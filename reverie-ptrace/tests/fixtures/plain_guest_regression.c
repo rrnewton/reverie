@@ -618,6 +618,109 @@ static void mode_sigtrap_states(void) {
   }
 }
 
+static void segv_handler(int sig) {
+  (void)sig;
+}
+
+/* SIGSEGV's whole action and mask bit, as sigtrap_full_state reports
+ * SIGTRAP's. */
+static void segv_full_state(const char* tag) {
+  struct sigaction sa;
+  sigset_t set;
+  if (sigaction(SIGSEGV, NULL, &sa) != 0 ||
+      sigprocmask(SIG_SETMASK, NULL, &set) != 0)
+    die("read sigsegv state");
+  const char* disp = sa.sa_handler == SIG_IGN    ? "ign"
+      : sa.sa_handler == SIG_DFL                 ? "dfl"
+      : sa.sa_handler == segv_handler            ? "segv_handler"
+                                                 : "other";
+  say("%s sigsegv=%s flags=%#lx usr2-in-mask=%d blocked=%d\n",
+      tag,
+      disp,
+      (unsigned long)(sa.sa_flags & (SA_RESTART | SA_NODEFER)),
+      sigismember(&sa.sa_mask, SIGUSR2),
+      sigismember(&set, SIGSEGV));
+}
+
+static void segv_set(void (*action)(int), int block) {
+  struct sigaction sa;
+  memset(&sa, 0, sizeof sa);
+  sa.sa_handler = action;
+  sa.sa_flags = SA_RESTART;
+  sigemptyset(&sa.sa_mask);
+  sigaddset(&sa.sa_mask, SIGUSR2);
+  if (sigaction(SIGSEGV, &sa, NULL) != 0)
+    die("set sigsegv");
+  sigset_t set;
+  sigemptyset(&set);
+  sigaddset(&set, SIGSEGV);
+  if (sigprocmask(block ? SIG_BLOCK : SIG_UNBLOCK, &set, NULL) != 0)
+    die("mask sigsegv");
+}
+
+/* rdtsc (0) or cpuid (1), each of which the tracer traps with a SIGSEGV. */
+static void segv_trapped_instruction(int cpuid) {
+  if (cpuid) {
+    unsigned a = 0, b, c = 0, d;
+    __asm__ volatile("cpuid" : "+a"(a), "=b"(b), "+c"(c), "=d"(d));
+    (void)b;
+    (void)d;
+  } else {
+    unsigned lo, hi;
+    __asm__ volatile("rdtsc" : "=a"(lo), "=d"(hi));
+    (void)lo;
+    (void)hi;
+  }
+}
+
+static char segv_handler_tag[64];
+
+/* A SIGUSR1 handler whose first instruction is a trapped rdtsc: SIGSEGV is
+ * in its sa_mask, so the handler runs with it blocked. */
+static void segv_usr1_handler(int sig) {
+  (void)sig;
+  segv_trapped_instruction(0);
+  segv_full_state(segv_handler_tag);
+}
+
+/* Each SIGSEGV state through a trapped rdtsc, a trapped cpuid and a trapped
+ * rdtsc first thing in a handler: natively neither instruction faults, so
+ * the action and mask bit stay as they were
+ * (https://github.com/rrnewton/hermit/issues/4485). */
+static void mode_segv_states(void) {
+  static const struct {
+    const char* name;
+    void (*action)(int);
+    int block;
+  } states[] = {
+      {"ign", SIG_IGN, 0},
+      {"ign-blocked", SIG_IGN, 1},
+      {"handler-blocked", segv_handler, 1},
+      {"dfl-blocked", SIG_DFL, 1},
+  };
+  struct sigaction usr1;
+  memset(&usr1, 0, sizeof usr1);
+  usr1.sa_handler = segv_usr1_handler;
+  sigemptyset(&usr1.sa_mask);
+  sigaddset(&usr1.sa_mask, SIGSEGV);
+  if (sigaction(SIGUSR1, &usr1, NULL) != 0)
+    die("set sigusr1");
+  for (unsigned i = 0; i < sizeof states / sizeof states[0]; i++) {
+    char tag[64];
+    for (int cpuid = 0; cpuid < 2; cpuid++) {
+      segv_set(states[i].action, states[i].block);
+      segv_trapped_instruction(cpuid);
+      snprintf(tag, sizeof tag, "%s %s", states[i].name, cpuid ? "cpuid" : "rdtsc");
+      segv_full_state(tag);
+    }
+    segv_set(states[i].action, states[i].block);
+    snprintf(segv_handler_tag, sizeof segv_handler_tag, "%s in-handler", states[i].name);
+    raise(SIGUSR1);
+    snprintf(tag, sizeof tag, "%s after-handler", states[i].name);
+    segv_full_state(tag);
+  }
+}
+
 /* What a sleep's remaining time says, without its host-dependent digits.
  * rem is zeroed before each call, so "unwritten" means the kernel never
  * copied a remaining time out (the sleep was not interrupted). The tracer
@@ -4169,6 +4272,8 @@ int main(int argc, char** argv) {
     mode_sigtrap_profile();
   else if (!strcmp(m, "sigtrap_states"))
     mode_sigtrap_states();
+  else if (!strcmp(m, "segv_states"))
+    mode_segv_states();
   else if (!strcmp(m, "sigtrap_timer"))
     mode_sigtrap_timer();
   else if (!strcmp(m, "sigtrap_interrupted_waits"))

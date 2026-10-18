@@ -3587,6 +3587,76 @@ async fn a_process_sharing_the_signal_actions_never_reads_a_reset_sigtrap_action
     }
 }
 
+/// A guest's SIGSEGV state survives Reverie's own rdtsc and cpuid traps, as
+/// it does natively, where neither instruction faults
+/// (https://github.com/rrnewton/hermit/issues/4485). Linux reports each trap
+/// with `force_sig`, which resets a blocked or ignored SIGSEGV to `SIG_DFL`
+/// and unblocks it. Four states go through a trapped rdtsc, a trapped cpuid,
+/// and a trapped rdtsc that is the first instruction of a handler whose
+/// `sa_mask` blocks SIGSEGV (the bit then comes from the delivery, not from
+/// the last stop); the guest reads back the handler, the flags and `sa_mask`
+/// it set, and the mask bit.
+#[tokio::test(flavor = "current_thread")]
+async fn segv_state_survives_rdtsc_and_cpuid_traps() {
+    let runs = run_both_configurations("segv_states").await;
+    let mut expected = Vec::new();
+    for (state, action, blocked) in [
+        ("ign", "ign", 0),
+        ("ign-blocked", "ign", 1),
+        ("handler-blocked", "segv_handler", 1),
+        ("dfl-blocked", "dfl", 1),
+    ] {
+        for place in ["rdtsc", "cpuid"] {
+            expected.push(format!(
+                "{state} {place} sigsegv={action} flags=0x10000000 usr2-in-mask=1 blocked={blocked}"
+            ));
+        }
+        expected.push(format!(
+            "{state} in-handler sigsegv={action} flags=0x10000000 usr2-in-mask=1 blocked=1"
+        ));
+        expected.push(format!(
+            "{state} after-handler sigsegv={action} flags=0x10000000 usr2-in-mask=1 blocked={blocked}"
+        ));
+    }
+    for run in &runs {
+        let lines: Vec<&str> = run
+            .report
+            .lines()
+            .filter(|line| line.contains(" sigsegv="))
+            .collect();
+        assert_eq!(lines, expected, "{}", run.report);
+    }
+}
+
+/// The negative control of `segv_state_survives_rdtsc_and_cpuid_traps`: for a
+/// Tool that declares no serialized-execution contract, Reverie keeps nothing,
+/// and each trapped rdtsc leaves Linux's reset, so the test above can fail.
+#[tokio::test(flavor = "current_thread")]
+async fn without_the_contract_a_trapped_rdtsc_resets_sigsegv() {
+    let run = run_guest_options(
+        "segv_states",
+        GuestOptions {
+            no_serialization_contract: true,
+            ..Default::default()
+        },
+    )
+    .await
+    .expect("run segv_states without the contract");
+    assert_eq!(run.status, ExitStatus::Exited(0), "{}", run.report);
+    let rdtsc: Vec<&str> = run
+        .report
+        .lines()
+        .filter(|line| line.contains(" rdtsc sigsegv="))
+        .collect();
+    let expected: Vec<String> = ["ign", "ign-blocked", "handler-blocked", "dfl-blocked"]
+        .iter()
+        .map(|state| {
+            format!("{state} rdtsc sigsegv=dfl flags=0x10000000 usr2-in-mask=1 blocked=0")
+        })
+        .collect();
+    assert_eq!(rdtsc, expected, "{}", run.report);
+}
+
 /// A caught, unblocked SIGTRAP needs no repair: no step can reset it, so a run
 /// through every handler shape makes no unstepped injection
 /// (`UNSTEPPED_INJECTIONS_FOR_TEST`) and keeps the handler.

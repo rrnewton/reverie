@@ -743,8 +743,10 @@ struct ProcSignalState {
     /// (`SigCgt`).
     sigtrap_ignored: bool,
     sigtrap_caught: bool,
-    /// Whether SIGSEGV is ignored (`SigIgn`).
+    /// Whether SIGSEGV is ignored (`SigIgn`) and whether it is caught
+    /// (`SigCgt`).
     sigsegv_ignored: bool,
+    sigsegv_caught: bool,
 }
 
 impl ProcSignalState {
@@ -776,6 +778,7 @@ impl ProcSignalState {
             sigtrap_ignored,
             sigtrap_caught,
             sigsegv_ignored: field("SigIgn:")? & SIGSEGV_BIT != 0,
+            sigsegv_caught: field("SigCgt:")? & SIGSEGV_BIT != 0,
         })
     }
 }
@@ -9369,6 +9372,28 @@ impl<L: Tool + 'static> TracedTask<L> {
                 }),
         };
         self.segv_blocked.store(state, Ordering::SeqCst);
+        if self.segv_action().is_none() && syscall == 0 {
+            self.learn_uncaught_segv_action(task);
+        }
+    }
+
+    /// Sets SIGSEGV's action from procfs if it is not caught: `SIG_IGN` or
+    /// `SIG_DFL`, whose flags, mask and restorer the restore takes from the
+    /// action it finds (`restore_segv_after_trap`). A caught one is read by
+    /// `learn_segv_action`, which needs an injection.
+    fn learn_uncaught_segv_action(&self, task: &Stopped) {
+        if let Ok(state) = ProcSignalState::read(task)
+            && !state.sigsegv_caught
+        {
+            self.set_segv_action(Some(KernelSigaction {
+                handler: if state.sigsegv_ignored {
+                    libc::SIG_IGN as u64
+                } else {
+                    libc::SIG_DFL as u64
+                },
+                ..KernelSigaction::default()
+            }));
+        }
     }
 
     /// The mask `note_segv_resume` records, with `syscall` the number plus
@@ -9398,13 +9423,21 @@ impl<L: Tool + 'static> TracedTask<L> {
                 regs.rsp as usize + crate::sigtrap_state::SIGRETURN_UC_SIGMASK_OFFSET,
             )
             .map(|mask| mask & BLOCKABLE_SIGNAL_BITS),
+            // It installs `act` unless it fails: a wrong size (EINVAL) or an
+            // unreadable `act` (EFAULT) installs nothing, and is read here
+            // without force, so that a page the kernel cannot read is not
+            // either. Otherwise the action is unknown.
             Sysno::rt_sigaction if how as i32 == libc::SIGSEGV && set != 0 => {
-                self.global_state
-                    .sigtrap_tables
-                    .lock()
-                    .unwrap()
-                    .segv_actions
-                    .remove(&self.sigtrap_table);
+                let act = (size as usize == std::mem::size_of::<u64>())
+                    .then(|| {
+                        Addr::<KernelSigaction>::from_raw(set as usize)
+                            .and_then(|address| task.read_value(address).ok())
+                    })
+                    .flatten();
+                self.set_segv_action(act.map(|act| KernelSigaction {
+                    mask: act.mask & BLOCKABLE_SIGNAL_BITS,
+                    ..act
+                }));
                 Some(mask)
             }
             _ => Some(mask),
@@ -9424,7 +9457,7 @@ impl<L: Tool + 'static> TracedTask<L> {
 
     /// Sets, or with `None` forgets, SIGSEGV's action in this thread's
     /// signal-action table.
-    fn set_segv_action(&mut self, action: Option<KernelSigaction>) {
+    fn set_segv_action(&self, action: Option<KernelSigaction>) {
         let mut tables = self.global_state.sigtrap_tables.lock().unwrap();
         match action {
             Some(action) => {
@@ -9781,14 +9814,26 @@ impl<L: Tool + 'static> TracedTask<L> {
     }
 
     /// Reads SIGSEGV's action into this thread's signal-action table if it is
-    /// not known there, at a stop that can take an unstepped injection, as
-    /// `apply_sigtrap_repair` can.
+    /// not known there. procfs says whether it is ignored or caught; only a
+    /// caught one, whose handler `restore_segv_after_trap` must know, is read
+    /// with an unstepped injection, at a stop that can take one, as
+    /// `apply_sigtrap_repair` can. For `SIG_IGN` and `SIG_DFL` the flags, mask
+    /// and restorer are left zero: a reset keeps them, so the restore takes
+    /// them from the action it finds.
     async fn learn_segv_action(&mut self, task: Stopped) -> Result<Stopped, TraceError> {
+        // Pre-init runs no guest code, and an exec stop sets the action
+        // itself; before a spawn's exec the action is the tracer's own.
         if !self.keeps_segv_state()
-            || self.in_signal_callback
-            || self.in_held_signal_callback
+            || self.preinit_generation.is_some()
             || self.segv_action().is_some()
         {
+            return Ok(task);
+        }
+        self.learn_uncaught_segv_action(&task);
+        if self.segv_action().is_some() {
+            return Ok(task);
+        }
+        if self.in_signal_callback || self.in_held_signal_callback {
             return Ok(task);
         }
         let _repairs = self.lock_sigtrap_repairs().await;
@@ -9881,14 +9926,30 @@ impl<L: Tool + 'static> TracedTask<L> {
             set_sigmask(&task, mask | SIGSEGV_BIT)?;
         }
         let action_known = before.is_some() || reset == Some(false);
-        let task = match (restore, now, scratch) {
-            (Some(before), Some(now), Some(scratch))
-                if before.handler != libc::SIG_DFL as u64
-                    && now.handler == libc::SIG_DFL as u64
+        // The reset kept the flags, mask and restorer. An ignored action is
+        // written back as `SIG_IGN` with them, as SIGTRAP's `Ignored` repair
+        // is; a caught one only if they are still the ones it was set with.
+        let write = match (restore, now) {
+            (Some(before), Some(now)) if now.handler == libc::SIG_DFL as u64 => {
+                if before.ignored() {
+                    Some(KernelSigaction {
+                        handler: libc::SIG_IGN as u64,
+                        ..now
+                    })
+                } else if before.handler != libc::SIG_DFL as u64
                     && (now.flags, now.restorer, now.mask)
-                        == (before.flags, before.restorer, before.mask) =>
-            {
-                self.write_signal_action_at(task, scratch, libc::SIGSEGV, before)
+                        == (before.flags, before.restorer, before.mask)
+                {
+                    Some(before)
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        };
+        let task = match (write, scratch) {
+            (Some(action), Some(scratch)) => {
+                self.write_signal_action_at(task, scratch, libc::SIGSEGV, action)
                     .await?
             }
             _ => task,
