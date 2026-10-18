@@ -35,6 +35,9 @@ use reverie::syscalls::Sysno;
 /// SIGTRAP's bit in a kernel signal mask (bit `n - 1` for signal `n`).
 pub(crate) const SIGTRAP_BIT: u64 = 1 << (libc::SIGTRAP as u64 - 1);
 
+/// SIGSEGV's bit in a kernel signal mask.
+pub(crate) const SIGSEGV_BIT: u64 = 1 << (libc::SIGSEGV as u64 - 1);
+
 /// Every signal that can be blocked: all but SIGKILL and SIGSTOP.
 pub(crate) const BLOCKABLE_SIGNAL_BITS: u64 =
     !(1 << (libc::SIGKILL as u64 - 1) | 1 << (libc::SIGSTOP as u64 - 1));
