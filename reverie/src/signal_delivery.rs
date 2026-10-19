@@ -138,6 +138,16 @@ pub struct SignalDelivery {
     /// mask comparison, for example a signal the backend reserves for itself.
     /// SIGKILL and SIGSTOP are always left out.
     pub unchecked_mask: u64,
+    /// Signals whose bits the tool does not claim to know in the frame's mask
+    /// only, left out of the [`SignalDeliveryField::FrameMask`] comparison
+    /// besides `unchecked_mask`; the other comparisons still check them.
+    pub unchecked_frame_mask: u64,
+    /// Signals whose bits the tool does not claim to know in the current mask
+    /// only, left out of the [`SignalDeliveryField::CurrentMask`] comparison,
+    /// and of the [`SignalDeliveryField::HandlerMask`] comparison derived
+    /// from it, besides `unchecked_mask`; the frame comparison still checks
+    /// them.
+    pub unchecked_current_mask: u64,
     /// What the thread was doing when the signal stopped it.
     pub interruption: Interruption,
 }
@@ -192,8 +202,12 @@ impl SignalDelivery {
     /// syscall. Returns the first field that differs. Pure: it reads nothing
     /// and changes nothing.
     pub fn check(&self, kernel: &KernelDeliveryState) -> Result<(), SignalDeliveryMismatch> {
-        let checked = !(self.unchecked_mask | UNBLOCKABLE);
         let compare = |field, expected: u64, actual: u64| {
+            let only = match field {
+                SignalDeliveryField::FrameMask => self.unchecked_frame_mask,
+                _ => self.unchecked_current_mask,
+            };
+            let checked = !(self.unchecked_mask | only | UNBLOCKABLE);
             if expected & checked == actual & checked {
                 Ok(())
             } else {
@@ -287,8 +301,10 @@ pub enum SignalDeliveryUnavailable {
     /// The callback cannot try again with other values: a mismatch reports
     /// the kernel's values, and resubmitting them would check nothing.
     AfterMismatch,
-    /// The delivery leaves its own signal's bit out of the comparison
-    /// (`unchecked_mask`), so no check could tell whether it is blocked.
+    /// The delivery leaves its own signal's bit out of a comparison
+    /// (`unchecked_mask`, `unchecked_frame_mask` or
+    /// `unchecked_current_mask`), so no check could tell whether it is
+    /// blocked.
     UncheckedSignal,
     /// The kernel's current mask blocks the signal, so resuming with it puts
     /// it back in the queue instead of delivering it (Linux's
@@ -303,12 +319,24 @@ pub enum SignalDeliveryUnavailable {
     UnsupportedArchitecture,
 }
 
+/// How a backend reports a signal to [`crate::Tool::handle_signal_event`]
+/// ([`crate::Guest::signal_report_path`]).
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
+pub enum SignalReportPath {
+    /// At the signal's own stop.
+    Direct,
+    /// Held: the signal stopped a Tool's injection, and the backend reports
+    /// it after the callback that held it returns.
+    Held,
+}
+
 /// A backend's answer to [`crate::Guest::deliver_signal`].
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SignalDeliveryOutcome {
     /// The kernel will deliver exactly this signal instance when the guest
     /// resumes, with masks equal to the delivery's on every checked bit
-    /// (all but `unchecked_mask`, SIGKILL and SIGSTOP): every check against
+    /// (all but `unchecked_mask`, SIGKILL and SIGSTOP, and in the frame's or
+    /// the current mask the bits unchecked for that mask): every check against
     /// the kernel passed (ptrace). The handler's mask is checked only as
     /// arithmetic over the tool's action, which the kernel's own action
     /// equals only as far as the tool's copy is kept right where the tool
@@ -355,6 +383,8 @@ mod tests {
             current_mask: current,
             handler_mask: action.handler_mask(current, USR1),
             unchecked_mask: 0,
+            unchecked_frame_mask: 0,
+            unchecked_current_mask: 0,
             interruption,
         }
     }
@@ -503,5 +533,68 @@ mod tests {
             ..kernel(&d, -1, 0)
         };
         assert_eq!(d.check(&k), Ok(()));
+    }
+
+    /// A bit unchecked in one mask is left out of that mask's comparison
+    /// only: the frame's exemption leaves the current mask checked, and the
+    /// current mask's leaves the frame checked.
+    #[test]
+    fn a_per_mask_exemption_covers_its_own_mask_only() {
+        let trap = signal_set_bit(libc::SIGTRAP);
+        let frame_only = SignalDelivery {
+            unchecked_frame_mask: trap,
+            ..delivery(Interruption::NotInSyscall)
+        };
+        let good = kernel(&frame_only, -1, 0);
+        let frame_differs = KernelDeliveryState {
+            frame_mask: good.frame_mask | trap,
+            ..good
+        };
+        let current_differs = KernelDeliveryState {
+            current_mask: good.current_mask | trap,
+            ..good
+        };
+        assert_eq!(frame_only.check(&frame_differs), Ok(()));
+        assert_eq!(
+            frame_only.check(&current_differs),
+            Err(SignalDeliveryMismatch {
+                field: SignalDeliveryField::CurrentMask,
+                expected: good.current_mask,
+                actual: good.current_mask | trap,
+            })
+        );
+        let current_only = SignalDelivery {
+            unchecked_frame_mask: 0,
+            unchecked_current_mask: trap,
+            ..frame_only
+        };
+        assert_eq!(current_only.check(&current_differs), Ok(()));
+        assert_eq!(
+            current_only.check(&frame_differs),
+            Err(SignalDeliveryMismatch {
+                field: SignalDeliveryField::FrameMask,
+                expected: good.frame_mask,
+                actual: good.frame_mask | trap,
+            })
+        );
+        // The handler's mask follows the current mask's exemption: a
+        // handler mask that differs from Linux's rule only in an exempt
+        // current bit passes, and with the frame's exemption alone it fails.
+        let handler_differs = SignalDelivery {
+            handler_mask: current_only.handler_mask | trap,
+            ..current_only
+        };
+        assert_eq!(handler_differs.check(&good), Ok(()));
+        assert_eq!(
+            SignalDelivery {
+                unchecked_frame_mask: trap,
+                unchecked_current_mask: 0,
+                ..handler_differs
+            }
+            .check(&good)
+            .unwrap_err()
+            .field,
+            SignalDeliveryField::HandlerMask
+        );
     }
 }

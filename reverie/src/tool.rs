@@ -928,6 +928,24 @@ pub trait Tool: Send + Sync + Default {
     ) {
     }
 
+    /// Records, in the taking thread's state, one signal the backend passes
+    /// on unreported, after [`Tool::filter_unreported_signal`] decided about
+    /// it: `kept` is that hook's answer, so a kept signal goes on to the
+    /// guest and a dropped one does not. The signal's
+    /// [`crate::UnreportedSignal::reason`] says why it was not reported, so
+    /// that a Tool can count what its signal callback never saw.
+    ///
+    /// The hook can only record: it gets the thread's state and the signal's
+    /// read-only description, and no access to the guest. The default
+    /// records nothing.
+    fn note_unreported_signal(
+        &self,
+        _thread_state: &mut Self::ThreadState,
+        _signal: &crate::UnreportedSignal,
+        _kept: bool,
+    ) {
+    }
+
     /// Admits acknowledgment of real KVM pending removals before thread start.
     /// Other Tools retain their existing pending-state behavior by default.
     ///
