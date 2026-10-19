@@ -597,6 +597,80 @@ fn temporary_signal_mask(task: &Stopped, nr: Sysno, args: &SyscallArgs) -> Optio
     read(mask)
 }
 
+/// The first reasons `report_or_pass_held_signal` passes a held signal on
+/// unreported for, read without a request, in its order: SIGSTOP, then the
+/// timer's signal number (a guest's own signal of that number shares it), a
+/// stop that is not a delivery stop, and a SIGTRAP another consumer may
+/// claim. `None` when none applies.
+fn held_early_reason(
+    is_sigstop: bool,
+    is_timer_number: bool,
+    at_delivery_stop: bool,
+    trap_may_be_claimed: bool,
+) -> Option<reverie::UnreportedSignalReason> {
+    if is_sigstop {
+        Some(reverie::UnreportedSignalReason::HeldStop)
+    } else if is_timer_number {
+        Some(reverie::UnreportedSignalReason::HeldTimer)
+    } else if !at_delivery_stop {
+        Some(reverie::UnreportedSignalReason::HeldAtNonDeliveryStop)
+    } else if trap_may_be_claimed {
+        Some(reverie::UnreportedSignalReason::HeldWhileTrapMayBeClaimed)
+    } else {
+        None
+    }
+}
+
+/// Whether the thread's masks keep a held signal from its report: the mask in
+/// effect (`blocked`, procfs `SigBlk`) blocks it (`sig_bit`), or the mask
+/// `PTRACE_GETSIGMASK` reports (`saved`, read only when the first does not
+/// apply) differs from it, so a temporary mask's restore is pending, or that
+/// read fails.
+fn held_mask_reason(
+    sig_bit: u64,
+    blocked: u64,
+    saved: impl FnOnce() -> Option<u64>,
+) -> Option<reverie::UnreportedSignalReason> {
+    if blocked & sig_bit != 0 {
+        return Some(reverie::UnreportedSignalReason::HeldBlocked);
+    }
+    match saved() {
+        Some(saved) if saved == blocked => None,
+        Some(_) => Some(reverie::UnreportedSignalReason::HeldRestorePending),
+        None => Some(reverie::UnreportedSignalReason::HeldUnreadable),
+    }
+}
+
+/// Whether the guest's syscall registers keep a held signal from its report:
+/// `regs` is `orig_ax` and `rax`, `None` when unreadable. A thread in a
+/// syscall whose result is `-ERESTART_RESTARTBLOCK` is to restart through its
+/// restart block.
+fn held_restart_reason(regs: Option<(i64, usize)>) -> Option<reverie::UnreportedSignalReason> {
+    match regs {
+        Some((orig, ret))
+            if orig < 0 || Errno::from_ret(ret) != Err(Errno::ERESTART_RESTARTBLOCK) =>
+        {
+            None
+        }
+        Some(_) => Some(reverie::UnreportedSignalReason::HeldRestartBlock),
+        None => Some(reverie::UnreportedSignalReason::HeldUnreadable),
+    }
+}
+
+/// Whether another signal pending in the kernel (`pending`, procfs `SigPnd`;
+/// `None` when unreadable) keeps a held signal from its report, leaving out a
+/// stale step SIGTRAP (`stale_step_trap`, its bit or 0).
+fn held_pending_reason(
+    pending: Option<u64>,
+    stale_step_trap: u64,
+) -> Option<reverie::UnreportedSignalReason> {
+    match pending {
+        Some(pending) if pending & !stale_step_trap == 0 => None,
+        Some(_) => Some(reverie::UnreportedSignalReason::HeldWithAnotherPending),
+        None => Some(reverie::UnreportedSignalReason::HeldUnreadable),
+    }
+}
+
 /// Classifies the signal-delivery stop that ended a private-page step.
 fn classify_private_step(
     ip: u64,
@@ -4716,7 +4790,13 @@ impl<L: Tool + 'static> TracedTask<L> {
                             Event::RawSignal(raw) => AnySignal::new(raw).ok_or(Errno::EINVAL)?,
                             _ => unreachable!(),
                         };
-                        let sig = owner.filter_direct_unreported(&task, sig).await;
+                        let sig = owner
+                            .filter_direct_unreported(
+                                &task,
+                                sig,
+                                reverie::UnreportedSignalReason::DuringInitialization,
+                            )
+                            .await;
                         running =
                             RootStopLease::new(task, held_root_stop.clone()).resume_any(sig)?;
                     }
@@ -6101,13 +6181,15 @@ impl<L: Tool + 'static> TracedTask<L> {
         let Some(sig) = signal else {
             return Ok(self.pass_held_signal_unreported(None));
         };
-        if sig == Signal::SIGSTOP
-            || sig == Timer::signal_type()
-            || self.latest_injection_stop.unwrap_or(stop_signal).is_none()
-            || self.sigtrap_may_be_claimed()
-        {
+        let early = held_early_reason(
+            sig == Signal::SIGSTOP,
+            sig == Timer::signal_type(),
+            self.latest_injection_stop.unwrap_or(stop_signal).is_some(),
+            self.sigtrap_may_be_claimed(),
+        );
+        if let Some(reason) = early {
             return self
-                .pass_held_signal_unreported_unless_filtered(signal, record, reported)
+                .pass_held_signal_unreported_unless_filtered(signal, record, reported, reason)
                 .await;
         }
         // `resume_with_signal` writes the siginfo back with
@@ -6120,7 +6202,12 @@ impl<L: Tool + 'static> TracedTask<L> {
         // later held signal is reported.
         if thread_may_be_seccomp_filtered() {
             return self
-                .pass_held_signal_unreported_unless_filtered(signal, record, reported)
+                .pass_held_signal_unreported_unless_filtered(
+                    signal,
+                    record,
+                    reported,
+                    reverie::UnreportedSignalReason::HeldTracerFiltered,
+                )
                 .await;
         }
         // A procfs or register read that fails passes the signal on
@@ -6128,14 +6215,18 @@ impl<L: Tool + 'static> TracedTask<L> {
         // a resume main makes.
         let Ok(blocked) = blocked_signal_mask(task.pid()) else {
             return self
-                .pass_held_signal_unreported_unless_filtered(signal, record, reported)
+                .pass_held_signal_unreported_unless_filtered(
+                    signal,
+                    record,
+                    reported,
+                    reverie::UnreportedSignalReason::HeldUnreadable,
+                )
                 .await;
         };
-        if blocked & signal_mask_bit(sig) != 0
-            || !task.getsigmask().is_ok_and(|saved| saved == blocked)
-        {
+        let masked = held_mask_reason(signal_mask_bit(sig), blocked, || task.getsigmask().ok());
+        if let Some(reason) = masked {
             return self
-                .pass_held_signal_unreported_unless_filtered(signal, record, reported)
+                .pass_held_signal_unreported_unless_filtered(signal, record, reported, reason)
                 .await;
         }
         // The guest's syscall is to restart through its own restart block.
@@ -6143,19 +6234,26 @@ impl<L: Tool + 'static> TracedTask<L> {
         // then restart the injection's syscall or keep its result
         // (`signal_callback_guest_ret`), where main, which reports no held
         // signal, restarts the guest's own.
-        if !task.getregs().is_ok_and(|regs| {
-            (regs.orig_syscall() as i64) < 0
-                || Errno::from_ret(regs.ret() as usize) != Err(Errno::ERESTART_RESTARTBLOCK)
-        }) {
+        let restart = held_restart_reason(
+            task.getregs()
+                .ok()
+                .map(|regs| (regs.orig_syscall() as i64, regs.ret() as usize)),
+        );
+        if let Some(reason) = restart {
             return self
-                .pass_held_signal_unreported_unless_filtered(signal, record, reported)
+                .pass_held_signal_unreported_unless_filtered(signal, record, reported, reason)
                 .await;
         }
         // An instance that was reported already is passed on unreported, and
         // its count stays taken: it is delivered now.
         if reported {
             return self
-                .pass_held_signal_unreported_unless_filtered(signal, record, false)
+                .pass_held_signal_unreported_unless_filtered(
+                    signal,
+                    record,
+                    false,
+                    reverie::UnreportedSignalReason::HeldAlreadyReported,
+                )
                 .await;
         }
         // Without its record the siginfo cannot be written back after the
@@ -6164,7 +6262,12 @@ impl<L: Tool + 'static> TracedTask<L> {
         // capture made can fail (EMFILE) and a later one succeed.
         let Some(taken) = taken.filter(|taken| taken.signal == sig) else {
             return self
-                .pass_held_signal_unreported_unless_filtered(signal, record, false)
+                .pass_held_signal_unreported_unless_filtered(
+                    signal,
+                    record,
+                    false,
+                    reverie::UnreportedSignalReason::HeldNoRecord,
+                )
                 .await;
         };
         let stale_step_trap = if self.stale_private_step_trap {
@@ -6172,9 +6275,10 @@ impl<L: Tool + 'static> TracedTask<L> {
         } else {
             0
         };
-        if pending_signal_mask(task.pid()).map_or(true, |pending| pending & !stale_step_trap != 0) {
+        let pending = held_pending_reason(pending_signal_mask(task.pid()).ok(), stale_step_trap);
+        if let Some(reason) = pending {
             return self
-                .pass_held_signal_unreported_unless_filtered(signal, record, false)
+                .pass_held_signal_unreported_unless_filtered(signal, record, false, reason)
                 .await;
         }
         tracing::debug!(
@@ -6233,18 +6337,20 @@ impl<L: Tool + 'static> TracedTask<L> {
     /// kernel's queue (a mask that blocks it), as when it was counted, so a
     /// kept signal gives its count back. A dropped signal leaves the queue for
     /// good, so its count stays taken. An instance the hold took no count for
-    /// changes no count, kept or dropped.
+    /// changes no count, kept or dropped. `reason` says why the signal is
+    /// not reported.
     async fn pass_held_signal_unreported_unless_filtered(
         &mut self,
         signal: Option<AnySignal>,
         taken: Option<TakenSignal>,
         restore_count: bool,
+        reason: reverie::UnreportedSignalReason,
     ) -> Result<SignalResume, TraceError> {
         if let Some(sig) = signal {
             let info = taken
                 .filter(|taken| taken.signal == sig)
                 .map(|taken| taken.bytes);
-            if !self.keeps_unreported_signal(sig, info).await {
+            if !self.keeps_unreported_signal(sig, info, reason).await {
                 return Ok(self.pass_held_signal_unreported(None));
             }
             if restore_count {
@@ -6280,15 +6386,17 @@ impl<L: Tool + 'static> TracedTask<L> {
     /// (`hold_pending_signal`), and its count ends. Kept, it goes back into
     /// the queue when the guest's mask blocks it (Linux's synchronous dequeue
     /// can take a blocked signal at a step), and then keeps its count.
+    /// `reason` says why the signal is not reported.
     async fn filter_direct_unreported(
         &mut self,
         task: &Stopped,
         sig: impl Into<AnySignal>,
+        reason: reverie::UnreportedSignalReason,
     ) -> Option<AnySignal> {
         let sig = sig.into();
         let counted = self.take_reported_requeue(sig);
         let info = TakenSignal::at_stop(task, sig).map(|taken| taken.bytes);
-        if !self.keeps_unreported_signal(sig, info).await {
+        if !self.keeps_unreported_signal(sig, info, reason).await {
             return None;
         }
         // An unreadable mask counts as blocking, as in `resume_with_signal`.
@@ -6316,18 +6424,24 @@ impl<L: Tool + 'static> TracedTask<L> {
     /// a guest's signal from the hook. Showing them all changes nothing for a
     /// Tool that keeps the signals it does not own, as the hook's contract
     /// requires and its default does.
-    async fn keeps_unreported_signal(&self, sig: AnySignal, info: Option<SiginfoBytes>) -> bool {
+    ///
+    /// The hook's answer is then recorded in the thread's state
+    /// (`Tool::note_unreported_signal`), with `reason`.
+    async fn keeps_unreported_signal(
+        &mut self,
+        sig: AnySignal,
+        info: Option<SiginfoBytes>,
+        reason: reverie::UnreportedSignalReason,
+    ) -> bool {
         // Every `AnySignal` is numbered 1 to 64, which `from_number` accepts.
         let Some(unreported) =
-            reverie::UnreportedSignal::from_number(self.pid(), self.tid(), sig.raw(), info)
+            reverie::UnreportedSignal::from_number(self.pid(), self.tid(), sig.raw(), info, reason)
         else {
             return true;
         };
-        let keep = self
-            .process_state
-            .clone()
-            .filter_unreported_signal(self, unreported)
-            .await;
+        let tool = self.process_state.clone();
+        let keep = tool.filter_unreported_signal(self, unreported).await;
+        tool.note_unreported_signal(&mut self.thread_state, &unreported, keep);
         if !keep {
             tracing::debug!(
                 "[{}] the tool dropped signal {} passed on unreported",
@@ -9233,7 +9347,13 @@ impl<L: Tool + 'static> TracedTask<L> {
                 Wait::Stopped(task, event) if let Some(sig) = event.signal() => {
                     // We can get a spurious signal here, such as SIGWINCH. Skip
                     // past them until the tracee eventually arrives at SIGTRAP.
-                    let sig = self.filter_direct_unreported(&task, sig).await;
+                    let sig = self
+                        .filter_direct_unreported(
+                            &task,
+                            sig,
+                            reverie::UnreportedSignalReason::DuringSyscallSkip,
+                        )
+                        .await;
                     running = self.step_stopped_any(task, sig)?;
                 }
                 Wait::Stopped(task, event) => {
@@ -12521,7 +12641,13 @@ impl<L: Tool + 'static> TracedTask<L> {
                 }
                 // TODO: combine with handle_signal!
                 Event::Signal(Signal::SIGCHLD) => {
-                    let sig = self.filter_direct_unreported(&task, Signal::SIGCHLD).await;
+                    let sig = self
+                        .filter_direct_unreported(
+                            &task,
+                            Signal::SIGCHLD,
+                            reverie::UnreportedSignalReason::DuringDebuggerStep,
+                        )
+                        .await;
                     let running = self.step_stopped_any(task, sig)?;
                     let wait = running
                         .next_state_with_owner(&self.ptracer_waits)
@@ -12744,6 +12870,19 @@ impl<L: Tool + 'static> Guest<L> for TracedTask<L> {
         Ok(())
     }
 
+    /// Held while `report_signal` reports a held signal
+    /// (`in_held_signal_callback`), Direct while it reports one at its own
+    /// stop.
+    fn signal_report_path(&self) -> Option<reverie::SignalReportPath> {
+        if !self.in_signal_callback {
+            None
+        } else if self.in_held_signal_callback {
+            Some(reverie::SignalReportPath::Held)
+        } else {
+            Some(reverie::SignalReportPath::Direct)
+        }
+    }
+
     /// Checks the approval at the reported signal's own delivery stop, or at
     /// its held-signal report, with read-only requests: `PTRACE_GETSIGMASK`
     /// (the mask the frame saves), procfs `SigBlk` (the mask in effect) and
@@ -12777,7 +12916,12 @@ impl<L: Tool + 'static> Guest<L> for TracedTask<L> {
         if self.signal_delivery_mismatched {
             return unavailable(Unavailable::AfterMismatch);
         }
-        if delivery.unchecked_mask & reverie::signal_set_bit(delivery.signal) != 0 {
+        if (delivery.unchecked_mask
+            | delivery.unchecked_frame_mask
+            | delivery.unchecked_current_mask)
+            & reverie::signal_set_bit(delivery.signal)
+            != 0
+        {
             return unavailable(Unavailable::UncheckedSignal);
         }
         if self.injected_syscall_frame.is_some() {
@@ -13875,5 +14019,87 @@ mod tests {
             .wait()
             .expect("wait");
         assert_eq!(exited.assume_exited().1, status);
+    }
+}
+
+#[cfg(test)]
+mod held_reason_tests {
+    use reverie::UnreportedSignalReason as Reason;
+
+    use super::*;
+
+    /// Each early check names its own reason, in order, and none applies to
+    /// a signal at a delivery stop that no other consumer may claim.
+    #[test]
+    fn early_reasons_follow_the_order_of_the_checks() {
+        let early = held_early_reason;
+        assert_eq!(early(true, true, false, true), Some(Reason::HeldStop));
+        assert_eq!(early(false, true, false, true), Some(Reason::HeldTimer));
+        assert_eq!(
+            early(false, false, false, true),
+            Some(Reason::HeldAtNonDeliveryStop)
+        );
+        assert_eq!(
+            early(false, false, true, true),
+            Some(Reason::HeldWhileTrapMayBeClaimed)
+        );
+        assert_eq!(early(false, false, true, false), None);
+    }
+
+    /// A mask in effect that blocks the signal is `HeldBlocked`, without
+    /// reading the saved mask; otherwise a saved mask that differs is a
+    /// pending restore, an equal one nothing, and a failed read unreadable.
+    #[test]
+    fn mask_reasons_tell_blocked_from_a_pending_restore() {
+        let usr1 = 1u64 << (libc::SIGUSR1 - 1);
+        let int = 1u64 << (libc::SIGINT - 1);
+        assert_eq!(
+            held_mask_reason(usr1, usr1 | int, || panic!("read the saved mask")),
+            Some(Reason::HeldBlocked)
+        );
+        assert_eq!(
+            held_mask_reason(usr1, int, || Some(int | usr1)),
+            Some(Reason::HeldRestorePending)
+        );
+        assert_eq!(held_mask_reason(usr1, int, || Some(int)), None);
+        assert_eq!(
+            held_mask_reason(usr1, int, || None),
+            Some(Reason::HeldUnreadable)
+        );
+    }
+
+    /// Only a syscall whose result is `-ERESTART_RESTARTBLOCK` is a restart
+    /// block; no syscall, another result, or an unreadable register set
+    /// is classified as such.
+    #[test]
+    fn restart_reasons_name_only_a_restart_block() {
+        let restart_block = (-(Errno::ERESTART_RESTARTBLOCK.into_raw() as i64)) as usize;
+        let eintr = (-(libc::EINTR as i64)) as usize;
+        assert_eq!(
+            held_restart_reason(Some((libc::SYS_nanosleep, restart_block))),
+            Some(Reason::HeldRestartBlock)
+        );
+        assert_eq!(held_restart_reason(Some((-1, restart_block))), None);
+        assert_eq!(held_restart_reason(Some((libc::SYS_read, eintr))), None);
+        assert_eq!(held_restart_reason(None), Some(Reason::HeldUnreadable));
+    }
+
+    /// Another pending signal keeps the report back, a stale step SIGTRAP
+    /// alone does not, and an unreadable set is unreadable.
+    #[test]
+    fn pending_reasons_leave_a_stale_step_trap_out() {
+        let trap = 1u64 << (libc::SIGTRAP - 1);
+        let usr2 = 1u64 << (libc::SIGUSR2 - 1);
+        assert_eq!(held_pending_reason(Some(0), 0), None);
+        assert_eq!(held_pending_reason(Some(trap), trap), None);
+        assert_eq!(
+            held_pending_reason(Some(trap), 0),
+            Some(Reason::HeldWithAnotherPending)
+        );
+        assert_eq!(
+            held_pending_reason(Some(trap | usr2), trap),
+            Some(Reason::HeldWithAnotherPending)
+        );
+        assert_eq!(held_pending_reason(None, 0), Some(Reason::HeldUnreadable));
     }
 }
