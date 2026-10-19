@@ -895,6 +895,9 @@ pub trait Tool: Send + Sync + Default {
     ///   while the backend works on another, stopped one; and
     /// - the guest cannot install a seccomp filter: the Tool refuses
     ///   `seccomp(SECCOMP_SET_MODE_FILTER)` and `prctl(PR_SET_SECCOMP)`.
+    /// - no seccomp filter is installed on the tracer's own threads once the
+    ///   trace has started: the backend reads each tracer thread's filter
+    ///   state once, and a filter that comes later goes unseen.
     ///
     /// The backend trusts the declaration and does not check it. The ptrace
     /// backend keeps the guest's SIGTRAP action and mask across its own
