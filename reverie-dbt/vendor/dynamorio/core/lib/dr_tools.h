@@ -2463,6 +2463,16 @@ DR_API
  */
 uint
 dr_get_itimer(int which);
+
+DR_API
+/**
+ * Reverie addition. Returns whether DynamoRIO is terminating application
+ * threads (process exit or exit_group). While it is, the thread exit event of
+ * each remaining thread may run on the exiting thread, with the remaining
+ * thread's drcontext rather than the current one.
+ */
+bool
+dr_threads_terminating(void);
 #endif /* UNIX */
 
 DR_API

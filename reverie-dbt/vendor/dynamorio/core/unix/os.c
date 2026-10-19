@@ -6039,11 +6039,16 @@ invoke_syscall_as_app_with_result(void *drcontext, int sysnum, int arg_count,
             signal_end_injected_sigpipe(dcontext);
         } else
 #    endif
-            result->value = suspend ? signal_wait_injected_sigsuspend(dcontext)
-                                    : dynamorio_syscall(dcontext->sys_num, arg_count,
-                                                        actual_args[0], actual_args[1],
-                                                        actual_args[2], actual_args[3],
-                                                        actual_args[4], actual_args[5]);
+        if (suspend)
+            result->value = signal_wait_injected_sigsuspend(dcontext);
+        else if (dcontext->sys_num == SYS_pselect6)
+            result->value = signal_injected_pselect6(dcontext, actual_args);
+        else {
+            result->value =
+                dynamorio_syscall(dcontext->sys_num, arg_count, actual_args[0],
+                                  actual_args[1], actual_args[2], actual_args[3],
+                                  actual_args[4], actual_args[5]);
+        }
         MCXT_SYSCALL_RES(mc) = result->value;
         post_system_call(dcontext);
     }
@@ -7141,6 +7146,7 @@ handle_exit(dcontext_t *dcontext)
             /* Set where we are to handle reciprocal syncs */
             copy_mcontext(mc, &mcontext);
             mc->pc = SYSCALL_PC(dcontext);
+            synch_terminating_begin();
             for (i = 0; i < num_threads; i++) {
                 if (threads[i]->id != myid && threads[i]->pid == mypid) {
                     /* See comments in dynamo_process_exit_cleanup(): we terminate
@@ -7160,6 +7166,7 @@ handle_exit(dcontext_t *dcontext)
                     ASSERT(synch_res == THREAD_SYNCH_RESULT_SUCCESS);
                 }
             }
+            synch_terminating_end();
             copy_mcontext(&mcontext, mc);
         }
         d_r_mutex_unlock(&thread_initexit_lock);

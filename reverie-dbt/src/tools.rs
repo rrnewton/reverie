@@ -110,6 +110,7 @@ const TEST_COMPARE_EXCHANGE_ENV: &str = "HERMIT_DBT_TEST_COMPARE_EXCHANGE";
 const TEST_PPID_ENV: &str = "HERMIT_DBT_TEST_PPID";
 const TEST_BACKTRACE_ENV: &str = "HERMIT_DBT_TEST_BACKTRACE";
 const TEST_INJECT_INVALID_CLONE_ENV: &str = "HERMIT_DBT_TEST_INJECT_INVALID_CLONE";
+const TEST_INJECT_WAITS_ENV: &str = "HERMIT_DBT_TEST_INJECT_WAITS";
 const COUNTER1_ENV: &str = "HERMIT_DBT_COUNTER1";
 const COUNTER2_ENV: &str = "HERMIT_DBT_COUNTER2";
 const CHUNKY_PRINT_ENV: &str = "HERMIT_DBT_CHUNKY_PRINT";
@@ -211,6 +212,8 @@ static TEST_BACKTRACE_ENABLED: LazyLock<bool> = LazyLock::new(|| env_flag(TEST_B
 static TEST_INJECT_INVALID_CLONE_ENABLED: LazyLock<bool> =
     LazyLock::new(|| env_flag(TEST_INJECT_INVALID_CLONE_ENV));
 static TEST_INJECT_INVALID_CLONE_DONE: AtomicBool = AtomicBool::new(false);
+static TEST_INJECT_WAITS_ENABLED: LazyLock<bool> =
+    LazyLock::new(|| env_flag(TEST_INJECT_WAITS_ENV));
 static COUNTER1_ENABLED: LazyLock<bool> = LazyLock::new(|| env_flag(COUNTER1_ENV));
 static COUNTER2_ENABLED: LazyLock<bool> = LazyLock::new(|| env_flag(COUNTER2_ENV));
 static CHUNKY_PRINT_ENABLED: LazyLock<bool> = LazyLock::new(|| env_flag(CHUNKY_PRINT_ENV));
@@ -368,6 +371,12 @@ pub(crate) fn recorder_tool() -> &'static recorder_exact::Recorder {
 /// one (`DbtRunner::output_with_global`), every event goes to the launcher's.
 pub(crate) fn recorder_global() -> &'static recorder_exact::Recorded {
     &RECORDER_GLOBAL
+}
+
+/// Whether the inject-waits regression tool is active; it also reports each
+/// runtime thread exit, so tests can count them.
+pub(crate) fn inject_waits_enabled() -> bool {
+    *TEST_INJECT_WAITS_ENABLED
 }
 
 /// Exact counter2 process-local tool instance.
@@ -1032,6 +1041,261 @@ impl Tool for InjectInvalidCloneTool {
             }
         }
         guest.tail_inject(syscall).await
+    }
+}
+
+/// Regression tool that runs the guest's `select` and `pselect6` through
+/// [`Guest::inject`], as Detcore does for a blocking wait on an external
+/// descriptor, and returns the injected result. Everything else runs normally.
+/// The injected wait executes inside DynamoRIO rather than from the code cache,
+/// so a synch against this thread cannot succeed until the call returns
+/// (<https://github.com/rrnewton/hermit/issues/4483>).
+///
+/// It also carries the Linux policy for such a wait, the part a Tool owns: the
+/// backend runs every injected `pselect6` under the mask the Tool gives it and
+/// reports an interruption by its own signals as `ERESTARTNOHAND`. This Tool
+/// gives the guest's effective mask plus the signals Linux would discard
+/// (`SIG_IGN`, and `SIG_DFL` with an ignore or continue default), validates and
+/// normalizes the timeout as `kern_select` does, keeps the time left across
+/// restarts (on its own clock under `STICKY_TIMEOUTS`, which the kernel does
+/// not update), restarts while no handler would run, and writes the time left
+/// back as Linux does.
+#[derive(Clone, Copy, Debug, Default)]
+struct InjectWaitsTool;
+
+const STICKY_TIMEOUTS: usize = 0x0400_0000;
+const NSEC_PER_SEC: i128 = 1_000_000_000;
+
+/// The kernel's sigset argument of `pselect6`: a pointer and a size.
+#[repr(C)]
+struct SigsetArg {
+    set: usize,
+    size: usize,
+}
+
+async fn inject_raw<G: Guest<InjectWaitsTool>>(
+    guest: &mut G,
+    number: Sysno,
+    args: [usize; 6],
+) -> Result<i64, reverie::syscalls::Errno> {
+    let [a0, a1, a2, a3, a4, a5] = args;
+    guest
+        .inject(Syscall::from_raw(
+            number,
+            SyscallArgs::new(a0, a1, a2, a3, a4, a5),
+        ))
+        .await
+}
+
+/// The guest's mask for the wait: `temporary` if the call gives one, else the
+/// thread's own, plus every signal whose disposition Linux would discard.
+async fn wait_mask<G: Guest<InjectWaitsTool>>(
+    guest: &mut G,
+    temporary: Option<u64>,
+) -> Result<u64, reverie::syscalls::Errno> {
+    let mut mask = match temporary {
+        Some(mask) => mask,
+        None => {
+            let mut current: u64 = 0;
+            inject_raw(
+                guest,
+                Sysno::rt_sigprocmask,
+                [
+                    libc::SIG_BLOCK as usize,
+                    0,
+                    &mut current as *mut u64 as usize,
+                    8,
+                    0,
+                    0,
+                ],
+            )
+            .await?;
+            current
+        }
+    };
+    for sig in 1..=64usize {
+        if sig == libc::SIGKILL as usize || sig == libc::SIGSTOP as usize {
+            continue;
+        }
+        let mut old = [0u64; 4];
+        if inject_raw(
+            guest,
+            Sysno::rt_sigaction,
+            [sig, 0, old.as_mut_ptr() as usize, 8, 0, 0],
+        )
+        .await
+        .is_err()
+        {
+            continue;
+        }
+        let handler = old[0] as usize;
+        let default_ignored = matches!(
+            sig as i32,
+            libc::SIGCHLD | libc::SIGCONT | libc::SIGURG | libc::SIGWINCH
+        );
+        if handler == libc::SIG_IGN || (handler == libc::SIG_DFL && default_ignored) {
+            mask |= 1u64 << (sig - 1);
+        }
+    }
+    Ok(mask)
+}
+
+fn emit_wait(
+    number: Sysno,
+    restarts: u32,
+    result: &Result<i64, reverie::syscalls::Errno>,
+    sticky: bool,
+) {
+    let raw = match result {
+        Ok(value) => *value,
+        Err(errno) => -(errno.into_raw() as i64),
+    };
+    emit_line(&format!(
+        "reverie-dbt-test: injected wait reissued nr={} count={restarts} result={raw} sticky={}",
+        number.id(),
+        sticky as i32
+    ));
+}
+
+async fn injected_wait<G: Guest<InjectWaitsTool>>(
+    guest: &mut G,
+    syscall: Syscall,
+) -> Result<i64, Error> {
+    use reverie::syscalls::Errno;
+    let number = syscall.number();
+    let (_, args) = syscall.into_parts();
+    let (nfds, readfds, writefds, exceptfds, timeout_ptr) =
+        (args.arg0, args.arg1, args.arg2, args.arg3, args.arg4);
+    let select = number == Sysno::select;
+    // Validation and normalization, as kern_select and do_pselect do.
+    let original: Option<(i128, i128)> = if timeout_ptr == 0 {
+        None
+    } else if select {
+        let tv: libc::timeval = guest
+            .memory()
+            .read_value(reverie::syscalls::Addr::<libc::timeval>::from_raw(timeout_ptr).unwrap())?;
+        if tv.tv_sec < 0 || tv.tv_usec < 0 {
+            return Err(Errno::EINVAL.into());
+        }
+        let sec = tv.tv_sec as i128 + tv.tv_usec as i128 / 1_000_000;
+        Some((sec, (tv.tv_usec as i128 % 1_000_000) * 1_000))
+    } else {
+        let ts: libc::timespec = guest.memory().read_value(
+            reverie::syscalls::Addr::<libc::timespec>::from_raw(timeout_ptr).unwrap(),
+        )?;
+        if ts.tv_sec < 0 || ts.tv_nsec < 0 || ts.tv_nsec >= 1_000_000_000 {
+            return Err(Errno::EINVAL.into());
+        }
+        Some((ts.tv_sec as i128, ts.tv_nsec as i128))
+    };
+    let temporary = if select || args.arg5 == 0 {
+        None
+    } else {
+        let arg: [usize; 2] = guest
+            .memory()
+            .read_value(reverie::syscalls::Addr::<[usize; 2]>::from_raw(args.arg5).unwrap())?;
+        if arg[0] == 0 {
+            None
+        } else {
+            let set: u64 = guest
+                .memory()
+                .read_value(reverie::syscalls::Addr::<u64>::from_raw(arg[0]).unwrap())?;
+            Some(set)
+        }
+    };
+    let set = Box::new(wait_mask(guest, temporary).await?);
+    let sigset = Box::new(SigsetArg {
+        set: &*set as *const u64 as usize,
+        size: 8,
+    });
+    let sticky = original.is_some()
+        && inject_raw(guest, Sysno::personality, [0xffff_ffff, 0, 0, 0, 0, 0])
+            .await
+            .is_ok_and(|persona| persona as usize & STICKY_TIMEOUTS != 0);
+    // The time left, in the kernel's form; the kernel updates it in place
+    // unless the timeout is sticky.
+    let start = std::time::Instant::now();
+    let mut left = Box::new(libc::timespec {
+        tv_sec: 0,
+        tv_nsec: 0,
+    });
+    if let Some((sec, nsec)) = original {
+        left.tv_sec = sec.min(i64::MAX as i128) as libc::time_t;
+        left.tv_nsec = nsec as libc::c_long;
+    }
+    let mut restarts = 0u32;
+    let result = loop {
+        if sticky && let Some((sec, nsec)) = original {
+            let total = sec * NSEC_PER_SEC + nsec;
+            let elapsed = start.elapsed().as_nanos() as i128;
+            let remaining = (total - elapsed).max(0);
+            left.tv_sec = (remaining / NSEC_PER_SEC).min(i64::MAX as i128) as libc::time_t;
+            left.tv_nsec = (remaining % NSEC_PER_SEC) as libc::c_long;
+        }
+        let timeout = if original.is_some() {
+            &mut *left as *mut libc::timespec as usize
+        } else {
+            0
+        };
+        let result = inject_raw(
+            guest,
+            Sysno::pselect6,
+            [
+                nfds,
+                readfds,
+                writefds,
+                exceptfds,
+                timeout,
+                &*sigset as *const SigsetArg as usize,
+            ],
+        )
+        .await;
+        // No handler runs for the backend's own interruption, so Linux would
+        // restart the call.
+        if result == Err(Errno::ERESTARTNOHAND) {
+            restarts += 1;
+            continue;
+        }
+        break result;
+    };
+    // The time left goes back to the guest as Linux writes it: truncated to
+    // microseconds for select, never under STICKY_TIMEOUTS, and a failed copy
+    // is ignored.
+    if original.is_some() && !sticky {
+        if select {
+            let tv = libc::timeval {
+                tv_sec: left.tv_sec,
+                tv_usec: left.tv_nsec / 1000,
+            };
+            let _ = guest.memory().write_value(
+                reverie::syscalls::AddrMut::<libc::timeval>::from_raw(timeout_ptr).unwrap(),
+                &tv,
+            );
+        } else {
+            let _ = guest.memory().write_value(
+                reverie::syscalls::AddrMut::<libc::timespec>::from_raw(timeout_ptr).unwrap(),
+                &*left,
+            );
+        }
+    }
+    emit_wait(number, restarts, &result, sticky);
+    Ok(result?)
+}
+
+#[reverie::tool]
+impl Tool for InjectWaitsTool {
+    type GlobalState = ();
+    type ThreadState = ();
+
+    async fn handle_syscall_event<G: Guest<Self>>(
+        &self,
+        guest: &mut G,
+        syscall: Syscall,
+    ) -> Result<i64, Error> {
+        match syscall.number() {
+            Sysno::select | Sysno::pselect6 => injected_wait(guest, syscall).await,
+            _ => guest.tail_inject(syscall).await,
+        }
     }
 }
 
@@ -1814,6 +2078,7 @@ enum ActiveTool {
     Ppid,
     Backtrace,
     InjectInvalidClone,
+    InjectWaits,
     Counter1,
     Counter2,
     ChunkyPrint,
@@ -1826,6 +2091,8 @@ fn active_tool() -> Option<ActiveTool> {
         Some(ActiveTool::RewriteExit)
     } else if *TEST_INJECT_INVALID_CLONE_ENABLED {
         Some(ActiveTool::InjectInvalidClone)
+    } else if *TEST_INJECT_WAITS_ENABLED {
+        Some(ActiveTool::InjectWaits)
     } else if *TEST_SET_REG_ENABLED {
         Some(ActiveTool::SetReg)
     } else if *TEST_COMPARE_EXCHANGE_ENABLED {
@@ -2262,6 +2529,17 @@ pub(crate) fn run_active_tool(
         ),
         ActiveTool::InjectInvalidClone => dispatch(
             &InjectInvalidCloneTool,
+            context,
+            tid,
+            pid,
+            branches,
+            syscall,
+            invoke_syscall,
+            read_registers,
+            write_registers,
+        ),
+        ActiveTool::InjectWaits => dispatch(
+            &InjectWaitsTool,
             context,
             tid,
             pid,

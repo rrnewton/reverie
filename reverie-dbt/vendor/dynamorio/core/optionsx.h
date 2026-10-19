@@ -780,6 +780,9 @@ OPTION_DEFAULT(bool, reroute_alarm_signals, true,
                "reroute alarm signals arriving in a blocked-for-app thread")
 OPTION_DEFAULT(uint, max_pending_signals, 8,
                "maximum count of pending signals per thread")
+/* Reverie: witness lines for reverie-dbt's live regression tests. */
+OPTION_DEFAULT(bool, reverie_test_hooks, false,
+               "print reverie-dbt-test: lines for reverie-dbt regression tests")
 
 /* i#2080: we have had some problems using sigreturn to set a thread's
  * context to a given state.  Turning this off will instead use a direct

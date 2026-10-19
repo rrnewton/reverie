@@ -165,6 +165,9 @@ typedef struct {
   int32_t kernel_tid;
   int32_t pending_birth_token;
   uint64_t pending_clone_flags;
+  // Host clock at the start of this thread's latest fork, for
+  // `-test-fork-timing`.
+  uint64_t test_fork_start_us;
   // AUTONOMOUS-BOT-IMPLEMENTED
   // TODO-HUMAN-REVIEW(PR-dbi-preempt): Review branch-count preemption
   // bookkeeping. Branch count observed at this thread's most recent synthetic
@@ -518,6 +521,11 @@ enum {
 static int test_private_memory;
 static bool test_private_memory_loss_injected;
 static bool test_private_memory_close_failure;
+static bool test_fork_timing;
+// `-test-itimer`: arms a client itimer, which the vendored DynamoRIO's
+// injected-wait re-issue must keep deliverable (issue 4483's itimer case).
+static bool test_itimer;
+static _Atomic int32_t test_itimer_armed;
 static atomic_flag compare_exchange_self_tested = ATOMIC_FLAG_INIT;
 static void run_compare_exchange_self_test(void);
 static uint32_t compare_exchange_word(
@@ -3834,6 +3842,9 @@ static bool prepare_clone_birth(
       return false;
     }
   } else {
+    if (test_fork_timing && origin == CLONE_SYSCALL_ORIGINAL &&
+        (flags & CLONE_VM) == 0)
+      counters->test_fork_start_us = dr_get_microseconds();
     atomic_store_explicit(&pending_clone_flags, flags, memory_order_relaxed);
     atomic_store_explicit(
         &pending_clone_creator_pid,
@@ -3880,6 +3891,17 @@ static int32_t complete_clone_birth(
     return 0;
 
   if (result > 0) {
+    if ((flags & CLONE_THREAD) == 0 && counters->test_fork_start_us != 0) {
+      // Includes DynamoRIO's synch with every other thread
+      // (https://github.com/rrnewton/hermit/issues/4483).
+      dr_fprintf(
+          diagnostic_file,
+          "reverie-dbt-test: fork host_us=%llu pid=%d\n",
+          (unsigned long long)(dr_get_microseconds() -
+                               counters->test_fork_start_us),
+          (int)dr_get_process_id());
+      counters->test_fork_start_us = 0;
+    }
     if ((flags & CLONE_THREAD) == 0) {
       require_evidence_child((process_id_t)result);
       if (test_kill_announced_child && kill((pid_t)result, SIGKILL) != 0) {
@@ -6361,6 +6383,11 @@ static void post_syscall_event(void* drcontext, int sysnum) {
   set_in_syscall_event(drcontext, false);
 }
 
+static void test_itimer_tick(void* drcontext, dr_mcontext_t* mcontext) {
+  (void)drcontext;
+  (void)mcontext;
+}
+
 static void thread_init(void* drcontext) {
   prototype_counters_t* counters =
       (prototype_counters_t*)dr_thread_alloc(drcontext, sizeof(*counters));
@@ -6387,6 +6414,8 @@ static void thread_init(void* drcontext) {
   DR_ASSERT(counters != NULL);
   memset(counters, 0, sizeof(*counters));
   DR_ASSERT(drmgr_set_tls_field(drcontext, thread_state_index, counters));
+  if (test_itimer && atomic_exchange(&test_itimer_armed, 1) == 0)
+    DR_ASSERT(dr_set_itimer(ITIMER_REAL, 20, test_itimer_tick));
 
   // AUTONOMOUS-BOT-IMPLEMENTED
   // TODO-HUMAN-REVIEW(PR-dbi-preempt): Review safe-point preemption per-thread
@@ -6546,6 +6575,18 @@ static void complete_runtime_thread_exit(
     return;
   if (counters->runtime_thread_exit_called != 0)
     return;
+  // Runtime exit state belongs to the exiting thread. thread_exit filters the
+  // copies DynamoRIO exits in a fork child. The one documented exception is
+  // DynamoRIO terminating threads at process exit or exit_group, which runs
+  // each remaining thread's exit from the exiting thread; that keeps its
+  // existing handling. Any other non-current context is a defect.
+  if (drcontext != dr_get_current_drcontext() && !dr_threads_terminating()) {
+    mark_backend_failure();
+    dr_fprintf(diagnostic_file,
+               "reverie-dbt: thread exit with a non-current drcontext refused\n");
+    exit_runtime_tree(101);
+    return;
+  }
   counters->runtime_thread_exit_called = 1;
   owns_runtime = !has_copied_runtime() ||
       (runtime_uses_external_global() && !is_copied_vfork_process());
@@ -6574,7 +6615,12 @@ static void thread_exit(void* drcontext) {
   if (counters != NULL) {
     bool owns_runtime = !has_copied_runtime() ||
         (runtime_uses_external_global() && !is_copied_vfork_process());
-    complete_runtime_thread_exit(counters, drcontext, false, false);
+    // In a fork child, DynamoRIO exits its copies of the parent's other
+    // threads from the forking thread. They never ran here, and their runtime
+    // state belongs to the parent; DynamoRIO documents this process-id test
+    // for recognising them (https://github.com/rrnewton/hermit/issues/4483).
+    if (dr_get_process_id_from_drcontext(drcontext) == dr_get_process_id())
+      complete_runtime_thread_exit(counters, drcontext, false, false);
     evidence_thread_leave(counters);
     if (owns_runtime) {
       if (counters->signal_mcontext != NULL)
@@ -7068,6 +7114,10 @@ DR_EXPORT void dr_client_main(client_id_t id, int argc, const char* argv[]) {
       test_compare_exchange = true;
     else if (strcmp(argv[i], "-test-controller-capture") == 0)
       test_controller_capture = true;
+    else if (strcmp(argv[i], "-test-fork-timing") == 0)
+      test_fork_timing = true;
+    else if (strcmp(argv[i], "-test-itimer") == 0)
+      test_itimer = true;
     else if (strcmp(argv[i], "-test-branch-owner-admission") == 0) {
       test_branch_owner_admission = true;
       test_reused_tid = true;
@@ -7204,7 +7254,9 @@ DR_EXPORT void dr_client_main(client_id_t id, int argc, const char* argv[]) {
         strcmp(argv[i], "-test-leave-process-clone-result-pending") == 0 ||
         strcmp(argv[i], "-test-backend-failure") == 0 ||
         strcmp(argv[i], "-test-backend-failure-sender-lookup-miss") == 0 ||
-        strcmp(argv[i], "-test-compare-exchange") == 0) {
+        strcmp(argv[i], "-test-compare-exchange") == 0 ||
+        strcmp(argv[i], "-test-fork-timing") == 0 ||
+        strcmp(argv[i], "-test-itimer") == 0) {
       /* Used only by native lifecycle regression tests. */
     } else if (strcmp(argv[i], "-launcher-pid") == 0) {
       unsigned long long launcher = 0;

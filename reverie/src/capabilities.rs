@@ -214,6 +214,18 @@ pub struct BackendCapabilities {
     /// being interrupted by signals.
     pub supports_blocked_wait_signal_interruption: bool,
 
+    /// An injected `pselect6` can be interrupted by a signal of the backend's
+    /// own (DBT: DynamoRIO's suspend signal, sent on every round of a synch
+    /// with the other threads), which no guest handler sees. The backend then
+    /// returns `ERESTARTNOHAND`: no handler ran, so Linux would restart the
+    /// call, and the tool restarts it (or returns `EINTR` where Linux would) and
+    /// never hands the value to the guest. The backend runs the call under the
+    /// mask its sigmask argument gives, with the signals it holds for later
+    /// delivery checked against that mask before the call sleeps, so the tool
+    /// chooses which signals end the wait by the mask it passes
+    /// (<https://github.com/rrnewton/hermit/issues/4483>).
+    pub restarts_backend_interrupted_waits: bool,
+
     /// The backend arms a preemption timer and delivers its events, so a
     /// tool's time slice really preempts a thread that makes no syscall
     /// (<https://github.com/rrnewton/hermit/issues/4068>).
@@ -288,6 +300,7 @@ impl BackendCapabilities {
         emulates_child_waits: false,
         virtualizes_guest_sigalrm: false,
         supports_blocked_wait_signal_interruption: true,
+        restarts_backend_interrupted_waits: false,
         delivers_preemption_timer_events: true,
         runs_guest_code_between_injections: false,
         promotes_open_files_before_native_lifecycle: false,
@@ -361,6 +374,7 @@ impl BackendCapabilities {
         // run has yet shown the kernel's own child-exit copy reaching it.
         reports_kernel_child_exit_signals: false,
         supports_blocked_wait_signal_interruption: false,
+        restarts_backend_interrupted_waits: true,
         delivers_preemption_timer_events: false,
         promotes_open_files_before_native_lifecycle: true,
         reports_sigreturns: false,
@@ -423,6 +437,7 @@ mod tests {
             "emulates_child_waits": false,
             "virtualizes_guest_sigalrm": false,
             "supports_blocked_wait_signal_interruption": true,
+            "restarts_backend_interrupted_waits": false,
             "delivers_preemption_timer_events": true,
             "runs_guest_code_between_injections": false,
             "promotes_open_files_before_native_lifecycle": false,
@@ -529,6 +544,7 @@ mod tests {
                 "reports_child_exit_publication": false,
                 "reports_kernel_child_exit_signals": false,
                 "supports_blocked_wait_signal_interruption": false,
+                "restarts_backend_interrupted_waits": true,
                 "delivers_preemption_timer_events": false,
                 "promotes_open_files_before_native_lifecycle": true,
                 "reports_sigreturns": false,
