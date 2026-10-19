@@ -280,4 +280,21 @@ is_at_do_syscall(dcontext_t *dcontext, app_pc pc, byte *esp);
 void
 adjust_wait_at_safe_spot(dcontext_t *dcontext, int amt);
 
+/* Reverie: brackets exit_group's synchs with the other threads of its group.
+ * See synch_terminating_in_progress(). */
+void
+synch_terminating_begin(void);
+void
+synch_terminating_end(void);
+/* Reverie: marks the process exit, from its synch with the remaining threads
+ * until DynamoRIO re-initializes. */
+void
+synch_set_process_terminating(bool terminating);
+/* Whether DynamoRIO is terminating application threads (process exit or
+ * exit_group). A returning injected wait is then not re-issued, so its thread
+ * leaves the call; and a remaining thread's exit event may run on the exiting
+ * thread. */
+bool
+synch_terminating_in_progress(void);
+
 #endif /* SYNCH_H */

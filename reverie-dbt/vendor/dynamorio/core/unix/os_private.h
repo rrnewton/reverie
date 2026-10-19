@@ -388,6 +388,8 @@ void
 signal_end_injected_sigpipe(dcontext_t *dcontext);
 reg_t
 signal_wait_injected_sigsuspend(dcontext_t *dcontext);
+reg_t
+signal_injected_pselect6(dcontext_t *dcontext, reg_t *args);
 struct _dr_syscall_invoke_result_t;
 void
 signal_finish_injected_sigsuspend(dcontext_t *dcontext,

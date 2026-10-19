@@ -3135,6 +3135,108 @@ signal_wait_injected_sigsuspend(dcontext_t *dcontext)
     return result;
 }
 
+/* https://github.com/rrnewton/hermit/issues/4483: the mechanism under an
+ * injected pselect6. Every policy decision (which signals end the wait, the
+ * timeout and its write-back, whether to restart) belongs to the Tool; DR only
+ * makes the Tool's request behave as the kernel's pselect6 would for the
+ * signals DR itself defers:
+ *
+ * - Prehandling has installed the Tool's temporary mask as app_sigblocked, as
+ *   for any pselect6. DR physically blocks every signal, checks its own
+ *   deferred queue against that mask (a record unblocked at receipt counts:
+ *   natively it would already have been delivered), and enters pselect6 with
+ *   that mask minus the signals DR itself must receive (its suspend signal and
+ *   the alarm of an armed DR or client itimer). The kernel installs it
+ *   atomically, so the check-to-entry window of the plain emulation is closed.
+ * - An EINTR that leaves no deliverable record behind was caused by DR's own
+ *   signal, for example a synch round. No application handler ran, so DR
+ *   reports -ERESTARTNOHAND, the kernel's own "restart unless a handler runs"
+ *   result, and the Tool decides what Linux would do next.
+ * - While DR terminates threads (process exit, exit_group) the result is
+ *   EINTR, so the thread leaves the call and exits itself.
+ */
+static bool
+deferred_signal_deliverable(thread_sig_info_t *info)
+{
+    bool deliverable = false;
+    info->accessing_sigpending = true;
+    __asm__ __volatile__("" : : : "memory");
+    for (int sig = 1; sig <= MAX_SIGNUM && !deliverable; ++sig) {
+        for (sigpending_t *pending = info->sigpending[sig]; pending != NULL;
+             pending = pending->next) {
+            if (pending->unblocked_at_receipt ||
+                !kernel_sigismember(&info->app_sigblocked, sig)) {
+                deliverable = true;
+                break;
+            }
+        }
+    }
+    __asm__ __volatile__("" : : : "memory");
+    info->accessing_sigpending = false;
+    return deliverable;
+}
+
+/* Signals DR must receive while the call waits: the suspend signal, which also
+ * carries thread termination, and the alarm signal of any itimer DR or a
+ * client has armed for this thread. */
+static void
+remove_dr_signals_from_wait_mask(thread_sig_info_t *info, kernel_sigset_t *mask)
+{
+    static const int itimer_signal[NUM_ITIMERS] = { SIGALRM, SIGVTALRM, SIGPROF };
+    kernel_sigdelset(mask, SUSPEND_SIGNAL);
+    if (info->itimer == NULL)
+        return;
+    for (int which = 0; which < NUM_ITIMERS; which++) {
+        if ((*info->itimer)[which].dr.value > 0 || (*info->itimer)[which].dr.interval > 0)
+            kernel_sigdelset(mask, itimer_signal[which]);
+    }
+}
+
+reg_t
+signal_injected_pselect6(dcontext_t *dcontext, reg_t *args)
+{
+    thread_sig_info_t *info = (thread_sig_info_t *)dcontext->signal_field;
+    kernel_sigset_t blocked, physical, wait_mask;
+    kernel_sigfillset(&blocked);
+    if (sigprocmask_syscall(SIG_SETMASK, &blocked, &physical, sizeof(blocked)) != 0)
+        return (reg_t)-EINTR;
+    reg_t result;
+    bool deliverable = false;
+    bool alarm_blocked = false;
+    if (synch_terminating_in_progress()) {
+        result = (reg_t)-EINTR;
+    } else if (deferred_signal_deliverable(info)) {
+        deliverable = true;
+        result = (reg_t)-EINTR;
+    } else {
+        wait_mask = info->app_sigblocked;
+        remove_dr_signals_from_wait_mask(info, &wait_mask);
+        alarm_blocked = kernel_sigismember(&wait_mask, SIGALRM);
+        struct {
+            const kernel_sigset_t *set;
+            size_t size;
+        } mask_arg = { &wait_mask, sizeof(wait_mask) };
+        result = dynamorio_syscall(SYS_pselect6, 6, args[0], args[1], args[2], args[3],
+                                   args[4], &mask_arg);
+        if ((ptr_int_t)result == -EINTR && !synch_terminating_in_progress()) {
+            deliverable = deferred_signal_deliverable(info);
+            if (!deliverable)
+                result = (reg_t)-INJECTED_ERESTARTNOHAND;
+        }
+    }
+    if (sigprocmask_syscall(SIG_SETMASK, &physical, NULL, sizeof(physical)) != 0) {
+        CLIENT_ASSERT(false, "injected pselect6 could not restore physical mask");
+        os_terminate(dcontext, TERMINATE_PROCESS);
+    }
+    if (DYNAMO_OPTION(reverie_test_hooks) && (ptr_int_t)result != -INJECTED_ERESTARTNOHAND) {
+        print_file(STDERR,
+                   "reverie-dbt-test: injected pselect6 result=%ld deliverable=%d "
+                   "alarm_blocked=%d\n",
+                   (long)result, deliverable, alarm_blocked);
+    }
+    return result;
+}
+
 void
 signal_finish_injected_sigsuspend(dcontext_t *dcontext,
                                   dr_syscall_invoke_result_t *result)
