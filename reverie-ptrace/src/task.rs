@@ -1017,14 +1017,13 @@ struct SigtrapBeforeInjection {
     /// The blocked mask before the injection, as `PTRACE_GETSIGMASK` reports
     /// it.
     mask: u64,
-    /// Whether a temporary mask's restore was pending (procfs `SigBlk`
-    /// differed from `mask`).
-    restore_pending: bool,
     /// The mask the kernel blocked under (procfs `SigBlk`).
     blocked: u64,
+    /// Whether the step was shielded (`shield_next_private_step`).
+    shielded: bool,
     /// Whether SIGTRAP was ignored before the injection (procfs `SigIgn`).
     ignored: bool,
-    /// SIGTRAP's handler before an injection the shield does not cover, if
+    /// SIGTRAP's handler before an injection whose trap may reset it, if
     /// SIGTRAP was caught (procfs `SigCgt`) and the action could be read.
     caught_action: Option<KernelSigaction>,
     /// For an injected `rt_sigaction(SIGTRAP, act)`: the action it sets.
@@ -2954,12 +2953,16 @@ static STEP_COUNTS_GLOBAL: std::sync::Mutex<std::collections::BTreeMap<i32, u64>
 pub(crate) static TIMER_SEQUENCES_STEPPED_FOR_TEST: std::sync::atomic::AtomicU64 =
     std::sync::atomic::AtomicU64::new(0);
 
-/// The unstepped injections of SIGTRAP repairs (the action's query, its
-/// write, and an `act`'s re-install), counted for the test that must know a
-/// run made none. Pre-init's sealing of the repair page is not counted.
 #[cfg(test)]
-pub(crate) static UNSTEPPED_INJECTIONS_FOR_TEST: std::sync::atomic::AtomicU64 =
-    std::sync::atomic::AtomicU64::new(0);
+thread_local! {
+    /// The unstepped injections of SIGTRAP repairs (the action's query, its
+    /// write, and an `act`'s re-install), counted for the tests that bound
+    /// them. Pre-init's sealing of the repair page is not counted. Per
+    /// thread: a test's tracer runs on its own `current_thread` runtime, so
+    /// tests running beside it in one process cannot add to its count.
+    pub(crate) static UNSTEPPED_INJECTIONS_FOR_TEST: std::cell::Cell<u64> =
+        const { std::cell::Cell::new(0) };
+}
 
 /// Timer steps over a guest `rt_sigreturn` whose frame blocked SIGTRAP
 /// (`TimerStepShield::prepare`), counted for the test that must know one ran.
@@ -3282,6 +3285,11 @@ pub struct TracedTask<L: Tool> {
     /// first instruction can reset it, and those steps skip the SIGTRAP work
     /// (`sigtrap_state`).
     exec_sigtrap_quiet: bool,
+    /// Set by `read_sigtrap_before_injection` for an injection whose step
+    /// must leave a caught SIGTRAP that the guest blocks unreset: every step
+    /// of it, retries included, is shielded (`step_private_syscall`). Cleared
+    /// by the repair.
+    shield_next_private_step: bool,
     /// The signal-action table this thread's group uses
     /// (`GlobalState::sigtrap_tables`).
     sigtrap_table: u64,
@@ -3634,6 +3642,7 @@ impl<L: Tool> TracedTask<L> {
             signal_delivery_mismatched: false,
             stale_private_step_trap: false,
             exec_sigtrap_quiet: false,
+            shield_next_private_step: false,
             tracer_unfiltered: StdMutex::new(None),
             injection_proc_state: None,
             restore_maybe_pending: true,
@@ -3722,6 +3731,7 @@ impl<L: Tool> TracedTask<L> {
             signal_delivery_mismatched: false,
             stale_private_step_trap: false,
             exec_sigtrap_quiet: false,
+            shield_next_private_step: false,
             tracer_unfiltered: StdMutex::new(None),
             injection_proc_state: None,
             restore_maybe_pending: true,
@@ -3832,6 +3842,7 @@ impl<L: Tool> TracedTask<L> {
             signal_delivery_mismatched: false,
             stale_private_step_trap: false,
             exec_sigtrap_quiet: false,
+            shield_next_private_step: false,
             tracer_unfiltered: StdMutex::new(None),
             injection_proc_state: None,
             restore_maybe_pending: true,
@@ -9389,11 +9400,18 @@ impl<L: Tool + 'static> TracedTask<L> {
     }
 
     /// `step_private_syscall_unshielded`, with SIGTRAP unblocked for the
-    /// step when the syscall does not itself set the blocked mask
-    /// (`sigtrap_state::StepKind::Shieldable`), so that the step's trap
-    /// cannot reset a blocked SIGTRAP's action or unblock it
+    /// step of an `execve` or `execveat`, so that the step's trap cannot
+    /// reset a blocked SIGTRAP's action or unblock it
     /// (<https://github.com/rrnewton/hermit/issues/4409>). SIGTRAP is blocked
     /// again at the stop the step ends at, before anything reads that stop.
+    ///
+    /// Every other injected syscall runs under the guest's own mask, so that
+    /// what the call reads of it is what it reads natively: a read of the
+    /// thread's procfs `status` reports `SigBlk` with SIGTRAP blocked. Its
+    /// trap may then reset SIGTRAP, and the injection puts back what it
+    /// reset (`repair_sigtrap_after_injection`). An exec never returns to
+    /// that repair; the exec stop and pre-init keep SIGTRAP across it
+    /// (`handle_exec_event`).
     async fn step_private_syscall(
         &mut self,
         task: Stopped,
@@ -9402,7 +9420,10 @@ impl<L: Tool + 'static> TracedTask<L> {
         // The shield makes requests main does not, which a tracer filter may
         // refuse (`thread_may_be_seccomp_filtered`).
         let known = self.injection_proc_state.take();
-        let shielded = step_kind(nr, swaps_signal_mask(nr)) == StepKind::Shieldable
+        // Read, not taken: a step that stops before the `syscall`
+        // instruction is retried, and the retry must be shielded too.
+        let shielded = (matches!(nr, Sysno::execve | Sysno::execveat)
+            || self.shield_next_private_step)
             && self.keeps_sigtrap_state()
             && self.shield_sigtrap_for_step_known(&task, "private-page injection", known)?;
         let (wait, seccomp_trapped) = self.step_private_syscall_unshielded(task, nr).await?;
@@ -9746,7 +9767,7 @@ impl<L: Tool + 'static> TracedTask<L> {
         scratch: usize,
     ) -> Result<(Stopped, Option<KernelSigaction>), TraceError> {
         #[cfg(test)]
-        UNSTEPPED_INJECTIONS_FOR_TEST.fetch_add(1, Ordering::SeqCst);
+        UNSTEPPED_INJECTIONS_FOR_TEST.with(|count| count.set(count.get() + 1));
         let args = SyscallArgs::new(
             libc::SIGTRAP as usize,
             0,
@@ -10120,7 +10141,7 @@ impl<L: Tool + 'static> TracedTask<L> {
         // (`sigtrap_ignored`).
         self.forget_sigtrap_ignored();
         #[cfg(test)]
-        UNSTEPPED_INJECTIONS_FOR_TEST.fetch_add(1, Ordering::SeqCst);
+        UNSTEPPED_INJECTIONS_FOR_TEST.with(|count| count.set(count.get() + 1));
         let written = AddrMut::from_raw(scratch)
             .ok_or(Errno::EFAULT)
             .and_then(|address| {
@@ -10179,7 +10200,7 @@ impl<L: Tool + 'static> TracedTask<L> {
             return Ok(None);
         }
         #[cfg(test)]
-        UNSTEPPED_INJECTIONS_FOR_TEST.fetch_add(1, Ordering::SeqCst);
+        UNSTEPPED_INJECTIONS_FOR_TEST.with(|count| count.set(count.get() + 1));
         let args = SyscallArgs::new(
             libc::SIGTRAP as usize,
             act,
@@ -10211,6 +10232,7 @@ impl<L: Tool + 'static> TracedTask<L> {
         let kind = step_kind(nr, swaps_signal_mask(nr));
         let mask = sigmask(&task)?;
         self.injection_proc_state = None;
+        self.shield_next_private_step = false;
         // The quiet case, without procfs: a syscall that keeps the mask, with
         // SIGTRAP unblocked in the guest's mask and its action `SIG_DFL`
         // (neither ignored nor caught, `sigtrap_disposition_known`), and the
@@ -10221,7 +10243,7 @@ impl<L: Tool + 'static> TracedTask<L> {
         // read either: a pending SIGTRAP that such a temporary mask blocks,
         // which the step would take as its trap, as it did before the keep.
         // A Tool's polling loop of injections made two procfs reads each.
-        if kind == StepKind::Shieldable
+        if kind == StepKind::KeepsMask
             && !self.restore_maybe_pending
             && mask & SIGTRAP_BIT == 0
             && !sets_sigtrap_action(nr, args)
@@ -10233,8 +10255,8 @@ impl<L: Tool + 'static> TracedTask<L> {
                     quiet: true,
                     kind,
                     mask,
-                    restore_pending: false,
                     blocked: mask,
+                    shielded: false,
                     ignored: false,
                     caught_action: None,
                     sets_action: None,
@@ -10267,27 +10289,14 @@ impl<L: Tool + 'static> TracedTask<L> {
             }
         };
         self.injection_proc_state = Some((mask, state));
-        let restore_pending = state.blocked != mask;
-        // A pending, blocked SIGTRAP cannot be kept across the step: it
-        // absorbs the step's trap, or, unblocked by the shield, is taken first
-        // (`PendingSigtrapAtStep`). An unblocked one is taken before the
+        // A pending, blocked SIGTRAP cannot be kept across the step: the
+        // step's trap is absorbed into it, and the reset unblocks it, so it is
+        // taken as if it were the trap (`PendingSigtrapAtStep`). An unblocked
+        // one is taken before the
         // instruction and discarded, as before (`untraced_syscall_with`).
         if state.pending & state.blocked & SIGTRAP_BIT != 0 {
             return Err(self.fail_pending_sigtrap(task.pid(), "private-page injection"));
         }
-        // A caught handler that the trap may reset is lost with it, so it is
-        // read now: for a step the shield does not cover, or whose shield a
-        // pending restore keeps from writing the mask. An ignored action keeps
-        // the rest of itself and is read back at the repair.
-        let (task, caught_action) =
-            if state.sigtrap_caught && (kind != StepKind::Shieldable || restore_pending) {
-                self.query_sigtrap_action(task).await?
-            } else {
-                (task, None)
-            };
-        let read_u64 = |address: usize| {
-            Addr::<u64>::from_raw(address).and_then(|address| task.read_value(address).ok())
-        };
         let sets_action = (sets_sigtrap_action(nr, args)
             && args.arg3 == std::mem::size_of::<u64>())
         .then(|| read_sigaction_forced(&task, args.arg1))
@@ -10303,6 +10312,43 @@ impl<L: Tool + 'static> TracedTask<L> {
                 })
             }
         });
+        // A caught SIGTRAP that the guest blocks is not exposed to the
+        // trap, nor is one the call itself installs while the guest blocks
+        // SIGTRAP (an injected `rt_sigaction(SIGTRAP, handler)`): the step of
+        // a call that keeps the mask is shielded, as every such step was
+        // before injected calls ran under the guest's own mask, and this one
+        // call sees SIGTRAP unblocked. Its handler then needs no
+        // repair, no other thread of the table can meet a reset `SIG_DFL`
+        // between the trap and a write-back, and nothing is read for it.
+        // While a temporary mask's restore is pending, the shield cannot
+        // write the mask, and either the temporary or the saved mask may be
+        // the trap's: resuming from the signal stop restores the saved mask
+        // first (`restore_saved_sigmask`), unless the restore is still
+        // pending at the trap.
+        let trap_may_block = (state.blocked | mask) & SIGTRAP_BIT != 0;
+        let installs_caught =
+            matches!(sets_action, Some(SigtrapAction::Set(action)) if !action.ignored());
+        let shielded = kind == StepKind::KeepsMask
+            && (state.sigtrap_caught || installs_caught)
+            && trap_may_block
+            && state.blocked == mask;
+        self.shield_next_private_step = shielded;
+        // A caught handler that the trap may reset is lost with it, so it is
+        // read now: for a syscall that may set the mask, or one that keeps it
+        // and is not shielded while SIGTRAP may be blocked (a restore
+        // pending, when the unstepped query is refused and the handler is
+        // lost, a named limit). An ignored action keeps the rest of itself
+        // and is read back at the repair.
+        let (task, caught_action) = if state.sigtrap_caught
+            && (kind != StepKind::KeepsMask || (trap_may_block && !shielded))
+        {
+            self.query_sigtrap_action(task).await?
+        } else {
+            (task, None)
+        };
+        let read_u64 = |address: usize| {
+            Addr::<u64>::from_raw(address).and_then(|address| task.read_value(address).ok())
+        };
         let sigaction_call = sets_action.is_some().then_some((args.arg1, args.arg2 != 0));
         let sets_mask = (kind == StepKind::SetsMask).then(|| {
             let set = (args.arg1 != 0 && args.arg3 == std::mem::size_of::<u64>())
@@ -10319,8 +10365,8 @@ impl<L: Tool + 'static> TracedTask<L> {
                 quiet: false,
                 kind,
                 mask,
-                restore_pending,
                 blocked: state.blocked,
+                shielded,
                 ignored: state.sigtrap_ignored,
                 caught_action,
                 sets_action,
@@ -10332,9 +10378,10 @@ impl<L: Tool + 'static> TracedTask<L> {
     }
 
     /// After an injection's single-step, puts back what its trap reset of
-    /// SIGTRAP's state (`sigtrap_state`): the mask bit, for a syscall the
-    /// shield does not cover, and the action, if the trap could have seen
-    /// SIGTRAP blocked or ignored. Runs after `status_to_result`, so that any
+    /// SIGTRAP's state (`sigtrap_state`): the mask bit, which the trap clears
+    /// where the guest's mask blocks SIGTRAP (no injection but an exec's is
+    /// shielded, `step_private_syscall`), and the action, if the trap could
+    /// have seen SIGTRAP blocked or ignored. Runs after `status_to_result`, so that any
     /// signal the step stopped at is already held, and the unstepped
     /// `rt_sigaction` cannot discard it.
     async fn repair_sigtrap_after_injection(
@@ -10342,6 +10389,7 @@ impl<L: Tool + 'static> TracedTask<L> {
         before: SigtrapBeforeInjection,
         result: &Result<i64, Errno>,
     ) -> Result<(), TraceError> {
+        self.shield_next_private_step = false;
         if !self.last_injection_ran || before.quiet {
             // Stopped before its instruction, so no trap was raised; or a
             // trap that reset nothing.
@@ -10357,7 +10405,7 @@ impl<L: Tool + 'static> TracedTask<L> {
         let restore_pending = if !self.restore_maybe_pending
             && matches!(
                 before.kind,
-                StepKind::Shieldable | StepKind::SetsMask | StepKind::Clones
+                StepKind::KeepsMask | StepKind::SetsMask | StepKind::Clones
             ) {
             false
         } else {
@@ -10366,11 +10414,21 @@ impl<L: Tool + 'static> TracedTask<L> {
         // Whether the trap could have seen SIGTRAP blocked, and whether the
         // guest's mask should block it now.
         let (trap_blocked, should_block) = match before.kind {
-            // The shield unblocked SIGTRAP for the trap, and blocked it again,
-            // unless a pending restore kept it from writing the mask.
-            StepKind::Shieldable => (
-                before.restore_pending && before.blocked & SIGTRAP_BIT != 0,
-                None,
+            // Shielded (a caught SIGTRAP the guest blocks): the trap saw
+            // SIGTRAP unblocked, and the shield blocked it again.
+            StepKind::KeepsMask if before.shielded => (false, None),
+            // Unshielded, the trap saw the mask the call ran under: the
+            // guest's, or, while a temporary mask's restore was pending, that
+            // temporary mask if the restore is still pending and the saved
+            // one if resuming from the signal stop performed it first
+            // (`read_sigtrap_before_injection`). Either is taken: a repair
+            // writes only over the reset it expects (`repair_sigtrap_at`).
+            // The guest's mask is the one before the call; while the restore
+            // is still pending, the saved mask is intact and nothing is
+            // written.
+            StepKind::KeepsMask => (
+                (before.blocked | before.mask) & SIGTRAP_BIT != 0,
+                Some(before.mask & SIGTRAP_BIT != 0),
             ),
             StepKind::SetsMask => {
                 let after = match result {

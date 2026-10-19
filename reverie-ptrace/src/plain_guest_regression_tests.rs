@@ -3640,15 +3640,258 @@ async fn each_flip_of_sigtrap_reaches_the_remembered_disposition() {
     }
 }
 
+/// What an injected call reads of the thread's own signal state is what it
+/// reads natively. For each SIGTRAP state the guest reads its procfs `status`
+/// with a read the Tool handles in four shapes: injected in place, injected
+/// in place and followed by another injection, injected on the private page
+/// after a private getpid (`private-call`, the only shape whose read is
+/// single-stepped), and run from its own seccomp stop (`tail`, a control).
+/// `SigBlk` must hold SIGTRAP exactly when the guest blocked it, and `SigIgn`
+/// and `SigCgt` must name the action it set. A step shield that unblocked
+/// SIGTRAP for the private-page read made a blocked SIGTRAP read as
+/// unblocked there (<https://github.com/rrnewton/hermit/issues/4485>). Pinned
+/// limit: a caught SIGTRAP that the guest blocks keeps the shield, so that
+/// its handler is never reset, and its private-page read still sees SIGTRAP
+/// unblocked.
+#[tokio::test(flavor = "current_thread")]
+async fn an_injected_read_of_status_sees_the_guests_own_sigtrap_mask() {
+    let runs = run_both_configurations("sigtrap_sigblk").await;
+    let mut expected = Vec::new();
+    for (state, ignored, caught, blocked) in [
+        ("ign-blocked", 1, 0, 1),
+        ("ign", 1, 0, 0),
+        ("handler-blocked", 0, 1, 1),
+        ("handler", 0, 1, 0),
+        ("dfl-blocked", 0, 0, 1),
+    ] {
+        for shape in ["inject", "two-injects", "private-call", "tail"] {
+            let sigblk = if state == "handler-blocked" && shape == "private-call" {
+                0
+            } else {
+                blocked
+            };
+            expected.push(format!(
+                "{state} {shape} SigBlk={sigblk} SigIgn={ignored} SigCgt={caught} \
+                 blocked={blocked}"
+            ));
+        }
+    }
+    for run in &runs {
+        let lines: Vec<&str> = run
+            .report
+            .lines()
+            .filter(|line| line.contains(" SigBlk="))
+            .collect();
+        assert_eq!(lines, expected, "{}", run.report);
+    }
+}
+
+/// An injection at a signal stop while a temporary mask's restore is pending
+/// (the Tool's SIGPROF callback injects getpid after a private-page ppoll was
+/// interrupted): resuming the thread for the getpid restores the saved mask
+/// first, so its trap sees SIGTRAP as the saved mask has it. The ignored and
+/// default states the saved mask blocks must keep their action and mask bit,
+/// and so must a caught SIGTRAP the temporary mask blocked and the saved mask
+/// admits. A caught SIGTRAP the saved mask blocks keeps its bit but loses its
+/// handler (pinned below). On Reverie 9ded00ff, before injected calls ran
+/// under the guest's own mask, the three blocked states came back unblocked.
+/// Both configurations.
+#[tokio::test(flavor = "current_thread")]
+async fn an_injection_at_a_pending_restore_keeps_sigtrap_under_either_mask() {
+    let runs = run_both_configurations("sigtrap_callback_restore").await;
+    let expected = [
+        // Pinned limit: the handler is lost (the unstepped query that would
+        // read it is refused while the restore is pending), as on Reverie
+        // 9ded00ff; its mask bit is kept.
+        ("handler-blocked-topen", "dfl", 1),
+        ("ign-blocked-topen", "ign", 1),
+        ("dfl-blocked-topen", "dfl", 1),
+        ("handler-tshut", "trap_handler", 0),
+    ]
+    .map(|(state, action, blocked)| {
+        format!(
+            "restore {state} hits=1 sigtrap={action} flags=0x50000000 usr2-in-mask=1 \
+             blocked={blocked}"
+        )
+    });
+    for run in &runs {
+        let lines: Vec<&str> = run
+            .report
+            .lines()
+            .filter(|line| line.starts_with("restore "))
+            .collect();
+        assert_eq!(lines, expected, "{}", run.report);
+        // Each state's SIGPROF reached the Tool's callback, whose getpid is
+        // the injection under test. It reaches it a second time at the
+        // guest's unblock: resuming for the getpid restored the saved mask,
+        // which blocks SIGPROF, so the delivery waits for the unblock and the
+        // ppoll returns getpid's result. That deferral predates the keep
+        // (Reverie 9ded00ff does the same) and is not what this test pins.
+        let callbacks = run
+            .all_events()
+            .iter()
+            .filter(|event| event.starts_with("signal SIGPROF"))
+            .count();
+        assert!(callbacks >= 4, "{}", run.report);
+    }
+}
+
+/// A caught SIGTRAP that the guest blocks, through 200 private injections (as
+/// Detcore's polling loops run them under a mask that blocks every signal):
+/// each step is shielded, so no trap resets the handler, and the run makes no
+/// unstepped injection (`UNSTEPPED_INJECTIONS_FOR_TEST`); the handler and the
+/// mask bit stay the guest's.
+#[tokio::test(flavor = "current_thread")]
+async fn a_caught_blocked_sigtrap_takes_no_repair_injection() {
+    let before = crate::task::UNSTEPPED_INJECTIONS_FOR_TEST.with(|count| count.get());
+    let run = run_guest("sigtrap_caught_blocked_injections", false).await;
+    let made = crate::task::UNSTEPPED_INJECTIONS_FOR_TEST.with(|count| count.get()) - before;
+    assert_eq!(run.status, ExitStatus::Exited(0), "{}", run.report);
+    let lines: Vec<&str> = run
+        .report
+        .lines()
+        .filter(|line| line.starts_with("caught-blocked "))
+        .collect();
+    assert_eq!(
+        lines,
+        ["caught-blocked after 200 sigtrap=trap_handler flags=0x50000000 usr2-in-mask=1 blocked=1"],
+        "{}",
+        run.report
+    );
+    assert_eq!(made, 0, "unstepped injections for 200 private steps");
+}
+
+/// A caught SIGTRAP that the guest blocks, where Reverie cannot read its
+/// handler: a guest seccomp filter refuses `rt_sigaction` into Reverie's
+/// repair page. The steps are shielded, so the handler is never read or
+/// reset, and it and the mask bit stay the guest's through 20 private steps.
+/// Reverie 9ded00ff passes this too; it guards the shield this state keeps.
+/// Both configurations.
+#[tokio::test(flavor = "current_thread")]
+async fn a_caught_blocked_sigtrap_whose_handler_cannot_be_read_is_kept() {
+    for run in run_both_configurations("sigtrap_caught_blocked_no_repair").await {
+        let lines: Vec<&str> = run
+            .report
+            .lines()
+            .filter(|line| line.starts_with("no-repair "))
+            .collect();
+        assert_eq!(
+            lines,
+            ["no-repair after 20 sigtrap=trap_handler flags=0x50000000 usr2-in-mask=1 blocked=1"],
+            "{}",
+            run.report
+        );
+    }
+}
+
+/// A caught SIGTRAP that the guest blocks, then a seccomp filter installed by
+/// a call the Tool injects on the private page, then five more private
+/// injections. Reverie gives up its repair page once the guest has a filter
+/// of its own; every step is shielded, so none needs it, and the handler and
+/// mask bit stay the guest's. (A Tool that declares serialized execution
+/// refuses such calls; this one does not.) Reverie 9ded00ff passes this too;
+/// it guards the shield this state keeps. Both configurations.
+#[tokio::test(flavor = "current_thread")]
+async fn a_filter_installing_injection_keeps_a_caught_blocked_sigtrap() {
+    for run in run_both_configurations("sigtrap_caught_blocked_filter_install").await {
+        let lines: Vec<&str> = run
+            .report
+            .lines()
+            .filter(|line| line.starts_with("filter-install "))
+            .collect();
+        assert_eq!(
+            lines,
+            ["filter-install after sigtrap=trap_handler flags=0x50000000 usr2-in-mask=1 blocked=1"],
+            "{}",
+            run.report
+        );
+    }
+}
+
+/// A sibling changes SIGTRAP's handler while this thread, with a caught
+/// SIGTRAP blocked, is blocked in a private-page read (this Tool lets threads
+/// run meanwhile, as Detcore does with a maybe-blocking external call). The
+/// read's step is shielded, so its trap resets nothing, and the sibling's
+/// handler is what the guest reads afterwards. Both configurations.
+#[tokio::test(flavor = "current_thread")]
+async fn a_sibling_change_during_an_injected_call_is_never_overwritten() {
+    for run in run_both_configurations("sigtrap_sibling_change_during_call").await {
+        let line = run
+            .report
+            .lines()
+            .find(|line| line.starts_with("sibling-change "))
+            .unwrap_or_else(|| panic!("no sibling-change line: {}", run.report));
+        assert_eq!(line, "sibling-change sigtrap=sibling", "{}", run.report);
+    }
+}
+
+/// Pinned limit: the same sibling change, starting from a default or an
+/// ignored SIGTRAP that this thread blocks. The read's step is shielded only
+/// for a caught SIGTRAP known before the call, so its trap resets the
+/// sibling's new handler to `SIG_DFL`, and for an ignored start the ignored
+/// repair then writes `SIG_IGN` over it. Natively the sibling's handler
+/// survives; on Reverie 9ded00ff every blocked step was shielded and it did.
+/// Only a Tool that lets another thread of the table run while an injected
+/// call blocks (Detcore's maybe-blocking external calls) meets this. Both
+/// configurations.
+#[tokio::test(flavor = "current_thread")]
+async fn a_sibling_change_during_a_blocked_default_or_ignored_call_is_reset() {
+    for (mode, expected) in [
+        (
+            "sigtrap_sibling_change_from_dfl",
+            "sibling-change sigtrap=dfl",
+        ),
+        (
+            "sigtrap_sibling_change_from_ign",
+            "sibling-change sigtrap=ign",
+        ),
+    ] {
+        for run in run_both_configurations(mode).await {
+            let line = run
+                .report
+                .lines()
+                .find(|line| line.starts_with("sibling-change "))
+                .unwrap_or_else(|| panic!("no sibling-change line: {}", run.report));
+            assert_eq!(line, expected, "{mode}: {}", run.report);
+        }
+    }
+}
+
+/// A default SIGTRAP that the guest blocks, then a handler installed by an
+/// `rt_sigaction` the Tool injects on the private page: the step is shielded,
+/// as for a caught SIGTRAP, since the call installs one, so its trap resets
+/// nothing, no other thread can meet a reset `SIG_DFL`, and the run makes no
+/// unstepped injection. Unshielded, the handler was reset and written back
+/// with one, which makes this the positive control of the counter the
+/// zero-injection tests read.
+#[tokio::test(flavor = "current_thread")]
+async fn an_injected_handler_install_while_blocked_is_shielded() {
+    let before = crate::task::UNSTEPPED_INJECTIONS_FOR_TEST.with(|count| count.get());
+    let run = run_guest("sigtrap_blocked_installs_handler", false).await;
+    let made = crate::task::UNSTEPPED_INJECTIONS_FOR_TEST.with(|count| count.get()) - before;
+    assert_eq!(run.status, ExitStatus::Exited(0), "{}", run.report);
+    let lines: Vec<&str> = run
+        .report
+        .lines()
+        .filter(|line| line.starts_with("installs-handler "))
+        .collect();
+    assert_eq!(
+        lines,
+        ["installs-handler sigtrap=trap_handler flags=0x50000000 usr2-in-mask=1 blocked=1"],
+        "{}",
+        run.report
+    );
+    assert_eq!(made, 0, "unstepped injections");
+}
+
 /// A caught, unblocked SIGTRAP needs no repair: no step can reset it, so a run
 /// through every handler shape makes no unstepped injection
 /// (`UNSTEPPED_INJECTIONS_FOR_TEST`) and keeps the handler.
 #[tokio::test(flavor = "current_thread")]
 async fn a_caught_unblocked_sigtrap_takes_no_repair_injection() {
-    use std::sync::atomic::Ordering;
-    let before = crate::task::UNSTEPPED_INJECTIONS_FOR_TEST.load(Ordering::SeqCst);
+    let before = crate::task::UNSTEPPED_INJECTIONS_FOR_TEST.with(|count| count.get());
     let run = run_guest("sigtrap_caught_unblocked", false).await;
-    let made = crate::task::UNSTEPPED_INJECTIONS_FOR_TEST.load(Ordering::SeqCst) - before;
+    let made = crate::task::UNSTEPPED_INJECTIONS_FOR_TEST.with(|count| count.get()) - before;
     assert_eq!(run.status, ExitStatus::Exited(0), "{}", run.report);
     let lines: Vec<&str> = run
         .report
