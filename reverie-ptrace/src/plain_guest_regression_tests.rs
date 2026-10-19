@@ -3641,13 +3641,15 @@ async fn each_flip_of_sigtrap_reaches_the_remembered_disposition() {
 }
 
 /// What an injected call reads of the thread's own signal state is what it
-/// reads natively. The guest reads its procfs `status` with a call the Tool
-/// injects (alone, after another injection, and after a private one) for each
-/// SIGTRAP state: `SigBlk` holds SIGTRAP exactly when the guest blocked it, and
-/// `SigIgn` and `SigCgt` name the action it set. A step shield that unblocked
-/// SIGTRAP for the injected call made a blocked SIGTRAP read as unblocked
-/// (<https://github.com/rrnewton/hermit/issues/4485>). In the tail
-/// configuration the read runs from its own seccomp stop, as a control.
+/// reads natively. For each SIGTRAP state the guest reads its procfs `status`
+/// with a read the Tool handles in four shapes: injected in place, injected
+/// in place and followed by another injection, injected on the private page
+/// after a private getpid (`private-call`, the only shape whose read is
+/// single-stepped), and run from its own seccomp stop (`tail`, a control).
+/// `SigBlk` must hold SIGTRAP exactly when the guest blocked it, and `SigIgn`
+/// and `SigCgt` must name the action it set. A step shield that unblocked
+/// SIGTRAP for the private-page read made a blocked SIGTRAP read as
+/// unblocked there (<https://github.com/rrnewton/hermit/issues/4485>).
 #[tokio::test(flavor = "current_thread")]
 async fn an_injected_read_of_status_sees_the_guests_own_sigtrap_mask() {
     let runs = run_both_configurations("sigtrap_sigblk").await;
@@ -3659,7 +3661,7 @@ async fn an_injected_read_of_status_sees_the_guests_own_sigtrap_mask() {
         ("handler", 0, 1, 0),
         ("dfl-blocked", 0, 0, 1),
     ] {
-        for shape in ["inject", "two-injects", "private-call"] {
+        for shape in ["inject", "two-injects", "private-call", "tail"] {
             expected.push(format!(
                 "{state} {shape} SigBlk={blocked} SigIgn={ignored} SigCgt={caught} \
                  blocked={blocked}"
@@ -3674,6 +3676,76 @@ async fn an_injected_read_of_status_sees_the_guests_own_sigtrap_mask() {
             .collect();
         assert_eq!(lines, expected, "{}", run.report);
     }
+}
+
+/// An injection at a signal stop while a temporary mask's restore is pending
+/// (the Tool's SIGPROF callback injects getpid after a private-page ppoll
+/// returned -EINTR): resuming the thread for the getpid restores the saved
+/// mask first, so its trap sees SIGTRAP as the saved mask has it. A caught
+/// SIGTRAP the saved mask blocks and the temporary mask admitted must keep
+/// its handler; so must the ignored and default states, and a caught SIGTRAP
+/// the temporary mask blocked and the saved mask admits. Both
+/// configurations.
+#[tokio::test(flavor = "current_thread")]
+async fn an_injection_at_a_pending_restore_keeps_sigtrap_under_either_mask() {
+    let runs = run_both_configurations("sigtrap_callback_restore").await;
+    let expected = [
+        ("handler-blocked-topen", "trap_handler", 1),
+        ("ign-blocked-topen", "ign", 1),
+        ("dfl-blocked-topen", "dfl", 1),
+        ("handler-tshut", "trap_handler", 0),
+    ]
+    .map(|(state, action, blocked)| {
+        format!(
+            "restore {state} r=eintr hits=1 sigtrap={action} flags=0x50000000 usr2-in-mask=1 \
+             blocked={blocked}"
+        )
+    });
+    for run in &runs {
+        let lines: Vec<&str> = run
+            .report
+            .lines()
+            .filter(|line| line.starts_with("restore "))
+            .collect();
+        assert_eq!(lines, expected, "{}", run.report);
+        let callbacks = run
+            .all_events()
+            .iter()
+            .filter(|event| event.starts_with("signal SIGPROF"))
+            .count();
+        assert_eq!(callbacks, 4, "{}", run.report);
+    }
+}
+
+/// A caught SIGTRAP that the guest blocks, through 200 private injections (as
+/// Detcore's polling loops run them under a mask that blocks every signal):
+/// each step's trap resets the handler, which is put back with one unstepped
+/// `rt_sigaction` per injection. The handler is read once and remembered for
+/// the signal-action table (`SigtrapTables::caught`), and the write-back does
+/// not read it again; reading it before each step and again before each
+/// write made three unstepped injections of every one.
+#[tokio::test(flavor = "current_thread")]
+async fn a_caught_blocked_sigtrap_takes_one_unstepped_injection_per_step() {
+    use std::sync::atomic::Ordering;
+    let before = crate::task::UNSTEPPED_INJECTIONS_FOR_TEST.load(Ordering::SeqCst);
+    let run = run_guest("sigtrap_caught_blocked_injections", false).await;
+    let made = crate::task::UNSTEPPED_INJECTIONS_FOR_TEST.load(Ordering::SeqCst) - before;
+    assert_eq!(run.status, ExitStatus::Exited(0), "{}", run.report);
+    let lines: Vec<&str> = run
+        .report
+        .lines()
+        .filter(|line| line.starts_with("caught-blocked "))
+        .collect();
+    assert_eq!(
+        lines,
+        ["caught-blocked after 200 sigtrap=trap_handler flags=0x50000000 usr2-in-mask=1 blocked=1"],
+        "{}",
+        run.report
+    );
+    assert!(
+        (200..=210).contains(&made),
+        "unstepped injections for 200 private steps: {made}"
+    );
 }
 
 /// A caught, unblocked SIGTRAP needs no repair: no step can reset it, so a run
