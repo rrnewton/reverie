@@ -670,6 +670,69 @@ static void mode_sigtrap_cache_flip(void) {
   }
 }
 
+/* SIGTRAP's bit in the hex value of status field `name` within `buf`, or -1. */
+static int status_sigtrap_bit(const char* buf, const char* name) {
+  const char* p = strstr(buf, name);
+  if (!p)
+    return -1;
+  unsigned long long v = strtoull(p + strlen(name), NULL, 16);
+  return (int)((v >> (SIGTRAP - 1)) & 1);
+}
+
+/* Each SIGTRAP state, read back from the thread's own procfs status by a read
+ * the Tool injects in each injecting shape: natively the read reports the
+ * mask the thread runs under, so a blocked SIGTRAP is in SigBlk. An injected
+ * read that the instrumentation runs with SIGTRAP unblocked reports the
+ * instrumentation's mask instead (https://github.com/rrnewton/hermit/issues/4485). */
+static void mode_sigtrap_sigblk(void) {
+  for (int i = 0; i < 3; i++)
+    SITE(SYS_getppid, 0, 0, 0, 0, 0);
+  static const struct {
+    const char* name;
+    void (*action)(int);
+    int block;
+  } states[] = {
+      {"ign-blocked", SIG_IGN, 1},
+      {"ign", SIG_IGN, 0},
+      {"handler-blocked", trap_handler, 1},
+      {"handler", trap_handler, 0},
+      {"dfl-blocked", SIG_DFL, 1},
+  };
+  static const struct {
+    const char* name;
+    long shape;
+  } shapes[] = {
+      {"inject", SHAPE_INJECT},
+      {"two-injects", SHAPE_TWO_INJECTS},
+      {"private-call", SHAPE_PRIVATE_CALL},
+      {"tail", SHAPE_TAIL},
+  };
+  for (unsigned i = 0; i < sizeof states / sizeof states[0]; i++) {
+    for (unsigned j = 0; j < sizeof shapes / sizeof shapes[0]; j++) {
+      sigtrap_set(states[i].action, states[i].block);
+      char buf[4096];
+      int fd = open("/proc/thread-self/status", O_RDONLY);
+      if (fd < 0)
+        die("open /proc/thread-self/status");
+      long n = SITEM(SYS_read, fd, (long)buf, sizeof buf - 1, 0, 0, shapes[j].shape);
+      close(fd);
+      if (n <= 0)
+        die("read /proc/thread-self/status");
+      buf[n] = 0;
+      sigset_t set;
+      if (sigprocmask(SIG_SETMASK, NULL, &set) != 0)
+        die("read the mask");
+      say("%s %s SigBlk=%d SigIgn=%d SigCgt=%d blocked=%d\n",
+          states[i].name,
+          shapes[j].name,
+          status_sigtrap_bit(buf, "SigBlk:"),
+          status_sigtrap_bit(buf, "SigIgn:"),
+          status_sigtrap_bit(buf, "SigCgt:"),
+          sigismember(&set, SIGTRAP));
+    }
+  }
+}
+
 /* What a sleep's remaining time says, without its host-dependent digits.
  * rem is zeroed before each call, so "unwritten" means the kernel never
  * copied a remaining time out (the sleep was not interrupted). The tracer
@@ -3178,6 +3241,105 @@ static void mode_sigtrap_signal_callback(void) {
   }
 }
 
+/* A caught SIGTRAP that the guest blocks, through 200 private injections,
+ * as Detcore's polling loops run them under a mask that blocks every
+ * signal: the handler and the mask bit are the guest's afterwards. */
+static void mode_sigtrap_caught_blocked_injections(void) {
+  for (int i = 0; i < 3; i++)
+    SITE(SYS_getppid, 0, 0, 0, 0, 0);
+  sigtrap_set(trap_handler, 1);
+  for (int i = 0; i < 200; i++)
+    SITEM(SYS_getppid, 0, 0, 0, 0, 0, SHAPE_PRIVATE);
+  sigtrap_full_state("caught-blocked after 200");
+}
+
+/* A caught SIGTRAP that the guest blocks, after the guest installs a
+ * seccomp filter that refuses rt_sigaction with Reverie's repair page
+ * (0x71001000) as oldact, so that Reverie cannot read the handler a step's
+ * trap would reset, and gives up the page. The guest's own sigaction calls
+ * pass a stack address and are allowed. Through 20 private injections the
+ * handler and the mask bit must stay the guest's. */
+static void mode_sigtrap_caught_blocked_no_repair(void) {
+  for (int i = 0; i < 3; i++)
+    SITE(SYS_getppid, 0, 0, 0, 0, 0);
+  struct sock_filter f[] = {
+      BPF_STMT(BPF_LD | BPF_W | BPF_ABS, offsetof(struct seccomp_data, arch)),
+      BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, AUDIT_ARCH_X86_64, 1, 0),
+      BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ALLOW),
+      BPF_STMT(BPF_LD | BPF_W | BPF_ABS, offsetof(struct seccomp_data, nr)),
+      BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, SYS_rt_sigaction, 1, 0),
+      BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ALLOW),
+      BPF_STMT(BPF_LD | BPF_W | BPF_ABS, offsetof(struct seccomp_data, args[2])),
+      BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, 0x71001000, 1, 0),
+      BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ALLOW),
+      BPF_STMT(BPF_LD | BPF_W | BPF_ABS, offsetof(struct seccomp_data, args[2]) + 4),
+      BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, 0, 1, 0),
+      BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ALLOW),
+      BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ERRNO | EPERM),
+  };
+  struct sock_fprog prog = {sizeof f / sizeof f[0], f};
+  if (prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0))
+    die("no_new_privs");
+  if (prctl(PR_SET_SECCOMP, SECCOMP_MODE_FILTER, &prog))
+    die("seccomp");
+  sigtrap_set(trap_handler, 1);
+  for (int i = 0; i < 20; i++)
+    SITEM(SYS_getppid, 0, 0, 0, 0, 0, SHAPE_PRIVATE);
+  sigtrap_full_state("no-repair after 20");
+}
+
+/* A Tool's injection at a signal stop while a temporary mask's restore is
+ * pending: SIGPROF is blocked and pending, and a private-page ppoll whose
+ * temporary mask admits it returns -EINTR with the restore pending. At the
+ * SIGPROF stop the Tool's callback injects getpid (handle_signal_event);
+ * resuming the thread for it restores the saved mask first, so the getpid's
+ * trap sees SIGTRAP as the saved mask has it, not as the temporary mask did.
+ * In -topen states the saved mask blocks SIGTRAP and the temporary mask
+ * admits it; in -tshut states the reverse. Natively SIGTRAP's action and
+ * mask bit are the guest's afterwards. */
+static void mode_sigtrap_callback_restore(void) {
+  warm();
+  struct sigaction prof;
+  memset(&prof, 0, sizeof prof);
+  prof.sa_sigaction = callback_handler;
+  prof.sa_flags = SA_SIGINFO;
+  sigemptyset(&prof.sa_mask);
+  if (sigaction(SIGPROF, &prof, NULL) != 0)
+    die("install SIGPROF");
+  static const struct {
+    const char* name;
+    void (*action)(int);
+    int block;
+    int tmask;
+  } states[] = {
+      {"handler-blocked-topen", trap_handler, 1, 0},
+      {"ign-blocked-topen", SIG_IGN, 1, 0},
+      {"dfl-blocked-topen", SIG_DFL, 1, 0},
+      {"handler-tshut", trap_handler, 0, 1},
+  };
+  sigset_t prof_set;
+  sigemptyset(&prof_set);
+  sigaddset(&prof_set, SIGPROF);
+  for (unsigned i = 0; i < sizeof states / sizeof states[0]; i++) {
+    sigtrap_set(states[i].action, states[i].block);
+    if (sigprocmask(SIG_BLOCK, &prof_set, NULL) != 0)
+      die("block SIGPROF");
+    callback_hits = 0;
+    raise(SIGPROF);
+    unsigned long temporary = states[i].tmask ? 1UL << (SIGTRAP - 1) : 0;
+    struct timespec ts = {5, 0};
+    /* The call's result is not compared: the Tool's injection at the
+     * SIGPROF stop replaces it in the guest's return register, natively
+     * -EINTR, with getpid's (a separate defect). */
+    SITEM(SYS_ppoll, 0, 0, (long)&ts, (long)&temporary, 8, SHAPE_PRIVATE_CALL);
+    if (sigprocmask(SIG_UNBLOCK, &prof_set, NULL) != 0)
+      die("unblock SIGPROF");
+    char tag[64];
+    snprintf(tag, sizeof tag, "restore %s hits=%d", states[i].name, callback_hits);
+    sigtrap_full_state(tag);
+  }
+}
+
 /* A timer single-step that reaches the site carrying an untraced number
  * (500, which no syscall table knows). */
 static void mode_timer_allow(void) {
@@ -4225,6 +4387,14 @@ int main(int argc, char** argv) {
     mode_sigtrap_raw_name();
   else if (!strcmp(m, "sigtrap_cache_flip"))
     mode_sigtrap_cache_flip();
+  else if (!strcmp(m, "sigtrap_sigblk"))
+    mode_sigtrap_sigblk();
+  else if (!strcmp(m, "sigtrap_callback_restore"))
+    mode_sigtrap_callback_restore();
+  else if (!strcmp(m, "sigtrap_caught_blocked_injections"))
+    mode_sigtrap_caught_blocked_injections();
+  else if (!strcmp(m, "sigtrap_caught_blocked_no_repair"))
+    mode_sigtrap_caught_blocked_no_repair();
   else if (!strcmp(m, "sigtrap_timer"))
     mode_sigtrap_timer();
   else if (!strcmp(m, "sigtrap_interrupted_waits"))
