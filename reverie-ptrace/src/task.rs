@@ -9530,6 +9530,11 @@ impl<L: Tool + 'static> TracedTask<L> {
         // main does not make, which a tracer filter may refuse
         // (`thread_may_be_seccomp_filtered`).
         let mut temporary_shield = 0;
+        // The signals a mask-swapping injection's temporary mask admits: one
+        // that stops its step before the `syscall` instruction is put back
+        // in the queue, so the call runs and finds it pending, as the
+        // guest's own call would (https://github.com/rrnewton/reverie/issues/1086).
+        let mut temporary_admits = 0;
         if child_context.is_none()
             && swaps_signal_mask(nr)
             && may_name_temporary_signal_mask(nr, &args)
@@ -9537,27 +9542,37 @@ impl<L: Tool + 'static> TracedTask<L> {
             && let Some(temporary) = temporary_signal_mask(&task, nr, &args)
         {
             temporary_shield = temporary & !NEVER_SHIELDED;
+            temporary_admits = !temporary & !NEVER_SHIELDED;
         }
         // Only a shielded injection reads the thread's mask.
-        let shield = if shield | temporary_shield != 0 {
+        let shield = if shield | temporary_shield | temporary_admits != 0 {
             let mask = task.getsigmask()?;
             // While an earlier mask-swapping syscall's restore is pending
             // (`TIF_RESTORE_SIGMASK`), `PTRACE_GETSIGMASK` reports the saved
             // mask, not the one the kernel blocks under, and writing a mask
             // discards the restore (`swaps_signal_mask`). The temporary
             // shield is then not taken, as before it existed.
-            if temporary_shield != 0 && blocked_signal_mask(task.pid()).ok() != Some(mask) {
+            if (temporary_shield | temporary_admits) != 0
+                && blocked_signal_mask(task.pid()).ok() != Some(mask)
+            {
                 temporary_shield = 0;
+                temporary_admits = 0;
             }
+            // A signal the thread's mask blocks cannot stop the step.
+            temporary_admits &= !mask;
             (shield | temporary_shield) & !mask
         } else {
             0
         };
-        if shield != 0 {
+        if shield != 0 || temporary_admits != 0 {
             // The shielded injection runs the thread to the syscall's entry
             // first, so the state read before is not reused for its step.
             self.injection_proc_state = None;
-            let requeue = self.in_held_signal_callback;
+            let requeue = if self.in_held_signal_callback {
+                !0
+            } else {
+                temporary_admits
+            };
             let (wait, seccomp_trapped) = self
                 .step_shielded_injection(task, nr, shield, requeue)
                 .await?;
@@ -11738,7 +11753,7 @@ impl<L: Tool + 'static> TracedTask<L> {
             original_mask,
             nr,
             false,
-            true,
+            !0,
         )
         .await
     }
@@ -11798,7 +11813,7 @@ impl<L: Tool + 'static> TracedTask<L> {
         task: Stopped,
         nr: Sysno,
         shield: u64,
-        requeue: bool,
+        requeue: u64,
     ) -> Result<(Wait, bool), TraceError> {
         let original_mask = task.getsigmask()?;
         let mask = original_mask | shield;
@@ -11830,7 +11845,7 @@ impl<L: Tool + 'static> TracedTask<L> {
         mut mask: u64,
         nr: Sysno,
         plain_injection: bool,
-        requeue: bool,
+        requeue: u64,
     ) -> Result<(Wait, bool), TraceError> {
         fn requeueable(sig: AnySignal) -> bool {
             !matches!(
@@ -11886,7 +11901,7 @@ impl<L: Tool + 'static> TracedTask<L> {
                     {
                         LATE_TIMER_SIGNALS_DISCARDED.fetch_add(1, Ordering::Relaxed);
                         None
-                    } else if !requeue {
+                    } else if requeue & signal_mask_bit(sig) == 0 {
                         stopped.setsigmask(original_mask)?;
                         return Ok((Wait::Stopped(stopped, event), false));
                     } else {
