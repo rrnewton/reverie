@@ -100,6 +100,10 @@ use crate::injected_syscall::InjectedSyscallFrame;
 use crate::poll_on_wake::PollOnWake;
 use crate::regs::Reg;
 use crate::regs::RegAccess;
+use crate::segv_state::CLONE_CLEAR_SIGHAND;
+use crate::segv_state::SIGSEGV_BIT;
+use crate::segv_state::SegvRun;
+use crate::segv_state::segv_repair;
 use crate::sigtrap_state::BLOCKABLE_SIGNAL_BITS;
 use crate::sigtrap_state::KernelSigaction;
 use crate::sigtrap_state::SIGTRAP_BIT;
@@ -828,6 +832,36 @@ impl ProcSignalState {
     }
 }
 
+/// Whether this kernel refuses x32-ABI syscalls (`__X32_SYSCALL_BIT`) with
+/// `ENOSYS`, as one built without `CONFIG_X86_X32_ABI` does. Reverie's
+/// filter traces syscalls by their x86-64 numbers; an x32 syscall has the
+/// same audit architecture and another number, so where the kernel accepts
+/// one, an x32 `rt_sigprocmask`, `rt_sigaction` or `rt_sigreturn` runs
+/// without a stop. Probed once, in the tracer, with an x32 `getpid`.
+fn x32_syscalls_refused() -> bool {
+    static REFUSED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *REFUSED.get_or_init(|| {
+        if !cfg!(target_arch = "x86_64") {
+            return false;
+        }
+        const X32_SYSCALL_BIT: libc::c_long = 0x4000_0000;
+        // SAFETY: getpid takes no arguments and touches no memory.
+        let ret = unsafe { libc::syscall(X32_SYSCALL_BIT | libc::SYS_getpid) };
+        ret == -1 && std::io::Error::last_os_error().raw_os_error() == Some(libc::ENOSYS)
+    })
+}
+
+/// Whether SIGSEGV is ignored for the stopped `task` (procfs `SigIgn`),
+/// `None` if that cannot be read.
+fn segv_ignored(task: &Stopped) -> Option<bool> {
+    let status = read_status(format!("/proc/{}/status", task.pid())).ok()?;
+    status
+        .lines()
+        .find_map(|line| line.strip_prefix("SigIgn:"))
+        .and_then(|value| u64::from_str_radix(value.trim(), 16).ok())
+        .map(|ignored| ignored & SIGSEGV_BIT != 0)
+}
+
 /// What `unblock_sigtrap_for_step_with` did before a Reverie single-step.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum StepShield {
@@ -1097,6 +1131,15 @@ struct SigtrapTables {
     /// threads that made one, until each such thread's next seccomp stop or
     /// its exit. While a table has any, its disposition is read afresh.
     changing: HashMap<u64, HashSet<Pid>>,
+    /// SIGSEGV's action in each table, where it is known
+    /// (`TracedTask::restore_segv_after_trap`).
+    segv_actions: HashMap<u64, KernelSigaction>,
+    /// The tables a thread Reverie does not trace may use: a clone that
+    /// shares the table and may be `CLONE_UNTRACED` ran
+    /// (`TracedTask::note_segv_clone`). Such a thread's signal deliveries and
+    /// faults can change SIGSEGV's action unseen, so these tables' actions
+    /// are never known. A fork child's copy is a table of its own.
+    segv_unseen: HashSet<u64>,
 }
 
 impl SigtrapTables {
@@ -1109,6 +1152,14 @@ impl SigtrapTables {
         }
         if let Some(ignored) = from.and_then(|from| self.ignored.get(&from).copied()) {
             self.ignored.insert(table, ignored);
+        }
+        // A table a thread Reverie does not trace may use passes on no
+        // action: that thread may have changed it unseen.
+        if let Some(action) = from
+            .filter(|from| !self.segv_unseen.contains(from))
+            .and_then(|from| self.segv_actions.get(&from).copied())
+        {
+            self.segv_actions.insert(table, action);
         }
         self.users.entry(table).or_default().insert(group);
         table
@@ -1137,6 +1188,8 @@ impl SigtrapTables {
                 self.ignored.remove(&table);
                 self.changing.remove(&table);
                 self.shared.remove(&table);
+                self.segv_actions.remove(&table);
+                self.segv_unseen.remove(&table);
             }
         }
     }
@@ -1169,6 +1222,27 @@ mod sigtrap_tables_tests {
         tables.leave(b, first);
         assert!(!tables.repairs.contains_key(&first));
         assert!(!tables.users.contains_key(&first));
+    }
+
+    /// A fork copies SIGSEGV's recorded action, except from a table a thread
+    /// Reverie does not trace may use, whose action that thread may have
+    /// changed unseen.
+    #[test]
+    fn a_fork_copies_no_sigsegv_action_from_an_unseen_table() {
+        let (a, b, c) = (Pid::from_raw(10), Pid::from_raw(11), Pid::from_raw(12));
+        let mut tables = SigtrapTables::default();
+        let action = KernelSigaction {
+            handler: libc::SIG_IGN as u64,
+            ..KernelSigaction::default()
+        };
+        let seen = tables.copy(a, None);
+        tables.segv_actions.insert(seen, action);
+        let forked = tables.copy(b, Some(seen));
+        assert_eq!(tables.segv_actions.get(&forked), Some(&action));
+        tables.segv_unseen.insert(seen);
+        let forked = tables.copy(c, Some(seen));
+        assert_eq!(tables.segv_actions.get(&forked), None);
+        assert!(!tables.segv_unseen.contains(&forked));
     }
 }
 
@@ -1213,6 +1287,52 @@ fn clone_flags(parent: &Stopped) -> Option<u64> {
         Some(Sysno::clone3) => Addr::<u64>::from_raw(regs.args().0 as usize)
             .and_then(|address| parent.read_value(address).ok()),
         _ => None,
+    }
+}
+
+/// Whether `task` is at a signal-delivery stop, where a resume's signal is
+/// delivered. Linux sends a signal handed to a resume from a syscall stop
+/// anew, as a signal of its own (`ptrace_report_syscall`), and drops one
+/// handed over at a ptrace event stop (`ptrace_event`) or a group stop;
+/// none of these runs a handler at that resume. A group stop has no siginfo
+/// (`PTRACE_GETSIGINFO` fails with `EINVAL`). A syscall stop's siginfo is
+/// SIGTRAP with the code SIGTRAP | 0x80 (Reverie sets
+/// `PTRACE_O_TRACESYSGOOD`), and a ptrace event stop's SIGTRAP with the
+/// event above the low 8 bits, but a guest can queue itself a SIGTRAP with
+/// any positive code (`rt_tgsigqueueinfo`), so a code of either shape is
+/// taken as a syscall stop only where `PTRACE_GET_SYSCALL_INFO` reports a
+/// syscall operation, and is otherwise not known. `None` if it cannot be
+/// told.
+fn at_signal_delivery_stop(task: &Stopped) -> Option<bool> {
+    match task.getsiginfo() {
+        Ok(info)
+            if info.si_signo == libc::SIGTRAP
+                && (info.si_code == libc::SIGTRAP
+                    || info.si_code == libc::SIGTRAP | 0x80
+                    || (info.si_code > 0xff && info.si_code & 0xff == libc::SIGTRAP)) =>
+        {
+            match task.getsyscallinfo() {
+                Ok(syscall) if syscall.operation != safeptrace::SyscallInfoOp::None => Some(false),
+                _ => None,
+            }
+        }
+        Ok(_) => Some(true),
+        Err(TraceError::Errno(Errno::EINVAL)) => Some(false),
+        Err(_) => None,
+    }
+}
+
+/// Whether the creator of a new process, at its ptrace event stop, made a
+/// `clone3` with `CLONE_CLEAR_SIGHAND`, which flushes the child's copy of the
+/// signal actions (`copy_sighand`); `None` if its flags cannot be read. A
+/// `clone` cannot pass the flag (`kernel_clone_args` keeps its low 32 bits).
+fn clears_signal_handlers(parent: &Stopped) -> Option<bool> {
+    let regs = parent.getregs().ok()?;
+    match Sysno::new(regs.orig_syscall() as usize) {
+        Some(Sysno::clone3) => Addr::<u64>::from_raw(regs.args().0 as usize)
+            .and_then(|address| parent.read_value(address).ok())
+            .map(|flags| flags & CLONE_CLEAR_SIGHAND != 0),
+        _ => Some(false),
     }
 }
 
@@ -2958,6 +3078,18 @@ struct GlobalState<G: GlobalTool> {
     /// sequence (`drive_timer`).
     traces_signal_state_syscalls: bool,
 
+    /// Whether Reverie keeps the guest's SIGSEGV action and mask across its
+    /// rdtsc and cpuid traps (`segv_state`): where it keeps SIGTRAP's
+    /// (`keeps_sigtrap_state`), for a Tool that subscribes to rdtsc or cpuid,
+    /// and only if every change of the mask or of SIGSEGV's action is one
+    /// Reverie sees: the Tool subscribes to every syscall that makes one
+    /// (`traces_signal_state_syscalls`), Reverie's filter traces a guest
+    /// `rt_sigreturn` (`reports_sigreturns`; otherwise it lets every one
+    /// run), the Tool subscribes to every clone that could make a thread it
+    /// does not trace (`sees_every_sighand_clone`), and the kernel refuses
+    /// x32 syscalls, which the filter would let run (`x32_syscalls_refused`).
+    keeps_segv_state: bool,
+
     /// guests are sequentialized already (by detcore for example), gdbserver
     /// should avoid sequentialize threads.
     sequentialized_guest: Arc<bool>,
@@ -3035,6 +3167,12 @@ thread_local! {
     /// thread: a test's tracer runs on its own `current_thread` runtime, so
     /// tests running beside it in one process cannot add to its count.
     pub(crate) static UNSTEPPED_INJECTIONS_FOR_TEST: std::cell::Cell<u64> =
+        const { std::cell::Cell::new(0) };
+
+    /// The repairs of SIGSEGV after an rdtsc or cpuid trap
+    /// (`restore_segv_after_trap`): one per mask bit set again and one per
+    /// action written back. Per thread, as above.
+    pub(crate) static SEGV_REPAIRS_FOR_TEST: std::cell::Cell<u64> =
         const { std::cell::Cell::new(0) };
 }
 
@@ -3194,6 +3332,7 @@ impl<G: GlobalTool> Clone for GlobalState<G> {
             caches_sigtrap_disposition: self.caches_sigtrap_disposition,
             sees_every_sighand_clone: self.sees_every_sighand_clone,
             traces_signal_state_syscalls: self.traces_signal_state_syscalls,
+            keeps_segv_state: self.keeps_segv_state,
             sequentialized_guest: self.sequentialized_guest.clone(),
             injected_syscall_trap: self.injected_syscall_trap.clone(),
             fatal_session: self.fatal_session.clone(),
@@ -3374,6 +3513,13 @@ pub struct TracedTask<L: Tool> {
     /// `SCRATCH_UNAVAILABLE`; `seal_sigtrap_scratch`), shared by every task
     /// that shares the address space.
     sigtrap_scratch_state: Arc<AtomicU8>,
+    /// SIGSEGV's bit in the mask this thread's guest code runs under, as its
+    /// last `PTRACE_CONT` left it (`note_segv_resume`).
+    segv_run: StdMutex<SegvRun>,
+    /// The syscall the coming `PTRACE_CONT` runs, as its number plus one, or
+    /// 0: a tail injection's original syscall, or a reported `rt_sigreturn`
+    /// (`note_segv_resume`).
+    segv_resume_syscall: AtomicU64,
 
     /// The generation [`Self::tracee_preinit`] is initializing, while it runs.
     preinit_generation: Option<TraceeGeneration>,
@@ -3656,6 +3802,12 @@ impl<L: Tool> TracedTask<L> {
             caches_sigtrap_disposition,
             sees_every_sighand_clone,
             traces_signal_state_syscalls,
+            keeps_segv_state: keeps_sigtrap_state
+                && (options.events.has_rdtsc() || options.events.has_cpuid())
+                && traces_signal_state_syscalls
+                && reports_sigreturns
+                && sees_every_sighand_clone
+                && x32_syscalls_refused(),
             sequentialized_guest: Arc::new(
                 gdbserver
                     .as_ref()
@@ -3730,6 +3882,8 @@ impl<L: Tool> TracedTask<L> {
             restore_maybe_pending: true,
             sigtrap_table,
             sigtrap_scratch_state: Arc::new(AtomicU8::new(SCRATCH_PENDING)),
+            segv_run: StdMutex::new(SegvRun::Unknown),
+            segv_resume_syscall: AtomicU64::new(0),
             ptracer_waits: Arc::new(PtracerWaitOwner::default()),
             preinit_generation: None,
             latest_injection_stop: None,
@@ -3826,6 +3980,8 @@ impl<L: Tool> TracedTask<L> {
             restore_maybe_pending: true,
             sigtrap_table: self.sigtrap_table,
             sigtrap_scratch_state: self.sigtrap_scratch_state.clone(),
+            segv_run: StdMutex::new(SegvRun::Unknown),
+            segv_resume_syscall: AtomicU64::new(0),
             ptracer_waits,
             preinit_generation: None,
             latest_injection_stop: None,
@@ -3938,6 +4094,8 @@ impl<L: Tool> TracedTask<L> {
             restore_maybe_pending: true,
             sigtrap_table,
             sigtrap_scratch_state,
+            segv_run: StdMutex::new(SegvRun::Unknown),
+            segv_resume_syscall: AtomicU64::new(0),
             ptracer_waits,
             preinit_generation: None,
             latest_injection_stop: None,
@@ -5369,6 +5527,8 @@ impl<L: Tool + 'static> TracedTask<L> {
         // seccomp-allowed private page, then follow the restored guest state.
         *regs.ip_mut() = cp::PRIVATE_PAGE_OFFSET as Reg;
         task.setregs(&regs)?;
+        self.segv_resume_syscall
+            .store(Sysno::rt_sigreturn as u64 + 1, Ordering::SeqCst);
         self.resume_stopped(task, None)?
             .next_state_with_owner(&self.ptracer_waits)
             .await
@@ -5689,6 +5849,7 @@ impl<L: Tool + 'static> TracedTask<L> {
             Some(SegfaultTrapInfo::Cpuid)
                 if self.global_state.subscriptions.has_cpuid() && self.has_cpuid_interception =>
             {
+                let task = self.restore_segv_after_trap(task).await?;
                 let regs = self.handle_cpuid(regs).await?;
                 task.setregs(&regs)?;
                 HandleSignalResult::SignalSuppressed(
@@ -5698,6 +5859,7 @@ impl<L: Tool + 'static> TracedTask<L> {
                 )
             }
             Some(SegfaultTrapInfo::Rdtscs(req)) if self.global_state.subscriptions.has_rdtsc() => {
+                let task = self.restore_segv_after_trap(task).await?;
                 let regs = self.handle_rdtscs(regs, req).await?;
                 task.setregs(&regs)?;
                 HandleSignalResult::SignalSuppressed(
@@ -5706,7 +5868,10 @@ impl<L: Tool + 'static> TracedTask<L> {
                         .await?,
                 )
             }
-            _ => HandleSignalResult::SignalToDeliver(task, Signal::SIGSEGV.into()),
+            _ => {
+                self.note_segv_delivered_to_guest(&task);
+                HandleSignalResult::SignalToDeliver(task, Signal::SIGSEGV.into())
+            }
         })
     }
 
@@ -6579,6 +6744,10 @@ impl<L: Tool + 'static> TracedTask<L> {
                 let table = tables.copy(pid, Some(self.sigtrap_table));
                 tables.leave(pid, self.sigtrap_table);
                 self.sigtrap_table = table;
+                // Exec flushes the actions (`begin_new_exec`).
+                if let Some(action) = tables.segv_actions.get(&table).copied() {
+                    tables.segv_actions.insert(table, action.flushed());
+                }
             }
             // The new image has no repair page until pre-init seals one
             // (`seal_sigtrap_scratch`); a repair owed meanwhile waits for it.
@@ -6607,6 +6776,19 @@ impl<L: Tool + 'static> TracedTask<L> {
                 && self.sigtrap_repair().is_none();
             if state.sigtrap_ignored {
                 self.note_sigtrap_repair(SigtrapRepair::Ignored);
+            }
+            // Exec leaves SIGSEGV `SIG_IGN` or `SIG_DFL`, with no flags,
+            // restorer or mask (`flush_signal_handlers`), so procfs tells all
+            // of its action.
+            if self.global_state.keeps_segv_state {
+                self.set_segv_action(segv_ignored(&task).map(|ignored| KernelSigaction {
+                    handler: if ignored {
+                        libc::SIG_IGN as u64
+                    } else {
+                        libc::SIG_DFL as u64
+                    },
+                    ..KernelSigaction::default()
+                }));
             }
         }
         let running = self.syscall_stopped(task, None)?;
@@ -6923,6 +7105,31 @@ impl<L: Tool + 'static> TracedTask<L> {
                 // ptrace event stop such as this seccomp stop, so a signal
                 // held for the resume stays held for the guest's next stop,
                 // as `handle_unsubscribed_mapping_syscall` leaves it.
+                //
+                // Where SIGSEGV's state is kept, the call is run to its exit
+                // stop, where the mask it set is read (`note_segv_resume`):
+                // read from the frame before the call, it could be one a
+                // background call of another thread rewrote before the kernel
+                // read it. The exit stop sends no signal and runs no guest
+                // instruction. Any other stop is the main loop's to handle.
+                if self.keeps_segv_state() {
+                    let wait = self
+                        .syscall_stopped(task, None)
+                        .tracee_context(tid, "run rt_sigreturn to its exit")?
+                        .next_state_with_owner(&self.ptracer_waits)
+                        .await
+                        .tracee_context(tid, "wait for rt_sigreturn's exit")?;
+                    self.arm_liteinst_wait(&wait);
+                    return match wait {
+                        Wait::Stopped(stopped, Event::Syscall) => self
+                            .resume_stopped(stopped, None)
+                            .tracee_context(tid, "resume after rt_sigreturn")?
+                            .next_state_with_owner(&self.ptracer_waits)
+                            .await
+                            .tracee_context(tid, "wait after rt_sigreturn"),
+                        wait => Ok(wait),
+                    };
+                }
                 return self
                     .resume_stopped(task, None)
                     .tracee_context(tid, "resume rt_sigreturn")?
@@ -7015,6 +7222,33 @@ impl<L: Tool + 'static> TracedTask<L> {
                     .await;
             }
             let resume = self.report_held_signal(&task, None, held).await?;
+            // An original syscall that sets the mask, left to run on this
+            // resume, is run to its exit stop where SIGSEGV's state is kept,
+            // and the mask it set is read there (`note_segv_resume`), not
+            // predicted from guest memory the kernel reads later. Not with a
+            // signal for the resume: Linux drops one handed to a resume from
+            // this seccomp stop, but sends one handed over at the exit stop.
+            if resume.signal.is_none()
+                && self.keeps_segv_state()
+                && [Sysno::rt_sigprocmask, Sysno::rt_sigreturn]
+                    .iter()
+                    .any(|&nr| self.segv_resume_syscall.load(Ordering::SeqCst) == nr as u64 + 1)
+            {
+                let wait = self
+                    .syscall_stopped(task, None)
+                    .tracee_context(tid, "run a mask-setting syscall to its exit")?
+                    .next_state_with_owner(&self.ptracer_waits)
+                    .await
+                    .tracee_context(tid, "wait for a mask-setting syscall's exit")?;
+                self.arm_liteinst_wait(&wait);
+                task = match wait {
+                    Wait::Stopped(stopped, Event::Syscall) => {
+                        self.segv_resume_syscall.store(0, Ordering::SeqCst);
+                        stopped
+                    }
+                    wait => return Ok(wait),
+                };
+            }
             let wait = self
                 .resume_with_signal(task, resume)
                 .await
@@ -7095,6 +7329,8 @@ impl<L: Tool + 'static> TracedTask<L> {
         if self.global_state.fatal_session.is_failed() {
             return Err(Errno::ECANCELED.into());
         }
+        let signal = signal.into();
+        self.note_segv_resume(&task, signal.map(|signal| signal as i32));
         self.lease_liteinst_root_stop(task).resume(signal)
     }
 
@@ -7108,6 +7344,8 @@ impl<L: Tool + 'static> TracedTask<L> {
         }
         #[cfg(test)]
         record_step_for_test(task.pid());
+        let signal = signal.into();
+        self.note_segv_signal_without_cont(signal.map(|signal| signal as i32));
         self.lease_liteinst_root_stop(task).step(signal)
     }
 
@@ -7119,6 +7357,8 @@ impl<L: Tool + 'static> TracedTask<L> {
         if self.global_state.fatal_session.is_failed() {
             return Err(Errno::ECANCELED.into());
         }
+        let signal = signal.into();
+        self.note_segv_signal_without_cont(signal.map(|signal| signal as i32));
         self.lease_liteinst_root_stop(task).syscall(signal)
     }
 
@@ -7134,6 +7374,7 @@ impl<L: Tool + 'static> TracedTask<L> {
                 if self.global_state.fatal_session.is_failed() {
                     return Err(Errno::ECANCELED.into());
                 }
+                self.note_segv_resume(&task, Some(signal.raw()));
                 self.lease_liteinst_root_stop(task).resume_raw(signal.raw())
             }
             signal => self.resume_stopped(task, signal.and_then(AnySignal::as_nix)),
@@ -7153,6 +7394,7 @@ impl<L: Tool + 'static> TracedTask<L> {
                 }
                 #[cfg(test)]
                 record_step_for_test(task.pid());
+                self.note_segv_signal_without_cont(Some(signal.raw()));
                 self.lease_liteinst_root_stop(task).step_raw(signal.raw())
             }
             signal => self.step_stopped(task, signal.and_then(AnySignal::as_nix)),
@@ -7170,6 +7412,7 @@ impl<L: Tool + 'static> TracedTask<L> {
                 if self.global_state.fatal_session.is_failed() {
                     return Err(Errno::ECANCELED.into());
                 }
+                self.note_segv_signal_without_cont(Some(signal.raw()));
                 self.lease_liteinst_root_stop(task)
                     .syscall_raw(signal.raw())
             }
@@ -7238,6 +7481,15 @@ impl<L: Tool + 'static> TracedTask<L> {
                 op == ChildOp::Vfork || shares_address_space(&parent),
             )
         };
+        // A `CLONE_CLEAR_SIGHAND` child's copy of the actions is flushed.
+        if !is_thread && self.global_state.keeps_segv_state {
+            match clears_signal_handlers(&parent) {
+                Some(false) => {}
+                Some(true) => child_task
+                    .set_segv_action(child_task.segv_action().map(KernelSigaction::flushed)),
+                None => child_task.set_segv_action(None),
+            }
+        }
         // A process made by a clone event has the parent the kernel recorded
         // for it: `CLONE_PARENT` makes that the creator's parent, which
         // `cloned()` reported for it before it was built as a process.
@@ -8964,6 +9216,7 @@ impl<L: Tool + 'static> TracedTask<L> {
                 (task, None)
             } else {
                 let task = self.apply_sigtrap_repair(task).await?;
+                let task = self.learn_segv_action(task).await?;
                 let (task, before) = self.read_sigtrap_before_injection(task, nr, &args).await?;
                 (task, Some(before))
             };
@@ -9643,6 +9896,344 @@ impl<L: Tool + 'static> TracedTask<L> {
         }
     }
 
+    /// Whether Reverie keeps the guest's SIGSEGV state across its rdtsc and
+    /// cpuid traps now (`GlobalState::keeps_segv_state`): this tracer thread
+    /// can make the requests (`keeps_sigtrap_state`), and no seccomp filter
+    /// of higher precedence than Reverie's can let a guest syscall run
+    /// without a stop, as for a quiet timer sequence (`drive_timer`): the
+    /// tracer has none of its own (`GlobalState::seccomp_filter_baseline` is
+    /// 1), the address space had none when pre-init sealed its repair page
+    /// (`seal_sigtrap_scratch`), and the guest installs none later under the
+    /// contract (`Tool::enforces_serialized_execution`).
+    ///
+    /// Under that contract no other guest thread runs guest code between the
+    /// trap and its repair, so none can meet the reset state. A thread that
+    /// Detcore lets block in a syscall meanwhile does not run guest code,
+    /// and a syscall cannot change SIGSEGV's action. Without the contract
+    /// (Hermit's `--no-sequentialize-threads` and `--strace-only` turn off
+    /// sequentialization, and so the contract), nothing is kept or repaired,
+    /// as before.
+    fn keeps_segv_state(&self) -> bool {
+        self.global_state.keeps_segv_state
+            && self.global_state.seccomp_filter_baseline == Some(1)
+            && self.sigtrap_scratch_state.load(Ordering::SeqCst) == SCRATCH_SEALED
+            && self.keeps_sigtrap_state()
+    }
+
+    /// SIGSEGV's action in this thread's signal-action table, if known
+    /// there. A table a thread Reverie does not trace may use has none
+    /// (`SigtrapTables::segv_unseen`).
+    fn segv_action(&self) -> Option<KernelSigaction> {
+        let tables = self.global_state.sigtrap_tables.lock().unwrap();
+        if tables.segv_unseen.contains(&self.sigtrap_table) {
+            return None;
+        }
+        tables.segv_actions.get(&self.sigtrap_table).copied()
+    }
+
+    /// Records SIGSEGV's action in this thread's signal-action table, or
+    /// with `None` forgets it.
+    fn set_segv_action(&self, action: Option<KernelSigaction>) {
+        let mut tables = self.global_state.sigtrap_tables.lock().unwrap();
+        match action {
+            Some(_) if tables.segv_unseen.contains(&self.sigtrap_table) => {}
+            Some(action) => {
+                tables.segv_actions.insert(self.sigtrap_table, action);
+            }
+            None => {
+                tables.segv_actions.remove(&self.sigtrap_table);
+            }
+        }
+    }
+
+    /// Before syscall `nr` with `args` runs: a clone that shares this
+    /// thread's signal-action table (`CLONE_SIGHAND`) and may make a thread
+    /// Reverie does not trace (`CLONE_UNTRACED`, or `clone3` flags that
+    /// cannot be read) marks the table as one whose SIGSEGV action is never
+    /// known (`SigtrapTables::segv_unseen`).
+    fn note_segv_clone(&self, nr: Sysno, args: &SyscallArgs) {
+        if !self.global_state.keeps_segv_state || !self.clone_may_share_signal_actions(nr, args) {
+            return;
+        }
+        let untraced = libc::CLONE_UNTRACED as u64;
+        let unseen = match nr {
+            Sysno::clone => args.arg0 as u64 & untraced != 0,
+            _ => Addr::<u64>::from_raw(args.arg0)
+                .and_then(|flags| self.assume_stopped().read_value(flags).ok())
+                .is_none_or(|flags| flags & untraced != 0),
+        };
+        if unseen {
+            let mut tables = self.global_state.sigtrap_tables.lock().unwrap();
+            tables.segv_unseen.insert(self.sigtrap_table);
+            tables.segv_actions.remove(&self.sigtrap_table);
+        }
+    }
+
+    /// Whether syscall `nr` with `args` is an `rt_sigaction` that sets
+    /// SIGSEGV's action. After one is injected, the action is read again
+    /// (`learn_segv_action`) rather than taken from `act`: another thread's
+    /// background call may rewrite `act` between a read of the tracer's and
+    /// the kernel's.
+    fn sets_segv_action(&self, nr: Sysno, args: &SyscallArgs) -> bool {
+        self.global_state.keeps_segv_state
+            && nr == Sysno::rt_sigaction
+            && args.arg0 == libc::SIGSEGV as usize
+            && args.arg1 != 0
+    }
+
+    /// Records, as `task` is resumed with `PTRACE_CONT` and `signal`,
+    /// SIGSEGV's bit in the mask its guest code runs under until its next
+    /// stop (`segv_run`), which a trap's repair reads
+    /// (`restore_segv_after_trap`). Every guest instruction that Reverie does
+    /// not step runs after such a resume, and a step changes no mask but by
+    /// a syscall, which stops first. Until the next stop the mask changes only
+    /// by what this resume makes the kernel do (`segv_run_after_resume`).
+    fn note_segv_resume(&self, task: &Stopped, signal: Option<i32>) {
+        let syscall = self.segv_resume_syscall.swap(0, Ordering::SeqCst);
+        let run = if self.keeps_segv_state() {
+            self.segv_run_after_resume(task, signal, syscall)
+        } else {
+            SegvRun::Unknown
+        };
+        *self.segv_run.lock().unwrap() = run;
+    }
+
+    /// As a single-step or a `PTRACE_SYSCALL` resume hands `signal` over,
+    /// which may run a handler without a `PTRACE_CONT` (`note_segv_resume`):
+    /// the mask is no longer known, and a SIGSEGV's delivery may have reset a
+    /// one-shot handler, so its action is forgotten.
+    fn note_segv_signal_without_cont(&self, signal: Option<i32>) {
+        let Some(signal) = signal else {
+            return;
+        };
+        *self.segv_run.lock().unwrap() = SegvRun::Unknown;
+        if signal == libc::SIGSEGV && self.global_state.keeps_segv_state {
+            self.set_segv_action(None);
+        }
+    }
+
+    /// The `segv_run` a resume leaves, with `syscall` the number plus one of
+    /// the syscall it runs, or 0:
+    /// - a signal delivered at a signal-delivery stop runs its handler, if it
+    ///   has one (`segv_run_after_delivery`). Linux drops a signal handed to a
+    ///   resume from any other stop (`at_signal_delivery_stop`);
+    /// - a syscall the resume runs that sets the mask (`rt_sigprocmask` with a
+    ///   set, `rt_sigreturn`) leaves it unknown, and an `rt_sigaction` that
+    ///   sets SIGSEGV's action leaves the action unknown. Each takes its
+    ///   argument from guest memory, which the tracer could read only before
+    ///   the kernel does: a background call of another thread may write it in
+    ///   between, and a protection key may fail the kernel's read where the
+    ///   tracer's succeeds. Detcore injects `rt_sigprocmask`, which is read
+    ///   after it ran; a reported `rt_sigreturn` stops at its exit
+    ///   (`handle_seccomp`), where the mask it set is read;
+    /// - otherwise `PTRACE_GETSIGMASK` is the mask: while a temporary mask's
+    ///   restore is pending it reports the saved mask the return restores.
+    fn segv_run_after_resume(&self, task: &Stopped, signal: Option<i32>, syscall: u64) -> SegvRun {
+        let Ok(saved) = task.getsigmask() else {
+            return SegvRun::Unknown;
+        };
+        if let Some(signal) = signal {
+            match at_signal_delivery_stop(task) {
+                Some(true) => return self.segv_run_after_delivery(task, signal, saved),
+                Some(false) => {}
+                None => return SegvRun::Unknown,
+            }
+        }
+        let known = SegvRun::Known(saved & SIGSEGV_BIT != 0);
+        let Some(nr) = syscall
+            .checked_sub(1)
+            .and_then(|nr| Sysno::new(nr as usize))
+        else {
+            return known;
+        };
+        let Ok(regs) = task.getregs() else {
+            return SegvRun::Unknown;
+        };
+        let (arg0, arg1, _, arg3, _, _) = regs.args();
+        match nr {
+            // A NULL set leaves the mask, as does a wrong size (EINVAL).
+            Sysno::rt_sigprocmask if arg1 != 0 && arg3 as usize == std::mem::size_of::<u64>() => {
+                SegvRun::Unknown
+            }
+            Sysno::rt_sigreturn => SegvRun::Unknown,
+            Sysno::rt_sigaction if arg0 as i32 == libc::SIGSEGV && arg1 != 0 => {
+                self.set_segv_action(None);
+                known
+            }
+            _ => known,
+        }
+    }
+
+    /// The `segv_run` a resume that delivers `signal` from a signal-delivery
+    /// stop leaves, with `saved` the mask `PTRACE_GETSIGMASK` reads there.
+    /// A signal that the mask the kernel blocks under (procfs `SigBlk`)
+    /// blocks is requeued, not delivered (`ptrace_signal`), and the return
+    /// restores `saved`. A delivered SIGSEGV is decided now, from its action,
+    /// which a one-shot handler's delivery resets (`get_signal`); another
+    /// signal's handler mask is read only if a trap needs it
+    /// ([`SegvRun::Delivered`]).
+    fn segv_run_after_delivery(&self, task: &Stopped, signal: i32, saved: u64) -> SegvRun {
+        let Ok(state) = ProcSignalState::read(task) else {
+            return SegvRun::Unknown;
+        };
+        if !(1..=64).contains(&signal) {
+            return SegvRun::Unknown;
+        }
+        let saved = saved & SIGSEGV_BIT != 0;
+        if state.blocked & (1 << (signal as u64 - 1)) != 0 {
+            return SegvRun::Known(saved);
+        }
+        let blocked = state.blocked & SIGSEGV_BIT != 0;
+        if signal == libc::SIGSEGV {
+            let before = self.segv_action();
+            if let Some(before) = before {
+                self.set_segv_action(Some(before.after_delivery()));
+            }
+            return SegvRun::after_segv_delivery(before, blocked, saved);
+        }
+        SegvRun::Delivered {
+            signal,
+            blocked,
+            saved,
+        }
+    }
+
+    /// At a SIGSEGV stop that is not one of Reverie's rdtsc or cpuid traps,
+    /// whose signal goes on to the guest: a SIGSEGV the kernel forced (a
+    /// fault, with a positive `si_code`) reset a blocked or ignored SIGSEGV's
+    /// action before the stop (`force_sig_info_to_task`), so the action is
+    /// forgotten unless it is known that neither was so. One a process sent
+    /// reset nothing.
+    fn note_segv_delivered_to_guest(&self, task: &Stopped) {
+        if !self.global_state.keeps_segv_state {
+            return;
+        }
+        let forced = task.getsiginfo().map_or(true, |info| info.si_code > 0);
+        let unblocked = *self.segv_run.lock().unwrap() == SegvRun::Known(false);
+        if forced && !(unblocked && self.segv_action().is_some_and(|action| !action.ignored())) {
+            self.set_segv_action(None);
+        }
+    }
+
+    /// Whether SIGSEGV's action is to be read (`learn_segv_action`): it is
+    /// kept, not known, and can be (`SigtrapTables::segv_unseen`).
+    fn segv_action_to_learn(&self) -> bool {
+        self.keeps_segv_state() && {
+            let tables = self.global_state.sigtrap_tables.lock().unwrap();
+            !tables.segv_unseen.contains(&self.sigtrap_table)
+                && !tables.segv_actions.contains_key(&self.sigtrap_table)
+        }
+    }
+
+    /// Reads SIGSEGV's action into this thread's signal-action table if it
+    /// is to be read (`segv_action_to_learn`), at a stop that can take an
+    /// unstepped injection, as `apply_sigtrap_repair` can.
+    async fn learn_segv_action(&mut self, task: Stopped) -> Result<Stopped, TraceError> {
+        if self.in_signal_callback || self.in_held_signal_callback || !self.segv_action_to_learn() {
+            return Ok(task);
+        }
+        let _repairs = self.lock_sigtrap_repairs().await;
+        let Ok(Some(scratch)) = self.sigtrap_scratch(task.pid()) else {
+            return Ok(task);
+        };
+        let (task, action) = self
+            .query_signal_action_at(task, scratch, libc::SIGSEGV)
+            .await?;
+        if action.is_some() {
+            self.set_segv_action(action);
+        }
+        Ok(task)
+    }
+
+    /// Puts back, at a SIGSEGV stop of one of Reverie's rdtsc or cpuid traps,
+    /// what Linux's forced delivery reset, before the Tool sees the event
+    /// (`segv_state`, <https://github.com/rrnewton/hermit/issues/4485>).
+    ///
+    /// It uses what was known before the fault: SIGSEGV's bit as the last
+    /// `PTRACE_CONT` left it (`segv_run`), and its action in this thread's
+    /// table (`segv_action`), and reads the action now only where a write
+    /// may be due ([`segv_repair`]). What is not known stays as the reset
+    /// left it, as before, and is logged; an action that may have been reset
+    /// and was not written back is forgotten. The common case, SIGSEGV
+    /// unblocked and not ignored, makes no request.
+    async fn restore_segv_after_trap(&mut self, task: Stopped) -> Result<Stopped, TraceError> {
+        if !self.keeps_segv_state() {
+            return Ok(task);
+        }
+        let run = *self.segv_run.lock().unwrap();
+        let before = self.segv_action();
+        if run == SegvRun::Known(false) && before.is_some_and(|action| !action.ignored()) {
+            return Ok(task);
+        }
+        let mask = sigmask(&task)?;
+        let _repairs = self.lock_sigtrap_repairs().await;
+        let scratch = self.sigtrap_scratch(task.pid()).ok().flatten();
+        let mut task = task;
+        // A thread Reverie does not trace could have changed the delivered
+        // signal's action since the delivery: the action read now is no
+        // evidence of the handler's mask there.
+        let unseen = self
+            .global_state
+            .sigtrap_tables
+            .lock()
+            .unwrap()
+            .segv_unseen
+            .contains(&self.sigtrap_table);
+        let delivered_action = match (run, scratch) {
+            (SegvRun::Delivered { signal, .. }, Some(scratch)) if !unseen => {
+                let (stopped, action) = self.query_signal_action_at(task, scratch, signal).await?;
+                task = stopped;
+                action
+            }
+            _ => None,
+        };
+        let blocked = run.resolve(mask, delivered_action);
+        // Only an action that is neither `SIG_DFL` (which the reset keeps)
+        // nor caught with SIGSEGV unblocked (which it does not touch) can be
+        // owed a write.
+        let now = match (before, scratch) {
+            (Some(before), Some(scratch))
+                if before.handler != libc::SIG_DFL as u64
+                    && !(blocked == Some(false) && before.caught()) =>
+            {
+                let (stopped, now) = self
+                    .query_signal_action_at(task, scratch, libc::SIGSEGV)
+                    .await?;
+                task = stopped;
+                now
+            }
+            _ => None,
+        };
+        let repair = segv_repair(blocked, before, now);
+        if repair.block {
+            set_sigmask(&task, mask | SIGSEGV_BIT)?;
+        }
+        let mut after = repair.after;
+        if let (Some(action), Some(scratch)) = (repair.write, scratch) {
+            let (stopped, written) = self
+                .write_signal_action_at(task, scratch, libc::SIGSEGV, action)
+                .await?;
+            task = stopped;
+            if !written {
+                after = None;
+            }
+        }
+        self.set_segv_action(after);
+        #[cfg(test)]
+        SEGV_REPAIRS_FOR_TEST.with(|count| {
+            count.set(count.get() + u64::from(repair.block) + u64::from(repair.write.is_some()))
+        });
+        if !repair.known {
+            tracing::debug!(
+                "[scheduler/tool] (pid = {}) SIGSEGV's state before a trapped rdtsc or cpuid is not fully known (blocked {:?}, action {:?}); what Linux's forced delivery reset may stay",
+                task.pid(),
+                blocked,
+                after
+            );
+        }
+        Ok(task)
+    }
+
     /// Whether Reverie keeps the guest's SIGTRAP state across its own steps:
     /// the Tool enforces serialized execution (`GlobalState::keeps_sigtrap_state`)
     /// and the tracer thread has no seccomp filter, which may refuse the
@@ -9871,10 +10462,21 @@ impl<L: Tool + 'static> TracedTask<L> {
         task: Stopped,
         scratch: usize,
     ) -> Result<(Stopped, Option<KernelSigaction>), TraceError> {
+        self.query_signal_action_at(task, scratch, libc::SIGTRAP)
+            .await
+    }
+
+    /// `query_sigtrap_action_at` for `signal`.
+    async fn query_signal_action_at(
+        &mut self,
+        task: Stopped,
+        scratch: usize,
+        signal: i32,
+    ) -> Result<(Stopped, Option<KernelSigaction>), TraceError> {
         #[cfg(test)]
         UNSTEPPED_INJECTIONS_FOR_TEST.with(|count| count.set(count.get() + 1));
         let args = SyscallArgs::new(
-            libc::SIGTRAP as usize,
+            signal as usize,
             0,
             scratch,
             std::mem::size_of::<u64>(),
@@ -10224,7 +10826,11 @@ impl<L: Tool + 'static> TracedTask<L> {
 
     /// Writes back the SIGTRAP repair owed (`sigtrap_repair`) at a seccomp
     /// stop, before the Tool sees the syscall, so that neither the syscall nor
-    /// the Tool reads the reset action.
+    /// the Tool reads the reset action. Reads SIGSEGV's action there too
+    /// where it is not known (`learn_segv_action`): a guest `rt_sigaction`
+    /// of SIGSEGV run on a resume leaves it unknown (`segv_run_after_resume`),
+    /// and a Tool that runs every syscall that way makes no injection where it
+    /// could be read otherwise.
     ///
     /// A seccomp stop cannot take an injection: a resume runs the stop's own
     /// syscall. The syscall has not run, so it is skipped (number -1) to its
@@ -10239,7 +10845,8 @@ impl<L: Tool + 'static> TracedTask<L> {
         &mut self,
         task: Stopped,
     ) -> Result<Stopped, TraceError> {
-        if self.sigtrap_repair().is_none() || !self.keeps_sigtrap_state() {
+        let owes_sigtrap = self.sigtrap_repair().is_some();
+        if !(owes_sigtrap || self.segv_action_to_learn()) || !self.keeps_sigtrap_state() {
             return Ok(task);
         }
         let regs = task.getregs()?;
@@ -10289,7 +10896,12 @@ impl<L: Tool + 'static> TracedTask<L> {
         *again.syscall_mut() = regs.orig_syscall();
         *again.orig_syscall_mut() = -1i64 as Reg;
         task.setregs(&again)?;
-        let task = self.apply_sigtrap_repair(task).await?;
+        let task = if owes_sigtrap {
+            self.apply_sigtrap_repair(task).await?
+        } else {
+            task
+        };
+        let task = self.learn_segv_action(task).await?;
         let mut wait = self
             .resume_stopped(task, None)?
             .next_state_with_owner(&self.ptracer_waits)
@@ -10310,6 +10922,11 @@ impl<L: Tool + 'static> TracedTask<L> {
         match wait {
             Wait::Stopped(task, Event::Seccomp) => {
                 set_sigmask(&task, mask)?;
+                // The resume that re-executed the call recorded the mask
+                // blocking every signal as the guest's (`note_segv_resume`);
+                // no guest code ran under it, and the next resume records
+                // the guest's own.
+                *self.segv_run.lock().unwrap() = SegvRun::Unknown;
                 Ok(task)
             }
             Wait::Stopped(_, Event::Exit) | Wait::Exited(..) => Err(Errno::ESRCH.into()),
@@ -10338,6 +10955,21 @@ impl<L: Tool + 'static> TracedTask<L> {
         // What the write leaves is read again when next needed
         // (`sigtrap_ignored`).
         self.forget_sigtrap_ignored();
+        let (task, _written) = self
+            .write_signal_action_at(task, scratch, libc::SIGTRAP, action)
+            .await?;
+        Ok(task)
+    }
+
+    /// `write_sigtrap_action_at` for `signal`, without its bookkeeping;
+    /// also returns whether the action was written.
+    async fn write_signal_action_at(
+        &mut self,
+        task: Stopped,
+        scratch: usize,
+        signal: i32,
+        action: KernelSigaction,
+    ) -> Result<(Stopped, bool), TraceError> {
         #[cfg(test)]
         UNSTEPPED_INJECTIONS_FOR_TEST.with(|count| count.set(count.get() + 1));
         let written = AddrMut::from_raw(scratch)
@@ -10349,10 +10981,10 @@ impl<L: Tool + 'static> TracedTask<L> {
             });
         if let Err(errno) = written {
             self.lose_sigtrap_scratch(&task, errno);
-            return Ok(task);
+            return Ok((task, false));
         }
         let args = SyscallArgs::new(
-            libc::SIGTRAP as usize,
+            signal as usize,
             scratch,
             0,
             std::mem::size_of::<u64>(),
@@ -10363,17 +10995,18 @@ impl<L: Tool + 'static> TracedTask<L> {
             .untraced_syscall_unstepped(task, Sysno::rt_sigaction, args)
             .await?;
         match result {
-            Ok(_) => Ok(task),
+            Ok(_) => Ok((task, true)),
             Err(Errno::EBUSY) => {
                 tracing::warn!(
-                    "[scheduler/tool] (pid = {}) cannot write back SIGTRAP's action while a temporary mask's restore is pending",
-                    task.pid()
+                    "[scheduler/tool] (pid = {}) cannot write back signal {}'s action while a temporary mask's restore is pending",
+                    task.pid(),
+                    signal
                 );
-                Ok(task)
+                Ok((task, false))
             }
             Err(errno) => {
                 self.lose_sigtrap_scratch(&task, errno);
-                Ok(task)
+                Ok((task, false))
             }
         }
     }
@@ -11282,7 +11915,15 @@ impl<L: Tool + 'static> TracedTask<L> {
         if swaps_signal_mask(nr) {
             self.restore_maybe_pending = true;
         }
-        self.inner_inject_unobserved(nr, args).await
+        self.note_segv_clone(nr, &args);
+        let sets_segv = self.sets_segv_action(nr, &args);
+        let result = self.inner_inject_unobserved(nr, args).await?;
+        if sets_segv {
+            self.set_segv_action(None);
+            let task = self.assume_stopped();
+            self.learn_segv_action(task).await?;
+        }
+        Ok(result)
     }
 
     /// `inner_inject`, without forgetting SIGTRAP's disposition.
@@ -11345,7 +11986,7 @@ impl<L: Tool + 'static> TracedTask<L> {
             let error = self.fail_broken_approval(approval, "then made a tail injection");
             self.abort(Err(error)).await
         }
-        match self.inner_tail_inject(nr, args).await {
+        match self.inner_tail_inject_observed(nr, args).await {
             Ok(_) => {
                 // Drop the handle_syscall_event future.
                 self.cancel_handler.store(true, Ordering::SeqCst);
@@ -11353,6 +11994,25 @@ impl<L: Tool + 'static> TracedTask<L> {
             }
             Err(err) => self.abort(Err(err)).await,
         }
+    }
+
+    /// `inner_tail_inject`, with the bookkeeping of SIGSEGV's state
+    /// (`segv_state`) that `inner_inject` keeps. An original syscall left to
+    /// run on the final resume is accounted there (`note_segv_resume`).
+    async fn inner_tail_inject_observed(
+        &mut self,
+        nr: Sysno,
+        args: SyscallArgs,
+    ) -> Result<Result<i64, Errno>, TraceError> {
+        self.note_segv_clone(nr, &args);
+        let sets_segv = self.sets_segv_action(nr, &args);
+        let result = self.inner_tail_inject(nr, args).await?;
+        if sets_segv && self.segv_resume_syscall.load(Ordering::SeqCst) != nr as u64 + 1 {
+            self.set_segv_action(None);
+            let task = self.assume_stopped();
+            self.learn_segv_action(task).await?;
+        }
+        Ok(result)
     }
 
     async fn inner_tail_inject(
@@ -11412,6 +12072,8 @@ impl<L: Tool + 'static> TracedTask<L> {
             Some(original) if original == (nr, args) => {
                 // The callback is cancelled next. Its final resume still owns
                 // execution of this original syscall; no second skip is due.
+                self.segv_resume_syscall
+                    .store(nr as u64 + 1, Ordering::SeqCst);
                 Ok(Ok(0))
             }
             Some(_) => self.private_inject(task, nr, args).await,
