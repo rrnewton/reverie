@@ -3640,6 +3640,42 @@ async fn each_flip_of_sigtrap_reaches_the_remembered_disposition() {
     }
 }
 
+/// What an injected call reads of the thread's own signal state is what it
+/// reads natively. The guest reads its procfs `status` with a call the Tool
+/// injects (alone, after another injection, and after a private one) for each
+/// SIGTRAP state: `SigBlk` holds SIGTRAP exactly when the guest blocked it, and
+/// `SigIgn` and `SigCgt` name the action it set. A step shield that unblocked
+/// SIGTRAP for the injected call made a blocked SIGTRAP read as unblocked
+/// (<https://github.com/rrnewton/hermit/issues/4485>). In the tail
+/// configuration the read runs from its own seccomp stop, as a control.
+#[tokio::test(flavor = "current_thread")]
+async fn an_injected_read_of_status_sees_the_guests_own_sigtrap_mask() {
+    let runs = run_both_configurations("sigtrap_sigblk").await;
+    let mut expected = Vec::new();
+    for (state, ignored, caught, blocked) in [
+        ("ign-blocked", 1, 0, 1),
+        ("ign", 1, 0, 0),
+        ("handler-blocked", 0, 1, 1),
+        ("handler", 0, 1, 0),
+        ("dfl-blocked", 0, 0, 1),
+    ] {
+        for shape in ["inject", "two-injects", "private-call"] {
+            expected.push(format!(
+                "{state} {shape} SigBlk={blocked} SigIgn={ignored} SigCgt={caught} \
+                 blocked={blocked}"
+            ));
+        }
+    }
+    for run in &runs {
+        let lines: Vec<&str> = run
+            .report
+            .lines()
+            .filter(|line| line.contains(" SigBlk="))
+            .collect();
+        assert_eq!(lines, expected, "{}", run.report);
+    }
+}
+
 /// A caught, unblocked SIGTRAP needs no repair: no step can reset it, so a run
 /// through every handler shape makes no unstepped injection
 /// (`UNSTEPPED_INJECTIONS_FOR_TEST`) and keeps the handler.
