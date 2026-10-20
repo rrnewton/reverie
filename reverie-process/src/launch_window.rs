@@ -121,6 +121,7 @@ use std::cell::RefCell;
 use std::marker::PhantomData;
 use std::sync::Once;
 use std::sync::atomic::AtomicU32;
+use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
 
 /// Set while a launch holds the lock. The other bits count transient opens,
@@ -134,6 +135,12 @@ pub const OPEN_WAIT_LIMIT: std::time::Duration = std::time::Duration::from_milli
 static STATE: AtomicU32 = AtomicU32::new(0);
 
 static CHILD_RESET: Once = Once::new();
+
+/// Incremented in the child of every libc `fork` and every raw `clone`
+/// without `CLONE_VM` (`reset_in_child`), and never in the parent: per-thread
+/// state a parent cached can tell it now runs in another process
+/// ([`child_generation`]).
+static CHILD_GENERATION: AtomicU64 = AtomicU64::new(0);
 
 thread_local! {
     /// Transient opens this thread holds that `STATE` counts.
@@ -209,11 +216,23 @@ extern "C" fn reset_in_child() {
         });
     }
     STATE.store(held, Ordering::Relaxed);
+    CHILD_GENERATION.fetch_add(1, Ordering::Relaxed);
+}
+
+/// How many times this process's lineage has entered a child through a libc
+/// `fork` or a raw `clone` without `CLONE_VM`, counted from the first call to
+/// this function. Equal values on one thread mean it still runs in the
+/// process where it read the earlier one. The call registers the libc-fork
+/// handler, so a fork after it is always counted; a raw clone is counted by
+/// `clone.rs`, which calls the same reset in its child.
+pub fn child_generation() -> u64 {
+    register_child_reset();
+    CHILD_GENERATION.load(Ordering::Relaxed)
 }
 
 fn register_child_reset() {
     CHILD_RESET.call_once(|| {
-        // SAFETY: `reset_in_child` only touches an atomic and
+        // SAFETY: `reset_in_child` only touches atomics and
         // constant-initialized thread-locals, without allocating or freeing,
         // which is async-signal-safe: it touches `AFTER_GUARDS` only if the
         // thread already used it, and `mem::take` leaves an empty `Vec`, which
