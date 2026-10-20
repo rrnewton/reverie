@@ -294,6 +294,33 @@ mod tests {
         assert_eq!(stack.mapping_len, stack.guard_len + CHILD_STACK_SIZE);
     }
 
+    /// A raw clone child runs no `pthread_atfork` handler, so the callback
+    /// moves the child generation itself; the parent's stays where it was.
+    #[test]
+    fn a_raw_clone_child_starts_a_new_child_generation() {
+        if crate::test_runs_in_own_process() {
+            return;
+        }
+        let before = crate::launch_window::child_generation();
+        let mut stack = child_stack().unwrap();
+        let pid = clone_with_stack(
+            || {
+                // An atomic load after the registration already ran: no
+                // allocation in the cloned child.
+                if crate::launch_window::child_generation() == before + 1 {
+                    42
+                } else {
+                    1
+                }
+            },
+            libc::SIGCHLD,
+            &mut stack,
+        )
+        .unwrap();
+        assert_eq!(wait(pid), WaitStatus::Exited(pid.into(), 42));
+        assert_eq!(crate::launch_window::child_generation(), before);
+    }
+
     #[test]
     fn child_keeps_its_stack_after_parent_unmaps() {
         if crate::test_runs_in_own_process() {
