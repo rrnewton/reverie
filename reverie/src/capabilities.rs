@@ -370,7 +370,7 @@ impl BackendCapabilities {
         needs_killed_thread_rpc_cancellation: true,
         process_exits_complete_asynchronously: true,
         runs_exit_robust_list: false,
-        supports_parked_write_signal_interruption: false,
+        supports_parked_write_signal_interruption: true, // PROTOTYPE 3c
         reports_child_exit_publication: false,
         // Its in-guest runtime gives the tool no siginfo.
         reports_kernel_child_exit_signals: false,

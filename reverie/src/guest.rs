@@ -1063,6 +1063,13 @@ pub trait Guest<T: Tool>: Send + GlobalRPC<T::GlobalState> {
         None
     }
 
+    /// PROTOTYPE 3c: the guest mask a backend's return to guest code will
+    /// install, where the kernel's mask for the thread is the backend's own
+    /// while the Tool runs (in-guest). `None` elsewhere.
+    fn prototype_saved_guest_mask(&self) -> Option<u64> {
+        None
+    }
+
     /// Returns half-open guest address ranges, `(start, end)`, that together
     /// contain every address at which a syscall could store its output into
     /// guest memory, as Linux's `put_user` does for `time(2)`'s `tloc`.
@@ -1401,6 +1408,10 @@ where
 
     fn take_unsupported_refusal(&mut self) -> Option<crate::UnsupportedRefusal> {
         self.inner.take_unsupported_refusal()
+    }
+
+    fn prototype_saved_guest_mask(&self) -> Option<u64> {
+        self.inner.prototype_saved_guest_mask()
     }
 
     fn storable_memory_ranges(&self) -> Result<Vec<(u64, u64)>, crate::Error> {

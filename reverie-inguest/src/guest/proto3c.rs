@@ -377,3 +377,8 @@ pub fn restart_table(result: i64) -> i64 {
         eintr
     }
 }
+
+/// Prototype instrumentation: one fixed line on stderr.
+pub fn note_text(text: &[u8]) {
+    unsafe { raw_syscall6(libc::SYS_write, [2, text.as_ptr() as u64, text.len() as u64, 0, 0, 0]) };
+}
