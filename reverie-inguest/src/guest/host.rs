@@ -3155,6 +3155,10 @@ impl<'a, T: Tool, R: HostRuntime> Guest<T> for InGuest<'a, T, R> {
 
     async fn daemonize(&mut self) {}
 
+    fn prototype_saved_guest_mask(&self) -> Option<u64> {
+        super::continuation::proto_guest_mask()
+    }
+
     fn take_unsupported_refusal(&mut self) -> Option<reverie::UnsupportedRefusal> {
         self.unsupported_refusal.take()
     }
