@@ -1384,7 +1384,7 @@ fn execute_basic_syscall_inner(
         // AUTONOMOUS-BOT-IMPLEMENTED
         personality(state, args[0])
     } else if number == libc::SYS_uname as u64 {
-        uname(&mut ProviderMemory(memory), state, args[0])
+        uname(&mut ProviderMemory(memory), args[0])
     } else if number == libc::SYS_rt_sigaction as u64 {
         rt_sigaction(memory, state, args)
     } else if number == libc::SYS_rt_sigprocmask as u64 {
@@ -16735,8 +16735,6 @@ fn fstatat_impl(
             .flatten();
         if let Some(inode) = empty_path_proc_inode {
             sanitize_proc_stat(&mut stat, inode);
-        } else {
-            sanitize_host_stat_timestamps(state, &mut stat);
         }
     }
     if executable.is_some() {
@@ -16945,8 +16943,6 @@ fn statx(
     let mut stat = unsafe { stat.assume_init() };
     if let Some(fd) = descriptor {
         sanitize_guest_fd_statx(state, fd, &mut stat);
-    } else {
-        sanitize_host_statx_timestamps(state, &mut stat);
     }
     write_struct(&mut ProviderMemory(memory), args[4], &stat)
 }
@@ -16981,27 +16977,6 @@ fn set_statx_timestamps(stat: &mut libc::statx, seconds: libc::time_t) {
     ] {
         timestamp.tv_sec = seconds;
         timestamp.tv_nsec = 0;
-    }
-}
-
-// AUTONOMOUS-BOT-IMPLEMENTED
-// TODO-HUMAN-REVIEW(https://github.com/rrnewton/reverie/issues/924):
-// Review host metadata timestamps for Tool runs.
-/// Sets the timestamps of a `stat` result read from a real host file or
-/// descriptor. A run that reports host metadata timestamps keeps the kernel's
-/// values: its Tool rewrites every timestamp the guest sees, and needs the
-/// stored values for its own lookups, such as confirming that `utimensat`
-/// stored the requested mtime. Every other run gets the fixed timestamp.
-fn sanitize_host_stat_timestamps(state: &LoadedStaticElf, stat: &mut libc::stat) {
-    if !state.host_metadata_timestamps {
-        sanitize_stat_timestamps(stat);
-    }
-}
-
-/// The `statx` form of [`sanitize_host_stat_timestamps`].
-fn sanitize_host_statx_timestamps(state: &LoadedStaticElf, stat: &mut libc::statx) {
-    if !state.host_metadata_timestamps {
-        sanitize_statx_timestamps(stat);
     }
 }
 
@@ -17048,36 +17023,11 @@ fn fstatfs_host(memory: &mut GuestMemory, host_fd: RawFd, output: u64) -> i64 {
         return io_error(std::io::Error::last_os_error());
     }
     // SAFETY: fstatfs initialized stat on success.
-    let mut stat = unsafe { stat.assume_init() };
-    // AUTONOMOUS-BOT-IMPLEMENTED
-    // TODO-HUMAN-REVIEW(PR-225): the raw host statfs leaks
-    // nondeterministic values (free blocks/inodes drift as the host disk is
-    // written, and f_fsid identifies the host filesystem), which breaks
-    // --verify for any statfs consumer (df, tar, stat -f). Canonicalize the
-    // host-varying fields exactly as the ptrace/detcore backend does in
-    // detcore/src/syscalls/files.rs::canonicalize_statfs_buf, so both statfs()
-    // and fstatfs() present the same stable, deterministic view.
-    canonicalize_statfs(&mut stat);
+    let stat = unsafe { stat.assume_init() };
+    // The host's answer, as the kernel gives it to a ptrace guest. The Tool
+    // decides what the guest sees: Detcore canonicalizes the free counts and
+    // zeroes `f_fsid` (`canonicalize_statfs_buf`) on every backend.
     write_struct(&mut ProviderMemory(memory), output, &stat)
-}
-
-// AUTONOMOUS-BOT-IMPLEMENTED
-// TODO-HUMAN-REVIEW(PR-225): mirror of detcore's statfs canonicalization
-// (FREE_BLOCKS_CAP / FREE_INODES_CAP, clamp free to totals, zero f_fsid) so
-// the KVM backend matches ptrace L2 determinism for statfs.
-fn canonicalize_statfs(sf: &mut libc::statfs) {
-    const FREE_BLOCKS_CAP: libc::fsblkcnt_t = 1_000_000;
-    const FREE_INODES_CAP: libc::fsfilcnt_t = 500_000;
-    let free_blocks = FREE_BLOCKS_CAP.min(sf.f_blocks);
-    sf.f_bfree = free_blocks;
-    sf.f_bavail = free_blocks;
-    sf.f_ffree = if sf.f_files == 0 {
-        0
-    } else {
-        FREE_INODES_CAP.min(sf.f_files)
-    };
-    // SAFETY: libc::fsid_t is a plain integer-array POD; zeroing it is valid.
-    sf.f_fsid = unsafe { std::mem::zeroed() };
 }
 
 fn access(memory: &GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) -> i64 {
@@ -18468,9 +18418,8 @@ fn sanitize_guest_fd_stat(state: &LoadedStaticElf, guest_fd: libc::c_int, stat: 
         sanitize_stat_timestamps(stat);
         return;
     }
-    match synthetic_descriptor_seconds(state, guest_fd) {
-        Some(seconds) => set_stat_timestamps(stat, seconds),
-        None => sanitize_host_stat_timestamps(state, stat),
+    if let Some(seconds) = synthetic_descriptor_seconds(state, guest_fd) {
+        set_stat_timestamps(stat, seconds);
     }
 }
 
@@ -18496,9 +18445,8 @@ fn sanitize_guest_fd_statx(state: &LoadedStaticElf, guest_fd: libc::c_int, stat:
         sanitize_statx_timestamps(stat);
         return;
     }
-    match synthetic_descriptor_seconds(state, guest_fd) {
-        Some(seconds) => set_statx_timestamps(stat, seconds),
-        None => sanitize_host_statx_timestamps(state, stat),
+    if let Some(seconds) = synthetic_descriptor_seconds(state, guest_fd) {
+        set_statx_timestamps(stat, seconds);
     }
 }
 
@@ -18508,7 +18456,8 @@ fn sanitize_guest_fd_statx(state: &LoadedStaticElf, guest_fd: libc::c_int, stat:
 /// The fixed timestamp that `guest_fd` reports in a run that reports host
 /// metadata timestamps, because its host times are those of a carrier the
 /// backend made rather than of any guest-visible object. `None` means a real
-/// host object, or a run that reports only fixed timestamps.
+/// host object, or a run with that setting off, and the descriptor reports
+/// the kernel's timestamps.
 ///
 /// A virtual file and a `/proc` snapshot are classified by their identity,
 /// which every alias shares. The virtual signalfd's private eventfd and the
@@ -21151,6 +21100,10 @@ fn personality(state: &mut LoadedStaticElf, raw: u64) -> i64 {
     }
     // Other execution domains or address-layout changes are not implemented.
     // Refuse before publishing state rather than reporting a flag with no effect.
+    // UNAME26 is kept and reported: its one effect in Linux is the release
+    // `uname` reports, which the Tool decides (Detcore replaces the release on
+    // every backend, ptrace's included). A run without a Tool sees the host's
+    // release.
     if requested & !PERSONALITY_UNAME26 != crate::elf::LINUX_FIXED_PERSONALITY {
         return negative_errno(libc::ENOSYS);
     }
@@ -21158,64 +21111,17 @@ fn personality(state: &mut LoadedStaticElf, raw: u64) -> i64 {
     i64::from(previous)
 }
 
-/// `uname(2)` from the host, with Linux's UNAME26 rule applied to the
-/// release when the guest set that personality (which this backend keeps
-/// itself): `override_release` reports `2.6.<60 + minor>` followed by the
-/// rest of the release. Detcore answers the kernel fields itself and passes
-/// the rest (`machine`, and `nodename` and `domainname` in a UTS namespace)
-/// through.
-fn uname<M: GuestMemoryAccess<Error = crate::Error>>(
-    memory: &mut M,
-    state: &LoadedStaticElf,
-    address: u64,
-) -> i64 {
+/// `uname(2)` from the host. Detcore answers the kernel fields itself
+/// (`sysname`, `release` and `version`, so a guest's UNAME26 personality
+/// never shows) and passes the rest (`machine`, and `nodename` and
+/// `domainname` in a UTS namespace) through.
+fn uname<M: GuestMemoryAccess<Error = crate::Error>>(memory: &mut M, address: u64) -> i64 {
     // SAFETY: zero is a valid utsname, and the pointer names a live one.
     let mut host = unsafe { std::mem::zeroed::<libc::utsname>() };
     if unsafe { libc::uname(&mut host) } != 0 {
         return io_error(std::io::Error::last_os_error());
     }
-    if state.linux_personality & PERSONALITY_UNAME26 != 0 {
-        host.release = uname26_release(&host.release);
-    }
     write_struct(memory, address, &host)
-}
-
-/// Linux's `override_release` for UNAME26: `2.6.<60 + patchlevel>` and then
-/// the release from its third dot or first character that is neither a
-/// digit nor a dot.
-fn uname26_release(release: &[libc::c_char; 65]) -> [libc::c_char; 65] {
-    let bytes: Vec<u8> = release
-        .iter()
-        .map(|&c| c as u8)
-        .take_while(|&b| b != 0)
-        .collect();
-    let mut dots = 0;
-    let mut rest = bytes.len();
-    for (index, &byte) in bytes.iter().enumerate() {
-        if byte == b'.' {
-            dots += 1;
-            if dots >= 3 {
-                rest = index;
-                break;
-            }
-        } else if !byte.is_ascii_digit() {
-            rest = index;
-            break;
-        }
-    }
-    let patchlevel: u32 = std::str::from_utf8(&bytes)
-        .ok()
-        .and_then(|text| text.split('.').nth(1))
-        .and_then(|minor| minor.parse().ok())
-        .unwrap_or(0);
-    let mut text = format!("2.6.{}", 60 + patchlevel).into_bytes();
-    text.extend_from_slice(&bytes[rest..]);
-    text.truncate(64);
-    let mut out = [0 as libc::c_char; 65];
-    for (slot, byte) in out.iter_mut().zip(text) {
-        *slot = byte as libc::c_char;
-    }
-    out
 }
 
 fn rt_sigaction(memory: &mut GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6]) -> i64 {
@@ -27287,13 +27193,6 @@ mod tests {
             assert_eq!((stat.st_dev, stat.st_ino), (expected.dev(), expected.ino()));
             assert_eq!(stat.st_mode, expected.mode());
             assert_eq!(stat.st_size, 8);
-            for timestamp in [stat.st_atime, stat.st_mtime, stat.st_ctime] {
-                assert_eq!(timestamp, DETERMINISTIC_METADATA_SECONDS);
-            }
-            assert_eq!(
-                (stat.st_atime_nsec, stat.st_mtime_nsec, stat.st_ctime_nsec),
-                (0, 0, 0)
-            );
 
             assert_eq!(
                 syscall_result(
@@ -27306,14 +27205,7 @@ mod tests {
                 "fstatfs fd={raw:#x}"
             );
             let stat: libc::statfs = read_struct(&memory, OUTPUT);
-            assert_eq!(stat.f_bfree, 1_000_000.min(stat.f_blocks));
-            assert_eq!(stat.f_bavail, stat.f_bfree);
-            assert_eq!(stat.f_ffree, 500_000.min(stat.f_files));
-            // SAFETY: fsid_t is two initialized integer words on this x86-64 backend.
-            assert_eq!(
-                unsafe { std::mem::transmute::<libc::fsid_t, [i32; 2]>(stat.f_fsid) },
-                [0, 0]
-            );
+            assert_forwarded_statfs(&stat, &path);
         }
         assert_eq!(
             state
@@ -27511,46 +27403,30 @@ mod tests {
         }
     }
 
-    // AUTONOMOUS-BOT-IMPLEMENTED
-    // TODO-HUMAN-REVIEW(PR-225): regression for statfs canonicalization,
-    // matching detcore's canonicalize_statfs_buf so KVM statfs/fstatfs is
-    // bitwise-deterministic across runs (df, tar, stat -f).
-    #[test]
-    fn canonicalize_statfs_zeroes_host_varying_fields() {
-        // A statfs whose free counts and fsid vary from run to run.
-        let mut sf: libc::statfs = unsafe { std::mem::zeroed() };
-        sf.f_blocks = 10_000_000;
-        sf.f_bfree = 7_123_456;
-        sf.f_bavail = 6_987_654;
-        sf.f_files = 2_000_000;
-        sf.f_ffree = 1_234_567;
-        sf.f_fsid = unsafe { std::mem::transmute::<[i32; 2], libc::fsid_t>([0x1234, 0x5678]) };
-
-        canonicalize_statfs(&mut sf);
-
-        // Free blocks are capped at 1_000_000 and clamped to the total.
-        assert_eq!(sf.f_bfree, 1_000_000);
-        assert_eq!(sf.f_bavail, 1_000_000);
-        // Free inodes are capped at 500_000 and clamped to the total.
-        assert_eq!(sf.f_ffree, 500_000);
-        // The filesystem identity is zeroed so it cannot leak host state.
-        assert_eq!(
-            unsafe { std::mem::transmute::<libc::fsid_t, [i32; 2]>(sf.f_fsid) },
-            [0, 0]
-        );
-        // Totals are untouched.
-        assert_eq!(sf.f_blocks, 10_000_000);
-        assert_eq!(sf.f_files, 2_000_000);
-
-        // Small totals clamp free values down to the total, and a zero inode
-        // total yields zero free inodes (never the cap).
-        let mut small: libc::statfs = unsafe { std::mem::zeroed() };
-        small.f_blocks = 42;
-        small.f_files = 0;
-        canonicalize_statfs(&mut small);
-        assert_eq!(small.f_bfree, 42);
-        assert_eq!(small.f_bavail, 42);
-        assert_eq!(small.f_ffree, 0);
+    /// `actual` is the host's statfs answer for `path`: the mount's geometry
+    /// and `f_fsid` are the host's (the Tool canonicalizes the free counts and
+    /// zeroes `f_fsid`), and the free counts, which move as the host writes,
+    /// are within the totals.
+    fn assert_forwarded_statfs(actual: &libc::statfs, path: &Path) {
+        let path = CString::new(path.as_os_str().as_bytes()).unwrap();
+        // SAFETY: zero is a valid statfs.
+        let mut host = unsafe { std::mem::zeroed::<libc::statfs>() };
+        // SAFETY: path is NUL-terminated and host is writable.
+        assert_eq!(unsafe { libc::statfs(path.as_ptr(), &mut host) }, 0);
+        let stable = |stat: &libc::statfs| {
+            // SAFETY: fsid_t is two initialized integer words on x86-64.
+            let fsid = unsafe { std::mem::transmute::<libc::fsid_t, [i32; 2]>(stat.f_fsid) };
+            (
+                stat.f_type,
+                stat.f_bsize,
+                stat.f_blocks,
+                stat.f_files,
+                stat.f_namelen,
+                fsid,
+            )
+        };
+        assert_eq!(stable(actual), stable(&host));
+        assert!(actual.f_bavail <= actual.f_bfree && actual.f_bfree <= actual.f_blocks);
     }
 
     #[test]
@@ -46604,7 +46480,7 @@ mod tests {
     }
 
     #[test]
-    fn host_metadata_timestamps_report_stored_times_for_host_files_only() {
+    fn host_files_report_stored_times_with_or_without_the_setting() {
         const PATH_ADDRESS: u64 = 0x100;
         const RANDOM_ADDRESS: u64 = 0x180;
         const EMPTY_ADDRESS: u64 = 0x1c0;
@@ -46619,7 +46495,7 @@ mod tests {
         let mut state = test_state(&root.0);
         assert!(
             !state.host_metadata_timestamps,
-            "fixed timestamps are the default"
+            "the setting is off by default"
         );
         state.host_metadata_timestamps = true;
         let mut memory = GuestMemory::new(0, 0x4000).unwrap();
@@ -46846,7 +46722,8 @@ mod tests {
             );
         }
 
-        // Without the setting the same host file reports the fixed timestamps.
+        // Without the setting the same host file reports the same stored
+        // timestamps: the executor leaves them to the Tool in every run.
         state.host_metadata_timestamps = false;
         assert_eq!(
             syscall_result(
@@ -46857,35 +46734,7 @@ mod tests {
             ),
             0
         );
-        let fixed: libc::stat = read_struct(&memory, STAT_ADDRESS);
-        for timestamp in [fixed.st_atime, fixed.st_mtime, fixed.st_ctime] {
-            assert_eq!(timestamp, DETERMINISTIC_METADATA_SECONDS);
-        }
-        assert_eq!(
-            syscall_result(
-                &mut memory,
-                &mut state,
-                libc::SYS_statx,
-                [
-                    libc::AT_FDCWD as u64,
-                    PATH_ADDRESS,
-                    0,
-                    statx_mask,
-                    STATX_ADDRESS,
-                    0,
-                ],
-            ),
-            0
-        );
-        let fixed_statx: libc::statx = read_struct(&memory, STATX_ADDRESS);
-        for timestamp in [
-            fixed_statx.stx_atime,
-            fixed_statx.stx_btime,
-            fixed_statx.stx_ctime,
-            fixed_statx.stx_mtime,
-        ] {
-            assert_eq!(timestamp.tv_sec, DETERMINISTIC_METADATA_SECONDS);
-        }
+        assert_host_stat(&read_struct(&memory, STAT_ADDRESS), "fstat, setting off");
     }
 
     #[test]
@@ -47599,139 +47448,129 @@ mod tests {
     fn host_metadata_timestamps_keep_received_proc_snapshots_at_the_epoch() {
         const SELF_MAPS_ADDRESS: u64 = 0x100;
 
-        for host_metadata_timestamps in [false, true] {
-            let root = TestDir::new();
-            let mut state = test_state(&root.0);
-            state.host_metadata_timestamps = host_metadata_timestamps;
-            // With the setting on, a synthetic /proc file reports the epoch
-            // through every alias, a received one included. With the setting
-            // off nothing changes: a received snapshot reports the fixed
-            // metadata time it has always reported.
-            let fixed = if host_metadata_timestamps {
-                0
-            } else {
-                DETERMINISTIC_METADATA_SECONDS
-            };
-            let setting = if host_metadata_timestamps {
-                "setting on"
-            } else {
-                "setting off"
-            };
-            let mut memory = GuestMemory::new(0, 0x4000).unwrap();
-            write_c_string(&mut memory, SELF_MAPS_ADDRESS, "/proc/self/maps");
-            let self_maps = syscall_result(
-                &mut memory,
-                &mut state,
-                libc::SYS_openat,
-                [
-                    libc::AT_FDCWD as u64,
-                    SELF_MAPS_ADDRESS,
-                    libc::O_RDONLY as u64,
-                    0,
-                    0,
-                    0,
-                ],
-            );
-            assert!(self_maps >= 0, "open /proc/self/maps failed: {self_maps}");
-            let self_maps = self_maps as libc::c_int;
-            let [sender, receiver] = guest_datagram_pair(&mut memory, &mut state);
+        let root = TestDir::new();
+        let mut state = test_state(&root.0);
+        state.host_metadata_timestamps = true;
+        // With the setting on, a synthetic /proc file reports the epoch
+        // through every alias, a received one included. With it off, a
+        // received snapshot is not classified and, like every host object,
+        // reports the kernel's timestamps, which the Tool decides about.
+        let fixed = 0;
+        let setting = "setting on";
+        let mut memory = GuestMemory::new(0, 0x4000).unwrap();
+        write_c_string(&mut memory, SELF_MAPS_ADDRESS, "/proc/self/maps");
+        let self_maps = syscall_result(
+            &mut memory,
+            &mut state,
+            libc::SYS_openat,
+            [
+                libc::AT_FDCWD as u64,
+                SELF_MAPS_ADDRESS,
+                libc::O_RDONLY as u64,
+                0,
+                0,
+                0,
+            ],
+        );
+        assert!(self_maps >= 0, "open /proc/self/maps failed: {self_maps}");
+        let self_maps = self_maps as libc::c_int;
+        let [sender, receiver] = guest_datagram_pair(&mut memory, &mut state);
 
-            // Received while the sender's descriptor is still open.
-            assert_eq!(
-                send_guest_rights(&mut memory, &mut state, sender, &[self_maps]),
-                1
-            );
-            let (result, _, received) =
-                receive_guest_rights(&mut memory, &mut state, receiver, RIGHTS_CONTROL_CAPACITY);
-            assert_eq!(result, 1);
-            assert_eq!(received.len(), 1);
-            assert_fixed_descriptor_timestamps(
-                &mut memory,
-                &mut state,
-                received[0],
-                fixed,
-                &format!("{setting}: /proc/self/maps received while the sender is open"),
-            );
-            let duplicate = syscall_result(
-                &mut memory,
-                &mut state,
-                libc::SYS_dup,
-                [received[0] as u64, 0, 0, 0, 0, 0],
-            );
-            assert!(duplicate >= 0, "dup failed: {duplicate}");
-            assert_fixed_descriptor_timestamps(
-                &mut memory,
-                &mut state,
-                duplicate as libc::c_int,
-                fixed,
-                &format!("{setting}: a dup of the received /proc/self/maps"),
-            );
+        // Received while the sender's descriptor is still open.
+        assert_eq!(
+            send_guest_rights(&mut memory, &mut state, sender, &[self_maps]),
+            1
+        );
+        let (result, _, received) =
+            receive_guest_rights(&mut memory, &mut state, receiver, RIGHTS_CONTROL_CAPACITY);
+        assert_eq!(result, 1);
+        assert_eq!(received.len(), 1);
+        assert_fixed_descriptor_timestamps(
+            &mut memory,
+            &mut state,
+            received[0],
+            fixed,
+            &format!("{setting}: /proc/self/maps received while the sender is open"),
+        );
+        let duplicate = syscall_result(
+            &mut memory,
+            &mut state,
+            libc::SYS_dup,
+            [received[0] as u64, 0, 0, 0, 0, 0],
+        );
+        assert!(duplicate >= 0, "dup failed: {duplicate}");
+        assert_fixed_descriptor_timestamps(
+            &mut memory,
+            &mut state,
+            duplicate as libc::c_int,
+            fixed,
+            &format!("{setting}: a dup of the received /proc/self/maps"),
+        );
 
-            // Received after every other descriptor for it has closed.
-            assert_eq!(
-                send_guest_rights(&mut memory, &mut state, sender, &[self_maps]),
-                1
-            );
-            for fd in [self_maps, received[0], duplicate as libc::c_int] {
-                guest_close(&mut memory, &mut state, fd);
-            }
-            let (result, _, late) =
-                receive_guest_rights(&mut memory, &mut state, receiver, RIGHTS_CONTROL_CAPACITY);
-            assert_eq!(result, 1);
-            assert_eq!(late.len(), 1);
-            assert_fixed_descriptor_timestamps(
-                &mut memory,
-                &mut state,
-                late[0],
-                fixed,
-                &format!("{setting}: /proc/self/maps received after the sender closed"),
-            );
-            let mut child = state.try_clone_for_fork(2).unwrap();
-            assert_fixed_descriptor_timestamps(
-                &mut memory,
-                &mut child,
-                late[0],
-                fixed,
-                &format!("{setting}: the received /proc/self/maps in a forked child"),
-            );
-
-            // An O_PATH snapshot cannot report its seals itself; received after
-            // its sender closed, it still reports the epoch.
-            let path_only = syscall_result(
-                &mut memory,
-                &mut state,
-                libc::SYS_openat,
-                [
-                    libc::AT_FDCWD as u64,
-                    SELF_MAPS_ADDRESS,
-                    (libc::O_PATH | libc::O_CLOEXEC) as u64,
-                    0,
-                    0,
-                    0,
-                ],
-            );
-            assert!(
-                path_only >= 0,
-                "O_PATH open /proc/self/maps failed: {path_only}"
-            );
-            let path_only = path_only as libc::c_int;
-            assert_eq!(
-                send_guest_rights(&mut memory, &mut state, sender, &[path_only]),
-                1
-            );
-            guest_close(&mut memory, &mut state, path_only);
-            let (result, _, received_path) =
-                receive_guest_rights(&mut memory, &mut state, receiver, RIGHTS_CONTROL_CAPACITY);
-            assert_eq!(result, 1);
-            assert_eq!(received_path.len(), 1);
-            assert_fixed_descriptor_timestamps(
-                &mut memory,
-                &mut state,
-                received_path[0],
-                fixed,
-                &format!("{setting}: an O_PATH /proc/self/maps received after the sender closed"),
-            );
+        // Received after every other descriptor for it has closed.
+        assert_eq!(
+            send_guest_rights(&mut memory, &mut state, sender, &[self_maps]),
+            1
+        );
+        for fd in [self_maps, received[0], duplicate as libc::c_int] {
+            guest_close(&mut memory, &mut state, fd);
         }
+        let (result, _, late) =
+            receive_guest_rights(&mut memory, &mut state, receiver, RIGHTS_CONTROL_CAPACITY);
+        assert_eq!(result, 1);
+        assert_eq!(late.len(), 1);
+        assert_fixed_descriptor_timestamps(
+            &mut memory,
+            &mut state,
+            late[0],
+            fixed,
+            &format!("{setting}: /proc/self/maps received after the sender closed"),
+        );
+        let mut child = state.try_clone_for_fork(2).unwrap();
+        assert_fixed_descriptor_timestamps(
+            &mut memory,
+            &mut child,
+            late[0],
+            fixed,
+            &format!("{setting}: the received /proc/self/maps in a forked child"),
+        );
+
+        // An O_PATH snapshot cannot report its seals itself; received after
+        // its sender closed, it still reports the epoch.
+        let path_only = syscall_result(
+            &mut memory,
+            &mut state,
+            libc::SYS_openat,
+            [
+                libc::AT_FDCWD as u64,
+                SELF_MAPS_ADDRESS,
+                (libc::O_PATH | libc::O_CLOEXEC) as u64,
+                0,
+                0,
+                0,
+            ],
+        );
+        assert!(
+            path_only >= 0,
+            "O_PATH open /proc/self/maps failed: {path_only}"
+        );
+        let path_only = path_only as libc::c_int;
+        assert_eq!(
+            send_guest_rights(&mut memory, &mut state, sender, &[path_only]),
+            1
+        );
+        guest_close(&mut memory, &mut state, path_only);
+        let (result, _, received_path) =
+            receive_guest_rights(&mut memory, &mut state, receiver, RIGHTS_CONTROL_CAPACITY);
+        assert_eq!(result, 1);
+        assert_eq!(received_path.len(), 1);
+        assert_fixed_descriptor_timestamps(
+            &mut memory,
+            &mut state,
+            received_path[0],
+            fixed,
+            &format!("{setting}: an O_PATH /proc/self/maps received after the sender closed"),
+        );
     }
 
     /// Asserts that `fd`, a duplicate of it, and both in a forked child report
@@ -48589,18 +48428,13 @@ mod tests {
             );
             let whole: libc::stat = read_struct(&memory, WHOLE_ADDRESS);
             assert_eq!(whole.st_ino, host.ino(), "the stat names the executable");
-            let expected = if host_metadata_timestamps {
-                (ATIME, MTIME)
-            } else {
-                (
-                    DETERMINISTIC_METADATA_SECONDS,
-                    DETERMINISTIC_METADATA_SECONDS,
-                )
-            };
-            assert_eq!((whole.st_atime, whole.st_mtime), expected);
+            assert_eq!((whole.st_atime, whole.st_mtime), (ATIME, MTIME));
 
             // A buffer that runs off the end of guest memory fails with EFAULT
-            // and keeps the prefix that fits, with only fixed timestamps in it.
+            // and keeps the prefix that fits. With the setting on, the prefix
+            // holds only fixed timestamps, because the Tool does not rewrite a
+            // failed call. With it off, the prefix is the kernel's answer, as
+            // Linux's partial copy leaves it.
             memory.write(STRADDLE_ADDRESS, &[0xa5; PREFIX]).unwrap();
             assert_eq!(
                 syscall_result(
@@ -48620,20 +48454,22 @@ mod tests {
             );
             let mut prefix = [0; PREFIX];
             memory.read(STRADDLE_ADDRESS, &mut prefix).unwrap();
-            let mut fixed = whole;
-            sanitize_stat_timestamps(&mut fixed);
+            let mut expected = whole;
+            if host_metadata_timestamps {
+                sanitize_stat_timestamps(&mut expected);
+            }
             // SAFETY: libc::stat is initialized plain data, viewed in place.
-            let fixed_bytes = unsafe {
+            let expected_bytes = unsafe {
                 std::slice::from_raw_parts(
-                    std::ptr::from_ref(&fixed).cast::<u8>(),
+                    std::ptr::from_ref(&expected).cast::<u8>(),
                     std::mem::size_of::<libc::stat>(),
                 )
             };
             assert_eq!(
                 prefix,
-                fixed_bytes[..PREFIX],
+                expected_bytes[..PREFIX],
                 "host_metadata_timestamps={host_metadata_timestamps}: the faulting copy \
-                 keeps the prefix, with fixed timestamps"
+                 keeps the prefix"
             );
         }
     }
@@ -48727,9 +48563,6 @@ mod tests {
         assert_eq!(file_stat.st_size, payload.len() as libc::off_t);
         assert_eq!(file_stat.st_mode & libc::S_IFMT, libc::S_IFREG);
         assert_eq!(file_stat.st_mode & 0o777, 0o600);
-        assert_eq!(file_stat.st_atime, DETERMINISTIC_METADATA_SECONDS);
-        assert_eq!(file_stat.st_mtime, DETERMINISTIC_METADATA_SECONDS);
-        assert_eq!(file_stat.st_ctime, DETERMINISTIC_METADATA_SECONDS);
         assert_eq!(
             syscall_result(
                 &mut memory,
@@ -48884,10 +48717,6 @@ mod tests {
         );
         let extended: libc::statx = read_struct(&memory, STAT_ADDRESS);
         assert_eq!(extended.stx_size, payload.len() as u64);
-        assert_eq!(extended.stx_atime.tv_sec, DETERMINISTIC_METADATA_SECONDS);
-        assert_eq!(extended.stx_btime.tv_sec, DETERMINISTIC_METADATA_SECONDS);
-        assert_eq!(extended.stx_ctime.tv_sec, DETERMINISTIC_METADATA_SECONDS);
-        assert_eq!(extended.stx_mtime.tv_sec, DETERMINISTIC_METADATA_SECONDS);
         assert_eq!(
             extended.stx_mask & libc::STATX_BASIC_STATS,
             libc::STATX_BASIC_STATS
