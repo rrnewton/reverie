@@ -98,6 +98,7 @@ use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicI32;
 use std::sync::atomic::AtomicPtr;
 use std::sync::atomic::AtomicU8;
+use std::sync::atomic::AtomicU64;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 #[cfg(test)]
@@ -796,6 +797,108 @@ pub(super) struct LegacyWaitOwner {
     // thread-self through the capture-time mount to authenticate the task
     // executing now without consulting a later absolute /proc overmount.
     proc_root: AlignedProcfs,
+    // The `owner_proof_token` of the one thread that last proved it is this
+    // owner, or 0. A live thread stays the task it is, so its successful
+    // proof stays true for this object; any other token proves again.
+    proven_by: AtomicU64,
+}
+
+static NEXT_OWNER_PROOF_TOKEN: AtomicU64 = AtomicU64::new(1);
+
+thread_local! {
+    // (fork epoch, token) issued to this thread; (0, 0) before any.
+    static OWNER_PROOF_TOKEN: std::cell::Cell<(u64, u64)> = const { std::cell::Cell::new((0, 0)) };
+}
+
+static NEXT_FORK_EPOCH: AtomicU64 = AtomicU64::new(1);
+
+/// The address of one page marked `MADV_WIPEONFORK`, or `None` where the
+/// kernel refuses that advice (before 4.14), which turns the proof cache off.
+static FORK_EPOCH_PAGE: OnceLock<Option<usize>> = OnceLock::new();
+
+#[cfg(test)]
+thread_local! {
+    // Per thread, so that it cannot leak into a test running beside it.
+    static FORK_EPOCH_UNAVAILABLE_FOR_TEST: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// This process's fork epoch: a nonzero value kept on a page the kernel
+/// zeroes in every child created without `CLONE_VM`, by libc `fork`, a direct
+/// `SYS_fork`, `clone` or `clone3` alike, before any of the child's code runs.
+/// A child therefore finds zero and takes a fresh epoch, unequal to every
+/// epoch of the parent (`NEXT_FORK_EPOCH` only grows), with no userspace hook
+/// to miss. `None` turns the cache off.
+fn fork_epoch() -> Option<u64> {
+    #[cfg(test)]
+    if FORK_EPOCH_UNAVAILABLE_FOR_TEST.with(std::cell::Cell::get) {
+        return None;
+    }
+    let page = (*FORK_EPOCH_PAGE.get_or_init(|| {
+        let size = 4096;
+        // SAFETY: a fresh private anonymous mapping, owned by this static for
+        // the life of the process.
+        let address = unsafe {
+            libc::mmap(
+                std::ptr::null_mut(),
+                size,
+                libc::PROT_READ | libc::PROT_WRITE,
+                libc::MAP_PRIVATE | libc::MAP_ANONYMOUS,
+                -1,
+                0,
+            )
+        };
+        if address == libc::MAP_FAILED {
+            return None;
+        }
+        // SAFETY: `address` is the mapping made above.
+        if unsafe { libc::madvise(address, size, libc::MADV_WIPEONFORK) } != 0 {
+            // SAFETY: as above; nothing else refers to it.
+            unsafe { libc::munmap(address, size) };
+            return None;
+        }
+        Some(address as usize)
+    }))?;
+    // SAFETY: the page is mapped for the life of the process and holds only
+    // this aligned atomic.
+    let epoch = unsafe { &*(page as *const AtomicU64) };
+    let current = epoch.load(Ordering::Acquire);
+    if current != 0 {
+        return Some(current);
+    }
+    let fresh = NEXT_FORK_EPOCH.fetch_add(1, Ordering::Relaxed);
+    Some(
+        match epoch.compare_exchange(0, fresh, Ordering::AcqRel, Ordering::Acquire) {
+            Ok(_) => fresh,
+            Err(installed) => installed,
+        },
+    )
+}
+
+/// The executing thread's token for `LegacyWaitOwner::is_current`'s proof
+/// cache, or `None` when the cache is off (`fork_epoch`).
+///
+/// A token is never reused in one process, so a thread that exits never
+/// shares its token with a later thread. The copy of a thread in a child
+/// created without `CLONE_VM` gets a fresh token: its fork epoch changed, and
+/// the copied counter issues only values above every token issued before the
+/// fork. So no proof cached in a copied owner object can match a task of the
+/// child, however the child was created.
+///
+/// A `CLONE_VM` child without `CLONE_SETTLS` (vfork) shares this thread's
+/// storage and memory, so it would share the token and cached proof. No
+/// tracer code runs Rust in such a child: a vfork child only execs, and
+/// `reverie-process` refuses `CLONE_VM` for its raw clones.
+fn owner_proof_token() -> Option<u64> {
+    let epoch = fork_epoch()?;
+    Some(OWNER_PROOF_TOKEN.with(|slot| {
+        let (issued_in, token) = slot.get();
+        if token != 0 && issued_in == epoch {
+            return token;
+        }
+        let token = NEXT_OWNER_PROOF_TOKEN.fetch_add(1, Ordering::Relaxed);
+        slot.set((epoch, token));
+        token
+    }))
 }
 
 /// The task selected before an initial numeric attachment. The raw ptrace
@@ -817,6 +920,7 @@ thread_local! {
     static ATTACHMENT_CAPTURE_HOOK: std::cell::RefCell<Option<AttachmentCaptureHook>> = const { std::cell::RefCell::new(None) };
     static PTRACER_OWNER_CAPTURES: Cell<usize> = const { Cell::new(0) };
     static PTRACER_HOST_PROOFS: Cell<usize> = const { Cell::new(0) };
+    static OWNER_PROOFS_REUSED: Cell<usize> = const { Cell::new(0) };
     static PTRACER_ATTACHMENT_STATUS_READS: Cell<usize> = const { Cell::new(0) };
 }
 
@@ -889,6 +993,7 @@ impl LegacyWaitOwner {
             force_directory_proof: AtomicBool::new(false),
             directory_key,
             proc_root: root,
+            proven_by: AtomicU64::new(0),
         })
     }
 
@@ -900,11 +1005,36 @@ impl LegacyWaitOwner {
         }
     }
 
+    /// Whether the executing thread is this owner's task. Only identity is
+    /// proved here: attachment and wait authority are checked separately
+    /// (`current_tracer_pid`, `authenticates_wait_role`) and are never
+    /// cached. A thread that proved it is the owner reuses that answer for
+    /// this object (`proven_by`); it cannot stop being the task it is while it
+    /// runs. A refusal is never cached, so every other thread, and the copy of
+    /// a thread in a child created by any fork or raw clone, proves again
+    /// (`owner_proof_token`).
     pub(super) fn is_current(&self) -> Result<bool, Errno> {
         #[cfg(test)]
         let use_descriptor = !self.force_directory_proof.load(Ordering::Relaxed);
         #[cfg(not(test))]
         let use_descriptor = true;
+        let token = owner_proof_token();
+        if use_descriptor
+            && let Some(token) = token
+            && self.proven_by.load(Ordering::Acquire) == token
+        {
+            #[cfg(test)]
+            OWNER_PROOFS_REUSED.with(|reused| reused.set(reused.get() + 1));
+            return Ok(true);
+        }
+        let current = self.prove_current(use_descriptor)?;
+        if current && let Some(token) = token {
+            self.proven_by.store(token, Ordering::Release);
+        }
+        Ok(current)
+    }
+
+    fn prove_current(&self, use_descriptor: bool) -> Result<bool, Errno> {
         if use_descriptor
             && self
                 .self_signal_fd
@@ -16433,5 +16563,182 @@ mod test {
     #[test]
     fn registry_rejects_projected_pid_reuse_without_user_namespaces() {
         assert_projected_registry_reuse_rejected();
+    }
+
+    fn reused_owner_proofs() -> usize {
+        OWNER_PROOFS_REUSED.with(Cell::get)
+    }
+
+    /// The thread that proved it is an owner reuses that answer for the same
+    /// owner object, without the signal-0 proof.
+    #[test]
+    fn the_owner_thread_reuses_its_proof() {
+        let owner = LegacyWaitOwner::capture_current().unwrap();
+        let before = reused_owner_proofs();
+        assert_eq!(owner.is_current(), Ok(true));
+        assert_eq!(reused_owner_proofs(), before, "the first call proves");
+        assert_eq!(owner.is_current(), Ok(true));
+        assert_eq!(owner.is_current(), Ok(true));
+        assert_eq!(reused_owner_proofs(), before + 2);
+    }
+
+    /// Another thread asking about the same owner proves again and is
+    /// refused, each time; the owner thread's answer is unchanged.
+    #[test]
+    fn another_thread_never_reuses_the_owners_proof() {
+        let owner = Arc::new(LegacyWaitOwner::capture_current().unwrap());
+        assert_eq!(owner.is_current(), Ok(true));
+        let other = Arc::clone(&owner);
+        let (answers, reused) = std::thread::spawn(move || {
+            let before = reused_owner_proofs();
+            // Twice: a refusal is never cached, so neither call is reused.
+            let answers = [other.is_current(), other.is_current()];
+            (answers, reused_owner_proofs() - before)
+        })
+        .join()
+        .unwrap();
+        assert_eq!(answers, [Ok(false), Ok(false)]);
+        assert_eq!(reused, 0);
+        assert_eq!(owner.is_current(), Ok(true));
+    }
+
+    /// A proof belongs to the owner object it was made for: a second owner
+    /// object captured by the same thread starts unproven. What the cache
+    /// records, "this thread is the owner's task", does not depend on the
+    /// tracee or the attachment; those are checked separately and uncached
+    /// (`current_tracer_pid`, `authenticates_wait_role`). This test captures
+    /// two independent owners; it does not exercise a detach, a re-attach or a
+    /// real pid reuse.
+    #[test]
+    fn a_new_owner_object_starts_unproven() {
+        let first = LegacyWaitOwner::capture_current().unwrap();
+        assert_eq!(first.is_current(), Ok(true));
+        assert_eq!(first.is_current(), Ok(true));
+        let second = LegacyWaitOwner::capture_current().unwrap();
+        let before = reused_owner_proofs();
+        assert_eq!(second.is_current(), Ok(true));
+        assert_eq!(reused_owner_proofs(), before, "the new owner proves");
+    }
+
+    /// A thread that exits takes its token with it: a later thread, even one
+    /// that the kernel gives the same numeric tid, never matches the proof
+    /// the exited thread cached.
+    #[test]
+    fn an_exited_owner_threads_proof_is_never_reused() {
+        let owner = std::thread::spawn(|| {
+            let owner = Arc::new(LegacyWaitOwner::capture_current().unwrap());
+            assert_eq!(owner.is_current(), Ok(true));
+            assert_eq!(owner.is_current(), Ok(true));
+            owner
+        })
+        .join()
+        .unwrap();
+        for _ in 0..4 {
+            let owner = Arc::clone(&owner);
+            let (answer, reused) = std::thread::spawn(move || {
+                let before = reused_owner_proofs();
+                let answer = owner.is_current();
+                (answer, reused_owner_proofs() - before)
+            })
+            .join()
+            .unwrap();
+            assert_eq!(answer, Ok(false));
+            assert_eq!(reused, 0);
+        }
+    }
+
+    /// The copy of the owner thread in a libc-forked child is another task:
+    /// it gets a fresh token and proves again, and is refused, although the
+    /// copied owner object holds the parent thread's proof.
+    #[test]
+    fn a_forked_child_never_reuses_its_parents_proof() {
+        let owner = LegacyWaitOwner::capture_current().unwrap();
+        assert_eq!(owner.is_current(), Ok(true));
+        assert_eq!(owner.is_current(), Ok(true));
+        match unsafe { fork() }.unwrap() {
+            ForkResult::Child => {
+                let before = reused_owner_proofs();
+                let answer = owner.is_current();
+                let code = match (answer, reused_owner_proofs() - before) {
+                    (Ok(false), 0) => 0,
+                    (Ok(true), _) => 1,
+                    (_, reused) if reused > 0 => 2,
+                    _ => 3,
+                };
+                unsafe { libc::_exit(code) };
+            }
+            ForkResult::Parent { child } => {
+                let status = nix::sys::wait::waitpid(child, None).unwrap();
+                assert_eq!(status, WaitStatus::Exited(child, 0));
+            }
+        }
+        assert_eq!(owner.is_current(), Ok(true));
+    }
+
+    /// A warmed guard copied into a child made by a direct fork or clone
+    /// syscall, which runs no libc or Reverie fork hook, is refused there:
+    /// the kernel wiped the fork-epoch page, so the child's token is fresh.
+    /// The parent's guard keeps its capability.
+    fn raw_child_refuses_a_warmed_guard(raw_fork: impl FnOnce() -> libc::c_long) {
+        let guard =
+            PtracerThreadGuard::from_owner(Arc::new(LegacyWaitOwner::capture_current().unwrap()));
+        assert_eq!(guard.check_current(), Ok(()));
+        assert_eq!(guard.check_current(), Ok(()));
+        let child = raw_fork();
+        if child == 0 {
+            let before = reused_owner_proofs();
+            let answer = guard.check_current();
+            let code = match (answer, reused_owner_proofs() - before) {
+                (Err(Errno::EPERM), 0) => 0,
+                (Ok(()), _) => 1,
+                (_, reused) if reused > 0 => 2,
+                _ => 3,
+            };
+            unsafe { libc::_exit(code) };
+        }
+        assert!(child > 0, "raw fork failed: {}", Errno::last());
+        let child = Pid::from_raw(child as i32);
+        let status = nix::sys::wait::waitpid(child, None).unwrap();
+        assert_eq!(status, WaitStatus::Exited(child, 0));
+        let before = reused_owner_proofs();
+        assert_eq!(guard.check_current(), Ok(()));
+        assert_eq!(
+            reused_owner_proofs(),
+            before + 1,
+            "the parent keeps its proof"
+        );
+    }
+
+    #[test]
+    fn a_raw_sys_fork_child_never_reuses_its_parents_proof() {
+        raw_child_refuses_a_warmed_guard(|| unsafe { libc::syscall(libc::SYS_fork) });
+    }
+
+    #[test]
+    fn a_raw_clone_child_never_reuses_its_parents_proof() {
+        raw_child_refuses_a_warmed_guard(|| unsafe {
+            libc::syscall(
+                libc::SYS_clone,
+                libc::SIGCHLD as libc::c_ulong,
+                0usize,
+                0usize,
+                0usize,
+                0usize,
+            )
+        });
+    }
+
+    /// Without a fork-epoch page (a kernel that refuses MADV_WIPEONFORK) the
+    /// cache is off: every call proves.
+    #[test]
+    fn without_a_fork_epoch_every_call_proves() {
+        let owner = LegacyWaitOwner::capture_current().unwrap();
+        FORK_EPOCH_UNAVAILABLE_FOR_TEST.with(|off| off.set(true));
+        let before = reused_owner_proofs();
+        let answers = [owner.is_current(), owner.is_current(), owner.is_current()];
+        let reused = reused_owner_proofs() - before;
+        FORK_EPOCH_UNAVAILABLE_FOR_TEST.with(|off| off.set(false));
+        assert_eq!(answers, [Ok(true), Ok(true), Ok(true)]);
+        assert_eq!(reused, 0);
     }
 }
