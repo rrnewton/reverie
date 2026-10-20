@@ -4461,27 +4461,27 @@ impl<L: Tool> TracedTask<L> {
     ) -> Result<(), TraceError> {
         task.setregs(regs)
     }
+}
 
-    fn get_syscall(&self, task: &Stopped) -> Result<Syscall, TraceError> {
-        let regs = task.getregs()?;
-        // A checked decode: the filter traces only numbers the syscall table
-        // knows, so an unknown number here is an error, never a panic.
-        let nr = Sysno::new(regs.orig_syscall() as i32 as usize).ok_or(Errno::ENOSYS)?;
+/// The syscall a seccomp stop's registers name.
+fn syscall_from_regs(regs: &libc::user_regs_struct) -> Result<Syscall, TraceError> {
+    // A checked decode: the filter traces only numbers the syscall table
+    // knows, so an unknown number here is an error, never a panic.
+    let nr = Sysno::new(regs.orig_syscall() as i32 as usize).ok_or(Errno::ENOSYS)?;
 
-        let args = regs.args();
+    let args = regs.args();
 
-        Ok(Syscall::from_raw(
-            nr,
-            SyscallArgs::new(
-                args.0 as usize,
-                args.1 as usize,
-                args.2 as usize,
-                args.3 as usize,
-                args.4 as usize,
-                args.5 as usize,
-            ),
-        ))
-    }
+    Ok(Syscall::from_raw(
+        nr,
+        SyscallArgs::new(
+            args.0 as usize,
+            args.1 as usize,
+            args.2 as usize,
+            args.3 as usize,
+            args.4 as usize,
+            args.5 as usize,
+        ),
+    ))
 }
 
 fn set_ret(task: &Stopped, ret: Reg) -> Result<Reg, TraceError> {
@@ -4674,8 +4674,18 @@ fn restore_context(
     retval: Option<Reg>,
     restore_stack: bool,
 ) -> Result<(), TraceError> {
-    let mut regs = task.getregs()?;
+    restore_context_from(task, task.getregs()?, context, retval, restore_stack)
+}
 
+/// `restore_context` from `regs`, the stop's registers as already read in
+/// this stop, with no register write or resume since.
+fn restore_context_from(
+    task: &Stopped,
+    mut regs: libc::user_regs_struct,
+    context: libc::user_regs_struct,
+    retval: Option<Reg>,
+    restore_stack: bool,
+) -> Result<(), TraceError> {
     if let Some(ret) = retval {
         *regs.ret_mut() = ret;
     }
@@ -7242,9 +7252,13 @@ impl<L: Tool + 'static> TracedTask<L> {
 
     async fn handle_seccomp(&mut self, mut task: Stopped) -> Result<Wait, Error> {
         let tid = self.tid();
-        let syscall = self
-            .get_syscall(&task)
+        // One read serves the stop's decode and its vsyscall check below:
+        // nothing between them writes the registers or resumes the thread.
+        let entry_regs = task
+            .getregs()
             .tracee_context(tid, "read registers at seccomp stop")?;
+        let syscall =
+            syscall_from_regs(&entry_regs).tracee_context(tid, "read registers at seccomp stop")?;
         let (nr, args) = syscall.into_parts();
         // Whatever this thread's own tracer filter state: a sibling sharing
         // the table may keep SIGTRAP.
@@ -7263,11 +7277,7 @@ impl<L: Tool + 'static> TracedTask<L> {
             return self.handle_unsubscribed_mapping_syscall(task).await;
         }
         #[cfg(target_arch = "x86_64")]
-        let is_legacy_vsyscall = is_legacy_vsyscall_ip(
-            task.getregs()
-                .tracee_context(tid, "identify legacy vsyscall stop")?
-                .ip(),
-        );
+        let is_legacy_vsyscall = is_legacy_vsyscall_ip(entry_regs.ip());
         #[cfg(not(target_arch = "x86_64"))]
         let is_legacy_vsyscall = false;
         // A SIGTRAP action that a Reverie trap reset is written back before
@@ -12006,7 +12016,12 @@ impl<L: Tool + 'static> TracedTask<L> {
                     Ok(Err(Errno::ERESTARTSYS))
                 }
                 event if let Some(sig) = event.signal() => {
-                    let mut regs = stopped.getregs()?;
+                    // The stop's registers as the kernel holds them. `regs`
+                    // below is edited locally; nothing writes the registers
+                    // or resumes the thread before `restore_context_from`
+                    // uses this copy.
+                    let stop_regs = stopped.getregs()?;
+                    let mut regs = stop_regs;
                     // NB: it is possible to get interrupted by signal (such as
                     // SIGCHLD) before single step finishes, while RIP still
                     // points at the private page.
@@ -12092,7 +12107,7 @@ impl<L: Tool + 'static> TracedTask<L> {
                             // block rather than replacing it.
                             let retval = self.in_held_signal_callback.then(|| context.ret());
                             if retval.is_some() {
-                                let injection = stopped.getregs()?;
+                                let injection = stop_regs;
                                 if Errno::from_ret(injection.ret() as usize)
                                     == Err(Errno::ERESTART_RESTARTBLOCK)
                                     && injection.orig_syscall() as i64
@@ -12103,7 +12118,7 @@ impl<L: Tool + 'static> TracedTask<L> {
                             }
                             let retval = retval
                                 .and_then(|ret| self.signal_callback_guest_ret(&context, ret));
-                            restore_context(&stopped, context, retval, false)?;
+                            restore_context_from(&stopped, stop_regs, context, retval, false)?;
                         }
                     }
                     Ok(result)
