@@ -1,9 +1,13 @@
 [package]
 name = "reverie-loader"
 description = "Hermit's in-guest loader: validation of the fixed-address loader and runtime images, and the loader's initialization stages."
-version = "0.4.1"
+version = "0.5.0"
 authors = ["Meta Platforms"]
 edition = "2024"
 repository = "https://github.com/facebookexperimental/reverie"
 license = "BSD-2-Clause"
-publish = false
+readme = "README.md"
+homepage = "https://hermetic-infra.org"
+documentation = "https://docs.rs/reverie-loader"
+keywords = ["linux", "instrumentation", "hermit"]
+categories = ["development-tools::debugging", "os::linux-apis"]
