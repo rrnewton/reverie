@@ -297,6 +297,12 @@ where
         if let Some(driven) = classify_outcome(outcome) {
             return driven;
         }
+        // PROTOTYPE 3c (16.6): a caught signal is deliverable at this
+        // return, so the call ends here with ERESTARTSYS, and Linux's restart
+        // table decides it from the delivered handler's SA_RESTART (host).
+        if crate::guest::proto3c::caught_deliverable() {
+            return DrivenSyscall::Result(-512);
+        }
     }
 }
 

@@ -104,6 +104,11 @@ fn virtual_signal_call(
     number: i64,
     args: [u64; 6],
 ) -> Option<i64> {
+    // PROTOTYPE 3c: calls that read or change the blocked set work on the
+    // guest's mask, which the completion installs, not the runtime's.
+    if let Some(result) = unsafe { super::proto3c::mask_call(number, args) } {
+        return Some(result);
+    }
     let rights = super::sigalrm::GuestRights {
         pkru: guest_pkru,
         original_args,
@@ -710,6 +715,36 @@ where
             guest.event.result = -i64::from(libc::ENOSYS);
             return;
         };
+        if guest.event.number == libc::SYS_rt_sigreturn {
+            // PROTOTYPE 3c (M2): report the guest's rt_sigreturn to the Tool
+            // (record-only, no turn, as ptrace's handle_sigreturn), make the
+            // final read with the frame's mask, then complete it at the
+            // runtime restorer, its first and only execution.
+            let sp = super::continuation::proto_guest_stack_pointer().unwrap_or_else(|| fatal(126));
+            let frame = match super::proto3c::read_frame_mask(sp) {
+                Some(mask) => reverie::SigreturnFrame::Readable { mask },
+                None => reverie::SigreturnFrame::Unmapped,
+            };
+            super::proto3c::note_sigreturn(sp);
+            tool.handle_sigreturn(guest.state, reverie::SigreturnReport::new(tid, sp, frame));
+            if let reverie::SigreturnFrame::Readable { mask } = frame {
+                super::continuation::proto_set_guest_mask(mask);
+                if let Some(ending) = proto_announce_predicted(tool, &mut guest) {
+                    drop(guest);
+                    finish_ending(
+                        &mut tool_slot,
+                        &mut states,
+                        &self.rpc,
+                        &self.runtime,
+                        (tid, pid),
+                        ending,
+                    );
+                }
+            }
+            super::continuation::proto_set_reissue();
+            guest.event.result = libc::SYS_rt_sigreturn;
+            return;
+        }
         if !self.subscriptions.contains(&number) {
             let number = guest.event.number;
             let args = guest.event.args;
@@ -862,6 +897,24 @@ where
         match driven {
             DrivenSyscall::Result(value) => {
                 guest.event.result = value;
+                // PROTOTYPE 3c (16.6): Linux's restart table for a call that
+                // ended with ERESTARTSYS because a caught signal is delivered
+                // at this return (arch/x86/kernel/signal.c v6.12 260-282).
+                if value == -512 {
+                    guest.event.result = super::proto3c::restart_table(value);
+                }
+                // PROTOTYPE 3c: the final read before this completion.
+                if let Some(ending) = proto_announce_predicted(tool, &mut guest) {
+                    drop(guest);
+                    finish_ending(
+                        &mut tool_slot,
+                        &mut states,
+                        &self.rpc,
+                        &self.runtime,
+                        (tid, pid),
+                        ending,
+                    );
+                }
                 // Signals the Tool's handler sent the guest itself that would
                 // end its process (`InGuest::inject` staged them), now that
                 // the handler has run to its end, as a tracer delivers a
@@ -1424,6 +1477,45 @@ fn finish_ending<T: Tool, R: HostRuntime>(
 /// pending and blocked ([`send_blocked`]; SIGKILL is sent by
 /// [`die_by_pending_signal`]), so the caller can run the exit callbacks with
 /// nothing left that can fail but the unblock.
+/// PROTOTYPE 3c: the final-read loop at a syscall completion. Predicts the
+/// kernel's deliveries at this return, takes each new one's turn through the
+/// Tool's signal callback, and reads again until the prediction holds no
+/// delivery that has not had its callback; that read is the final one.
+fn proto_announce_predicted<T: Tool, R: HostRuntime>(
+    tool: &T,
+    guest: &mut InGuest<'_, T, R>,
+) -> Option<Ending> {
+    let tail = guest.tail;
+    let mut handled = 0u64;
+    for pass in 0..64 {
+        let mask = super::continuation::proto_guest_mask()?;
+        let prediction = super::proto3c::predict(mask);
+        let mut fresh = false;
+        for &sig in &prediction.caught[..prediction.len] {
+            let b = 1u64 << (sig - 1);
+            if handled & b != 0 {
+                continue;
+            }
+            fresh = true;
+            let shown = reverie::Signal::try_from(sig).unwrap_or_else(|_| fatal(126));
+            match callback_result(drive_callback(tool.handle_signal_event(guest, shown), tail)) {
+                Ok(Ok(Some(_))) => handled |= b,
+                Ok(Ok(None)) => super::proto3c::dequeue(sig),
+                Ok(Err(errno)) => tool_fatal(125, &Error::from(errno)),
+                Err(ending) => return Some(ending),
+            }
+        }
+        if !fresh {
+            if pass > 1 {
+                super::proto3c::note_passes(pass);
+            }
+            super::proto3c::report_final(&prediction);
+            return None;
+        }
+    }
+    None
+}
+
 fn deliver_staged_signals<T: Tool, R: HostRuntime>(
     tool: &T,
     guest: &mut InGuest<'_, T, R>,
