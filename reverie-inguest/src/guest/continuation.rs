@@ -315,6 +315,12 @@ struct Continuation {
     // intentionally has no mask; instruction callbacks need this fact too.
     #[cfg(all(feature = "loader-private-runtime", target_env = "musl"))]
     mapped_signal_mask: u64,
+    /// PROTOTYPE 3c: the guest's mask at the trap, installed by the completion.
+    guest_mask: u64,
+    /// PROTOTYPE 3c: complete at the runtime restorer (a guest rt_sigreturn).
+    reissue: bool,
+    /// PROTOTYPE 3c: the call restarts (SA_RESTART): resume at its `syscall`.
+    restart: bool,
     #[cfg(feature = "exec-native-injection")]
     native_exec_resume: Option<NativeExecResumeReceipt>,
     phase: Phase,
@@ -550,6 +556,9 @@ pub fn initialize_with_stack_backing(backing: StackBacking) -> io::Result<()> {
             generation: 0,
             #[cfg(all(feature = "loader-private-runtime", target_env = "musl"))]
             mapped_signal_mask: 0,
+            guest_mask: 0,
+            reissue: false,
+            restart: false,
             #[cfg(feature = "exec-native-injection")]
             native_exec_resume: None,
             phase: Phase::Idle,
@@ -710,6 +719,10 @@ fn prepare_signal_for(
             });
     }
     owner.phase = Phase::Captured;
+    // PROTOTYPE 3c (3c.0): keep the guest's mask for the completion and enter
+    // the continuation under the runtime mask.
+    owner.guest_mask = frame.signal_mask();
+    frame.set_signal_mask(super::proto3c::RUNTIME_MASK);
     frame.set_register(libc::REG_RSP as usize, (owner.stack.top & !15) as i64);
     frame.set_register(libc::REG_RDI as usize, pointer as i64);
     frame.set_register(
@@ -777,6 +790,49 @@ fn commit_context(owner: &mut Continuation, length: u64) -> Result<(), FrameErro
         .checked_add(length)
         .ok_or(FrameError)? as i64;
     Ok(())
+}
+
+/// PROTOTYPE 3c: the guest mask the running continuation's completion will
+/// install, while a callback runs on this thread.
+pub fn proto_guest_mask() -> Option<u64> {
+    let pointer = OWNER.get();
+    if pointer.is_null() || unsafe { (*pointer).phase } != Phase::Running {
+        return None;
+    }
+    Some(unsafe { (*pointer).guest_mask })
+}
+
+/// PROTOTYPE 3c: the guest's stack pointer at the trap.
+pub fn proto_guest_stack_pointer() -> Option<u64> {
+    let pointer = OWNER.get();
+    if pointer.is_null() || unsafe { (*pointer).phase } != Phase::Running {
+        return None;
+    }
+    Some(unsafe { (*pointer).context.stack_pointer })
+}
+
+/// PROTOTYPE 3c: complete this call at the runtime restorer's `syscall`.
+pub fn proto_set_reissue() {
+    let pointer = OWNER.get();
+    if !pointer.is_null() && unsafe { (*pointer).phase } == Phase::Running {
+        unsafe { (*pointer).reissue = true };
+    }
+}
+
+/// PROTOTYPE 3c: restart this call after the delivered handler returns.
+pub fn proto_set_restart() {
+    let pointer = OWNER.get();
+    if !pointer.is_null() && unsafe { (*pointer).phase } == Phase::Running {
+        unsafe { (*pointer).restart = true };
+    }
+}
+
+/// PROTOTYPE 3c: replace that mask.
+pub fn proto_set_guest_mask(mask: u64) {
+    let pointer = OWNER.get();
+    if !pointer.is_null() && unsafe { (*pointer).phase } == Phase::Running {
+        unsafe { (*pointer).guest_mask = mask };
+    }
 }
 
 /// The current handler prefix has already opened runtime permissions before
@@ -853,7 +909,12 @@ unsafe extern "C" fn dispatch(pointer: *mut Continuation) {
     }
     let owner = unsafe { &mut *pointer };
     let mut length = pending.kind.length();
-    if super::sigalrm::take_entry_delivery() {
+    if core::mem::take(&mut owner.restart) {
+        // PROTOTYPE 3c (16.6): Linux's restart (rax = the call number, rip -= 2):
+        // resume at the `syscall` instruction with the entry registers.
+        (owner.context.rax, owner.context.rcx, owner.context.r11) = entry;
+        length = 0;
+    } else if super::sigalrm::take_entry_delivery() {
         // The syscall did not run: resume at its `syscall` instruction with
         // its number and the guest's registers, so it runs from the start
         // after the delivered handler returns. Only a syscall can ask.
@@ -880,6 +941,17 @@ unsafe extern "C" fn dispatch(pointer: *mut Continuation) {
     {
         fatal()
     }
+    if owner.reissue {
+        // PROTOTYPE 3c (M2): resume at the restorer's `syscall` with rax 15
+        // (the handler's result) and the guest's registers otherwise.
+        let gate = crate::signal::signal_restorer_return_ip() - 2;
+        let r = &mut owner.saved.registers;
+        r[libc::REG_RIP as usize] = gate as i64;
+    }
+    // PROTOTYPE 3c (M4): from this stack, which is not the alternate one,
+    // switch the runtime's alternate stack off when the completion will
+    // deliver, and back on otherwise, before the completion marker traps.
+    super::proto3c::switch_alternate_stack(owner.guest_mask);
     owner.phase = Phase::ReadyToReturn;
 }
 
@@ -917,6 +989,14 @@ pub fn complete(frame: &mut SignalFrame<'_>) -> Result<bool, FrameError> {
     }
     let owner = unsafe { &mut *pointer };
     frame.restore(&owner.saved)?;
+    // PROTOTYPE 3c (3c.0): the completion installs the guest's mask, or the
+    // runtime mask for a guest rt_sigreturn completed at the restorer.
+    if owner.reissue {
+        owner.reissue = false;
+        frame.set_signal_mask(super::proto3c::RUNTIME_MASK);
+    } else {
+        frame.set_signal_mask(owner.guest_mask);
+    }
     // Signal phase 1: a prepared SIGALRM delivery opens its window here, so
     // the queued instance arrives as this frame returns, before any guest
     // instruction.
@@ -1292,6 +1372,9 @@ mod tests {
             generation: 0,
             #[cfg(all(feature = "loader-private-runtime", target_env = "musl"))]
             mapped_signal_mask: 0,
+            guest_mask: 0,
+            reissue: false,
+            restart: false,
             #[cfg(feature = "exec-native-injection")]
             native_exec_resume: None,
             phase: Phase::Idle,

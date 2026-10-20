@@ -425,7 +425,12 @@ pub unsafe fn dispatch_saved_syscall(
     // A site patched for another syscall (glibc's `syscall()` wrapper) can
     // carry the guest's own `rt_sigreturn` here without a trap; refuse it as
     // the SIGSYS handler does a trapped one.
-    if crate::trap::is_rt_sigreturn(event.number) && crate::trap::signal_return_restricted() {
+    // PROTOTYPE 3c (M2): a trapped one (the fallback continuation) goes on to
+    // the tool host, which reports it and completes it at the restorer.
+    if crate::trap::is_rt_sigreturn(event.number)
+        && crate::trap::signal_return_restricted()
+        && !matches!(dispatch, SyscallDispatch::Fallback)
+    {
         unsafe { crate::trap::refuse_guest_signal_return() };
     }
     // AUTONOMOUS-BOT-IMPLEMENTED

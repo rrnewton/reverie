@@ -156,7 +156,8 @@ pub unsafe fn install_runtime_handler(
         handler: handler as *const () as u64,
         flags: (libc::SA_SIGINFO | SA_RESTORER | extra_flags) as u64,
         restorer: signal_restorer(),
-        mask: 0,
+        // PROTOTYPE 3c (3c.0): the runtime mask while a runtime handler runs.
+        mask: if signal == libc::SIGSYS { crate::guest::proto3c::RUNTIME_MASK } else { 0 },
     };
     unsafe { raw_sigaction(signal, Some(&action), None) }.map_err(io::Error::from_raw_os_error)
 }

@@ -591,9 +591,9 @@ pub(crate) unsafe extern "C" fn sigsys_handler(
     };
     // The filter traps `rt_sigreturn` only when it admits it at the
     // runtime's restorer alone, so a trapped one is never the runtime's.
-    if is_rt_sigreturn(frame.register(libc::REG_RAX as usize)) {
-        unsafe { refuse_guest_signal_return() };
-    }
+    // PROTOTYPE 3c (M2): a trapped guest rt_sigreturn goes through the
+    // normal dispatch; the tool host reports it and completes it at the
+    // runtime restorer (`proto3c`).
     if dispatcher().is_some_and(|dispatcher| dispatcher.dispatch_private_signal(&mut frame)) {
         IN_HANDLER.set(false);
         return;

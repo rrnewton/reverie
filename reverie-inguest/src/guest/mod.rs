@@ -41,6 +41,8 @@ pub mod native_exec_mappings;
 #[cfg(feature = "coordinator-rpc")]
 pub mod patcher;
 pub mod protect;
+/// PROTOTYPE 3c (throwaway, branch signals/proto-3c).
+pub mod proto3c;
 pub mod restorer;
 #[cfg(feature = "coordinator-rpc")]
 pub mod rpc;

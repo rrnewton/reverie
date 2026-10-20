@@ -141,6 +141,11 @@ pub fn signal_action_supported(number: i64, args: [u64; 6]) -> bool {
     if signal == libc::SIGSYS || (signal == libc::SIGSEGV && any_instruction_subscribed()) {
         return false;
     }
+    // PROTOTYPE 3c: admit guest handlers (deliveries come at completions,
+    // under the runtime mask everywhere else).
+    if signal != libc::SIGALRM {
+        return true;
+    }
 
     let mut handler = 0_u64;
     let local = libc::iovec {
