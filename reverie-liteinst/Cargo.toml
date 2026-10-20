@@ -1,6 +1,8 @@
 [package]
 name = "reverie-liteinst"
 version = "0.5.0"
+# This backend requires an unpublished liteinst2 API; build it from source.
+publish = false
 authors = ["Meta Platforms"]
 edition = "2024"
 repository = "https://github.com/facebookexperimental/reverie"
@@ -33,9 +35,11 @@ exec-private-init = ["fixed-syscall-gates", "reverie-inguest/exec-private-init"]
 native-exec-state = ["exec-private-init", "reverie-inguest/native-exec-state"]
 # Inactive explicit successor installer; ordinary entry points stay unchanged.
 exec-private-successor = ["exec-private-init", "native-exec-state", "reverie-inguest/exec-private-successor"]
-# Explicit authenticated driver installation; no constructor or environment activation.
-exec-native-injection = ["exec-private-successor", "reverie-inguest/exec-native-injection"]
+# Native injection is unavailable on the 0.5.0 release branch.
 
+[lints.rust]
+# Recognize retained native-injection source without exposing a Cargo feature.
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(feature, values("exec-native-injection"))'] }
 
 [[bin]]
 name = "reverie-liteinst-allocator-host-control"

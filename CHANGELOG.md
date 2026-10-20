@@ -63,10 +63,21 @@ replay mode.
   `nostd-print` private because its registry name belongs to another project.
   Publish the dependency-free `reverie-loader` support crate so
   `reverie-inguest`'s existing optional launch mechanics resolve from crates.io.
-  The DynamoRIO, e9patch and SaBRe implementation crates and their dedicated
-  tools remain source-only. `reverie-sabre-stats` contains the shared Rust
-  statistics ABI, not the SaBRe third-party runtime. Generated Cargo manifests
-  must be synchronized with their internal autocargo source before re-export.
+  The DynamoRIO, e9patch, SaBRe and LiteInst implementation crates, preload
+  leaves, and their dedicated tools remain source-only. LiteInst requires an
+  API in its pinned source dependency that is not yet on crates.io.
+  `reverie-sabre-stats` contains the shared Rust statistics ABI, not the SaBRe
+  third-party runtime. Generated Cargo manifests must be synchronized with
+  their internal autocargo source before re-export.
+- **Published feature contract:** `reverie-inguest` includes the shared runtime,
+  coordinator RPC, and optional `exec-stop` launch mechanics. The opt-in
+  `exec-private-init`, `native-exec-state`, and `exec-private-successor`
+  components remain available but do not admit native successor execution.
+  Native injection is unavailable on the 0.5 release branch; the
+  `exec-native-injection` Cargo feature is removed from both `reverie-inguest`
+  and the private `reverie-liteinst` crate because its source identity checks
+  require files outside a registry archive. Source development continues on
+  `main`. No published feature selects a private backend.
 
 ## 0.4.1
 

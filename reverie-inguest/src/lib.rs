@@ -41,6 +41,17 @@
 //! `execve`. `fork` *is* fully covered because the kernel inherits the filter
 //! atomically.
 //!
+//! # Version 0.5 registry features
+//!
+//! The registry package includes the shared runtime, coordinator RPC, and
+//! `exec-stop` launch mechanics. Experimental `exec-private-init`,
+//! `native-exec-state`, and `exec-private-successor` components remain opt-in;
+//! they do not admit native successor execution. Native injection is unavailable
+//! on the 0.5 release branch: `exec-native-injection` is not a Cargo feature.
+//! Its retained source depends on sibling crates outside this package, and
+//! development of that experimental path continues on `main`. Enabling all
+//! published features does not enable native injection or a LiteInst backend.
+//!
 //! # Two ways to use it
 //!
 //! * **As a library (`rlib`):** e9patch/liteinst embed the runtime, register a

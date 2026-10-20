@@ -1575,7 +1575,6 @@ dependencies = [
  "safeptrace",
  "serde",
  "serde_json",
- "sha2",
  "syscalls",
  "tempfile",
  "tokio",
