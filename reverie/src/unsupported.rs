@@ -66,6 +66,13 @@ pub enum UnsupportedOperation {
     /// signals that way. Nothing was delivered or changed; the backend's own
     /// delivery path is unchanged.
     SignalDelivery,
+    /// A call whose answer the tool decides on every backend, on a backend
+    /// that therefore keeps no copy of that answer: for example the CPU,
+    /// scheduling and priority queries and changes, `getrandom`,
+    /// `prlimit64`, the user and group id calls, `seccomp` or `getpgrp`. A
+    /// backend that refuses one read and changed nothing, in the guest or on
+    /// the host. A tool that answers the call itself never sees this refusal.
+    ToolDecided,
 }
 
 /// A backend's refusal of an injected syscall, or of a `Guest` operation,
