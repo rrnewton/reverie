@@ -79,6 +79,17 @@ replay mode.
   require files outside a registry archive. Source development continues on
   `main`. No published feature selects a private backend.
 
+### Known issues
+
+The ptrace regression
+`ordinary_nonleader_exec_displaced_hook_failure_fences_replacement` has a
+pre-existing intermittent failure: a replacement EXEC stop can arrive without
+the displaced leader's retained preceding EXIT status, leaving cleanup pending.
+Independent review reproduced the failure on the
+[unchanged baseline](https://github.com/rrnewton/reverie/commit/5041073ee5204c976aa3fdba76b16035bbf7ef76)
+at repetition 156 of a requested 200, after 155 passes. Passing candidate runs
+do not establish a repair; this release does not fix the failure.
+
 ## 0.4.1
 
 - Support stable Rust in the public crate graph and fix libunwind/LZMA linking
