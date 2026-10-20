@@ -59,7 +59,9 @@ replay mode.
   build-root library search paths; see the
   [preload compatibility issue](https://github.com/rrnewton/reverie/issues/980).
 - **Release packages:** align all workspace versions and internal requirements
-  at 0.5.0. Publish the dependency-free `reverie-loader` support crate so
+  at 0.5.0. Keep the established `reverie-utils` package alias and keep
+  `nostd-print` private because its registry name belongs to another project.
+  Publish the dependency-free `reverie-loader` support crate so
   `reverie-inguest`'s existing optional launch mechanics resolve from crates.io.
   The DynamoRIO, e9patch and SaBRe implementation crates and their dedicated
   tools remain source-only. `reverie-sabre-stats` contains the shared Rust
