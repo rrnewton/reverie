@@ -18824,6 +18824,17 @@ fn host_fd(state: &LoadedStaticElf, guest_fd: libc::c_int) -> Option<RawFd> {
 }
 
 // TODO-HUMAN-REVIEW(PR-52): Review KVM guest fcntl compatibility boundaries.
+/// fcntl looks an O_PATH descriptor up with fdget_raw and lets it run only
+/// the descriptor-flag, status-flag and duplication commands; every lock
+/// command fails with EBADF there, before its flock structure is copied.
+fn refuse_o_path_lock_command(host_fd: RawFd) -> Result<(), i64> {
+    if fd_status_flags(host_fd)? & libc::O_PATH != 0 {
+        Err(negative_errno(libc::EBADF))
+    } else {
+        Ok(())
+    }
+}
+
 fn fcntl(memory: &GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6]) -> i64 {
     let guest_fd = args[0] as libc::c_int;
     let source_alias = output_alias(state, guest_fd);
@@ -18975,6 +18986,9 @@ fn fcntl(memory: &GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6]) -> 
         // AUTONOMOUS-BOT-IMPLEMENTED
         // TODO-HUMAN-REVIEW(PR-211): Review KVM advisory-lock forwarding.
         command @ (libc::F_SETLK | libc::F_SETLKW | libc::F_OFD_SETLK | libc::F_OFD_SETLKW) => {
+            if let Err(error) = refuse_o_path_lock_command(host_fd) {
+                return error;
+            }
             let mut lock = match read_guest_struct::<libc::flock>(&ProviderMemory(memory), args[2])
             {
                 Ok(lock) => lock,
@@ -19006,6 +19020,9 @@ fn fcntl(memory: &GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6]) -> 
         // fcntl(2) does. A conflicting holder is an OFD lock, which Linux
         // reports with l_pid -1, so a guest F_GETLK never sees a host pid.
         command @ (libc::F_GETLK | libc::F_OFD_GETLK) => {
+            if let Err(error) = refuse_o_path_lock_command(host_fd) {
+                return error;
+            }
             let mut lock = match read_guest_struct::<libc::flock>(&ProviderMemory(memory), args[2])
             {
                 Ok(lock) => lock,
