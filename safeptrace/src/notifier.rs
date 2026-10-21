@@ -859,7 +859,254 @@ impl AttachmentAnchor {
     }
 }
 
+/// [`HOST_PROOF_MARKER`] before any page is published.
+const MARKER_UNPUBLISHED: usize = 0;
+/// [`HOST_PROOF_MARKER`] once publishing failed: every proof stays unarmed,
+/// and nothing retries.
+const MARKER_UNAVAILABLE: usize = 1;
+const MARKER_PAGE_SIZE: usize = 4096;
+
+/// The fork marker that lets a [`HostProof`] recheck without a syscall: the
+/// address of one page holding 1, marked `MADV_WIPEONFORK`, so the kernel
+/// zero-fills it in every child created without `CLONE_VM` (libc `fork`,
+/// `SYS_fork`, `clone`, `clone3`) before any of the child's code runs.
+///
+/// Published once per process by [`publish_host_proof_marker`] and never
+/// written again, so no child can re-arm a proof it inherited.
+static HOST_PROOF_MARKER: AtomicUsize = AtomicUsize::new(MARKER_UNPUBLISHED);
+
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+struct HostProofRechecks {
+    /// The marker still read 1: no syscall.
+    armed: usize,
+    /// The proof was armed, but its page now reads 0: a forked child.
+    wiped: usize,
+    /// The proof was never armed: the cold proof ran.
+    unarmed: usize,
+}
+
+#[cfg(test)]
+type AfterColdProofHook = Box<dyn FnMut()>;
+
+#[cfg(test)]
+thread_local! {
+    // All per thread, so that none leaks into a test running beside it.
+    // A test's own marker slot in place of `HOST_PROOF_MARKER`, so that it
+    // can start from an unpublished marker whatever ran before it.
+    static MARKER_SLOT_FOR_TEST: Cell<Option<&'static AtomicUsize>> = const { Cell::new(None) };
+    static MARKER_MADVISE_FAILS_FOR_TEST: Cell<bool> = const { Cell::new(false) };
+    static MARKER_MAPS_FOR_TEST: Cell<usize> = const { Cell::new(0) };
+    static MARKER_LAST_MAP_FOR_TEST: Cell<usize> = const { Cell::new(0) };
+    // (paused, resume): stop between writing the page and publishing it.
+    static PAUSE_BEFORE_MARKER_PUBLICATION_FOR_TEST: Cell<Option<&'static [AtomicBool; 2]>> = const { Cell::new(None) };
+    static AFTER_COLD_PROOF_FOR_TEST: std::cell::RefCell<Option<AfterColdProofHook>> = const { std::cell::RefCell::new(None) };
+    static HOST_PROOF_RECHECKS: Cell<HostProofRechecks> = const {
+        Cell::new(HostProofRechecks { armed: 0, wiped: 0, unarmed: 0 })
+    };
+    static OWNER_COLD_PROOFS: Cell<usize> = const { Cell::new(0) };
+}
+
+fn host_proof_marker_slot() -> &'static AtomicUsize {
+    #[cfg(test)]
+    if let Some(slot) = MARKER_SLOT_FOR_TEST.with(Cell::get) {
+        return slot;
+    }
+    &HOST_PROOF_MARKER
+}
+
+/// Maps one page marked `MADV_WIPEONFORK` and holding 1, or `None` if a step
+/// fails.
+fn map_host_proof_marker_page() -> Option<usize> {
+    #[cfg(test)]
+    MARKER_MAPS_FOR_TEST.with(|maps| maps.set(maps.get() + 1));
+    // SAFETY: a fresh private anonymous mapping.
+    let address = unsafe {
+        libc::mmap(
+            std::ptr::null_mut(),
+            MARKER_PAGE_SIZE,
+            libc::PROT_READ | libc::PROT_WRITE,
+            libc::MAP_PRIVATE | libc::MAP_ANONYMOUS,
+            -1,
+            0,
+        )
+    };
+    if address == libc::MAP_FAILED {
+        return None;
+    }
+    #[cfg(test)]
+    MARKER_LAST_MAP_FOR_TEST.with(|last| last.set(address as usize));
+    #[cfg(test)]
+    let advised = if MARKER_MADVISE_FAILS_FOR_TEST.with(Cell::get) {
+        -1
+    } else {
+        // SAFETY: `address` is the mapping made above.
+        unsafe { libc::madvise(address, MARKER_PAGE_SIZE, libc::MADV_WIPEONFORK) }
+    };
+    #[cfg(not(test))]
+    // SAFETY: `address` is the mapping made above.
+    let advised = unsafe { libc::madvise(address, MARKER_PAGE_SIZE, libc::MADV_WIPEONFORK) };
+    if advised != 0 {
+        // SAFETY: as above; nothing else refers to it.
+        unsafe { libc::munmap(address, MARKER_PAGE_SIZE) };
+        return None;
+    }
+    // SAFETY: the page is mapped, writable and page-aligned; it holds only
+    // this atomic.
+    unsafe { &*(address as *const AtomicU8) }.store(1, Ordering::Relaxed);
+    Some(address as usize)
+}
+
+/// Publishes the fork marker if no page and no failure is published yet.
+///
+/// No lock and no waiting: a thread maps, advises and writes its own page,
+/// then publishes it with a compare-and-swap, and unmaps it if another thread
+/// won. A failed `mmap` or `madvise` publishes [`MARKER_UNAVAILABLE`], which
+/// is permanent. A child forked at any point inherits either an unpublished
+/// slot (and later publishes its own page), or a published page that the
+/// kernel has wiped, or the permanent failure. Nothing ever rewrites a
+/// published page.
+fn publish_host_proof_marker() {
+    let slot = host_proof_marker_slot();
+    if slot.load(Ordering::Acquire) != MARKER_UNPUBLISHED {
+        return;
+    }
+    let mapped = map_host_proof_marker_page();
+    #[cfg(test)]
+    if let Some([paused, resume]) = PAUSE_BEFORE_MARKER_PUBLICATION_FOR_TEST.with(Cell::get) {
+        paused.store(true, Ordering::Release);
+        while !resume.load(Ordering::Acquire) {
+            std::thread::yield_now();
+        }
+    }
+    let candidate = mapped.unwrap_or(MARKER_UNAVAILABLE);
+    if slot
+        .compare_exchange(
+            MARKER_UNPUBLISHED,
+            candidate,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        )
+        .is_err()
+        && let Some(page) = mapped
+    {
+        // SAFETY: this thread's own unpublished mapping.
+        unsafe { libc::munmap(page as *mut libc::c_void, MARKER_PAGE_SIZE) };
+    }
+}
+
+/// The published marker page if it reads 1. Never publishes.
+fn sample_host_proof_marker() -> Option<&'static AtomicU8> {
+    match host_proof_marker_slot().load(Ordering::Acquire) {
+        MARKER_UNPUBLISHED | MARKER_UNAVAILABLE => None,
+        page => {
+            // SAFETY: a published page stays mapped for the life of the
+            // process and holds only this atomic.
+            let marker = unsafe { &*(page as *const AtomicU8) };
+            (marker.load(Ordering::Acquire) == 1).then_some(marker)
+        }
+    }
+}
+
+/// A proof that the current task is `owner`'s task, valid only while the
+/// synchronous call that created it runs on the task that created it.
+///
+/// One managed poll makes one cold kernel proof ([`LegacyWaitOwner::prove`])
+/// and rechecks it after every callback that may have created a child.
+/// - It borrows a guard local to that poll, so it cannot be stored in a
+///   future, and it is neither `Send` nor `Sync`, so no other thread can
+///   reach it in safe code. Only the poll's own continuation calls
+///   [`HostProof::recheck`].
+/// - A child created without `CLONE_VM` that reaches a recheck runs that
+///   continuation on a copy of the stack, but its copy of the marker page is
+///   zero, so its recheck runs the cold proof, which refuses it.
+/// - Not covered, here or by the cold proof alone: a child forked (for
+///   example from a signal handler) after a check has succeeded and before
+///   the operation it guards runs on that success without another check.
+///   Neither a recheck nor a cold proof is an atomic identity-and-commit
+///   step; each answers for the moment it ran, and this keeps the same
+///   observation-to-operation window as the cold proof.
+/// - A `CLONE_VM` child on its own stack never runs the poll's frames.
+/// - Out of contract: moving this frame's continuation to another task, such
+///   as a same-stack `vfork` child returning into Rust frames (undefined
+///   behavior: POSIX forbids returning from the function that called
+///   `vfork`, and Rust has no `returns_twice`), or `longjmp`/`setcontext`
+///   from a `CLONE_VM` task. A cold recheck would refuse such a task; an
+///   armed recheck admits it. Debug builds assert the tid on the armed
+///   branch to catch it in tests.
+struct HostProof<'a> {
+    owner: &'a LegacyWaitOwner,
+    /// Sampled before the cold proof, and `Some` only if it read 1 then.
+    marker: Option<&'static AtomicU8>,
+    _local: PhantomData<*const ()>,
+}
+
+impl HostProof<'_> {
+    /// Rechecks after code that may have created a child: one load when
+    /// armed and still 1, otherwise the cold proof with its typed refusal.
+    fn recheck(&self) -> Result<(), Errno> {
+        if let Some(marker) = self.marker {
+            if marker.load(Ordering::Acquire) == 1 {
+                debug_assert_eq!(
+                    Pid::from(nix::unistd::gettid()),
+                    self.owner.tid,
+                    "a HostProof's continuation moved to another task"
+                );
+                #[cfg(test)]
+                HOST_PROOF_RECHECKS.with(|counts| {
+                    let mut current = counts.get();
+                    current.armed += 1;
+                    counts.set(current);
+                });
+                return Ok(());
+            }
+            #[cfg(test)]
+            HOST_PROOF_RECHECKS.with(|counts| {
+                let mut current = counts.get();
+                current.wiped += 1;
+                counts.set(current);
+            });
+        } else {
+            #[cfg(test)]
+            HOST_PROOF_RECHECKS.with(|counts| {
+                let mut current = counts.get();
+                current.unarmed += 1;
+                counts.set(current);
+            });
+        }
+        if self.owner.is_current()? {
+            Ok(())
+        } else {
+            Err(Errno::EPERM)
+        }
+    }
+}
+
 impl LegacyWaitOwner {
+    /// The cold kernel proof that the current task is this owner's task, as
+    /// [`LegacyWaitOwner::is_current`], into a proof for the rest of the
+    /// current synchronous call. Samples the published fork marker first and
+    /// never publishes one, so a proof is never armed by a marker created
+    /// after its own cold proof.
+    fn prove(&self) -> Result<HostProof<'_>, Errno> {
+        let marker = sample_host_proof_marker();
+        if !self.is_current()? {
+            return Err(Errno::EPERM);
+        }
+        #[cfg(test)]
+        {
+            let hook = AFTER_COLD_PROOF_FOR_TEST.with(|slot| slot.borrow_mut().take());
+            if let Some(mut hook) = hook {
+                hook();
+            }
+        }
+        Ok(HostProof {
+            owner: self,
+            marker,
+            _local: PhantomData,
+        })
+    }
+
     fn capture_current() -> Result<Self, Errno> {
         Self::capture_at(AlignedProcfs::open()?)
     }
@@ -867,6 +1114,8 @@ impl LegacyWaitOwner {
     fn capture_at(root: AlignedProcfs) -> Result<Self, Errno> {
         #[cfg(test)]
         PTRACER_OWNER_CAPTURES.with(|captures| captures.set(captures.get() + 1));
+        // Before any proof of this owner, so that `prove` finds it published.
+        publish_host_proof_marker();
         let tid = Pid::from(nix::unistd::gettid());
         let lifetime = root.open_current_thread()?;
         let current = retained_proc_status(lifetime.as_raw_fd())?;
@@ -901,6 +1150,8 @@ impl LegacyWaitOwner {
     }
 
     pub(super) fn is_current(&self) -> Result<bool, Errno> {
+        #[cfg(test)]
+        OWNER_COLD_PROOFS.with(|proofs| proofs.set(proofs.get() + 1));
         #[cfg(test)]
         let use_descriptor = !self.force_directory_proof.load(Ordering::Relaxed);
         #[cfg(not(test))]
@@ -1847,14 +2098,14 @@ impl Event {
     fn poll_status_reservation_with_guard(
         &self,
         waker: &Waker,
-        guard: Option<&PtracerThreadGuard>,
+        proof: Option<&HostProof<'_>>,
     ) -> Poll<Result<StatusReservation<'_>, Errno>> {
         // Register the waker *before* checking the status to avoid a race condition.
         self.status_waker.register(waker);
         // Register may run arbitrary RawWaker clone/drop callbacks. A managed
         // controller must still be its original host before reserving a front.
-        if let Some(guard) = guard
-            && let Err(error) = guard.check_current()
+        if let Some(proof) = proof
+            && let Err(error) = proof.recheck()
         {
             return Poll::Ready(Err(error));
         }
@@ -2114,7 +2365,7 @@ impl Event {
     fn decode_status_return_with_guard<T>(
         &self,
         reservation: StatusReservation<'_>,
-        guard: Option<&PtracerThreadGuard>,
+        proof: Option<&HostProof<'_>>,
         decode: impl FnOnce(i32) -> Result<T, Error>,
     ) -> Result<StatusReturn<T>, Error> {
         let transaction = match self.begin_status_return(
@@ -2130,8 +2381,8 @@ impl Event {
         let decoded = decode(reservation.status);
         // Child Event adoption can notify an already registered waker. Check
         // again before this transaction can remove its original FIFO front.
-        if let Some(guard) = guard {
-            guard.check_current()?;
+        if let Some(proof) = proof {
+            proof.recheck()?;
         }
         let decoded = match decoded {
             Ok(decoded) => decoded,
@@ -6663,7 +6914,7 @@ impl WaitFuture {
         &mut self,
         cx: &mut Context<'_>,
         policy: WaitPolicy,
-        guard: Option<&PtracerThreadGuard>,
+        proof: Option<&HostProof<'_>>,
     ) -> Poll<Result<Wait, Error>> {
         let pid = self.pid;
         let event_handle = match NOTIFIER.event_for_policy(pid, self.token.event(), policy) {
@@ -6679,8 +6930,8 @@ impl WaitFuture {
             } else {
                 Ok(())
             };
-            let readiness = match guard {
-                Some(guard) => event.poll_status_reservation_with_guard(cx.waker(), Some(guard)),
+            let readiness = match proof {
+                Some(proof) => event.poll_status_reservation_with_guard(cx.waker(), Some(proof)),
                 None => event.poll_status_reservation(cx.waker()),
             };
             let reservation = match readiness {
@@ -6693,7 +6944,7 @@ impl WaitFuture {
                     };
                 }
             };
-            return match event.decode_status_return_with_guard(reservation, guard, |status| {
+            return match event.decode_status_return_with_guard(reservation, proof, |status| {
                 // The explicit driver already authenticated its retained
                 // original owner. Carry that same anchor into this stop;
                 // recapturing it here would immediately discard the result.
@@ -6793,12 +7044,12 @@ impl OwnedWaitFuture {
         &mut self,
         cx: &mut Context<'_>,
         policy: WaitPolicy,
-        guard: Option<&PtracerThreadGuard>,
+        proof: Option<&HostProof<'_>>,
     ) -> Poll<Result<Wait, OwnedWaitError>> {
         let Some(inner) = self.inner.as_mut() else {
             return Poll::Ready(Err(OwnedWaitError::Completed));
         };
-        match inner.poll_with_guard(cx, policy, guard) {
+        match inner.poll_with_guard(cx, policy, proof) {
             Poll::Pending => Poll::Pending,
             Poll::Ready(Ok(wait)) => {
                 self.inner.take();
@@ -6835,11 +7086,19 @@ impl OwnedWaitFuture {
         {
             return Poll::Ready(Err(OwnedWaitError::Errno(error)));
         }
-        let guard = match PtracerThreadGuard::retain_for_poll(&mut self.managed_guard, guard) {
+        let guard = match PtracerThreadGuard::candidate_for_poll(self.managed_guard.as_ref(), guard)
+        {
             Ok(guard) => guard,
             Err(error) => return Poll::Ready(Err(OwnedWaitError::Errno(error))),
         };
-        self.poll_with_guard(cx, WaitPolicy::Native, Some(&guard))
+        // One cold proof for this whole call; every later check in it is a
+        // recheck of this proof. Admission retains the guard only after it.
+        let proof = match guard.owner.prove() {
+            Ok(proof) => proof,
+            Err(error) => return Poll::Ready(Err(OwnedWaitError::Errno(error))),
+        };
+        guard.retain_after_proof(&mut self.managed_guard);
+        self.poll_with_guard(cx, WaitPolicy::Native, Some(&proof))
     }
 
     /// Retains this unfinished wait's original generation without a lookup.
@@ -6963,10 +7222,18 @@ impl ExitFuture {
         if let Err(error) = WaitPolicy::Native.check_handle(&self.event) {
             return Poll::Ready(Err(error.into()));
         }
-        let guard = match PtracerThreadGuard::retain_for_poll(&mut self.managed_guard, guard) {
+        let guard = match PtracerThreadGuard::candidate_for_poll(self.managed_guard.as_ref(), guard)
+        {
             Ok(guard) => guard,
             Err(error) => return Poll::Ready(Err(error.into())),
         };
+        // One cold proof for this whole call; every later check in it is a
+        // recheck of this proof. Admission retains the guard only after it.
+        let proof = match guard.owner.prove() {
+            Ok(proof) => proof,
+            Err(error) => return Poll::Ready(Err(error.into())),
+        };
+        guard.retain_after_proof(&mut self.managed_guard);
         if let Some(stopped) = self.managed_delivery.take() {
             return Poll::Ready(Ok(stopped));
         }
@@ -6980,7 +7247,7 @@ impl ExitFuture {
         // Keep the original register -> claim -> notify order. Registration
         // may clone/drop an arbitrary waker before the irreversible claim.
         event.exit_waiters.register(&self.waiter, cx.waker());
-        if let Err(error) = guard.check_current() {
+        if let Err(error) = proof.recheck() {
             return Poll::Ready(Err(error.into()));
         }
         let Some(publication) = event.exit_publication.try_lock() else {
@@ -6997,7 +7264,7 @@ impl ExitFuture {
                 ));
             }
             event.exit_waiters.wake_all();
-            if let Err(error) = guard.check_current() {
+            if let Err(error) = proof.recheck() {
                 return Poll::Ready(Err(error.into()));
             }
         }
@@ -7031,17 +7298,23 @@ pub struct PtracerThreadGuard {
 }
 
 impl PtracerThreadGuard {
-    fn retain_for_poll(retained: &mut Option<Self>, supplied: &Self) -> Result<Self, Errno> {
-        if let Some(guard) = retained.as_ref() {
-            if !Arc::ptr_eq(&guard.owner, &supplied.owner) {
-                return Err(Errno::EPERM);
-            }
-            guard.check_current()?;
-            return Ok(guard.clone());
+    /// The guard a managed poll proves: the retained one, which `supplied`
+    /// must match, or `supplied` on the first call. Stores nothing; the
+    /// caller proves it, then calls [`Self::retain_after_proof`].
+    fn candidate_for_poll(retained: Option<&Self>, supplied: &Self) -> Result<Self, Errno> {
+        match retained {
+            Some(guard) if !Arc::ptr_eq(&guard.owner, &supplied.owner) => Err(Errno::EPERM),
+            Some(guard) => Ok(guard.clone()),
+            None => Ok(supplied.clone()),
         }
-        supplied.check_current()?;
-        *retained = Some(supplied.clone());
-        Ok(supplied.clone())
+    }
+
+    /// Retains this guard for later managed polls, after its proof succeeded.
+    /// The first admitted call's guard stays retained.
+    fn retain_after_proof(&self, retained: &mut Option<Self>) {
+        if retained.is_none() {
+            *retained = Some(self.clone());
+        }
     }
 
     pub(super) fn from_owner(owner: Arc<LegacyWaitOwner>) -> Self {
@@ -7701,6 +7974,7 @@ impl TerminalCleanup {
 mod test {
     include!("adaptive_api_tests.rs");
     include!("managed_native_tests.rs");
+    include!("host_proof_tests.rs");
     include!("stop_auth_cache_tests.rs");
     include!("retired_tid_tests.rs");
     include!("legacy_thread_tests.rs");
