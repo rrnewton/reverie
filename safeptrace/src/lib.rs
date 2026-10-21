@@ -1558,8 +1558,10 @@ impl Stopped {
     /// `PTRACE_GETSIGINFO` tells the two apart: in the exit stop, `si_code`
     /// is `SIGTRAP | (PTRACE_EVENT_EXIT << 8)`.
     ///
-    /// Call this only on the capability for a stop other than the exit stop,
-    /// after a request on it failed with `ESRCH`. Holding such a stop, the
+    /// Call this only on the capability for a stop other than the exit stop:
+    /// after a request on it failed with `ESRCH`, or before a resume, to
+    /// refuse resuming a stop the tracee has left (a resume addressed by PID
+    /// would land on the exit stop and consume it). Holding such a stop, the
     /// tracer has not resumed the tracee, so a tracee found in its exit stop
     /// was taken there by a fatal signal and the held stop is dead.
     pub fn died_into_exit_stop(&self) -> Option<Error> {

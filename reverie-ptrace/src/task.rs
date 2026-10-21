@@ -7610,6 +7610,37 @@ impl<L: Tool + 'static> TracedTask<L> {
         }
     }
 
+    /// Refuses to resume a stop the tracee has already left for its
+    /// `PTRACE_EVENT_EXIT` stop, with the same `Died` as a request that met
+    /// `ESRCH` (https://github.com/rrnewton/reverie/issues/1091).
+    ///
+    /// A fatal signal takes a tracee out of any ptrace stop without a tracer
+    /// request, and a request is addressed by PID, not by stop. So a resume
+    /// through the stop this run loop holds would land on the exit stop and
+    /// consume it before its owner (the task's exit future, then
+    /// `finish_ordinary_terminal`) reads its status with `PTRACE_GETEVENTMSG`.
+    /// For a leader displaced by a nonleader exec, that status is the only
+    /// record of its exit: no final wait status follows, and the exec stays
+    /// pending on `ExitEventStatusUnavailable`.
+    ///
+    /// The run loop never resumes an exit stop through these wrappers (it
+    /// waits for the exit future instead), so finding one here means the held
+    /// stop is dead. Only a leader with another traced thread can be displaced
+    /// by an exec, so only it pays the `PTRACE_GETSIGINFO`; any other task's
+    /// exit is reported by its final wait status even if its exit stop is
+    /// consumed. The probe narrows the race to the moment between it and the
+    /// resume request; it cannot close it, as no ptrace request resumes only
+    /// a given stop.
+    fn refuse_stop_left_for_exit(&self, task: &Stopped) -> Result<(), TraceError> {
+        if self.is_main_thread()
+            && self.ordinary_exec.lock().unwrap().len() > 1
+            && let Some(died) = task.died_into_exit_stop()
+        {
+            return Err(died);
+        }
+        Ok(())
+    }
+
     fn lease_liteinst_root_stop(&self, task: Stopped) -> RootStopLease {
         let slot = self.liteinst_root_stop_slot();
         RootStopLease::new(task, slot)
@@ -7623,6 +7654,7 @@ impl<L: Tool + 'static> TracedTask<L> {
         if self.global_state.fatal_session.is_failed() {
             return Err(Errno::ECANCELED.into());
         }
+        self.refuse_stop_left_for_exit(&task)?;
         let signal = signal.into();
         self.note_segv_resume(&task, signal.map(|signal| signal as i32));
         self.lease_liteinst_root_stop(task).resume(signal)
@@ -7636,6 +7668,7 @@ impl<L: Tool + 'static> TracedTask<L> {
         if self.global_state.fatal_session.is_failed() {
             return Err(Errno::ECANCELED.into());
         }
+        self.refuse_stop_left_for_exit(&task)?;
         #[cfg(test)]
         record_step_for_test(task.pid());
         let signal = signal.into();
@@ -7651,6 +7684,7 @@ impl<L: Tool + 'static> TracedTask<L> {
         if self.global_state.fatal_session.is_failed() {
             return Err(Errno::ECANCELED.into());
         }
+        self.refuse_stop_left_for_exit(&task)?;
         let signal = signal.into();
         self.note_segv_signal_without_cont(signal.map(|signal| signal as i32));
         self.lease_liteinst_root_stop(task).syscall(signal)
@@ -7668,6 +7702,7 @@ impl<L: Tool + 'static> TracedTask<L> {
                 if self.global_state.fatal_session.is_failed() {
                     return Err(Errno::ECANCELED.into());
                 }
+                self.refuse_stop_left_for_exit(&task)?;
                 self.note_segv_resume(&task, Some(signal.raw()));
                 self.lease_liteinst_root_stop(task).resume_raw(signal.raw())
             }
@@ -7686,6 +7721,7 @@ impl<L: Tool + 'static> TracedTask<L> {
                 if self.global_state.fatal_session.is_failed() {
                     return Err(Errno::ECANCELED.into());
                 }
+                self.refuse_stop_left_for_exit(&task)?;
                 #[cfg(test)]
                 record_step_for_test(task.pid());
                 self.note_segv_signal_without_cont(Some(signal.raw()));
@@ -7706,6 +7742,7 @@ impl<L: Tool + 'static> TracedTask<L> {
                 if self.global_state.fatal_session.is_failed() {
                     return Err(Errno::ECANCELED.into());
                 }
+                self.refuse_stop_left_for_exit(&task)?;
                 self.note_segv_signal_without_cont(Some(signal.raw()));
                 self.lease_liteinst_root_stop(task)
                     .syscall_raw(signal.raw())
