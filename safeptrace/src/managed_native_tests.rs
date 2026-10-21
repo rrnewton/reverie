@@ -13,9 +13,28 @@ enum ManagedForkCallback {
     Wake,
 }
 
+/// How a waker callback creates the child that returns into the managed poll.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ManagedForkRoute {
+    Libc,
+    SysFork,
+    SysClone,
+    /// A libc fork whose child forks again; only the grandchild returns.
+    Grandchild,
+}
+
+impl ManagedForkRoute {
+    const ALL: [Self; 4] = [Self::Libc, Self::SysFork, Self::SysClone, Self::Grandchild];
+}
+
 struct ManagedWakerFork {
     callback: ManagedForkCallback,
+    route: ManagedForkRoute,
     origin: libc::pid_t,
+    // This thread's HostProof recheck counts when the callback forked, which
+    // the child inherits: the witness that the poll's proof was armed.
+    armed_at_fork: AtomicUsize,
+    wiped_at_fork: AtomicUsize,
     armed: AtomicBool,
     fired: AtomicBool,
     read: OwnedFd,
@@ -40,7 +59,7 @@ fn guarded_native_reservation_keeps_local_auto_traits() {
 }
 
 impl ManagedWakerFork {
-    fn new(callback: ManagedForkCallback) -> Arc<Self> {
+    fn new(callback: ManagedForkCallback, route: ManagedForkRoute) -> Arc<Self> {
         let mut pipe = [-1; 2];
         assert_eq!(
             unsafe { libc::pipe2(pipe.as_mut_ptr(), libc::O_CLOEXEC) },
@@ -52,7 +71,10 @@ impl ManagedWakerFork {
         );
         Arc::new(Self {
             callback,
+            route,
             origin: unsafe { libc::getpid() },
+            armed_at_fork: AtomicUsize::new(0),
+            wiped_at_fork: AtomicUsize::new(0),
             armed: AtomicBool::new(false),
             fired: AtomicBool::new(false),
             read: unsafe { OwnedFd::from_raw_fd(pipe[0]) },
@@ -71,9 +93,46 @@ impl ManagedWakerFork {
         {
             return;
         }
-        let child = unsafe { libc::fork() };
+        let rechecks = HOST_PROOF_RECHECKS.with(Cell::get);
+        self.armed_at_fork.store(rechecks.armed, Ordering::Release);
+        self.wiped_at_fork.store(rechecks.wiped, Ordering::Release);
+        let child = match self.route {
+            ManagedForkRoute::Libc | ManagedForkRoute::Grandchild => unsafe { libc::fork() },
+            ManagedForkRoute::SysFork => unsafe { libc::syscall(libc::SYS_fork) as libc::pid_t },
+            ManagedForkRoute::SysClone => unsafe {
+                libc::syscall(libc::SYS_clone, libc::SIGCHLD, 0usize, 0usize, 0usize, 0usize)
+                    as libc::pid_t
+            },
+        };
         assert!(child >= 0);
         if child == 0 {
+            if self.route == ManagedForkRoute::Grandchild {
+                let grandchild = unsafe { libc::fork() };
+                assert!(grandchild >= 0);
+                if grandchild > 0 {
+                    let status = waitpid_status_bounded(
+                        Pid::from_raw(grandchild),
+                        0,
+                        TRACEE_WAIT_TIMEOUT,
+                    );
+                    let passed = matches!(status, Ok(status)
+                        if libc::WIFEXITED(status) && libc::WEXITSTATUS(status) == 0);
+                    unsafe { libc::_exit(if passed { 0 } else { 1 }) };
+                }
+            }
+            // A failed check in the copied test thread would otherwise end
+            // the child with status 0 (no harness thread exists here) and
+            // leave the parent only a report deadline: report the exact
+            // assertion instead.
+            let write = self.write.as_raw_fd();
+            std::panic::set_hook(Box::new(move |info| {
+                eprintln!("MANAGED_FORK_CHILD_PANIC: {info}");
+                unsafe { libc::write(write, b"F".as_ptr().cast(), 1) };
+                unsafe { libc::_exit(1) };
+            }));
+            // An owner capture runs the marker initializer in the child
+            // before its inherited proof rechecks; it must not re-arm it.
+            let _ = LegacyWaitOwner::capture_current();
             // Return through the actual waker operation and the SDK poll in
             // the foreign kernel host. The test's post-poll branch reports
             // its real refusal before the original callback is released.
@@ -85,7 +144,10 @@ impl ManagedWakerFork {
             let read =
                 unsafe { libc::read(self.read.as_raw_fd(), (&mut byte as *mut u8).cast(), 1) };
             if read == 1 {
-                assert_eq!(byte, b'R');
+                assert_eq!(
+                    byte, b'R',
+                    "managed fork child failed a check (its MANAGED_FORK_CHILD_PANIC line names it)"
+                );
                 break;
             }
             assert!(read == -1 && Errno::last() == Errno::EAGAIN);
@@ -103,6 +165,25 @@ impl ManagedWakerFork {
         .unwrap();
         assert!(libc::WIFEXITED(status));
         assert_eq!(libc::WEXITSTATUS(status), 0);
+    }
+
+    /// In the foreign child: the inherited proof was armed when the callback
+    /// forked, and its recheck found the page wiped and ran the cold proof.
+    fn assert_child_took_the_wiped_fallback(&self) {
+        let rechecks = HOST_PROOF_RECHECKS.with(Cell::get);
+        assert_eq!(rechecks.armed, self.armed_at_fork.load(Ordering::Acquire));
+        assert_eq!(
+            rechecks.wiped,
+            self.wiped_at_fork.load(Ordering::Acquire) + 1,
+            "the child's recheck must take the wiped-marker fallback"
+        );
+    }
+
+    /// In the original: the recheck after the callback was armed.
+    fn assert_original_recheck_was_armed(&self) {
+        let rechecks = HOST_PROOF_RECHECKS.with(Cell::get);
+        assert!(rechecks.armed > self.armed_at_fork.load(Ordering::Acquire));
+        assert_eq!(rechecks.wiped, self.wiped_at_fork.load(Ordering::Acquire));
     }
 
     fn report_and_exit(&self) -> ! {
@@ -298,7 +379,10 @@ fn managed_native_wait_rechecks_after_waker_callbacks() {
     if run_managed_native_outer(NAME, MARKER, UNAVAILABLE) {
         return;
     }
-    for callback in [ManagedForkCallback::Clone, ManagedForkCallback::Drop] {
+    let fork_cases = ManagedForkRoute::ALL.into_iter().flat_map(|route| {
+        [ManagedForkCallback::Clone, ManagedForkCallback::Drop].map(|callback| (route, callback))
+    });
+    for (route, callback) in fork_cases {
         let Some(mut guest) = managed_native_guest(true, UNAVAILABLE) else {
             return;
         };
@@ -306,7 +390,7 @@ fn managed_native_wait_rechecks_after_waker_callbacks() {
         let handle = guest.running.as_ref().unwrap().1.event().clone();
         let original_fifo = guest.terminal.queued_raw_statuses();
         assert_eq!(original_fifo, [(libc::SIGUSR1 << 8) | 0x7f]);
-        let state = ManagedWakerFork::new(callback);
+        let state = ManagedWakerFork::new(callback, route);
         let callback_waker = state.waker();
         let noop = futures::task::noop_waker();
         let active_waker = if callback == ManagedForkCallback::Drop {
@@ -331,9 +415,11 @@ fn managed_native_wait_rechecks_after_waker_callbacks() {
                 WAIT_OWNER_NOTIFIER
             );
             assert!(!owned.observed_death);
+            state.assert_child_took_the_wiped_fallback();
             state.report_and_exit();
         }
         assert!(state.fired.load(Ordering::Acquire));
+        state.assert_original_recheck_was_armed();
         let stopped = match result {
             Poll::Ready(Ok(Wait::Stopped(stopped, crate::Event::Signal(Signal::SIGUSR1)))) => {
                 stopped
@@ -387,13 +473,16 @@ fn managed_native_exit_preserves_claim_across_waker_callbacks() {
     if run_managed_native_outer(NAME, MARKER, UNAVAILABLE) {
         return;
     }
-    for callback in [ManagedForkCallback::Clone, ManagedForkCallback::Wake] {
+    let fork_cases = ManagedForkRoute::ALL.into_iter().flat_map(|route| {
+        [ManagedForkCallback::Clone, ManagedForkCallback::Wake].map(|callback| (route, callback))
+    });
+    for (route, callback) in fork_cases {
         let Some(mut guest) = managed_native_guest(false, UNAVAILABLE) else {
             return;
         };
         let handle = guest.running.as_ref().unwrap().1.event().clone();
         let epoch = guest.exit.waiter.epoch;
-        let state = ManagedWakerFork::new(callback);
+        let state = ManagedWakerFork::new(callback, route);
         let waker = state.waker();
         state.armed.store(true, Ordering::Release);
         let result = guest
@@ -429,9 +518,11 @@ fn managed_native_exit_preserves_claim_across_waker_callbacks() {
                     .poll_with_ptracer_guard(&mut Context::from_waker(&waker), &guest.guard),
                 Poll::Ready(Err(Error::Errno(Errno::EPERM)))
             ));
+            state.assert_child_took_the_wiped_fallback();
             state.report_and_exit();
         }
         assert!(state.fired.load(Ordering::Acquire));
+        state.assert_original_recheck_was_armed();
         let stopped = match result {
             Poll::Ready(Ok(stopped)) => stopped,
             other => panic!("original managed EXIT did not transfer actual capability: {other:?}"),
