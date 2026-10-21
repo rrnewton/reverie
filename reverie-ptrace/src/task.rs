@@ -1846,6 +1846,44 @@ const INT_3: [u8; 2] = [0xcd, 0x03];
 /// trap stays undelivered; so does an `int3` another thread overwrote or
 /// unmapped before this read. The caller excludes the `int3`s Reverie
 /// planted itself.
+/// Whether a resume of `task`'s held stop takes the exit guard of
+/// [`TracedTask::exit_stop_guard`]: a main thread whose process has another
+/// traced thread (more than one exec slot).
+fn exit_stop_guard_applies<S>(main_thread: bool, exec_slots: &StdMutex<HashMap<Pid, S>>) -> bool {
+    main_thread && exec_slots.lock().unwrap().len() > 1
+}
+
+/// Test-only record of what the guarded transition will meet, probed just
+/// before it: an exit stop it refuses, or a forged exit signature it lets
+/// resume.
+#[cfg(test)]
+fn record_exit_stop_guard_probe(task: &Stopped) {
+    if task.died_into_exit_stop_before_resume().is_some() {
+        EXIT_STOP_RESUME_REFUSALS.with(|count| count.set(count.get() + 1));
+    } else if task.getsiginfo().is_ok_and(|info| {
+        info.si_signo == libc::SIGTRAP
+            && info.si_code == libc::SIGTRAP | (libc::PTRACE_EVENT_EXIT << 8)
+    }) {
+        FORGED_EXIT_SIGNATURES_RESUMED.with(|count| count.set(count.get() + 1));
+    }
+}
+
+/// A test-only action run just before the timer's next single step.
+#[cfg(test)]
+pub(crate) type TimerStepHook = Box<dyn FnOnce(&Stopped)>;
+
+#[cfg(test)]
+thread_local! {
+    /// How often a run-loop resume was refused because the tracee had left
+    /// the held stop for its exit stop.
+    pub(crate) static EXIT_STOP_RESUME_REFUSALS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    /// How often the guard probed a stop showing the exit signature without
+    /// PF_SIGNALED, and let the resume proceed.
+    pub(crate) static FORGED_EXIT_SIGNATURES_RESUMED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    /// Runs once, just before the timer's next single step of a held stop.
+    pub(crate) static TIMER_STEP_HOOK: std::cell::RefCell<Option<TimerStepHook>> = const { std::cell::RefCell::new(None) };
+}
+
 fn is_guest_int3_trap(task: &Stopped, rip: u64) -> Result<bool, TraceError> {
     if !cfg!(target_arch = "x86_64") {
         return Ok(false);
@@ -5576,11 +5614,25 @@ impl<L: Tool + 'static> TracedTask<L> {
             ..TimerStepShield::default()
         }));
         let step_shield = Arc::clone(&shield);
+        let main_thread = self.is_main_thread();
+        let exec_slots = Arc::clone(&self.ordinary_exec);
         let mut step = move |task: Stopped, unit| {
             if !filtered {
                 step_shield.lock().unwrap().prepare(&task)?;
             }
-            let lease = RootStopLease::new(task, held_root_stop.clone());
+            // Each step resumes the held stop, exactly like the run loop's
+            // wrappers (https://github.com/rrnewton/reverie/issues/1091).
+            let guard = exit_stop_guard_applies(main_thread, &exec_slots);
+            #[cfg(test)]
+            {
+                if let Some(hook) = TIMER_STEP_HOOK.with(|slot| slot.borrow_mut().take()) {
+                    hook(&task);
+                }
+                if guard {
+                    record_exit_stop_guard_probe(&task);
+                }
+            }
+            let lease = RootStopLease::new(task, held_root_stop.clone()).guard_exit_stop(guard);
             match unit {
                 StepUnit::Instruction => lease.step(None),
                 #[cfg(target_arch = "x86_64")]
@@ -6580,6 +6632,16 @@ impl<L: Tool + 'static> TracedTask<L> {
             approved,
             replacement,
         } = resume;
+        // Before any siginfo write below: a write can land on an exit stop
+        // the tracee already took (https://github.com/rrnewton/reverie/issues/1091).
+        // The guarded resume probes again; this keeps the writes off it.
+        if exit_stop_guard_applies(self.is_main_thread(), &self.ordinary_exec)
+            && let Some(died) = task.died_into_exit_stop_before_resume()
+        {
+            #[cfg(test)]
+            EXIT_STOP_RESUME_REFUSALS.with(|count| count.set(count.get() + 1));
+            return Err(died);
+        }
         if let (Some(sig), Some(taken), Some(stop)) = (signal, reported, self.latest_injection_stop)
             && sig == taken.signal
         {
@@ -7610,6 +7672,39 @@ impl<L: Tool + 'static> TracedTask<L> {
         }
     }
 
+    /// Refuses to resume a stop the tracee has already left for its
+    /// `PTRACE_EVENT_EXIT` stop, with the same `Died` as a request that met
+    /// `ESRCH` (https://github.com/rrnewton/reverie/issues/1091).
+    ///
+    /// A fatal signal takes a tracee out of any ptrace stop without a tracer
+    /// request, and a request is addressed by PID, not by stop. So a resume
+    /// through the stop this run loop holds would land on the exit stop and
+    /// consume it before its owner (the task's exit future, then
+    /// `finish_ordinary_terminal`) reads its status with `PTRACE_GETEVENTMSG`.
+    /// For a leader displaced by a nonleader exec, that status is the only
+    /// record of its exit: no final wait status follows, and the exec stays
+    /// pending on `ExitEventStatusUnavailable`.
+    ///
+    /// The run loop never resumes an exit stop through these wrappers (it
+    /// waits for the exit future instead), so finding one here means the held
+    /// stop is dead. Only a leader with another traced thread can be displaced
+    /// by an exec, so only it pays the `PTRACE_GETSIGINFO`; any other task's
+    /// exit is reported by its final wait status even if its exit stop is
+    /// consumed. The probe narrows the race to the moment between it and the
+    /// resume request; it cannot close it, as no ptrace request resumes only
+    /// a given stop. The timer's single-step loop applies the same guard to
+    /// each step.
+    fn exit_stop_guard(&self, task: &Stopped) -> bool {
+        let guard = exit_stop_guard_applies(self.is_main_thread(), &self.ordinary_exec);
+        #[cfg(test)]
+        if guard {
+            record_exit_stop_guard_probe(task);
+        }
+        #[cfg(not(test))]
+        let _ = task;
+        guard
+    }
+
     fn lease_liteinst_root_stop(&self, task: Stopped) -> RootStopLease {
         let slot = self.liteinst_root_stop_slot();
         RootStopLease::new(task, slot)
@@ -7625,7 +7720,10 @@ impl<L: Tool + 'static> TracedTask<L> {
         }
         let signal = signal.into();
         self.note_segv_resume(&task, signal.map(|signal| signal as i32));
-        self.lease_liteinst_root_stop(task).resume(signal)
+        let guard = self.exit_stop_guard(&task);
+        self.lease_liteinst_root_stop(task)
+            .guard_exit_stop(guard)
+            .resume(signal)
     }
 
     fn step_stopped<T: Into<Option<Signal>>>(
@@ -7640,7 +7738,10 @@ impl<L: Tool + 'static> TracedTask<L> {
         record_step_for_test(task.pid());
         let signal = signal.into();
         self.note_segv_signal_without_cont(signal.map(|signal| signal as i32));
-        self.lease_liteinst_root_stop(task).step(signal)
+        let guard = self.exit_stop_guard(&task);
+        self.lease_liteinst_root_stop(task)
+            .guard_exit_stop(guard)
+            .step(signal)
     }
 
     fn syscall_stopped<T: Into<Option<Signal>>>(
@@ -7653,7 +7754,10 @@ impl<L: Tool + 'static> TracedTask<L> {
         }
         let signal = signal.into();
         self.note_segv_signal_without_cont(signal.map(|signal| signal as i32));
-        self.lease_liteinst_root_stop(task).syscall(signal)
+        let guard = self.exit_stop_guard(&task);
+        self.lease_liteinst_root_stop(task)
+            .guard_exit_stop(guard)
+            .syscall(signal)
     }
 
     /// `resume_stopped` for a signal that may be one nix cannot name
@@ -7669,7 +7773,12 @@ impl<L: Tool + 'static> TracedTask<L> {
                     return Err(Errno::ECANCELED.into());
                 }
                 self.note_segv_resume(&task, Some(signal.raw()));
-                self.lease_liteinst_root_stop(task).resume_raw(signal.raw())
+                {
+                    let guard = self.exit_stop_guard(&task);
+                    self.lease_liteinst_root_stop(task)
+                        .guard_exit_stop(guard)
+                        .resume_raw(signal.raw())
+                }
             }
             signal => self.resume_stopped(task, signal.and_then(AnySignal::as_nix)),
         }
@@ -7689,7 +7798,12 @@ impl<L: Tool + 'static> TracedTask<L> {
                 #[cfg(test)]
                 record_step_for_test(task.pid());
                 self.note_segv_signal_without_cont(Some(signal.raw()));
-                self.lease_liteinst_root_stop(task).step_raw(signal.raw())
+                {
+                    let guard = self.exit_stop_guard(&task);
+                    self.lease_liteinst_root_stop(task)
+                        .guard_exit_stop(guard)
+                        .step_raw(signal.raw())
+                }
             }
             signal => self.step_stopped(task, signal.and_then(AnySignal::as_nix)),
         }
@@ -7707,7 +7821,9 @@ impl<L: Tool + 'static> TracedTask<L> {
                     return Err(Errno::ECANCELED.into());
                 }
                 self.note_segv_signal_without_cont(Some(signal.raw()));
+                let guard = self.exit_stop_guard(&task);
                 self.lease_liteinst_root_stop(task)
+                    .guard_exit_stop(guard)
                     .syscall_raw(signal.raw())
             }
             signal => self.syscall_stopped(task, signal.and_then(AnySignal::as_nix)),

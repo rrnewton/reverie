@@ -6043,6 +6043,16 @@ impl StoppedObservation {
     }
 }
 
+impl EventHandle {
+    /// The bound thread's stat flags (field 9), read through its retained
+    /// proc directory, so they describe this exact generation; `None` without
+    /// a captured identity.
+    pub(super) fn bound_stat_flags(&self) -> Option<Result<u32, ProcStatError>> {
+        self.identity()
+            .map(|identity| read_bound_stat_flags(identity))
+    }
+}
+
 fn read_bound_stat_flags(identity: &WorkerIdentity) -> Result<u32, ProcStatError> {
     let _open = launch_window::TransientOpen::begin();
     let raw = unsafe {

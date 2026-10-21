@@ -991,6 +991,22 @@ impl TraceeGeneration {
 #[derive(Hash, Eq, PartialEq)]
 pub struct Stopped(Pid, TraceeToken, ExitStopMark);
 
+/// A resuming request for [`Stopped::transition_unless_left_for_exit`]. Each
+/// signal is a raw number, so that one nix cannot name can be delivered; 0
+/// delivers none.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Transition {
+    /// `PTRACE_CONT`.
+    Cont(i32),
+    /// `PTRACE_SYSCALL`.
+    Syscall(i32),
+    /// `PTRACE_SINGLESTEP`.
+    Step(i32),
+    /// `PTRACE_SINGLEBLOCK`, delivering no signal.
+    #[cfg(target_arch = "x86_64")]
+    BlockStep,
+}
+
 impl fmt::Debug for Stopped {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_tuple("Stopped")
@@ -1561,7 +1577,8 @@ impl Stopped {
     /// Call this only on the capability for a stop other than the exit stop,
     /// after a request on it failed with `ESRCH`. Holding such a stop, the
     /// tracer has not resumed the tracee, so a tracee found in its exit stop
-    /// was taken there by a fatal signal and the held stop is dead.
+    /// was taken there by a fatal signal and the held stop is dead. Before a
+    /// resume, use [`Self::died_into_exit_stop_before_resume`].
     pub fn died_into_exit_stop(&self) -> Option<Error> {
         match self.getsiginfo() {
             Ok(siginfo)
@@ -1572,6 +1589,95 @@ impl Stopped {
             }
             Err(died @ Error::Died(_)) => Some(died),
             _ => None,
+        }
+    }
+
+    /// [`Self::died_into_exit_stop`] for a probe made before resuming the stop
+    /// this capability names, so that the resume does not land on the exit
+    /// stop and consume it (a resume is addressed by PID, not by stop). To
+    /// resume, prefer [`Self::transition_unless_left_for_exit`], which makes
+    /// the same probe immediately before its request.
+    ///
+    /// Siginfo contents alone prove nothing here: at a SIGTRAP delivery stop
+    /// a thread may queue itself the exit signature (`si_code` 0x605), and
+    /// `PTRACE_SETSIGINFO` can overwrite the real exit stop's siginfo (a
+    /// replayed signal does) while `PTRACE_GETEVENTMSG` still holds the exit
+    /// status. So the probe rests on two other facts:
+    /// - `PF_SIGNALED` (0x400) in the thread's stat flags, read through the
+    ///   generation's retained proc directory: a task that took a fatal
+    ///   signal can only be stopped in its exit stop, and the flag is set
+    ///   before that stop is reported. A gone task (`ESRCH`/`ENOENT`) has
+    ///   left too.
+    /// - `PTRACE_GETSIGINFO` failing with `ESRCH`: the tracee is no longer in
+    ///   a stop. Holding one, the tracer has not resumed it, so a fatal signal
+    ///   woke it (Linux clears `JOBCTL_TRACED` at once).
+    ///
+    /// The flags come first and `PTRACE_GETSIGINFO` last, so that in the
+    /// common case no system call separates the final check from the
+    /// request that follows: each return from a system call is a point where
+    /// a loaded scheduler can preempt the tracer while the tracee moves on.
+    /// An exit signature seen by that last check, after flags without
+    /// `PF_SIGNALED`, re-reads the flags to tell a real exit stop entered in
+    /// between from a forged one.
+    #[cfg(feature = "notifier")]
+    pub fn died_into_exit_stop_before_resume(&self) -> Option<Error> {
+        self.left_for_exit_stop()
+            .then(|| self.map_err(Errno::ESRCH))
+    }
+
+    /// Makes `transition` unless the tracee has left the stop this capability
+    /// names for its exit stop; then it returns the same [`Error::Died`] as a
+    /// request that met `ESRCH`, without issuing the request. The probe (see
+    /// [`Self::died_into_exit_stop_before_resume`]) runs inside the same held
+    /// TID section, immediately before the request. Nothing makes the two
+    /// atomic: a fatal signal arriving between them still takes the tracee
+    /// into its exit stop, and the request then resumes it.
+    ///
+    /// Use it only on the capability for a stop other than the exit stop.
+    #[cfg(feature = "notifier")]
+    pub fn transition_unless_left_for_exit(self, transition: Transition) -> Result<Running, Error> {
+        let (request, signal) = match transition {
+            Transition::Cont(signal) => (libc::PTRACE_CONT, signal),
+            Transition::Syscall(signal) => (libc::PTRACE_SYSCALL, signal),
+            Transition::Step(signal) => (libc::PTRACE_SINGLESTEP, signal),
+            #[cfg(target_arch = "x86_64")]
+            Transition::BlockStep => (PTRACE_SINGLEBLOCK, 0),
+        };
+        self.1
+            .on_held_tid(|| {
+                if self.left_for_exit_stop() {
+                    return Err(Errno::ESRCH);
+                }
+                ptrace_resume_raw(request, self.0, signal)
+            })
+            .map_err(|err| self.map_err(err))?;
+        Ok(self.into_running())
+    }
+
+    /// The probe shared by [`Self::died_into_exit_stop_before_resume`] and
+    /// [`Self::transition_unless_left_for_exit`], for use inside a held TID
+    /// section. Without a captured identity it cannot read the bound flags,
+    /// and only the `ESRCH` half applies.
+    #[cfg(feature = "notifier")]
+    fn left_for_exit_stop(&self) -> bool {
+        const PF_SIGNALED: u32 = 0x400;
+        let signaled = || match self.1.event().bound_stat_flags() {
+            Some(Ok(flags)) => flags & PF_SIGNALED != 0,
+            Some(Err(notifier::ProcStatError::Io(Errno::ESRCH | Errno::ENOENT))) => true,
+            Some(Err(_)) | None => false,
+        };
+        if signaled() {
+            return true;
+        }
+        match ptrace::getsiginfo(self.0.into()) {
+            Err(nix::Error::ESRCH) => true,
+            Ok(info)
+                if info.si_signo == libc::SIGTRAP
+                    && info.si_code == libc::SIGTRAP | (libc::PTRACE_EVENT_EXIT << 8) =>
+            {
+                signaled()
+            }
+            _ => false,
         }
     }
 
