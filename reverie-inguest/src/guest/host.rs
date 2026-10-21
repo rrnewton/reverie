@@ -1493,8 +1493,14 @@ fn proto_announce_predicted<T: Tool, R: HostRuntime>(
     tool: &T,
     guest: &mut InGuest<'_, T, R>,
 ) -> Option<Ending> {
+    // PROTOTYPE 3c (P11): the two-phase hand-off. Each pass announces every
+    // newly predicted caught signal (its turn, nothing recorded); once a pass
+    // predicts nothing new, the final read decides: announcements the final
+    // prediction delivers are committed in the kernel's delivery order, the
+    // others withdrawn.
     let tail = guest.tail;
     let mut handled = 0u64;
+    let mut held: Vec<reverie::SignalAnnouncement> = Vec::new();
     for pass in 0..64 {
         let mask = super::continuation::proto_guest_mask()?;
         let prediction = super::proto3c::predict(mask);
@@ -1505,9 +1511,9 @@ fn proto_announce_predicted<T: Tool, R: HostRuntime>(
                 continue;
             }
             fresh = true;
-            let shown = reverie::Signal::try_from(sig).unwrap_or_else(|_| fatal(126));
-            match callback_result(drive_callback(tool.handle_signal_event(guest, shown), tail)) {
-                Ok(Ok(Some(_))) => handled |= b,
+            handled |= b;
+            match callback_result(drive_callback(tool.announce_signal_event(guest, sig), tail)) {
+                Ok(Ok(Some(announcement))) => held.push(announcement),
                 Ok(Ok(None)) => super::proto3c::dequeue(sig),
                 Ok(Err(errno)) => tool_fatal(125, &Error::from(errno)),
                 Err(ending) => return Some(ending),
@@ -1518,6 +1524,24 @@ fn proto_announce_predicted<T: Tool, R: HostRuntime>(
                 super::proto3c::note_passes(pass);
             }
             super::proto3c::report_final(&prediction);
+            let delivered = &prediction.caught[..prediction.len];
+            for &sig in delivered {
+                if let Some(index) = held.iter().position(|a| a.signal() == sig) {
+                    let announcement = held.remove(index);
+                    match callback_result(drive_callback(
+                        tool.commit_signal_event(guest, announcement),
+                        tail,
+                    )) {
+                        Ok(Ok(())) => super::proto3c::note_commit(sig),
+                        Ok(Err(errno)) => tool_fatal(125, &Error::from(errno)),
+                        Err(ending) => return Some(ending),
+                    }
+                }
+            }
+            for announcement in held.drain(..) {
+                super::proto3c::note_withdraw(announcement.signal());
+                tool.withdraw_signal_event(guest.thread_state_mut(), announcement);
+            }
             return None;
         }
     }

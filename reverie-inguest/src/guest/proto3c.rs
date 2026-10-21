@@ -336,6 +336,22 @@ pub fn read_frame_mask(sp: u64) -> Option<u64> {
 
 /// Prototype instrumentation: a final read reached after more than one pass
 /// of turns (a signal arrived while an earlier turn was taken).
+/// PROTOTYPE 3c (P11): one line per committed announcement.
+pub fn note_commit(sig: i32) {
+    let mut line = *b"proto3c: commit 00\n";
+    line[16] = b'0' + (sig / 10) as u8;
+    line[17] = b'0' + (sig % 10) as u8;
+    unsafe { raw_syscall6(libc::SYS_write, [2, line.as_ptr() as u64, line.len() as u64, 0, 0, 0]) };
+}
+
+/// PROTOTYPE 3c (P11): one line per withdrawn announcement.
+pub fn note_withdraw(sig: i32) {
+    let mut line = *b"proto3c: withdraw 00\n";
+    line[18] = b'0' + (sig / 10) as u8;
+    line[19] = b'0' + (sig % 10) as u8;
+    unsafe { raw_syscall6(libc::SYS_write, [2, line.as_ptr() as u64, line.len() as u64, 0, 0, 0]) };
+}
+
 pub fn note_passes(passes: usize) {
     let mut line = *b"proto3c: final read after 0 passes of turns\n";
     line[26] = b'0' + passes.min(9) as u8;
