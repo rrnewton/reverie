@@ -816,3 +816,56 @@ fn descriptor_zero_byte_reads_follow_access_before_blocking_admission() {
         assert_eq!(close(&mut state, fd as u64), 0);
     }
 }
+
+/// fcntl lets an O_PATH descriptor run only its descriptor-flag, status-flag
+/// and duplication commands: a lock command fails with EBADF before its flock
+/// structure is copied, so even an unreadable structure gives EBADF; a
+/// descriptor open for I/O copies the structure first (EFAULT).
+#[test]
+fn descriptor_o_path_lock_commands_refuse_before_copying_the_lock() {
+    let root = TestDir::new();
+    let mut state = test_state(&root.0);
+    let mut memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
+    let regular = descriptor_regular_file(&root, "regular");
+    let native_regular = root.0.join("regular");
+    for (path, native_path) in [
+        ("/dev/urandom", std::path::PathBuf::from("/dev/urandom")),
+        (regular.as_str(), native_regular),
+    ] {
+        for (opened, expected) in [(libc::O_PATH, libc::EBADF), (libc::O_RDWR, libc::EFAULT)] {
+            let fd = open_with_flags(&mut memory, &mut state, path, opened);
+            assert!(fd >= 0, "{path}: {fd}");
+            let native_name = CString::new(native_path.as_os_str().as_bytes()).unwrap();
+            // SAFETY: the name is NUL-terminated; the descriptor is closed below.
+            let native = unsafe { libc::open(native_name.as_ptr(), opened | libc::O_CLOEXEC) };
+            assert!(native >= 0);
+            for command in [
+                libc::F_SETLK,
+                libc::F_SETLKW,
+                libc::F_OFD_SETLK,
+                libc::F_GETLK,
+                libc::F_OFD_GETLK,
+            ] {
+                // SAFETY: an address the kernel refuses to read (it fails with
+                // EFAULT or, for O_PATH, before reading it).
+                let native_result = descriptor_native_outcome(unsafe {
+                    libc::fcntl(native, command, usize::MAX as *mut libc::flock)
+                } as i64);
+                assert_eq!(native_result, negative_errno(expected), "{path} {command}");
+                assert_eq!(
+                    syscall_result(
+                        &mut memory,
+                        &mut state,
+                        libc::SYS_fcntl,
+                        [fd as u64, command as u64, u64::MAX, 0, 0, 0]
+                    ),
+                    native_result,
+                    "{path} opened={opened:#x} command={command}"
+                );
+            }
+            // SAFETY: native is owned here.
+            unsafe { libc::close(native) };
+            assert_eq!(close(&mut state, fd as u64), 0);
+        }
+    }
+}
