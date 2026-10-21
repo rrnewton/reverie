@@ -122,6 +122,12 @@ struct OwnerData {
     /// change (a callback scope's end, on every guest syscall) has no watcher,
     /// and arming allocates a channel and a shared future.
     change_subscribed: bool,
+    /// The generation of the last destroyed callback scope, kept so the next
+    /// callback can reuse its allocation. It is reused only when this is the
+    /// last reference to it (`Arc::get_mut`), so no origin, waiter or nested
+    /// callback can observe the reuse; a reused generation gets a fresh
+    /// identity and is reset to the state `Arc::new` would give it.
+    spare_generation: Option<Arc<CallbackGeneration>>,
 }
 
 impl OwnerData {
@@ -187,6 +193,7 @@ impl DriverScope {
                     pending: Vec::new(),
                     change: Change::new(),
                     change_subscribed: false,
+                    spare_generation: None,
                 }),
                 has_pending: AtomicBool::new(false),
             })),
@@ -306,21 +313,29 @@ impl DriverOwner {
             .next_callback
             .checked_add(1)
             .ok_or_else(|| protocol("callback identity exhausted"))?;
-        let (sender, receiver) = oneshot::channel();
-        let callback = Arc::new(CallbackGeneration {
-            id,
-            destroyed: AtomicBool::new(false),
-            destroyed_notification: receiver.shared(),
-            parent,
-        });
+        // Reuse the last destroyed generation's allocation only while nothing
+        // else refers to it: then no one can tell it from a new one. Its old
+        // parent is moved out here and dropped after the owner lock.
+        let mut released = None;
+        let mut spare = data.spare_generation.take();
+        let callback = match spare.as_mut().and_then(Arc::get_mut) {
+            Some(reused) => {
+                released = reused.reset(id, parent);
+                spare.take().expect("reused spare generation")
+            }
+            // A shared spare stays with its other holders.
+            None => Arc::new(CallbackGeneration::new(id, parent)),
+        };
         data.next_callback = id;
         data.callbacks.insert(id);
+        drop(data);
+        drop(released);
+        drop(spare);
         Ok(CallbackScope {
             origin: OperationOrigin {
                 callback: Some(callback),
                 ..self.origin()
             },
-            sender: Some(sender),
         })
     }
 }
@@ -328,8 +343,75 @@ impl DriverOwner {
 struct CallbackGeneration {
     id: u64,
     destroyed: AtomicBool,
-    destroyed_notification: OwnerSubscription,
+    /// Created by the first waiter only. Almost no callback is ever awaited,
+    /// and creating the channel and its shared receiver for every callback
+    /// cost three allocations per guest syscall. The scope's destructor
+    /// stores `destroyed` before it takes this lock, and a waiter rechecks
+    /// `destroyed` after it releases this lock, so either the waiter sees the
+    /// destruction or the destructor finds and completes its channel.
+    destroyed_notification: Mutex<Option<DestroyedNotification>>,
     parent: Option<Arc<CallbackGeneration>>,
+}
+
+struct DestroyedNotification {
+    sender: Option<oneshot::Sender<()>>,
+    receiver: OwnerSubscription,
+}
+
+impl CallbackGeneration {
+    fn new(id: u64, parent: Option<Arc<CallbackGeneration>>) -> Self {
+        Self {
+            id,
+            destroyed: AtomicBool::new(false),
+            destroyed_notification: Mutex::new(None),
+            parent,
+        }
+    }
+
+    /// Give a uniquely owned generation the state [`CallbackGeneration::new`]
+    /// would, returning its previous parent for the caller to drop outside
+    /// its locks.
+    fn reset(
+        &mut self,
+        id: u64,
+        parent: Option<Arc<CallbackGeneration>>,
+    ) -> Option<Arc<CallbackGeneration>> {
+        self.id = id;
+        *self.destroyed.get_mut() = false;
+        *self
+            .destroyed_notification
+            .get_mut()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
+        std::mem::replace(&mut self.parent, parent)
+    }
+
+    /// Subscribe before rechecking `destroyed`.
+    fn subscribe_destroyed(&self) -> OwnerSubscription {
+        let mut notification = self
+            .destroyed_notification
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        notification
+            .get_or_insert_with(|| {
+                let (sender, receiver) = oneshot::channel();
+                DestroyedNotification {
+                    sender: Some(sender),
+                    receiver: receiver.shared(),
+                }
+            })
+            .receiver
+            .clone()
+    }
+
+    /// Called after `destroyed` was stored. Returns the sender to complete
+    /// once the caller holds no lock.
+    fn take_destroyed_sender(&self) -> Option<oneshot::Sender<()>> {
+        self.destroyed_notification
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .as_mut()
+            .and_then(|notification| notification.sender.take())
+    }
 }
 
 /// Drop this guard only after dropping the owned callback future and its
@@ -338,7 +420,6 @@ struct CallbackGeneration {
 #[must_use = "keep the scope outside and alive through its owned callback future"]
 pub(crate) struct CallbackScope {
     origin: OperationOrigin,
-    sender: Option<oneshot::Sender<()>>,
 }
 
 impl CallbackScope {
@@ -357,20 +438,26 @@ impl std::fmt::Debug for CallbackScope {
 
 impl Drop for CallbackScope {
     fn drop(&mut self) {
-        let generation = self.origin.callback.as_ref().unwrap();
+        let generation = self.origin.callback.take().unwrap();
+        let mut released = None;
         let notification = self.origin.owner.upgrade().map(|owner| {
             let mut data = owner.data.lock().unwrap();
             let removed = data.callbacks.remove(&generation.id);
             debug_assert!(removed, "unique callback scope was already removed");
             generation.destroyed.store(true, Ordering::Release);
+            // Keep this generation for the next callback's allocation. The
+            // one it replaces is dropped below, outside the owner lock.
+            released = data.spare_generation.replace(generation.clone());
             data.changed()
         });
         // The lexical driver may already have been abandoned and destroyed.
         // The retained generation still records actual callback destruction.
         generation.destroyed.store(true, Ordering::Release);
-        if let Some(sender) = self.sender.take() {
+        if let Some(sender) = generation.take_destroyed_sender() {
             let _ = sender.send(());
         }
+        drop(generation);
+        drop(released);
         if let Some(notification) = notification {
             notification.notify();
         }
@@ -467,9 +554,12 @@ impl OperationOrigin {
         let mut callback = self.callback.clone();
         while let Some(generation) = callback {
             if !generation.destroyed.load(Ordering::Acquire) {
-                let _ = generation.destroyed_notification.clone().await;
+                let destroyed = generation.subscribe_destroyed();
                 if !generation.destroyed.load(Ordering::Acquire) {
-                    return Err(protocol("callback notification lost before destruction"));
+                    let _ = destroyed.await;
+                    if !generation.destroyed.load(Ordering::Acquire) {
+                        return Err(protocol("callback notification lost before destruction"));
+                    }
                 }
             }
             callback = generation.parent.clone();
