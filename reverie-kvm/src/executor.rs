@@ -8375,9 +8375,22 @@ fn file_mode(file: &std::fs::File) -> Result<libc::mode_t, i64> {
     fd_mode(file.as_raw_fd())
 }
 
+/// Whether a description's status flags grant read access. Linux's open gives
+/// FMODE_READ only to O_RDONLY and O_RDWR: access mode 3 (O_ACCMODE) grants
+/// neither read nor write, and an O_PATH descriptor grants no I/O at all.
+fn status_grants_read(flags: libc::c_int) -> bool {
+    flags & libc::O_PATH == 0 && matches!(flags & libc::O_ACCMODE, libc::O_RDONLY | libc::O_RDWR)
+}
+
+/// Whether a description's status flags grant write access (FMODE_WRITE):
+/// only O_WRONLY and O_RDWR, as for [`status_grants_read`].
+fn status_grants_write(flags: libc::c_int) -> bool {
+    flags & libc::O_PATH == 0 && matches!(flags & libc::O_ACCMODE, libc::O_WRONLY | libc::O_RDWR)
+}
+
 fn ensure_read_access_fd(fd: RawFd) -> Result<(), i64> {
     let flags = fd_status_flags(fd)?;
-    if flags & libc::O_PATH != 0 || flags & libc::O_ACCMODE == libc::O_WRONLY {
+    if !status_grants_read(flags) {
         return Err(negative_errno(libc::EBADF));
     }
     Ok(())
@@ -8409,7 +8422,7 @@ fn ensure_writable_entry(
         return ensure_writable(file);
     };
     let flags = entry.access(|| file_status_flags(file))?;
-    if flags & libc::O_PATH != 0 || flags & libc::O_ACCMODE == libc::O_RDONLY {
+    if !status_grants_write(flags) {
         Err(negative_errno(libc::EBADF))
     } else {
         Ok(())
@@ -8426,7 +8439,7 @@ fn ensure_read_capable_entry(
         return ensure_read_capable(file);
     };
     let flags = entry.access(|| file_status_flags(file))?;
-    if flags & libc::O_PATH != 0 || flags & libc::O_ACCMODE == libc::O_WRONLY {
+    if !status_grants_read(flags) {
         return Err(negative_errno(libc::EBADF));
     }
     entry.read_capable(|| read_capability_probe(file))
@@ -8438,7 +8451,7 @@ fn ensure_writable(file: &std::fs::File) -> Result<(), i64> {
 
 fn ensure_writable_fd(fd: RawFd) -> Result<(), i64> {
     let flags = fd_status_flags(fd)?;
-    if flags & libc::O_PATH != 0 || flags & libc::O_ACCMODE == libc::O_RDONLY {
+    if !status_grants_write(flags) {
         Err(negative_errno(libc::EBADF))
     } else {
         Ok(())
@@ -8653,8 +8666,39 @@ fn write(
     {
         return error;
     }
+    // vfs_write checks the buffer's address range (access_ok) for the whole
+    // count after the access mode and before anything is written, even when
+    // the count is zero.
+    if let Err(error) = validate_guest_iovec_address(args[1], requested_length) {
+        return error;
+    }
     if length == 0 {
         return 0;
+    }
+
+    // An owned descriptor writes through the host unless captured output
+    // takes its bytes.
+    if !standard && (output_destination.is_none() || output.is_none()) {
+        let host_fd = state
+            .files
+            .get(&fd)
+            .expect("owned descriptor disappeared")
+            .as_raw_fd();
+        let mut staged = match stage_guest_write(memory, host_fd, args[1], length) {
+            Ok(staged) => staged,
+            Err(error) => return error,
+        };
+        let (buffer, buffer_length) = staged.host_buffer();
+        let private_pipe = private_pipe_owner(state, fd);
+        let still_private = || private_pipe.is_some_and(|owner| owner.pair_never_exported());
+        let pipe_requested = private_pipe.map(|_| (length, &still_private as &dyn Fn() -> bool));
+        let (written, sigpipe) = suppress_host_sigpipe_reporting(pipe_requested, || {
+            // SAFETY: the staged buffer is `length` live host bytes (a partly
+            // readable one has its unreadable suffix PROT_NONE), and host_fd
+            // is a live backing descriptor.
+            unsafe { libc::write(host_fd, buffer, buffer_length) as i64 }
+        });
+        return with_guest_sigpipe(state, written, sigpipe);
     }
 
     let mut bytes = vec![0; length];
@@ -8673,28 +8717,74 @@ fn write(
             return host_write(fd, &bytes);
         }
     }
-    if standard {
-        return state
-            .stdin
-            .as_mut()
-            .expect("open standard input disappeared")
-            .write(&bytes)
-            .map_or_else(io_error, |count| count as i64);
-    }
+    debug_assert!(
+        standard,
+        "an owned descriptor writes through the staged path"
+    );
+    state
+        .stdin
+        .as_mut()
+        .expect("open standard input disappeared")
+        .write(&bytes)
+        .map_or_else(io_error, |count| count as i64)
+}
 
-    let host_fd = state
-        .files
-        .get(&fd)
-        .expect("owned descriptor disappeared")
-        .as_raw_fd();
-    let private_pipe = private_pipe_owner(state, fd);
-    let still_private = || private_pipe.is_some_and(|owner| owner.pair_never_exported());
-    let pipe_requested = private_pipe.map(|_| (bytes.len(), &still_private as &dyn Fn() -> bool));
-    let (written, sigpipe) = suppress_host_sigpipe_reporting(pipe_requested, || {
-        // SAFETY: bytes is a live host buffer and host_fd is a live backing descriptor.
-        unsafe { libc::write(host_fd, bytes.as_ptr().cast::<libc::c_void>(), bytes.len()) as i64 }
-    });
-    with_guest_sigpipe(state, written, sigpipe)
+/// A guest write buffer staged for one host write.
+enum StagedWrite {
+    /// The whole buffer was readable.
+    Whole(Vec<u8>),
+    /// Only a prefix was: see [`stage_guest_write`].
+    Partial(StagedIoVector),
+}
+
+impl StagedWrite {
+    /// The host buffer and its length, which is always the guest's length.
+    fn host_buffer(&mut self) -> (*const libc::c_void, usize) {
+        match self {
+            Self::Whole(bytes) => (bytes.as_ptr().cast(), bytes.len()),
+            Self::Partial(staged) => {
+                let iovec = staged.host_iovec();
+                (iovec.iov_base.cast_const(), iovec.iov_len)
+            }
+        }
+    }
+}
+
+/// Stages a guest write buffer for one host write of `length` bytes. A
+/// buffer that is readable throughout is copied as it is. One that becomes
+/// unreadable part way is staged as its readable prefix in a private arena
+/// whose remaining pages are PROT_NONE, so it reaches the host kernel with
+/// the shape it has in the guest, and the kernel decides the result for its
+/// object (a short count for a random device, EFAULT for some filesystems and
+/// for a pipe, for example), as for vectored writes.
+fn stage_guest_write(
+    memory: &GuestMemory,
+    host_fd: RawFd,
+    address: u64,
+    length: usize,
+) -> Result<StagedWrite, i64> {
+    let mut bytes = vec![0; length];
+    if memory.user().read(address, &mut bytes).is_ok() {
+        return Ok(StagedWrite::Whole(bytes));
+    }
+    drop(bytes);
+    let provider = ProviderMemory(memory);
+    let prefix = provider
+        .accessible_prefix(address, length, Access::Read)
+        .unwrap_or(0);
+    let vector = GuestIoVec {
+        base: address,
+        length,
+    };
+    let mut staged = StagedIoVector::new(vector, prefix, direct_io_memory_alignment(host_fd))?;
+    if prefix != 0
+        && provider
+            .read_exact(address, staged.accessible_slice_mut(prefix))
+            .is_err()
+    {
+        return Err(negative_errno(libc::EFAULT));
+    }
+    Ok(StagedWrite::Partial(staged))
 }
 
 /// The pipe-owner record of `fd` if it is a guest pipe end (pipe/pipe2 or a
@@ -9478,15 +9568,34 @@ fn pwrite64(memory: &GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) -> i
     if let Err(error) = ensure_writable(file) {
         return error;
     }
+    // As write: vfs_write's access_ok covers the whole count, even zero.
+    if let Err(error) = validate_guest_iovec_address(args[1], requested_length) {
+        return error;
+    }
     if length == 0 {
         return 0;
     }
-    let mut bytes = vec![0; length];
-    if memory.user().read(args[1], &mut bytes).is_err() {
-        return negative_errno(libc::EFAULT);
+    let mut staged = match stage_guest_write(memory, file.as_raw_fd(), args[1], length) {
+        Ok(staged) => staged,
+        Err(error) => return error,
+    };
+    let (buffer, buffer_length) = staged.host_buffer();
+    // SAFETY: the staged buffer is `length` live host bytes (a partly
+    // readable one has its unreadable suffix PROT_NONE), and file owns a live
+    // backing descriptor.
+    let written = unsafe {
+        libc::pwrite(
+            file.as_raw_fd(),
+            buffer,
+            buffer_length,
+            args[3] as libc::off_t,
+        )
+    };
+    if written < 0 {
+        io_error(std::io::Error::last_os_error())
+    } else {
+        written as i64
     }
-    file.write_at(&bytes, args[3])
-        .map_or_else(io_error, |count| count as i64)
 }
 
 struct AlignedIoArena {
@@ -10076,16 +10185,21 @@ fn vectored_io(
         return error;
     }
 
-    let count = if state.random_device_descriptions.contains_key(&guest_fd) {
-        u64::from(args[2] as u32)
-    } else {
-        args[2]
-    };
+    // Linux's import_iovec takes the vector count as an unsigned int, so the
+    // raw register's upper 32 bits are ignored for every vectored read and
+    // write.
+    let count = u64::from(args[2] as u32);
     let (guest_iovecs, total, kernel_total) = match decode_guest_iovecs(memory, args[1], count) {
         Ok(decoded) => decoded,
         Err(error) => return error,
     };
-    if positioned && let Err(error) = validate_positioned_vectored_flags(number, args, total) {
+    // A host descriptor's positioned call reaches the host kernel with its
+    // flags, which validates them in its own order (after the offset and
+    // length check). Only the backend-made endpoints check them here.
+    if positioned
+        && (virtual_signalfd || captured_output)
+        && let Err(error) = validate_positioned_vectored_flags(number, args, total)
+    {
         return error;
     }
     if virtual_signalfd {
@@ -16079,6 +16193,14 @@ fn ioctl(
     let Some(host_fd) = host_fd(state, guest_fd) else {
         return negative_errno(libc::EBADF);
     };
+    // ioctl looks its descriptor up with fdget, which refuses an O_PATH
+    // descriptor, so every command (FIOCLEX and FIONCLEX included) fails with
+    // EBADF there before any descriptor flag changes.
+    match fd_status_flags(host_fd) {
+        Ok(flags) if flags & libc::O_PATH != 0 => return negative_errno(libc::EBADF),
+        Ok(_) => {}
+        Err(error) => return error,
+    }
     // Linux ioctl takes an unsigned-int command even on the 64-bit syscall ABI.
     // Keep this limited support independent of the other ioctl dispatch arms.
     if args[1] as u32 == libc::FIONREAD as u32 {
@@ -19985,6 +20107,9 @@ fn mmap(memory: &mut GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6]) 
     {
         return random_device_mmap(memory, state, args, random);
     }
+    if let Some(error) = non_regular_mmap_early_refusal(state, args) {
+        return error;
+    }
     if args[1] == 0 {
         return negative_errno(libc::EINVAL);
     }
@@ -20087,6 +20212,11 @@ fn mmap(memory: &mut GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6]) 
                     return io_error(error);
                 }
             }
+        }
+        if !matches!(kind, MappingKind::RegularFile(_))
+            && let Some(error) = host_mmap_probe(file.as_raw_fd(), args)
+        {
+            return error;
         }
         // Only the first chunk is read before the reservation. The rest is
         // streamed below, so the host never holds a copy of the whole range
@@ -20196,6 +20326,111 @@ fn mmap(memory: &mut GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6]) 
         state.mmap_next = state.mmap_next.max(end);
     }
     memory.physical_to_user(address).unwrap_or(address) as i64
+}
+
+/// Flags a host mmap probe clears from the guest's request: they choose where
+/// a mapping goes, or ask for work beyond creating it (population, locking).
+/// The probe maps at an address of the host's choosing and keeps nothing.
+const HOST_MMAP_PROBE_CLEARED_FLAGS: u64 = (libc::MAP_FIXED
+    | libc::MAP_FIXED_NOREPLACE
+    | libc::MAP_32BIT
+    | libc::MAP_POPULATE
+    | libc::MAP_LOCKED
+    | libc::MAP_NONBLOCK) as u64;
+
+/// The flags Linux judges before it places a mapping: ksys_mmap_pgoff refuses
+/// MAP_HUGETLB, with its page-size field, for a file outside hugetlbfs.
+const HOST_MMAP_EARLY_FLAGS: u64 =
+    libc::MAP_HUGETLB as u64 | ((libc::MAP_HUGE_MASK as u64) << libc::MAP_HUGE_SHIFT);
+
+/// Asks the host kernel whether it maps `fd` with the guest's raw length,
+/// protection, flags (less [`HOST_MMAP_PROBE_CLEARED_FLAGS`]) and offset, at an
+/// address of its choosing, and removes the mapping at once. Returns the
+/// kernel's negative errno when it refuses, and `None` when it maps.
+pub(crate) fn host_mmap_probe(fd: RawFd, args: &[u64; 6]) -> Option<i64> {
+    host_mmap_probe_with(fd, args[1], args[2], args[3], args[5])
+}
+
+fn host_mmap_probe_with(fd: RawFd, length: u64, prot: u64, flags: u64, offset: u64) -> Option<i64> {
+    // SAFETY: without MAP_FIXED or MAP_FIXED_NOREPLACE the kernel places the
+    // mapping where nothing is mapped, so no existing mapping is replaced;
+    // nothing reads it, and it is unmapped below. The raw operands keep the
+    // guest's bits, as its own mmap passes them.
+    let mapped = unsafe {
+        libc::syscall(
+            libc::SYS_mmap,
+            0_u64,
+            length,
+            prot,
+            flags & !HOST_MMAP_PROBE_CLEARED_FLAGS,
+            fd as libc::c_long,
+            offset,
+        )
+    };
+    if mapped == -1 {
+        return Some(io_error(std::io::Error::last_os_error()));
+    }
+    // SAFETY: the host returned this mapping of `length` bytes just above.
+    let unmapped = unsafe { libc::munmap(mapped as *mut libc::c_void, length as usize) };
+    debug_assert_eq!(unmapped, 0, "the probe mapping could not be removed");
+    None
+}
+
+/// The refusals Linux gives before it places a file mapping, for a mapping of
+/// an object that is not a regular file; `None` for anything else. The
+/// executor copies a mapped file's bytes into guest memory instead of mapping
+/// it, so for an object other than a regular file the kernel's own answers are
+/// taken from host probes, in the kernel's order:
+///
+/// 1. x86-64's sys_mmap refuses an unaligned offset (EINVAL) first, then
+///    ksys_mmap_pgoff's descriptor lookup refuses an O_PATH descriptor (EBADF).
+/// 2. The checks before placement that do not depend on the object
+///    (MAP_HUGETLB outside hugetlbfs, a zero or overflowing length, an
+///    overflowing file offset) come from the same request made of a stand-in
+///    that accepts every mapping: a private memfd, mapped MAP_PRIVATE with
+///    only [`HOST_MMAP_EARLY_FLAGS`] of the guest's flags.
+///
+/// The guest's own placement refusals (a bad fixed range, an occupied
+/// MAP_FIXED_NOREPLACE range, an exhausted address space) follow in the
+/// caller, and the object's answer (the mapping type and flag validation,
+/// the access mode, a missing mmap operation) comes last from
+/// [`host_mmap_probe`] on the object itself, as in do_mmap.
+pub(crate) fn non_regular_mmap_early_refusal(
+    state: &LoadedStaticElf,
+    args: &[u64; 6],
+) -> Option<i64> {
+    if args[3] & libc::MAP_ANONYMOUS as u64 != 0 {
+        return None;
+    }
+    let file = state.files.get(&(args[4] as libc::c_int))?;
+    match file_mode(file) {
+        Ok(mode) if mode & libc::S_IFMT == libc::S_IFREG => return None,
+        Ok(_) => {}
+        Err(error) => return Some(error),
+    }
+    if !args[5].is_multiple_of(PAGE_SIZE) {
+        return Some(negative_errno(libc::EINVAL));
+    }
+    match file_status_flags(file) {
+        Ok(status) if status & libc::O_PATH != 0 => return Some(negative_errno(libc::EBADF)),
+        Ok(_) => {}
+        Err(error) => return Some(error),
+    }
+    // SAFETY: the name is NUL-terminated; a successful descriptor is owned below.
+    let stand_in =
+        unsafe { libc::memfd_create(c"reverie-kvm-mmap-probe".as_ptr(), libc::MFD_CLOEXEC) };
+    if stand_in < 0 {
+        return Some(io_error(std::io::Error::last_os_error()));
+    }
+    // SAFETY: memfd_create returned this newly owned descriptor.
+    let stand_in = unsafe { std::fs::File::from_raw_fd(stand_in) };
+    host_mmap_probe_with(
+        stand_in.as_raw_fd(),
+        args[1],
+        libc::PROT_NONE as u64,
+        libc::MAP_PRIVATE as u64 | (args[3] & HOST_MMAP_EARLY_FLAGS),
+        args[5],
+    )
 }
 
 /// Fails an mmap after its reservation, returning `result`.
@@ -22618,6 +22853,7 @@ mod tests {
     include!("executor/inotify_tests.rs");
     include!("executor/shared_file_tests.rs");
     include!("executor/read_zero_cancel_tests.rs");
+    include!("executor/descriptor_generic_tests.rs");
     include!("executor/random_device_stream_tests.rs");
     include!("executor/random_device_carrier_tests.rs");
     use std::collections::BTreeMap;
