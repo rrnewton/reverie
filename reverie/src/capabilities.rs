@@ -92,6 +92,18 @@ pub struct BackendCapabilities {
     /// A pending tool request from a thread that the tool has logically killed
     /// is not resolved by the kernel's exit-group teardown, so the tool must
     /// cancel it explicitly.
+    ///
+    /// A tool may also use it to choose how it treats a removed thread's later
+    /// requests. Detcore does: it admits requests by address-space incarnation
+    /// on every backend, and where this holds it also keeps a tombstone for
+    /// each removed thread ID, which refuses that ID's later requests (an exec
+    /// that reuses the ID for its new leader clears it). Where it does not
+    /// (ptrace, and e9patch, which runs on it) there is no tombstone, so an
+    /// exec can reopen a former thread ID through registration, and a removed
+    /// thread's owed cleanup (robust-list wakes) and failure reports are still
+    /// admitted. Retiring this field needs those two models unified first, a
+    /// named item planned with A5 step C (A5 design 18.14 and 18.15, dev-hermit
+    /// `ai_docs/2026-10-16-a5-signal-delivery-design.md`).
     pub needs_killed_thread_rpc_cancellation: bool,
 
     /// The backend reports a process's final physical exit separately, after
