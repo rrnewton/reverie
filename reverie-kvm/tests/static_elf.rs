@@ -807,9 +807,6 @@ int main(int argc, char **argv) {
 }
 "#;
 
-#[path = "support/random_device_stream.rs"]
-mod random_device_stream;
-
 #[path = "support/poll_descriptor_abi.rs"]
 mod poll_descriptor_abi;
 
@@ -20890,7 +20887,6 @@ fn dropped_public_run_case(
         ("mutable guest memory", backend.memory_mut().map(drop)),
         ("the VM fd", backend.vm_fd().map(drop)),
         ("a root pid", backend.set_root_pid(DROPPED_RUN_ROOT)),
-        ("a random seed", backend.set_random_seed(1)),
         (
             "host metadata timestamps",
             backend.set_host_metadata_timestamps(true),

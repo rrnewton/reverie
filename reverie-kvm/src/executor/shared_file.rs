@@ -30,7 +30,6 @@ fn classify_shared_mmap_file(
 ) -> crate::Result<()> {
     if state.proc_files.contains_key(&fd)
         || state.fdinfo_files.contains_key(&fd)
-        || state.random_device_fds.contains(&fd)
         || (capture_output && output_alias(state, fd).is_some())
     {
         return Err(unsupported_mmap("synthetic or captured backing"));
@@ -70,14 +69,6 @@ pub(super) fn mmap_with_shared_files(
     capture_output: bool,
     allocation: AllocationGuard<'_>,
 ) -> crate::Result<i64> {
-    // Preserve the random device's earlier ABI checks. Its existing mmap path
-    // always refuses before reservation/zeroing, including MAP_FIXED; calling
-    // it cannot overwrite a currently shared ordinary file.
-    if args[3] & libc::MAP_ANONYMOUS as u64 == 0
-        && let Some(random) = state.random_device_descriptions.get(&(args[4] as i32))
-    {
-        return Ok(random_device_mmap(memory, state, args, random));
-    }
     if args[1] == 0 {
         return Ok(negative_errno(libc::EINVAL));
     }
@@ -221,6 +212,9 @@ pub(super) fn mmap_with_shared_files(
             Err(error) => return Ok(error),
         };
         if mode & libc::S_IFMT != libc::S_IFREG {
+            if let Some(error) = super::host_mmap_refusal(file, args, length) {
+                return Ok(error);
+            }
             return Err(unsupported_mmap(
                 "only ordinary regular files are supported",
             ));
@@ -268,6 +262,11 @@ pub(super) fn mmap_with_shared_files(
             let Some(file) = state.files.get(&(args[4] as libc::c_int)) else {
                 return Ok(negative_errno(libc::EBADF));
             };
+            if !matches!(kind, super::MappingKind::RegularFile(_))
+                && let Some(error) = super::host_mmap_refusal(file, args, length)
+            {
+                return Ok(error);
+            }
             let mut bytes = vec![0; length];
             let mut count = 0;
             while count < length {
@@ -577,7 +576,7 @@ mod tests {
     #[test]
     fn shared_mmap_capability_refusals_preserve_target_and_descriptor_precedence() {
         let (mut memory, mut state) = setup();
-        state.files.insert(3, backing(c"reverie-kvm-virtual"));
+        state.files.insert(3, backing(c"reverie-kvm-proc"));
         state.files.insert(4, backing(c"shared-map-ordinary"));
         let address = state.mmap_base;
         memory.write(address, &[0x5a; 32]).unwrap();
@@ -629,5 +628,75 @@ mod tests {
             Err(crate::Error::SharedFileCapability { .. })
         ));
         assert_eq!(bytes(&memory, address, 32), [0x5a; 32]);
+    }
+
+    /// What the host kernel answers when `path` is mapped natively: zero for
+    /// a mapping, or the negative errno of its refusal.
+    fn native_mmap_result(path: &str, flags: libc::c_int) -> i64 {
+        let file = std::fs::File::open(path).unwrap();
+        // SAFETY: a kernel-placed mapping of a live descriptor, unmapped below.
+        let mapped = unsafe {
+            libc::mmap(
+                std::ptr::null_mut(),
+                PAGE_SIZE as usize,
+                libc::PROT_READ,
+                flags,
+                file.as_raw_fd(),
+                0,
+            )
+        };
+        if mapped == libc::MAP_FAILED {
+            return io_error(std::io::Error::last_os_error());
+        }
+        // SAFETY: the mapping above is PAGE_SIZE bytes and is not used again.
+        assert_eq!(unsafe { libc::munmap(mapped, PAGE_SIZE as usize) }, 0);
+        0
+    }
+
+    /// The executor copies a mapped file's bytes into guest memory, which
+    /// would succeed for any object read(2) reads. For an object that is not a
+    /// regular file, whether it can be mapped is the host kernel's decision:
+    /// a refusal (for example the random devices' ENODEV) reaches the guest
+    /// with the guest's memory and allocation cursors unchanged, and an
+    /// accepted private mapping keeps the copy (zeros, for /dev/zero).
+    #[test]
+    fn non_regular_file_mmap_follows_the_host_kernel() {
+        // Linux's random devices have no mmap operation.
+        assert_eq!(
+            native_mmap_result("/dev/urandom", libc::MAP_PRIVATE),
+            negative_errno(libc::ENODEV)
+        );
+        for path in ["/dev/urandom", "/dev/random", "/dev/null", "/dev/zero", "/"] {
+            for flags in [libc::MAP_PRIVATE, libc::MAP_SHARED] {
+                let (mut memory, mut state) = setup();
+                state.files.insert(3, std::fs::File::open(path).unwrap());
+                let address = state.mmap_base;
+                memory.write(address, &[0x5a; 32]).unwrap();
+                let before = state.mmap_next;
+                let args = [0, PAGE_SIZE, libc::PROT_READ as u64, flags as u64, 3, 0];
+                let result = call(&mut memory, &mut state, args, false);
+                let native = native_mmap_result(path, flags);
+                if native < 0 {
+                    assert_eq!(result.unwrap(), native, "{path} flags={flags:#x}");
+                    assert_eq!(bytes(&memory, address, 32), [0x5a; 32], "{path}");
+                    assert_eq!(state.mmap_next, before, "{path}");
+                } else if flags == libc::MAP_PRIVATE {
+                    let mapped = result.unwrap();
+                    assert!(mapped > 0, "{path} flags={flags:#x}: {mapped}");
+                    let mapped = memory
+                        .user_range_to_guest(mapped as u64, PAGE_SIZE)
+                        .unwrap();
+                    assert_eq!(bytes(&memory, mapped, 32), [0; 32], "{path}");
+                } else {
+                    // A shared view of an object that is not a regular file
+                    // remains an unsupported capability once the host maps it.
+                    assert!(
+                        matches!(result, Err(crate::Error::SharedFileCapability { .. })),
+                        "{path} flags={flags:#x}"
+                    );
+                }
+                assert!(!memory.contains_shared_file(), "{path}");
+            }
+        }
     }
 }
