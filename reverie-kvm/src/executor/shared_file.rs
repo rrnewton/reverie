@@ -78,6 +78,9 @@ pub(super) fn mmap_with_shared_files(
     {
         return Ok(random_device_mmap(memory, state, args, random));
     }
+    if let Some(error) = super::non_regular_mmap_early_refusal(state, args) {
+        return Ok(error);
+    }
     if args[1] == 0 {
         return Ok(negative_errno(libc::EINVAL));
     }
@@ -196,6 +199,23 @@ pub(super) fn mmap_with_shared_files(
         if status & libc::O_PATH != 0 {
             return Ok(negative_errno(libc::EBADF));
         }
+        let mode = match file_mode(file) {
+            Ok(mode) => mode,
+            Err(error) => return Ok(error),
+        };
+        if mode & libc::S_IFMT != libc::S_IFREG {
+            // The object's own refusal (mapping type and flag validation,
+            // access mode, a missing mmap operation) is the host kernel's, in
+            // its order. One the kernel maps is beyond this path, which shares
+            // only regular files: it ends the run with the capability refusal,
+            // and the probe's mapping is already gone.
+            if let Some(error) = super::host_mmap_probe(file.as_raw_fd(), args) {
+                return Ok(error);
+            }
+            return Err(unsupported_mmap(
+                "only ordinary regular files are supported",
+            ));
+        }
         if !matches!(status & libc::O_ACCMODE, libc::O_RDONLY | libc::O_RDWR)
             || (writable && status & libc::O_ACCMODE != libc::O_RDWR)
         {
@@ -215,15 +235,6 @@ pub(super) fn mmap_with_shared_files(
             seals >= 0 && seals & (libc::F_SEAL_WRITE | libc::F_SEAL_FUTURE_WRITE) != 0;
         if writable && sealed_write {
             return Ok(negative_errno(libc::EPERM));
-        }
-        let mode = match file_mode(file) {
-            Ok(mode) => mode,
-            Err(error) => return Ok(error),
-        };
-        if mode & libc::S_IFMT != libc::S_IFREG {
-            return Err(unsupported_mmap(
-                "only ordinary regular files are supported",
-            ));
         }
         classify_shared_mmap_file(state, fd, file, capture_output)?;
         if flags & !supported_flags != 0 {
@@ -268,6 +279,11 @@ pub(super) fn mmap_with_shared_files(
             let Some(file) = state.files.get(&(args[4] as libc::c_int)) else {
                 return Ok(negative_errno(libc::EBADF));
             };
+            if !matches!(kind, super::MappingKind::RegularFile(_))
+                && let Some(error) = super::host_mmap_probe(file.as_raw_fd(), args)
+            {
+                return Ok(error);
+            }
             let mut bytes = vec![0; length];
             let mut count = 0;
             while count < length {
@@ -629,5 +645,142 @@ mod tests {
             Err(crate::Error::SharedFileCapability { .. })
         ));
         assert_eq!(bytes(&memory, address, 32), [0x5a; 32]);
+    }
+
+    /// What the host kernel answers when `path`, opened with `open_flags`, is
+    /// mapped natively: zero for a mapping, or the negative errno of its
+    /// refusal.
+    fn native_mmap_result(
+        path: &str,
+        open_flags: libc::c_int,
+        length: u64,
+        flags: libc::c_int,
+    ) -> i64 {
+        let name = CString::new(path).unwrap();
+        // SAFETY: name is NUL-terminated; the descriptor is closed below.
+        let fd = unsafe { libc::open(name.as_ptr(), open_flags | libc::O_CLOEXEC) };
+        assert!(fd >= 0, "{path}");
+        // SAFETY: a kernel-placed mapping of a live descriptor, unmapped below.
+        let mapped = unsafe {
+            libc::mmap(
+                std::ptr::null_mut(),
+                length as usize,
+                libc::PROT_READ,
+                flags,
+                fd,
+                0,
+            )
+        };
+        let result = if mapped == libc::MAP_FAILED {
+            io_error(std::io::Error::last_os_error())
+        } else {
+            // SAFETY: the mapping above is `length` bytes and is not used again.
+            assert_eq!(unsafe { libc::munmap(mapped, length as usize) }, 0);
+            0
+        };
+        // SAFETY: fd is owned here.
+        unsafe { libc::close(fd) };
+        result
+    }
+
+    /// The executor copies a mapped file's bytes into guest memory, which
+    /// would succeed for any object read(2) reads. For an object that is not a
+    /// regular file, every refusal is the host kernel's, in its order: the
+    /// O_PATH lookup (EBADF, even for a zero length), MAP_HUGETLB outside
+    /// hugetlbfs (EINVAL), MAP_SHARED_VALIDATE's unknown flags (EOPNOTSUPP),
+    /// the access mode (EACCES) and a missing mmap operation (ENODEV). A
+    /// refusal leaves guest memory and the mmap cursor unchanged, MAP_FIXED
+    /// included. An accepted private mapping keeps the copy (zeros, for
+    /// /dev/zero); an accepted shared one remains the named capability
+    /// refusal.
+    #[test]
+    fn non_regular_file_mmap_follows_the_host_kernel() {
+        // Linux's random devices have no mmap operation.
+        assert_eq!(
+            native_mmap_result("/dev/urandom", libc::O_RDONLY, PAGE_SIZE, libc::MAP_PRIVATE),
+            negative_errno(libc::ENODEV)
+        );
+        let cases = [
+            (libc::O_RDONLY, libc::MAP_PRIVATE, PAGE_SIZE),
+            (libc::O_RDONLY, libc::MAP_SHARED, PAGE_SIZE),
+            (
+                libc::O_RDONLY,
+                libc::MAP_PRIVATE | libc::MAP_HUGETLB,
+                PAGE_SIZE,
+            ),
+            (
+                libc::O_RDONLY,
+                libc::MAP_SHARED_VALIDATE | libc::MAP_SYNC,
+                PAGE_SIZE,
+            ),
+            (libc::O_WRONLY, libc::MAP_PRIVATE, PAGE_SIZE),
+            (libc::O_WRONLY, libc::MAP_SHARED, PAGE_SIZE),
+            (libc::O_PATH, libc::MAP_PRIVATE, PAGE_SIZE),
+            (libc::O_PATH, libc::MAP_PRIVATE, 0),
+        ];
+        for path in ["/dev/urandom", "/dev/random", "/dev/null", "/dev/zero", "/"] {
+            for (open_flags, flags, length) in cases {
+                if path == "/" && open_flags == libc::O_WRONLY {
+                    continue;
+                }
+                let (mut memory, mut state) = setup();
+                let name = CString::new(path).unwrap();
+                // SAFETY: name is NUL-terminated; the File owns the descriptor.
+                let fd = unsafe { libc::open(name.as_ptr(), open_flags | libc::O_CLOEXEC) };
+                assert!(fd >= 0, "{path}");
+                // SAFETY: open returned this newly owned descriptor.
+                state
+                    .files
+                    .insert(3, unsafe { std::fs::File::from_raw_fd(fd) });
+                let address = state.mmap_base;
+                memory.write(address, &[0x5a; 32]).unwrap();
+                let before = state.mmap_next;
+                let args = [0, length, libc::PROT_READ as u64, flags as u64, 3, 0];
+                let result = call(&mut memory, &mut state, args, false);
+                let native = native_mmap_result(path, open_flags, length, flags);
+                let label = format!("{path} open={open_flags:#x} flags={flags:#x} length={length}");
+                if native < 0 {
+                    assert_eq!(result.unwrap(), native, "{label}");
+                    assert_eq!(bytes(&memory, address, 32), [0x5a; 32], "{label}");
+                    assert_eq!(state.mmap_next, before, "{label}");
+                } else if flags & libc::MAP_TYPE == libc::MAP_PRIVATE {
+                    let mapped = result.unwrap();
+                    assert!(mapped > 0, "{label}: {mapped}");
+                    let mapped = memory
+                        .user_range_to_guest(mapped as u64, PAGE_SIZE)
+                        .unwrap();
+                    assert_eq!(bytes(&memory, mapped, 32), [0; 32], "{label}");
+                } else {
+                    assert!(
+                        matches!(result, Err(crate::Error::SharedFileCapability { .. })),
+                        "{label}"
+                    );
+                }
+                assert!(!memory.contains_shared_file(), "{label}");
+            }
+        }
+        // A refused MAP_FIXED mapping leaves the bytes it would have replaced.
+        for flags in [libc::MAP_PRIVATE, libc::MAP_SHARED] {
+            let (mut memory, mut state) = setup();
+            state
+                .files
+                .insert(3, std::fs::File::open("/dev/urandom").unwrap());
+            let address = state.mmap_base;
+            memory.write(address, &[0x5a; 32]).unwrap();
+            let args = [
+                address,
+                PAGE_SIZE,
+                libc::PROT_READ as u64,
+                (flags | libc::MAP_FIXED) as u64,
+                3,
+                0,
+            ];
+            assert_eq!(
+                call(&mut memory, &mut state, args, false).unwrap(),
+                negative_errno(libc::ENODEV),
+                "flags={flags:#x}"
+            );
+            assert_eq!(bytes(&memory, address, 32), [0x5a; 32], "flags={flags:#x}");
+        }
     }
 }

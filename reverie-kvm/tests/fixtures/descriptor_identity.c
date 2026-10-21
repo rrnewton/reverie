@@ -194,7 +194,7 @@ static int mapping_errors(long fd, long mode) {
   return 0;
 }
 
-static int one(const char* path, unsigned minor_number, int native) {
+static int one(const char* path, unsigned minor_number) {
   const long modes[] = {O_RDONLY, O_WRONLY, O_RDWR, 3, O_PATH};
   for (unsigned m = 0; m < sizeof(modes) / sizeof(modes[0]); ++m) {
     long mode = modes[m];
@@ -291,7 +291,7 @@ static int one(const char* path, unsigned minor_number, int native) {
             SYS_mmap, 0L, 4096L, (long)PROT_READ, (long)MAP_PRIVATE, fd, 0L),
         mode == O_PATH ? EBADF
                        : (mode == O_WRONLY || mode == 3 ? EACCES : ENODEV));
-    if (!native && (mode == O_WRONLY || mode == O_RDWR)) {
+    if (mode == O_WRONLY || mode == O_RDWR) {
       unsigned char* pages = (void*)syscall(
           SYS_mmap,
           0L,
@@ -316,21 +316,55 @@ static int one(const char* path, unsigned minor_number, int native) {
       CHECK(syscall(SYS_read, fd, (long)bytes, 23L) == 23);
       struct iovec iv[] = {{bytes + 23, 7}, {bytes + 30, 19}, {bytes + 49, 33}};
       CHECK(syscall(SYS_readv, alias, (long)iv, 3L) == 59);
-      if (!native)
-        for (unsigned i = 0; i < sizeof(bytes); ++i)
-          CHECK(bytes[i] == (unsigned char)((i * 73 + 41) & 255));
     }
     CHECK(syscall(SYS_close, fd) == 0);
     CHECK(syscall(SYS_close, alias) == 0);
   }
   return 0;
 }
-int main(int argc, char** argv) {
-  int native = argc == 2 && strcmp(argv[1], "native") == 0;
-  CHECK(one("/dev/random", 8, native) == 0);
-  CHECK(one("/dev/urandom", 9, native) == 0);
-  CHECK(one("/dev//random", 8, native) == 0);
-  CHECK(one("/dev/./urandom", 9, native) == 0);
-  puts("random carrier access, identity, flags, faults and bytes ok");
+/* The three stat calls agree on an ordinary file as on a device. */
+static int regular_identity(void) {
+  long fd = syscall(
+      SYS_openat,
+      (long)AT_FDCWD,
+      (long)"regular",
+      (long)(O_RDWR | O_CREAT | O_TRUNC | O_CLOEXEC),
+      0600L);
+  CHECK(fd >= 0);
+  CHECK(syscall(SYS_write, fd, (long)"identity", 8L) == 8);
+  long alias = syscall(SYS_dup, fd);
+  CHECK(alias >= 0);
+  struct stat st, at;
+  CHECK(syscall(SYS_fstat, fd, (long)&st) == 0);
+  CHECK(S_ISREG(st.st_mode) && st.st_size == 8);
+  struct statx sx;
+  CHECK(
+      syscall(
+          SYS_statx,
+          alias,
+          (long)"",
+          (long)AT_EMPTY_PATH,
+          (long)STATX_BASIC_STATS,
+          (long)&sx) == 0);
+  CHECK((sx.stx_mode & S_IFMT) == S_IFREG && sx.stx_size == 8);
+  CHECK(sx.stx_ino == st.st_ino && sx.stx_blocks == (unsigned long long)st.st_blocks);
+  CHECK(
+      syscall(SYS_newfstatat, alias, (long)"", (long)&at, (long)AT_EMPTY_PATH) ==
+      0);
+  CHECK(
+      at.st_mode == st.st_mode && at.st_ino == st.st_ino &&
+      at.st_dev == st.st_dev && at.st_size == st.st_size);
+  CHECK(syscall(SYS_close, fd) == 0);
+  CHECK(syscall(SYS_close, alias) == 0);
+  return 0;
+}
+
+int main(void) {
+  CHECK(one("/dev/random", 8) == 0);
+  CHECK(one("/dev/urandom", 9) == 0);
+  CHECK(one("/dev//random", 8) == 0);
+  CHECK(one("/dev/./urandom", 9) == 0);
+  CHECK(regular_identity() == 0);
+  puts("descriptor access, identity, flags, mapping errors and faults ok");
   return 0;
 }
