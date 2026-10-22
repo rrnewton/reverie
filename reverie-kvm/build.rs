@@ -9,6 +9,8 @@
 fn main() {
     println!("cargo:rerun-if-changed=src/terminal_read.c");
     println!("cargo:rerun-if-changed=src/terminal_read.h");
+    // Opt-in uprobe points that count the Tool-scratch fast path (memory.rs).
+    println!("cargo::rustc-check-cfg=cfg(reverie_kvm_scratch_probe)");
     if std::env::var("CARGO_CFG_TARGET_ARCH").as_deref() != Ok("x86_64") {
         return;
     }
