@@ -674,6 +674,14 @@ impl EntryGate {
         notify(sender);
     }
 
+    /// Whether [`Self::pending_failure`] may return a failure: the flag it
+    /// reads first. False means it would return None.
+    #[inline]
+    pub(crate) fn failure_recorded(&self) -> bool {
+        self.failure_recorded
+            .load(std::sync::atomic::Ordering::Acquire)
+    }
+
     pub(crate) fn pending_failure(&self) -> Option<Arc<PendingFailure>> {
         // Every guest-memory copy checks this, usually more than once.
         if !self
