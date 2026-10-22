@@ -307,6 +307,49 @@ pub(crate) mod exit_read_reuse_tests {
         assert_eq!(admissions(&backend), before);
     }
 
+    /// A shared-file failure deferred behind an open notification scope is
+    /// not yet a gate failure, so the gate's own check passes; the copy
+    /// failures checked around an admitted copy must still refuse the reuse,
+    /// with the same error a fresh capture reports.
+    #[test]
+    fn reuse_is_refused_by_a_deferred_copy_failure_as_a_fresh_capture_is() {
+        let Fixture {
+            mut backend,
+            frame_address,
+            ..
+        } = fixture();
+        let memory = backend.memory.clone();
+        let (_, exit) = backend.read_syscall_exit(&memory, frame_address).unwrap();
+        let scope = memory.defer_notifications();
+        let cause = memory.capture_shared_file_error(Error::SharedFileCopy {
+            operation: "controlled deferred copy",
+            address: frame_address,
+            requested: 8,
+            transferred: 0,
+            prior_transferred: 0,
+            source: std::io::Error::from_raw_os_error(libc::EIO),
+        });
+        assert!(backend.memory.entry_gate().pending_failure().is_none());
+        assert!(
+            backend
+                .memory
+                .entry_gate()
+                .admit_operation_unchanged(exit.generation)
+                .unwrap()
+        );
+        let before = admissions(&backend);
+        let error = capture_reusing(&mut backend, frame_address, Some((&exit, &memory)))
+            .map(drop)
+            .unwrap_err();
+        assert_eq!(admissions(&backend), before, "reuse admitted a copy");
+        let control = capture_reusing(&mut backend, frame_address, None)
+            .map(drop)
+            .unwrap_err();
+        assert_eq!(format!("{error:?}"), format!("{control:?}"));
+        assert_eq!(format!("{error:?}"), format!("{cause:?}"));
+        drop(scope);
+    }
+
     #[test]
     fn reuse_is_refused_while_closed_and_the_capture_waits_for_the_reopened_image() {
         let Fixture {
