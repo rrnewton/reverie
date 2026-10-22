@@ -363,6 +363,9 @@ struct State {
     failure_recorded: Arc<std::sync::atomic::AtomicBool>,
     #[cfg(test)]
     copy_waits: usize,
+    /// Every copy ever admitted, so tests can count admissions.
+    #[cfg(test)]
+    copy_admissions: usize,
     #[cfg(test)]
     copy_waiters: Vec<std::thread::ThreadId>,
 }
@@ -570,6 +573,7 @@ pub(crate) struct TestGateState {
     pub(crate) copies: usize,
     pub(crate) retained_operands: usize,
     pub(crate) copy_waits: usize,
+    pub(crate) copy_admissions: usize,
     pub(crate) copy_waiters: Vec<std::thread::ThreadId>,
     pub(crate) members: Vec<TestMemberState>,
 }
@@ -597,6 +601,7 @@ impl EntryGate {
             copies: state.copies,
             retained_operands: state.retained_operands,
             copy_waits: state.copy_waits,
+            copy_admissions: state.copy_admissions,
             copy_waiters: state.copy_waiters.clone(),
             members: state
                 .members
@@ -638,6 +643,8 @@ impl EntryGate {
                 failure_recorded: failure_recorded.clone(),
                 #[cfg(test)]
                 copy_waits: 0,
+                #[cfg(test)]
+                copy_admissions: 0,
                 #[cfg(test)]
                 copy_waiters: Vec::new(),
             }),
@@ -929,6 +936,10 @@ impl EntryGate {
             return Err(failure);
         };
         state.copies = copies;
+        #[cfg(test)]
+        {
+            state.copy_admissions += 1;
+        }
         let (origin, lazy) = match origin {
             Origin::Stored(origin) => (origin, false),
             Origin::Lazy(_) => (EntryOrigin::default(), true),
@@ -2404,6 +2415,58 @@ mod tests {
         let copy = gate.try_copy(None).unwrap().unwrap();
         assert_eq!(copy.generation, generation);
         drop(copy);
+    }
+
+    /// The reuse check (`admit_operation_unchanged`) says yes only while the
+    /// gate admits at the generation a copy saw. Closed, published-since and
+    /// failed gates all refuse, a refusal changes no gate state, and a failure
+    /// is reported as the same Arc admit_operation reports.
+    #[test]
+    fn unchanged_admission_admits_only_the_open_generation_a_copy_saw() {
+        let gate = EntryGate::new();
+        let copy = gate.try_copy(None).unwrap().unwrap();
+        let seen = copy.generation();
+        assert_eq!(seen, gate.generation().unwrap());
+        // Held copies do not matter to the check; only admission does.
+        assert!(gate.admit_operation_unchanged(seen).unwrap());
+        drop(copy);
+        assert!(gate.admit_operation_unchanged(seen).unwrap());
+
+        // Closed (a closer may be changing the image): refused, quietly.
+        let mut closed = block_on(gate.try_close().unwrap().unwrap().finish()).unwrap();
+        let before = gate.test_state();
+        let changed = gate.subscribe();
+        assert!(!gate.admit_operation_unchanged(seen).unwrap());
+        assert_eq!(gate.test_state(), before);
+        assert!(changed.now_or_never().is_none(), "a refusal notified");
+
+        // Published and reopened: the old generation is refused, the new
+        // one admitted.
+        let published = closed
+            .publish(None, seen, |next| {
+                Ok(crate::memory::InstalledMapping::gate_control(next))
+            })
+            .unwrap();
+        drop(closed);
+        assert_ne!(published, seen);
+        assert!(!gate.admit_operation_unchanged(seen).unwrap());
+        assert!(gate.admit_operation_unchanged(published).unwrap());
+        let fresh = gate.try_copy(None).unwrap().unwrap();
+        assert_eq!(fresh.generation(), published);
+        drop(fresh);
+
+        // Failed: refused with the gate's own failure, for any generation.
+        let failure = gate.poison(None, protocol_failure("controlled reuse poison"));
+        for generation in [seen, published] {
+            let Err(actual) = gate.admit_operation_unchanged(generation) else {
+                panic!("a failed gate admitted reuse");
+            };
+            assert!(Arc::ptr_eq(&actual, &failure));
+        }
+        let Err(expected) = gate.admit_operation() else {
+            panic!("a failed gate admitted an operation");
+        };
+        assert!(Arc::ptr_eq(&expected, &failure));
     }
 
     #[test]

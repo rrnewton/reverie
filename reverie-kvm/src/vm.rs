@@ -6330,6 +6330,7 @@ mod tests {
     include!("vm/entry_eintr_tests.rs");
     include!("vm/inline_interrupt_tests.rs");
     include!("vm/memory_publication_tests.rs");
+    include!("vm/exit_read_reuse_tests.rs");
     include!("vm/read_zero_guest_tests.rs");
 
     #[derive(Default)]
