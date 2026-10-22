@@ -110,6 +110,8 @@ use crate::signal::XsaveImage;
 use crate::stats::KvmBackendStats;
 use crate::stats::KvmExitCollector;
 use crate::syscall::FRAME_SIZE;
+use crate::syscall::RETURN_FLAGS_WORD;
+use crate::syscall::RETURN_RIP_WORD;
 
 /// KVM currently permits userspace exits for this standardized hypercall.
 /// The prototype uses it as a transport opcode and places the syscall frame
@@ -1332,6 +1334,22 @@ pub(crate) struct SyscallExitRead {
 }
 
 impl SyscallExitRead {
+    /// The user context the guest's `syscall` instruction left, as the
+    /// trampoline saved it in the frame before it overwrote RCX: the return
+    /// RIP, which SYSCALL loaded into RCX, and RFLAGS, which it loaded into
+    /// R11 (`bootstrap::syscall_trampoline`).
+    pub(crate) fn user_return(&self) -> (u64, u64) {
+        let word = |index: usize| {
+            let start = index * std::mem::size_of::<u64>();
+            u64::from_le_bytes(
+                self.frame[start..start + std::mem::size_of::<u64>()]
+                    .try_into()
+                    .expect("a frame word is eight bytes"),
+            )
+        };
+        (word(RETURN_RIP_WORD), word(RETURN_FLAGS_WORD))
+    }
+
     /// Serves the boundary capture's two reads from these bytes. Any other
     /// read, which the capture never makes, is refused rather than guessed.
     fn read(&self, address: u64, destination: &mut [u8]) -> Result<()> {
@@ -1351,6 +1369,65 @@ impl SyscallExitRead {
                 destination.len()
             ))),
         }
+    }
+}
+
+#[cfg(test)]
+mod syscall_exit_register_tests {
+    use super::*;
+
+    /// A Tool callback at a transported syscall is shown the guest's return
+    /// RIP and RFLAGS from the frame rather than the stopped trampoline's,
+    /// and RCX and R11 equal to them, as the trampoline's SYSRETQ return
+    /// leaves them (`bootstrap::tests::ordinary_syscall_return_reloads_rcx_and_r11_from_the_return_words`).
+    #[test]
+    fn callback_registers_report_what_the_sysret_return_leaves() {
+        const RETURN_RIP: u64 = 0x40_1236;
+        const RETURN_FLAGS: u64 = 0x246;
+        let mut frame = [0; FRAME_SIZE];
+        let word = std::mem::size_of::<u64>();
+        frame[RETURN_RIP_WORD * word..][..word].copy_from_slice(&RETURN_RIP.to_le_bytes());
+        frame[RETURN_FLAGS_WORD * word..][..word].copy_from_slice(&RETURN_FLAGS.to_le_bytes());
+        let exit = SyscallExitRead {
+            frame_address: 0x7000,
+            frame,
+            hypercall_address: 0x5040,
+            hypercall: None,
+            generation: crate::entry::MappingGeneration::INITIAL,
+        };
+        assert_eq!(exit.user_return(), (RETURN_RIP, RETURN_FLAGS));
+        // The vCPU as it stops at the trampoline's VMCALL: the trampoline's
+        // RIP and ring-zero RFLAGS, the RCX it loaded for the hypercall, and
+        // the guest's own R11, RDI, R8 and RSP, which it left alone.
+        let live = kvm_bindings::kvm_regs {
+            rip: 0x5043,
+            rflags: 0x2,
+            rcx: 1,
+            r11: RETURN_FLAGS,
+            rdi: 0x11,
+            r8: 0x55,
+            rsp: 0x7fff_0000,
+            ..Default::default()
+        };
+        let registers = crate::runtime::kvm_syscall_registers(
+            live,
+            libc::SYS_getppid as u64,
+            exit.user_return(),
+        );
+        assert_eq!((registers.rip, registers.rcx), (RETURN_RIP, RETURN_RIP));
+        assert_eq!(
+            (registers.eflags, registers.r11),
+            (RETURN_FLAGS, RETURN_FLAGS)
+        );
+        assert_eq!(
+            (
+                registers.rdi,
+                registers.r8,
+                registers.rsp,
+                registers.orig_rax
+            ),
+            (0x11, 0x55, 0x7fff_0000, libc::SYS_getppid as u64)
+        );
     }
 }
 

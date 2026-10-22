@@ -455,6 +455,20 @@ trait GuestSyscallExecutor<T: Tool>:
         None
     }
 
+    /// [`Self::complete_injection`]'s answer, when it is known at once without
+    /// awaiting anything, so that the common injection, one that staged no
+    /// process action, is completed without the boxed future and the
+    /// [`ToolContext`] that `complete_injection` costs. `None` defers to
+    /// `complete_injection`, which then runs exactly as it would have. An
+    /// adapter that answers here answers exactly what `complete_injection`
+    /// would have, with the same effects.
+    fn complete_injection_now(
+        &mut self,
+        _plan: Option<&crate::executor::StagedProcessAction>,
+    ) -> Option<InjectionCompletion> {
+        None
+    }
+
     fn complete_injection<'a>(
         &'a mut self,
         _context: ToolContext<'a, T>,
@@ -702,6 +716,24 @@ impl Drop for StaticElfSyscallExecutor<'_> {
         }) && let Some(site) = self.callback_site
         {
             self.executor.retire_parent_death_exec(site);
+        }
+    }
+}
+
+impl StaticElfSyscallExecutor<'_> {
+    /// How an injection that staged no process action completes: it does not
+    /// return when it left an exit pending, and returns its own result
+    /// otherwise.
+    fn completion_without_action(&self) -> InjectionCompletion {
+        if self.executor.has_pending_exit() {
+            InjectionCompletion::DoesNotReturn {
+                image_replaced: false,
+                process_exited: true,
+            }
+        } else {
+            InjectionCompletion::Returns {
+                syscall_result: None,
+            }
         }
     }
 }
@@ -1252,6 +1284,28 @@ where
         Ok(())
     }
 
+    fn complete_injection_now(
+        &mut self,
+        plan: Option<&crate::executor::StagedProcessAction>,
+    ) -> Option<InjectionCompletion> {
+        // Exactly the cases in which `complete_injection` below reaches its
+        // `let Some(action) = action else` return having awaited nothing and
+        // changed nothing: not the completed initial exec, no staged-action
+        // token (with one, that function either runs the action or reports
+        // that it vanished), and no staged action (taking an absent action
+        // changes nothing).
+        if plan.is_some()
+            || self.executor.has_process_action()
+            || matches!(
+                self.process_context,
+                ProcessExecutionContext::InitialExecCompleted
+            )
+        {
+            return None;
+        }
+        Some(self.completion_without_action())
+    }
+
     fn complete_injection<'a>(
         &'a mut self,
         context: ToolContext<'a, T>,
@@ -1284,16 +1338,7 @@ where
                 ));
             }
             let Some(action) = action else {
-                return Ok(if self.executor.has_pending_exit() {
-                    InjectionCompletion::DoesNotReturn {
-                        image_replaced: false,
-                        process_exited: true,
-                    }
-                } else {
-                    InjectionCompletion::Returns {
-                        syscall_result: None,
-                    }
-                });
+                return Ok(self.completion_without_action());
             };
             if !action.returns_to_original_image() && self.executor.has_eligible_pending_signal() {
                 return Err(Error::UnexpectedVcpuExit(
@@ -1968,17 +2013,23 @@ impl<T: Tool> Guest<T> for KvmGuest<'_, T> {
         self.resume_ordinary_operation(Some(raw)).await;
         let mut result = raw_to_result(raw);
         if result.is_ok() {
-            let context = ToolContext {
-                pid: self.pid,
-                tid: self.tid,
-                process_state: self.process_state.clone(),
-                thread_state: self.thread_state,
-                global_state: self.shared_global_state.clone(),
-                config: self.config,
-                subscriptions: self.subscriptions.clone(),
-                pending_child_starts: self.pending_child_starts.clone(),
+            let completion = match self.executor.complete_injection_now(plan.as_ref()) {
+                Some(completion) => Ok(completion),
+                None => {
+                    let context = ToolContext {
+                        pid: self.pid,
+                        tid: self.tid,
+                        process_state: self.process_state.clone(),
+                        thread_state: self.thread_state,
+                        global_state: self.shared_global_state.clone(),
+                        config: self.config,
+                        subscriptions: self.subscriptions.clone(),
+                        pending_child_starts: self.pending_child_starts.clone(),
+                    };
+                    self.executor.complete_injection(context, plan).await
+                }
             };
-            match self.executor.complete_injection(context, plan).await {
+            match completion {
                 Ok(InjectionCompletion::ThreadCancelled) => {
                     self.signal_handler(HandlerSignal::ThreadCancelled);
                     return std::future::pending().await;
@@ -6263,6 +6314,10 @@ impl KvmBackend {
                 // boundary would copy again; the first callback below reuses
                 // it when the gate allows (see `SyscallExitRead`).
                 let (request, exit_read) = self.read_syscall_exit(&memory, frame_address)?;
+                // What a Tool callback at this syscall is shown; see
+                // `kvm_syscall_registers`.
+                let callback_registers =
+                    kvm_syscall_registers(registers, request.number(), exit_read.user_return());
                 let mut exit_read = Some(exit_read);
                 // The KVM_RUN hypercall return slot is one-shot storage. Publish
                 // its unused value exactly once while this decoded exit is live;
@@ -6434,7 +6489,7 @@ impl KvmBackend {
                                 tool.clone(),
                                 memory.clone(),
                                 &auxv,
-                                kvm_registers(registers, request.number()),
+                                callback_registers,
                                 &mut thread_state,
                                 &mut guest_executor,
                                 global_state.as_ref(),
@@ -6626,7 +6681,7 @@ impl KvmBackend {
                         &tool,
                         &memory,
                         &auxv,
-                        kvm_registers(registers, request.number()),
+                        callback_registers,
                         &mut thread_state,
                         &global_state,
                         config,
@@ -6985,6 +7040,35 @@ fn result_to_raw(result: std::result::Result<i64, Errno>) -> i64 {
     }
 }
 
+/// The registers a Tool callback at a syscall the trampoline transported is
+/// shown: the vCPU's, which are stopped inside the ring-zero trampoline, with
+/// the trampoline's own RIP and RFLAGS replaced by the guest's (`user_return`,
+/// from `SyscallExitRead::user_return`), and RCX and R11 as the
+/// guest finds them once the call returns.
+///
+/// That return reloads RCX from the frame's return-RIP word and R11 from its
+/// return-flags word and executes SYSRETQ, which sets RIP from RCX and RFLAGS
+/// from R11 (`bootstrap::syscall_trampoline`). Whatever RIP and RFLAGS the
+/// call returns to are staged in those same two words
+/// (`stage_process_syscall_return`), so after the call the guest holds RCX ==
+/// RIP and R11 == RFLAGS, as SYSRET leaves them on Linux. (Only a return the
+/// backend stages for `rt_sigreturn` takes the IRETQ path instead, and that
+/// call never reaches a Tool callback through these registers.)
+pub(crate) fn kvm_syscall_registers(
+    registers: kvm_regs,
+    syscall_number: u64,
+    user_return: (u64, u64),
+) -> libc::user_regs_struct {
+    let (rip, rflags) = user_return;
+    libc::user_regs_struct {
+        rip,
+        eflags: rflags,
+        rcx: rip,
+        r11: rflags,
+        ..kvm_registers(registers, syscall_number)
+    }
+}
+
 pub(crate) fn kvm_registers(registers: kvm_regs, syscall_number: u64) -> libc::user_regs_struct {
     libc::user_regs_struct {
         r15: registers.r15,
@@ -7027,6 +7111,132 @@ mod tests {
 
     fn synthetic_initial_exec() -> SyscallRequest {
         SyscallRequest::new(libc::SYS_execve as u64, [0x100, 0x200, 0x300, 0, 0, 0])
+    }
+
+    /// `complete_injection_now` answers exactly when `complete_injection`
+    /// would finish without awaiting or changing anything, and then with the
+    /// same completion; in every other case it defers. Each case runs both on
+    /// identically prepared adapters over a real KVM backend.
+    #[test]
+    fn complete_injection_now_answers_only_what_complete_injection_would() {
+        #[derive(Debug, PartialEq)]
+        enum Seen {
+            ThreadCancelled,
+            Returns(Option<i64>),
+            DoesNotReturn(bool, bool),
+            Failed,
+        }
+        fn seen(completion: Result<InjectionCompletion>) -> Seen {
+            match completion {
+                Ok(InjectionCompletion::ThreadCancelled) => Seen::ThreadCancelled,
+                Ok(InjectionCompletion::Returns { syscall_result }) => {
+                    Seen::Returns(syscall_result)
+                }
+                Ok(InjectionCompletion::DoesNotReturn {
+                    image_replaced,
+                    process_exited,
+                }) => Seen::DoesNotReturn(image_replaced, process_exited),
+                Err(_) => Seen::Failed,
+            }
+        }
+        // (context, staged-action token, exit pending, expected fast answer,
+        // expected completion)
+        let cases = [
+            (
+                ProcessExecutionContext::Lifecycle,
+                false,
+                false,
+                Some(Seen::Returns(None)),
+                Seen::Returns(None),
+            ),
+            (
+                ProcessExecutionContext::Lifecycle,
+                false,
+                true,
+                Some(Seen::DoesNotReturn(false, true)),
+                Seen::DoesNotReturn(false, true),
+            ),
+            // A token without its action: complete_injection reports it.
+            (
+                ProcessExecutionContext::Lifecycle,
+                true,
+                false,
+                None,
+                Seen::Failed,
+            ),
+            (
+                ProcessExecutionContext::InitialExecCompleted,
+                false,
+                false,
+                None,
+                Seen::DoesNotReturn(true, false),
+            ),
+        ];
+        let tool = Arc::new(crate::StraceTool);
+        let child_starts: SharedChildStarts = Arc::new(Mutex::new(Vec::new()));
+        for (context, token, exit_pending, fast, full) in cases {
+            let run = |use_fast: bool| {
+                let mut backend =
+                    KvmBackend::new(16 * 1024 * 1024).expect("actual KVM is mandatory");
+                let mut executor = crate::executor::ElfExecutor::new(
+                    crate::executor::native_loaded_state(std::path::Path::new(".")),
+                    false,
+                );
+                let memory = GuestMemory::new(0, 0x4000).unwrap();
+                if exit_pending {
+                    executor.execute(
+                        &SyscallRequest::new(libc::SYS_exit as u64, [3, 0, 0, 0, 0, 0]),
+                        &memory,
+                    );
+                    assert!(executor.has_pending_exit());
+                }
+                let mut process_completed = false;
+                let mut adapter = StaticElfSyscallExecutor {
+                    backend: &mut backend,
+                    executor: &mut executor,
+                    memory,
+                    process_context: context.clone(),
+                    last_result: Some(0),
+                    polled_read_attempt: None,
+                    process_completed: &mut process_completed,
+                    callback_site: None,
+                    original_syscall: None,
+                    signal_guard: SignalGuard::Ordinary,
+                };
+                let plan = token.then(crate::executor::StagedProcessAction::staged);
+                if use_fast {
+                    return <StaticElfSyscallExecutor<'_> as GuestSyscallExecutor<
+                        crate::StraceTool,
+                    >>::complete_injection_now(
+                        &mut adapter, plan.as_ref()
+                    )
+                    .map(|completion| seen(Ok(completion)));
+                }
+                let thread_state = ();
+                let context = ToolContext::<crate::StraceTool> {
+                    pid: Pid::from_raw(1),
+                    tid: Pid::from_raw(1),
+                    process_state: tool.clone(),
+                    thread_state: &thread_state,
+                    global_state: None,
+                    config: &(),
+                    subscriptions: Subscription::none(),
+                    pending_child_starts: child_starts.clone(),
+                };
+                Some(seen(futures::executor::block_on(
+                    adapter.complete_injection(context, plan),
+                )))
+            };
+            assert_eq!(run(true), fast, "fast answer, exit pending {exit_pending}");
+            assert_eq!(
+                run(false),
+                Some(full),
+                "full completion, exit pending {exit_pending}"
+            );
+            if let Some(fast) = run(true) {
+                assert_eq!(Some(fast), run(false));
+            }
+        }
     }
 
     /// Only the two exact dispositional errors become provider outcomes. A
