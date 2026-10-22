@@ -78,6 +78,10 @@ pub struct GuestMemory {
     test_user_copy_failure: Option<Arc<TestUserCopyFailure>>,
     #[cfg(test)]
     test_user_copy_backing_wait: Option<Arc<std::sync::atomic::AtomicBool>>,
+    /// Runs in `read_then_write_raw` after its read and before its
+    /// failure checkpoint, while the copy is still admitted.
+    #[cfg(test)]
+    test_between_read_and_write: Option<Arc<dyn Fn() + Send + Sync>>,
     #[cfg(test)]
     test_shared_map: Option<SharedMapHook>,
     #[cfg(test)]
@@ -1167,6 +1171,8 @@ impl GuestMemory {
             test_user_copy_failure: None,
             #[cfg(test)]
             test_user_copy_backing_wait: None,
+            #[cfg(test)]
+            test_between_read_and_write: None,
             #[cfg(test)]
             test_shared_map: None,
             #[cfg(test)]
@@ -2451,12 +2457,19 @@ impl GuestMemory {
         self.with_copy(|copy| self.write_raw_admitted(guest_address, source, copy))
     }
 
-    /// `read_raw` then `write_raw`, under one admission instead of two. The
-    /// read completes before the write starts, and a read error returns
-    /// before anything is written, exactly as the two calls in sequence. One
-    /// admission only removes the instant between them at which a closer
-    /// could have published a new mapping; the gate still refuses this copy
-    /// wherever it would have refused the first of the two.
+    /// `read_raw` then `write_raw`, under one admission instead of two.
+    ///
+    /// Between the read and the write this keeps the refusal checkpoint the
+    /// two separate calls had: after a successful read it checks for a
+    /// recorded or deferred failure (as `read_raw`'s completion did) and
+    /// then for a gate failure under the gate lock (as `write_raw`'s
+    /// admission did, serialized with failure publication), and on a
+    /// failure it returns that failure without writing. A read error
+    /// returns exactly as `read_raw`'s, before anything is written. What one
+    /// admission removes is the gate's other refusal at the write: a close
+    /// begun after the read can no longer park the write until the gate
+    /// reopens, because a close cannot complete while this copy is
+    /// admitted; the write then sees the image the read saw.
     pub(crate) fn read_then_write_raw(
         &self,
         read_address: u64,
@@ -2464,10 +2477,37 @@ impl GuestMemory {
         write_address: u64,
         source: &[u8],
     ) -> Result<()> {
-        self.with_copy(|copy| {
-            self.read_raw_admitted(read_address, destination, copy)?;
-            self.write_raw_admitted(write_address, source, copy)
-        })
+        let copy = self.copy_access()?;
+        let read = self.read_raw_admitted(read_address, destination, &copy);
+        let result = match read {
+            Err(error) => Err(error),
+            Ok(()) => {
+                #[cfg(test)]
+                if let Some(between) = &self.test_between_read_and_write {
+                    between();
+                }
+                let checkpoint = self.check_copy_failure().and_then(|()| {
+                    self.mapping
+                        .entry_gate
+                        .admit_operation()
+                        .map_err(|failure| failure.error())
+                });
+                if let Err(failure) = checkpoint {
+                    // As `read_raw` returning its failure after its copy
+                    // retired, or `write_raw` refused at admission.
+                    drop(copy);
+                    return Err(failure);
+                }
+                self.write_raw_admitted(write_address, source, &copy)
+            }
+        };
+        // The completion checks of `with_copy`, for whichever operation ran last.
+        let prior = self.check_copy_failure();
+        drop(copy);
+        let result = result.map_err(|error| self.capture_shared_file_error(error));
+        prior?;
+        self.check_copy_failure()?;
+        result
     }
 
     /// `read_raw` of `destination`, then, under the same admission, an
@@ -7961,6 +8001,77 @@ mod one_admission_copy_tests {
         );
         assert_eq!(read.as_slice(), unchanged.as_slice());
         assert_eq!(memory.entry_gate().test_state().copies, 0);
+    }
+
+    /// A failure that arrives after the read, while the combined copy is
+    /// still admitted, refuses the store, as the separate `write_raw` was
+    /// refused: a gate failure recorded then (a peer's entry cleanup can
+    /// record one while a copy is held), and a shared-file failure deferred
+    /// behind an open notification scope. The read has happened; the result
+    /// word keeps its old bytes; the error is the failure itself.
+    #[test]
+    fn read_then_write_raw_refuses_the_store_after_a_failure_between_them() {
+        for deferred in [false, true] {
+            let mut memory = fixture();
+            let observer = memory.clone();
+            let unchanged = bytes(&memory, 0x2000, 8);
+            let gate = memory.entry_gate();
+            let recorded = Arc::new(std::sync::Mutex::new(None));
+            let slot = recorded.clone();
+            memory.test_between_read_and_write = Some(Arc::new(move || {
+                let error = if deferred {
+                    observer.capture_shared_file_error(Error::SharedFileCopy {
+                        operation: "controlled deferred failure",
+                        address: 0x2000,
+                        requested: 8,
+                        transferred: 0,
+                        prior_transferred: 0,
+                        source: std::io::Error::from_raw_os_error(libc::EIO),
+                    })
+                } else {
+                    gate.poison(
+                        None,
+                        Error::UnexpectedVcpuExit("controlled failure between".to_owned()),
+                    )
+                    .error()
+                };
+                *slot.lock().unwrap() = Some(format!("{error:?}"));
+            }));
+            let scope = deferred.then(|| memory.defer_notifications());
+            if deferred {
+                assert!(memory.entry_gate().pending_failure().is_none());
+            }
+            let mut read = [0; 8];
+            let error = memory
+                .read_then_write_raw(0x1000, &mut read, 0x2000, &[0x77; 8])
+                .unwrap_err();
+            assert_eq!(read, [0, 1, 2, 3, 4, 5, 6, 7], "the read ran");
+            assert_eq!(
+                Some(format!("{error:?}")),
+                *recorded.lock().unwrap(),
+                "deferred={deferred}"
+            );
+            assert_eq!(memory.entry_gate().test_state().copies, 0);
+            drop(scope);
+            // The failure is terminal now; inspect the word through the
+            // backing directly rather than through a refused copy.
+            let offset = memory.checked_offset(0x2000, 8).unwrap();
+            let chunks = memory.mapping.host_chunks(offset, 8);
+            let mut word = [0; 8];
+            let mut copied = 0;
+            for chunk in chunks.iter() {
+                // SAFETY: the chunks cover exactly the 8 validated bytes.
+                unsafe {
+                    std::ptr::copy_nonoverlapping(
+                        chunk.mapping.as_ptr(),
+                        word[copied..].as_mut_ptr(),
+                        chunk.length,
+                    );
+                }
+                copied += chunk.length;
+            }
+            assert_eq!(word.as_slice(), unchanged.as_slice(), "the store ran");
+        }
     }
 
     #[test]

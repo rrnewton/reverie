@@ -314,11 +314,6 @@ pub(crate) fn configure_user_segments(vcpu: &VcpuFd) -> Result<()> {
     Ok(())
 }
 
-/// Reconstructs the userspace register file stopped at a syscall boundary.
-///
-/// The live vCPU is executing the ring-zero VMCALL trampoline, which has
-/// overwritten RAX/RBX/RCX/RDX/RSI. The transport frame is authoritative for
-/// those registers and for the userspace return RIP and RFLAGS.
 /// The frame words a syscall return reads: 1 through SAVED_RBX_WORD.
 const RETURN_FIRST_WORD: usize = 1;
 const RETURN_LAST_WORD: usize = SAVED_RBX_WORD;
@@ -333,6 +328,11 @@ const RETURN_WORDS_BYTES: usize =
     (RETURN_LAST_WORD - RETURN_FIRST_WORD + 1) * std::mem::size_of::<u64>();
 type ReturnWords = [u8; RETURN_WORDS_BYTES];
 
+/// Reconstructs the userspace register file stopped at a syscall boundary.
+///
+/// The live vCPU is executing the ring-zero VMCALL trampoline, which has
+/// overwritten RAX/RBX/RCX/RDX/RSI. The transport frame is authoritative for
+/// those registers and for the userspace return RIP and RFLAGS.
 pub(crate) fn process_syscall_return_registers(
     memory: &GuestMemory,
     registers: kvm_bindings::kvm_regs,
@@ -359,9 +359,9 @@ pub(crate) fn process_syscall_return_registers(
 /// [`process_syscall_return_registers`] followed by
 /// [`crate::SyscallRequest::write_result`]'s store of `result` into the
 /// frame's result word, under one entry-gate admission instead of two. The
-/// read precedes the store, a read error returns before the store, and the
-/// store writes the same eight bytes at the same address; see
-/// [`GuestMemory::read_then_write_raw`].
+/// read precedes the store, a read error or a failure recorded or deferred
+/// after the read returns before the store, and the store writes the same
+/// eight bytes at the same address; see [`GuestMemory::read_then_write_raw`].
 pub(crate) fn process_syscall_return_registers_storing_result(
     memory: &GuestMemory,
     registers: kvm_bindings::kvm_regs,

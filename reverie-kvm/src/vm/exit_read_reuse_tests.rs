@@ -350,6 +350,71 @@ pub(crate) mod exit_read_reuse_tests {
         drop(scope);
     }
 
+    /// A copy failure deferred while the reused bytes are being turned into
+    /// a value, after the check that precedes them, still refuses the
+    /// capture: the check after them must catch it, as a fresh capture's
+    /// checks after its admitted copy catch one deferred during the copy.
+    /// The capture returns the failure, so its caller returns before any
+    /// Tool callback, and the error is the one a fresh capture returns.
+    #[test]
+    fn a_copy_failure_deferred_during_reuse_refuses_like_one_during_a_fresh_copy() {
+        fn defer(memory: &GuestMemory) {
+            let _ = memory.capture_shared_file_error(Error::SharedFileCopy {
+                operation: "controlled deferred copy during capture",
+                address: 0,
+                requested: 8,
+                transferred: 0,
+                prior_transferred: 0,
+                source: std::io::Error::from_raw_os_error(libc::EIO),
+            });
+        }
+        let mut errors = Vec::new();
+        for reuse in [true, false] {
+            let Fixture {
+                mut backend,
+                frame_address,
+                ..
+            } = fixture();
+            let memory = backend.memory.clone();
+            let (_, exit) = backend.read_syscall_exit(&memory, frame_address).unwrap();
+            let scope = memory.defer_notifications();
+            let ran = std::sync::atomic::AtomicBool::new(false);
+            let mut pending = std::pin::pin!(std::future::pending());
+            let before = admissions(&backend);
+            let result = futures::executor::block_on(backend.prepare_action_read_or_reuse(
+                pending.as_mut(),
+                reuse.then(|| {
+                    (exit.generation, |_: &KvmBackend| {
+                        // After the check that precedes the reused bytes.
+                        assert!(memory.check_copy_failures().is_ok());
+                        defer(&memory);
+                        ran.store(true, std::sync::atomic::Ordering::SeqCst);
+                        Ok(7_u32)
+                    })
+                }),
+                |_, _| {
+                    defer(&memory);
+                    ran.store(true, std::sync::atomic::Ordering::SeqCst);
+                    Ok(7_u32)
+                },
+            ));
+            assert!(ran.load(std::sync::atomic::Ordering::SeqCst));
+            assert_eq!(
+                admissions(&backend),
+                before + usize::from(!reuse),
+                "reuse={reuse}"
+            );
+            let error = result.unwrap_err();
+            assert!(
+                matches!(error.primary(), Error::SharedFileCopy { .. }),
+                "reuse={reuse}: {error:?}"
+            );
+            errors.push(format!("{error:?}"));
+            drop(scope);
+        }
+        assert_eq!(errors[0], errors[1]);
+    }
+
     #[test]
     fn reuse_is_refused_while_closed_and_the_capture_waits_for_the_reopened_image() {
         let Fixture {
