@@ -415,6 +415,56 @@ pub(crate) mod exit_read_reuse_tests {
         assert_eq!(errors[0], errors[1]);
     }
 
+    /// A copy failure already deferred when the capture starts refuses it
+    /// before the bytes are used, as a fresh capture refuses before its copy
+    /// runs: neither the reused closure nor the capturing one is called.
+    #[test]
+    fn a_copy_failure_deferred_before_reuse_refuses_before_the_bytes_are_used() {
+        let mut errors = Vec::new();
+        for reuse in [true, false] {
+            let Fixture {
+                mut backend,
+                frame_address,
+                ..
+            } = fixture();
+            let memory = backend.memory.clone();
+            let (_, exit) = backend.read_syscall_exit(&memory, frame_address).unwrap();
+            let scope = memory.defer_notifications();
+            let _ = memory.capture_shared_file_error(Error::SharedFileCopy {
+                operation: "controlled deferred copy before capture",
+                address: 0,
+                requested: 8,
+                transferred: 0,
+                prior_transferred: 0,
+                source: std::io::Error::from_raw_os_error(libc::EIO),
+            });
+            let ran = std::sync::atomic::AtomicBool::new(false);
+            let mut pending = std::pin::pin!(std::future::pending());
+            let before = admissions(&backend);
+            let result = futures::executor::block_on(backend.prepare_action_read_or_reuse(
+                pending.as_mut(),
+                reuse.then(|| {
+                    (exit.generation, |_: &KvmBackend| {
+                        ran.store(true, std::sync::atomic::Ordering::SeqCst);
+                        Ok(7_u32)
+                    })
+                }),
+                |_, _| {
+                    ran.store(true, std::sync::atomic::Ordering::SeqCst);
+                    Ok(7_u32)
+                },
+            ));
+            assert!(
+                !ran.load(std::sync::atomic::Ordering::SeqCst),
+                "reuse={reuse}: the bytes were used after a deferred failure"
+            );
+            assert_eq!(admissions(&backend), before, "reuse={reuse}");
+            errors.push(format!("{:?}", result.unwrap_err()));
+            drop(scope);
+        }
+        assert_eq!(errors[0], errors[1]);
+    }
+
     #[test]
     fn reuse_is_refused_while_closed_and_the_capture_waits_for_the_reopened_image() {
         let Fixture {
