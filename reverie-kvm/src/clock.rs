@@ -465,9 +465,50 @@ impl Default for CounterPlacement {
     }
 }
 
+/// The raw RCB encoding of the core PMU, reused across counted entries while
+/// it cannot have changed.
+///
+/// The encoding is a pure function of the executing CPU's CPUID vendor,
+/// family and model. Under `FollowTask` placement every CPU has the same single
+/// core PMU (that is the premise `CounterPlacement` was chosen on, once per
+/// process), and CPUID's vendor/family/model of a CPU never changes while the
+/// host runs, so the first successful answer answers for every later entry of
+/// this clock, on any CPU, in any guest task. Nothing guest-controlled is an
+/// input: exec, clone, fork, vfork, signal frames, thread exit and TID reuse
+/// change only the task, which `CounterIdentity` already names separately.
+///
+/// Under `PinEachEntry` (hybrid or unmeasured hosts) each entry still asks the
+/// CPU it is pinned to, exactly as before: that placement exists because CPUs
+/// may differ. A failed lookup is never cached; it poisons the clock as before.
+#[derive(Debug, Default)]
+struct RawEventCache {
+    follow_task: Option<u64>,
+}
+
+impl RawEventCache {
+    fn raw_event(
+        &mut self,
+        placement: CounterPlacement,
+        lookup: impl FnOnce() -> Result<u64>,
+    ) -> Result<u64> {
+        match placement {
+            CounterPlacement::FollowTask => {
+                if let Some(raw_event) = self.follow_task {
+                    return Ok(raw_event);
+                }
+                let raw_event = lookup()?;
+                self.follow_task = Some(raw_event);
+                Ok(raw_event)
+            }
+            CounterPlacement::PinEachEntry => lookup(),
+        }
+    }
+}
+
 #[derive(Default)]
 struct GuestClock {
     placement: CounterPlacement,
+    raw_event_cache: RawEventCache,
     tracking: bool,
     ran_untracked: bool,
     total: u64,
@@ -524,7 +565,7 @@ impl GuestClock {
                 cpu: affinity
                     .as_ref()
                     .map_or(FOLLOWS_TASK, |affinity| affinity.cpu),
-                raw_event: raw_event()?,
+                raw_event: self.raw_event_cache.raw_event(self.placement, raw_event)?,
             };
             if self.binding.as_ref().map(|b| b.identity) != Some(identity) {
                 self.binding.take();
@@ -2106,6 +2147,116 @@ mod tests {
             "raw clone child reused a cached tid"
         );
         assert_eq!(host_tid(), parent);
+    }
+
+    #[test]
+    fn follow_task_raw_event_is_looked_up_once_and_pinned_entries_every_time() {
+        let lookups = std::cell::Cell::new(0);
+        let lookup = || {
+            lookups.set(lookups.get() + 1);
+            Ok(0x5100c4)
+        };
+        let mut cache = RawEventCache::default();
+        for _ in 0..3 {
+            assert_eq!(
+                cache
+                    .raw_event(CounterPlacement::FollowTask, lookup)
+                    .unwrap(),
+                0x5100c4
+            );
+        }
+        assert_eq!(lookups.get(), 1, "FollowTask must reuse its first answer");
+
+        // Negative control: a pinned entry asks its own CPU on every entry,
+        // even when a FollowTask answer is cached, because pinned placement
+        // exists for hosts whose CPUs can differ.
+        lookups.set(0);
+        for _ in 0..3 {
+            cache
+                .raw_event(CounterPlacement::PinEachEntry, lookup)
+                .unwrap();
+        }
+        assert_eq!(lookups.get(), 3, "PinEachEntry must never use the cache");
+        let mut pinned = RawEventCache::default();
+        let mut answers = [1_u64, 2, 3].into_iter();
+        let seen: Vec<u64> = (0..3)
+            .map(|_| {
+                pinned
+                    .raw_event(CounterPlacement::PinEachEntry, || {
+                        Ok(answers.next().unwrap())
+                    })
+                    .unwrap()
+            })
+            .collect();
+        assert_eq!(seen, [1, 2, 3], "each pinned entry sees its own lookup");
+        assert_eq!(pinned.follow_task, None);
+    }
+
+    #[test]
+    fn a_failed_raw_event_lookup_is_not_cached() {
+        let mut cache = RawEventCache::default();
+        let error = cache
+            .raw_event(CounterPlacement::FollowTask, || {
+                Err(failure("unsupported CPU family"))
+            })
+            .unwrap_err();
+        assert!(error.to_string().contains("unsupported CPU family"));
+        assert_eq!(cache.follow_task, None);
+        let lookups = std::cell::Cell::new(0);
+        let lookup = || {
+            lookups.set(lookups.get() + 1);
+            Ok(7)
+        };
+        assert_eq!(
+            cache
+                .raw_event(CounterPlacement::FollowTask, lookup)
+                .unwrap(),
+            7
+        );
+        assert_eq!(
+            cache
+                .raw_event(CounterPlacement::FollowTask, lookup)
+                .unwrap(),
+            7
+        );
+        assert_eq!(lookups.get(), 1);
+    }
+
+    #[test]
+    fn the_cached_raw_event_is_this_hosts_cpuid_answer_on_every_cpu() {
+        // Runs CPUID only; no PMU or KVM is needed. On a host whose CPU is
+        // unsupported both paths must refuse alike.
+        let mut cache = RawEventCache::default();
+        let cached = cache.raw_event(CounterPlacement::FollowTask, current_raw_event);
+        let Ok(cached) = cached else {
+            assert!(current_raw_event().is_err());
+            println!("raw event cache: CPU unsupported, both paths refused");
+            return;
+        };
+        if CounterPlacement::default() != CounterPlacement::FollowTask {
+            println!("raw event cache: this host pins each entry; checked the current CPU only");
+            assert_eq!(current_raw_event().unwrap(), cached);
+            return;
+        }
+        // FollowTask's premise: every permitted CPU gives the same answer.
+        let original = affinity().unwrap();
+        let mut checked = 0;
+        for cpu in 0..libc::CPU_SETSIZE as usize {
+            // SAFETY: `cpu` is below CPU_SETSIZE and `original` is a valid set.
+            if !unsafe { libc::CPU_ISSET(cpu, &original) } {
+                continue;
+            }
+            // SAFETY: an all-zero cpu_set_t is the empty set.
+            let mut one: libc::cpu_set_t = unsafe { std::mem::zeroed() };
+            // SAFETY: `cpu` is below CPU_SETSIZE.
+            unsafe { libc::CPU_SET(cpu, &mut one) };
+            set_affinity(&one).unwrap();
+            assert_eq!(current_raw_event().unwrap(), cached, "cpu {cpu}");
+            checked += 1;
+        }
+        set_affinity(&original).unwrap();
+        assert!(same_affinity(&affinity().unwrap(), &original));
+        println!("raw event cache: {checked} permitted CPUs agree with the cached {cached:#x}");
     }
 }
 
