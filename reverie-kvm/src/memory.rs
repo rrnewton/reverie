@@ -2451,6 +2451,58 @@ impl GuestMemory {
         self.with_copy(|copy| self.write_raw_admitted(guest_address, source, copy))
     }
 
+    /// `read_raw` then `write_raw`, under one admission instead of two. The
+    /// read completes before the write starts, and a read error returns
+    /// before anything is written, exactly as the two calls in sequence. One
+    /// admission only removes the instant between them at which a closer
+    /// could have published a new mapping; the gate still refuses this copy
+    /// wherever it would have refused the first of the two.
+    pub(crate) fn read_then_write_raw(
+        &self,
+        read_address: u64,
+        destination: &mut [u8],
+        write_address: u64,
+        source: &[u8],
+    ) -> Result<()> {
+        self.with_copy(|copy| {
+            self.read_raw_admitted(read_address, destination, copy)?;
+            self.write_raw_admitted(write_address, source, copy)
+        })
+    }
+
+    /// `read_raw` of `destination`, then, under the same admission, an
+    /// attempt to read `speculative` too. The first read is exactly
+    /// `read_raw`, errors included. The second is only an attempt: if it
+    /// fails, its error is dropped (it never reaches
+    /// `capture_shared_file_error`) and it reports false, so a caller that
+    /// later needs those bytes must read them again through an ordinary
+    /// admission. Returns the mapping generation the admission saw; no
+    /// publication can change the mapping while an admission is held, so
+    /// both reads observe that generation.
+    pub(crate) fn read_raw_and_try_read(
+        &self,
+        guest_address: u64,
+        destination: &mut [u8],
+        speculative_address: u64,
+        speculative: &mut [u8],
+    ) -> Result<(crate::entry::MappingGeneration, bool)> {
+        self.with_copy(|copy| {
+            self.read_raw_admitted(guest_address, destination, copy)?;
+            let read = self
+                .read_raw_admitted(speculative_address, speculative, copy)
+                .is_ok();
+            Ok((copy.generation(), read))
+        })
+    }
+
+    /// The checks an admitted copy makes before and after it runs (a
+    /// recorded gate failure, or a shared-file failure deferred behind a
+    /// notification scope), without admitting a copy. For a caller that
+    /// reuses bytes an earlier admission already read.
+    pub(crate) fn check_copy_failures(&self) -> Result<()> {
+        self.check_copy_failure()
+    }
+
     /// Attempts one short copy without parking the calling executor. A closed
     /// gate returns None before inspecting layout or taking a backing lock.
     /// The owner must subscribe, recheck its stop predicates and await before

@@ -188,13 +188,23 @@ impl EntryDriverWatch {
 /// and its gate. KvmBackend::check_entry_owner runs it several times per
 /// guest syscall without building and dropping a watch each time.
 pub(crate) fn check_entry(owner: Option<&DriverOwner>, gate: &EntryGate) -> Result<()> {
+    // The same three observations, in the same order, as the fold below:
+    // the owner's pending failures, the gate's failure, then the owner's
+    // lifecycle. When all three are clear the fold can only return Ok, so
+    // return it without building and moving the large Result values the fold
+    // passes along, which cost more than the three atomic loads.
     let owned = owner.map(DriverOwner::pending).unwrap_or_default();
+    let gate_failure = gate.pending_failure();
+    let inactive = owner.is_some_and(|owner| owner.lifecycle() != DriverLifecycle::Active);
+    if owned.is_empty() && gate_failure.is_none() && !inactive {
+        return Ok(());
+    }
     let result = fold_causes(Ok(()), owned.iter().flat_map(|failure| failure.causes()));
-    let result = match gate.pending_failure() {
+    let result = match gate_failure {
         Some(failure) => fold_causes(result, failure.causes()),
         None => result,
     };
-    if owner.is_some_and(|owner| owner.lifecycle() != DriverLifecycle::Active) {
+    if inactive {
         combine_pending(
             result,
             Err(protocol("operation after driver registration closed")),

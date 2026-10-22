@@ -697,6 +697,24 @@ impl EntryGate {
         self.state.lock().unwrap().check()
     }
 
+    /// `admit_operation`, and in the same critical section whether a copy
+    /// admitted now would see the image `generation` names: admission is
+    /// open and no publication has advanced the generation since. A caller
+    /// that read bytes under an admission of `generation` may use them in
+    /// place of a fresh copy only on `Ok(true)`: generations advance only by
+    /// publication, publication requires a close, and a close completes only
+    /// with no copy admitted, so on `Ok(true)` no installed image has changed
+    /// since that admission. `Ok(false)` changes nothing; the caller admits a
+    /// fresh copy exactly as it would have.
+    pub(crate) fn admit_operation_unchanged(
+        &self,
+        generation: MappingGeneration,
+    ) -> GateResult<bool> {
+        let state = self.state.lock().unwrap();
+        state.check()?;
+        Ok(state.admission == Admission::Open && state.generation == generation)
+    }
+
     pub(crate) fn poison(
         &self,
         origin: impl Into<EntryOrigin>,
@@ -1374,6 +1392,12 @@ impl<F: FnOnce() -> EntryOrigin> Origin<F> {
 }
 
 impl CopyAccess {
+    /// The mapping generation this copy was admitted against. It cannot
+    /// change while the copy is held.
+    pub(crate) fn generation(&self) -> MappingGeneration {
+        self.generation
+    }
+
     /// Retire the actual access now, while deferring every notification and
     /// the issuing context's destruction until the caller releases its locks.
     /// The returned token owns no memory or allocation transaction.
