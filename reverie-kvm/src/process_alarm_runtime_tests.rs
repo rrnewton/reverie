@@ -298,7 +298,7 @@ fn process_alarm_signal_transport_contexts_match_resumable_boundaries() {
         ),
         (
             "signal",
-            ProcessExecutionContext::SignalBoundary(CompletedSyscallBoundary::for_test()),
+            ProcessExecutionContext::SignalBoundary(&CompletedSyscallBoundary::FOR_TEST),
             true,
         ),
         (
@@ -308,7 +308,7 @@ fn process_alarm_signal_transport_contexts_match_resumable_boundaries() {
         ),
         (
             "syscall",
-            ProcessExecutionContext::SyscallBoundary(CompletedSyscallBoundary::for_test()),
+            ProcessExecutionContext::SyscallBoundary(&CompletedSyscallBoundary::FOR_TEST),
             true,
         ),
     ];

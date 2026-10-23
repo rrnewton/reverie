@@ -299,9 +299,11 @@ use crate::provider::LinuxEmuSignalControl;
 use crate::provider::LinuxProvider;
 use crate::provider::ProviderOutcome;
 use crate::provider::ProviderRequest;
+use crate::vm::CompletedBoundarySlot;
 use crate::vm::CompletedSyscallBoundary;
 use crate::vm::ProcessActionContinuation;
 use crate::vm::ProcessActionOutcome;
+use crate::vm::SyscallExitRead;
 use crate::vm::UserTrap;
 
 const STACK_CAPACITY: usize = TOOL_STACK_SIZE as usize;
@@ -701,19 +703,23 @@ impl<T: Tool> GuestSyscallExecutor<T> for DirectSyscallExecutor<'_> {
     }
 }
 
+/// The boundary variants lend the completed boundary rather than own it:
+/// its owner (a syscall callback's capture slot, or a signal callback's
+/// local) outlives the executor that holds this context, and a returning
+/// process action copies it only when it runs one.
 #[derive(Clone)]
-enum ProcessExecutionContext {
+enum ProcessExecutionContext<'a> {
     InitialExec(SyscallRequest),
     InitialExecCompleted,
     Lifecycle,
     Instruction,
     ThreadEntrySignal,
-    SignalBoundary(CompletedSyscallBoundary),
+    SignalBoundary(&'a CompletedSyscallBoundary),
     FaultBoundary(Box<UserTrap>),
-    SyscallBoundary(CompletedSyscallBoundary),
+    SyscallBoundary(&'a CompletedSyscallBoundary),
 }
 
-impl ProcessExecutionContext {
+impl ProcessExecutionContext<'_> {
     fn has_resumable_signal_boundary(&self) -> bool {
         // These contexts carry an exact user continuation for a signal frame.
         // Lifecycle and initial-exec callbacks have no such transport.
@@ -866,7 +872,7 @@ struct StaticElfSyscallExecutor<'a> {
     backend: &'a mut KvmBackend,
     executor: &'a mut ElfExecutor,
     memory: GuestMemory,
-    process_context: ProcessExecutionContext,
+    process_context: ProcessExecutionContext<'a>,
     last_result: Option<i64>,
     // Exact request/result pair for zero-effect original-read observation.
     // Invalidated by every attempted injected execution, including refusals.
@@ -1545,7 +1551,7 @@ where
                             .expect("process action must have an injected syscall result");
                         boundary.stage_action_result(self.backend, result)?;
                         let continuation =
-                            ProcessActionContinuation::from_captured(&action, boundary);
+                            ProcessActionContinuation::from_captured(&action, boundary.clone());
                         self.backend
                             .run_injected_process_action_with_tool_at_boundary(
                                 self.executor,
@@ -1767,10 +1773,11 @@ impl<'a, T: Tool> KvmGuest<'a, T> {
 
     /// Lend this handle the thread's kept RPC failure wait. It must watch the
     /// same failures a per-RPC wait would: the run-wide subscription and the
-    /// GlobalTool's backend failure (see `wait_for_failure`).
-    fn with_rpc_failure(mut self, failure: &'a dyn crate::failure::RpcFailure) -> Self {
+    /// GlobalTool's backend failure (see `wait_for_failure`). It is set on
+    /// the handle where it is, rather than by moving the whole handle
+    /// through a builder.
+    fn set_rpc_failure(&mut self, failure: &'a dyn crate::failure::RpcFailure) {
         self.rpc_failure = Some(failure);
-        self
     }
 
     /// Preserve a previously selected nonlocal disposition. Its outer owner
@@ -5836,6 +5843,7 @@ impl KvmBackend {
         let failure_subscription = self.failure_subscription(executor.is_traced_tree_root());
         self.check_entry_owner()?;
         expose_tool_scratch(memory, tool_stack_top)?;
+        let signal_boundary;
         let process_context = if let Some(fault) = fault {
             ProcessExecutionContext::FaultBoundary(Box::new(fault.clone()))
         } else if thread_entry {
@@ -5856,7 +5864,8 @@ impl KvmBackend {
                 hide_tool_scratch(memory, tool_stack_top)?;
                 return Ok(CallbackOutcome::ThreadCancelled);
             };
-            ProcessExecutionContext::SignalBoundary(boundary)
+            signal_boundary = boundary;
+            ProcessExecutionContext::SignalBoundary(&signal_boundary)
         };
         let continuation_site = executor
             .signal_failure_context()
@@ -6073,6 +6082,12 @@ impl KvmBackend {
         // The slots of this thread's ordinary syscall callbacks, kept between
         // callbacks (see CallbackContext for why nothing can leak through).
         let mut callback_context = CallbackContext::default();
+        // Where each syscall callback's completed boundary is captured, in
+        // place, and lent to the callback (see CompletedBoundarySlot).
+        let mut boundary_slot = CompletedBoundarySlot::new();
+        // Where each syscall exit's first copy is read, in place; every exit
+        // overwrites it before anything reads it.
+        let mut exit_read = SyscallExitRead::empty();
 
         let handler_signal = Arc::new(Mutex::new(None));
         let pending_child_starts = Arc::new(Mutex::new(Vec::new()));
@@ -6684,16 +6699,22 @@ impl KvmBackend {
                         "syscall frame is at unexpected address {frame_address:#x}"
                     )));
                 }
-                let registers = self.vcpu.get_regs()?;
+                // Read into place: one copy from KVM's synced registers
+                // rather than a second one out of a returned `Result`.
+                let mut registers = kvm_regs::default();
+                self.vcpu.get_regs_into(&mut registers)?;
                 // The same copy also reads what a Tool callback's completed
                 // boundary would copy again; the first callback below reuses
                 // it when the gate allows (see `SyscallExitRead`).
-                let (request, exit_read) = self.read_syscall_exit(&memory, frame_address)?;
+                let request =
+                    self.read_syscall_exit_into(&memory, frame_address, &mut exit_read)?;
                 // What a Tool callback at this syscall is shown; see
                 // `kvm_syscall_registers`.
                 let callback_registers =
                     kvm_syscall_registers(registers, request.number(), exit_read.user_entry());
-                let mut exit_read = Some(exit_read);
+                // Whether the exit read is still unused: only the first
+                // callback attempt below may lend it.
+                let mut exit_read_unused = true;
                 // The KVM_RUN hypercall return slot is one-shot storage. Publish
                 // its unused value exactly once while this decoded exit is live;
                 // process actions may re-enter the vCPU before the Tool callback
@@ -6827,13 +6848,14 @@ impl KvmBackend {
                             // Only the first attempt may reuse the exit's copy:
                             // a restarted callback follows a Tool callback,
                             // which may have written guest memory.
-                            let exit_read = exit_read.take();
+                            let exit_read = std::mem::replace(&mut exit_read_unused, false)
+                                .then_some(&exit_read);
                             CompletedSyscallBoundary::capture_admitted_reusing(
                                 self,
                                 frame_address,
-                                None,
                                 stop,
-                                exit_read.as_ref().map(|exit_read| (exit_read, &memory)),
+                                exit_read.map(|exit_read| (exit_read, &memory)),
+                                &mut boundary_slot,
                             )
                             .await?
                         };
@@ -6880,8 +6902,8 @@ impl KvmBackend {
                                 tool_stack_top,
                                 stack_checked_out.clone(),
                                 Some(&callback_watch),
-                            )
-                            .with_rpc_failure(&rpc_failure);
+                            );
+                            guest.set_rpc_failure(&rpc_failure);
                             drive_entry_handler_completion_from(
                                 || tool.handle_syscall_event(&mut guest, syscall),
                                 handler_signal.clone(),
@@ -7074,32 +7096,36 @@ impl KvmBackend {
                 };
                 // The ring0 trampoline reads the result from the frame and then
                 // SYSRETs, so the hypercall return slot is unused here.
-                let (mut returned_registers, mut restarted_registers) = if restart_requested {
+                // Both are built where they are kept rather than moved out of
+                // returned values and a tuple.
+                let mut returned_registers = registers;
+                let mut restarted_registers = None;
+                if restart_requested {
                     // A rewind can fail between the read and the store, and
                     // then nothing may be stored: keep the two copies.
-                    let returned_registers = process_syscall_return_registers(
+                    returned_registers = process_syscall_return_registers(
                         &memory,
                         registers,
                         frame_address,
                         result,
                         None,
                     )?;
-                    let restarted_registers =
-                        restart_syscall_registers(returned_registers, request.number())?;
+                    restarted_registers = Some(restart_syscall_registers(
+                        returned_registers,
+                        request.number(),
+                    )?);
                     SyscallRequest::write_result(&mut memory, frame_address, result)?;
-                    (returned_registers, Some(restarted_registers))
                 } else {
                     // Nothing runs between reading the return words and
                     // storing the result, so one admission covers both.
-                    let returned_registers = process_syscall_return_registers_storing_result(
+                    process_syscall_return_registers_storing_result(
                         &memory,
-                        registers,
+                        &mut returned_registers,
                         frame_address,
                         result,
                         None,
                     )?;
-                    (returned_registers, None)
-                };
+                }
                 let pending_segment = self.take_pending_segment();
                 let mut pending_exit = executor.take_exit();
                 let pending_process = executor.take_process_action();
@@ -8857,8 +8883,8 @@ mod tests {
         }
     }
 
-    fn test_process_boundary() -> CompletedSyscallBoundary {
-        CompletedSyscallBoundary::for_test()
+    fn test_process_boundary() -> &'static CompletedSyscallBoundary {
+        &CompletedSyscallBoundary::FOR_TEST
     }
 
     #[test]
@@ -8866,12 +8892,10 @@ mod tests {
         let boundary = test_process_boundary();
         let request = SyscallRequest::new(libc::SYS_write as u64, [1, 0x100, 4, 0, 0, 0]);
         assert!(
-            !ProcessExecutionContext::SignalBoundary(boundary.clone())
-                .tail_injection_allowed(&request)
+            !ProcessExecutionContext::SignalBoundary(boundary).tail_injection_allowed(&request)
         );
         assert!(
-            ProcessExecutionContext::SyscallBoundary(boundary.clone())
-                .tail_injection_allowed(&request)
+            ProcessExecutionContext::SyscallBoundary(boundary).tail_injection_allowed(&request)
         );
         assert!(ProcessExecutionContext::Lifecycle.tail_injection_allowed(&request));
 
