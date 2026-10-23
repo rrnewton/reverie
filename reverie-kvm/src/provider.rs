@@ -197,6 +197,13 @@ pub(crate) trait LinuxEmuSignalControl: Send + Sync {
         None
     }
 
+    /// Whether flushing signal effects after an injection would find nothing
+    /// to do and change nothing, so the caller may skip that flush. The
+    /// default always flushes.
+    fn signal_effects_settled(&self) -> bool {
+        false
+    }
+
     /// Polls for the next signal dequeue in the executor's ledger.
     fn poll_signal_dequeue(
         &self,

@@ -815,3 +815,93 @@ fn an_empty_signal_boundary_selects_and_changes_nothing() {
     assert!(!executor.has_eligible_pending_signal());
     assert!(!executor.signal_boundary_is_empty());
 }
+
+/// signal_effects_settled lets an injection skip its signal-effect flush. It
+/// must answer true exactly when that flush (complete_signal_effects) would
+/// find no journaled dequeue of this executor's to retain or notify and no
+/// failure to return: signal_dequeue_front is None and one
+/// poll_signal_dequeue is Ready(Ok(None)).
+#[test]
+fn settled_signal_effects_agree_with_the_injection_flush() {
+    fn flush_would_do_nothing(executor: &ElfExecutor) -> bool {
+        let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
+        executor.signal_dequeue_front().is_none()
+            && matches!(
+                executor.poll_signal_dequeue(&mut cx),
+                std::task::Poll::Ready(Ok(None))
+            )
+    }
+    fn assert_agrees(executor: &ElfExecutor, settled: bool) {
+        assert_eq!(executor.signal_effects_settled(), settled);
+        assert_eq!(flush_would_do_nothing(executor), settled);
+    }
+    let root = TestDir::new();
+    let mut executor = ElfExecutor::new(test_state(&root.0), false);
+    executor.enable_signal_dequeues();
+    assert_agrees(&executor, true);
+
+    // A journaled dequeue of this executor's must be flushed, and is settled
+    // again once acknowledged.
+    assert!(matches!(
+        executor.queue_process_alarm_signal(process_alarm_event(executor.state.pid)),
+        reverie::ProcessAlarmSignalOutcome::Accepted(_)
+    ));
+    assert_agrees(&executor, true);
+    let taken = executor.take_pending_signal_for_delivery().unwrap().unwrap();
+    assert_eq!(taken.event.signal(), libc::SIGALRM);
+    assert_agrees(&executor, false);
+    let effect = executor.signal_dequeue_front().unwrap();
+    executor.acknowledge_signal_dequeue(effect).unwrap();
+    assert_agrees(&executor, true);
+
+    // A stored dequeue failure must surface through the flush.
+    executor.state.signal_dequeue_failure = Some(reverie::syscalls::Errno::EIO);
+    assert_agrees(&executor, false);
+    executor.state.signal_dequeue_failure = None;
+    assert_agrees(&executor, true);
+
+    // So must a journal that a failed owner aborted.
+    executor
+        .state
+        .process_signals
+        .lock()
+        .unwrap()
+        .dequeue_failed = true;
+    assert_agrees(&executor, false);
+}
+
+/// signal_boundary_emptiness also reports, for an empty boundary, whether a
+/// temporary-mask call left a saved mask for the boundary to restore.
+#[test]
+fn an_empty_boundary_reports_whether_a_mask_is_saved() {
+    let root = TestDir::new();
+    let mut executor = ElfExecutor::new(test_state(&root.0), false);
+    executor.enable_signal_dequeues();
+    assert_eq!(
+        executor.signal_boundary_emptiness(),
+        SignalBoundaryEmptiness::Empty { mask_saved: false }
+    );
+    // A temporary mask that leaves nothing eligible, with the own mask saved.
+    let own = executor.state.thread_signals.lock().blocked;
+    let mut temporary = own;
+    temporary.insert(libc::SIGUSR1);
+    install_temporary_mask_for_delivery(&executor.state, temporary);
+    assert_eq!(executor.state.thread_signals.lock().saved_sigmask, Some(own));
+    assert_eq!(
+        executor.signal_boundary_emptiness(),
+        SignalBoundaryEmptiness::Empty { mask_saved: true }
+    );
+    // An eligible signal makes the boundary not empty, saved mask or not.
+    let event = event_for_thread(libc::SIGUSR2, executor.state.pid, executor.state.tid).unwrap();
+    executor.defer_signal_delivery(event).unwrap();
+    assert_eq!(
+        executor.signal_boundary_emptiness(),
+        SignalBoundaryEmptiness::NotEmpty
+    );
+    executor.restore_saved_signal_mask();
+    assert_eq!(executor.state.thread_signals.lock().saved_sigmask, None);
+    assert_eq!(
+        executor.signal_boundary_emptiness(),
+        SignalBoundaryEmptiness::NotEmpty
+    );
+}

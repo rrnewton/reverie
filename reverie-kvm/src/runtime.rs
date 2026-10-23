@@ -63,6 +63,7 @@ use crate::executor::PendingSignal;
 use crate::executor::ProcessAction;
 use crate::executor::ProcessExit;
 use crate::executor::RunAdmission;
+use crate::executor::SignalBoundaryEmptiness;
 use crate::executor::StagedProcessAction;
 use crate::executor::conventional_exit_code;
 use crate::failure::FailureCheck;
@@ -119,6 +120,179 @@ pub(crate) mod entry_wait_observation {
         }
     }
 }
+/// Test-only observations of the synchronous start of a syscall-return
+/// signal boundary. They are per host thread, like entry_wait_observation, and
+/// a Scope resets them, so a test sees only its own guest's boundaries.
+#[cfg(test)]
+pub(crate) mod signal_return_observation {
+    use std::cell::Cell;
+    use std::cell::RefCell;
+
+    use crate::executor::ElfExecutor;
+
+    /// Where a test hook runs, on both the synchronous and the full path.
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    pub(crate) enum HookPoint {
+        /// On entry to signal_selection_start.
+        BeforeSelectionStart,
+        /// When signal_selection_start returns Skipped or Declined.
+        AfterNothingSelected,
+    }
+
+    pub(crate) type Hook = Box<dyn FnMut(HookPoint, &ElfExecutor)>;
+
+    thread_local! {
+        static FULL_PATH: Cell<bool> = const { Cell::new(false) };
+        static SYNC_RETURNS: Cell<u64> = const { Cell::new(0) };
+        static FULL_RETURNS: Cell<u64> = const { Cell::new(0) };
+        static SETTLED_INJECTIONS: Cell<u64> = const { Cell::new(0) };
+        static UNSETTLED_INJECTIONS: Cell<u64> = const { Cell::new(0) };
+        static RETURN_BOUNDARIES: Cell<u64> = const { Cell::new(0) };
+        static FIRST_SIGNAL_AT: Cell<Option<u64>> = const { Cell::new(None) };
+        static HOOK: RefCell<Option<Hook>> = const { RefCell::new(None) };
+    }
+
+    /// Installs one test's choices on this thread; dropping it restores the
+    /// defaults.
+    pub(crate) struct Scope {
+        thread: std::thread::ThreadId,
+        _same_thread: std::marker::PhantomData<std::rc::Rc<()>>,
+    }
+
+    impl Scope {
+        /// With `full_path`, ordinary syscall returns and injections take the
+        /// code as it was before the synchronous checks existed: the boundary
+        /// builds `filter_one_pending_signal_with_tool` from its first
+        /// iteration and `finish_signal_boundary` and `complete_signal_effects`
+        /// are always awaited. `hook` runs at each HookPoint, on either path.
+        pub(crate) fn new(full_path: bool, hook: Option<Hook>) -> Self {
+            reset();
+            FULL_PATH.with(|slot| slot.set(full_path));
+            HOOK.with(|slot| *slot.borrow_mut() = hook);
+            Self {
+                thread: std::thread::current().id(),
+                _same_thread: std::marker::PhantomData,
+            }
+        }
+
+        /// Ordinary syscall returns that finished without building a future.
+        pub(crate) fn sync_returns(&self) -> u64 {
+            SYNC_RETURNS.with(Cell::get)
+        }
+
+        /// Ordinary syscall returns that built the selection future.
+        pub(crate) fn full_returns(&self) -> u64 {
+            FULL_RETURNS.with(Cell::get)
+        }
+
+        /// Injections whose signal effects were already settled, so the
+        /// completion future was not built.
+        pub(crate) fn settled_injections(&self) -> u64 {
+            SETTLED_INJECTIONS.with(Cell::get)
+        }
+
+        /// Injections that built the completion future.
+        pub(crate) fn unsettled_injections(&self) -> u64 {
+            UNSETTLED_INJECTIONS.with(Cell::get)
+        }
+
+        /// The 1-based index of the first ordinary syscall-return boundary
+        /// whose outcome was not NoHandler (a handler ran or the thread or
+        /// group ended there).
+        pub(crate) fn first_signal_at(&self) -> Option<u64> {
+            FIRST_SIGNAL_AT.with(Cell::get)
+        }
+    }
+
+    impl Drop for Scope {
+        fn drop(&mut self) {
+            assert_eq!(self.thread, std::thread::current().id());
+            reset();
+        }
+    }
+
+    fn reset() {
+        FULL_PATH.with(|slot| slot.set(false));
+        SYNC_RETURNS.with(|slot| slot.set(0));
+        FULL_RETURNS.with(|slot| slot.set(0));
+        SETTLED_INJECTIONS.with(|slot| slot.set(0));
+        UNSETTLED_INJECTIONS.with(|slot| slot.set(0));
+        RETURN_BOUNDARIES.with(|slot| slot.set(0));
+        FIRST_SIGNAL_AT.with(|slot| slot.set(None));
+        HOOK.with(|slot| *slot.borrow_mut() = None);
+    }
+
+    pub(crate) fn full_path() -> bool {
+        FULL_PATH.with(Cell::get)
+    }
+
+    fn bump(slot: &'static std::thread::LocalKey<Cell<u64>>) {
+        slot.with(|count| count.set(count.get() + 1));
+    }
+
+    pub(crate) fn note_sync_return() {
+        bump(&SYNC_RETURNS);
+    }
+
+    pub(crate) fn note_full_return() {
+        bump(&FULL_RETURNS);
+    }
+
+    pub(crate) fn note_injection(settled: bool) {
+        bump(if settled {
+            &SETTLED_INJECTIONS
+        } else {
+            &UNSETTLED_INJECTIONS
+        });
+    }
+
+    pub(crate) fn note_return_boundary() {
+        bump(&RETURN_BOUNDARIES);
+    }
+
+    /// How many ordinary syscall-return boundaries this thread has entered.
+    pub(crate) fn return_boundaries() -> u64 {
+        RETURN_BOUNDARIES.with(Cell::get)
+    }
+
+    pub(crate) fn note_boundary_outcome(outcome: reverie::SignalBoundaryOutcome) {
+        if outcome != reverie::SignalBoundaryOutcome::NoHandler
+            && FIRST_SIGNAL_AT.with(Cell::get).is_none()
+        {
+            let boundary = RETURN_BOUNDARIES.with(Cell::get);
+            FIRST_SIGNAL_AT.with(|slot| slot.set(Some(boundary)));
+        }
+    }
+
+    pub(crate) fn hook(point: HookPoint, executor: &ElfExecutor) {
+        // Take the hook out so it never runs under this cell's borrow.
+        let hook = HOOK.with(|slot| slot.borrow_mut().take());
+        if let Some(mut hook) = hook {
+            hook(point, executor);
+            HOOK.with(|slot| *slot.borrow_mut() = Some(hook));
+        }
+    }
+}
+
+/// Test-only sizes of the futures around the syscall-return signal boundary,
+/// as built at their call sites (the largest seen in this process).
+#[cfg(test)]
+pub(crate) mod signal_future_sizes {
+    use std::sync::atomic::AtomicUsize;
+    use std::sync::atomic::Ordering;
+
+    pub(crate) static RUN_LOOP: AtomicUsize = AtomicUsize::new(0);
+    pub(crate) static FILTER_ONE: AtomicUsize = AtomicUsize::new(0);
+    pub(crate) static FILTER_NEXT: AtomicUsize = AtomicUsize::new(0);
+    pub(crate) static FINISH_BOUNDARY: AtomicUsize = AtomicUsize::new(0);
+    pub(crate) static FINISH_WITH_PERMIT: AtomicUsize = AtomicUsize::new(0);
+    pub(crate) static COMPLETE_EFFECTS: AtomicUsize = AtomicUsize::new(0);
+
+    pub(crate) fn record<F>(slot: &AtomicUsize, future: &F) {
+        slot.fetch_max(std::mem::size_of_val(future), Ordering::Relaxed);
+    }
+}
+
 use crate::memory::UserMemory;
 use crate::provider::LinuxEmuMemoryMap;
 use crate::provider::LinuxEmuSignalControl;
@@ -1159,6 +1333,10 @@ impl LinuxEmuSignalControl for StaticElfSyscallExecutor<'_> {
         self.executor.signal_dequeue_front()
     }
 
+    fn signal_effects_settled(&self) -> bool {
+        self.executor.signal_effects_settled()
+    }
+
     fn poll_signal_dequeue(
         &self,
         cx: &mut std::task::Context<'_>,
@@ -2061,9 +2239,25 @@ impl<T: Tool> Guest<T> for KvmGuest<'_, T> {
                 return std::future::pending().await;
             }
         };
-        if let Err(error) = self.complete_signal_effects(Some(raw)).await {
-            self.signal_handler(HandlerSignal::RuntimeError(error));
-            return std::future::pending().await;
+        // With no stored dequeue failure, no aborted journal and no journal
+        // entry of this thread's, complete_signal_effects would return
+        // Ok(None) having changed nothing; one locked check says so without
+        // building its future.
+        #[cfg(not(test))]
+        let full_path = false;
+        #[cfg(test)]
+        let full_path = signal_return_observation::full_path();
+        let settled = !full_path && self.executor.signal_effects_settled();
+        #[cfg(test)]
+        signal_return_observation::note_injection(settled);
+        if !settled {
+            let completion = self.complete_signal_effects(Some(raw));
+            #[cfg(test)]
+            signal_future_sizes::record(&signal_future_sizes::COMPLETE_EFFECTS, &completion);
+            if let Err(error) = completion.await {
+                self.signal_handler(HandlerSignal::RuntimeError(error));
+                return std::future::pending().await;
+            }
         }
         self.resume_ordinary_operation(Some(raw)).await;
         let mut result = raw_to_result(raw);
@@ -2673,6 +2867,122 @@ enum CallbackOutcome<T> {
     ThreadCancelled,
     GroupExit(ExitStatus),
     ThreadRetired,
+}
+
+/// Linux repeats signal selection on the same exit-to-user path when a tracer
+/// suppresses a signal or the replacement disposition ignores it. There are at
+/// most two standard-signal domains of 31 entries; the bound also prevents a
+/// Tool that keeps generating events from monopolizing one boundary forever.
+const SIGNAL_SELECTIONS_PER_BOUNDARY: u32 = 64;
+
+/// What the synchronous start of one signal-selection iteration decided.
+/// Skipped and Declined both end the iteration with `Completed(None)`.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum SignalSelectionStart {
+    /// The Tool lets the backend skip empty boundaries and this one is empty
+    /// (signal_boundary_emptiness). `mask_saved` is whether a temporary-mask
+    /// call left a saved mask, read under the same lock.
+    Skipped { mask_saved: bool },
+    /// The Tool authorized no delivery permit.
+    Declined,
+    /// Selection continues under the permit, if any, that is now registered.
+    Select,
+}
+
+/// Where `filter_one_pending_signal_with_tool` starts its bounded loop. A
+/// caller that already ran part of the first iteration synchronously says
+/// how much, so the iteration bound and every read stay as before.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum SignalBoundaryResume {
+    /// Nothing has run yet.
+    Fresh,
+    /// The first iteration's synchronous start ran and returned `Select`.
+    AfterSelectionStart,
+    /// The whole first iteration ran, selected nothing, and its exit test
+    /// found the boundary unfinished.
+    AfterFirstIteration,
+}
+
+/// The part of a syscall-return selection iteration before its first await,
+/// moved here from filter_next_pending_signal_with_tool so the ordinary return
+/// site can run it without building any future. Its reads, their order, its
+/// errors and its Tool calls are unchanged; it now also says which way it
+/// selected nothing and, for a skip, the saved-mask bit that
+/// signal_boundary_emptiness reads under the lock it already holds. The
+/// caller excludes fault boundaries, as filter_next always did.
+fn signal_selection_start<G: GlobalTool>(
+    executor: &ElfExecutor,
+    global_state: &G,
+) -> Result<SignalSelectionStart> {
+    #[cfg(test)]
+    signal_return_observation::hook(
+        signal_return_observation::HookPoint::BeforeSelectionStart,
+        executor,
+    );
+    if executor.signal_controlled() && executor.delivery_permit().is_none() {
+        let identity = executor.signal_task_identity().ok_or_else(|| {
+            Error::UnexpectedVcpuExit("signal return lost task generation".to_owned())
+        })?;
+        // Most syscall returns have nothing to deliver. When the Tool
+        // allows it, skip the permit round trip and the locked selection
+        // at a boundary that provably selects nothing and changes nothing;
+        // see signal_boundary_emptiness.
+        if global_state.skip_empty_signal_boundaries()
+            && let SignalBoundaryEmptiness::Empty { mask_saved } =
+                executor.signal_boundary_emptiness()
+        {
+            #[cfg(test)]
+            signal_return_observation::hook(
+                signal_return_observation::HookPoint::AfterNothingSelected,
+                executor,
+            );
+            return Ok(SignalSelectionStart::Skipped { mask_saved });
+        }
+        let permit = global_state
+            .authorize_backend_signal_boundary(identity)
+            .map_err(Error::Reverie)?;
+        if permit.is_none() {
+            #[cfg(test)]
+            signal_return_observation::hook(
+                signal_return_observation::HookPoint::AfterNothingSelected,
+                executor,
+            );
+            return Ok(SignalSelectionStart::Declined);
+        }
+        if executor.delivery_permit() != permit {
+            return Err(Error::UnexpectedVcpuExit(
+                "unregistered signal return permit".to_owned(),
+            ));
+        }
+    }
+    Ok(SignalSelectionStart::Select)
+}
+
+/// The exit test after each selection iteration: the boundary is finished
+/// unless it selected nothing, no exit is pending, and a signal the mask
+/// leaves unblocked is (still or newly) pending.
+fn signal_selection_finished(
+    executor: &ElfExecutor,
+    pending: &CallbackOutcome<Option<PendingSignal>>,
+) -> bool {
+    matches!(
+        pending,
+        CallbackOutcome::ThreadCancelled
+            | CallbackOutcome::GroupExit(_)
+            | CallbackOutcome::ThreadRetired
+            | CallbackOutcome::Completed(Some(_))
+    ) || executor.has_pending_exit()
+        || !executor.has_eligible_pending_signal()
+}
+
+/// The part of finish_signal_boundary before its first await: a recorded
+/// parent-death failure ends the boundary, and without an owned delivery
+/// permit there is no receipt to send.
+fn signal_boundary_receipt_permit(
+    executor: &ElfExecutor,
+) -> Result<Option<reverie::SignalDeliveryPermit>> {
+    executor.check_parent_death_failure()?;
+    Ok(executor.owned_delivery_permit())
 }
 
 fn handler_signal_outcome<T>(signal: HandlerSignal) -> HandlerOutcome<T> {
@@ -4506,10 +4816,22 @@ impl KvmBackend {
         global: &G,
         outcome: reverie::SignalBoundaryOutcome,
     ) -> Result<()> {
-        executor.check_parent_death_failure()?;
-        let Some(permit) = executor.owned_delivery_permit() else {
+        let Some(permit) = signal_boundary_receipt_permit(executor)? else {
             return Ok(());
         };
+        self.finish_signal_boundary_with_permit(executor, global, outcome, permit)
+            .await
+    }
+
+    /// The rest of finish_signal_boundary once signal_boundary_receipt_permit
+    /// returned `permit`; nothing between the two reads it again.
+    async fn finish_signal_boundary_with_permit<G: GlobalTool>(
+        &mut self,
+        executor: &mut ElfExecutor,
+        global: &G,
+        outcome: reverie::SignalBoundaryOutcome,
+        permit: reverie::SignalDeliveryPermit,
+    ) -> Result<()> {
         if matches!(
             outcome,
             reverie::SignalBoundaryOutcome::Terminated { group: false, .. }
@@ -5394,6 +5716,7 @@ impl KvmBackend {
         subscriptions: &Subscription,
         stack_checked_out: &Arc<AtomicBool>,
         thread_entry: bool,
+        resume: SignalBoundaryResume,
     ) -> Result<CallbackOutcome<Option<PendingSignal>>>
     where
         T: Tool + 'static,
@@ -5401,41 +5724,36 @@ impl KvmBackend {
         T::GlobalState: 'static,
         <T::GlobalState as GlobalTool>::Config: 'static,
     {
-        // Linux repeats signal selection on the same exit-to-user path when a
-        // tracer suppresses a signal or the replacement disposition ignores
-        // it. There are at most two standard-signal domains of 31 entries; the
-        // bound also prevents a Tool that keeps generating events from
-        // monopolizing this boundary forever.
-        for _ in 0..64 {
-            let pending = self
-                .filter_next_pending_signal_with_tool(
-                    executor,
-                    pid,
-                    tid,
-                    tool,
-                    memory,
-                    auxv,
-                    registers,
-                    syscall_number,
-                    frame_address,
-                    thread_state,
-                    global_state,
-                    config,
-                    subscriptions,
-                    stack_checked_out,
-                    None,
-                    thread_entry,
-                )
-                .await?;
-            if matches!(
-                pending,
-                CallbackOutcome::ThreadCancelled
-                    | CallbackOutcome::GroupExit(_)
-                    | CallbackOutcome::ThreadRetired
-                    | CallbackOutcome::Completed(Some(_))
-            ) || executor.has_pending_exit()
-                || !executor.has_eligible_pending_signal()
-            {
+        let (first, mut selection_started) = match resume {
+            SignalBoundaryResume::Fresh => (0, false),
+            SignalBoundaryResume::AfterSelectionStart => (0, true),
+            SignalBoundaryResume::AfterFirstIteration => (1, false),
+        };
+        for _ in first..SIGNAL_SELECTIONS_PER_BOUNDARY {
+            let selection = self.filter_next_pending_signal_with_tool(
+                executor,
+                pid,
+                tid,
+                tool,
+                memory,
+                auxv,
+                registers,
+                syscall_number,
+                frame_address,
+                thread_state,
+                global_state,
+                config,
+                subscriptions,
+                stack_checked_out,
+                None,
+                thread_entry,
+                selection_started,
+            );
+            #[cfg(test)]
+            signal_future_sizes::record(&signal_future_sizes::FILTER_NEXT, &selection);
+            let pending = selection.await?;
+            selection_started = false;
+            if signal_selection_finished(executor, &pending) {
                 return Ok(pending);
             }
         }
@@ -5463,6 +5781,7 @@ impl KvmBackend {
         stack_checked_out: &Arc<AtomicBool>,
         fault: Option<&UserTrap>,
         thread_entry: bool,
+        selection_started: bool,
     ) -> Result<CallbackOutcome<Option<PendingSignal>>>
     where
         T: Tool + 'static,
@@ -5470,28 +5789,14 @@ impl KvmBackend {
         T::GlobalState: 'static,
         <T::GlobalState as GlobalTool>::Config: 'static,
     {
-        if fault.is_none() && executor.signal_controlled() && executor.delivery_permit().is_none() {
-            let identity = executor.signal_task_identity().ok_or_else(|| {
-                Error::UnexpectedVcpuExit("signal return lost task generation".to_owned())
-            })?;
-            // Most syscall returns have nothing to deliver. When the Tool
-            // allows it, skip the permit round trip and the locked selection
-            // at a boundary that provably selects nothing and changes nothing;
-            // see signal_boundary_is_empty.
-            if global_state.skip_empty_signal_boundaries() && executor.signal_boundary_is_empty() {
-                return Ok(CallbackOutcome::Completed(None));
-            }
-            let permit = global_state
-                .authorize_backend_signal_boundary(identity)
-                .map_err(Error::Reverie)?;
-            if permit.is_none() {
-                return Ok(CallbackOutcome::Completed(None));
-            }
-            if executor.delivery_permit() != permit {
-                return Err(Error::UnexpectedVcpuExit(
-                    "unregistered signal return permit".to_owned(),
-                ));
-            }
+        // A caller that already ran signal_selection_start for this iteration
+        // passes selection_started, and it returned Select.
+        if fault.is_none()
+            && !selection_started
+            && signal_selection_start(executor, global_state.as_ref())?
+                != SignalSelectionStart::Select
+        {
+            return Ok(CallbackOutcome::Completed(None));
         }
         let selected = if let Some(fault) = fault {
             Ok(Some(fault.pending()))
@@ -5984,6 +6289,7 @@ impl KvmBackend {
                         subscriptions,
                         &stack_checked_out,
                         true,
+                        SignalBoundaryResume::Fresh,
                     )
                     .await?;
                 let pending = match pending {
@@ -6314,6 +6620,7 @@ impl KvmBackend {
                                 &stack_checked_out,
                                 Some(&fault),
                                 false,
+                                false,
                             )
                             .await?;
                         let pending = match pending {
@@ -6423,6 +6730,7 @@ impl KvmBackend {
                                 subscriptions,
                                 &stack_checked_out,
                                 false,
+                                SignalBoundaryResume::Fresh,
                             )
                             .await?;
                         let pending = match pending {
@@ -6902,31 +7210,89 @@ impl KvmBackend {
                     set_user_segment_base(&self.vcpu, segment, address)?;
                 }
                 let mut signal_boundary_outcome = reverie::SignalBoundaryOutcome::NoHandler;
+                #[cfg(not(test))]
+                let full_path = false;
+                #[cfg(test)]
+                let full_path = signal_return_observation::full_path();
                 if !replaced_image && pending_exit.is_none() {
+                    #[cfg(test)]
+                    signal_return_observation::note_return_boundary();
+                    // False only when an empty, skipped boundary found no
+                    // saved mask; then the restore below has nothing to do.
+                    let mut mask_may_be_saved = true;
                     let pending = if let Some(prepared) = executor
                         .take_prepared_signal()
                         .map_err(|errno| Error::Reverie(errno.into()))?
                     {
                         CallbackOutcome::Completed(Some(prepared))
                     } else {
-                        self.filter_one_pending_signal_with_tool(
-                            executor,
-                            pid,
-                            tid,
-                            &tool,
-                            &memory,
-                            &auxv,
-                            returned_registers,
-                            request.number(),
-                            frame_address,
-                            &mut thread_state,
-                            &global_state,
-                            config,
-                            subscriptions,
-                            &stack_checked_out,
-                            false,
-                        )
-                        .await?
+                        // Run the first selection iteration's synchronous
+                        // start here rather than inside the selection future.
+                        // Its reads, their order and their program point are
+                        // the ones the future's first poll would make.
+                        //
+                        // None: the first iteration selected nothing and the
+                        // boundary is finished, as filter_one would return.
+                        let resume = if full_path {
+                            Some(SignalBoundaryResume::Fresh)
+                        } else {
+                            match signal_selection_start(executor, global_state.as_ref())? {
+                                SignalSelectionStart::Select => {
+                                    Some(SignalBoundaryResume::AfterSelectionStart)
+                                }
+                                SignalSelectionStart::Skipped { mask_saved } => {
+                                    // The exit test would read the pending
+                                    // signals again under the same locks that
+                                    // signal_boundary_emptiness just held, and
+                                    // under the Tool's skip contract no other
+                                    // task changes them in between; with no
+                                    // eligible signal it finishes the boundary
+                                    // whatever has_pending_exit says.
+                                    mask_may_be_saved = mask_saved;
+                                    None
+                                }
+                                SignalSelectionStart::Declined => {
+                                    let nothing = CallbackOutcome::Completed(None);
+                                    if signal_selection_finished(executor, &nothing) {
+                                        None
+                                    } else {
+                                        Some(SignalBoundaryResume::AfterFirstIteration)
+                                    }
+                                }
+                            }
+                        };
+                        if let Some(resume) = resume {
+                            #[cfg(test)]
+                            signal_return_observation::note_full_return();
+                            let selection = self.filter_one_pending_signal_with_tool(
+                                executor,
+                                pid,
+                                tid,
+                                &tool,
+                                &memory,
+                                &auxv,
+                                returned_registers,
+                                request.number(),
+                                frame_address,
+                                &mut thread_state,
+                                &global_state,
+                                config,
+                                subscriptions,
+                                &stack_checked_out,
+                                false,
+                                resume,
+                            );
+                            #[cfg(test)]
+                            signal_future_sizes::record(
+                                &signal_future_sizes::FILTER_ONE,
+                                &selection,
+                            );
+                            selection.await?
+                        } else {
+                            #[cfg(test)]
+                            signal_return_observation::note_sync_return();
+                            CallbackOutcome::Completed(None)
+                        }
                     };
                     let pending = match pending {
                         CallbackOutcome::Completed(pending) => pending,
@@ -6962,7 +7328,7 @@ impl KvmBackend {
                             pending,
                         )?;
                     }
-                    if !delivered {
+                    if !delivered && mask_may_be_saved {
                         // No handler frame saved a temporary-mask call's
                         // mask, so put it back (`restore_saved_sigmask`).
                         executor.restore_saved_signal_mask();
@@ -6975,6 +7341,8 @@ impl KvmBackend {
                     } else {
                         reverie::SignalBoundaryOutcome::NoHandler
                     };
+                    #[cfg(test)]
+                    signal_return_observation::note_boundary_outcome(signal_boundary_outcome);
                     if restart_requested && !delivered && pending_exit.is_none() {
                         // Suppression, an ignored replacement, or a replacement
                         // newly blocked by its signal number means no handler ran;
@@ -6991,12 +7359,28 @@ impl KvmBackend {
                 if let Some(exit) = pending_exit {
                     signal_boundary_outcome = exit.signal_boundary_outcome();
                 }
-                self.finish_signal_boundary(
-                    executor,
-                    global_state.as_ref(),
-                    signal_boundary_outcome,
-                )
-                .await?;
+                // finish_signal_boundary, with its synchronous start run here
+                // so a boundary with no owned permit builds no future.
+                if full_path {
+                    let finish = self.finish_signal_boundary(
+                        executor,
+                        global_state.as_ref(),
+                        signal_boundary_outcome,
+                    );
+                    #[cfg(test)]
+                    signal_future_sizes::record(&signal_future_sizes::FINISH_BOUNDARY, &finish);
+                    finish.await?;
+                } else if let Some(permit) = signal_boundary_receipt_permit(executor)? {
+                    let finish = self.finish_signal_boundary_with_permit(
+                        executor,
+                        global_state.as_ref(),
+                        signal_boundary_outcome,
+                        permit,
+                    );
+                    #[cfg(test)]
+                    signal_future_sizes::record(&signal_future_sizes::FINISH_WITH_PERMIT, &finish);
+                    finish.await?;
+                }
                 executor.finish_parked_delivery();
                 pending_exit = pending_exit.or_else(|| executor.take_exit());
                 if let Some(exit) = pending_exit {
@@ -7007,6 +7391,8 @@ impl KvmBackend {
                 }
             }
         };
+        #[cfg(test)]
+        signal_future_sizes::record(&signal_future_sizes::RUN_LOOP, &execution);
         let mut caught = crate::failure::owned_future::catch_owned_future(execution).await;
         // The kept failure wait outlived every callback that borrowed it.
         // Destroy it under a catch, as each callback's own wait was: a
@@ -8803,6 +9189,10 @@ mod exit_descriptor_tests;
 #[cfg(test)]
 #[path = "runtime/parent_death_tests.rs"]
 mod parent_death_tests;
+
+#[cfg(test)]
+#[path = "runtime/signal_return_start_tests.rs"]
+mod signal_return_start_tests;
 
 #[cfg(test)]
 #[path = "runtime/process_plan_tests.rs"]

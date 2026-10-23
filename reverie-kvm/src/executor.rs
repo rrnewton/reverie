@@ -7032,6 +7032,37 @@ impl ElfExecutor {
             .map(|entry| entry.effect)
     }
 
+    /// Reports that the injection-completion flush (KvmGuest's
+    /// complete_signal_effects) has nothing to do: no stored dequeue failure,
+    /// a journal that has not failed, and no journaled dequeue owned by this
+    /// executor. That flush would then take signal_dequeue_front (None, so no
+    /// result is retained) and one poll_signal_dequeue (Ok(None)), and return
+    /// Ok(None) having notified no Tool and changed no state. This reads the
+    /// same inputs under one process_signals lock instead of two.
+    ///
+    /// The stored failure is this executor's own field. Journal entries are
+    /// added only by this executor's own dequeues, so none of this owner's can
+    /// appear between the two locks. Only `dequeue_failed` can be set by
+    /// another thread (terminal ownership transfer after a failure), and a
+    /// flag set after this read is the execution the two-lock code also had
+    /// when the flag was set after its second lock.
+    pub(crate) fn signal_effects_settled(&self) -> bool {
+        if self.signal_dequeue_failure().is_some() {
+            return false;
+        }
+        let owner = self.admitted_signal_identity();
+        let process = self
+            .state
+            .process_signals
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        !process.dequeue_failed
+            && !process
+                .dequeue_journal
+                .iter()
+                .any(|entry| entry.owner == owner)
+    }
+
     /// A refusal by the observation bookkeeping, never a guest syscall errno.
     pub(crate) fn signal_dequeue_failure(&self) -> Option<reverie::syscalls::Errno> {
         self.state.signal_dequeue_failure
@@ -7135,9 +7166,19 @@ impl ElfExecutor {
         Ok(pending)
     }
 
-    /// Reports that this thread's next signal boundary can neither select a
-    /// signal nor fail nor change signal state. There is no stored dequeue
-    /// failure, no parked ledger whose effect reservation could refuse, no
+    /// Test-only: whether signal_boundary_emptiness reports an empty boundary.
+    #[cfg(test)]
+    pub(crate) fn signal_boundary_is_empty(&self) -> bool {
+        matches!(
+            self.signal_boundary_emptiness(),
+            SignalBoundaryEmptiness::Empty { .. }
+        )
+    }
+
+    /// Reports whether this thread's next signal boundary is empty: it can
+    /// neither select a signal nor fail nor change signal state. There is no
+    /// stored dequeue failure, no parked ledger whose effect reservation could
+    /// refuse, no
     /// signalfd whose readiness the boundary would refresh, no journaled
     /// dequeue of this thread's to flush, and no pending signal that the
     /// current mask leaves unblocked. Then take_pending_signal_for_delivery
@@ -7148,9 +7189,15 @@ impl ElfExecutor {
     /// Every input is this thread's own state or state that other tasks change
     /// only during their own serial turns, so the answer is the one the full
     /// boundary would reach at this point of the same turn.
-    pub(crate) fn signal_boundary_is_empty(&self) -> bool {
+    ///
+    /// When the boundary is empty, also reports whether a temporary-mask call
+    /// left a saved mask for the boundary to restore, read under the thread
+    /// lock the answer already holds. Only this thread's own executor writes
+    /// the saved mask (installing a temporary mask in its own call,
+    /// delivering, rt_sigreturn, and the restore itself).
+    pub(crate) fn signal_boundary_emptiness(&self) -> SignalBoundaryEmptiness {
         if self.state.signal_dequeue_failure.is_some() || self.parked_signals.is_some() {
-            return false;
+            return SignalBoundaryEmptiness::NotEmpty;
         }
         let owner = self.admitted_signal_identity();
         let process = self
@@ -7164,13 +7211,41 @@ impl ElfExecutor {
                 .iter()
                 .any(|entry| entry.owner == owner)
         {
-            return false;
+            return SignalBoundaryEmptiness::NotEmpty;
         }
         let generations = &process.pending_generations;
         let thread = self.state.thread_signals.lock();
         let blocked = thread.blocked;
-        !thread.pending.any_eligible(blocked, generations)
+        if !thread.pending.any_eligible(blocked, generations)
             && !process.shared_pending.any_eligible(blocked, generations)
+        {
+            SignalBoundaryEmptiness::Empty {
+                mask_saved: thread.saved_sigmask.is_some(),
+            }
+        } else {
+            SignalBoundaryEmptiness::NotEmpty
+        }
+    }
+
+    /// Test-only: adds `signal` to this thread's mask, as a Tool's injected
+    /// rt_sigprocmask would.
+    #[cfg(test)]
+    pub(crate) fn block_signal_for_test(&self, signal: libc::c_int) {
+        self.state.thread_signals.lock().blocked.insert(signal);
+    }
+
+    /// Test-only: makes this executor's admitted task generation stale, as
+    /// after the task it was admitted for was replaced.
+    #[cfg(test)]
+    pub(crate) fn lose_task_generation_for_test(&mut self) {
+        self.task_generation += 1;
+    }
+
+    /// Test-only: records a parent-death publication failure, as a failed
+    /// publication does.
+    #[cfg(test)]
+    pub(crate) fn retain_parent_death_error_for_test(&self, errno: reverie::syscalls::Errno) {
+        self.signal_registry.retain_parent_death_error(errno);
     }
 
     /// Reports current unblocked pending state without selecting a signal or
@@ -21706,6 +21781,16 @@ fn rt_sigtimedwait(memory: &mut GuestMemory, state: &mut LoadedStaticElf, args: 
         }
     }
     event.signal() as i64
+}
+
+/// What signal_boundary_emptiness found at a syscall-return signal boundary.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum SignalBoundaryEmptiness {
+    /// The boundary may select a signal, fail, or change signal state.
+    NotEmpty,
+    /// signal_boundary_is_empty holds. `mask_saved` is whether a
+    /// temporary-mask call left the thread's own mask saved for restoring.
+    Empty { mask_saved: bool },
 }
 
 /// What a pending signal does to a call that waits under `mask` and ends
