@@ -362,13 +362,17 @@ pub(crate) fn process_syscall_return_registers(
 /// read precedes the store, a read error or a failure recorded or deferred
 /// after the read returns before the store, and the store writes the same
 /// eight bytes at the same address; see [`GuestMemory::read_then_write_raw`].
+///
+/// The return registers are built in `registers`, which holds the exit's
+/// registers on entry, rather than returned. On an error `registers` is
+/// unchanged.
 pub(crate) fn process_syscall_return_registers_storing_result(
     memory: &GuestMemory,
-    registers: kvm_bindings::kvm_regs,
+    registers: &mut kvm_bindings::kvm_regs,
     syscall_frame_address: u64,
     result: i64,
     stack_pointer: Option<u64>,
-) -> Result<kvm_bindings::kvm_regs> {
+) -> Result<()> {
     let mut frame: ReturnWords = [0; RETURN_WORDS_BYTES];
     memory.read_then_write_raw(
         frame_word_address_u64(syscall_frame_address, RETURN_FIRST_WORD),
@@ -376,12 +380,8 @@ pub(crate) fn process_syscall_return_registers_storing_result(
         frame_word_address_u64(syscall_frame_address, RESULT_WORD),
         &result.to_le_bytes(),
     )?;
-    Ok(return_registers_from_words(
-        &frame,
-        registers,
-        result,
-        stack_pointer,
-    ))
+    return_registers_from_words_in_place(&frame, registers, result, stack_pointer);
+    Ok(())
 }
 
 fn return_registers_from_words(
@@ -390,6 +390,16 @@ fn return_registers_from_words(
     result: i64,
     stack_pointer: Option<u64>,
 ) -> kvm_bindings::kvm_regs {
+    return_registers_from_words_in_place(frame, &mut registers, result, stack_pointer);
+    registers
+}
+
+fn return_registers_from_words_in_place(
+    frame: &ReturnWords,
+    registers: &mut kvm_bindings::kvm_regs,
+    result: i64,
+    stack_pointer: Option<u64>,
+) {
     let word = |index: usize| {
         let start = (index - RETURN_FIRST_WORD) * std::mem::size_of::<u64>();
         u64::from_le_bytes(frame[start..start + 8].try_into().unwrap())
@@ -411,7 +421,6 @@ fn return_registers_from_words(
     if let Some(stack_pointer) = stack_pointer {
         registers.rsp = stack_pointer;
     }
-    registers
 }
 
 // TODO-HUMAN-REVIEW(PR-172): Review syscall-frame selection for concurrent vCPUs.
@@ -1347,6 +1356,74 @@ mod tests {
             (context.rbx, context.rip, context.rflags),
             (0x7777, 0x1234_5678, 0x202)
         );
+    }
+
+    /// The syscall loop builds its return registers in place from the exit's
+    /// registers: they equal what the returning read builds from the same
+    /// registers and frame, and the result word is stored. An unreadable
+    /// frame is an error that leaves the registers as they were.
+    #[test]
+    fn return_registers_built_in_place_match_the_returning_read() {
+        const FRAME: u64 = 0x1000;
+        let mut memory = GuestMemory::new(0, 0x4000).unwrap();
+        let request = SyscallRequest::new(
+            libc::SYS_getppid as u64,
+            [0x11, 0x22, 0x33, 0x44, 0x55, 0x66],
+        );
+        request.write_to(&mut memory, FRAME).unwrap();
+        for (word, value) in [
+            (RETURN_RIP_WORD, 0x40_1236_u64),
+            (RETURN_FLAGS_WORD, 0x246),
+            (SAVED_RBX_WORD, 0xbb),
+        ] {
+            memory
+                .write_raw(frame_word_address_u64(FRAME, word), &value.to_le_bytes())
+                .unwrap();
+        }
+        let live = kvm_bindings::kvm_regs {
+            rax: u64::MAX,
+            rbx: u64::MAX,
+            rcx: u64::MAX,
+            rdx: u64::MAX,
+            rsi: u64::MAX,
+            r12: 0x1212,
+            r15: 0x1515,
+            rsp: 0x7fff_f000,
+            rip: 0x5043,
+            rflags: 0x2,
+            ..Default::default()
+        };
+        let result_word =
+            |memory: &GuestMemory| read_u64(memory, frame_word_address_u64(FRAME, RESULT_WORD));
+        for (result, stack_pointer) in [(-7_i64, None), (3, Some(0x7fff_e000))] {
+            let expected =
+                process_syscall_return_registers(&memory, live, FRAME, result, stack_pointer)
+                    .unwrap();
+            let mut in_place = live;
+            process_syscall_return_registers_storing_result(
+                &memory,
+                &mut in_place,
+                FRAME,
+                result,
+                stack_pointer,
+            )
+            .unwrap();
+            assert_eq!(in_place, expected);
+            assert_eq!(result_word(&memory).unwrap(), result as u64);
+        }
+        let mut unchanged = live;
+        assert!(
+            process_syscall_return_registers_storing_result(
+                &memory,
+                &mut unchanged,
+                0x10_0000,
+                9,
+                None,
+            )
+            .is_err()
+        );
+        assert_eq!(unchanged, live);
+        assert_eq!(result_word(&memory).unwrap(), 3);
     }
 
     #[test]

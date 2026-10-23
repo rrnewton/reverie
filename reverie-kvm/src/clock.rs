@@ -238,19 +238,23 @@ impl CountedVcpu {
         }
     }
 
+    /// Both register reads below read the fd's register state (its kvm_run
+    /// page or an ioctl), so the probe counts them as shared-fd accesses, as
+    /// a raw `Deref` read was counted before.
+    fn note_register_read(&self) {
+        #[cfg(test)]
+        if let Some(probe) = &self.run_probe {
+            probe.prepare.increment(&probe.shared_fd_accesses);
+        }
+    }
+
     /// The guest's general registers. After an exit this reads KVM's synced
     /// copy without an ioctl; otherwise, or after any raw fd access, it asks
     /// KVM (`KVM_GET_REGS`).
     pub(crate) fn get_regs(
         &self,
     ) -> std::result::Result<kvm_bindings::kvm_regs, kvm_ioctls::Error> {
-        // Both paths read the fd's register state (its kvm_run page or an
-        // ioctl), so the probe counts them as shared-fd accesses, as a raw
-        // `Deref` read was counted before.
-        #[cfg(test)]
-        if let Some(probe) = &self.run_probe {
-            probe.prepare.increment(&probe.shared_fd_accesses);
-        }
+        self.note_register_read();
         if self.synced_exit.load(std::sync::atomic::Ordering::Relaxed) {
             Ok(self.fd.sync_regs().regs)
         } else {
@@ -258,29 +262,56 @@ impl CountedVcpu {
         }
     }
 
+    /// [`Self::get_regs`], stored into `registers` rather than returned: the
+    /// same read from the same source, copied once into its destination
+    /// instead of through a returned `Result`. On an error `registers` is
+    /// unchanged.
+    pub(crate) fn get_regs_into(
+        &self,
+        registers: &mut kvm_bindings::kvm_regs,
+    ) -> std::result::Result<(), kvm_ioctls::Error> {
+        self.note_register_read();
+        if self.synced_exit.load(std::sync::atomic::Ordering::Relaxed) {
+            *registers = self.fd.sync_regs().regs;
+        } else {
+            *registers = self.fd.get_regs()?;
+        }
+        Ok(())
+    }
+
     /// The guest's special registers, from the synced copy as for
     /// [`Self::get_regs`] (`KVM_GET_SREGS` otherwise).
     pub(crate) fn get_sregs(
         &self,
     ) -> std::result::Result<kvm_bindings::kvm_sregs, kvm_ioctls::Error> {
-        // Both paths read the fd's register state (its kvm_run page or an
-        // ioctl), so the probe counts them as shared-fd accesses, as a raw
-        // `Deref` read was counted before.
-        #[cfg(test)]
-        if let Some(probe) = &self.run_probe {
-            probe.prepare.increment(&probe.shared_fd_accesses);
-        }
+        self.note_register_read();
         if self.synced_exit.load(std::sync::atomic::Ordering::Relaxed) {
             let special = self.fd.sync_regs().sregs;
-            // KVM sets bits in the synced interrupt bitmap but never clears
-            // them (measured on Linux 7.1.3), while KVM_GET_SREGS reports the
-            // pending bitmap. This backend injects no interrupt, so the bitmap
-            // is zero; should one ever be set, ask KVM rather than return it.
-            if special.interrupt_bitmap.iter().all(|word| *word == 0) {
+            if synced_special_registers_usable(&special) {
                 return Ok(special);
             }
         }
         self.fd.get_sregs()
+    }
+
+    /// [`Self::get_sregs`], stored into `special` rather than returned: the
+    /// same reads in the same order (the synced copy, then `KVM_GET_SREGS`
+    /// only when that copy is unusable), each copied once into its
+    /// destination. On an error `special` holds the synced copy that was
+    /// refused, and the caller discards it with the error.
+    pub(crate) fn get_sregs_into(
+        &self,
+        special: &mut kvm_bindings::kvm_sregs,
+    ) -> std::result::Result<(), kvm_ioctls::Error> {
+        self.note_register_read();
+        if self.synced_exit.load(std::sync::atomic::Ordering::Relaxed) {
+            *special = self.fd.sync_regs().sregs;
+            if synced_special_registers_usable(special) {
+                return Ok(());
+            }
+        }
+        *special = self.fd.get_sregs()?;
+        Ok(())
     }
 
     /// Attribute this vCPU's entry failures to `origin`, keeping the
@@ -624,6 +655,15 @@ impl CpuDomain {
             .get(cpu / 64)
             .is_some_and(|word| word & (1 << (cpu % 64)) != 0)
     }
+}
+
+/// Whether KVM's synced special registers can stand for `KVM_GET_SREGS`.
+/// KVM sets bits in the synced interrupt bitmap but never clears them
+/// (measured on Linux 7.1.3), while KVM_GET_SREGS reports the pending bitmap.
+/// This backend injects no interrupt, so the bitmap is zero; should one ever
+/// be set, ask KVM rather than return it.
+fn synced_special_registers_usable(special: &kvm_bindings::kvm_sregs) -> bool {
+    special.interrupt_bitmap.iter().all(|word| *word == 0)
 }
 
 /// This host's domain, taken once per process (a fork child inherits it: the
