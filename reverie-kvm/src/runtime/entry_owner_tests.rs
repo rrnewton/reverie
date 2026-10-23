@@ -77,7 +77,7 @@ fn private_entry_failure_wakes_pending_callback_before_scope_acknowledgement() {
         signal,
         starts,
         std::future::pending(),
-        watch.clone(),
+        &watch,
     ));
     let waker = futures::task::waker(counts.clone());
     let mut cx = Context::from_waker(&waker);
@@ -175,7 +175,7 @@ fn existing_entry_failure_skips_factory_and_retains_both_destructor_payloads() {
                 drops: failure_drops.clone(),
             },
         },
-        watch,
+        &watch,
     ));
     assert_eq!(build_calls.load(Ordering::SeqCst), 0);
     assert_eq!(builder_drops.load(Ordering::SeqCst), 1);
@@ -229,7 +229,7 @@ fn ready_typed_error_survives_entry_failure_and_outer_mapping() {
         Arc::new(Mutex::new(None)),
         Arc::new(Mutex::new(Vec::new())),
         std::future::pending(),
-        watch.clone(),
+        &watch,
     ));
     let mut cx = Context::from_waker(Waker::noop());
     let Poll::Ready(completion) = driven.as_mut().poll(&mut cx) else {
@@ -267,4 +267,60 @@ fn ready_typed_error_survives_entry_failure_and_outer_mapping() {
     drop(expected);
     drop(backend.finish_entry_driver(driver, Err::<(), _>(error)));
     assert!(weak.upgrade().is_none());
+}
+
+/// The callback watch a syscall callback builds is the watch its callback
+/// memory would build (`EntryDriverWatch::for_memory`), with a driver and
+/// without one, so `KvmGuest::new_with_watch` may lend it to the guest
+/// handle: the same owner allocation and the same gate, by pointer.
+#[test]
+fn a_callback_watch_is_the_watch_its_callback_memory_would_build() {
+    use crate::entry::driver::EntryDriverWatch;
+
+    // Without a driver: no owner, no origin.
+    let backend = backend();
+    let watch = backend.entry_driver_watch();
+    let memory = backend.memory.clone();
+    assert!(watch.observes_memory(&memory));
+    assert!(watch.same_as(&EntryDriverWatch::for_memory(&memory)));
+
+    // With a driver, as the run loop's syscall callback has it.
+    let mut backend = backend;
+    let driver = backend.start_entry_driver();
+    let callback = backend.begin_entry_callback().unwrap().unwrap();
+    let watch = backend.entry_driver_watch();
+    let memory = backend.memory.clone();
+    assert!(watch.observes_memory(&memory));
+    let built = EntryDriverWatch::for_memory(&memory);
+    assert!(watch.same_as(&built));
+    // A failure recorded on the gate mid-callback is seen through either.
+    let failure = memory.entry_gate().poison(
+        memory.entry_origin(),
+        Error::GuestClock("lent watch".into()),
+    );
+    assert!(watch.check().is_err());
+    assert!(built.check().is_err());
+
+    // A memory whose origin is another driver's, or whose gate is another
+    // mapping's, is not observed: the handle builds its own watch there.
+    let other = crate::entry::owner::DriverScope::new();
+    let mut foreign = memory.clone();
+    foreign.set_operation_origin(Some(other.owner().origin()));
+    assert!(!watch.observes_memory(&foreign));
+    let elsewhere = GuestMemory::new(0, 0x4000).unwrap();
+    assert!(!watch.observes_memory(&elsewhere));
+    // A watch with no owner does not observe a memory with an origin, even
+    // one whose driver is gone.
+    let unowned = EntryDriverWatch::for_memory(&elsewhere);
+    let mut gone = elsewhere.clone();
+    gone.set_operation_origin(Some(
+        crate::entry::owner::DriverScope::new().owner().origin(),
+    ));
+    assert!(!unowned.observes_memory(&gone));
+    assert!(unowned.observes_memory(&elsewhere));
+
+    drop(failure);
+    drop(callback);
+    backend.restore_entry_origin();
+    drop(driver);
 }

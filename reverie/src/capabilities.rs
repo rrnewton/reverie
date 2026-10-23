@@ -441,6 +441,17 @@ impl BackendCapabilities {
     /// `reverie-kvm`: guest threads run in a virtual machine that the backend
     /// drives, and the backend implements many syscalls itself.
     pub const KVM: Self = Self {
+        // Every return to a syscall's caller sets RCX and R11 from values
+        // reverie-kvm chose, never from host state: SYSRETQ from the staged
+        // return RIP and RFLAGS (an ordinary return, and the entry of a
+        // handler whose frame is set up at the return, where Linux would leave
+        // the interrupted call's RCX and R11 instead), IRETQ with a restored
+        // signal context's own RCX and R11, and zero in an exec'd image. The
+        // Tool's register snapshot at a syscall already has RCX == RIP and
+        // R11 == RFLAGS, and the backend offers a Tool no register write
+        // (`Guest::set_regs` is unsupported), so a Tool's canonicalization
+        // could change nothing here.
+        virtualizes_syscall_clobbers: true,
         needs_killed_thread_rpc_cancellation: true,
         runs_exit_robust_list: false,
         defers_vfork_child_registration: true,
@@ -632,6 +643,7 @@ mod tests {
         assert_eq!(
             table(BackendCapabilities::KVM),
             ptrace_with(serde_json::json!({
+                "virtualizes_syscall_clobbers": true,
                 "needs_killed_thread_rpc_cancellation": true,
                 "runs_exit_robust_list": false,
                 "defers_vfork_child_registration": true,

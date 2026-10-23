@@ -138,6 +138,35 @@ impl EntryDriverWatch {
         }
     }
 
+    /// Whether this watch is the one [`Self::for_memory`] would build for
+    /// `memory`: the same entry gate, and the same driver allocation as
+    /// `memory`'s operation origin, or no owner and no origin. Pointer
+    /// comparisons only, so it takes no reference count. When it holds, the
+    /// owner this watch keeps alive is the allocation `memory`'s origin
+    /// points to, so `for_memory`'s upgrade would succeed and give that same
+    /// allocation. An origin whose driver this watch does not hold answers
+    /// false, even where `for_memory` would find no owner either.
+    pub(crate) fn observes_memory(&self, memory: &crate::GuestMemory) -> bool {
+        Arc::ptr_eq(&self.gate, memory.entry_gate_ref())
+            && match (memory.operation_origin(), &self.owner) {
+                (None, None) => true,
+                (Some(origin), Some(owner)) => origin.is_owned_by(owner),
+                _ => false,
+            }
+    }
+
+    /// Whether `other` watches the very same owner allocation (or none) and
+    /// gate as this watch.
+    #[cfg(test)]
+    pub(crate) fn same_as(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.gate, &other.gate)
+            && match (&self.owner, &other.owner) {
+                (None, None) => true,
+                (Some(left), Some(right)) => left.same_allocation(right),
+                _ => false,
+            }
+    }
+
     /// A retained operation view can outlive the owner allocation. Keep its
     /// weak retirement witness in the caller instead of inventing an owner.
     pub(crate) fn check_operation(

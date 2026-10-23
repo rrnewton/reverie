@@ -318,11 +318,12 @@ enum Activity {
     Retiring,
 }
 
+/// A participant's shared record. Its failure attribution, the origin, is
+/// not here: only the participant itself reads it (`Participant::origin`).
 struct Member {
     run: u64,
     generation: Option<MappingGeneration>,
     activity: Activity,
-    origin: EntryOrigin,
     /// How many times a closer sent the reserved signal to this member's
     /// current entry. Counted under the registry lock before each send and
     /// taken by withdrawal, after which no closer can send to it.
@@ -770,7 +771,6 @@ impl EntryGate {
                                 run: 0,
                                 generation: None,
                                 activity: Activity::Stopped,
-                                origin: EntryOrigin::default(),
                                 kicks: 0,
                             },
                         );
@@ -778,6 +778,8 @@ impl EntryGate {
                             gate: self.clone(),
                             id,
                             key: signal::participant_key(),
+                            origin: EntryOrigin::default(),
+                            entry_abandoned: false,
                             #[cfg(test)]
                             prepare_probe: None,
                         })
@@ -1087,6 +1089,22 @@ pub(crate) struct Participant {
     id: u64,
     /// Process-unique; see [`signal::participant_key`].
     key: u64,
+    /// What a failure this participant records is attributed to, as last set
+    /// by [`Self::set_origin`]. Only this participant reads it: its entry
+    /// identity's exhaustion ([`Self::try_enter`]), its own retirement
+    /// ([`Drop`]) and its entry's acknowledgement or abandonment
+    /// ([`Entry::acknowledge`], `Entry`'s [`Drop`]), each on the thread that
+    /// owns it, after the store in program order. No closer or peer reads
+    /// another member's origin, so it lives here rather than under the
+    /// gate's registry lock: storing it takes no lock, and the origin it
+    /// replaces is dropped outside the lock, where a context that owns the
+    /// last run sender may wake a waiter (`State::fail`).
+    origin: EntryOrigin,
+    /// Whether an entry of this participant was dropped without its
+    /// acknowledgement, which leaves its member `Retiring` for good. It
+    /// mirrors that one state, so [`Self::set_origin`] refuses it without
+    /// reading the member under the registry lock.
+    entry_abandoned: bool,
     #[cfg(test)]
     prepare_probe: Option<Arc<PrepareProbe>>,
 }
@@ -1098,11 +1116,17 @@ impl Participant {
         self.prepare_probe = Some(probe);
     }
 
+    /// Attribute this participant's later failures to `origin`. Its member is
+    /// stopped here, as before the origin moved out of the registry: an
+    /// [`Entry`] borrows this participant mutably until it is acknowledged
+    /// (`Stopped` again) or dropped, so no entry is in setup or running, and
+    /// an abandoned one (`Retiring`) is refused by its mirror.
     pub(crate) fn set_origin(&mut self, origin: impl Into<EntryOrigin>) {
-        let mut state = self.gate.state.lock().unwrap();
-        let member = state.members.get_mut(&self.id).unwrap();
-        assert_eq!(member.activity, Activity::Stopped);
-        member.origin = origin.into();
+        assert!(
+            !self.entry_abandoned,
+            "participant origin set after an abandoned entry"
+        );
+        self.origin = origin.into();
     }
 
     pub(crate) fn try_enter(&mut self) -> GateResult<Option<Entry<'_>>> {
@@ -1115,7 +1139,7 @@ impl Participant {
         let member = state.members.get_mut(&self.id).unwrap();
         assert_eq!(member.activity, Activity::Stopped);
         let Some(run) = member.run.checked_add(1) else {
-            let origin = member.origin.clone();
+            let origin = self.origin.clone();
             let error = state.fail(origin, protocol_failure("entry identity exhausted"));
             let sender = state.changed();
             drop(state);
@@ -1200,7 +1224,7 @@ impl Drop for Participant {
                 // Never leave a reusable pthread ID available to a sender,
                 // and never report incomplete cleanup as a stopped member.
                 member.activity = Activity::Retiring;
-                let origin = member.origin.clone();
+                let origin = self.origin.clone();
                 state.fail(
                     origin,
                     protocol_failure("participant retired before entry cleanup"),
@@ -1292,7 +1316,7 @@ impl Entry<'_> {
         assert_eq!(member.run, self.run);
         assert_eq!(member.activity, Activity::Retiring);
         member.activity = Activity::Stopped;
-        let origin = member.origin.clone();
+        let origin = self.participant.origin.clone();
         if let Err(error) = cleanup {
             state.fail(origin, error);
         }
@@ -1315,10 +1339,11 @@ impl Drop for Entry<'_> {
             let member = state.members.get_mut(&self.participant.id).unwrap();
             assert_eq!(member.run, self.run);
             member.activity = Activity::Retiring;
-            let origin = member.origin.clone();
+            let origin = self.participant.origin.clone();
             state.fail(origin, protocol_failure("entry cleanup was abandoned"));
             state.changed()
         };
+        self.participant.entry_abandoned = true;
         notify(sender);
     }
 }
@@ -3092,4 +3117,151 @@ fn captured_owner_is_visible_before_wake_outside_registry_lock() {
     assert_eq!(retired.pending.len(), 1);
     assert!(Arc::ptr_eq(&retired.pending[0], &failure));
     retired.notification.notify();
+}
+
+/// The participant's origin, which lives in the participant rather than in
+/// its member under the registry lock (`Participant::origin`).
+#[cfg(test)]
+mod participant_origin_tests {
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    use super::*;
+
+    fn operation(origin: &owner::OperationOrigin) -> EntryOrigin {
+        EntryOrigin {
+            failure: None,
+            operation: Some(origin.clone()),
+        }
+    }
+
+    /// The three failures a participant records itself, each with the origin
+    /// it last set: an entry dropped without acknowledgement, a failed
+    /// acknowledgement, and an exhausted entry identity.
+    fn record(case: &str, gate: &Arc<EntryGate>, participant: &mut Participant) {
+        match case {
+            "abandoned" => {
+                let mut entry = participant.try_enter().unwrap().unwrap();
+                assert!(entry.activate().unwrap());
+                drop(entry);
+            }
+            "acknowledged" => {
+                let mut entry = participant.try_enter().unwrap().unwrap();
+                entry.withdraw();
+                assert!(
+                    entry
+                        .acknowledge(Err(Error::GuestClock("cleanup".into())))
+                        .is_err()
+                );
+            }
+            "exhausted" => {
+                gate.state
+                    .lock()
+                    .unwrap()
+                    .members
+                    .get_mut(&participant.id)
+                    .unwrap()
+                    .run = u64::MAX;
+                assert!(participant.try_enter().is_err());
+            }
+            _ => unreachable!("{case}"),
+        }
+    }
+
+    /// Every failure a participant records names the origin it set last,
+    /// through a nested callback's origin and the restore of the enclosing
+    /// one that follows it, as the run loop sets them around a callback.
+    /// (An entry cannot nest: it borrows its participant mutably.)
+    #[test]
+    fn each_failure_a_participant_records_names_the_origin_it_set_last() {
+        for case in ["abandoned", "acknowledged", "exhausted"] {
+            for restored in [false, true] {
+                let driver = owner::DriverScope::new();
+                let owner = driver.owner();
+                let outer = owner.begin_callback(None).unwrap();
+                let nested = owner.begin_callback(Some(&outer.origin())).unwrap();
+                let gate = EntryGate::new();
+                let mut participant = gate.register().unwrap();
+                participant.set_origin(operation(&owner.origin()));
+                participant.set_origin(operation(&outer.origin()));
+                participant.set_origin(operation(&nested.origin()));
+                let expected = if restored {
+                    participant.set_origin(operation(&outer.origin()));
+                    outer.origin()
+                } else {
+                    nested.origin()
+                };
+                record(case, &gate, &mut participant);
+                let failure = gate.pending_failure().expect(case);
+                assert!(
+                    failure
+                        .operation
+                        .as_ref()
+                        .is_some_and(|operation| operation.same_as(&expected)),
+                    "{case}, restored {restored}: {:?}",
+                    failure.operation
+                );
+                assert!(failure.owner_registered(), "{case}");
+                drop(participant);
+            }
+        }
+    }
+
+    /// Setting the origin takes no registry lock: it completes while another
+    /// thread holds the gate's registry mutex, and the origin it stored is
+    /// the one a later failure names.
+    #[test]
+    fn setting_an_origin_takes_no_registry_lock() {
+        let driver = owner::DriverScope::new();
+        let owner = driver.owner();
+        let callback = owner.begin_callback(None).unwrap();
+        let gate = EntryGate::new();
+        let mut participant = gate.register().unwrap();
+        let (held_sender, held) = mpsc::channel();
+        let (release, released) = mpsc::channel::<()>();
+        let (set_sender, set) = mpsc::channel();
+        std::thread::scope(|scope| {
+            let holder_gate = gate.clone();
+            scope.spawn(move || {
+                let _state = holder_gate.state.lock().unwrap();
+                held_sender.send(()).unwrap();
+                let _ = released.recv();
+            });
+            held.recv().unwrap();
+            let origin = operation(&callback.origin());
+            let participant = &mut participant;
+            scope.spawn(move || {
+                participant.set_origin(origin);
+                set_sender.send(()).unwrap();
+            });
+            let completed = set.recv_timeout(Duration::from_secs(30));
+            // Release the holder before judging, so a failure cannot hang.
+            release.send(()).unwrap();
+            assert!(completed.is_ok(), "set_origin waited for the registry lock");
+        });
+        record("abandoned", &gate, &mut participant);
+        assert!(
+            gate.pending_failure()
+                .unwrap()
+                .operation
+                .as_ref()
+                .is_some_and(|operation| operation.same_as(&callback.origin()))
+        );
+    }
+
+    /// An origin set after an abandoned entry is refused, as it was when the
+    /// origin lived in the member and its activity, `Retiring`, failed the
+    /// stopped check.
+    #[test]
+    #[should_panic(expected = "participant origin set after an abandoned entry")]
+    fn an_origin_set_after_an_abandoned_entry_is_refused() {
+        let gate = EntryGate::new();
+        let mut participant = gate.register().unwrap();
+        record("abandoned", &gate, &mut participant);
+        assert_eq!(
+            gate.state.lock().unwrap().members[&participant.id].activity,
+            Activity::Retiring
+        );
+        participant.set_origin(None);
+    }
 }

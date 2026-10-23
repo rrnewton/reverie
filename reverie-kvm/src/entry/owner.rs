@@ -249,6 +249,12 @@ impl Drop for DriverScope {
 }
 
 impl DriverOwner {
+    /// Whether `other` is a handle to this same driver allocation.
+    #[cfg(test)]
+    pub(crate) fn same_allocation(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.state, &other.state)
+    }
+
     #[inline]
     pub(crate) fn lifecycle(&self) -> DriverLifecycle {
         self.state.witness.lifecycle()
@@ -511,6 +517,13 @@ impl OperationOrigin {
     /// operation lifetime; origins and pending failures still point weakly.
     pub(crate) fn driver_owner(&self) -> Option<DriverOwner> {
         self.owner.upgrade().map(|state| DriverOwner { state })
+    }
+
+    /// Whether this origin's driver is `owner`'s allocation: what
+    /// [`Self::driver_owner`] would return while `owner` keeps it alive,
+    /// decided by pointer, without an upgrade.
+    pub(crate) fn is_owned_by(&self, owner: &DriverOwner) -> bool {
+        std::ptr::eq(self.owner.as_ptr(), Arc::as_ptr(&owner.state))
     }
 
     /// Subscribe before inspecting lifecycle. Disconnection is only a reason

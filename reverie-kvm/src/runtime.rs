@@ -1476,7 +1476,10 @@ struct KvmGuest<'a, T: Tool> {
     stack_checked_out: Arc<AtomicBool>,
     observation_lease: Option<reverie::ParkedObservationLease>,
     notifying_dequeue: bool,
-    entry_watch: crate::entry::driver::EntryDriverWatch,
+    // The caller's own watch when it is the one this handle's memory would
+    // build (`KvmGuest::new_with_watch`), so a callback takes no reference
+    // counts for it; otherwise built here.
+    entry_watch: std::borrow::Cow<'a, crate::entry::driver::EntryDriverWatch>,
     // The typed refusal of this handler's most recent injection, if the
     // backend declined it as unsupported. Every injection replaces it.
     unsupported_refusal: Option<reverie::UnsupportedRefusal>,
@@ -1505,8 +1508,60 @@ impl<'a, T: Tool> KvmGuest<'a, T> {
         tool_stack_top: u64,
         stack_checked_out: Arc<AtomicBool>,
     ) -> Self {
+        Self::new_with_watch(
+            pid,
+            tid,
+            process_state,
+            memory,
+            auxv,
+            registers,
+            thread_state,
+            executor,
+            global_state,
+            shared_global_state,
+            config,
+            subscriptions,
+            handler_signal,
+            pending_child_starts,
+            tool_stack_top,
+            stack_checked_out,
+            None,
+        )
+    }
+
+    /// As [`Self::new`], lending the handle `watch`, the caller's watch for
+    /// the same callback, in place of the one `new` builds from `memory`
+    /// (`EntryDriverWatch::for_memory`). It is used only where it is that
+    /// watch: the same driver allocation (or none) and the same entry gate
+    /// (`EntryDriverWatch::observes_memory`). Anything else builds it, as
+    /// `new` does. Either way the handle checks the same owner and gate.
+    #[allow(clippy::too_many_arguments)]
+    fn new_with_watch(
+        pid: Pid,
+        tid: Pid,
+        process_state: Arc<T>,
+        memory: GuestMemory,
+        auxv: &'a [(libc::c_ulong, libc::c_ulong)],
+        registers: libc::user_regs_struct,
+        thread_state: &'a mut T::ThreadState,
+        executor: &'a mut dyn GuestSyscallExecutor<T>,
+        global_state: &'a T::GlobalState,
+        shared_global_state: Option<Arc<T::GlobalState>>,
+        config: &'a <T::GlobalState as GlobalTool>::Config,
+        subscriptions: &'a Subscription,
+        handler_signal: SharedHandlerSignal,
+        pending_child_starts: SharedChildStarts,
+        tool_stack_top: u64,
+        stack_checked_out: Arc<AtomicBool>,
+        watch: Option<&'a crate::entry::driver::EntryDriverWatch>,
+    ) -> Self {
         executor.begin_signal_callback();
-        let entry_watch = crate::entry::driver::EntryDriverWatch::for_memory(&memory);
+        let entry_watch = match watch {
+            Some(watch) if watch.observes_memory(&memory) => std::borrow::Cow::Borrowed(watch),
+            _ => {
+                std::borrow::Cow::Owned(crate::entry::driver::EntryDriverWatch::for_memory(&memory))
+            }
+        };
         Self {
             pid,
             tid,
@@ -2663,7 +2718,7 @@ async fn drive_entry_handler_completion_from<B, F, T>(
     handler_signal: SharedHandlerSignal,
     pending_child_starts: SharedChildStarts,
     failure: impl Future<Output = ()>,
-    watch: crate::entry::driver::EntryDriverWatch,
+    watch: &crate::entry::driver::EntryDriverWatch,
 ) -> crate::failure::owned_future::CaughtFuture<HandlerOutcome<T>>
 where
     B: FnOnce() -> F,
@@ -2684,7 +2739,7 @@ async fn drive_handler_completion_from_inner<B, F, T>(
     handler_signal: SharedHandlerSignal,
     pending_child_starts: SharedChildStarts,
     failure: impl Future<Output = ()>,
-    watch: Option<crate::entry::driver::EntryDriverWatch>,
+    watch: Option<&crate::entry::driver::EntryDriverWatch>,
 ) -> crate::failure::owned_future::CaughtFuture<HandlerOutcome<T>>
 where
     B: FnOnce() -> F,
@@ -2695,7 +2750,7 @@ where
 
     use crate::failure::owned_future::CaughtFuture;
 
-    if let Some(error) = watch.as_ref().and_then(|watch| watch.check().err()) {
+    if let Some(error) = watch.and_then(|watch| watch.check().err()) {
         // The factory itself can own user values with destructors. Keep the
         // pending typed cause outside their separate destruction catch.
         let mut completion = CaughtFuture {
@@ -2712,11 +2767,8 @@ where
         {
             completion.output = Some(match signal {
                 HandlerSignal::RuntimeError(error) => HandlerOutcome::RuntimeError(
-                    crate::entry::driver::combine_pending::<()>(
-                        Err(error),
-                        watch.as_ref().unwrap().check(),
-                    )
-                    .unwrap_err(),
+                    crate::entry::driver::combine_pending::<()>(Err(error), watch.unwrap().check())
+                        .unwrap_err(),
                 ),
                 signal => handler_signal_outcome(signal),
             });
@@ -2755,8 +2807,10 @@ where
             if let Err(payload) = catch_unwind(AssertUnwindSafe(|| drop(failure))) {
                 completion.panics.push(payload);
             }
-            if let Some(error) = watch.as_ref().and_then(|watch| watch.check().err())
-                && completion.output.is_none()
+            // The check is a pure read, so test the output first: a selected
+            // outcome discards its answer.
+            if completion.output.is_none()
+                && let Some(error) = watch.and_then(|watch| watch.check().err())
             {
                 completion.output = Some(HandlerOutcome::RuntimeError(error));
             }
@@ -2795,7 +2849,7 @@ async fn drive_handler_completion_inner<T>(
     handler_signal: SharedHandlerSignal,
     pending_child_starts: SharedChildStarts,
     failure: impl Future<Output = ()>,
-    watch: Option<crate::entry::driver::EntryDriverWatch>,
+    watch: Option<&crate::entry::driver::EntryDriverWatch>,
     failure_order: HandlerFailureOrder,
 ) -> crate::failure::owned_future::CaughtFuture<HandlerOutcome<T>> {
     use std::panic::AssertUnwindSafe;
@@ -2835,7 +2889,9 @@ async fn drive_handler_completion_inner<T>(
         |private_failure: &mut Option<Pin<Box<dyn Future<Output = ()> + Send>>>,
          context: &mut std::task::Context<'_>| {
             let private_failure = private_failure.get_or_insert_with(|| {
-                let watch = watch.clone();
+                // The wake outlives this borrow, so it owns its own watch;
+                // only a callback that suspends pays for the clone.
+                let watch = watch.cloned();
                 Box::pin(async move {
                     match watch {
                         Some(watch) => watch.wait().await,
@@ -2858,7 +2914,7 @@ async fn drive_handler_completion_inner<T>(
         if private_failure.is_some() {
             register_private_wake(&mut private_failure, context);
         }
-        if let Some(error) = watch.as_ref().and_then(|watch| watch.check().err()) {
+        if let Some(error) = watch.and_then(|watch| watch.check().err()) {
             let prior = handler_signal
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -2887,7 +2943,7 @@ async fn drive_handler_completion_inner<T>(
             .as_pin_mut()
             .expect("callback polled after destruction")
             .poll(context);
-        if let Some(error) = watch.as_ref().and_then(|watch| watch.check().err()) {
+        if let Some(error) = watch.and_then(|watch| watch.check().err()) {
             // Keep a selected typed callback value/nonlocal result intact.
             // The outer finalizer maps its error before combining this sticky
             // cause; dropping a Ready Err here would lose its actual payload.
@@ -2941,7 +2997,7 @@ async fn drive_handler_completion_inner<T>(
                 {
                     return select(terminal());
                 }
-                if let Some(error) = watch.as_ref().and_then(|watch| watch.check().err()) {
+                if let Some(error) = watch.and_then(|watch| watch.check().err()) {
                     return select(HandlerOutcome::RuntimeError(error));
                 }
                 let mut starts = pending_child_starts
@@ -2984,8 +3040,11 @@ async fn drive_handler_completion_inner<T>(
     }
     // Destructors may themselves capture a cause. Do not discard a selected
     // value before its typed mapping; the production finalizer rechecks it.
-    if let Some(error) = watch.as_ref().and_then(|watch| watch.check().err())
-        && completion.output.is_none()
+    // The check (`check_entry`) only reads the owner's and the gate's state,
+    // so it runs only where its answer is used: when nothing was selected,
+    // which no ordinary completion is.
+    if completion.output.is_none()
+        && let Some(error) = watch.and_then(|watch| watch.check().err())
     {
         completion.output = Some(HandlerOutcome::RuntimeError(error));
     }
@@ -3096,7 +3155,7 @@ where
                 polled_read_attempt: None,
                 process_completed: &mut _process_completed,
             };
-            let mut guest = KvmGuest::<T>::new(
+            let mut guest = KvmGuest::<T>::new_with_watch(
                 pid,
                 // A process leader (root, fork child, or the post-exec thread
                 // that became the new leader) has tid == pid.
@@ -3115,13 +3174,14 @@ where
                 pending_child_starts.clone(),
                 tool_stack_top,
                 stack_checked_out.clone(),
+                Some(&callback_watch),
             );
             drive_entry_handler_completion_from(
                 || tool.handle_post_exec(&mut guest),
                 handler_signal,
                 pending_child_starts.clone(),
                 wait_for_failure(global_state.as_ref(), failure_subscription.clone()),
-                callback_watch.clone(),
+                &callback_watch,
             )
             .await
         };
@@ -3263,7 +3323,7 @@ where
             polled_read_attempt: None,
             process_completed: &mut _process_completed,
         };
-        let mut guest = KvmGuest::<T>::new(
+        let mut guest = KvmGuest::<T>::new_with_watch(
             pid,
             // The initial exec runs on the root thread, where tid == pid.
             pid,
@@ -3281,13 +3341,14 @@ where
             pending_child_starts.clone(),
             tool_stack_top,
             stack_checked_out.clone(),
+            Some(&callback_watch),
         );
         drive_entry_handler_completion_from(
             || tool.handle_syscall_event(&mut guest, syscall),
             handler_signal,
             pending_child_starts.clone(),
             wait_for_failure(global_state.as_ref(), failure_subscription.clone()),
-            callback_watch.clone(),
+            &callback_watch,
         )
         .await
     };
@@ -4865,7 +4926,7 @@ impl KvmBackend {
                     executor: &mut executor,
                     vcpu: &self.vcpu,
                 };
-                let mut guest = KvmGuest::<T>::new(
+                let mut guest = KvmGuest::<T>::new_with_watch(
                     pid,
                     // run_with_tool drives a single root thread (tid == pid).
                     pid,
@@ -4883,13 +4944,14 @@ impl KvmBackend {
                     pending_child_starts.clone(),
                     tool_stack_top,
                     stack_checked_out.clone(),
+                    Some(&callback_watch),
                 );
                 drive_entry_handler_completion_from(
                     || tool.handle_thread_start(&mut guest),
                     handler_signal,
                     pending_child_starts,
                     wait_for_failure(&global_state, None),
-                    callback_watch.clone(),
+                    &callback_watch,
                 )
                 .await
             };
@@ -4977,7 +5039,7 @@ impl KvmBackend {
                                         executor: &mut executor,
                                         vcpu: &self.vcpu,
                                     };
-                                    let mut guest = KvmGuest::<T>::new(
+                                    let mut guest = KvmGuest::<T>::new_with_watch(
                                         pid,
                                         // run_with_tool drives a single root thread.
                                         pid,
@@ -4995,13 +5057,14 @@ impl KvmBackend {
                                         pending_child_starts.clone(),
                                         tool_stack_top,
                                         stack_checked_out.clone(),
+                                        Some(&callback_watch),
                                     );
                                     drive_entry_handler_completion_from(
                                         || tool.handle_syscall_event(&mut guest, syscall),
                                         handler_signal,
                                         pending_child_starts,
                                         wait_for_failure(&global_state, None),
-                                        callback_watch.clone(),
+                                        &callback_watch,
                                     )
                                     .await
                                 };
@@ -5509,7 +5572,7 @@ impl KvmBackend {
                 polled_read_attempt: None,
                 process_completed: &mut process_completed,
             };
-            let mut guest = KvmGuest::<T>::new(
+            let mut guest = KvmGuest::<T>::new_with_watch(
                 pid,
                 tid,
                 tool.clone(),
@@ -5529,13 +5592,14 @@ impl KvmBackend {
                 pending_child_starts.clone(),
                 tool_stack_top,
                 stack_checked_out.clone(),
+                Some(&callback_watch),
             );
             drive_entry_handler_completion_from(
                 || tool.handle_structured_signal_event(&mut guest, pending.event),
                 handler_signal,
                 pending_child_starts.clone(),
                 wait_for_failure(global_state.as_ref(), failure_subscription.clone()),
-                callback_watch.clone(),
+                &callback_watch,
             )
             .await
         };
@@ -5742,7 +5806,7 @@ impl KvmBackend {
                     polled_read_attempt: None,
                     process_completed: &mut _process_completed,
                 };
-                let mut guest = KvmGuest::<T>::new(
+                let mut guest = KvmGuest::<T>::new_with_watch(
                     pid,
                     tid,
                     tool.clone(),
@@ -5759,13 +5823,14 @@ impl KvmBackend {
                     pending_child_starts.clone(),
                     tool_stack_top,
                     stack_checked_out.clone(),
+                    Some(&callback_watch),
                 );
                 drive_entry_handler_completion_from(
                     || tool.handle_thread_start(&mut guest),
                     handler_signal,
                     pending_child_starts.clone(),
                     wait_for_failure(global_state.as_ref(), failure_subscription.clone()),
-                    callback_watch.clone(),
+                    &callback_watch,
                 )
                 .await
             };
@@ -6069,7 +6134,7 @@ impl KvmBackend {
                                     polled_read_attempt: None,
                                     process_completed: &mut process_completed,
                                 };
-                                let mut guest = KvmGuest::<T>::new(
+                                let mut guest = KvmGuest::<T>::new_with_watch(
                                     pid,
                                     tid,
                                     tool.clone(),
@@ -6086,6 +6151,7 @@ impl KvmBackend {
                                     pending_child_starts.clone(),
                                     tool_stack_top,
                                     stack_checked_out.clone(),
+                                    Some(&callback_watch),
                                 );
                                 match &boundary {
                                     crate::vm::ToolInstructionBoundary::Timestamp(boundary) => {
@@ -6102,7 +6168,7 @@ impl KvmBackend {
                                                 global_state.as_ref(),
                                                 failure_subscription.clone(),
                                             ),
-                                            callback_watch.clone(),
+                                            &callback_watch,
                                         )
                                         .await;
                                         map_handler_completion(completion, |result| {
@@ -6124,7 +6190,7 @@ impl KvmBackend {
                                                 global_state.as_ref(),
                                                 failure_subscription.clone(),
                                             ),
-                                            callback_watch.clone(),
+                                            &callback_watch,
                                         )
                                         .await;
                                         map_handler_completion(completion, |result| {
@@ -6486,7 +6552,7 @@ impl KvmBackend {
                             // The guest handle takes the callback view itself:
                             // nothing else in this block reads it, and it is
                             // released with the handle, still inside the block.
-                            let mut guest = KvmGuest::<T>::new(
+                            let mut guest = KvmGuest::<T>::new_with_watch(
                                 pid,
                                 tid,
                                 tool.clone(),
@@ -6503,6 +6569,7 @@ impl KvmBackend {
                                 pending_child_starts.clone(),
                                 tool_stack_top,
                                 stack_checked_out.clone(),
+                                Some(&callback_watch),
                             )
                             .with_rpc_failure(&rpc_failure);
                             drive_entry_handler_completion_from(
@@ -6510,7 +6577,7 @@ impl KvmBackend {
                                 handler_signal.clone(),
                                 pending_child_starts.clone(),
                                 Pin::new(&mut callback_failure),
-                                callback_watch.clone(),
+                                &callback_watch,
                             )
                             .await
                         };
