@@ -2593,17 +2593,18 @@ struct FdinfoTarget {
     capture_output: bool,
 }
 
-/// The per-process `/proc/<pid>` files whose content Linux generates on read.
+/// The per-process `/proc/<pid>` files whose content Linux generates on read
+/// and that the executor still renders: `status` only. `stat` followed
+/// Detcore (package K slice D4c-1), which renders every spelling of a
+/// process's own `/proc/<pid>/stat` from its own process table.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum ProcessProcFile {
-    Stat,
     Status,
 }
 
 impl ProcessProcFile {
     fn from_normalized_path(path: &[u8]) -> Option<Self> {
         match path {
-            b"/proc/self/stat" => Some(Self::Stat),
             b"/proc/self/status" => Some(Self::Status),
             _ => None,
         }
@@ -2611,13 +2612,12 @@ impl ProcessProcFile {
 
     fn name(self) -> &'static str {
         match self {
-            Self::Stat => "stat",
             Self::Status => "status",
         }
     }
 }
 
-/// The process cells rendered into `/proc/<pid>/stat` and `status`. The parent
+/// The process cells rendered into `/proc/<pid>/status`. The parent
 /// cell and the leader's name are shared with the live process, so a
 /// description opened before reparenting or `PR_SET_NAME` renders the value
 /// current at read time, as Linux does. The umask is sampled at open because
@@ -2665,24 +2665,8 @@ impl ProcessProcView {
 
     fn render(&self, file: ProcessProcFile) -> Vec<u8> {
         match file {
-            ProcessProcFile::Stat => self.stat(),
             ProcessProcFile::Status => self.status(),
         }
-    }
-
-    fn stat(&self) -> Vec<u8> {
-        // pid (comm) state ppid ... The fields after ppid are process-accounting
-        // values reported as zero so no nondeterministic host state leaks. The
-        // real file has 52 fields; pad with zeros so field-counting parsers are
-        // satisfied.
-        let mut line = format!("{} (", self.pid).into_bytes();
-        line.extend_from_slice(&self.comm());
-        line.extend_from_slice(format!(") R {} 0 0 0 -1 0", self.parent_pid()).as_bytes());
-        for _ in 0..44 {
-            line.extend_from_slice(b" 0");
-        }
-        line.push(b'\n');
-        line
     }
 
     fn status(&self) -> Vec<u8> {
@@ -3128,7 +3112,7 @@ fn open_fdinfo(
     result
 }
 
-/// Open `/proc/<pid>/stat` or `status` as a seq description over this
+/// Open `/proc/<pid>/status` as a seq description over this
 /// process's live cells. Access and flag checks precede this call.
 fn open_process_proc(
     state: &mut LoadedStaticElf,
@@ -11290,12 +11274,8 @@ fn open_guest_fd_path(
         }
         return negative_errno(libc::EEXIST);
     }
-    if source_proc_inode.is_some_and(|inode| {
-        [b"/proc/self/stat".as_slice(), b"/proc/self/status"]
-            .into_iter()
-            .any(|path| inode == synthetic_proc_inode(path))
-    }) {
-        // Their content is rendered from the opener's process cells, which an
+    if source_proc_inode.is_some_and(|inode| inode == synthetic_proc_inode(b"/proc/self/status")) {
+        // Its content is rendered from the opener's process cells, which an
         // O_PATH backing does not carry. Refuse rather than expose its empty
         // backing file.
         return negative_errno(libc::ENOSYS);
@@ -17581,12 +17561,14 @@ const SYNTHETIC_GUEST_FD_DEV_MINOR: u32 = 0xff02;
 // D4b). Its KVM copy (this table's entry, argv[0] and a NUL from the loader's
 // argv0, and the positioned-write EBADF that a read-only open of a plain
 // procfs file gives) carried no marker.
-const SYNTHETIC_REGULAR_PROC_PATHS: &[&[u8]] = &[
-    b"/proc/locks",
-    b"/proc/self/stat",
-    b"/proc/self/status",
-    b"/proc/self/maps",
-];
+// /proc/self/stat followed, once Detcore rendered every spelling of a
+// process's own stat (self, thread-self, its pid, task/<tid>) from its process
+// table and its own record of each thread's comm, in Linux's 52 fields
+// (package K slice D4c-1). Its KVM copy (this table's entry, a 53-field line
+// of pid, the leader's name, state R and the parent followed by zeros, its
+// reopen refusal and its zero path size) carried no marker.
+const SYNTHETIC_REGULAR_PROC_PATHS: &[&[u8]] =
+    &[b"/proc/locks", b"/proc/self/status", b"/proc/self/maps"];
 
 fn synthetic_dev(minor: u32) -> libc::dev_t {
     libc::makedev(SYNTHETIC_DEV_MAJOR, minor)
@@ -17710,7 +17692,6 @@ fn synthetic_proc_content(state: &LoadedStaticElf, path: &[u8]) -> Option<Vec<u8
     let normalized = normalize_proc_path(state, path)?;
     let content = match normalized.as_slice() {
         b"/proc/locks" => proc_locks_content(state),
-        b"/proc/self/stat" => proc_self_stat_content(state),
         b"/proc/self/status" => proc_self_status_content(state),
         b"/proc/self/maps" => proc_self_maps_content(state),
         _ => return None,
@@ -17774,10 +17755,6 @@ fn synthetic_proc_path_size(normalized: &[u8], content: &[u8]) -> usize {
     } else {
         content.len()
     }
-}
-
-fn proc_self_stat_content(state: &LoadedStaticElf) -> Vec<u8> {
-    ProcessProcView::of(state).stat()
 }
 
 fn proc_self_status_content(state: &LoadedStaticElf) -> Vec<u8> {
@@ -27108,14 +27085,6 @@ mod tests {
         let mut state = test_state(&root.0); // pid=1, ppid=0, argv0="test"
         let mut memory = GuestMemory::new(0, 0x4000).unwrap();
 
-        let fd = open_readonly(&mut memory, &mut state, "/proc/self/stat");
-        let stat = read_fd_to_end(&mut memory, &mut state, fd);
-        assert!(
-            String::from_utf8_lossy(&stat).starts_with("1 (test) R 0 "),
-            "{}",
-            String::from_utf8_lossy(&stat)
-        );
-
         let fd = open_readonly(&mut memory, &mut state, "/proc/self/status");
         let status = String::from_utf8(read_fd_to_end(&mut memory, &mut state, fd)).unwrap();
         assert!(status.contains("Name:\ttest\n"), "{status}");
@@ -27132,17 +27101,15 @@ mod tests {
             ),
             0,
         );
-        let fd = open_readonly(&mut memory, &mut state, "/proc/self/stat");
-        let stat = String::from_utf8(read_fd_to_end(&mut memory, &mut state, fd)).unwrap();
-        assert!(stat.starts_with("1 (worker-name) R 0 "), "{stat}");
         let fd = open_readonly(&mut memory, &mut state, "/proc/self/status");
         let status = String::from_utf8(read_fd_to_end(&mut memory, &mut state, fd)).unwrap();
         assert!(status.contains("Name:\tworker-name\n"), "{status}");
 
         // /proc/<pid> aliases /proc/self for this guest's own pid.
-        let fd = open_readonly(&mut memory, &mut state, "/proc/1/stat");
-        let stat = String::from_utf8(read_fd_to_end(&mut memory, &mut state, fd)).unwrap();
-        assert!(stat.starts_with("1 (worker-name) R 0 "), "{stat}");
+        let fd = open_readonly(&mut memory, &mut state, "/proc/1/status");
+        let status = String::from_utf8(read_fd_to_end(&mut memory, &mut state, fd)).unwrap();
+        assert!(status.contains("Name:\tworker-name\n"), "{status}");
+        assert!(status.contains("Pid:\t1\n"), "{status}");
     }
 
     #[test]
@@ -27408,6 +27375,10 @@ mod tests {
             "/proc/uptime",
             "/proc/stat",
             "/proc/cpuinfo",
+            // A process's own stat, by its self and pid spellings (test_state's
+            // pid is 1), is Detcore's (package K slice D4c-1).
+            "/proc/self/stat",
+            "/proc/1/stat",
         ] {
             assert!(
                 synthetic_proc_content(&state, path.as_bytes()).is_none(),
@@ -46778,14 +46749,14 @@ mod tests {
     /// description can both still be sent and received afterwards.
     fn assert_discarded_snapshot_rights_hold_nothing(discard: RightDiscard) {
         const SELF_MAPS_ADDRESS: u64 = 0x100;
-        const PROC_STAT_ADDRESS: u64 = 0x140;
+        const PROC_STATUS_ADDRESS: u64 = 0x140;
 
         let root = TestDir::new();
         let mut state = test_state(&root.0);
         state.host_metadata_timestamps = true;
         let mut memory = GuestMemory::new(0, 0x4000).unwrap();
         write_c_string(&mut memory, SELF_MAPS_ADDRESS, "/proc/self/maps");
-        write_c_string(&mut memory, PROC_STAT_ADDRESS, "/proc/self/stat");
+        write_c_string(&mut memory, PROC_STATUS_ADDRESS, "/proc/self/status");
         let open = |memory: &mut GuestMemory, state: &mut LoadedStaticElf, path: u64| {
             let fd = syscall_result(
                 memory,
@@ -46833,10 +46804,10 @@ mod tests {
             guest_close(&mut memory, &mut state, sender);
         }
 
-        let proc_stat = open(&mut memory, &mut state, PROC_STAT_ADDRESS);
+        let proc_status = open(&mut memory, &mut state, PROC_STATUS_ADDRESS);
         for (fd, what) in [
             (self_maps, "/proc/self/maps"),
-            (proc_stat, "/proc/self/stat"),
+            (proc_status, "/proc/self/status"),
         ] {
             let [sender, receiver] = guest_datagram_pair(&mut memory, &mut state);
             assert_eq!(
@@ -47333,7 +47304,6 @@ mod tests {
     /// fchmod does. With the setting off it keeps the EACCES it always had.
     #[test]
     fn host_metadata_timestamps_refuse_empty_path_chmod_of_live_proc_files_with_eperm() {
-        const STAT_ADDRESS: u64 = 0x100;
         const STATUS_ADDRESS: u64 = 0x180;
         const EMPTY_ADDRESS: u64 = 0x2c0;
 
@@ -47347,12 +47317,9 @@ mod tests {
             let mut state = test_state(&root.0);
             state.host_metadata_timestamps = host_metadata_timestamps;
             let mut memory = GuestMemory::new(0, 0x4000).unwrap();
-            write_c_string(&mut memory, STAT_ADDRESS, "/proc/self/stat");
             write_c_string(&mut memory, STATUS_ADDRESS, "/proc/self/status");
             write_c_string(&mut memory, EMPTY_ADDRESS, "");
             for (path, flags, what) in [
-                (STAT_ADDRESS, libc::O_RDONLY, "/proc/self/stat"),
-                (STAT_ADDRESS, libc::O_PATH, "/proc/self/stat O_PATH"),
                 (STATUS_ADDRESS, libc::O_RDONLY, "/proc/self/status"),
                 (STATUS_ADDRESS, libc::O_PATH, "/proc/self/status O_PATH"),
             ] {
@@ -64672,11 +64639,6 @@ mod tests {
         set_signal_test_name(&mut state, raw_name);
         assert_eq!(proc_comm(&state), raw_name);
 
-        let mut stat_prefix = format!("{} (", state.pid).into_bytes();
-        stat_prefix.extend_from_slice(raw_name);
-        stat_prefix.extend_from_slice(b") R ");
-        assert!(proc_self_stat_content(&state).starts_with(&stat_prefix));
-
         let mut status_prefix = b"Name:\t".to_vec();
         status_prefix.extend_from_slice(raw_name);
         status_prefix.push(b'\n');
@@ -65396,8 +65358,6 @@ mod tests {
         );
         assert_eq!(sibling.state.thread_name, child_name);
         assert_eq!(proc_comm(&sibling.state), [0xff, b'\n', b'\\', b'L']);
-        let stat = proc_self_stat_content(&sibling.state);
-        assert!(stat.starts_with(b"1 (\xff\n\\L) R 0 "), "{stat:?}");
         let status = proc_self_status_content(&sibling.state);
         assert!(status.starts_with(b"Name:\t\xff\\n\\\\L\n"), "{status:?}");
         assert_eq!(proc_comm(&replacement), b"new-program");

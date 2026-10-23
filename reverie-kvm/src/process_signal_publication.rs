@@ -4038,29 +4038,23 @@ mod tests {
     }
 
     #[test]
-    fn proc_stat_and_status_opened_before_reparenting_report_the_new_parent() {
+    fn proc_status_opened_before_reparenting_reports_the_new_parent() {
         let root = outside_init_root();
         let mut parent = root.fork_child(6, false, false).unwrap();
         let mut child = parent.fork_child(7, false, false).unwrap();
         let mut memory = GuestMemory::new(0, 4096).unwrap();
-        let stat = open_proc(&mut child, &mut memory, "/proc/self/stat", libc::O_RDONLY);
         let status = open_proc(&mut child, &mut memory, "/proc/7/status", libc::O_RDONLY);
         let restarted = open_proc(&mut child, &mut memory, "/proc/self/status", libc::O_RDONLY);
-        let partial = open_proc(&mut child, &mut memory, "/proc/self/stat", libc::O_RDONLY);
-        assert!(stat >= 0 && status >= 0 && restarted >= 0 && partial >= 0);
+        let partial = open_proc(&mut child, &mut memory, "/proc/self/status", libc::O_RDONLY);
+        assert!(status >= 0 && restarted >= 0 && partial >= 0);
         // Linux renders the whole single record when a read starts the
         // sequence, and later reads drain that buffer.
         assert!(read_proc(&mut child, &memory, restarted, 64).contains("\nPPid:\t6\n"));
         let head = read_proc_once(&mut child, &memory, partial, 4);
-        assert_eq!(head, "7 (t");
+        assert_eq!(head, "Name");
 
         parent.retire_current_thread(reverie::ExitStatus::Exited(0), false);
         assert_eq!(getppid(&mut child), 1);
-        let stat_text = read_proc(&mut child, &memory, stat, 64);
-        assert!(
-            stat_text.starts_with("7 (test) R 1 0 0 0 -1 0 "),
-            "{stat_text}"
-        );
         let status_text = read_proc(&mut child, &memory, status, 64);
         assert!(
             status_text.contains("\nPid:\t7\nPPid:\t1\n"),
@@ -4080,32 +4074,33 @@ mod tests {
         );
         assert!(read_proc(&mut child, &memory, restarted, 64).contains("\nPPid:\t1\n"));
         let tail = read_proc(&mut child, &memory, partial, 64);
+        let started = format!("{head}{tail}");
         assert!(
-            format!("{head}{tail}").starts_with("7 (test) R 6 "),
-            "a started sequence keeps the record it rendered: {head}{tail}",
+            started.starts_with("Name:\ttest\n") && started.contains("\nPPid:\t6\n"),
+            "a started sequence keeps the record it rendered: {started}",
         );
         let count = call(
             &mut child,
             &memory,
             libc::SYS_pread64,
-            [partial as u64, 0x400, 64, 0, 0, 0],
+            [partial as u64, 0x400, 128, 0, 0, 0],
         );
         assert!(count > 0);
         let mut bytes = vec![0; count as usize];
         memory.read(0x400, &mut bytes).unwrap();
+        let reread = String::from_utf8_lossy(&bytes);
         assert!(
-            bytes.starts_with(b"7 (test) R 1 "),
-            "{:?}",
-            String::from_utf8_lossy(&bytes)
+            reread.starts_with("Name:\ttest\n") && reread.contains("\nPPid:\t1\n"),
+            "{reread:?}"
         );
     }
 
     #[test]
-    fn proc_stat_and_status_descriptors_expose_no_stale_backing() {
+    fn proc_status_descriptors_expose_no_stale_backing() {
         let root = outside_init_root();
         let mut child = root.fork_child(6, false, false).unwrap();
         let mut memory = GuestMemory::new(0, 4096).unwrap();
-        for (name, path) in [("stat", "/proc/self/stat"), ("status", "/proc/6/status")] {
+        for (name, path) in [("self", "/proc/self/status"), ("pid", "/proc/6/status")] {
             let fd = open_proc(&mut child, &mut memory, path, libc::O_RDONLY);
             assert!(fd >= 0);
             assert_eq!(
@@ -4147,7 +4142,7 @@ mod tests {
             assert!(length > 0);
             let mut target = vec![0; length as usize];
             memory.read(0x400, &mut target).unwrap();
-            assert_eq!(target, format!("/proc/6/{name}").into_bytes());
+            assert_eq!(target, b"/proc/6/status", "{name}");
             // The empty backing memfd is never content: kernel transfers and
             // mappings are refused, and an invalid output keeps its EBADF.
             assert_eq!(
@@ -4353,7 +4348,7 @@ mod tests {
     }
 
     #[test]
-    fn proc_stat_and_status_sent_with_scm_rights_keep_one_read_time_description() {
+    fn proc_status_sent_with_scm_rights_keeps_one_read_time_description() {
         let root = outside_init_root();
         let mut parent = root.fork_child(6, false, false).unwrap();
         let mut child = parent.fork_child(7, false, false).unwrap();
@@ -4376,16 +4371,16 @@ mod tests {
         );
         let sockets: [i32; 2] = read_struct(&memory, 0x2400);
         let (sender, receiver) = (i64::from(sockets[0]), i64::from(sockets[1]));
-        let stat = open_proc(&mut child, &mut memory, "/proc/self/stat", libc::O_RDONLY);
+        let started = open_proc(&mut child, &mut memory, "/proc/self/status", libc::O_RDONLY);
         let status = open_proc(&mut child, &mut memory, "/proc/7/status", libc::O_RDONLY);
-        assert!(stat >= 0 && status >= 0);
-        let head = read_proc_once(&mut child, &memory, stat, 4);
-        assert_eq!(head, "7 (t");
-        assert_eq!(send_right(&mut child, &mut memory, sender, stat), 1);
+        assert!(started >= 0 && status >= 0);
+        let head = read_proc_once(&mut child, &memory, started, 4);
+        assert_eq!(head, "Name");
+        assert_eq!(send_right(&mut child, &mut memory, sender, started), 1);
         assert_eq!(send_right(&mut child, &mut memory, sender, status), 1);
         assert_eq!(proc_transfers_in_flight(&child), [1, 1]);
         // The queued rights alone keep both descriptions alive.
-        for fd in [stat, status] {
+        for fd in [started, status] {
             assert_eq!(
                 call(
                     &mut child,
@@ -4408,29 +4403,31 @@ mod tests {
             ),
             0
         );
-        let received_stat = receive_right(&mut child, &mut memory, receiver, 0);
+        let received_started = receive_right(&mut child, &mut memory, receiver, 0);
         let received_status = receive_right(&mut child, &mut memory, receiver, 0);
         assert_eq!(proc_transfers_in_flight(&child), Vec::<usize>::new());
 
         parent.retire_current_thread(reverie::ExitStatus::Exited(0), false);
         assert_eq!(getppid(&mut child), 1);
-        // The received stat shares the sender's started sequence and position.
-        let tail = read_proc(&mut child, &memory, received_stat, 64);
+        // The received description shares the sender's started sequence and
+        // position.
+        let tail = read_proc(&mut child, &memory, received_started, 64);
+        let continued = format!("{head}{tail}");
         assert!(
-            format!("{head}{tail}").starts_with("7 (test) R 6 "),
-            "{head}{tail}"
+            continued.starts_with("Name:\ttest\n") && continued.contains("\nPPid:\t6\n"),
+            "{continued}"
         );
         assert_eq!(
             call(
                 &mut child,
                 &memory,
                 libc::SYS_lseek,
-                [received_stat as u64, 0, libc::SEEK_SET as u64, 0, 0, 0]
+                [received_started as u64, 0, libc::SEEK_SET as u64, 0, 0, 0]
             ),
             0
         );
-        let restarted = read_proc(&mut child, &memory, received_stat, 64);
-        assert!(restarted.starts_with("7 (test) R 1 "), "{restarted}");
+        let restarted = read_proc(&mut child, &memory, received_started, 64);
+        assert!(restarted.contains("\nPPid:\t1\n"), "{restarted}");
         // Status was opened before reparenting and first read after it.
         let status_text = read_proc(&mut child, &memory, received_status, 64);
         assert!(
@@ -4507,13 +4504,13 @@ mod tests {
         );
         let sockets: [i32; 2] = read_struct(&memory, 0x2400);
         let (sender, receiver) = (i64::from(sockets[0]), i64::from(sockets[1]));
-        let stat = open_proc(&mut child, &mut memory, "/proc/self/stat", libc::O_RDONLY);
-        assert!(stat >= 0);
+        let status = open_proc(&mut child, &mut memory, "/proc/self/status", libc::O_RDONLY);
+        assert!(status >= 0);
         let mut queued = 0;
         while queued < limit - 1 {
             let count = SCM_MAX_FD.min(limit - 1 - queued);
             assert_eq!(
-                send_rights(&mut child, &mut memory, sender, &vec![stat; count]),
+                send_rights(&mut child, &mut memory, sender, &vec![status; count]),
                 1
             );
             queued += count;
@@ -4521,13 +4518,13 @@ mod tests {
         assert_eq!(proc_transfers_in_flight(&child), [limit - 1]);
         // A message crossing the bound is refused whole.
         assert_eq!(
-            send_rights(&mut child, &mut memory, sender, &[stat, stat]),
+            send_rights(&mut child, &mut memory, sender, &[status, status]),
             -i64::from(libc::ETOOMANYREFS)
         );
         assert_eq!(proc_transfers_in_flight(&child), [limit - 1]);
-        assert_eq!(send_right(&mut child, &mut memory, sender, stat), 1);
+        assert_eq!(send_right(&mut child, &mut memory, sender, status), 1);
         assert_eq!(
-            send_right(&mut child, &mut memory, sender, stat),
+            send_right(&mut child, &mut memory, sender, status),
             -i64::from(libc::ETOOMANYREFS)
         );
         assert_eq!(proc_transfers_in_flight(&child), [limit]);
@@ -4535,7 +4532,7 @@ mod tests {
         let received = receive_rights(&mut child, &mut memory, receiver, 0, SCM_MAX_FD);
         assert_eq!(received.len(), SCM_MAX_FD);
         assert_eq!(proc_transfers_in_flight(&child), [limit - SCM_MAX_FD]);
-        assert_eq!(send_right(&mut child, &mut memory, sender, stat), 1);
+        assert_eq!(send_right(&mut child, &mut memory, sender, status), 1);
         assert_eq!(proc_transfers_in_flight(&child), [limit - SCM_MAX_FD + 1]);
     }
 
@@ -4562,9 +4559,12 @@ mod tests {
         );
         let sockets: [i32; 2] = read_struct(&memory, 0x2400);
         let sender = i64::from(sockets[0]);
-        let stat = open_proc(&mut child, &mut memory, "/proc/self/stat", libc::O_RDONLY);
-        assert!(stat >= 0);
-        assert_eq!(send_rights(&mut child, &mut memory, sender, &[stat; 3]), 1);
+        let status = open_proc(&mut child, &mut memory, "/proc/self/status", libc::O_RDONLY);
+        assert!(status >= 0);
+        assert_eq!(
+            send_rights(&mut child, &mut memory, sender, &[status; 3]),
+            1
+        );
         assert_eq!(proc_transfers_in_flight(&child), [3]);
         let open_before: Vec<_> = child.state.files.keys().copied().collect();
 
@@ -4572,8 +4572,8 @@ mod tests {
         // buffer: the first fits, the second's slot is out of range, and the
         // third is never reached. The host delivers the sender's open
         // description, as a dup does.
-        let host = super::super::host_fd(&child.state, stat as i32).unwrap();
-        // SAFETY: the guest's stat descriptor keeps `host` open.
+        let host = super::super::host_fd(&child.state, status as i32).unwrap();
+        // SAFETY: the guest's status descriptor keeps `host` open.
         let host = unsafe { std::os::fd::BorrowedFd::borrow_raw(host) };
         let install = |child: &mut ElfExecutor, peek: bool| {
             let rights = [0, 8, 4]
@@ -5591,13 +5591,12 @@ mod tests {
     }
 
     #[test]
-    fn proc_stat_and_status_opened_before_exec_report_the_new_image_name() {
+    fn proc_status_opened_before_exec_reports_the_new_image_name() {
         let root = outside_init_root();
         let mut child = root.fork_child(7, false, false).unwrap();
         let mut memory = GuestMemory::new(0, 0x4000).unwrap();
-        let stat = open_proc(&mut child, &mut memory, "/proc/self/stat", libc::O_RDONLY);
         let status = open_proc(&mut child, &mut memory, "/proc/self/status", libc::O_RDONLY);
-        assert!(stat >= 0 && status >= 0);
+        assert!(status >= 0);
         // As exec_static_elf names the new image before it inherits the process.
         let mut replacement = native_loaded_state(std::path::Path::new("/"));
         replacement.thread_name =
@@ -5605,8 +5604,6 @@ mod tests {
         *replacement.thread_group_leader_name.lock().unwrap() = replacement.thread_name;
         let previous = std::mem::replace(&mut child.state, replacement);
         child.state.inherit_process_state(previous);
-        let stat_text = read_proc(&mut child, &memory, stat, 64);
-        assert!(stat_text.starts_with("7 (exec-image) "), "{stat_text}");
         let status_text = read_proc(&mut child, &memory, status, 64);
         assert!(
             status_text.starts_with("Name:\texec-image\n"),

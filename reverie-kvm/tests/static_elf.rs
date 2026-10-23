@@ -2276,14 +2276,16 @@ static int print_identity(const char *argv0) {
   if (link_length < 0 || write_all(link, (size_t)link_length) != 0 ||
       write_all("\n", 1) != 0) return -1;
 
-  int fd = open("/proc/self/stat", O_RDONLY);
-  char stat[4096];
-  ssize_t length = fd < 0 ? -1 : read(fd, stat, sizeof(stat) - 1);
+  /* The executor's comm, through its status Name line (its stat copy
+     followed Detcore, package K slice D4c-1). */
+  int fd = open("/proc/self/status", O_RDONLY);
+  char status[4096];
+  ssize_t length = fd < 0 ? -1 : read(fd, status, sizeof(status) - 1);
   if (fd >= 0) close(fd);
   if (length <= 0) return -1;
-  stat[length] = 0;
-  char *left = strchr(stat, '(');
-  char *right = strrchr(stat, ')');
+  status[length] = 0;
+  char *left = strncmp(status, "Name:\t", 6) == 0 ? status + 5 : NULL;
+  char *right = left == NULL ? NULL : strchr(left, '\n');
   if (left == NULL || right == NULL || right <= left ||
       write_all(left + 1, (size_t)(right - left - 1)) != 0 ||
       write_all("\n", 1) != 0 || write_all(argv0, strlen(argv0)) != 0 ||
@@ -9450,7 +9452,6 @@ fn native_and_kvm_prctl_names_keep_worker_local_and_format_procfs_leader_bytes()
 #include <unistd.h>
 
 static const unsigned char leader_name[5] = {0xff, '\n', '\\', 'L', 0};
-static const unsigned char stat_name[6] = {'(', 0xff, '\n', '\\', 'L', ')'};
 static const unsigned char status_name[13] = {
     'N', 'a', 'm', 'e', ':', '\t', 0xff, '\\', 'n', '\\', '\\', 'L', '\n'
 };
@@ -9484,15 +9485,8 @@ static void *worker(void *unused) {
   if (write(1, observed, sizeof(observed)) != sizeof(observed))
     return (void *)(uintptr_t)4;
 
-  int count = read_proc("/proc/self/stat", buffer, sizeof(buffer));
+  int count = read_proc("/proc/self/status", buffer, sizeof(buffer));
   const unsigned char *found = count < 0 ? 0 : find_bytes(
-      buffer, (size_t)count, stat_name, sizeof(stat_name));
-  if (!found) return (void *)(uintptr_t)5;
-  if (write(1, found, sizeof(stat_name)) != sizeof(stat_name))
-    return (void *)(uintptr_t)6;
-
-  count = read_proc("/proc/self/status", buffer, sizeof(buffer));
-  found = count < 0 ? 0 : find_bytes(
       buffer, (size_t)count, status_name, sizeof(status_name));
   if (!found) return (void *)(uintptr_t)7;
   if (write(1, found, sizeof(status_name)) != sizeof(status_name))
@@ -9518,10 +9512,9 @@ int main(void) {
     );
     let mut expected = b"worker".to_vec();
     expected.resize(16, 0);
-    expected.extend_from_slice(&[b'(', 0xff, b'\n', b'\\', b'L', b')']);
     expected.extend_from_slice(b"Name:\t\xff\\n\\\\L\n");
     expected.extend_from_slice(&[0xff, b'\n', b'\\', b'L']);
-    expected.resize(51, 0);
+    expected.resize(45, 0);
 
     let native = std::process::Command::new(&executable)
         .current_dir(&directory.0)
@@ -10390,18 +10383,16 @@ static int read_record(int fd, char *buffer, size_t size) {
 }
 
 /* Runs in a grandchild adopted by the outside init. Its descriptors were opened
-   under its original parent; both must report the new parent when first read. */
-static char adopted_verdict(int stat_fd, int status_fd) {
+   under its original parent, by its pid and by self; both must report the new
+   parent when first read. */
+static char adopted_verdict(int pid_status_fd, int status_fd) {
   if (getppid() != 1) return 'p';
   char buffer[4096];
-  if (read_record(stat_fd, buffer, sizeof buffer) != 0) return 's';
-  char *end = strrchr(buffer, ')');
-  char state = 0;
-  int ppid = -1;
-  if (end == 0 || sscanf(end + 1, " %c %d", &state, &ppid) != 2 || ppid != 1)
-    return 'S';
-  if (read_record(status_fd, buffer, sizeof buffer) != 0) return 't';
+  if (read_record(pid_status_fd, buffer, sizeof buffer) != 0) return 's';
   char *line = strstr(buffer, "\nPPid:\t");
+  if (line == 0 || atoi(line + 7) != 1) return 'S';
+  if (read_record(status_fd, buffer, sizeof buffer) != 0) return 't';
+  line = strstr(buffer, "\nPPid:\t");
   if (line == 0 || atoi(line + 7) != 1) return 'T';
   return 'k';
 }
@@ -10443,15 +10434,17 @@ int main(int argc, char **argv) {
         /* Only the root may release this process; its failure reads as EOF.
            Dropping the hold end leaves the former parent as its last writer. */
         if (close(release[1]) != 0 || close(hold[1]) != 0) _exit(36);
-        int stat_fd = open("/proc/self/stat", O_RDONLY);
+        char pid_status[64];
+        snprintf(pid_status, sizeof pid_status, "/proc/%d/status", (int)getpid());
+        int pid_status_fd = open(pid_status, O_RDONLY);
         int status_fd = open("/proc/self/status", O_RDONLY);
-        if (stat_fd < 0 || status_fd < 0) _exit(27);
+        if (pid_status_fd < 0 || status_fd < 0) _exit(27);
         if (getppid() == 1) _exit(28);
         char byte = 'x';
         if (write(ready[1], &byte, 1) != 1) _exit(29);
         /* The parent exits after reading the byte; spin until adoption. */
         while (getppid() != 1) (void)getpid();
-        byte = adopted_verdict(stat_fd, status_fd);
+        byte = adopted_verdict(pid_status_fd, status_fd);
         if (write(verdict[1], &byte, 1) != 1) _exit(30);
         /* Outlive the former parent until the root has reaped it: its exit
            must not wait for this adopted process. */
