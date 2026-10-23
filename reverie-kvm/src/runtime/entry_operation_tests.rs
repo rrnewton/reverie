@@ -1017,7 +1017,7 @@ fn rpc_unknown_failure_check(then: FailureCheck) {
     let mut state = ();
     let subscriptions = Subscription::none();
     let scripted = ScriptedRpcFailure(Mutex::default());
-    let guest = KvmGuest::new(
+    let mut guest = KvmGuest::new(
         Pid::from_raw(17),
         Pid::from_raw(17),
         tool,
@@ -1034,8 +1034,8 @@ fn rpc_unknown_failure_check(then: FailureCheck) {
         Arc::new(Mutex::new(Vec::new())),
         BASE + TOOL_STACK_SIZE,
         Arc::new(AtomicBool::new(false)),
-    )
-    .with_rpc_failure(&scripted);
+    );
+    guest.set_rpc_failure(&scripted);
     let mut rpc = Box::pin(guest.send_rpc(()));
     let mut context = Context::from_waker(Waker::noop());
     let polls = &fixture.global.counts.rpc_polls;
