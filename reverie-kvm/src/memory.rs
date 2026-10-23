@@ -1376,6 +1376,15 @@ impl GuestMemory {
             }
     }
 
+    /// Move this handle's attribution out, leaving it with none: what
+    /// [`Self::entry_origin`] returned, without a clone.
+    pub(crate) fn take_entry_origin(&mut self) -> EntryOrigin {
+        EntryOrigin {
+            failure: self.failure_context.take(),
+            operation: self.operation_origin.take(),
+        }
+    }
+
     /// The issuing operation alone, without cloning the whole origin.
     pub(crate) fn operation_origin(&self) -> Option<&OperationOrigin> {
         self.operation_origin.as_ref()

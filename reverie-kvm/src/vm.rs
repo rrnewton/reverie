@@ -1903,7 +1903,8 @@ impl KvmBackend {
         &mut self,
     ) -> Result<Option<crate::entry::owner::CallbackScope>> {
         self.check_entry_owner()?;
-        let Some(owner) = self.entry_driver_owner() else {
+        // Borrowed, not cloned: the borrow ends before the origin is stored.
+        let Some(owner) = self.entry_driver.as_ref() else {
             return Ok(None);
         };
         let callback = owner.begin_callback(None)?;
