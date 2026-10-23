@@ -13,6 +13,7 @@ use std::sync::Arc;
 
 use bytes::Bytes;
 use bytes::BytesMut;
+use futures::future::FutureExt;
 use futures::stream::FuturesUnordered;
 use futures::stream::StreamExt;
 use nix::fcntl;
@@ -90,6 +91,10 @@ pub struct Session {
     /// its own channel until gdb resumes it, even before it reaches the gdb stop.
     pub stopped: Option<InferiorThreadId>,
 
+    /// Reporters to tell once the reply now being written reaches gdb
+    /// (`StoppedInferior::replied`).
+    replied: Vec<oneshot::Sender<()>>,
+
     /// Channel to report stop event.
     // NB: even though we could use a single `gdb_stop_rx` to receive all
     // stop events (mpsc), we use a `stop_rx` channel for each `inferior`
@@ -111,6 +116,8 @@ struct VcontResumeResult {
     ptid_to_remove: Vec<ThreadId>,
     /// The thread that reported the stop, which then waits in a gdb stop.
     reporter: Option<InferiorThreadId>,
+    /// Tells the reporter once the reply is written (`StoppedInferior::replied`).
+    replied: Option<oneshot::Sender<()>>,
     /// Switch to a new task
     //
     // NB: This is possible when supporting multi-threaded programs. See
@@ -134,6 +141,72 @@ struct VcontResumeResult {
     // we switch current to thread `switch_to`, to simulate gdb's (client)
     // (mis)behavior.
     switch_to: Option<InferiorThreadId>,
+}
+
+/// The stops resumed threads report, until one that gdb is told about.
+#[derive(Default)]
+struct StopCollector {
+    reason: Option<StopReason>,
+    replied: Option<oneshot::Sender<()>>,
+    new_inferior: Option<Inferior>,
+    ptid_to_remove: Vec<ThreadId>,
+    reporter: Option<InferiorThreadId>,
+    switch_to: Option<InferiorThreadId>,
+}
+
+impl StopCollector {
+    /// Takes what thread `id` reported, returning whether gdb is to be told.
+    /// A thread exit is not reported, nor is a thread whose stop channel has
+    /// closed: it has gone, its exit with it.
+    fn take(
+        &mut self,
+        id: InferiorThreadId,
+        stop: Result<(StopReason, Option<oneshot::Sender<()>>), Error>,
+    ) -> Result<bool, Error> {
+        let (mut stop_reason, replied) = match stop {
+            Ok(stop) => stop,
+            Err(Error::GdbServerStopEventRecvError) => {
+                self.ptid_to_remove.push(id.into());
+                return Ok(false);
+            }
+            Err(error) => return Err(error),
+        };
+        match &mut stop_reason {
+            StopReason::ThreadExited(pid, tgid, _exit_status) => {
+                self.ptid_to_remove
+                    .push(ThreadId::pid_tid(tgid.as_raw(), pid.as_raw()));
+                // The thread exit event `w XX; ptid is not reported
+                return Ok(false);
+            }
+            StopReason::Exited(pid, _exit_staus) => {
+                self.ptid_to_remove.push(ThreadId::pid(pid.as_raw()));
+            }
+            StopReason::NewTask(new_task) => {
+                self.reporter = Some(InferiorThreadId::new(new_task.pid, new_task.tgid));
+                let id = match new_task.op {
+                    ChildOp::Fork | ChildOp::Vfork => {
+                        InferiorThreadId::new(new_task.child, new_task.child)
+                    }
+                    ChildOp::Clone => InferiorThreadId::new(new_task.child, new_task.tgid),
+                };
+                self.new_inferior = Some(Inferior {
+                    id,
+                    view: new_task.view.clone(),
+                    resume_tx: new_task.resume_tx.take(),
+                    request_tx: new_task.request_tx.take(),
+                    stop_rx: new_task.stop_rx.take(),
+                    resume_pending: false,
+                });
+            }
+            StopReason::Stopped(stopped) => {
+                self.reporter = Some(InferiorThreadId::new(stopped.pid, stopped.tgid));
+                self.switch_to = self.reporter;
+            }
+        }
+        self.reason = Some(stop_reason);
+        self.replied = replied;
+        Ok(true)
+    }
 }
 
 /// Where the session reads a thread's registers.
@@ -170,6 +243,7 @@ impl Session {
             inferiors: Arc::new(Mutex::new(BTreeMap::new())),
             current: None,
             stopped: None,
+            replied: Vec::new(),
             gdb_stop_rx: Some(gdb_stop_rx),
         }
     }
@@ -265,14 +339,13 @@ impl Session {
         threadid: ThreadId,
         resume: ResumeInferior,
     ) -> Result<HandleVcontResume, Error> {
-        let mut inferiors_to_resume: Vec<&mut Inferior> = Vec::new();
         let mut inferiors = self.inferiors.lock().await;
 
-        match threadid.tid {
+        let to_resume: Vec<Pid> = match threadid.tid {
             // vCont a specific ptid, such as $vCont;c:p2.2#..
             IdKind::Id(tid) => {
-                let inferior = inferiors.get_mut(&tid).ok_or(Error::UnknownThread(tid))?;
-                inferiors_to_resume.push(inferior);
+                inferiors.get(&tid).ok_or(Error::UnknownThread(tid))?;
+                vec![tid]
             }
             // Invalid vCont
             IdKind::Any => {
@@ -280,87 +353,72 @@ impl Session {
             }
             // vCont all threads, such as $vCont;c:p2.-1#10
             IdKind::All => match threadid.pid {
-                IdKind::Id(pid) => {
-                    for inferior in inferiors.values_mut() {
-                        if inferior.getpid() == pid {
-                            inferiors_to_resume.push(inferior);
-                        }
-                    }
-                }
+                IdKind::Id(pid) => inferiors
+                    .values()
+                    .filter(|inferior| inferior.getpid() == pid)
+                    .map(Inferior::gettid)
+                    .collect(),
                 _ => return Err(Error::ThreadIdNotSpecified),
             },
-        }
+        };
 
-        if inferiors_to_resume.is_empty() {
+        if to_resume.is_empty() {
             return Ok(HandleVcontResume::NotHandled);
         }
+        let processes: Vec<Pid> = to_resume
+            .iter()
+            .filter_map(|tid| inferiors.get(tid).map(Inferior::getpid))
+            .collect();
 
-        let mut new_inferior: Option<Inferior> = None;
-        let mut ptid_to_remove: Vec<ThreadId> = Vec::new();
-        let mut reporter: Option<InferiorThreadId> = None;
-        let mut switch_to: Option<InferiorThreadId> = None;
-        let mut inferiors_to_wait = FuturesUnordered::new();
-
-        for inferior in inferiors_to_resume {
-            inferior.notify_resume(resume).await?;
-            inferiors_to_wait.push(inferior.wait_for_stop());
-        }
-
-        let mut reason: Option<StopReason> = None;
-        while let Some(stop_reason) = inferiors_to_wait.next().await {
-            let mut stop_reason = stop_reason?;
-            match &mut stop_reason {
-                StopReason::ThreadExited(pid, tgid, _exit_status) => {
-                    ptid_to_remove.push(ThreadId::pid_tid(tgid.as_raw(), pid.as_raw()));
-                    // The thread exit event `w XX; ptid is not reported
-                    continue;
-                }
-                StopReason::Exited(pid, _exit_staus) => {
-                    ptid_to_remove.push(ThreadId::pid(pid.as_raw()));
-                }
-                StopReason::NewTask(new_task) => {
-                    reporter = Some(InferiorThreadId::new(new_task.pid, new_task.tgid));
-                    new_inferior = Some(match new_task.op {
-                        ChildOp::Fork => Inferior {
-                            id: InferiorThreadId::new(new_task.child, new_task.child),
-                            view: new_task.view.clone(),
-                            resume_tx: new_task.resume_tx.take(),
-                            request_tx: new_task.request_tx.take(),
-                            stop_rx: new_task.stop_rx.take(),
-                            resume_pending: false,
-                        },
-                        ChildOp::Vfork => Inferior {
-                            id: InferiorThreadId::new(new_task.child, new_task.child),
-                            view: new_task.view.clone(),
-                            resume_tx: new_task.resume_tx.take(),
-                            request_tx: new_task.request_tx.take(),
-                            stop_rx: new_task.stop_rx.take(),
-                            resume_pending: false,
-                        },
-                        ChildOp::Clone => Inferior {
-                            id: InferiorThreadId::new(new_task.child, new_task.tgid),
-                            view: new_task.view.clone(),
-                            resume_tx: new_task.resume_tx.take(),
-                            request_tx: new_task.request_tx.take(),
-                            stop_rx: new_task.stop_rx.take(),
-                            resume_pending: false,
-                        },
-                    });
-                }
-
-                StopReason::Stopped(stopped) => {
-                    reporter = Some(InferiorThreadId::new(stopped.pid, stopped.tgid));
-                    switch_to = reporter;
+        let mut stops = StopCollector::default();
+        {
+            let mut inferiors_to_wait = FuturesUnordered::new();
+            for inferior in inferiors.values_mut() {
+                if to_resume.contains(&inferior.gettid()) {
+                    inferior.notify_resume(resume).await?;
+                    let id = inferior.id;
+                    inferiors_to_wait.push(inferior.wait_for_stop().map(move |stop| (id, stop)));
                 }
             }
-            reason = Some(stop_reason);
-            break;
+            while let Some((id, stop)) = inferiors_to_wait.next().await {
+                if stops.take(id, stop)? {
+                    break;
+                }
+            }
         }
-        Ok(HandleVcontResume::Handled(VcontResumeResult {
-            reason: reason.expect("GDB resume loop must produce a stop reason"),
+        if stops.reason.is_none() {
+            // Every thread this resumed exited without reporting a stop: a
+            // fatal signal it was resumed or stepped with ends the whole
+            // group. The process's exit then comes from a thread of it that an
+            // earlier resume left running, from gdb's view stopped, such as a
+            // leader that reports its exit last.
+            let mut inferiors_to_wait = FuturesUnordered::new();
+            for inferior in inferiors.values_mut() {
+                if inferior.resume_pending && processes.contains(&inferior.getpid()) {
+                    let id = inferior.id;
+                    inferiors_to_wait.push(inferior.wait_for_stop().map(move |stop| (id, stop)));
+                }
+            }
+            while let Some((id, stop)) = inferiors_to_wait.next().await {
+                if stops.take(id, stop)? {
+                    break;
+                }
+            }
+        }
+        let StopCollector {
+            reason,
+            replied,
             new_inferior,
             ptid_to_remove,
             reporter,
+            switch_to,
+        } = stops;
+        Ok(HandleVcontResume::Handled(VcontResumeResult {
+            reason: reason.ok_or(Error::GdbServerStopEventRecvError)?,
+            new_inferior,
+            ptid_to_remove,
+            reporter,
+            replied,
             switch_to,
         }))
     }
@@ -594,9 +652,11 @@ impl Session {
                                 new_inferior,
                                 ptid_to_remove,
                                 reporter,
+                                replied,
                                 switch_to,
                             }) => {
                                 self.stopped = reporter;
+                                self.replied.extend(replied);
                                 let mut inferiors = self.inferiors.lock().await;
                                 for ptid in ptid_to_remove {
                                     if let Some(tid) = ptid.gettid() {
@@ -836,6 +896,15 @@ impl Session {
                         .write_all(&resp)
                         .await
                         .map_err(|_| Error::GdbServerSendPacketError)?;
+                    if !self.replied.is_empty() {
+                        self.stream_tx
+                            .flush()
+                            .await
+                            .map_err(|_| Error::GdbServerSendPacketError)?;
+                        for replied in self.replied.drain(..) {
+                            let _ = replied.send(());
+                        }
+                    }
                 }
             }
         }
