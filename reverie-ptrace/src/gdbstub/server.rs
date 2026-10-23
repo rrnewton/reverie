@@ -27,6 +27,7 @@ use super::packet::Packet;
 use super::packet::PacketParseError;
 use super::packet::checksum_delimiter;
 use super::session::Session;
+use super::signals::PassedSignals;
 
 /// GdbServer controller
 pub struct GdbServer {
@@ -37,6 +38,9 @@ pub struct GdbServer {
     /// FIXME: the tracees are serialized already, tell gdbserver not to
     /// serialize by its own.
     pub sequentialized_guest: bool,
+    /// The signals gdb asked to have passed without a stop, which the session
+    /// records and the traced threads read.
+    pub passed_signals: PassedSignals,
 }
 
 impl GdbServer {
@@ -47,7 +51,14 @@ impl GdbServer {
         let (inferior_attached_tx, inferior_attached_rx) = mpsc::channel(1);
         let (server_tx, server_rx) = oneshot::channel();
 
-        let server = GdbServerImpl::from_addr(addr, server_rx, inferior_attached_rx).await?;
+        let passed_signals = PassedSignals::default();
+        let server = GdbServerImpl::from_addr(
+            addr,
+            server_rx,
+            inferior_attached_rx,
+            passed_signals.clone(),
+        )
+        .await?;
         tokio::task::spawn(async move {
             if let Err(err) = server.run().await {
                 tracing::error!("Failed to run gdbserver: {:?}", err);
@@ -57,6 +68,7 @@ impl GdbServer {
             server_tx: Some(server_tx),
             inferior_attached_tx: Some(inferior_attached_tx),
             sequentialized_guest: false,
+            passed_signals,
         })
     }
 
@@ -67,7 +79,14 @@ impl GdbServer {
         let (inferior_attached_tx, inferior_attached_rx) = mpsc::channel(1);
         let (server_tx, server_rx) = oneshot::channel();
 
-        let server = GdbServerImpl::from_path(path, server_rx, inferior_attached_rx).await?;
+        let passed_signals = PassedSignals::default();
+        let server = GdbServerImpl::from_path(
+            path,
+            server_rx,
+            inferior_attached_rx,
+            passed_signals.clone(),
+        )
+        .await?;
         tokio::task::spawn(async move {
             if let Err(err) = server.run().await {
                 tracing::error!("Failed to run gdbserver: {:?}", err);
@@ -77,6 +96,7 @@ impl GdbServer {
             server_tx: Some(server_tx),
             inferior_attached_tx: Some(inferior_attached_tx),
             sequentialized_guest: false,
+            passed_signals,
         })
     }
 
@@ -175,6 +195,7 @@ impl GdbServerImpl {
         addr: SocketAddr,
         server_rx: oneshot::Receiver<()>,
         inferior_attached_rx: mpsc::Receiver<StoppedInferior>,
+        passed_signals: PassedSignals,
     ) -> Result<Self, Error> {
         let stream = wait_for_tcp_connection(addr)
             .await
@@ -183,7 +204,8 @@ impl GdbServerImpl {
 
         let (tx, rx) = mpsc::channel(1);
         // create a gdb session.
-        let session = Session::new(Box::new(writer), rx, inferior_attached_rx);
+        let mut session = Session::new(Box::new(writer), rx, inferior_attached_rx);
+        session.passed_signals = passed_signals;
 
         Ok(GdbServerImpl {
             reader: Box::new(reader),
@@ -199,6 +221,7 @@ impl GdbServerImpl {
         path: &Path,
         server_rx: oneshot::Receiver<()>,
         inferior_attached_rx: mpsc::Receiver<StoppedInferior>,
+        passed_signals: PassedSignals,
     ) -> Result<Self, Error> {
         let stream = wait_for_unix_connection(path)
             .await
@@ -208,7 +231,8 @@ impl GdbServerImpl {
         let (tx, rx) = mpsc::channel(1);
 
         // Create a gdb session.
-        let session = Session::new(Box::new(writer), rx, inferior_attached_rx);
+        let mut session = Session::new(Box::new(writer), rx, inferior_attached_rx);
+        session.passed_signals = passed_signals;
 
         Ok(GdbServerImpl {
             reader: Box::new(reader),

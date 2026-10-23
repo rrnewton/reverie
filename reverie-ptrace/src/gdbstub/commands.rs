@@ -34,6 +34,7 @@ use paste::paste;
 use reverie::ExitStatus;
 use reverie::Pid;
 use reverie::Signal;
+use safeptrace::AnySignal;
 use safeptrace::ChildOp;
 use safeptrace::Stopped;
 use thiserror::Error;
@@ -338,6 +339,7 @@ commands! {
             "m" => m,
             "M" => M,
             "qAttached" => qAttached,
+            "QPassSignals" => QPassSignals,
             "QThreadEvents" => QThreadEvents,
             "qC" => qC,
             "qfThreadInfo" => qfThreadInfo,
@@ -380,9 +382,9 @@ commands! {
 #[derive(PartialEq, Clone, Copy, Debug)]
 pub enum ResumeAction {
     /// signal step, with optional signal.
-    Step(Option<Signal>),
+    Step(Option<AnySignal>),
     /// cointinue, with optional signal.
-    Continue(Option<Signal>),
+    Continue(Option<AnySignal>),
     /// Stop, not sure what it means exactly.
     Stop,
     /// Keep stepping until rip doesn't belong to start..=end.
@@ -416,8 +418,9 @@ impl From<libc::user_regs_struct> for ExpediatedRegs {
 
 #[derive(PartialEq, Clone, Debug)]
 pub enum StopEvent {
-    /// Stopped by signal.
-    Signal(Signal),
+    /// Stopped by signal: a trap (SIGTRAP), or a guest signal about to be
+    /// delivered.
+    Signal(AnySignal),
     /// Stopped by softwrae breakpoint.
     SwBreak,
     /// Stopped due to vforkdone event.
@@ -566,7 +569,14 @@ impl WriteResponse for StopReason {
                 writer.put_str(";");
             }
             StopReason::Stopped(stopped) => {
-                writer.put_str("T05");
+                // `T` names the signal by gdb's number; every other stop is a
+                // trap.
+                writer.put_str("T");
+                let signal = match &stopped.event {
+                    StopEvent::Signal(signal) => signals::to_gdb(signal.raw()),
+                    _ => signals::to_gdb(libc::SIGTRAP),
+                };
+                writer.put_hex_encoded(&[signal]);
                 match &stopped.event {
                     StopEvent::Signal(_) => {}
                     StopEvent::SwBreak => {
@@ -684,11 +694,38 @@ mod test {
     }
 
     #[test]
+    fn a_signal_stop_names_the_signal_by_gdbs_number() {
+        // SAFETY: user_regs_struct contains only integer register values.
+        let regs: libc::user_regs_struct = unsafe { std::mem::zeroed() };
+        let stop = |event| {
+            let mut writer = ResponseWriter::new(BytesMut::new(), true);
+            StopReason::stopped(Pid::from_raw(3), Pid::from_raw(3), event, regs.into())
+                .write_response(&mut writer);
+            let text = format!("{writer:?}");
+            text[text.find("$T").expect("a T reply") + 1..].to_owned()
+        };
+        assert!(stop(StopEvent::Signal(Signal::SIGSEGV.into())).starts_with("T0b06:"));
+        assert!(
+            stop(StopEvent::Signal(Signal::SIGUSR1.into())).starts_with("T1e06:"),
+            "gdb numbers SIGUSR1 30"
+        );
+        assert!(
+            stop(StopEvent::Signal(AnySignal::new(34).unwrap())).starts_with("T2e06:"),
+            "gdb numbers real-time signal 34 46"
+        );
+        assert!(stop(StopEvent::Signal(Signal::SIGTRAP.into())).starts_with("T0506:"));
+        assert!(
+            stop(StopEvent::SwBreak).starts_with("T05swbreak:;"),
+            "a breakpoint is a trap"
+        );
+    }
+
+    #[test]
     fn vcont_signals_are_gdbs_numbers() {
         assert_eq!(
             vCont::parse(BytesMut::from("$vCont;C1e:p3.3")),
             Some(vCont::Actions(vec![(
-                ResumeAction::Continue(Some(Signal::SIGUSR1)),
+                ResumeAction::Continue(Some(Signal::SIGUSR1.into())),
                 ThreadId::pid_tid(3, 3)
             )])),
             "gdb's 30 is SIGUSR1, not Linux's 30, SIGPWR"
@@ -696,7 +733,7 @@ mod test {
         assert_eq!(
             vCont::parse(BytesMut::from("$vCont;S0a:p3.3")),
             Some(vCont::Actions(vec![(
-                ResumeAction::Step(Some(Signal::SIGBUS)),
+                ResumeAction::Step(Some(Signal::SIGBUS.into())),
                 ThreadId::pid_tid(3, 3)
             )]))
         );

@@ -15,6 +15,12 @@
 //! actions (`vCont;C`) are translated here, as gdbserver does with
 //! `gdb_signal_from_host` and `gdb_signal_to_host` (gdbsupport/signals.cc).
 
+use std::sync::Arc;
+use std::sync::atomic::AtomicU64;
+use std::sync::atomic::Ordering;
+
+use safeptrace::AnySignal;
+
 /// gdb's `GDB_SIGNAL_REALTIME_33`; real-time signals 33 to 63 follow it.
 const GDB_REALTIME_33: u8 = 45;
 /// gdb's `GDB_SIGNAL_REALTIME_32`, placed after `GDB_SIGNAL_CANCEL` (76).
@@ -104,9 +110,58 @@ pub fn from_gdb(gdb: u8) -> Option<libc::c_int> {
     (linux <= libc::SIGRTMAX()).then_some(linux)
 }
 
+/// Whether gdb has a number for `sig`. Linux's SIGSTKFLT is the only one it
+/// lacks: gdb would show it as an unknown signal and could not resume with it.
+pub fn signal_has_gdb_number(sig: AnySignal) -> bool {
+    to_gdb(sig.raw()) != GDB_SIGNAL_UNKNOWN
+}
+
+/// The signals gdb asked the stub to pass to the guest without stopping
+/// (`QPassSignals`), shared by the session, which records them, and every
+/// traced thread, which reads them at each signal it is about to deliver.
+/// gdb names signals it would neither stop at nor print, but pass, such as
+/// SIGALRM, SIGCHLD and SIGWINCH by default (gdb's `handle` command).
+#[derive(Clone, Debug, Default)]
+pub struct PassedSignals(Arc<AtomicU64>);
+
+impl PassedSignals {
+    /// Replaces the set with the signals of gdb's numbers `gdb_signals`. A
+    /// number with no Linux signal is ignored.
+    pub fn set(&self, gdb_signals: &[u8]) {
+        let bits = gdb_signals
+            .iter()
+            .filter_map(|gdb| from_gdb(*gdb))
+            .filter(|linux| (1..=64).contains(linux))
+            .fold(0u64, |bits, linux| bits | 1 << (linux - 1));
+        self.0.store(bits, Ordering::Relaxed);
+    }
+
+    /// Whether gdb asked for `sig` to be passed without stopping.
+    pub fn passes(&self, sig: AnySignal) -> bool {
+        self.0.load(Ordering::Relaxed) & 1 << (sig.raw() - 1) != 0
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn passed_signals_follow_the_latest_list() {
+        let passed = PassedSignals::default();
+        let sigalrm = AnySignal::from(nix::sys::signal::Signal::SIGALRM);
+        let sigusr1 = AnySignal::from(nix::sys::signal::Signal::SIGUSR1);
+        let sig34 = AnySignal::new(34).unwrap();
+        assert!(!passed.passes(sigalrm), "nothing passes before gdb asks");
+        // gdb's numbers: SIGALRM 14, real-time 34 is 46, and 7 (SIGEMT) has no
+        // Linux signal.
+        passed.set(&[14, 46, 7]);
+        assert!(passed.passes(sigalrm));
+        assert!(passed.passes(sig34));
+        assert!(!passed.passes(sigusr1));
+        passed.set(&[]);
+        assert!(!passed.passes(sigalrm), "a new list replaces the old one");
+    }
 
     #[test]
     fn standard_signals_use_gdbs_numbers() {

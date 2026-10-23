@@ -47,3 +47,5 @@ pub use inferior::ThreadView;
 pub use regs::CoreRegs;
 pub use request::GdbRequest;
 pub use server::GdbServer;
+pub use signals::PassedSignals;
+pub use signals::signal_has_gdb_number;

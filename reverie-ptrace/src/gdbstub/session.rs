@@ -47,6 +47,7 @@ use super::regs::CoreRegs;
 #[cfg(target_arch = "x86_64")]
 use super::regs::REGISTER_INFOS;
 use super::response::*;
+use super::signals::PassedSignals;
 
 type BoxWriter = Box<dyn AsyncWrite + Unpin + Send + Sync + 'static>;
 
@@ -90,6 +91,10 @@ pub struct Session {
     /// The thread whose stop gdb was last told about. It answers requests on
     /// its own channel until gdb resumes it, even before it reaches the gdb stop.
     pub stopped: Option<InferiorThreadId>,
+
+    /// The signals gdb asked to have passed without a stop (`QPassSignals`),
+    /// shared with the traced threads, which deliver them unreported.
+    pub passed_signals: PassedSignals,
 
     /// Reporters to tell once the reply now being written reaches gdb
     /// (`StoppedInferior::replied`).
@@ -244,6 +249,7 @@ impl Session {
             current: None,
             stopped: None,
             replied: Vec::new(),
+            passed_signals: PassedSignals::default(),
             gdb_stop_rx: Some(gdb_stop_rx),
         }
     }
@@ -318,7 +324,7 @@ impl Session {
         let mut inferiors = self.inferiors.lock().await;
         let resume = ResumeInferior {
             action: if kill {
-                ResumeAction::Continue(Some(Signal::SIGKILL))
+                ResumeAction::Continue(Some(Signal::SIGKILL.into()))
             } else {
                 ResumeAction::Continue(None)
             },
@@ -434,7 +440,7 @@ impl Session {
                 writer.put_str("OK");
             }
             Base::qSupported(_) => {
-                writer.put_str("PacketSize=8000;vContSupported+;multiprocess+;exec-events+;fork-events+;vfork-events+;QThreadEvents+;QStartNoAckMode+;swbreak+;qXfer:features:read+;qXfer:auxv:read+;qXfer:threads:read+;");
+                writer.put_str("PacketSize=8000;vContSupported+;multiprocess+;exec-events+;fork-events+;vfork-events+;QThreadEvents+;QStartNoAckMode+;QPassSignals+;swbreak+;qXfer:features:read+;qXfer:auxv:read+;qXfer:threads:read+;");
             }
             // LLDB extensions. See
             // https://github.com/llvm/llvm-project/blob/main/lldb/docs/resources/lldbgdbremote.md
@@ -509,6 +515,10 @@ impl Session {
             }
             Base::qAttached(_pid) => {
                 writer.put_str("0");
+            }
+            Base::QPassSignals(passed) => {
+                self.passed_signals.set(&passed.signals);
+                writer.put_str("OK");
             }
             Base::QThreadEvents(_thread_events) => {
                 // NB: This should toggle reporting thread event, such as
