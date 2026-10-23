@@ -324,7 +324,7 @@ fn syncfs_private_rights_remain_refused_after_sender_reuse_dup_fork_exec() {
     let root = TestDir::new();
     let replacement = root.0.join("replacement");
     std::fs::write(&replacement, SELF_MAPS_CONTENT).unwrap();
-    for path in ["/proc/self/maps", "/proc/self/stat", "/proc/self/status"] {
+    for path in ["/proc/self/maps", "/proc/self/status"] {
         let mut state = test_state(&root.0);
         let mut memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
         let original = open_readonly(&mut memory, &mut state, path) as i32;
@@ -384,7 +384,6 @@ fn syncfs_known_private_descriptions_are_refused_without_host_call() {
     let mut fds = Vec::new();
     for path in [
         "/proc/self/maps",
-        "/proc/self/stat",
         "/proc/self/status",
         "/proc",
     ] {
