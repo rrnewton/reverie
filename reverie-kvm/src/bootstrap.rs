@@ -362,13 +362,17 @@ pub(crate) fn process_syscall_return_registers(
 /// read precedes the store, a read error or a failure recorded or deferred
 /// after the read returns before the store, and the store writes the same
 /// eight bytes at the same address; see [`GuestMemory::read_then_write_raw`].
+///
+/// The return registers are built in `registers`, which holds the exit's
+/// registers on entry, rather than returned. On an error `registers` is
+/// unchanged.
 pub(crate) fn process_syscall_return_registers_storing_result(
     memory: &GuestMemory,
-    registers: kvm_bindings::kvm_regs,
+    registers: &mut kvm_bindings::kvm_regs,
     syscall_frame_address: u64,
     result: i64,
     stack_pointer: Option<u64>,
-) -> Result<kvm_bindings::kvm_regs> {
+) -> Result<()> {
     let mut frame: ReturnWords = [0; RETURN_WORDS_BYTES];
     memory.read_then_write_raw(
         frame_word_address_u64(syscall_frame_address, RETURN_FIRST_WORD),
@@ -376,12 +380,8 @@ pub(crate) fn process_syscall_return_registers_storing_result(
         frame_word_address_u64(syscall_frame_address, RESULT_WORD),
         &result.to_le_bytes(),
     )?;
-    Ok(return_registers_from_words(
-        &frame,
-        registers,
-        result,
-        stack_pointer,
-    ))
+    return_registers_from_words_in_place(&frame, registers, result, stack_pointer);
+    Ok(())
 }
 
 fn return_registers_from_words(
@@ -390,6 +390,16 @@ fn return_registers_from_words(
     result: i64,
     stack_pointer: Option<u64>,
 ) -> kvm_bindings::kvm_regs {
+    return_registers_from_words_in_place(frame, &mut registers, result, stack_pointer);
+    registers
+}
+
+fn return_registers_from_words_in_place(
+    frame: &ReturnWords,
+    registers: &mut kvm_bindings::kvm_regs,
+    result: i64,
+    stack_pointer: Option<u64>,
+) {
     let word = |index: usize| {
         let start = (index - RETURN_FIRST_WORD) * std::mem::size_of::<u64>();
         u64::from_le_bytes(frame[start..start + 8].try_into().unwrap())
@@ -411,7 +421,6 @@ fn return_registers_from_words(
     if let Some(stack_pointer) = stack_pointer {
         registers.rsp = stack_pointer;
     }
-    registers
 }
 
 // TODO-HUMAN-REVIEW(PR-172): Review syscall-frame selection for concurrent vCPUs.

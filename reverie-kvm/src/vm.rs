@@ -1275,11 +1275,30 @@ fn normalize_completed_syscall_boundary_registers(
 }
 
 fn normalize_completed_syscall_boundary_registers_with_read(
-    mut read: impl FnMut(u64, &mut [u8]) -> Result<()>,
+    read: impl FnMut(u64, &mut [u8]) -> Result<()>,
     mut registers: kvm_regs,
     hypercall_instruction: [u8; 3],
     hypercall_address: u64,
 ) -> Result<kvm_regs> {
+    normalize_completed_syscall_boundary_registers_in_place(
+        read,
+        &mut registers,
+        hypercall_instruction,
+        hypercall_address,
+    )?;
+    Ok(registers)
+}
+
+/// [`normalize_completed_syscall_boundary_registers_with_read`] on
+/// `registers` where they are, with the same checks and reads in the same
+/// order. `registers` changes only after every check has passed, so an error
+/// leaves it as it was.
+fn normalize_completed_syscall_boundary_registers_in_place(
+    mut read: impl FnMut(u64, &mut [u8]) -> Result<()>,
+    registers: &mut kvm_regs,
+    hypercall_instruction: [u8; 3],
+    hypercall_address: u64,
+) -> Result<()> {
     let return_address = hypercall_address
         .checked_add(hypercall_instruction.len() as u64)
         .ok_or_else(|| Error::UnexpectedVcpuExit("hypercall RIP overflow".to_owned()))?;
@@ -1303,7 +1322,7 @@ fn normalize_completed_syscall_boundary_registers_with_read(
     // any process action can consume the exit. Both admitted RIP forms model
     // that same completed-hypercall state.
     registers.rax = 0;
-    Ok(registers)
+    Ok(())
 }
 
 /// What a syscall exit's first guest-memory copy read: the whole transport
@@ -1517,20 +1536,55 @@ impl CompletedSyscallBoundary {
         backend: &KvmBackend,
         frame_address: u64,
         action_return_registers: Option<kvm_regs>,
-        mut read: impl FnMut(u64, &mut [u8]) -> Result<()>,
+        read: impl FnMut(u64, &mut [u8]) -> Result<()>,
     ) -> Result<Self> {
-        let mut frame = [0; FRAME_SIZE];
-        read(frame_address, &mut frame)?;
-        let (registers, special_registers) =
-            backend.completed_syscall_boundary_registers_with_read(&mut read)?;
-        Ok(Self {
+        let mut boundary = Self::empty();
+        boundary.capture_with_read_into(
+            backend,
             frame_address,
-            frame,
-            registers,
-            special_registers,
-            action_return_registers,
+            action_return_registers.as_ref(),
+            read,
+        )?;
+        Ok(boundary)
+    }
+
+    /// The capture [`Self::capture_with_read`] makes, written over `self`
+    /// where it is instead of into a new value that is then moved: the
+    /// frame read, the general registers, the hypercall read and check, and
+    /// the special registers, in that order, then the plain fields. Every
+    /// field is overwritten on success, so nothing of an earlier capture
+    /// survives. On an error `self` holds partial values; every caller
+    /// discards it with the error and never reads it.
+    fn capture_with_read_into(
+        &mut self,
+        backend: &KvmBackend,
+        frame_address: u64,
+        action_return_registers: Option<&kvm_regs>,
+        mut read: impl FnMut(u64, &mut [u8]) -> Result<()>,
+    ) -> Result<()> {
+        read(frame_address, &mut self.frame)?;
+        backend.completed_syscall_boundary_registers_with_read_into(
+            &mut read,
+            &mut self.registers,
+            &mut self.special_registers,
+        )?;
+        self.frame_address = frame_address;
+        self.action_return_registers = action_return_registers.copied();
+        self.stage_action_outcome = false;
+        Ok(())
+    }
+
+    /// A boundary with every field zero, to be overwritten by a capture
+    /// before anything reads it.
+    fn empty() -> Self {
+        Self {
+            frame_address: 0,
+            frame: [0; FRAME_SIZE],
+            registers: kvm_regs::default(),
+            special_registers: kvm_bindings::kvm_sregs::default(),
+            action_return_registers: None,
             stage_action_outcome: false,
-        })
+        }
     }
 
     pub(crate) async fn capture_admitted(
@@ -1557,13 +1611,21 @@ impl CompletedSyscallBoundary {
     /// mapping (the same entry gate), covers exactly the frame and hypercall
     /// this capture reads, and the gate still admits at the generation the
     /// read saw; otherwise this is `capture_admitted`, unchanged.
-    pub(crate) async fn capture_admitted_reusing(
+    ///
+    /// The boundary is captured into `slot`, where it stays, and is lent
+    /// back: a syscall callback's boundary is otherwise moved (about 670
+    /// bytes, by `memcpy`) out of the capture and again into the callback's
+    /// executor, on every syscall a Tool handles. The reads, their order and
+    /// every check are those of a capture by value; only where the result is
+    /// stored differs.
+    pub(crate) async fn capture_admitted_reusing<'slot>(
         backend: &mut KvmBackend,
         frame_address: u64,
-        action_return_registers: Option<kvm_regs>,
+        action_return_registers: Option<&kvm_regs>,
         stop: Pin<&mut (dyn Future<Output = ()> + Send + '_)>,
         exit: Option<(&SyscallExitRead, &GuestMemory)>,
-    ) -> Result<Option<Self>> {
+        slot: &'slot mut CompletedBoundarySlot,
+    ) -> Result<Option<&'slot Self>> {
         let hypercall_address = syscall_hypercall_address(
             backend.hypercall_instruction,
             backend.syscall_trampoline_address,
@@ -1576,25 +1638,38 @@ impl CompletedSyscallBoundary {
                 && Arc::ptr_eq(memory.entry_gate_ref(), backend.memory.entry_gate_ref())
         });
         let reused = reuse.map(|(exit, _)| {
-            (exit.generation, move |backend: &KvmBackend| {
-                Self::capture_with_read(
-                    backend,
-                    frame_address,
-                    action_return_registers,
-                    |address, bytes| exit.read(address, bytes),
-                )
-            })
+            (
+                exit.generation,
+                move |backend: &KvmBackend, boundary: &mut Self| {
+                    boundary.capture_with_read_into(
+                        backend,
+                        frame_address,
+                        action_return_registers,
+                        |address, bytes| exit.read(address, bytes),
+                    )
+                },
+            )
         });
-        backend
-            .prepare_action_read_or_reuse(stop, reused, |backend, access| {
-                Self::capture_with_read(
-                    backend,
-                    frame_address,
-                    action_return_registers,
-                    |address, bytes| access.read_raw(address, bytes),
-                )
-            })
-            .await
+        let captured = backend
+            .prepare_action_read_or_reuse(
+                stop,
+                reused,
+                &mut slot.boundary,
+                |backend, access, boundary| {
+                    boundary.capture_with_read_into(
+                        backend,
+                        frame_address,
+                        action_return_registers,
+                        |address, bytes| access.read_raw(address, bytes),
+                    )
+                },
+            )
+            .await?;
+        let slot: &'slot CompletedBoundarySlot = slot;
+        Ok(match captured {
+            Some(()) => Some(&slot.boundary),
+            None => None,
+        })
     }
 
     pub(crate) async fn capture_for_action_admitted(
@@ -1652,8 +1727,13 @@ impl CompletedSyscallBoundary {
         Ok(())
     }
 
+    /// [`Self::for_test`] as a constant, which a test may borrow for as long
+    /// as it likes.
     #[cfg(test)]
-    pub(crate) fn for_test() -> Self {
+    pub(crate) const FOR_TEST: Self = Self::for_test();
+
+    #[cfg(test)]
+    pub(crate) const fn for_test() -> Self {
         Self {
             frame_address: 0x1000,
             frame: [0; FRAME_SIZE],
@@ -1663,6 +1743,23 @@ impl CompletedSyscallBoundary {
             special_registers: unsafe { std::mem::zeroed() },
             action_return_registers: None,
             stage_action_outcome: false,
+        }
+    }
+}
+
+/// Where [`CompletedSyscallBoundary::capture_admitted_reusing`] captures a
+/// boundary, kept for a thread's run so that each syscall callback's capture
+/// overwrites it in place. Its contents are reachable only through a
+/// successful capture, which overwrites every field first, so no earlier
+/// capture's state can be read through it.
+pub(crate) struct CompletedBoundarySlot {
+    boundary: CompletedSyscallBoundary,
+}
+
+impl CompletedBoundarySlot {
+    pub(crate) fn new() -> Self {
+        Self {
+            boundary: CompletedSyscallBoundary::empty(),
         }
     }
 }
@@ -2516,22 +2613,32 @@ impl KvmBackend {
         Ok((registers, self.vcpu.get_sregs()?))
     }
 
-    fn completed_syscall_boundary_registers_with_read(
+    /// [`Self::completed_syscall_boundary_registers`], reading the hypercall
+    /// instruction through `read` and storing both register sets where the
+    /// caller keeps them: the general registers, the normalization's checks
+    /// and read, then the special registers, in that order, as a returned
+    /// pair was built. On an error the destinations hold partial values and
+    /// the caller discards them with the error.
+    fn completed_syscall_boundary_registers_with_read_into(
         &self,
         read: impl FnMut(u64, &mut [u8]) -> Result<()>,
-    ) -> Result<(kvm_regs, kvm_bindings::kvm_sregs)> {
+        registers: &mut kvm_regs,
+        special_registers: &mut kvm_bindings::kvm_sregs,
+    ) -> Result<()> {
         let hypercall_address = syscall_hypercall_address(
             self.hypercall_instruction,
             self.syscall_trampoline_address,
             self.syscall_frame_address,
         );
-        let registers = normalize_completed_syscall_boundary_registers_with_read(
+        self.vcpu.get_regs_into(registers)?;
+        normalize_completed_syscall_boundary_registers_in_place(
             read,
-            self.vcpu.get_regs()?,
+            registers,
             self.hypercall_instruction,
             hypercall_address,
         )?;
-        Ok((registers, self.vcpu.get_sregs()?))
+        self.vcpu.get_sregs_into(special_registers)?;
+        Ok(())
     }
 
     fn snapshot_process(&self) -> Result<KvmProcessSnapshot> {
@@ -2746,8 +2853,9 @@ impl KvmBackend {
     ) -> Result<Option<T>> {
         self.prepare_action_read_or_reuse(
             stop,
-            None::<(crate::entry::MappingGeneration, fn(&Self) -> Result<T>)>,
-            capture,
+            None::<(crate::entry::MappingGeneration, fn(&Self, &mut ()) -> Result<T>)>,
+            &mut (),
+            |backend, access, ()| capture(backend, access),
         )
         .await
     }
@@ -2761,14 +2869,19 @@ impl KvmBackend {
     /// cancellation, the copy failures checked around an admitted copy) runs
     /// in the same order as for a fresh copy. Otherwise the attempt copies,
     /// exactly as `prepare_action_read`.
-    async fn prepare_action_read_or_reuse<T, R>(
+    ///
+    /// Both `reused` and `capture` are lent `destination`, which lets a
+    /// capture write its value where the caller keeps it rather than return
+    /// it; `prepare_action_read` lends nothing.
+    async fn prepare_action_read_or_reuse<T, D, R>(
         &mut self,
         mut stop: Pin<&mut (dyn Future<Output = ()> + Send + '_)>,
         mut reused: Option<(crate::entry::MappingGeneration, R)>,
-        capture: impl Fn(&Self, &crate::memory::RawMemoryRead<'_>) -> Result<T>,
+        destination: &mut D,
+        capture: impl Fn(&Self, &crate::memory::RawMemoryRead<'_>, &mut D) -> Result<T>,
     ) -> Result<Option<T>>
     where
-        R: FnOnce(&Self) -> Result<T>,
+        R: FnOnce(&Self, &mut D) -> Result<T>,
     {
         let gate = self.memory.entry_gate();
         // The first attempt subscribes to nothing: it nearly always reads at
@@ -2799,11 +2912,14 @@ impl KvmBackend {
                 // The failures an admitted copy checks before and after it
                 // runs; the bytes themselves were copied under admission.
                 self.memory.check_copy_failures()?;
-                let value = reused(self);
+                let value = reused(self, destination);
                 self.memory.check_copy_failures()?;
                 return value.map(Some);
             }
-            if let Some(value) = self.memory.try_read_with(|access| capture(self, access))? {
+            if let Some(value) = self
+                .memory
+                .try_read_with(|access| capture(self, access, destination))?
+            {
                 return Ok(Some(value));
             }
             let Some((changed, cancelled)) = subscriptions else {
