@@ -37,7 +37,7 @@ fn process_outcome_reports_an_action_the_executor_keeps() {
         executor: &mut executor,
         memory: memory.clone(),
         process_context: ProcessExecutionContext::SyscallBoundary(
-            CompletedSyscallBoundary::for_test(),
+            &CompletedSyscallBoundary::FOR_TEST,
         ),
         callback_site: None,
         original_syscall: None,
@@ -88,7 +88,7 @@ fn process_outcome_reports_an_action_the_executor_keeps() {
 fn run_handler<F>(
     backend: &mut KvmBackend,
     executor: &mut ElfExecutor,
-    context: ProcessExecutionContext,
+    context: ProcessExecutionContext<'_>,
     handler: F,
 ) -> HandlerOutcome<std::result::Result<i64, Errno>>
 where
@@ -220,7 +220,7 @@ fn a_later_call_does_not_report_an_action_an_earlier_call_staged() {
         executor: &mut executor,
         memory: memory.clone(),
         process_context: ProcessExecutionContext::SyscallBoundary(
-            CompletedSyscallBoundary::for_test(),
+            &CompletedSyscallBoundary::FOR_TEST,
         ),
         callback_site: None,
         original_syscall: None,

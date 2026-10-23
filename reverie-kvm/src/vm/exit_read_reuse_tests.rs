@@ -76,13 +76,16 @@ pub(crate) mod exit_read_reuse_tests {
         exit: Option<(&SyscallExitRead, &GuestMemory)>,
     ) -> Result<Option<CompletedSyscallBoundary>> {
         let mut pending = std::pin::pin!(std::future::pending());
+        let mut slot = CompletedBoundarySlot::new();
         futures::executor::block_on(CompletedSyscallBoundary::capture_admitted_reusing(
             backend,
             frame_address,
             None,
             pending.as_mut(),
             exit,
+            &mut slot,
         ))
+        .map(Option::<&CompletedSyscallBoundary>::cloned)
     }
 
     #[test]
@@ -258,6 +261,7 @@ pub(crate) mod exit_read_reuse_tests {
                 pending.as_mut()
             };
             let before = admissions(&backend);
+            let mut slot = CompletedBoundarySlot::new();
             let result = futures::executor::block_on(
                 CompletedSyscallBoundary::capture_admitted_reusing(
                     &mut backend,
@@ -265,6 +269,7 @@ pub(crate) mod exit_read_reuse_tests {
                     None,
                     stop,
                     Some((&exit, &memory)),
+                    &mut slot,
                 ),
             );
             match (event, result) {
@@ -383,14 +388,15 @@ pub(crate) mod exit_read_reuse_tests {
             let before = admissions(&backend);
             let result = futures::executor::block_on(backend.prepare_action_read_or_reuse(
                 pending.as_mut(),
-                reuse.then_some((exit.generation, |_: &KvmBackend| {
+                reuse.then_some((exit.generation, |_: &KvmBackend, _: &mut ()| {
                         // After the check that precedes the reused bytes.
                         assert!(memory.check_copy_failures().is_ok());
                         defer(&memory);
                         ran.store(true, std::sync::atomic::Ordering::SeqCst);
                         Ok(7_u32)
                     })),
-                |_, _| {
+                &mut (),
+                |_, _, _| {
                     defer(&memory);
                     ran.store(true, std::sync::atomic::Ordering::SeqCst);
                     Ok(7_u32)
@@ -441,11 +447,12 @@ pub(crate) mod exit_read_reuse_tests {
             let before = admissions(&backend);
             let result = futures::executor::block_on(backend.prepare_action_read_or_reuse(
                 pending.as_mut(),
-                reuse.then_some((exit.generation, |_: &KvmBackend| {
+                reuse.then_some((exit.generation, |_: &KvmBackend, _: &mut ()| {
                         ran.store(true, std::sync::atomic::Ordering::SeqCst);
                         Ok(7_u32)
                     })),
-                |_, _| {
+                &mut (),
+                |_, _, _| {
                     ran.store(true, std::sync::atomic::Ordering::SeqCst);
                     Ok(7_u32)
                 },
@@ -476,12 +483,14 @@ pub(crate) mod exit_read_reuse_tests {
             futures::executor::block_on(gate.try_close().unwrap().unwrap().finish()).unwrap();
         let before = admissions(&backend);
         let mut pending = std::pin::pin!(std::future::pending());
+        let mut slot = CompletedBoundarySlot::new();
         let mut capture = Box::pin(CompletedSyscallBoundary::capture_admitted_reusing(
             &mut backend,
             frame_address,
             None,
             pending.as_mut(),
             Some((&exit, &memory)),
+            &mut slot,
         ));
         let waker = futures::task::noop_waker();
         let mut context = Context::from_waker(&waker);
