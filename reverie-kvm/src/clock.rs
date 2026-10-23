@@ -42,6 +42,7 @@ use reverie::pmu::PmuProfile;
 
 use crate::Error;
 use crate::Result;
+use crate::entry::EntryOrigin;
 use crate::entry::Participant;
 use crate::entry::RunEntry;
 use crate::entry::owner::OperationOrigin;
@@ -155,7 +156,23 @@ pub(crate) struct CountedVcpu {
     immediate_exit: crate::entry::ImmediateExit,
     participant: Participant,
     // Keep the Mapping alive independently of the backend field's drop order.
+    // Its attribution was moved to `origin_seed` at construction: this handle
+    // is never used to issue an access, so nothing else reads it.
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "Held only to keep the Mapping alive; tests read guest memory through it"
+        )
+    )]
     memory: GuestMemory,
+    /// The construction handle's attribution, until the first
+    /// [`Self::set_failure_context`] or [`Self::set_operation_origin`]. The
+    /// participant's origin is the handle's whole attribution after each
+    /// set, so that first set gives it the part the call does not name from
+    /// here, as it once took that part from the handle. Placed after
+    /// `memory`, it is dropped where the handle dropped it.
+    origin_seed: Option<EntryOrigin>,
     clock: GuestClock,
     image_is_elf: bool,
     initial_elf_ran: bool,
@@ -178,7 +195,8 @@ impl Deref for CountedVcpu {
 }
 
 impl CountedVcpu {
-    pub(crate) fn new(mut fd: VcpuFd, memory: GuestMemory, sync_regs: bool) -> Result<Self> {
+    pub(crate) fn new(mut fd: VcpuFd, mut memory: GuestMemory, sync_regs: bool) -> Result<Self> {
+        let origin_seed = Some(memory.take_entry_origin());
         let participant = memory
             .entry_gate()
             .register()
@@ -197,6 +215,7 @@ impl CountedVcpu {
             immediate_exit,
             participant,
             memory,
+            origin_seed,
             clock: GuestClock::default(),
             image_is_elf: false,
             initial_elf_ran: false,
@@ -264,14 +283,49 @@ impl CountedVcpu {
         self.fd.get_sregs()
     }
 
+    /// Attribute this vCPU's entry failures to `origin`, keeping the
+    /// operation part. The participant is the only reader of this
+    /// attribution, so `origin` moves into it without a copy.
     pub(crate) fn set_failure_context(&mut self, origin: Option<FailureContext>) {
-        self.memory.set_failure_context(origin);
-        self.participant.set_origin(self.memory.entry_origin());
+        let seed = &mut self.origin_seed;
+        self.participant.update_origin(|current| match seed.take() {
+            Some(seed) => {
+                *current = EntryOrigin {
+                    failure: origin,
+                    operation: seed.operation,
+                }
+            }
+            None => current.failure = origin,
+        });
     }
 
+    /// Attribute this vCPU's entry failures to `origin`, keeping the failure
+    /// context. As for [`Self::set_failure_context`], `origin` moves into the
+    /// participant without a copy.
     pub(crate) fn set_operation_origin(&mut self, origin: Option<OperationOrigin>) {
-        self.memory.set_operation_origin(origin);
-        self.participant.set_origin(self.memory.entry_origin());
+        let seed = &mut self.origin_seed;
+        self.participant.update_origin(|current| match seed.take() {
+            Some(seed) => {
+                *current = EntryOrigin {
+                    failure: seed.failure,
+                    operation: origin,
+                }
+            }
+            None => current.operation = origin,
+        });
+    }
+
+    /// The attribution the participant would record now.
+    #[cfg(test)]
+    pub(crate) fn participant_origin(&self) -> &EntryOrigin {
+        self.participant.origin()
+    }
+
+    /// The attribution this vCPU's own memory handle carries: none, since
+    /// construction moved it aside for the participant.
+    #[cfg(test)]
+    pub(crate) fn handle_origin(&self) -> EntryOrigin {
+        self.memory.entry_origin()
     }
 
     /// Only initial installation creates a new thread lifetime. Exec retains
@@ -2527,6 +2581,117 @@ mod tests {
             "raw event cache: {checked} permitted CPUs agree with the domain's {:#x}",
             domain.raw_event
         );
+    }
+
+    /// A set refused because an entry is outstanding (dropped unacknowledged,
+    /// or forgotten in `Setup` or `Running`) changes neither the
+    /// participant's attribution nor the construction handle's part held for
+    /// the first set: the refusal precedes every move, so what a later
+    /// failure names is the origin set before the entry, as before.
+    #[test]
+    fn a_refused_attribution_set_changes_and_consumes_nothing() {
+        use std::panic::AssertUnwindSafe;
+        use std::panic::catch_unwind;
+
+        fn same_origin(left: &EntryOrigin, right: &EntryOrigin) -> bool {
+            (match (&left.failure, &right.failure) {
+                (Some(left), Some(right)) => left.same_as(right),
+                (None, None) => true,
+                _ => false,
+            }) && match (&left.operation, &right.operation) {
+                (Some(left), Some(right)) => left.same_as(right),
+                (None, None) => true,
+                _ => false,
+            }
+        }
+
+        for case in [
+            "dropped",
+            "forgotten in setup",
+            "forgotten running",
+            "dropped before any set",
+        ] {
+            let mut backend = crate::KvmBackend::new(0x10000)
+                .expect("participant refusal control requires /dev/kvm");
+            let seeded = case == "dropped before any set";
+            let driver = (!seeded).then(|| backend.start_entry_driver());
+            let callback = (!seeded).then(|| backend.begin_entry_callback().unwrap().unwrap());
+            let before = backend.vcpu.participant.origin().clone();
+            if let Some(callback) = &callback {
+                assert!(
+                    before
+                        .operation
+                        .as_ref()
+                        .unwrap()
+                        .same_as(&callback.origin()),
+                    "{case}"
+                );
+            }
+            assert_eq!(backend.vcpu.origin_seed.is_some(), seeded, "{case}");
+            let gate = backend.memory.entry_gate();
+            match case {
+                "forgotten in setup" => {
+                    let entry = backend.vcpu.participant.try_enter().unwrap().unwrap();
+                    std::mem::forget(entry);
+                }
+                "forgotten running" => {
+                    let mut entry = backend.vcpu.participant.try_enter().unwrap().unwrap();
+                    assert!(entry.activate().unwrap());
+                    std::mem::forget(entry);
+                }
+                _ => {
+                    let mut entry = backend.vcpu.participant.try_enter().unwrap().unwrap();
+                    assert!(entry.activate().unwrap());
+                    drop(entry);
+                    let failure = gate.pending_failure().expect(case);
+                    assert!(
+                        match (&failure.operation, &before.operation) {
+                            (Some(left), Some(right)) => left.same_as(right),
+                            (None, None) => true,
+                            _ => false,
+                        },
+                        "{case}"
+                    );
+                }
+            }
+
+            let other = crate::entry::owner::DriverScope::new();
+            let global = std::sync::Arc::new(());
+            let run = crate::failure::RunFailure::new(&global);
+            let refusals = [
+                catch_unwind(AssertUnwindSafe(|| {
+                    backend
+                        .vcpu
+                        .set_operation_origin(Some(other.owner().origin()))
+                })),
+                catch_unwind(AssertUnwindSafe(|| {
+                    backend.vcpu.set_failure_context(Some(FailureContext::new(
+                        run.clone(),
+                        reverie::Pid::from_raw(1),
+                        reverie::Pid::from_raw(1),
+                    )))
+                })),
+                catch_unwind(AssertUnwindSafe(|| backend.vcpu.set_operation_origin(None))),
+            ];
+            for refused in refusals {
+                let refused = refused.expect_err(case);
+                assert_eq!(
+                    refused.downcast_ref::<&str>().copied(),
+                    Some("participant origin set while an entry is outstanding"),
+                    "{case}"
+                );
+            }
+            assert!(
+                same_origin(backend.vcpu.participant.origin(), &before),
+                "{case}"
+            );
+            assert_eq!(backend.vcpu.origin_seed.is_some(), seeded, "{case}");
+            // The registry lock was never taken, so it is not poisoned.
+            let _ = gate.pending_failure();
+            drop(callback);
+            drop(driver);
+            drop(other);
+        }
     }
 }
 

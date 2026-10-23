@@ -41,8 +41,15 @@ pub(crate) enum DriverLifecycle {
 }
 
 /// Retained by origins, but never owns a pending cause or DriverState.
+///
+/// One per driver, created with it and never replaced, so it also names the
+/// driver: `owner` is the driver's allocation, held weakly. An origin of the
+/// driver itself is this one shared allocation, and a callback's origin
+/// reaches it through its generation, so cloning or dropping an origin is
+/// one reference count rather than one per part.
 struct RetirementWitness {
     lifecycle: AtomicU8,
+    owner: Weak<DriverState>,
 }
 
 impl RetirementWitness {
@@ -184,9 +191,10 @@ pub(crate) struct DriverRetirement {
 impl DriverScope {
     pub(crate) fn new() -> Self {
         Self {
-            state: Some(Arc::new(DriverState {
+            state: Some(Arc::new_cyclic(|state| DriverState {
                 witness: Arc::new(RetirementWitness {
                     lifecycle: AtomicU8::new(DriverLifecycle::Active as u8),
+                    owner: state.clone(),
                 }),
                 data: Mutex::new(OwnerData {
                     next_callback: 0,
@@ -290,9 +298,7 @@ impl DriverOwner {
 
     pub(crate) fn origin(&self) -> OperationOrigin {
         OperationOrigin {
-            owner: Arc::downgrade(&self.state),
-            witness: self.state.witness.clone(),
-            callback: None,
+            kind: OriginKind::Driver(self.state.witness.clone()),
         }
     }
 
@@ -306,10 +312,10 @@ impl DriverOwner {
         let parent = match parent {
             None => None,
             Some(origin) => {
-                if !Arc::ptr_eq(&origin.witness, &self.state.witness) {
+                if !Arc::ptr_eq(origin.witness(), &self.state.witness) {
                     return Err(protocol("nested callback belongs to another driver"));
                 }
-                let Some(callback) = &origin.callback else {
+                let Some(callback) = origin.callback() else {
                     return Err(protocol("nested callback has no enclosing generation"));
                 };
                 let mut enclosing = Some(callback.as_ref());
@@ -339,7 +345,11 @@ impl DriverOwner {
                 spare.take().expect("reused spare generation")
             }
             // A shared spare stays with its other holders.
-            None => Arc::new(CallbackGeneration::new(id, parent)),
+            None => Arc::new(CallbackGeneration::new(
+                id,
+                parent,
+                self.state.witness.clone(),
+            )),
         };
         data.next_callback = id;
         data.callbacks.insert(id);
@@ -347,10 +357,7 @@ impl DriverOwner {
         drop(released);
         drop(spare);
         Ok(CallbackScope {
-            origin: OperationOrigin {
-                callback: Some(callback),
-                ..self.origin()
-            },
+            generation: Some(callback),
         })
     }
 }
@@ -366,6 +373,9 @@ struct CallbackGeneration {
     /// destruction or the destructor finds and completes its channel.
     destroyed_notification: Mutex<Option<DestroyedNotification>>,
     parent: Option<Arc<CallbackGeneration>>,
+    /// The driver's witness. A generation stays with its driver (only that
+    /// driver's callbacks reuse it), so `reset` keeps this.
+    witness: Arc<RetirementWitness>,
 }
 
 struct DestroyedNotification {
@@ -374,18 +384,24 @@ struct DestroyedNotification {
 }
 
 impl CallbackGeneration {
-    fn new(id: u64, parent: Option<Arc<CallbackGeneration>>) -> Self {
+    fn new(
+        id: u64,
+        parent: Option<Arc<CallbackGeneration>>,
+        witness: Arc<RetirementWitness>,
+    ) -> Self {
         Self {
             id,
             destroyed: AtomicBool::new(false),
             destroyed_notification: Mutex::new(None),
             parent,
+            witness,
         }
     }
 
     /// Give a uniquely owned generation the state [`CallbackGeneration::new`]
     /// would, returning its previous parent for the caller to drop outside
-    /// its locks.
+    /// its locks. Its witness is already the reusing driver's: a spare is
+    /// only ever the generation of one of that driver's own callbacks.
     fn reset(
         &mut self,
         id: u64,
@@ -434,44 +450,64 @@ impl CallbackGeneration {
 /// Unwind records destruction; neither path settles effects or calls a Tool.
 #[must_use = "keep the scope outside and alive through its owned callback future"]
 pub(crate) struct CallbackScope {
-    origin: OperationOrigin,
+    /// Present until `Drop` takes it. The scope's origin is exactly this
+    /// generation, which names its driver through its witness.
+    generation: Option<Arc<CallbackGeneration>>,
 }
 
 impl CallbackScope {
     pub(crate) fn origin(&self) -> OperationOrigin {
-        self.origin.clone()
+        OperationOrigin {
+            kind: OriginKind::Callback(self.generation.as_ref().unwrap().clone()),
+        }
     }
 }
 
 impl std::fmt::Debug for CallbackScope {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("CallbackScope")
-            .field("origin", &self.origin)
+            .field("origin", &self.origin())
             .finish_non_exhaustive()
     }
 }
 
 impl Drop for CallbackScope {
     fn drop(&mut self) {
-        let generation = self.origin.callback.take().unwrap();
-        let mut released = None;
-        let notification = self.origin.owner.upgrade().map(|owner| {
-            let mut data = owner.data.lock().unwrap();
-            let removed = data.callbacks.remove(&generation.id);
-            debug_assert!(removed, "unique callback scope was already removed");
-            generation.destroyed.store(true, Ordering::Release);
-            // Keep this generation for the next callback's allocation. The
-            // one it replaces is dropped below, outside the owner lock.
-            released = data.spare_generation.replace(generation.clone());
-            data.changed()
-        });
-        // The lexical driver may already have been abandoned and destroyed.
-        // The retained generation still records actual callback destruction.
-        generation.destroyed.store(true, Ordering::Release);
-        if let Some(sender) = generation.take_destroyed_sender() {
+        let generation = self.generation.take().unwrap();
+        // Either the destructor takes a waiter's sender, or the waiter's
+        // recheck after subscribing sees `destroyed`: `destroyed` is stored
+        // before the sender is taken in both branches, and the waiter
+        // subscribes under the same notification mutex. The sender is only
+        // taken under the owner lock, never sent there.
+        let (sender, released, notification) = match generation.witness.owner.upgrade() {
+            Some(owner) => {
+                let mut data = owner.data.lock().unwrap();
+                let removed = data.callbacks.remove(&generation.id);
+                debug_assert!(removed, "unique callback scope was already removed");
+                generation.destroyed.store(true, Ordering::Release);
+                let sender = generation.take_destroyed_sender();
+                // Keep this generation for the next callback's allocation,
+                // moved rather than cloned: this scope's reference was the
+                // one it gives up. The one it replaces is dropped below,
+                // outside the owner lock.
+                let released = data.spare_generation.replace(generation);
+                let notification = data.changed();
+                drop(data);
+                drop(owner);
+                (sender, released, Some(notification))
+            }
+            None => {
+                // The lexical driver may already have been abandoned and
+                // destroyed. The generation still records actual callback
+                // destruction, then is released here.
+                generation.destroyed.store(true, Ordering::Release);
+                let sender = generation.take_destroyed_sender();
+                (sender, Some(generation), None)
+            }
+        };
+        if let Some(sender) = sender {
             let _ = sender.send(());
         }
-        drop(generation);
         drop(released);
         if let Some(notification) = notification {
             notification.notify();
@@ -481,21 +517,30 @@ impl Drop for CallbackScope {
 
 /// No strong path from an origin back to DriverState. PendingFailure may own
 /// this value while the driver owns that pending failure without a cycle.
+///
+/// One shared allocation: the driver's witness, or a callback's generation,
+/// which holds that witness. The driver (the witness's weak `owner`), the
+/// witness and the callback generation are the same three parts an origin
+/// always named; each is reached from the one reference instead of being
+/// counted separately.
 #[derive(Clone)]
 pub(crate) struct OperationOrigin {
-    owner: Weak<DriverState>,
-    witness: Arc<RetirementWitness>,
-    callback: Option<Arc<CallbackGeneration>>,
+    kind: OriginKind,
+}
+
+#[derive(Clone)]
+enum OriginKind {
+    /// The driver itself, outside any callback.
+    Driver(Arc<RetirementWitness>),
+    /// A callback of the driver its generation's witness names.
+    Callback(Arc<CallbackGeneration>),
 }
 
 impl std::fmt::Debug for OperationOrigin {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("OperationOrigin")
             .field("lifecycle", &self.lifecycle())
-            .field(
-                "callback",
-                &self.callback.as_ref().map(|callback| callback.id),
-            )
+            .field("callback", &self.callback().map(|callback| callback.id))
             .finish_non_exhaustive()
     }
 }
@@ -512,60 +557,86 @@ pub(crate) struct CaptureRejected {
 }
 
 impl OperationOrigin {
+    /// The driver's witness, which also names the driver (`owner`).
+    #[inline]
+    fn witness(&self) -> &Arc<RetirementWitness> {
+        match &self.kind {
+            OriginKind::Driver(witness) => witness,
+            OriginKind::Callback(generation) => &generation.witness,
+        }
+    }
+
+    /// The driver's allocation, held weakly.
+    #[inline]
+    fn owner(&self) -> &Weak<DriverState> {
+        &self.witness().owner
+    }
+
+    /// The callback generation, if this origin names a callback.
+    #[inline]
+    fn callback(&self) -> Option<&Arc<CallbackGeneration>> {
+        match &self.kind {
+            OriginKind::Driver(_) => None,
+            OriginKind::Callback(generation) => Some(generation),
+        }
+    }
+
     /// Observe the existing driver without registering a new callback or
     /// acquiring a publisher. The caller must retain this only for its own
     /// operation lifetime; origins and pending failures still point weakly.
     pub(crate) fn driver_owner(&self) -> Option<DriverOwner> {
-        self.owner.upgrade().map(|state| DriverOwner { state })
+        self.owner().upgrade().map(|state| DriverOwner { state })
     }
 
     /// Whether this origin's driver is `owner`'s allocation: what
     /// [`Self::driver_owner`] would return while `owner` keeps it alive,
     /// decided by pointer, without an upgrade.
     pub(crate) fn is_owned_by(&self, owner: &DriverOwner) -> bool {
-        std::ptr::eq(self.owner.as_ptr(), Arc::as_ptr(&owner.state))
+        std::ptr::eq(self.owner().as_ptr(), Arc::as_ptr(&owner.state))
     }
 
     /// Subscribe before inspecting lifecycle. Disconnection is only a reason
     /// to recheck abandonment, never evidence of completed publication.
     pub(crate) fn subscribe(&self) -> Option<OwnerSubscription> {
-        self.owner
+        self.owner()
             .upgrade()
             .map(|owner| owner.data.lock().unwrap().subscribe())
     }
 
     pub(crate) fn lifecycle(&self) -> DriverLifecycle {
-        self.witness.lifecycle()
+        self.witness().lifecycle()
     }
 
     /// An identity is meaningful only together with this driver's identity.
     #[cfg(test)]
     pub(crate) fn callback_id(&self) -> Option<u64> {
-        self.callback.as_ref().map(|callback| callback.id)
+        self.callback().map(|callback| callback.id)
     }
 
     pub(crate) fn same_driver(&self, other: &Self) -> bool {
-        Arc::ptr_eq(&self.witness, &other.witness)
+        Arc::ptr_eq(self.witness(), other.witness())
     }
 
     /// Whether `other` is this exact origin: the same driver allocation,
     /// retirement witness and callback generation. A clone of one is always
     /// the same, so replacing one with the other changes nothing observable.
+    ///
+    /// One pointer comparison decides all three: a driver has exactly one
+    /// witness for its lifetime and the witness names that driver, and a
+    /// generation belongs to exactly one driver's witness for its lifetime.
     pub(crate) fn same_as(&self, other: &Self) -> bool {
-        Weak::ptr_eq(&self.owner, &other.owner)
-            && Arc::ptr_eq(&self.witness, &other.witness)
-            && match (&self.callback, &other.callback) {
-                (Some(left), Some(right)) => Arc::ptr_eq(left, right),
-                (None, None) => true,
-                _ => false,
-            }
+        match (&self.kind, &other.kind) {
+            (OriginKind::Driver(left), OriginKind::Driver(right)) => Arc::ptr_eq(left, right),
+            (OriginKind::Callback(left), OriginKind::Callback(right)) => Arc::ptr_eq(left, right),
+            _ => false,
+        }
     }
 
     /// Origins without callback receipts do not identify a callback.
     #[cfg(test)]
     pub(crate) fn same_callback(&self, other: &Self) -> bool {
         self.same_driver(other)
-            && match (&self.callback, &other.callback) {
+            && match (self.callback(), other.callback()) {
                 (Some(left), Some(right)) => Arc::ptr_eq(left, right),
                 _ => false,
             }
@@ -575,7 +646,7 @@ impl OperationOrigin {
     /// retirement and executor settlement must still be checked independently.
     #[cfg(test)]
     pub(crate) fn callback_dropped(&self) -> bool {
-        let mut callback = self.callback.as_deref();
+        let mut callback = self.callback().map(Arc::as_ref);
         while let Some(generation) = callback {
             if !generation.destroyed.load(Ordering::Acquire) {
                 return false;
@@ -586,7 +657,7 @@ impl OperationOrigin {
     }
 
     pub(crate) async fn wait_callback_drop(&self) -> Result<()> {
-        let mut callback = self.callback.clone();
+        let mut callback = self.callback().cloned();
         while let Some(generation) = callback {
             if !generation.destroyed.load(Ordering::Acquire) {
                 let destroyed = generation.subscribe_destroyed();
@@ -624,7 +695,7 @@ impl OperationOrigin {
         failure: Arc<PendingFailure>,
         #[cfg(test)] after_unlock: impl FnOnce(),
     ) -> std::result::Result<OwnerNotification, CaptureRejected> {
-        let Some(owner) = self.owner.upgrade() else {
+        let Some(owner) = self.owner().upgrade() else {
             return Err(CaptureRejected {
                 failure,
                 #[cfg(test)]
@@ -829,7 +900,7 @@ mod tests {
                     after_drop.recv_timeout(timeout).unwrap();
                 });
                 let wakes_before_unlock = observed.wakes.load(Ordering::Acquire);
-                let owners_before_unlock = origin.owner.strong_count();
+                let owners_before_unlock = origin.owner().strong_count();
                 let (notification, rejection) = match captured {
                     Ok(notification) => (notification, None),
                     Err(rejected) => (
@@ -862,7 +933,7 @@ mod tests {
                 assert_eq!(disconnect_wakes, 1, "{case}, notify={notify}");
                 assert_eq!(observed.wakes.load(Ordering::Acquire), 2);
                 assert!(observed.gate_was_unlocked.load(Ordering::Acquire));
-                assert!(origin.owner.upgrade().is_none());
+                assert!(origin.owner().upgrade().is_none());
                 assert_eq!(origin.lifecycle(), DriverLifecycle::Retired);
                 match rejection {
                     Some((cause, lifecycle, available)) => {
@@ -969,8 +1040,7 @@ mod tests {
 
     fn has_destroyed_channel(origin: &OperationOrigin) -> bool {
         origin
-            .callback
-            .as_ref()
+            .callback()
             .unwrap()
             .destroyed_notification
             .lock()
@@ -984,7 +1054,7 @@ mod tests {
         let owner = scope.owner();
         let first = owner.begin_callback(None).unwrap();
         let first_id = first.origin().callback_id().unwrap();
-        let first_ptr = Arc::as_ptr(first.origin.callback.as_ref().unwrap());
+        let first_ptr = Arc::as_ptr(first.generation.as_ref().unwrap());
         drop(first);
         // Kept, not freed, and still recording its destruction.
         let kept = spare(&owner).unwrap();
@@ -996,10 +1066,7 @@ mod tests {
         // identity and the state of a new generation.
         let second = owner.begin_callback(None).unwrap();
         let second_origin = second.origin();
-        assert_eq!(
-            Arc::as_ptr(second_origin.callback.as_ref().unwrap()),
-            first_ptr
-        );
+        assert_eq!(Arc::as_ptr(second_origin.callback().unwrap()), first_ptr);
         assert!(second_origin.callback_id().unwrap() > first_id);
         assert!(!second_origin.callback_dropped());
         assert!(!has_destroyed_channel(&second_origin));
@@ -1012,10 +1079,7 @@ mod tests {
         let third = owner.begin_callback(None).unwrap();
         let third_origin = third.origin();
         assert!(!third_origin.same_callback(&second_origin));
-        assert_ne!(
-            Arc::as_ptr(third_origin.callback.as_ref().unwrap()),
-            first_ptr
-        );
+        assert_ne!(Arc::as_ptr(third_origin.callback().unwrap()), first_ptr);
         assert!(second_origin.callback_dropped());
         assert!(!third_origin.callback_dropped());
         drop(third);
@@ -1038,25 +1102,15 @@ mod tests {
         drop(parent);
         // The parent's scope replaced the nested spare, releasing its parent
         // reference; only the origin above and the new spare hold the parent.
-        assert_eq!(
-            Arc::strong_count(parent_origin.callback.as_ref().unwrap()),
-            2
-        );
+        assert_eq!(Arc::strong_count(parent_origin.callback().unwrap()), 2);
         drop(parent_origin);
         let next = owner.begin_callback(None).unwrap();
-        assert!(next.origin.callback.as_ref().unwrap().parent.is_none());
+        assert!(next.generation.as_ref().unwrap().parent.is_none());
         let next_origin = next.origin();
         let nested = owner.begin_callback(Some(&next_origin)).unwrap();
         assert!(Arc::ptr_eq(
-            nested
-                .origin
-                .callback
-                .as_ref()
-                .unwrap()
-                .parent
-                .as_ref()
-                .unwrap(),
-            next_origin.callback.as_ref().unwrap()
+            nested.generation.as_ref().unwrap().parent.as_ref().unwrap(),
+            next_origin.callback().unwrap()
         ));
         drop(nested);
         drop(next);
@@ -1326,11 +1380,164 @@ mod tests {
         origin.capture(failure.clone()).unwrap().notify();
         drop(scope);
         drop(owner);
-        assert!(retained.owner.upgrade().is_none());
+        assert!(retained.owner().upgrade().is_none());
         assert_eq!(retained.lifecycle(), DriverLifecycle::Abandoned);
         let rejected = retained.capture(failure.clone()).unwrap_err();
         assert!(!rejected.owner_available);
         assert_eq!(rejected.lifecycle, DriverLifecycle::Abandoned);
         assert!(Arc::ptr_eq(&rejected.failure, &failure));
+    }
+
+    /// An origin is one shared allocation: cloning or dropping one counts
+    /// exactly one reference, the witness's for a driver origin and the
+    /// generation's for a callback origin, and never touches the driver's
+    /// own counts (it still holds the driver only weakly).
+    #[test]
+    fn an_origin_clone_or_drop_counts_one_reference() {
+        let scope = DriverScope::new();
+        let owner = scope.owner();
+        let strong = Arc::strong_count(&owner.state);
+        let weak = Arc::weak_count(&owner.state);
+        let witness = Arc::strong_count(&owner.state.witness);
+
+        let driver = owner.origin();
+        assert_eq!(Arc::strong_count(&owner.state.witness), witness + 1);
+        let copy = driver.clone();
+        assert_eq!(Arc::strong_count(&owner.state.witness), witness + 2);
+        assert_eq!(Arc::strong_count(&owner.state), strong);
+        assert_eq!(Arc::weak_count(&owner.state), weak);
+        drop(copy);
+        assert_eq!(Arc::strong_count(&owner.state.witness), witness + 1);
+
+        let callback = owner.begin_callback(None).unwrap();
+        let generation = callback.generation.as_ref().unwrap();
+        // The new generation holds the witness; the scope holds it.
+        assert_eq!(Arc::strong_count(&owner.state.witness), witness + 2);
+        assert_eq!(Arc::strong_count(generation), 1);
+        let origin = callback.origin();
+        let copy = origin.clone();
+        assert_eq!(Arc::strong_count(generation), 3);
+        assert_eq!(Arc::strong_count(&owner.state.witness), witness + 2);
+        assert_eq!(Arc::strong_count(&owner.state), strong);
+        assert_eq!(Arc::weak_count(&owner.state), weak);
+        drop(copy);
+        assert_eq!(Arc::strong_count(generation), 2);
+        drop(origin);
+        assert_eq!(Arc::strong_count(callback.generation.as_ref().unwrap()), 1);
+
+        // The destroyed scope's own reference moves into the spare.
+        drop(callback);
+        assert_eq!(Arc::strong_count(&spare(&owner).unwrap()), 2);
+        drop(driver);
+        let retirement = scope.retire();
+        retirement.result.unwrap();
+        retirement.notification.notify();
+    }
+
+    /// The one allocation still names the same three parts an origin always
+    /// named (driver allocation, retirement witness, callback generation), so
+    /// every identity question has its old answer: `same_as` holds exactly
+    /// when all three are the same, `same_driver` when the witness is, and
+    /// the owner, lifecycle and capture all reach the origin's own driver,
+    /// for driver, callback and nested callback origins alike.
+    #[test]
+    fn an_origin_still_names_its_driver_witness_and_callback() {
+        let scope = DriverScope::new();
+        let owner = scope.owner();
+        let other_scope = DriverScope::new();
+        let other = other_scope.owner();
+
+        let driver = owner.origin();
+        let driver_again = owner.origin();
+        let outer = owner.begin_callback(None).unwrap();
+        let nested = owner.begin_callback(Some(&outer.origin())).unwrap();
+        let peer = owner.begin_callback(None).unwrap();
+        let foreign = other.origin();
+        let foreign_callback = other.begin_callback(None).unwrap();
+        let origins = [
+            ("driver", driver.clone()),
+            ("outer", outer.origin()),
+            ("nested", nested.origin()),
+            ("peer", peer.origin()),
+            ("foreign", foreign.clone()),
+            ("foreign callback", foreign_callback.origin()),
+        ];
+        // The three parts, compared exactly as before the parts were shared.
+        let parts = |origin: &OperationOrigin| {
+            (
+                origin.owner().as_ptr(),
+                Arc::as_ptr(origin.witness()),
+                origin.callback().map(Arc::as_ptr),
+            )
+        };
+        for (left_name, left) in &origins {
+            for (right_name, right) in &origins {
+                let (left_owner, left_witness, left_callback) = parts(left);
+                let (right_owner, right_witness, right_callback) = parts(right);
+                assert_eq!(
+                    left.same_as(right),
+                    std::ptr::eq(left_owner, right_owner)
+                        && std::ptr::eq(left_witness, right_witness)
+                        && left_callback == right_callback,
+                    "{left_name} vs {right_name}"
+                );
+                assert_eq!(
+                    left.same_driver(right),
+                    std::ptr::eq(left_witness, right_witness),
+                    "{left_name} vs {right_name}"
+                );
+                assert!(left.same_as(&left.clone()), "{left_name}");
+            }
+        }
+        // Two driver origins made separately are the same origin, as before.
+        assert!(driver.same_as(&driver_again));
+        assert!(!driver.same_as(&outer.origin()));
+        assert!(!outer.origin().same_as(&nested.origin()));
+        assert!(!outer.origin().same_as(&peer.origin()));
+
+        for (name, origin) in &origins {
+            let mine = !name.starts_with("foreign");
+            let expected = if mine { &owner } else { &other };
+            assert!(origin.is_owned_by(expected), "{name}");
+            assert_ne!(origin.is_owned_by(&owner), !mine, "{name}");
+            assert!(
+                origin.driver_owner().unwrap().same_allocation(expected),
+                "{name}"
+            );
+            assert_eq!(origin.lifecycle(), DriverLifecycle::Active, "{name}");
+        }
+        assert_eq!(driver.callback_id(), None);
+        assert_eq!(
+            nested.origin().callback_id(),
+            Some(nested.generation.as_ref().unwrap().id)
+        );
+
+        // Capture through a nested callback origin reaches its own driver.
+        let failure = cause();
+        nested.origin().capture(failure.clone()).unwrap().notify();
+        assert!(Arc::ptr_eq(&owner.pending()[0], &failure));
+        assert!(other.pending().is_empty());
+
+        let retained = nested.origin();
+        drop(nested);
+        drop(peer);
+        drop(outer);
+        drop(foreign_callback);
+        let retirement = scope.retire();
+        assert_eq!(retirement.lifecycle, DriverLifecycle::Retired);
+        retirement.notification.notify();
+        drop(owner);
+        // The retired driver is gone; its origins still read its witness.
+        assert!(retained.driver_owner().is_none());
+        assert!(driver.driver_owner().is_none());
+        assert_eq!(retained.lifecycle(), DriverLifecycle::Retired);
+        assert_eq!(driver.lifecycle(), DriverLifecycle::Retired);
+        assert!(retained.same_driver(&driver));
+        assert!(retained.callback_dropped());
+        let rejected = retained.capture(failure.clone()).unwrap_err();
+        assert!(!rejected.owner_available);
+        assert_eq!(rejected.lifecycle, DriverLifecycle::Retired);
+        drop(other_scope);
+        assert_eq!(foreign.lifecycle(), DriverLifecycle::Abandoned);
     }
 }

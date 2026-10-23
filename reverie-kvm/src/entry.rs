@@ -947,7 +947,7 @@ impl EntryGate {
             Origin::Lazy(_) => (EntryOrigin::default(), true),
         };
         Ok(CopyAccess {
-            gate: self.clone(),
+            gate: Some(self.clone()),
             origin,
             lazy,
             generation: state.generation,
@@ -975,7 +975,11 @@ impl EntryGate {
         copy: &CopyAccess,
         origin: impl FnOnce() -> EntryOrigin,
     ) -> GateResult<RetainedOperand> {
-        assert!(Arc::ptr_eq(self, &copy.gate));
+        assert!(
+            copy.gate
+                .as_ref()
+                .is_some_and(|gate| Arc::ptr_eq(self, gate))
+        );
         let mut state = self.state.lock().unwrap();
         state.check()?;
         assert!(state.copies != 0, "retained operand requires a live copy");
@@ -1090,7 +1094,7 @@ pub(crate) struct Participant {
     /// Process-unique; see [`signal::participant_key`].
     key: u64,
     /// What a failure this participant records is attributed to, as last set
-    /// by [`Self::set_origin`]. Only this participant reads it: its entry
+    /// by [`Self::update_origin`]. Only this participant reads it: its entry
     /// identity's exhaustion ([`Self::try_enter`]), its own retirement
     /// ([`Drop`]) and its entry's acknowledgement or abandonment
     /// ([`Entry::acknowledge`], `Entry`'s [`Drop`]), each on the thread that
@@ -1105,7 +1109,7 @@ pub(crate) struct Participant {
     /// cleared only when [`Entry::acknowledge`] moves it back. It is
     /// therefore true exactly while the member is not `Stopped`, whether the
     /// entry guard is alive, was dropped unacknowledged (`Retiring`, for good)
-    /// or was forgotten, so [`Self::set_origin`] refuses every state the
+    /// or was forgotten, so [`Self::update_origin`] refuses every state the
     /// member's own check refused, without reading the member under the
     /// registry lock.
     entry_outstanding: bool,
@@ -1120,17 +1124,35 @@ impl Participant {
         self.prepare_probe = Some(probe);
     }
 
-    /// Attribute this participant's later failures to `origin`. Its member
-    /// must be stopped, as before the origin moved out of the registry: this
-    /// refuses exactly when the member is not `Stopped`
-    /// (`Participant::entry_outstanding`). The refusal now panics with no lock
-    /// held, so it no longer poisons the registry mutex.
+    /// Attribute this participant's later failures to `origin`, replacing
+    /// both parts: [`Self::update_origin`] with a whole new origin.
+    #[cfg(test)]
     pub(crate) fn set_origin(&mut self, origin: impl Into<EntryOrigin>) {
+        let origin = origin.into();
+        self.update_origin(|current| *current = origin);
+    }
+
+    /// The attribution a failure this participant records would carry now.
+    #[cfg(test)]
+    pub(crate) fn origin(&self) -> &EntryOrigin {
+        &self.origin
+    }
+
+    /// Change what this participant's later failures are attributed to:
+    /// `update` is given the stored origin to change in place, so a caller
+    /// replacing one part moves it in without rebuilding (and recounting)
+    /// the other. Its member must be stopped, as before the origin moved out
+    /// of the registry: this refuses exactly when the member is not
+    /// `Stopped` (`Participant::entry_outstanding`). The refusal panics with
+    /// no lock held, so it does not poison the registry mutex, and before
+    /// `update` runs, so a refused call changes nothing and consumes nothing
+    /// `update` would have moved.
+    pub(crate) fn update_origin(&mut self, update: impl FnOnce(&mut EntryOrigin)) {
         assert!(
             !self.entry_outstanding,
             "participant origin set while an entry is outstanding"
         );
-        self.origin = origin.into();
+        update(&mut self.origin);
     }
 
     pub(crate) fn try_enter(&mut self) -> GateResult<Option<Entry<'_>>> {
@@ -1414,7 +1436,11 @@ impl Drop for RunEntry<'_> {
 }
 
 pub(crate) struct CopyAccess {
-    gate: Arc<EntryGate>,
+    /// Present until [`Self::retire_deferred_with`] moves it into the
+    /// [`CopyRetirement`] it returns, which keeps the gate alive until its
+    /// notification is delivered, as a clone did, without counting a second
+    /// reference.
+    gate: Option<Arc<EntryGate>>,
     origin: EntryOrigin,
     /// Admitted with [`EntryGate::try_copy_lazy`] or
     /// [`EntryGate::copy_blocking_lazy`]: `origin` is empty, and the issuer
@@ -1468,14 +1494,21 @@ impl CopyAccess {
             change: Some(change),
             origin: Some(std::mem::take(&mut self.origin)),
             lazy: self.lazy,
-            _gate: self.gate.clone(),
+            // Retired, so this copy's own drop does nothing more with it.
+            _gate: self.gate.take().expect("an unretired copy keeps its gate"),
         }
     }
 
     fn retire(&mut self, origin: impl FnOnce() -> EntryOrigin) -> ChangeSignal {
         assert!(!self.retired, "copy retired twice");
         {
-            let mut state = self.gate.state.lock().unwrap();
+            let mut state = self
+                .gate
+                .as_ref()
+                .expect("an unretired copy keeps its gate")
+                .state
+                .lock()
+                .unwrap();
             if std::thread::panicking() {
                 let origin = if self.lazy {
                     origin()
