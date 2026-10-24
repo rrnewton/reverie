@@ -30,6 +30,9 @@
 //! two breakpoint sites 6 bytes apart. It checks where the guest stops and
 //! reads the guest's code through `/proc/<pid>/mem`, which shows the inserted
 //! `int3` bytes that the server's `m` packet hides.
+//!
+//! The file also drives GDB's interrupt (the byte 0x03 of Ctrl-C) against a
+//! guest that never stops on its own (`fixtures/gdbstub_interrupt.c`).
 
 #![cfg(target_arch = "x86_64")]
 
@@ -40,9 +43,13 @@ use std::path::PathBuf;
 use std::sync::LazyLock;
 use std::time::Duration;
 
+use reverie::Error;
 use reverie::ExitStatus;
 use reverie::Tool;
 use reverie::process::Command;
+use reverie::syscalls::Syscall;
+use reverie::syscalls::SyscallInfo;
+use reverie::syscalls::Sysno;
 use reverie_ptrace::TracerBuilder;
 use tokio::io::AsyncReadExt;
 use tokio::io::AsyncWriteExt;
@@ -276,6 +283,30 @@ impl Remote {
         let thread = self.thread.clone();
         self.request(&format!("vCont;s:{thread}")).await
     }
+
+    /// Resumes every thread of the guest without waiting for the stop.
+    async fn resume_in_background(&mut self) {
+        let pid = self.pid;
+        self.send(&format!("vCont;c:p{pid:x}.-1")).await;
+    }
+
+    /// Sends GDB's interrupt, the byte 0x03 that GDB sends for Ctrl-C, and
+    /// returns the stop that answers it.
+    async fn interrupt(&mut self) -> String {
+        self.stream
+            .write_all(&[0x03])
+            .await
+            .expect("send the interrupt to the GDB server");
+        self.recv().await
+    }
+}
+
+/// The `p<pid>.<tid>` thread a stop reply names.
+fn stop_thread(reply: &str) -> &str {
+    reply
+        .split(';')
+        .find_map(|field| field.strip_prefix("thread:"))
+        .unwrap_or_else(|| panic!("no thread in the stop reply {reply:?}"))
 }
 
 /// The %rip, register 0x10, in a SIGTRAP stop reply.
@@ -331,6 +362,24 @@ where
     F: FnOnce(Remote) -> Fut,
     Fut: Future<Output = ()>,
 {
+    debug_to_end_with::<NoopTool, _, _>(path, name, false, client).await
+}
+
+/// Runs `path` under Reverie's GDB server and Tool `T`, with `client` as GDB,
+/// and returns how the guest ended. `sequentialized` tells the server that
+/// `T` runs one thread at a time (`TracerBuilder::sequentialized_guest`).
+async fn debug_to_end_with<T, F, Fut>(
+    path: &Path,
+    name: &str,
+    sequentialized: bool,
+    client: F,
+) -> ExitStatus
+where
+    T: Tool + Default + 'static,
+    T::GlobalState: Default,
+    F: FnOnce(Remote) -> Fut,
+    Fut: Future<Output = ()>,
+{
     let socket = std::env::temp_dir().join(format!(
         "reverie-gdbstub-{name}-{}.sock",
         std::process::id()
@@ -338,8 +387,13 @@ where
     let _ = std::fs::remove_file(&socket);
     let command = Command::new(path);
     let tracer = async {
-        TracerBuilder::<NoopTool>::new(command)
-            .gdbserver(socket.clone())
+        let builder = TracerBuilder::<T>::new(command).gdbserver(socket.clone());
+        let builder = if sequentialized {
+            builder.sequentialized_guest()
+        } else {
+            builder
+        };
+        builder
             .spawn()
             .await
             .expect("spawn the guest under the GDB server")
@@ -566,6 +620,235 @@ async fn a_guest_int3_that_gdb_passes_on_kills_the_guest() {
     .await;
     assert!(
         matches!(status, ExitStatus::Signaled(reverie::Signal::SIGTRAP, _)),
+        "{status:?}"
+    );
+}
+
+/// The interrupt guest and the address of its `reverie_stop_worker` flag.
+struct InterruptGuest {
+    path: PathBuf,
+    stop_worker: u64,
+}
+
+fn interrupt_guest() -> &'static InterruptGuest {
+    static GUEST: LazyLock<InterruptGuest> = LazyLock::new(|| {
+        let (path, addresses) =
+            build_guest("gdbstub_interrupt", &["-pthread"], &["reverie_stop_worker"]);
+        InterruptGuest {
+            path,
+            stop_worker: addresses[0],
+        }
+    });
+    &GUEST
+}
+
+/// Waits until process `pid` has one thread left.
+async fn wait_for_one_thread(pid: u32) {
+    for _ in 0..3000 {
+        let threads = std::fs::read_dir(format!("/proc/{pid}/task"))
+            .expect("list the guest's threads")
+            .count();
+        if threads == 1 {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    panic!("the guest's second thread did not exit");
+}
+
+/// Counts the threads that reached the Tool's gate (`GateTool`).
+static GATE_REACHED: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(0);
+/// Lets threads through the gate.
+static GATE: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(0);
+
+/// A Tool that holds a thread's getppid() until the test lets it through,
+/// as a Tool that runs one thread at a time holds a thread whose turn has not
+/// come: the thread waits inside the Tool's callback, and no thread runs.
+#[derive(Default)]
+struct GateTool;
+
+#[reverie::tool]
+impl Tool for GateTool {
+    type GlobalState = ();
+    type ThreadState = ();
+
+    async fn handle_syscall_event<G: reverie::Guest<Self>>(
+        &self,
+        guest: &mut G,
+        syscall: Syscall,
+    ) -> Result<i64, Error> {
+        if syscall.number() == Sysno::getppid {
+            GATE_REACHED.add_permits(1);
+            GATE.acquire()
+                .await
+                .expect("the gate is never closed")
+                .forget();
+        }
+        guest.tail_inject(syscall).await
+    }
+}
+
+/// GDB's interrupt stops a guest that never stops on its own, as Ctrl-C does
+/// natively, and GDB is told of a SIGINT (`T02`) on the stopped thread. While
+/// a thread runs, it stops at its next system call, and GDB can read the
+/// registers of the thread that waits inside the Tool. When no thread runs,
+/// because the only thread left waits inside the Tool, that thread stops where
+/// it waits, and GDB can read memory through it. Each `continue` lets the
+/// guest go on as before; the guest exits 0.
+#[tokio::test]
+async fn an_interrupt_stops_a_running_thread_or_one_that_waits_in_the_tool() {
+    let InterruptGuest { path, stop_worker } = interrupt_guest();
+    let stop_worker = *stop_worker;
+    let status =
+        debug_to_end_with::<GateTool, _, _>(path, "interrupt", true, |mut remote| async move {
+            let main = remote.thread.clone();
+            let stop = remote.resume().await;
+            let worker = stop
+                .strip_prefix("T05create:")
+                .and_then(|rest| rest.split(';').next())
+                .unwrap_or_else(|| panic!("expected a thread-creation stop, got {stop:?}"))
+                .to_owned();
+
+            // The worker makes system calls while main waits in the Tool.
+            remote.resume_in_background().await;
+            GATE_REACHED
+                .acquire()
+                .await
+                .expect("the gate count is never closed")
+                .forget();
+            let stop = remote.interrupt().await;
+            assert!(stop.starts_with("T02"), "expected a SIGINT stop: {stop:?}");
+            assert_eq!(stop_thread(&stop), worker, "the running thread stops");
+            assert_eq!(remote.request(&format!("Hg{main}")).await, "OK");
+            let regs = remote.request("g").await;
+            assert!(
+                !regs.starts_with('E'),
+                "the registers of main, which waits in the Tool: {regs:?}"
+            );
+
+            // End the worker's loop: then no thread runs.
+            assert_eq!(remote.request(&format!("Hg{worker}")).await, "OK");
+            assert_eq!(
+                remote
+                    .request(&format!("M{stop_worker:x},4:01000000"))
+                    .await,
+                "OK"
+            );
+            remote.resume_in_background().await;
+            // The worker exits within a few system calls.
+            wait_for_one_thread(remote.pid).await;
+            for interrupt in 0..2 {
+                let stop = remote.interrupt().await;
+                assert!(
+                    stop.starts_with("T02"),
+                    "interrupt {interrupt}: expected a SIGINT stop: {stop:?}"
+                );
+                assert_eq!(stop_thread(&stop), main, "main stops where it waits");
+                assert_eq!(
+                    remote.request(&format!("m{stop_worker:x},4")).await,
+                    "01000000",
+                    "memory read through the thread stopped in the Tool"
+                );
+                remote.resume_in_background().await;
+            }
+            GATE.add_permits(1);
+            assert_exited_zero(&remote.recv().await, "after the gate opened");
+        })
+        .await;
+    assert_eq!(status, ExitStatus::Exited(0));
+}
+
+/// Under a Tool that lets threads run at once, the thread that takes GDB's
+/// interrupt at its next system call freezes the others, as a breakpoint
+/// does; GDB's kill then ends the guest.
+#[tokio::test]
+async fn an_interrupt_stops_a_guest_whose_threads_run_at_once_and_kill_ends_it() {
+    let InterruptGuest { path, .. } = interrupt_guest();
+    let status = debug_to_end(path, "interrupt-parallel", |mut remote| async move {
+        let stop = remote.resume().await;
+        assert!(stop.starts_with("T05create:"), "{stop:?}");
+        for interrupt in 0..2 {
+            remote.resume_in_background().await;
+            tokio::time::sleep(Duration::from_millis(200)).await;
+            let stop = remote.interrupt().await;
+            assert!(
+                stop.starts_with("T02"),
+                "interrupt {interrupt}: expected a SIGINT stop: {stop:?}"
+            );
+            let regs = remote.request("g").await;
+            assert!(!regs.starts_with('E'), "{regs:?}");
+        }
+        let pid = remote.pid;
+        assert_eq!(remote.request(&format!("vKill;{pid:x}")).await, "OK");
+    })
+    .await;
+    assert!(
+        matches!(status, ExitStatus::Signaled(reverie::Signal::SIGKILL, _)),
+        "{status:?}"
+    );
+}
+
+/// After an interrupt's stop, GDB's step ends at the stopped thread's next
+/// stop, and GDB's `signal SIGINT` delivers the signal it was shown, whose
+/// default action ends the guest, as natively.
+#[tokio::test]
+async fn a_step_or_a_signal_from_an_interrupt_stop_is_carried_out() {
+    let InterruptGuest { path, .. } = interrupt_guest();
+    let status = debug_to_end(path, "interrupt-step", |mut remote| async move {
+        let stop = remote.resume().await;
+        assert!(stop.starts_with("T05create:"), "{stop:?}");
+        remote.resume_in_background().await;
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        let stop = remote.interrupt().await;
+        assert!(stop.starts_with("T02"), "{stop:?}");
+        let thread = stop_thread(&stop).to_owned();
+        let step = remote.request(&format!("vCont;s:{thread}")).await;
+        assert!(step.starts_with("T05"), "the step's stop: {step:?}");
+        assert_eq!(stop_thread(&step), thread, "the stepped thread stops");
+
+        remote.resume_in_background().await;
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        let stop = remote.interrupt().await;
+        assert!(stop.starts_with("T02"), "{stop:?}");
+        let thread = stop_thread(&stop).to_owned();
+        let end = remote.request(&format!("vCont;C02:{thread}")).await;
+        assert!(
+            end.starts_with("X02"),
+            "the guest dies of the SIGINT gdb passed on, without a second stop: {end:?}"
+        );
+    })
+    .await;
+    assert!(
+        matches!(status, ExitStatus::Signaled(reverie::Signal::SIGINT, _)),
+        "{status:?}"
+    );
+}
+
+/// A guest whose only thread blocks in the kernel makes no stop of its own.
+/// Under a Tool that lets threads run at once, GDB's interrupt stops it all
+/// the same, as gdbserver's SIGINT does natively, and `continue` lets it
+/// block again: its pause() does not return.
+#[tokio::test]
+async fn an_interrupt_stops_a_guest_blocked_in_the_kernel() {
+    static GUEST: LazyLock<PathBuf> = LazyLock::new(|| build_guest("gdbstub_blocked", &[], &[]).0);
+    let status = debug_to_end(&GUEST, "interrupt-blocked", |mut remote| async move {
+        for interrupt in 0..2 {
+            remote.resume_in_background().await;
+            tokio::time::sleep(Duration::from_millis(200)).await;
+            let stop = remote.interrupt().await;
+            assert!(
+                stop.starts_with("T02"),
+                "interrupt {interrupt}: expected a SIGINT stop: {stop:?}"
+            );
+            let regs = remote.request("g").await;
+            assert!(!regs.starts_with('E'), "{regs:?}");
+        }
+        let pid = remote.pid;
+        assert_eq!(remote.request(&format!("vKill;{pid:x}")).await, "OK");
+    })
+    .await;
+    assert!(
+        matches!(status, ExitStatus::Signaled(reverie::Signal::SIGKILL, _)),
         "{status:?}"
     );
 }

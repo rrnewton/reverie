@@ -10,11 +10,13 @@ use std::collections::BTreeMap;
 use std::os::fd::BorrowedFd;
 use std::os::fd::IntoRawFd;
 use std::sync::Arc;
+use std::time::Duration;
 
 use bytes::Bytes;
 use bytes::BytesMut;
 use futures::future::FutureExt;
 use futures::stream::FuturesUnordered;
+use futures::stream::Stream;
 use futures::stream::StreamExt;
 use nix::fcntl;
 use nix::fcntl::OFlag;
@@ -37,10 +39,12 @@ use super::Error;
 use super::GdbRequest;
 use super::Inferior;
 use super::InferiorThreadId;
+use super::Interrupt;
 use super::Packet;
 use super::ResumeInferior;
 use super::StoppedInferior;
 use super::ThreadState;
+use super::ThreadView;
 use super::commands;
 use super::commands::*;
 use super::regs::CoreRegs;
@@ -50,6 +54,17 @@ use super::response::*;
 use super::signals::PassedSignals;
 
 type BoxWriter = Box<dyn AsyncWrite + Unpin + Send + Sync + 'static>;
+
+/// How often the session looks again for a thread that can take gdb's
+/// interrupt where it waits (`Session::next_stop`).
+const INTERRUPT_CHECK: Duration = Duration::from_millis(10);
+
+/// How long gdb's interrupt waits for a thread's next stop before, under a
+/// Tool that runs one thread at a time, a thread waiting inside a Tool
+/// callback may take it where it waits, whether or not another thread still
+/// runs, or, under any other Tool, every thread is sent SIGSTOP to make it
+/// stop (`Session::next_stop`).
+pub(super) const INTERRUPT_IN_PLACE_AFTER: Duration = Duration::from_secs(1);
 
 /// Target triple reported to LLDB via `qHostInfo`/`qProcessInfo`.
 #[cfg(target_arch = "x86_64")]
@@ -96,9 +111,17 @@ pub struct Session {
     /// shared with the traced threads, which deliver them unreported.
     pub passed_signals: PassedSignals,
 
+    /// gdb's interrupt, armed while gdb waits for a stop and shared with the
+    /// packet relay, which raises it, and the traced threads, which take it.
+    pub interrupt: Interrupt,
+
     /// Reporters to tell once the reply now being written reaches gdb
     /// (`StoppedInferior::replied`).
     replied: Vec<oneshot::Sender<()>>,
+
+    /// How many commands gdb has sent, which numbers the one now handled, as
+    /// the packet relay numbers them (`Interrupt::arm`).
+    commands: u64,
 
     /// Channel to report stop event.
     // NB: even though we could use a single `gdb_stop_rx` to receive all
@@ -249,7 +272,9 @@ impl Session {
             current: None,
             stopped: None,
             replied: Vec::new(),
+            commands: 0,
             passed_signals: PassedSignals::default(),
+            interrupt: Interrupt::default(),
             gdb_stop_rx: Some(gdb_stop_rx),
         }
     }
@@ -339,8 +364,95 @@ impl Session {
         Ok(())
     }
 
+    /// The next stop in `waiting`, the stops of the threads of `views`.
+    /// Meanwhile, if gdb interrupts the guest, a running thread takes the
+    /// interrupt at its next stop. If none has after `INTERRUPT_CHECK`, and no
+    /// thread runs (each waits inside a Tool callback, such as threads that
+    /// all sleep or block, or waits for gdb), one that waits inside a callback
+    /// may take it where it waits; after `INTERRUPT_IN_PLACE_AFTER`, one may
+    /// whatever the others do. Under a Tool that lets threads run at once,
+    /// which none waits for, every thread is then sent SIGSTOP: a thread that
+    /// spins or blocks in the kernel makes no stop of its own.
+    async fn next_stop<S: Stream + Unpin>(
+        &self,
+        waiting: &mut S,
+        views: &BTreeMap<Pid, (Pid, ThreadView)>,
+    ) -> Option<S::Item> {
+        self.interrupt.wait_for(views.keys().copied());
+        let allow_in_place = async {
+            // A request taken while gdb held the guest stopped, by a thread
+            // whose stop gdb has yet to resume, is not one to decide; the
+            // next request after that thread's resume is.
+            loop {
+                self.interrupt.requested().await;
+                let mut waited = Duration::ZERO;
+                loop {
+                    // A thread that runs reaches its next stop meanwhile, as
+                    // does one that waits only briefly in the Tool.
+                    tokio::time::sleep(INTERRUPT_CHECK).await;
+                    waited += INTERRUPT_CHECK;
+                    if !self.interrupt.is_requested() {
+                        break;
+                    }
+                    let none_runs = views
+                        .values()
+                        .all(|(_, view)| !matches!(view.state(), ThreadState::Running));
+                    let fallback = waited >= INTERRUPT_IN_PLACE_AFTER;
+                    if self.interrupt.sequentialized() && (none_runs || fallback) {
+                        tracing::debug!(
+                            none_runs,
+                            ?waited,
+                            "gdb's interrupt may be taken where a thread waits"
+                        );
+                        self.interrupt.allow_in_place();
+                        break;
+                    }
+                    if !self.interrupt.sequentialized() && fallback {
+                        tracing::debug!(
+                            ?waited,
+                            "stopping the guest's threads for gdb's interrupt"
+                        );
+                        for (tid, (pid, _)) in views {
+                            self.interrupt.kick(*tid);
+                            // SAFETY: a plain syscall with integer arguments.
+                            let _ = unsafe {
+                                libc::syscall(
+                                    libc::SYS_tgkill,
+                                    pid.as_raw(),
+                                    tid.as_raw(),
+                                    libc::SIGSTOP,
+                                )
+                            };
+                        }
+                        break;
+                    }
+                }
+                self.interrupt.settled().await;
+            }
+        };
+        tokio::pin!(allow_in_place);
+        tokio::select! {
+            biased;
+            stop = waiting.next() => stop,
+            _ = &mut allow_in_place => unreachable!("deciding never ends"),
+        }
+    }
+
     /// handle vCont resume
     async fn vcont_resume(
+        &self,
+        threadid: ThreadId,
+        resume: ResumeInferior,
+    ) -> Result<HandleVcontResume, Error> {
+        // An interrupt may come while gdb waits for the stop that answers
+        // this resume. Whatever stop gdb gets answers it.
+        self.interrupt.arm(self.commands);
+        let resumed = self.vcont_resume_until_stop(threadid, resume).await;
+        self.interrupt.disarm();
+        resumed
+    }
+
+    async fn vcont_resume_until_stop(
         &self,
         threadid: ThreadId,
         resume: ResumeInferior,
@@ -378,18 +490,24 @@ impl Session {
 
         let mut stops = StopCollector::default();
         {
+            // The threads waited for, where each is, to tell whether one runs
+            // when gdb interrupts the guest.
+            let mut views = BTreeMap::new();
             let mut inferiors_to_wait = FuturesUnordered::new();
             for inferior in inferiors.values_mut() {
                 if to_resume.contains(&inferior.gettid()) {
                     inferior.notify_resume(resume).await?;
                     let id = inferior.id;
+                    views.insert(id.tid, (id.pid, inferior.view.clone()));
                     inferiors_to_wait.push(inferior.wait_for_stop().map(move |stop| (id, stop)));
                 }
             }
-            while let Some((id, stop)) = inferiors_to_wait.next().await {
+            while let Some((id, stop)) = self.next_stop(&mut inferiors_to_wait, &views).await {
                 if stops.take(id, stop)? {
                     break;
                 }
+                // Gone, or exited: it will not run again.
+                views.remove(&id.tid);
             }
         }
         if stops.reason.is_none() {
@@ -398,17 +516,20 @@ impl Session {
             // group. The process's exit then comes from a thread of it that an
             // earlier resume left running, from gdb's view stopped, such as a
             // leader that reports its exit last.
+            let mut views = BTreeMap::new();
             let mut inferiors_to_wait = FuturesUnordered::new();
             for inferior in inferiors.values_mut() {
                 if inferior.resume_pending && processes.contains(&inferior.getpid()) {
                     let id = inferior.id;
+                    views.insert(id.tid, (id.pid, inferior.view.clone()));
                     inferiors_to_wait.push(inferior.wait_for_stop().map(move |stop| (id, stop)));
                 }
             }
-            while let Some((id, stop)) = inferiors_to_wait.next().await {
+            while let Some((id, stop)) = self.next_stop(&mut inferiors_to_wait, &views).await {
                 if stops.take(id, stop)? {
                     break;
                 }
+                views.remove(&id.tid);
             }
         }
         let StopCollector {
@@ -900,6 +1021,7 @@ impl Session {
                 // handle interrupt
                 Packet::Interrupt => {}
                 Packet::Command(cmd) => {
+                    self.commands += 1;
                     tx_buf.clear();
                     let resp = self.handle_command(cmd, tx_buf.clone()).await?;
                     self.stream_tx

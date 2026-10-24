@@ -35,6 +35,10 @@ use futures::future::Either;
 use futures::future::Future;
 use futures::future::FutureExt;
 use futures::future::TryFutureExt;
+use gdb_stop::GdbPorts;
+use gdb_stop::GdbTracee;
+use gdb_stop::ParkedForGdb;
+use gdb_stop::SentSignal;
 use nix::sys::mman::ProtFlags;
 use nix::sys::signal::Signal;
 use reverie::BackendFailure;
@@ -86,10 +90,10 @@ use crate::error::Error;
 use crate::error::TraceResultExt;
 use crate::failure::PtraceCleanupFailure;
 use crate::failure::PtraceRunFailure;
-use crate::gdbstub::BreakpointType;
 use crate::gdbstub::CoreRegs;
 use crate::gdbstub::GdbRequest;
 use crate::gdbstub::GdbServer;
+use crate::gdbstub::Interrupt;
 use crate::gdbstub::PassedSignals;
 use crate::gdbstub::ResumeAction;
 use crate::gdbstub::ResumeInferior;
@@ -153,6 +157,7 @@ fn observe_ready_thread_state<T: Tool>(
         })
 }
 
+mod gdb_stop;
 mod host_linux;
 
 #[cfg(test)]
@@ -4020,15 +4025,23 @@ pub struct TracedTask<L: Tool> {
     /// GDB resume request, gdbstub is the sender
     gdb_resume_tx: Option<mpsc::Sender<ResumeInferior>>,
 
-    /// GDB resume request, reverie is the receiver
-    gdb_resume_rx: Option<mpsc::Receiver<ResumeInferior>>,
-
     /// Request sent by gdb. the tx channel is used by gdb instead of
     /// `TracedTask`.
     gdb_request_tx: Option<mpsc::Sender<GdbRequest>>,
 
-    /// Receiver to receive gdb request.
-    gdb_request_rx: Option<mpsc::Receiver<GdbRequest>>,
+    /// Where gdb's resume and requests reach this thread in a gdb stop.
+    gdb_ports: GdbPorts,
+
+    /// gdb's interrupt, which this thread takes at a stop it makes if it is
+    /// the first to get there (`interrupt_point`).
+    gdb_interrupt: Interrupt,
+
+    /// gdb stepped this thread from a stop made before the stop it stopped at
+    /// was handled (`stop_for_gdb_at`): the step ends at its next stop.
+    gdb_step_pending: bool,
+
+    /// The signal gdb resumed this thread with from such a stop, once sent.
+    gdb_sent_signal: SentSignal,
 
     /// Wait to be resumed when in sigstop due to all stop mode.
     exit_suspend_tx: Option<mpsc::Sender<Pid>>,
@@ -4151,6 +4164,10 @@ impl<L: Tool> TracedTask<L> {
             .as_ref()
             .map(|server| server.passed_signals.clone())
             .unwrap_or_default();
+        let gdb_interrupt = gdbserver
+            .as_ref()
+            .map(|server| server.interrupt.clone())
+            .unwrap_or_default();
         let (gdb_request_tx, gdb_request_rx) = mpsc::channel(1);
         let (exit_suspend_tx, exit_suspend_rx) = mpsc::channel(16);
         let sigtrap_table = global_state.sigtrap_tables.lock().unwrap().copy(tid, None);
@@ -4227,13 +4244,15 @@ impl<L: Tool> TracedTask<L> {
             attached_by_gdb: false,
             resumed_by_gdb: None,
             gdb_resume_tx: Some(gdb_resume_tx),
-            gdb_resume_rx: Some(gdb_resume_rx),
             breakpoints: Default::default(),
             gdb_view: ThreadView::default(),
             gdb_passed_signals: gdb_passed_signals.clone(),
             suspended: Arc::new(AtomicBool::new(false)),
             gdb_request_tx: Some(gdb_request_tx),
-            gdb_request_rx: Some(gdb_request_rx),
+            gdb_ports: GdbPorts::new(gdb_resume_rx, gdb_request_rx),
+            gdb_interrupt,
+            gdb_step_pending: false,
+            gdb_sent_signal: SentSignal::default(),
             exit_suspend_tx: Some(exit_suspend_tx),
             exit_suspend_rx: Some(exit_suspend_rx),
             needs_step_over: Arc::new(Mutex::new(())),
@@ -4328,13 +4347,15 @@ impl<L: Tool> TracedTask<L> {
             attached_by_gdb: self.attached_by_gdb,
             resumed_by_gdb: self.resumed_by_gdb,
             gdb_resume_tx: Some(gdb_resume_tx),
-            gdb_resume_rx: Some(gdb_resume_rx),
             breakpoints: self.breakpoints.clone(),
             gdb_view: ThreadView::default(),
             gdb_passed_signals: self.gdb_passed_signals.clone(),
             suspended: Arc::new(AtomicBool::new(false)),
             gdb_request_tx: Some(gdb_request_tx),
-            gdb_request_rx: Some(gdb_request_rx),
+            gdb_ports: GdbPorts::new(gdb_resume_rx, gdb_request_rx),
+            gdb_interrupt: self.gdb_interrupt.clone(),
+            gdb_step_pending: false,
+            gdb_sent_signal: SentSignal::default(),
             exit_suspend_tx: Some(exit_suspend_tx),
             exit_suspend_rx: Some(exit_suspend_rx),
             needs_step_over: self.needs_step_over.clone(),
@@ -4448,7 +4469,6 @@ impl<L: Tool> TracedTask<L> {
             attached_by_gdb: self.attached_by_gdb,
             resumed_by_gdb: None,
             gdb_resume_tx: Some(gdb_resume_tx),
-            gdb_resume_rx: Some(gdb_resume_rx),
             breakpoints: Arc::new(StdMutex::new(
                 self.breakpoints
                     .lock()
@@ -4459,7 +4479,10 @@ impl<L: Tool> TracedTask<L> {
             gdb_passed_signals: self.gdb_passed_signals.clone(),
             suspended: Arc::new(AtomicBool::new(false)),
             gdb_request_tx: Some(gdb_request_tx),
-            gdb_request_rx: Some(gdb_request_rx),
+            gdb_ports: GdbPorts::new(gdb_resume_rx, gdb_request_rx),
+            gdb_interrupt: self.gdb_interrupt.clone(),
+            gdb_step_pending: false,
+            gdb_sent_signal: SentSignal::default(),
             exit_suspend_tx: Some(exit_suspend_tx),
             exit_suspend_rx: Some(exit_suspend_rx),
             needs_step_over: Arc::new(Mutex::new(())),
@@ -5527,13 +5550,15 @@ impl<L: Tool + 'static> TracedTask<L> {
     ) -> Result<libc::user_regs_struct, TraceError> {
         let eax = regs.rax as u32;
         let ecx = regs.rcx as u32;
-        let parked = self.park_for_gdb();
-        let result = self
-            .process_state
-            .clone()
-            .handle_cpuid_event(self, eax, ecx)
-            .await;
-        drop(parked);
+        let mut parked = self.park_for_gdb();
+        let result = ParkedForGdb::hold(
+            &mut parked,
+            self.process_state
+                .clone()
+                .handle_cpuid_event(self, eax, ecx),
+        )
+        .await;
+        self.unpark(parked);
         let cpuid = self
             .ordinary_callback_errno("ptrace cpuid callback", result)
             .await?;
@@ -5553,13 +5578,13 @@ impl<L: Tool + 'static> TracedTask<L> {
         mut regs: libc::user_regs_struct,
         request: Rdtsc,
     ) -> Result<libc::user_regs_struct, TraceError> {
-        let parked = self.park_for_gdb();
-        let result = self
-            .process_state
-            .clone()
-            .handle_rdtsc_event(self, request)
-            .await;
-        drop(parked);
+        let mut parked = self.park_for_gdb();
+        let result = ParkedForGdb::hold(
+            &mut parked,
+            self.process_state.clone().handle_rdtsc_event(self, request),
+        )
+        .await;
+        self.unpark(parked);
         let retval = self
             .ordinary_callback_errno("ptrace rdtsc callback", result)
             .await?;
@@ -5786,9 +5811,13 @@ impl<L: Tool + 'static> TracedTask<L> {
         } else {
             self.apply_sigtrap_repair(task).await?
         };
-        let parked = self.park_for_gdb();
-        self.process_state.clone().handle_timer_event(self).await;
-        drop(parked);
+        let mut parked = self.park_for_gdb();
+        ParkedForGdb::hold(
+            &mut parked,
+            self.process_state.clone().handle_timer_event(self),
+        )
+        .await;
+        self.unpark(parked);
         self.ordinary_trace_continuation()?;
         self.timer.finalize_requests();
         Ok((true, task))
@@ -5823,6 +5852,11 @@ impl<L: Tool + 'static> TracedTask<L> {
     /// Postconditions:
     ///  * guest thread may or may not be stopped, depending on value of GuestNext
     async fn handle_stop_event(&mut self, stopped: Stopped, event: Event) -> Result<Wait, Error> {
+        // gdb's interrupt stops the guest at the first stop a thread makes,
+        // before the stop is handled.
+        self.interrupt_point(&stopped, &event)
+            .await
+            .tracee_context(self.tid(), "stop for gdb's interrupt")?;
         // An original clone the last resume ran made a child Reverie traces
         // only if this stop is its new-task event; otherwise (no child, or one
         // made with CLONE_UNTRACED) the table it may share is marked
@@ -6033,15 +6067,18 @@ impl<L: Tool + 'static> TracedTask<L> {
             self.pending_syscall = Some((nr, args));
 
             self.in_syscall_callback = true;
-            let parked = self.park_for_gdb();
-            let retval = cancellable(self.cancel_handler.clone(), async {
-                self.process_state
-                    .clone()
-                    .handle_syscall_event(self, syscall)
-                    .await
-            })
+            let mut parked = self.park_for_gdb();
+            let retval = ParkedForGdb::hold(
+                &mut parked,
+                cancellable(self.cancel_handler.clone(), async {
+                    self.process_state
+                        .clone()
+                        .handle_syscall_event(self, syscall)
+                        .await
+                }),
+            )
             .await;
-            drop(parked);
+            self.unpark(parked);
             self.in_syscall_callback = false;
 
             let retval = match retval {
@@ -6211,7 +6248,7 @@ impl<L: Tool + 'static> TracedTask<L> {
         debug_assert!(!resumed_by_gdb_step);
         if let Some((suspended_flag, stop_tx)) = self.get_stop_tx().await {
             // Frozen for another thread's gdb stop: let gdb inspect this one.
-            let _parked = self.park_for_gdb();
+            let _parked = self.publish_registers_for_gdb();
             let notify_stop_tx = stop_tx
                 .send((
                     task.pid(),
@@ -6837,11 +6874,14 @@ impl<L: Tool + 'static> TracedTask<L> {
         let outer_guest_block =
             std::mem::replace(&mut self.signal_callback_guest_restart_block, false);
         let outer_held = std::mem::replace(&mut self.in_held_signal_callback, held);
-        let parked = self.park_for_gdb();
+        let mut parked = self.park_for_gdb();
         let result = if held {
             let outer_execed = std::mem::replace(&mut self.signal_callback_execed, false);
-            let result =
-                cancellable(self.cancel_handler.clone(), self.tool_signal_verdict(sig)).await;
+            let result = ParkedForGdb::hold(
+                &mut parked,
+                cancellable(self.cancel_handler.clone(), self.tool_signal_verdict(sig)),
+            )
+            .await;
             let execed = self.signal_callback_execed;
             self.signal_callback_execed = outer_execed || execed;
             // A callback that executed a program cannot ask for the signal:
@@ -6853,9 +6893,9 @@ impl<L: Tool + 'static> TracedTask<L> {
             // none.
             result.unwrap_or(Ok((!execed).then_some(sig)))
         } else {
-            self.tool_signal_verdict(sig).await
+            ParkedForGdb::hold(&mut parked, self.tool_signal_verdict(sig)).await
         };
-        drop(parked);
+        self.unpark(parked);
         self.in_signal_callback = outer;
         self.reported_signal = outer_reported;
         let replacement = std::mem::replace(&mut self.replacement_signal_info, outer_replacement);
@@ -7037,9 +7077,14 @@ impl<L: Tool + 'static> TracedTask<L> {
                     .report_signal(sig, false, taken.map(|taken| taken.bytes))
                     .await?;
                 let mut signal = verdict.signal;
+                // gdb chose this signal when it resumed the thread from a stop
+                // made before a stop was handled (`stop_for_gdb_at`), and is
+                // not shown it again.
+                let chosen_by_gdb = self.gdb_sent_signal.take_if(sig);
                 // A signal the Tool delivers stops for gdb first, which then
                 // decides what the guest gets.
                 if let Some(delivered) = signal
+                    && !chosen_by_gdb
                     && self.stops_for_gdb_at(delivered)
                 {
                     match self.signal_stop_for_gdb(&task, delivered).await? {
@@ -7300,7 +7345,9 @@ impl<L: Tool + 'static> TracedTask<L> {
         if initial_command {
             self.timer.finish_initial_exec();
         }
-        let parked = self.park_for_gdb();
+        // gdb is shown the new image only once it is set up, below: the
+        // thread does not stop for gdb's interrupt in this callback.
+        let parked = self.publish_registers_for_gdb();
         let result = self.process_state.clone().handle_post_exec(self).await;
         drop(parked);
         self.ordinary_callback_errno("ptrace post-exec callback", result)
@@ -7588,15 +7635,18 @@ impl<L: Tool + 'static> TracedTask<L> {
             self.pending_syscall = Some((nr, args));
 
             self.in_syscall_callback = true;
-            let parked = self.park_for_gdb();
-            let retval = cancellable(self.cancel_handler.clone(), async {
-                self.process_state
-                    .clone()
-                    .handle_syscall_event(self, syscall)
-                    .await
-            })
+            let mut parked = self.park_for_gdb();
+            let retval = ParkedForGdb::hold(
+                &mut parked,
+                cancellable(self.cancel_handler.clone(), async {
+                    self.process_state
+                        .clone()
+                        .handle_syscall_event(self, syscall)
+                        .await
+                }),
+            )
             .await;
-            drop(parked);
+            self.unpark(parked);
             self.in_syscall_callback = false;
 
             let retval = match retval {
@@ -8384,12 +8434,15 @@ impl<L: Tool + 'static> TracedTask<L> {
     async fn run_loop_internal(&mut self, task: Stopped) -> Result<ExitStatus, Error> {
         // This is the beginning of the life of the guest. Allow the tool to
         // inject syscalls as soon as the thread starts.
-        let parked = self.park_for_gdb();
-        let started = cancellable(self.cancel_handler.clone(), async {
-            self.process_state.clone().handle_thread_start(self).await
-        })
+        let mut parked = self.park_for_gdb();
+        let started = ParkedForGdb::hold(
+            &mut parked,
+            cancellable(self.cancel_handler.clone(), async {
+                self.process_state.clone().handle_thread_start(self).await
+            }),
+        )
         .await;
-        drop(parked);
+        self.unpark(parked);
         match started {
             Some(Ok(())) => self.observe_ready_thread_state()?,
             Some(Err(err)) => {
@@ -12722,23 +12775,188 @@ impl<L: Tool + 'static> TracedTask<L> {
         }
     }
 
-    /// Publishes this thread's registers to gdb while a tool callback holds the
-    /// thread, until the returned guard drops. A tool that sequentializes threads
-    /// keeps them in callbacks while another thread is in a gdb stop, where they
-    /// cannot answer gdb themselves. Costs nothing unless gdb is attached.
-    fn park_for_gdb(&self) -> Option<ThreadStateGuard> {
+    /// Publishes this thread's registers to gdb while it is held, until the
+    /// returned guard drops. A thread held by a Tool callback or for another
+    /// thread's gdb stop cannot answer gdb itself. Costs nothing unless gdb is
+    /// attached.
+    fn publish_registers_for_gdb(&self) -> Option<ThreadStateGuard> {
         if !self.attached_by_gdb {
             return None;
         }
         // A thread whose registers cannot be read shows gdb as running.
-        let regs = self.read_registers().ok()?;
+        let task = self.assume_stopped();
+        let regs = CoreRegs::from_parts(task.getregs().ok()?, task.getfpregs().ok()?);
         Some(self.gdb_view.enter(ThreadState::Parked(Box::new(regs))))
     }
 
-    async fn notify_gdb_stop(&self, reason: StopReason) -> Result<(), TraceError> {
+    /// Parks this thread for a Tool callback, which holds it until it returns:
+    /// the thread publishes its registers to gdb, and can stop for gdb's
+    /// interrupt (`ParkedForGdb::hold`). A tool that sequentializes threads
+    /// keeps them in callbacks while another thread is in a gdb stop, where they
+    /// cannot answer gdb themselves. Costs nothing unless gdb is attached.
+    /// Undone by `unpark`.
+    fn park_for_gdb(&self) -> Option<ParkedForGdb> {
+        if !self.attached_by_gdb {
+            return None;
+        }
+        // A thread whose registers cannot be read shows gdb as running.
+        let task = self.assume_stopped();
+        let regs = task.getregs().ok()?;
+        let core_regs = CoreRegs::from_parts(regs, task.getfpregs().ok()?);
+        let parked = self
+            .gdb_view
+            .enter(ThreadState::Parked(Box::new(core_regs.clone())));
+        Some(ParkedForGdb {
+            tid: self.tid(),
+            pid: self.pid(),
+            task,
+            regs,
+            core_regs,
+            breakpoints: self.breakpoints.clone(),
+            view: self.gdb_view.clone(),
+            ports: self.gdb_ports.clone(),
+            stop_tx: self.gdb_stop_tx.clone(),
+            request_tx: self.gdb_request_tx.clone(),
+            resume_tx: self.gdb_resume_tx.clone(),
+            interrupt: self.gdb_interrupt.clone(),
+            sent_signal: self.gdb_sent_signal.clone(),
+            sequentialized: *self.global_state.sequentialized_guest,
+            resumed: None,
+            _parked: parked,
+        })
+    }
+
+    /// Ends a park (`park_for_gdb`) once its callback has returned, applying the
+    /// resume gdb chose if the thread stopped for gdb there. Its signal was
+    /// sent then: a kill cannot wait for a callback that may never return.
+    fn unpark(&mut self, parked: Option<ParkedForGdb>) {
+        if let Some(parked) = parked
+            && let Some((resume, released_by_session)) = parked.resumed
+        {
+            self.apply_resume_from_gdb_stop(resume, released_by_session, parked.tid, false);
+        }
+    }
+
+    /// Where this thread, at a ptrace stop it has yet to handle, stops for gdb's
+    /// interrupt if it is the first thread to get to such a point since gdb sent
+    /// it. The guest then goes on from this stop as it would have without the
+    /// interrupt: the stop is one the thread made anyway, and it is handled
+    /// after gdb resumes the thread. While another thread is stopped for the
+    /// interrupt, a thread of a guest that the Tool runs one thread at a time
+    /// holds here until gdb resumes the guest; otherwise the thread stopped for
+    /// it froze the others (`freeze_all`). A step gdb made from such a stop
+    /// ends here too (`gdb_step_pending`).
+    ///
+    /// Not at a SIGTRAP or an exec, which their own handling reports to gdb:
+    /// it tells a breakpoint from Reverie's own traps, and shows gdb the new
+    /// image only once it is set up. Nor at a SIGSTOP, another thread's freeze
+    /// or the guest's own, unless it is the session's (`Interrupt::kick`).
+    async fn interrupt_point(&mut self, task: &Stopped, event: &Event) -> Result<(), TraceError> {
+        if !self.attached_by_gdb || matches!(event, Event::Exec(_) | Event::Signal(Signal::SIGTRAP))
+        {
+            return Ok(());
+        }
+        if *event == Event::Signal(Signal::SIGSTOP) && !self.gdb_interrupt.take_kick(self.tid()) {
+            return Ok(());
+        }
+        if std::mem::take(&mut self.gdb_step_pending) {
+            return self.stop_for_gdb_at(task, Signal::SIGTRAP).await;
+        }
+        if self.gdb_interrupt.take(self.tid()) {
+            tracing::debug!(tid = %self.tid(), ?event, "gdb's interrupt taken at a ptrace stop");
+            let stopped = self.stop_for_gdb_at(task, Signal::SIGINT).await;
+            self.gdb_interrupt.release();
+            stopped
+        } else if self.gdb_interrupt.is_taken() && *self.global_state.sequentialized_guest {
+            tracing::debug!(tid = %self.tid(), ?event, "holding at a ptrace stop for gdb's interrupt");
+            let _parked = self.publish_registers_for_gdb();
+            self.gdb_interrupt.released().await;
+            Ok(())
+        } else {
+            Ok(())
+        }
+    }
+
+    /// Reports `sig` as this thread's stop at `task`, a ptrace stop it has yet
+    /// to handle, freezes the other threads unless the Tool runs one at a time,
+    /// and waits for gdb's resume. gdb sees the thread's registers but may not
+    /// change them: the stop is still to be handled. A thread that another
+    /// thread is freezing counts as frozen, as at a breakpoint
+    /// (`resume_from_swbreak`).
+    async fn stop_for_gdb_at(&mut self, task: &Stopped, sig: Signal) -> Result<(), TraceError> {
+        let regs = task.getregs()?;
+        let shown = CoreRegs::from_parts(regs, task.getfpregs()?);
+        let was_suspended = self.suspended.swap(true, Ordering::SeqCst);
+        if let Some((suspended, stop_tx)) = self.get_stop_tx().await {
+            let frozen = Suspended {
+                waker: None,
+                suspended,
+            };
+            let _ = stop_tx.send((self.tid(), frozen)).await;
+        }
+        let stopped = self
+            .notify_gdb_stop(StopReason::stopped(
+                task.pid(),
+                self.pid(),
+                StopEvent::Signal(sig.into()),
+                regs.into(),
+            ))
+            .await;
+        let resumed = match stopped {
+            Ok(()) => {
+                self.freeze_all().await?;
+                let resumed = self.serve_gdb_stop(Some(&shown)).await;
+                self.thaw_all().await?;
+                resumed
+            }
+            Err(error) => Err(error),
+        };
+        if !was_suspended {
+            self.suspended.store(false, Ordering::SeqCst);
+        }
+        let (resume, released_by_session) = resumed?;
+        self.apply_resume_from_gdb_stop(resume, released_by_session, task.pid(), true);
+        Ok(())
+    }
+
+    /// Applies gdb's resume from a stop made before the thread's stop was
+    /// handled, or inside a Tool callback (`stop_for_gdb_at`,
+    /// `ParkedForGdb`). The thread goes on with what it was doing, so a step
+    /// ends at its next stop (`gdb_step_pending`). The signal gdb resumed it
+    /// with is sent to it here if `send` (a park sends it itself, as soon as
+    /// gdb resumes it), and its delivery is not reported to gdb again
+    /// (`SentSignal`).
+    fn apply_resume_from_gdb_stop(
+        &mut self,
+        resume: Option<ResumeInferior>,
+        released_by_session: bool,
+        tid: Pid,
+        send: bool,
+    ) {
+        let stepped = resume
+            .is_some_and(|resume| !resume.detach && matches!(resume.action, ResumeAction::Step(_)));
+        let recorded = resume.map(|resume| ResumeInferior {
+            action: if stepped {
+                ResumeAction::Continue(None)
+            } else {
+                resume.action
+            },
+            ..resume
+        });
+        self.note_gdb_resume(recorded, released_by_session);
+        self.gdb_step_pending = stepped && self.attached_by_gdb;
+        if send && let Some(sig) = gdb_stop::signal_after_interrupt(resume) {
+            gdb_stop::send_signal(self.pid(), tid, sig);
+            self.gdb_sent_signal.set(sig);
+        }
+    }
+
+    async fn notify_gdb_stop(&mut self, reason: StopReason) -> Result<(), TraceError> {
         if !self.attached_by_gdb {
             return Ok(());
         }
+        // Any stop gdb is told of ends a step it made (`gdb_step_pending`).
+        self.gdb_step_pending = false;
 
         if let Some(stop_tx) = self.gdb_stop_tx.as_ref() {
             let request_tx = self.gdb_request_tx.clone();
@@ -12773,41 +12991,6 @@ impl<L: Tool + 'static> TracedTask<L> {
             }
         }
         Ok(())
-    }
-
-    async fn handle_gdb_request(&mut self, request: Option<GdbRequest>) {
-        if let Some(request) = request {
-            match request {
-                GdbRequest::SetBreakpoint(bkpt, reply_tx) => {
-                    if bkpt.ty == BreakpointType::Software {
-                        let result = self.add_breakpoint(bkpt.addr).await;
-                        let _ = reply_tx.send(result);
-                    }
-                }
-                GdbRequest::RemoveBreakpoint(bkpt, reply_tx) => {
-                    if bkpt.ty == BreakpointType::Software {
-                        let result = self.remove_breakpoint(bkpt.addr).await;
-                        let _ = reply_tx.send(result);
-                    }
-                }
-                GdbRequest::ReadInferiorMemory(addr, length, reply_tx) => {
-                    let result = self.read_inferior_memory(addr, length);
-                    let _ = reply_tx.send(result);
-                }
-                GdbRequest::WriteInferiorMemory(addr, length, data, reply_tx) => {
-                    let result = self.write_inferior_memory(addr, length, data);
-                    let _ = reply_tx.send(result);
-                }
-                GdbRequest::ReadRegisters(reply_tx) => {
-                    let result = self.read_registers();
-                    let _ = reply_tx.send(result);
-                }
-                GdbRequest::WriteRegisters(core_regs, reply_tx) => {
-                    let result = self.write_registers(core_regs);
-                    let _ = reply_tx.send(result);
-                }
-            }
-        }
     }
 
     async fn handle_gdb_resume(
@@ -12872,51 +13055,31 @@ impl<L: Tool + 'static> TracedTask<L> {
     /// Waits in a gdb stop, answering gdb's requests, until gdb resumes this
     /// thread. Returns gdb's resume, `None` if the resume channel closed, and
     /// whether the session let the thread go without one, in which case the
-    /// resume is a detach.
+    /// resume is a detach (`gdb_stop::serve_gdb_stop`).
     async fn wait_for_gdb_resume(&mut self) -> Result<(Option<ResumeInferior>, bool), TraceError> {
-        let mut resume_rx = self.gdb_resume_rx.take().ok_or(Errno::EIO)?;
-        let mut gdb_request_rx = self.gdb_request_rx.take().ok_or(Errno::EIO)?;
+        self.serve_gdb_stop(None).await
+    }
+
+    /// `wait_for_gdb_resume`, showing gdb `shown` as the thread's registers,
+    /// which gdb may then not change, if given.
+    async fn serve_gdb_stop(
+        &mut self,
+        shown: Option<&CoreRegs>,
+    ) -> Result<(Option<ResumeInferior>, bool), TraceError> {
+        let mut ports = self.gdb_ports.take().ok_or(Errno::EIO)?;
         let answering = self.gdb_view.enter(ThreadState::InGdbStop);
-
-        let mut resume_future = Box::pin(resume_rx.recv());
-        // The session drops this thread's stop channel once gdb has let the
-        // thread go: at a detach or a kill, which send a resume only to the
-        // threads whose stops gdb has seen, and when gdb disconnects. No
-        // resume comes after that, so the thread resumes as a detach resumes
-        // it, whether it was waiting here already or arrives later.
-        let stop_tx = self.gdb_stop_tx.clone();
-        let mut released = Box::pin(async move {
-            match stop_tx {
-                Some(stop_tx) => stop_tx.closed().await,
-                None => future::pending().await,
-            }
-        });
-
-        let result = loop {
-            let request_future = Box::pin(gdb_request_rx.recv());
-            let resume_or_release = future::select(&mut resume_future, &mut released);
-
-            match future::select(request_future, resume_or_release).await {
-                Either::Left((gdb_request, _)) => {
-                    self.handle_gdb_request(gdb_request).await;
-                }
-                Either::Right((Either::Left((resume_request, _)), _)) => {
-                    break (resume_request, false);
-                }
-                Either::Right((Either::Right(((), _)), _)) => {
-                    let detach = ResumeInferior {
-                        action: ResumeAction::Continue(None),
-                        detach: true,
-                    };
-                    break (Some(detach), true);
-                }
-            }
+        let mut task = self.assume_stopped();
+        let mut tracee = GdbTracee {
+            task: &mut task,
+            breakpoints: &self.breakpoints,
+            parked_registers: shown,
         };
-
-        drop(resume_future);
+        let result = gdb_stop::serve_gdb_stop(&mut ports, self.gdb_stop_tx.clone(), |request| {
+            tracee.answer(request)
+        })
+        .await;
         drop(answering);
-        self.gdb_request_rx = Some(gdb_request_rx);
-        self.gdb_resume_rx = Some(resume_rx);
+        self.gdb_ports.put(ports);
         Ok(result)
     }
 
@@ -13163,29 +13326,6 @@ impl<L: Tool + 'static> TracedTask<L> {
             .expect("should not be poisoned: no code panics while holding it")
     }
 
-    async fn add_breakpoint(&mut self, addr: u64) -> Result<(), TraceError> {
-        if let Some(bkpt_addr) = AddrMut::from_raw(addr as usize) {
-            let mut task = self.assume_stopped();
-            // The word read here can include the int3 of another live
-            // breakpoint up to 7 bytes later. That is harmless: only the
-            // lowest byte, this breakpoint's own, is ever restored.
-            let saved_insn: u64 = task.read_value(bkpt_addr)?;
-            // `Z0` must be idempotent (GDB remote protocol, "Z0"). Inserting again
-            // would save the int3 as the original byte, so a later `z0` would
-            // leave the breakpoint in the tracee for good. An entry can be
-            // stale when something other than gdb rewrote the code, such as an
-            // exec. Trust the entry only while the int3 is still in memory;
-            // otherwise insert again, replacing the stale entry.
-            let mut breakpoints = self.breakpoints();
-            if breakpoints.contains_key(&addr) && saved_insn & 0xff == 0xcc {
-                return Ok(());
-            }
-            task.write_value(bkpt_addr, &breakpoint_inserted(saved_insn))?;
-            breakpoints.insert(addr, saved_insn);
-        }
-        Ok(())
-    }
-
     /// thaw all threads.
     async fn thaw_all(&mut self) -> Result<(), TraceError> {
         for (_pid, suspended_task) in core::mem::take(&mut self.suspended_tasks) {
@@ -13221,80 +13361,6 @@ impl<L: Tool + 'static> TracedTask<L> {
         while let Some((pid, suspended_task)) = stop_rx.recv().await {
             self.suspended_tasks.insert(pid, suspended_task);
         }
-        Ok(())
-    }
-
-    async fn remove_breakpoint(&mut self, addr: u64) -> Result<(), TraceError> {
-        let insn = self.breakpoints().remove(&addr).ok_or(Errno::ENOENT)?;
-        let mut task = self.assume_stopped();
-        if let Some(bkpt_addr) = AddrMut::from_raw(addr as usize) {
-            // Restore this breakpoint's byte only. Writing the whole saved
-            // word back would also restore the 7 bytes after it as they were
-            // at insertion, erasing the int3 of any breakpoint inserted there
-            // since, such as GDB's breakpoint on a following short source
-            // line when it steps over this one.
-            let current: u64 = task.read_value(bkpt_addr)?;
-            task.write_value(bkpt_addr, &breakpoint_removed(current, insn))?;
-        }
-        Ok(())
-    }
-
-    fn read_inferior_memory(&self, addr: u64, mut size: usize) -> Result<Vec<u8>, TraceError> {
-        let task = self.assume_stopped();
-
-        // NB: dont' trust size to be sane blindly.
-        if size > 0x8000 {
-            size = 0x8000;
-        }
-
-        let mut res = vec![0; size];
-        if let Some(addr) = Addr::from_raw(addr as usize) {
-            let nb = task.read(addr, &mut res)?;
-            res.resize(nb, 0);
-        }
-
-        // There could be a software breakpoint within the address requested,
-        // we should return the orignal contents without the breakpoint insn.
-        // This is *not* documented in gdb remote protocol, however, both
-        // gdbserver and rr does this. see:
-        // rr: https://github.com/rr-debugger/rr/blob/master/src/GdbServer.cc#L561
-        // gdbserver: https://github.com/bminor/binutils-gdb/blob/master/gdbserver/mem-break.cc#L1914
-        for (bkpt, saved_insn) in self.breakpoints().iter() {
-            if (addr..addr + res.len() as u64).contains(bkpt) {
-                // This abuses bkpt insn 0xcc is single byte.
-                res[*bkpt as usize - addr as usize] = *saved_insn as u8;
-            }
-        }
-
-        Ok(res)
-    }
-
-    fn write_inferior_memory(
-        &self,
-        addr: u64,
-        size: usize,
-        data: Vec<u8>,
-    ) -> Result<(), TraceError> {
-        let mut task = self.assume_stopped();
-        let size = std::cmp::min(size, data.len());
-        let addr = AddrMut::from_raw(addr as usize).ok_or(Errno::EFAULT)?;
-        task.write(addr, &data[..size])?;
-        Ok(())
-    }
-
-    fn read_registers(&self) -> Result<CoreRegs, TraceError> {
-        let task = self.assume_stopped();
-        let regs = task.getregs()?;
-        let fpregs = task.getfpregs()?;
-        let core_regs = CoreRegs::from_parts(regs, fpregs);
-        Ok(core_regs)
-    }
-
-    fn write_registers(&self, core_regs: CoreRegs) -> Result<(), TraceError> {
-        let task = self.assume_stopped();
-        let (regs, fpregs) = core_regs.into_parts();
-        task.setregs(&regs)?;
-        task.setfpregs(&fpregs)?;
         Ok(())
     }
 }
