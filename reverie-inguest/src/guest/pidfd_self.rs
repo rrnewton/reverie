@@ -9,7 +9,7 @@
 //! The pidfd self-sentinel spelling of the kernel that executes this guest's
 //! syscalls ([`reverie::pidfd_self`]).
 //!
-//! The runtime qualifies it once per process image, while it installs its
+//! A process image's runtime qualifies it once, if and when it installs its
 //! syscall trap (`lifecycle::install_in_process_trap`), immediately before
 //! its own seccomp filter: the last point at which the runtime's syscalls
 //! meet no filter of its own, and before any guest code runs. Every syscall
@@ -25,8 +25,11 @@
 //! The answer, Unknown included, is published once and read by
 //! `Guest::pidfd_self_spelling` without any syscall, which a Tool callback
 //! under the runtime's filter could not make through an ordinary path. A
-//! forked child keeps its parent's answer (the same kernel); an exec starts a
-//! new image, which qualifies again.
+//! forked child keeps its parent's answer (the same kernel). A new image
+//! starts unqualified and qualifies only if its runtime installs its own
+//! trap: the authenticated initial-image path (`exec_private`'s
+//! `InitialImageController`) adopts the inherited filter and never does, so
+//! its spelling stays Unknown.
 
 use reverie::Errno;
 use reverie::PidfdSelfSpelling;

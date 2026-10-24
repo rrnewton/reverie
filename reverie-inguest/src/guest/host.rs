@@ -2999,9 +2999,10 @@ impl<'a, T: Tool, R: HostRuntime> Guest<T> for InGuest<'a, T, R> {
     /// (which could fail or fake the gate's calls), nothing is executed and
     /// the spelling is unknown.
     fn pidfd_self_spelling(&self) -> reverie::PidfdSelfSpelling {
-        // Read, never qualified, here: the image qualified it before its
-        // filter was installed (`pidfd_self::initialize_before_runtime_filter`).
-        // Outside the admitted callback, or once the guest has installed a
+        // Read, never qualified, here: an image whose runtime installed its
+        // trap qualified it before the filter
+        // (`pidfd_self::initialize_before_runtime_filter`); any other image
+        // published nothing and reads Unknown. Outside the admitted callback, or once the guest has installed a
         // filter of its own that could stand between the gate and the
         // kernel, it is unknown. No syscall either way.
         if !tool_callback_active() || guest_filter_admitted() {
