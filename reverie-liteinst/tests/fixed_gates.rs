@@ -204,3 +204,60 @@ fn failed_published_installation_exits_even_with_saturated_stderr() {
     assert_eq!(status.code(), Some(127));
     drop(reader);
 }
+
+#[test]
+fn selector_refusal_does_not_connect_with_inherited_filters_or_published_gates() {
+    use std::os::unix::net::UnixListener;
+    for state in ["inherited", "published"] {
+        let directory = tempfile::tempdir().unwrap();
+        let socket = directory.path().join("coordinator.sock");
+        let listener = UnixListener::bind(&socket).unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let mut command = Command::new(env!("CARGO_BIN_EXE_reverie-liteinst-rpc-tool-guest"));
+        command
+            .arg("fixed-gate-selector-refusal")
+            .arg(&socket)
+            .arg(state)
+            .env("REVERIE_LITEINST_SITE_PATCHING", "2")
+            .env(
+                "REVERIE_LITEINST_COORDINATOR",
+                "preserve-refused-coordinator",
+            );
+        let output = bounded_output(command);
+        assert!(output.status.success(), "{state}: {output:?}");
+        assert_eq!(
+            output.stdout,
+            format!(
+                "selector refusal: state={state} original-error=preserved runtime-state=unchanged\n"
+            )
+            .as_bytes()
+        );
+        assert!(output.stderr.is_empty(), "{state}: {output:?}");
+        assert_eq!(
+            listener.accept().unwrap_err().kind(),
+            std::io::ErrorKind::WouldBlock
+        );
+    }
+}
+
+#[test]
+fn selector_refusal_preserves_its_error_when_the_fresh_handshake_fails() {
+    let directory = tempfile::tempdir().unwrap();
+    let mut command = Command::new(env!("CARGO_BIN_EXE_reverie-liteinst-rpc-tool-guest"));
+    command
+        .arg("fixed-gate-selector-refusal")
+        .arg(directory.path().join("no-server"))
+        .arg("fresh")
+        .env("REVERIE_LITEINST_SITE_PATCHING", "2")
+        .env(
+            "REVERIE_LITEINST_COORDINATOR",
+            "preserve-refused-coordinator",
+        );
+    let output = bounded_output(command);
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(
+        output.stdout,
+        b"selector refusal: state=fresh original-error=preserved runtime-state=unchanged\n"
+    );
+    assert!(output.stderr.is_empty(), "{output:?}");
+}

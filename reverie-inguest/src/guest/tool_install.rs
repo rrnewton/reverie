@@ -157,7 +157,28 @@ where
     // terminate rather than return. Validate and capture this fallible input
     // first; the same value is consumed after coordinator setup.
     #[cfg(feature = "fixed-syscall-gates")]
-    let site_patching = host.site_patching()?;
+    let site_patching = match host.site_patching() {
+        Ok(selected) => selected,
+        Err(error) => {
+            // An output launcher must see this ordinary installation refusal,
+            // rather than mistake the child for an unsupported executable.
+            // Only a fresh, unfiltered image may make the config-only
+            // handshake. Do not publish gates or reserve a protected fd, and
+            // retain the original selector error if the handshake also fails.
+            // SAFETY: as in the inherited-filter check below, the caller owns
+            // the exclusive startup boundary and its trusted raw syscall gate.
+            // This query only reads the process's current filter count.
+            if !crate::trap::fixed_gates_published()
+                && unsafe { crate::guest::sigalrm::seccomp_filter_count() } == Some(0)
+            {
+                let _refusal_rpc = CoordinatorRpc::<T::GlobalState>::connect(
+                    coordinator,
+                    crate::guest::protect::replace_coordinator_fd,
+                );
+            }
+            return Err(error);
+        }
+    };
     #[cfg(feature = "fixed-syscall-gates")]
     let mut fixed_install = FixedGateInstallation { complete: false };
     #[cfg(feature = "fixed-syscall-gates")]

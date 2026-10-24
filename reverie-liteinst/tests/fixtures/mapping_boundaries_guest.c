@@ -365,6 +365,13 @@ static int fork_case(const struct snapshot *before) {
   if (child < 0)
     return 100;
 #ifdef REVERIE_MAPPING_FULLTOOL
+  if (child == 0) {
+    /* The runtime resets and recounts its per-process fallback counters in the
+       child. The fixture callback cell stays inherited through COW, so retain
+       its captured parent baseline while measuring the child's exact 1/1/1. */
+    fork_probe.total = 0;
+    fork_probe.syscall = 0;
+  }
   if (!full_tool_after("fork", SYS_fork, fork_probe, 1, 1))
     return 103;
 #endif

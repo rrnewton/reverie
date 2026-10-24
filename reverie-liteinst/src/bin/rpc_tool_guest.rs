@@ -3539,6 +3539,14 @@ fn main() {
             fixed_gates_guest::inherited_filter(Path::new(&path))
         }
         Some("fixed-gate-install-failure") => fixed_gates_guest::install_failure(Path::new(&path)),
+        #[cfg(feature = "fixed-syscall-gates")]
+        Some("fixed-gate-selector-refusal") => fixed_gates_guest::selector_refusal(
+            Path::new(&path),
+            args.next()
+                .expect("refusal state")
+                .to_str()
+                .expect("UTF-8 state"),
+        ),
         Some("guest") => guest(Path::new(&path)),
         Some("same-tool") => same_tool_guest::run(
             Path::new(&path),

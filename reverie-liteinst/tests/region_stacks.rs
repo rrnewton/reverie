@@ -77,8 +77,15 @@ fn trial(label: &str, inert: bool, alt_stack: bool) -> Result<(), String> {
     let launcher_identity = artifact::FileIdentity::read(&launcher)?;
     let setarch = artifact::real_file(Path::new("/usr/bin/setarch"))?;
     let setarch_identity = artifact::FileIdentity::read(&setarch)?;
+    let final_exec_environment = if !cfg!(feature = "liteinst") && !inert {
+        let path = artifact::real_file(Path::new("/usr/bin/env"))?;
+        let identity = artifact::FileIdentity::read(&path)?;
+        Some((path, identity))
+    } else {
+        None
+    };
     let mode = if inert { "inert" } else { "observe" };
-    let policy = serde_json::to_vec(&serde_json::json!({
+    let mut policy = serde_json::json!({
         "schema": 1,
         "observation": "M2 real standalone leaf; continuation NotPrepared/NotReached",
         "source_head": runtime.source.head,
@@ -95,8 +102,12 @@ fn trial(label: &str, inert: bool, alt_stack: bool) -> Result<(), String> {
         "stdin": "closed; fixture reads no input",
         "full_entry_isolation_claimed": false,
         "guest_write_protection_claimed": false,
-    }))
-    .map_err(|error| error.to_string())?;
+    });
+    if let Some((_, identity)) = &final_exec_environment {
+        policy["final_exec_environment"] =
+            serde_json::to_value(identity).map_err(|error| error.to_string())?;
+    }
+    let policy = serde_json::to_vec(&policy).map_err(|error| error.to_string())?;
     let mut held = liteinst_runtime::held_environment(policy);
     let mut environment: BTreeMap<OsString, OsString> = held.environment.into_iter().collect();
     for name in [
@@ -131,8 +142,15 @@ fn trial(label: &str, inert: bool, alt_stack: bool) -> Result<(), String> {
     } else {
         // The same actual constructor and M2 query/guard/altstack probes are
         // available through the shared builtin without legacy forwarding.
-        environment.insert("LD_PRELOAD".into(), runtime.path.as_os_str().to_owned());
-        environment.insert("REVERIE_LITEINST_TOOL".into(), "passthrough".into());
+        // Keep setarch and env uninstrumented: the builtin refuses exec, so
+        // only the final M2 guest may receive its active preload selector.
+        environment.remove(&OsString::from("LD_PRELOAD"));
+        let mut preload = OsString::from("LD_PRELOAD=");
+        preload.push(runtime.path.as_os_str());
+        command
+            .arg(&final_exec_environment.as_ref().unwrap().0)
+            .arg(preload)
+            .arg("REVERIE_LITEINST_TOOL=passthrough");
     }
     command
         .arg(&guest)
@@ -204,6 +222,9 @@ fn trial(label: &str, inert: bool, alt_stack: bool) -> Result<(), String> {
         guest_receipt.binary.verify()?;
         launcher_identity.verify()?;
         setarch_identity.verify()?;
+        if let Some((_, identity)) = &final_exec_environment {
+            identity.verify()?;
+        }
         liteinst_runtime::verify_unchanged(&evidence)
     })();
     match (result, after) {

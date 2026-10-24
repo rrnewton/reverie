@@ -3191,8 +3191,8 @@ pub struct AllocatorTlsBoundary {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[serde(untagged)]
 pub enum AllocatorInstallationEvidence {
-    Existing(AllocatorTlsBoundary),
-    NoInstallationScope(NoInstallationScopeEvidence),
+    Existing(Box<AllocatorTlsBoundary>),
+    NoInstallationScope(Box<NoInstallationScopeEvidence>),
 }
 impl<'de> Deserialize<'de> for AllocatorInstallationEvidence {
     fn deserialize<D: serde::Deserializer<'de>>(
@@ -19122,9 +19122,9 @@ fn fixed_emitted_role(name: &str) -> Option<&'static str> {
         .find_map(|&(role, observed)| (canonical == observed).then_some(role))
 }
 
-fn fixed_role_symbol_candidates(
-    elf: &Elf<'_>,
-) -> Result<(BTreeMap<String, sym::Sym>, BTreeMap<&'static str, sym::Sym>)> {
+type FixedRoleSymbolCandidates = (BTreeMap<String, sym::Sym>, BTreeMap<&'static str, sym::Sym>);
+
+fn fixed_role_symbol_candidates(elf: &Elf<'_>) -> Result<FixedRoleSymbolCandidates> {
     require(
         !FIXED_EMITTED_ROLE_SYMBOLS.is_empty(),
         "fixed allocator/setup emitted-role census is pending actual release/dev ELF evidence",
@@ -20177,19 +20177,21 @@ fn qualify_fixed_allocator_in_source_context(
         .get(&roles["fixed_patch_alloc"].st_value)
         .is_some_and(|body| body.len() == no_scope_extent)
     {
-        AllocatorInstallationEvidence::NoInstallationScope(derive_no_installation_scope_evidence(
-            elf, bytes, code, &roles, sources,
-        )?)
+        AllocatorInstallationEvidence::NoInstallationScope(Box::new(
+            derive_no_installation_scope_evidence(elf, bytes, code, &roles, sources)?,
+        ))
     } else {
-        AllocatorInstallationEvidence::Existing(qualify_allocator_tls_boundary_in_source_context(
-            elf,
-            bytes,
-            code,
-            disassembly,
-            got,
-            image_kind,
-            sources,
-        )?)
+        AllocatorInstallationEvidence::Existing(Box::new(
+            qualify_allocator_tls_boundary_in_source_context(
+                elf,
+                bytes,
+                code,
+                disassembly,
+                got,
+                image_kind,
+                sources,
+            )?,
+        ))
     };
     let context = fixed_machine_context(
         (elf, bytes),
@@ -40475,7 +40477,7 @@ mod tests {
                     .into_iter().flat_map(u64::to_le_bytes).collect::<Vec<_>>()),
                 file_offset: 0x800, section_index: 1, load_segment_index: 0,
             },
-            tls_boundary: AllocatorInstallationEvidence::Existing(AllocatorTlsBoundary {
+            tls_boundary: AllocatorInstallationEvidence::Existing(Box::new(AllocatorTlsBoundary {
                 dependency: "existing_installation_depth_tls".to_owned(),
                 provider_symbol: "__tls_get_addr".to_owned(), provider_version: "GLIBC_2.3".to_owned(),
                 provider_library: "ld-linux-x86-64.so.2".to_owned(),
@@ -40489,7 +40491,7 @@ mod tests {
                 function_sha256: BTreeMap::from([("fixed_patch_alloc".to_owned(), "0".repeat(64))]),
                 local_chain: BTreeMap::from([("fixed_patch_alloc".to_owned(), functions["fixed_patch_alloc"].clone())]),
                 direct_allocation: None,
-            }),
+            })),
             allocator_transfers: FIXED_REQUIRED_ROLES[..4]
                 .iter()
                 .chain(FIXED_PUBLICATION_REQUIRED_ROLES.iter())
@@ -40509,6 +40511,15 @@ mod tests {
         };
         // Structural schema controls only; synthetic hashes never qualify ELF.
         validate_fixed_backing_evidence(&backing).unwrap();
+        let historical_json = serde_json::to_vec(backing.tls_boundary.existing().unwrap()).unwrap();
+        assert_eq!(
+            serde_json::to_vec(&backing.tls_boundary).unwrap(),
+            historical_json
+        );
+        assert_eq!(
+            serde_json::from_slice::<AllocatorInstallationEvidence>(&historical_json).unwrap(),
+            backing.tls_boundary,
+        );
         // Each new mandatory publication root needs its own structural
         // function/hash and transfer-map evidence. Synthetic hashes remain
         // schema controls only and never qualify a physical ELF.
@@ -40938,20 +40949,20 @@ mod tests {
         };
         check(&proof).unwrap();
         let value = serde_json::to_value(AllocatorInstallationEvidence::NoInstallationScope(
-            proof.clone(),
+            Box::new(proof.clone()),
         ))
         .unwrap();
         assert_eq!(
             serde_json::from_value::<AllocatorInstallationEvidence>(value.clone()).unwrap(),
-            AllocatorInstallationEvidence::NoInstallationScope(proof.clone())
+            AllocatorInstallationEvidence::NoInstallationScope(Box::new(proof.clone()))
         );
         let encoded = serde_json::to_vec(&AllocatorInstallationEvidence::NoInstallationScope(
-            proof.clone(),
+            Box::new(proof.clone()),
         ))
         .unwrap();
         assert_eq!(
             serde_json::from_slice::<AllocatorInstallationEvidence>(&encoded).unwrap(),
-            AllocatorInstallationEvidence::NoInstallationScope(proof.clone())
+            AllocatorInstallationEvidence::NoInstallationScope(Box::new(proof.clone()))
         );
         for field in value.as_object().unwrap().keys() {
             let mut bad = value.clone();
@@ -40961,6 +40972,8 @@ mod tests {
                 "missing absence field{field}"
             );
         }
+        assert_eq!(value, serde_json::to_value(&proof).unwrap());
+        assert_eq!(encoded, serde_json::to_vec(&proof).unwrap());
         let mut unknown = value;
         unknown["tls_cell"] = serde_json::json!({});
         assert!(
@@ -41140,13 +41153,14 @@ mod tests {
         };
         check_standalone(&standalone).unwrap();
         let serialized = serde_json::to_vec(&AllocatorInstallationEvidence::NoInstallationScope(
-            standalone.clone(),
+            Box::new(standalone.clone()),
         ))
         .unwrap();
         assert_eq!(
             serde_json::from_slice::<AllocatorInstallationEvidence>(&serialized).unwrap(),
-            AllocatorInstallationEvidence::NoInstallationScope(standalone.clone())
+            AllocatorInstallationEvidence::NoInstallationScope(Box::new(standalone.clone()))
         );
+        assert_eq!(serialized, serde_json::to_vec(&standalone).unwrap());
         for relative in CONTENT_WORKSPACE_FILES {
             let mut bad = standalone.clone();
             bad.current_build
@@ -42024,11 +42038,13 @@ mod tests {
             unsupported.tls_boundary.existing_mut().tls_cell.address = offset;
             assert!(validate_fixed_backing_evidence(&unsupported).is_err());
             let unsupported = unsupported.tls_boundary.existing().unwrap();
-            assert!(validate_direct_allocation_tls_evidence(
-                unsupported,
-                unsupported.direct_allocation.as_ref().unwrap(),
-            )
-            .is_err());
+            assert!(
+                validate_direct_allocation_tls_evidence(
+                    unsupported,
+                    unsupported.direct_allocation.as_ref().unwrap(),
+                )
+                .is_err()
+            );
         }
         for (field, replacement) in [
             ("version", serde_json::json!(2)),
@@ -42741,11 +42757,14 @@ mod tests {
             if kind == FixedImageKind::Standalone && matches!(offset, 0x98 | 0xd8) {
                 // The new offset must execute the old complete Some-LocalKey
                 // checks; admitting a numeric offset alone must not pass.
-                assert!(validate_existing_allocator_tls_boundary(
-                    sample.tls_boundary.existing().unwrap(),
-                    FixedImageKind::Detcore,
-                )
-                .is_err(), "standalone DEV{offset:#x} cannot substitute for a Detcore TLS cohort");
+                assert!(
+                    validate_existing_allocator_tls_boundary(
+                        sample.tls_boundary.existing().unwrap(),
+                        FixedImageKind::Detcore,
+                    )
+                    .is_err(),
+                    "standalone DEV{offset:#x} cannot substitute for a Detcore TLS cohort"
+                );
                 for mutation in 0..6 {
                     let mut bad = sample.clone();
                     let tls = bad.tls_boundary.existing_mut();
@@ -42779,7 +42798,10 @@ mod tests {
                         }
                         _ => unreachable!(),
                     }
-                    assert!(check(&bad).is_err(), "DEV{offset:#x} incomplete/optimized boundary{mutation}");
+                    assert!(
+                        check(&bad).is_err(),
+                        "DEV{offset:#x} incomplete/optimized boundary{mutation}"
+                    );
                 }
                 for wrong in [0, 0x90, 0x97, 0x99, 0xd0, 0xd7, 0xd9, 0xe0, u64::MAX] {
                     let mut bad = sample.clone();
