@@ -145,7 +145,7 @@ pub(super) fn run(path: &Path) {
     );
     assert_eq!(
         reverie_liteinst::reverie_liteinst_site_trap_count(site as u64),
-        6
+        super::expected_site_count(6)
     );
     assert_eq!(
         reverie_liteinst::reverie_liteinst_fallback_refusal_count(),
@@ -306,18 +306,22 @@ pub(super) fn run_fork(path: &Path, installed: bool) {
     // getpid control. Child counters are reset after that parent-only work.
     assert_eq!(
         hooks,
-        if installed {
+        if installed && cfg!(feature = "liteinst") {
             if child == 0 { 1 } else { 2 }
         } else {
             0
         }
     );
-    assert_eq!(traps, u64::from(!installed || child != 0));
-    assert_eq!(fallback, u64::from(!installed));
-    assert_eq!(syscall, u64::from(!installed));
+    assert_eq!(
+        traps,
+        super::expected_site_count(u64::from(!installed || child != 0))
+    );
+    let through_fallback = !installed || !cfg!(feature = "liteinst");
+    assert_eq!(fallback, u64::from(through_fallback));
+    assert_eq!(syscall, u64::from(through_fallback));
     // The child's original entry and callback physically happened before
     // fork in the parent. It receives only its own completion signal.
-    if !installed {
+    if through_fallback {
         unsafe extern "C" {
             fn reverie_liteinst_owned_fallback_observation(selector: u32) -> u64;
         }
@@ -337,8 +341,13 @@ pub(super) fn run_fork(path: &Path, installed: bool) {
             unsafe { std::slice::from_raw_parts(site, 3) },
             [0x0f, 0x05, 0xc3]
         );
-    } else {
+    } else if cfg!(feature = "liteinst") {
         assert_ne!(
+            unsafe { std::slice::from_raw_parts(site, 5) },
+            [0x0f, 0x05, 0x90, 0x90, 0x90]
+        );
+    } else {
+        assert_eq!(
             unsafe { std::slice::from_raw_parts(site, 5) },
             [0x0f, 0x05, 0x90, 0x90, 0x90]
         );

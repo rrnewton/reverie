@@ -214,7 +214,10 @@ fn trial(case: &str) -> Result<(), String> {
     ] {
         env.remove(&OsString::from(key));
     }
-    env.insert(reverie_liteinst::SITE_PATCHING_ENV.into(), "1".into());
+    env.insert(
+        reverie_liteinst::SITE_PATCHING_ENV.into(),
+        if cfg!(feature = "liteinst") { "1" } else { "0" }.into(),
+    );
     env.insert(reverie_liteinst::ALT_STACK_ENV.into(), "1".into());
     held.environment = env.into_iter().collect();
     let mut command = Command::new(&guest);

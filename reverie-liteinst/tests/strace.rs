@@ -247,6 +247,7 @@ fn strace_tool_observes_echo_syscalls() {
     assert!(stderr.contains("syscall(1,"));
 }
 
+#[cfg(feature = "liteinst")]
 #[test]
 fn first_sigsys_installs_a_hook_for_later_calls() {
     let output = run_guest(env!("CARGO_BIN_EXE_reverie-liteinst-trap-count-guest"), &[]);
@@ -258,6 +259,23 @@ fn first_sigsys_installs_a_hook_for_later_calls() {
         String::from_utf8_lossy(&output.stderr)
     );
     assert_eq!(output.stdout, b"calls=32 traps=1 hooks=32\n");
+}
+
+#[cfg(not(feature = "liteinst"))]
+#[test]
+fn every_syscall_reaches_strace_without_site_patching() {
+    let output = run_guest(env!("CARGO_BIN_EXE_reverie-liteinst-trap-count-guest"), &[]);
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(output.stdout, b"calls=32 traps=0 hooks=0\n");
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert_eq!(
+        stderr
+            .lines()
+            .filter(|line| line.contains("syscall(39,"))
+            .count(),
+        32,
+        "every getpid must reach the Tool: {stderr}"
+    );
 }
 
 fn run_pc_relative_guest(hooked: bool) -> Output {
@@ -332,11 +350,28 @@ fn syscall_hook_preserves_displaced_self_relative_address() {
 
     let hooked = run_pc_relative_guest(true);
     assert!(hooked.status.success(), "hooked guest: {hooked:?}");
-    assert_eq!(
-        hooked.stdout,
-        b"pc-relative hooked: calls=32 addresses=32 traps=32 hooks=0 \
-          start_addresses=32 start_traps=1 start_hooks=32\n"
-    );
+    if cfg!(feature = "liteinst") {
+        assert_eq!(
+            hooked.stdout,
+            b"pc-relative hooked: calls=32 addresses=32 traps=32 hooks=0 \
+              start_addresses=32 start_traps=1 start_hooks=32\n"
+        );
+    } else {
+        assert_eq!(
+            hooked.stdout,
+            b"pc-relative hooked: calls=32 addresses=32 traps=0 hooks=0 \
+              start_addresses=32 start_traps=0 start_hooks=0\n"
+        );
+        let stderr = String::from_utf8(hooked.stderr).unwrap();
+        assert_eq!(
+            stderr
+                .lines()
+                .filter(|line| line.contains("syscall(39,"))
+                .count(),
+            64,
+            "both relative-address sites must reach the Tool on every call: {stderr}"
+        );
+    }
 }
 
 #[test]
@@ -582,17 +617,15 @@ fn compatibility_event_fd_rejects_read_only_descriptor() {
     );
 }
 
-/// Only an in-guest Tool takes the site-patching selector. Every other runtime
-/// selected from the environment must start when the variable holds the
-/// default `1`, and must refuse to start, rather than ignore it, for any other
-/// value.
+/// Other runtimes accept only their build's default selector. In a build
+/// without LiteInst, `0` keeps every syscall on the trap path.
 #[test]
 fn other_runtimes_refuse_site_patching_selector() {
     fn check(mut command: Command, runtime: &str, value: &str) {
         command.env(SITE_PATCHING_ENV, value);
         let output = command.output().unwrap();
         let stderr = String::from_utf8_lossy(&output.stderr);
-        if value == "1" {
+        if value == if cfg!(feature = "liteinst") { "1" } else { "0" } {
             assert!(output.status.success(), "{runtime} {value}: {output:?}");
             assert!(
                 !stderr.contains(SITE_PATCHING_ENV),
@@ -605,10 +638,17 @@ fn other_runtimes_refuse_site_patching_selector() {
             Some(127),
             "{runtime} {value}: {output:?}"
         );
-        assert!(
-            stderr.contains(&format!("the {runtime} runtime does not take it")),
-            "{runtime} {value}: {stderr}"
-        );
+        if !cfg!(feature = "liteinst") && value == "1" {
+            assert!(
+                stderr.contains("built without LiteInst"),
+                "{runtime} {value}: {stderr}"
+            );
+        } else {
+            assert!(
+                stderr.contains(&format!("the {runtime} runtime does not take it")),
+                "{runtime} {value}: {stderr}"
+            );
+        }
     }
     for value in ["1", "0", "2"] {
         for (tool, runtime) in [

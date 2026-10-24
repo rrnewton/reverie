@@ -128,6 +128,12 @@ jobs:
     # judged (reverie-examples/e2e/README.md).
     - name: Reverie-layer cross-backend e2e (no device)
       run: reverie-examples/e2e/run.sh --backends ptrace,liteinst,in-guest-trap,e9patch,dbt,sabre
+    - name: In-guest trap without LiteInst
+      timeout-minutes: 20
+      run: |
+        set -euo pipefail
+        generation="$RUNNER_TEMP/in-guest-trap-$GITHUB_JOB-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+        scripts/test-in-guest-trap-no-liteinst.sh "$generation"
     - name: Restore hosted-runner namespace restriction
       if: ${{ always() && steps.userns.outputs.restore_required == 'true' }}
       timeout-minutes: 1

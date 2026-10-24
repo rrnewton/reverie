@@ -55,7 +55,7 @@ fn fallback_uses_owned_frames_after_guest_stack_revocation() {
         );
         let bytes = stdout.lines().last().unwrap()
             .strip_prefix("owned frame: rseq=unregistered native=4 Tool=4 registers=equal xstate-bytes=")
-            .and_then(|line| line.strip_suffix(" callback-stack=owned guest-stack-revoked=preserved negative-pkru=preserved hooks=0 traps=4"))
+            .and_then(|line| line.strip_suffix(if cfg!(feature = "liteinst") { " callback-stack=owned guest-stack-revoked=preserved negative-pkru=preserved hooks=0 traps=4" } else { " callback-stack=owned guest-stack-revoked=preserved negative-pkru=preserved hooks=0 traps=0" }))
             .expect("complete owned-frame observations").parse::<usize>().unwrap();
         assert!(bytes >= 576);
         println!("alt_stack={on_alt_stack}\n{stdout}");
@@ -144,7 +144,7 @@ fn ordinary_tool_memory_and_scratch_work_with_protected_guest_state() {
         assert!(output.status.success(), "{output:?}");
         let stdout = String::from_utf8(output.stdout).unwrap();
         let bytes = stdout.strip_prefix("memory access: rseq=unregistered native=2 Tool=2 pkru=0,1 xstate-bytes=")
-            .and_then(|line| line.strip_suffix(" scratch=complete readlink=complete inspection=complete faults=EFAULT rpc=2 hooks=0 traps=2\n"))
+            .and_then(|line| line.strip_suffix(if cfg!(feature = "liteinst") { " scratch=complete readlink=complete inspection=complete faults=EFAULT rpc=2 hooks=0 traps=2\n" } else { " scratch=complete readlink=complete inspection=complete faults=EFAULT rpc=2 hooks=0 traps=0\n" }))
             .expect("complete memory-access evidence").parse::<usize>().unwrap();
         assert!(bytes >= 576);
         println!("alt_stack={on_alt_stack} {stdout}");
@@ -303,10 +303,18 @@ fn fork_child_accounts_for_fallback_and_installed_dispatch() {
     let _ = coordinator.wait();
     let [installed, fallback] = outputs.expect("coordinator socket was not created");
     assert!(installed.status.success(), "{installed:?}");
-    assert_eq!(installed.stdout, b"installed fork child: hooks=1 traps=0 fallback=0 syscall=0\ninstalled fork parent: hooks=2 traps=1 fallback=0 syscall=0\n");
+    if cfg!(feature = "liteinst") {
+        assert_eq!(installed.stdout, b"installed fork child: hooks=1 traps=0 fallback=0 syscall=0\ninstalled fork parent: hooks=2 traps=1 fallback=0 syscall=0\n");
+    } else {
+        assert_eq!(installed.stdout, b"installed fork child: hooks=0 traps=0 fallback=1 syscall=1\ninstalled fork parent: hooks=0 traps=0 fallback=1 syscall=1\n");
+    }
     assert!(installed.stderr.is_empty(), "{installed:?}");
     assert!(fallback.status.success(), "{fallback:?}");
-    assert_eq!(fallback.stdout, b"fallback fork child: hooks=0 traps=1 fallback=1 syscall=1\nfallback fork parent: hooks=0 traps=1 fallback=1 syscall=1\n");
+    if cfg!(feature = "liteinst") {
+        assert_eq!(fallback.stdout, b"fallback fork child: hooks=0 traps=1 fallback=1 syscall=1\nfallback fork parent: hooks=0 traps=1 fallback=1 syscall=1\n");
+    } else {
+        assert_eq!(fallback.stdout, b"fallback fork child: hooks=0 traps=0 fallback=1 syscall=1\nfallback fork parent: hooks=0 traps=0 fallback=1 syscall=1\n");
+    }
     assert!(fallback.stderr.is_empty(), "{fallback:?}");
     print!(
         "{}{}",
@@ -345,8 +353,13 @@ fn an_anonymous_syscall_site_stays_on_the_fallback_path() {
     assert!(output.status.success(), "{output:?}");
     assert_eq!(
         String::from_utf8_lossy(&output.stdout),
-        "anonymous: calls=3 traps=3 hooks=0 fallback=3 bytes=unchanged \
-         control: calls=3 traps=1 hooks=6 fallback=0 bytes=patched\n"
+        if cfg!(feature = "liteinst") {
+            "anonymous: calls=3 traps=3 hooks=0 fallback=3 bytes=unchanged \
+             control: calls=3 traps=1 hooks=6 fallback=0 bytes=patched\n"
+        } else {
+            "anonymous: calls=3 traps=0 hooks=0 fallback=3 bytes=unchanged \
+             control: calls=3 traps=0 hooks=0 fallback=3 bytes=unchanged\n"
+        }
     );
     assert!(output.stderr.is_empty(), "{output:?}");
 }
@@ -682,9 +695,23 @@ fn installed_hook_reentry_bypasses_tool_with_shared_coordinator_rpc() {
 
     for (mode, reached) in [
         ("tool-sigreturn-trap", "sigreturn-site-fresh\n"),
-        ("tool-sigreturn-hook", "numbered-site-hooked\n"),
+        (
+            "tool-sigreturn-hook",
+            if cfg!(feature = "liteinst") {
+                "numbered-site-hooked\n"
+            } else {
+                "numbered-site-trapped\n"
+            },
+        ),
         ("tool-sigreturn-trap-alias", "sigreturn-site-fresh\n"),
-        ("tool-sigreturn-hook-alias", "numbered-site-hooked\n"),
+        (
+            "tool-sigreturn-hook-alias",
+            if cfg!(feature = "liteinst") {
+                "numbered-site-hooked\n"
+            } else {
+                "numbered-site-trapped\n"
+            },
+        ),
     ] {
         let output = Command::new(binary)
             .arg(mode)
@@ -810,7 +837,11 @@ fn installed_hook_reentry_bypasses_tool_with_shared_coordinator_rpc() {
     // With site patching on (the default) the guard router takes this
     // SIGTRAP and passes it to the default action; with it off no router is
     // installed and the kernel's own default action ends the process.
-    for patching in ["1", "0"] {
+    for patching in [
+        #[cfg(feature = "liteinst")]
+        "1",
+        "0",
+    ] {
         let sigtrap_default = Command::new(binary)
             .arg("tool-sigtrap-default")
             .arg(&socket)
@@ -839,8 +870,13 @@ fn installed_hook_reentry_bypasses_tool_with_shared_coordinator_rpc() {
         (
             None,
             "default",
-            "sigtrap-action prior=default kernel=router blocked=false site-patching=true\n",
+            if cfg!(feature = "liteinst") {
+                "sigtrap-action prior=default kernel=router blocked=false site-patching=true\n"
+            } else {
+                "sigtrap-action prior=default kernel=default blocked=false site-patching=false\n"
+            },
         ),
+        #[cfg(feature = "liteinst")]
         (
             Some("1"),
             "ignore",
@@ -910,7 +946,11 @@ fn installed_hook_reentry_bypasses_tool_with_shared_coordinator_rpc() {
             );
             assert_eq!(
                 instruction_guest.stdout,
-                b"cpuid=tool rdtsc=tool rdtscp=tool rdrand=masked rdseed=masked instruction-handler-rpc=1 patched-native=1 first-use-native=1 nested-syscall-native=1 tool-callbacks=9\n",
+                if cfg!(feature = "liteinst") {
+                    b"cpuid=tool rdtsc=tool rdtscp=tool rdrand=masked rdseed=masked instruction-handler-rpc=1 patched-native=1 first-use-native=1 nested-syscall-native=1 tool-callbacks=9\n".as_slice()
+                } else {
+                    b"cpuid=tool rdtsc=tool rdtscp=tool rdrand=masked rdseed=masked instruction-handler-rpc=1 trapped-native=1 first-use-native=1 nested-syscall-native=1 tool-callbacks=9\n".as_slice()
+                },
                 "{mode}"
             );
             assert!(
@@ -933,7 +973,7 @@ fn installed_hook_reentry_bypasses_tool_with_shared_coordinator_rpc() {
     );
     let instruction_control_available = instruction_positives == 2;
 
-    if instruction_control_available {
+    if cfg!(feature = "liteinst") && instruction_control_available {
         let nested_instruction_fork = Command::new(binary)
             .arg("nested-instruction-fork")
             .arg(&socket)
@@ -1236,7 +1276,11 @@ fn installed_hook_reentry_bypasses_tool_with_shared_coordinator_rpc() {
     let stdout = String::from_utf8(guest.stdout).unwrap();
     assert!(
         stdout.starts_with(
-            "calls=32 traps=1 hooks=32 rpc_delta=34 nested_traps=1 nested_hooks=33 mask_traps=1 mask_hooks=33 mask_result=-1 first_use_exec_result=-95 first_use_signal_result=-1 "
+            if cfg!(feature = "liteinst") {
+                "calls=32 traps=1 hooks=32 rpc_delta=34 nested_traps=1 nested_hooks=33 mask_traps=1 mask_hooks=33 mask_result=-1 first_use_exec_result=-95 first_use_signal_result=-1 "
+            } else {
+                "calls=32 traps=0 hooks=0 rpc_delta=34 nested_traps=0 nested_hooks=0 mask_traps=0 mask_hooks=0 mask_result=-1 first_use_exec_result=-95 first_use_signal_result=-1 "
+            }
         ),
         "{stdout}"
     );
@@ -1306,7 +1350,11 @@ fn late_code_instructions_reach_the_tool_through_the_continuation() {
         );
         assert_eq!(
             String::from_utf8_lossy(&output.stdout),
-            "late-code cpuid=tool rdtsc=tool rdtscp=tool equals-patched=1 continuation=163 owned-stack=163 sites=0 registers=preserved\n",
+            if cfg!(feature = "liteinst") {
+                "late-code cpuid=tool rdtsc=tool rdtscp=tool equals-patched=1 continuation=163 owned-stack=163 sites=0 registers=preserved\n"
+            } else {
+                "late-code trap-only cpuid=tool rdtsc=tool rdtscp=tool equals-in-arena=1 continuation=163+7 owned-stack=170 sites=0 registers=preserved\n"
+            },
             "alt_stack={on_alt_stack}: {output:?}"
         );
         assert!(
@@ -1329,12 +1377,15 @@ fn patched_declined_and_unpatched_sites_give_one_tool_the_same_results() {
                                  cpuid=tool tool-cpuid=1 rdtsc=tool tool-rdtsc=1";
     let zero = "binary-site traps=0 hooks=0 anonymous-site traps=0 hooks=0";
     let cases = [
+        #[cfg(feature = "liteinst")]
         (
             "liteinst",
             Some("1"),
             "binary-site traps=1 hooks=8 anonymous-site traps=8 hooks=0",
         ),
         ("liteinst", Some("0"), zero),
+        #[cfg(not(feature = "liteinst"))]
+        ("liteinst", None, zero),
         ("no-patcher", None, zero),
     ];
     for on_alt_stack in [true, false] {
@@ -1613,15 +1664,23 @@ fn cross_line_instruction_site_reaches_the_tool_through_the_continuation() {
         );
         assert_eq!(
             String::from_utf8_lossy(&output.stdout),
-            "straddler cpuid=tool rdtsc=tool rdtscp=tool calls=56 continuation=56 owned-stack=56 hooks=0 registers=preserved\n\
-             straddler-neighbour cpuid=tool callbacks=32 traps=8+24 hooks=0\n\
-             straddler-stale-jump cpuid=tool traps=8 hooks=0\n",
+            if cfg!(feature = "liteinst") {
+                "straddler cpuid=tool rdtsc=tool rdtscp=tool calls=56 continuation=56 owned-stack=56 hooks=0 registers=preserved\n\
+                 straddler-neighbour cpuid=tool callbacks=32 traps=8+24 hooks=0\n\
+                 straddler-stale-jump cpuid=tool traps=8 hooks=0\n"
+            } else {
+                "straddler cpuid=tool rdtsc=tool rdtscp=tool calls=56 continuation=56 owned-stack=56 hooks=0 registers=preserved\n\
+                 straddler-neighbour cpuid=tool callbacks=32 traps=0+0 hooks=0\n"
+            },
             "alt_stack={on_alt_stack}: {output:?}"
         );
         let stderr = String::from_utf8_lossy(&output.stderr);
         let stage_count = |stage: &str| stderr.lines().filter(|line| line.ends_with(stage)).count();
         for (stage, expected) in [
-            ("stage=instruction-fault-continuation-cpuid", 80),
+            (
+                "stage=instruction-fault-continuation-cpuid",
+                if cfg!(feature = "liteinst") { 80 } else { 72 },
+            ),
             ("stage=instruction-fault-continuation-rdtsc", 8),
             ("stage=instruction-fault-continuation-rdtscp", 8),
         ] {
@@ -1639,6 +1698,7 @@ fn cross_line_instruction_site_reaches_the_tool_through_the_continuation() {
 // reclaims the site while the jump's displacement survives on the second
 // page. The runtime must end the guest (the earlier patch may survive)
 // rather than resume through the continuation into those bytes.
+#[cfg(feature = "liteinst")]
 #[test]
 fn reclaiming_a_site_whose_jump_partly_survives_fails_closed() {
     use std::os::unix::process::ExitStatusExt;
@@ -1701,7 +1761,11 @@ fn a_stale_syscall_fallback_site_keeps_its_continuation_reservation() {
         );
         assert_eq!(
             String::from_utf8_lossy(&output.stdout),
-            "straddler-syscall-reservation cpuid=tool syscall=getpid traps=8 hooks=0+0\n",
+            if cfg!(feature = "liteinst") {
+                "straddler-syscall-reservation cpuid=tool syscall=getpid traps=8 hooks=0+0\n"
+            } else {
+                "straddler-syscall-reservation cpuid=tool syscall=getpid traps=0 hooks=0+0\n"
+            },
             "alt_stack={on_alt_stack}: {output:?}"
         );
     }
@@ -1727,7 +1791,11 @@ fn a_shared_executable_mapping_is_never_patched() {
         );
         assert_eq!(
             String::from_utf8_lossy(&output.stdout),
-            "shared-mapping cpuid=tool traps=8+8 hooks=0+0 page=unchanged\n",
+            if cfg!(feature = "liteinst") {
+                "shared-mapping cpuid=tool traps=8+8 hooks=0+0 page=unchanged\n"
+            } else {
+                "shared-mapping cpuid=tool traps=0+0 hooks=0+0 page=unchanged\n"
+            },
             "alt_stack={on_alt_stack}: {output:?}"
         );
     }
@@ -1751,7 +1819,11 @@ fn a_refused_site_resuming_into_a_shared_mapping_runs_through_the_continuation()
         );
         assert_eq!(
             String::from_utf8_lossy(&output.stdout),
-            "split-mapping cpuid=tool traps=8\n",
+            if cfg!(feature = "liteinst") {
+                "split-mapping cpuid=tool traps=8\n"
+            } else {
+                "split-mapping cpuid=tool traps=0\n"
+            },
             "alt_stack={on_alt_stack}: {output:?}"
         );
     }
@@ -1760,6 +1832,7 @@ fn a_refused_site_resuming_into_a_shared_mapping_runs_through_the_continuation()
 // A syscall refused before anything was written runs through the SIGSYS
 // continuation without leaving a footprint, so the patchable RDTSC starting
 // exactly at its resume point must still be patched.
+#[cfg(feature = "liteinst")]
 #[test]
 fn an_instruction_at_a_fallback_syscalls_resume_point_is_still_patched() {
     for on_alt_stack in [true, false] {
@@ -1804,7 +1877,11 @@ fn a_shared_alias_is_not_patched_under_a_private_continuation_site() {
         );
         assert_eq!(
             String::from_utf8_lossy(&output.stdout),
-            "private-alias shared=unpatched private=original cpuid=tool traps=8+8\n",
+            if cfg!(feature = "liteinst") {
+                "private-alias shared=unpatched private=original cpuid=tool traps=8+8\n"
+            } else {
+                "private-alias shared=unpatched private=original cpuid=tool traps=0+0\n"
+            },
             "alt_stack={on_alt_stack}: {output:?}"
         );
     }

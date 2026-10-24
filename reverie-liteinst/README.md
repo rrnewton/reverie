@@ -6,9 +6,43 @@ Part of [Hermit](https://hermetic-infra.org) and
 backend and [`hermit-run`](https://crates.io/crates/hermit-run) for the CLI.
 Hermit's `liteinst` feature is optional and off by default.
 
-`reverie-liteinst` is an experimental Linux x86-64 Reverie backend built on the
-standalone `liteinst2` patching library, the shared `reverie-inguest` runtime,
-and `reverie-rpc-transport`.
+`reverie-liteinst` hosts the shared Linux x86-64 in-guest runtime from
+`reverie-inguest` and `reverie-rpc-transport`. Its optional `liteinst` Cargo
+feature adds site patching through the standalone `liteinst2` library.
+
+## Building without LiteInst
+
+The core, preload leaf, and examples enable `liteinst` by default to preserve
+their existing builds. Disable defaults to build the full trap runtime without
+`liteinst2` in the dependency graph:
+
+```sh
+cargo build -p reverie-liteinst-preload --no-default-features
+cargo tree -p reverie-liteinst-preload --no-default-features -i liteinst2
+```
+
+The second command has no dependency tree to print. The same mode supports
+the loader and native-exec feature chain:
+
+```sh
+cargo build -p reverie-liteinst --no-default-features --features exec-native-injection,loader-private-runtime
+```
+
+The trap runtime retains the allocator ownership check, SIGSYS continuation,
+instruction emulation, preload constructor, Tool host, RPC, and lifecycle
+services. It allocates no executable patch arenas and installs no LiteInst
+SIGTRAP guard router. The existing zero per-site counters and per-syscall
+fallback counters describe its execution.
+
+With `liteinst` enabled, `REVERIE_LITEINST_SITE_PATCHING=0` retains the existing
+runtime switch. Without it, patching defaults off; an explicit `1`, including
+in sealed bootstrap data, reports that the runtime was built without LiteInst.
+Consumers that disable dependency defaults can enable the extension explicitly
+with `reverie-liteinst/liteinst`.
+
+The historical crate names remain for compatibility. The shared runtime and
+declining patcher interface already live in `reverie-inguest`; renaming the
+remaining wrapper crates is a separate packaging change.
 
 ## Preload and allocator ownership
 

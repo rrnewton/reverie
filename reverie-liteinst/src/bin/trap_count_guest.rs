@@ -104,8 +104,15 @@ fn main() {
     // SAFETY: names and exported function signatures are fixed by the runtime.
     let hooks = unsafe { count_function(c"reverie_liteinst_site_hook_count")(address) };
     println!("calls={CALLS} traps={traps} hooks={hooks}");
-    assert_eq!(traps, 1);
-    assert_eq!(hooks, CALLS);
+    if cfg!(feature = "liteinst") {
+        assert_eq!(traps, 1);
+        assert_eq!(hooks, CALLS);
+    } else {
+        // The trap-only runtime never claims a patch site. The parent test
+        // independently checks that all CALLS syscalls reached the Tool.
+        assert_eq!(traps, 0);
+        assert_eq!(hooks, 0);
+    }
 }
 
 fn self_lea(hooked: bool) {
@@ -146,7 +153,7 @@ fn self_lea(hooked: bool) {
         // SAFETY: the runtime exports both functions with this exact C ABI.
         let traps = unsafe { count_function(c"reverie_liteinst_site_trap_count")(address) };
         let hooks = unsafe { count_function(c"reverie_liteinst_site_hook_count")(address) };
-        assert_eq!(traps, CALLS);
+        assert_eq!(traps, if cfg!(feature = "liteinst") { CALLS } else { 0 });
         assert_eq!(hooks, 0);
         let start_address = core::ptr::addr_of!(reverie_liteinst_start_lea_syscall) as usize as u64;
         // SAFETY: the runtime exports both functions with this exact C ABI.
@@ -154,8 +161,13 @@ fn self_lea(hooked: bool) {
             unsafe { count_function(c"reverie_liteinst_site_trap_count")(start_address) };
         let start_hooks =
             unsafe { count_function(c"reverie_liteinst_site_hook_count")(start_address) };
-        assert_eq!(start_traps, 1);
-        assert_eq!(start_hooks, CALLS);
+        if cfg!(feature = "liteinst") {
+            assert_eq!(start_traps, 1);
+            assert_eq!(start_hooks, CALLS);
+        } else {
+            assert_eq!(start_traps, 0);
+            assert_eq!(start_hooks, 0);
+        }
         println!(
             "pc-relative hooked: calls={CALLS} addresses={addresses} traps={traps} hooks={hooks} \
              start_addresses={start_addresses} start_traps={start_traps} start_hooks={start_hooks}"
