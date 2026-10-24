@@ -5707,12 +5707,16 @@ impl ElfExecutor {
     pub(crate) fn begin_signal_callback(&mut self) -> Option<reverie::CallbackSignalSite> {
         // Called at a callback boundary with no file-table/recipient guard.
         // Release the private snapshot lock before dropping its retained file.
-        let obsolete = self
+        // Almost always there is no snapshot: test before `take`, which
+        // would copy the whole (empty) slot out on every callback.
+        let slot = self
             .parent_death_exec
             .get_mut()
-            .unwrap_or_else(|p| p.into_inner())
-            .take();
-        drop(obsolete);
+            .unwrap_or_else(|p| p.into_inner());
+        if slot.is_some() {
+            let obsolete = slot.take();
+            drop(obsolete);
+        }
         let identity = self.signal_task_identity()?;
         self.signal_callback_nonce = self.signal_callback_nonce.checked_add(1)?;
         Some(reverie::CallbackSignalSite {
@@ -17493,13 +17497,36 @@ fn set_cwd(state: &mut LoadedStaticElf, directory: std::fs::File) -> i64 {
 /// supervisor descriptor (like the existing `link_at`/`utimensat` fallbacks),
 /// not a guest-visible procfs access.
 fn canonical_fd_path(fd: RawFd) -> Result<std::path::PathBuf, i64> {
-    let proc_path =
-        CString::new(format!("/proc/self/fd/{fd}")).map_err(|_| negative_errno(libc::EINVAL))?;
     let mut buffer = vec![0u8; libc::PATH_MAX as usize];
+    let count = read_fd_link_into(fd, &mut buffer)?;
+    buffer.truncate(count);
+    Ok(std::path::PathBuf::from(std::ffi::OsString::from_vec(
+        buffer,
+    )))
+}
+
+/// Whether `/proc/self/fd/<fd>` names exactly `expected`: the answer of
+/// `canonical_fd_path(fd).is_ok_and(|target| target == expected)`, from the
+/// same `readlink`, into a stack buffer instead of a `PATH_MAX` heap one.
+/// The buffer is longer than `expected`, so a longer target, which
+/// `readlink` truncates to the buffer, never reads as equal; a failed read
+/// is no match, as it is for `canonical_fd_path`.
+fn fd_link_target_is<const N: usize>(fd: RawFd, expected: &[u8; N]) -> bool {
+    const CAPACITY: usize = 64;
+    const { assert!(N < CAPACITY) };
+    let mut buffer = [0u8; CAPACITY];
+    read_fd_link_into(fd, &mut buffer).is_ok_and(|count| buffer[..count] == expected[..])
+}
+
+/// `readlink` of the supervisor's `/proc/self/fd/<fd>` into `buffer`,
+/// returning the number of bytes it stored (truncated to the buffer, as
+/// `readlink` truncates).
+fn read_fd_link_into(fd: RawFd, buffer: &mut [u8]) -> Result<usize, i64> {
+    let proc_path = ProcSelfFdPath::new(fd);
     // SAFETY: proc_path is NUL-terminated and buffer is writable for its length.
     let count = unsafe {
         libc::readlink(
-            proc_path.as_ptr(),
+            proc_path.as_c_str().as_ptr(),
             buffer.as_mut_ptr().cast::<libc::c_char>(),
             buffer.len(),
         )
@@ -17507,10 +17534,55 @@ fn canonical_fd_path(fd: RawFd) -> Result<std::path::PathBuf, i64> {
     if count < 0 {
         return Err(io_error(std::io::Error::last_os_error()));
     }
-    buffer.truncate(count as usize);
-    Ok(std::path::PathBuf::from(std::ffi::OsString::from_vec(
-        buffer,
-    )))
+    Ok(count as usize)
+}
+
+/// `/proc/self/fd/<fd>` as a C string on the stack: the bytes of
+/// `format!("/proc/self/fd/{fd}")`, sign included, with a terminating NUL and
+/// no allocation. A decimal descriptor never contains a NUL.
+struct ProcSelfFdPath {
+    bytes: [u8; PROC_SELF_FD_PATH_CAPACITY],
+    /// The path's length, without the NUL at `bytes[len]`.
+    len: usize,
+}
+
+const PROC_SELF_FD_PREFIX: &[u8] = b"/proc/self/fd/";
+
+/// The prefix, the longest descriptor (`-2147483648`, eleven bytes) and the NUL.
+const PROC_SELF_FD_PATH_CAPACITY: usize = PROC_SELF_FD_PREFIX.len() + 11 + 1;
+
+impl ProcSelfFdPath {
+    fn new(fd: RawFd) -> Self {
+        let mut bytes = [0u8; PROC_SELF_FD_PATH_CAPACITY];
+        bytes[..PROC_SELF_FD_PREFIX.len()].copy_from_slice(PROC_SELF_FD_PREFIX);
+        let mut len = PROC_SELF_FD_PREFIX.len();
+        if fd < 0 {
+            bytes[len] = b'-';
+            len += 1;
+        }
+        // Least significant digit first, then reversed into place.
+        let mut digits = [0u8; 10];
+        let mut count = 0;
+        let mut magnitude = fd.unsigned_abs();
+        loop {
+            digits[count] = b'0' + (magnitude % 10) as u8;
+            count += 1;
+            magnitude /= 10;
+            if magnitude == 0 {
+                break;
+            }
+        }
+        for &digit in digits[..count].iter().rev() {
+            bytes[len] = digit;
+            len += 1;
+        }
+        Self { bytes, len }
+    }
+
+    fn as_c_str(&self) -> &CStr {
+        CStr::from_bytes_with_nul(&self.bytes[..=self.len])
+            .expect("a /proc/self/fd path has one NUL, at its end")
+    }
 }
 
 // ===== Synthetic /proc surface =====
@@ -18195,9 +18267,7 @@ fn is_self_pidfd(state: &LoadedStaticElf, guest_fd: libc::c_int) -> bool {
     let Some(host_fd) = host_fd(state, guest_fd) else {
         return false;
     };
-    if !canonical_fd_path(host_fd)
-        .is_ok_and(|target| target.as_os_str().as_bytes() == b"anon_inode:[pidfd]")
-    {
+    if !fd_link_target_is(host_fd, b"anon_inode:[pidfd]") {
         return false;
     }
     // Before pidfd_open has made the supervisor's pidfd in this process,
@@ -18251,13 +18321,10 @@ fn received_carrier_timestamps(
     if !state.host_metadata_timestamps {
         return IdentityTimestamps::Host;
     }
-    let Ok(target) = canonical_fd_path(file.as_raw_fd()) else {
+    if !fd_link_target_is(file.as_raw_fd(), b"/memfd:reverie-kvm-proc (deleted)") {
         return IdentityTimestamps::Host;
-    };
-    let timestamps = match target.as_os_str().as_bytes() {
-        b"/memfd:reverie-kvm-proc (deleted)" => IdentityTimestamps::ProcSnapshot,
-        _ => return IdentityTimestamps::Host,
-    };
+    }
+    let timestamps = IdentityTimestamps::ProcSnapshot;
     match carrier_seals(file) {
         CarrierSealProbe::Seals(seals) if supported_synthetic_proc_seals(seals) => timestamps,
         CarrierSealProbe::OutOfResources => timestamps,
@@ -66072,3 +66139,7 @@ mod child_panic_owner_tests {
 #[cfg(test)]
 #[path = "executor/exit_descriptor_tests.rs"]
 mod exit_descriptor_tests;
+
+#[cfg(test)]
+#[path = "executor/fd_link_path_tests.rs"]
+mod fd_link_path_tests;
