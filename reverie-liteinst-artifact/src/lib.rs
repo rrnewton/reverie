@@ -18286,7 +18286,7 @@ fn qualify_allocator_tls_boundary_in_source_context(
     image_kind: FixedImageKind,
     sources: Option<&VerifiedCompiledSources>,
 ) -> Result<AllocatorTlsBoundary> {
-    let roles = fixed_role_symbols(elf)?;
+    let roles = fixed_role_symbols_in_file(elf, bytes)?;
     let cell = fixed_tls_cell(elf)?;
     let mut chain = BTreeMap::new();
     let mut hashes = BTreeMap::new();
@@ -18632,7 +18632,9 @@ fn fixed_emitted_role(name: &str) -> Option<&'static str> {
         .find_map(|&(role, observed)| (canonical == observed).then_some(role))
 }
 
-fn fixed_role_symbols(elf: &Elf<'_>) -> Result<BTreeMap<String, sym::Sym>> {
+fn fixed_role_symbol_candidates(
+    elf: &Elf<'_>,
+) -> Result<(BTreeMap<String, sym::Sym>, BTreeMap<&'static str, sym::Sym>)> {
     require(
         !FIXED_EMITTED_ROLE_SYMBOLS.is_empty(),
         "fixed allocator/setup emitted-role census is pending actual release/dev ELF evidence",
@@ -18669,6 +18671,13 @@ fn fixed_role_symbols(elf: &Elf<'_>) -> Result<BTreeMap<String, sym::Sym>> {
             format!("Fixed emitted function {name} is dynamically visible/preemptible"),
         )?;
         for role in aliases {
+            if role == "fixed_heap_usize_max" {
+                require(
+                    FIXED_HEAP_MAX_PROVIDERS.contains(&canonical.as_str()),
+                    "unlisted Fixed usize max provider",
+                )?;
+                continue;
+            }
             require(
                 result.insert(role.to_owned(), symbol).is_none(),
                 format!("ambiguous Fixed emitted role {role}"),
@@ -18681,7 +18690,250 @@ fn fixed_role_symbols(elf: &Elf<'_>) -> Result<BTreeMap<String, sym::Sym>> {
             format!("required actual Fixed emitted role {role} absent"),
         )?;
     }
-    Ok(result)
+    Ok((result, fixed_heap_max_candidates(elf)?))
+}
+
+// These two exact source/type identities were already admitted individually.
+// Coexistence is byte scope only until the complete dev callers select an owner.
+const FIXED_HEAP_MAX_PROVIDERS: [&str; 2] = [
+    "_RNvYjNtNtCs_4core3cmp3Ord3maxCs_6goblin",
+    "_RNvYjNtNtCs_4core3cmp3Ord3maxCs_10serde_core",
+];
+
+fn fixed_heap_max_candidates(elf: &Elf<'_>) -> Result<BTreeMap<&'static str, sym::Sym>> {
+    let mut candidates = BTreeMap::new();
+    for spelling in FIXED_HEAP_MAX_PROVIDERS {
+        let symbols: Vec<_> = elf
+            .syms
+            .iter()
+            .filter(|symbol| {
+                elf.strtab
+                    .get_at(symbol.st_name)
+                    .and_then(canonical_rust_symbol)
+                    .as_deref()
+                    == Some(spelling)
+            })
+            .collect();
+        let dynamic = elf.dynsyms.iter().any(|symbol| {
+            elf.dynstrtab
+                .get_at(symbol.st_name)
+                .and_then(canonical_rust_symbol)
+                .as_deref()
+                == Some(spelling)
+        });
+        if symbols.is_empty() && !dynamic {
+            continue;
+        }
+        require(
+            symbols.len() == 1 && !dynamic,
+            "ambiguous/dynamic exact Fixed usize max provider",
+        )?;
+        let symbol = symbols[0];
+        require(
+            executable_symbol(elf, &symbol) && symbol.st_bind() == sym::STB_LOCAL,
+            "Fixed usize max provider is not executable LOCAL/non-dynamic",
+        )?;
+        candidates.insert(spelling, symbol);
+    }
+    Ok(candidates)
+}
+
+// Symbol-only callers cannot resolve two providers. In particular, the existing
+// dual-alias negative controls still exercise this exact strict entry point.
+fn fixed_role_symbols(elf: &Elf<'_>) -> Result<BTreeMap<String, sym::Sym>> {
+    let (mut roles, candidates) = fixed_role_symbol_candidates(elf)?;
+    require(
+        candidates.len() <= 1,
+        "ambiguous Fixed emitted role fixed_heap_usize_max",
+    )?;
+    if let Some(symbol) = candidates.values().next() {
+        require(
+            roles
+                .insert("fixed_heap_usize_max".to_owned(), *symbol)
+                .is_none(),
+            "Fixed usize max role collision",
+        )?;
+    }
+    Ok(roles)
+}
+
+fn fixed_role_symbols_in_file(elf: &Elf<'_>, bytes: &[u8]) -> Result<BTreeMap<String, sym::Sym>> {
+    let (mut roles, candidates) = fixed_role_symbol_candidates(elf)?;
+    if candidates.len() <= 1 {
+        return fixed_role_symbols(elf);
+    }
+    let selected = fixed_heap_max_owner(elf, bytes, &roles, &candidates)?;
+    require(
+        roles
+            .insert("fixed_heap_usize_max".to_owned(), selected)
+            .is_none(),
+        "Fixed usize max owner collides with a census role",
+    )?;
+    Ok(roles)
+}
+
+// This binds only the owner address. It grants no allocator admission: the
+// unchanged machine context and operation closure must still bind every other
+// removed data/call operand and cover the complete caller instruction census.
+fn fixed_heap_max_owner(
+    elf: &Elf<'_>,
+    bytes: &[u8],
+    roles: &BTreeMap<String, sym::Sym>,
+    candidates: &BTreeMap<&'static str, sym::Sym>,
+) -> Result<sym::Sym> {
+    require(
+        candidates.len() == 2
+            && FIXED_HEAP_MAX_PROVIDERS
+                .iter()
+                .all(|name| candidates.contains_key(name)),
+        "Fixed usize max ownership needs the exact measured two-provider cohort",
+    )?;
+    let mut provider_ranges = Vec::new();
+    for symbol in candidates.values() {
+        require(
+            symbol.st_size == 95,
+            "Fixed usize max provider is not complete95B",
+        )?;
+        let (mapping, _) = unique_file_mapping(elf, bytes, symbol.st_value, 95)?;
+        require(
+            mapping.p_flags & (program_header::PF_R | program_header::PF_W | program_header::PF_X)
+                == program_header::PF_R | program_header::PF_X,
+            "Fixed usize max provider is not uniquely mapped RX",
+        )?;
+        require(
+            extent_writers(elf, symbol.st_value, 95)?.is_empty(),
+            "Fixed usize max provider has a runtime relocation writer",
+        )?;
+        fixed_whole_recipe(
+            symbol.st_value,
+            loaded_bytes(elf, bytes, symbol.st_value, 95)?,
+            DEV_FIXED_HEAP_HEX_27,
+            &[],
+        )?;
+        provider_ranges.push((
+            symbol.st_value,
+            symbol
+                .st_value
+                .checked_add(95)
+                .ok_or("Fixed usize max provider range overflow")?,
+        ));
+    }
+    provider_ranges.sort_unstable();
+    require(
+        provider_ranges
+            .windows(2)
+            .all(|pair| pair[0].1 <= pair[1].0),
+        "Fixed usize max providers alias/overlap",
+    )?;
+
+    let got = local_got_targets(elf, bytes)?;
+    let mut owner = None;
+    for (role, hex, operands, max_operands) in [
+        (
+            "fixed_heap_allocate",
+            DEV_FIXED_HEAP_HEX_0,
+            DEV_FIXED_HEAP_OPERANDS_0,
+            &[(409, 413, 418)][..],
+        ),
+        (
+            "fixed_heap_layout_end",
+            DEV_FIXED_HEAP_HEX_2,
+            DEV_FIXED_HEAP_OPERANDS_2,
+            &[(309, 313, 307), (419, 423, 417)][..],
+        ),
+    ] {
+        let caller = roles
+            .get(role)
+            .ok_or("Fixed usize max owner lacks a complete caller role")?;
+        let length = fixed_hex(hex).len();
+        require(
+            caller.st_size == length as u64,
+            "Fixed usize max ownership requires the exact dev caller extent",
+        )?;
+        let (mapping, _) = unique_file_mapping(elf, bytes, caller.st_value, length)?;
+        require(
+            mapping.p_flags & (program_header::PF_R | program_header::PF_W | program_header::PF_X)
+                == program_header::PF_R | program_header::PF_X,
+            "Fixed usize max caller is not uniquely mapped RX",
+        )?;
+        require(
+            extent_writers(elf, caller.st_value, length)?.is_empty(),
+            "Fixed usize max caller has a runtime relocation writer",
+        )?;
+        let body = loaded_bytes(elf, bytes, caller.st_value, length)?;
+        require(
+            fixed_template_shape(
+                body,
+                &fixed_hex(hex),
+                operands.iter().map(|operand| operand.displacement),
+            ),
+            "Fixed usize max ownership requires the whole2384B/668B dev caller shape",
+        )?;
+        let actual_operands: Vec<_> = operands
+            .iter()
+            .filter(|operand| operand.key == "fixed_heap_usize_max")
+            .map(|operand| (operand.displacement, operand.next, operand.instruction))
+            .collect();
+        require(
+            actual_operands == max_operands
+                && operands
+                    .iter()
+                    .filter(|operand| operand.key == "fixed_heap_usize_max")
+                    .all(|operand| operand.kind == 2 && operand.addend == 0),
+            "Fixed usize max caller operand census differs",
+        )?;
+        for &(displacement, next, _) in max_operands {
+            let slot = fixed_rip_target(caller.st_value, body, displacement, next)?;
+            require(
+                fixed_readonly_range(elf, bytes, slot, 8)? == [0; 8],
+                "Fixed usize max GOT lacks its exact file-zero word",
+            )?;
+            let relros: Vec<_> = elf
+                .program_headers
+                .iter()
+                .filter(|header| header.p_type == program_header::PT_GNU_RELRO)
+                .collect();
+            require(
+                relros.len() == 1
+                    && slot >= relros[0].p_vaddr
+                    && slot.checked_add(8).is_some_and(|end| {
+                        relros[0]
+                            .p_vaddr
+                            .checked_add(relros[0].p_memsz)
+                            .is_some_and(|limit| end <= (limit & !4095))
+                    }),
+                "Fixed usize max GOT is not wholly in unique protected RELRO",
+            )?;
+            let target = *got
+                .get(&slot)
+                .ok_or("Fixed usize max GOT is unauthenticated")?;
+            let writers = extent_writers(elf, slot, 8)?;
+            require(
+                writers.len() == 1
+                    && writers[0].r_offset == slot
+                    && writers[0].r_type == reloc::R_X86_64_RELATIVE
+                    && writers[0].r_sym == 0
+                    && writers[0].r_addend
+                        == Some(i64::try_from(target).map_err(|e| e.to_string())?),
+                "Fixed usize max GOT lacks its sole exact local RELATIVE writer",
+            )?;
+            require(
+                owner.is_none_or(|prior| prior == target),
+                "Fixed usize max callers select different providers",
+            )?;
+            owner = Some(target);
+        }
+    }
+    let target = owner.ok_or("Fixed usize max caller operand is absent")?;
+    let selected: Vec<_> = candidates
+        .values()
+        .filter(|symbol| symbol.st_value == target)
+        .collect();
+    require(
+        selected.len() == 1,
+        "Fixed usize max callers do not select one exact measured provider",
+    )?;
+    Ok(*selected[0])
 }
 
 // The observed equality cohorts can coexist in one DSO. This finite census
@@ -19401,7 +19653,7 @@ fn qualify_fixed_allocator_in_source_context(
         ]),
     )?;
     let disassembly = gate_view.as_str();
-    let mut roles = fixed_role_symbols(elf)?;
+    let mut roles = fixed_role_symbols_in_file(elf, bytes)?;
     if image_kind == FixedImageKind::Detcore {
         add_fixed_native_owner(elf, &mut roles)?;
     }
@@ -19566,7 +19818,7 @@ fn qualify_fixed_allocator_in_source_context(
             },
         );
     }
-    let preparation = preparation_symbols(elf)?;
+    let preparation = preparation_symbols(elf, bytes)?;
     let allowed = preparation.values().map(|symbol| symbol.st_value).collect();
     let mut owned_setup_transfers = BTreeMap::new();
     let mut owned_setup_got_edges = Vec::new();
@@ -24743,6 +24995,7 @@ fn called_shim_path(
 fn qualify_inline_route(
     key: &str,
     elf: &Elf<'_>,
+    bytes: &[u8],
     entry: &SymbolEvidence,
     shim: &SymbolEvidence,
     graph: &CallGraph,
@@ -24753,7 +25006,7 @@ fn qualify_inline_route(
         "m1_alloc->__rust_alloc_zeroed" => "fixed_patch_alloc_zeroed",
         _ => return Err("unsupported optimized allocation route".to_owned()),
     };
-    let roles = fixed_role_symbols(elf)?;
+    let roles = fixed_role_symbols_in_file(elf, bytes)?;
     let endpoint = &roles[endpoint_role];
     let wrappers = elf
         .syms
@@ -25952,7 +26205,7 @@ fn unique_standalone_slot(root_slots: &[u64], generic_slots: &[u64]) -> Result<u
     Ok(root_slots[0])
 }
 
-fn standalone_symbols(elf: &Elf<'_>) -> Result<BTreeMap<String, sym::Sym>> {
+fn standalone_symbols(elf: &Elf<'_>, bytes: &[u8]) -> Result<BTreeMap<String, sym::Sym>> {
     require_legacy_standalone_gate(elf)?;
     let mut symbols = BTreeMap::new();
     for name in [
@@ -25968,7 +26221,7 @@ fn standalone_symbols(elf: &Elf<'_>) -> Result<BTreeMap<String, sym::Sym>> {
     }
     // Whole private typed owner helpers remain source-bound preparation roles.
     // They confer no supplied-body target or compiler-frame dispatch proof.
-    symbols.extend(preparation_symbols(elf)?);
+    symbols.extend(preparation_symbols(elf, bytes)?);
     add_fixed_native_selector(elf, &mut symbols)?;
     add_fixed_native_owner(elf, &mut symbols)?;
     // This cannot be inferred from an rlib/no_mangle declaration. Require the
@@ -26047,7 +26300,7 @@ fn detcore_public_initializer(elf: &Elf<'_>) -> Result<sym::Sym> {
     Ok(root)
 }
 
-fn detcore_symbols(elf: &Elf<'_>) -> Result<BTreeMap<String, sym::Sym>> {
+fn detcore_symbols(elf: &Elf<'_>, bytes: &[u8]) -> Result<BTreeMap<String, sym::Sym>> {
     let mut symbols = BTreeMap::from([(DETCORE_ROOT.to_owned(), detcore_public_initializer(elf)?)]);
     for name in [
         DETCORE_BODY,
@@ -26062,7 +26315,7 @@ fn detcore_symbols(elf: &Elf<'_>) -> Result<BTreeMap<String, sym::Sym>> {
         )?;
         symbols.insert(name.to_owned(), function);
     }
-    symbols.extend(preparation_symbols(elf)?);
+    symbols.extend(preparation_symbols(elf, bytes)?);
     add_fixed_native_selector(elf, &mut symbols)?;
     add_fixed_native_owner(elf, &mut symbols)?;
     require_disjoint_bootstrap_roles(&symbols)?;
@@ -26091,7 +26344,7 @@ fn detcore_init_slot(
                 .ok_or("Detcore native role extent overflow")?,
         ));
     }
-    let generic = generic_symbols(elf)?;
+    let generic = generic_symbols(elf, bytes)?;
     for name in [
         GENERIC_INITIALIZER,
         GENERIC_BODY,
@@ -26296,7 +26549,7 @@ fn generic_public_initializer(elf: &Elf<'_>) -> Result<sym::Sym> {
     Ok(initializer)
 }
 
-fn generic_symbols(elf: &Elf<'_>) -> Result<BTreeMap<String, sym::Sym>> {
+fn generic_symbols(elf: &Elf<'_>, bytes: &[u8]) -> Result<BTreeMap<String, sym::Sym>> {
     let mut symbols = BTreeMap::from([(
         GENERIC_INITIALIZER.to_owned(),
         generic_public_initializer(elf)?,
@@ -26322,7 +26575,7 @@ fn generic_symbols(elf: &Elf<'_>) -> Result<BTreeMap<String, sym::Sym>> {
         CONSTRUCTOR_GATE_OWNER.to_owned(),
         private_function(elf, CONSTRUCTOR_GATE_OWNER)?,
     );
-    symbols.extend(preparation_symbols(elf)?);
+    symbols.extend(preparation_symbols(elf, bytes)?);
     add_fixed_native_selector(elf, &mut symbols)?;
     add_fixed_native_owner(elf, &mut symbols)?;
     // Roles must own distinct complete functions. Alias names or overlapping
@@ -26356,9 +26609,9 @@ fn require_disjoint_bootstrap_roles(symbols: &BTreeMap<String, sym::Sym>) -> Res
     Ok(())
 }
 
-fn combined_bootstrap_symbols(elf: &Elf<'_>) -> Result<BTreeMap<String, sym::Sym>> {
-    let mut symbols = standalone_symbols(elf)?;
-    for (name, function) in generic_symbols(elf)? {
+fn combined_bootstrap_symbols(elf: &Elf<'_>, bytes: &[u8]) -> Result<BTreeMap<String, sym::Sym>> {
+    let mut symbols = standalone_symbols(elf, bytes)?;
+    for (name, function) in generic_symbols(elf, bytes)? {
         if let Some(shared) = symbols.get(&name) {
             require(
                 shared.st_value == function.st_value
@@ -26531,7 +26784,7 @@ fn preparation_role(name: &str) -> Option<&'static str> {
     }
 }
 
-fn preparation_symbols(elf: &Elf<'_>) -> Result<BTreeMap<String, sym::Sym>> {
+fn preparation_symbols(elf: &Elf<'_>, bytes: &[u8]) -> Result<BTreeMap<String, sym::Sym>> {
     let mut result = BTreeMap::new();
     let mut roles = BTreeSet::new();
     for symbol in elf.syms.iter().filter(|s| executable_symbol(elf, s)) {
@@ -26568,7 +26821,7 @@ fn preparation_symbols(elf: &Elf<'_>) -> Result<BTreeMap<String, sym::Sym>> {
             result.insert(name.to_owned(), symbol);
         }
     }
-    for (role, symbol) in fixed_role_symbols(elf)? {
+    for (role, symbol) in fixed_role_symbols_in_file(elf, bytes)? {
         if owned_fixed_setup_role(&role)
             || role == "fixed_panic_nounwind_fmt"
             || PUBLICATION_PREPARATION_ROLES.contains(&role.as_str())
@@ -26995,7 +27248,11 @@ const MAX_OBJDUMP_BYTES: usize = 64 * 1024 * 1024;
 /// The complete node union admitted by the existing required-route and named
 /// allocator graphs. Scope is derived from the ELF, not a receipt or a successful
 /// path: unchosen alternatives remain part of the required byte evidence.
-fn proof_functions(elf: &Elf<'_>, initializer_name: &str) -> Result<BTreeMap<u64, u64>> {
+fn proof_functions(
+    elf: &Elf<'_>,
+    bytes: &[u8],
+    initializer_name: &str,
+) -> Result<BTreeMap<u64, u64>> {
     if initializer_name == STANDALONE_ROOT {
         require_legacy_standalone_gate(elf)?;
     }
@@ -27017,7 +27274,12 @@ fn proof_functions(elf: &Elf<'_>, initializer_name: &str) -> Result<BTreeMap<u64
         })
         .collect();
     addresses.extend(
-        fixed_role_symbols(elf)?
+        fixed_role_symbols_in_file(elf, bytes)?
+            .values()
+            .map(|symbol| symbol.st_value),
+    );
+    addresses.extend(
+        fixed_heap_max_candidates(elf)?
             .values()
             .map(|symbol| symbol.st_value),
     );
@@ -27026,13 +27288,13 @@ fn proof_functions(elf: &Elf<'_>, initializer_name: &str) -> Result<BTreeMap<u64
         addresses.insert(export(elf, name)?.1.st_value);
     }
     if initializer_name == STANDALONE_ROOT {
-        addresses.extend(constructor_proof_functions(elf)?.keys().copied());
+        addresses.extend(constructor_proof_functions(elf, bytes)?.keys().copied());
     } else if initializer_name == DETCORE_ROOT {
-        addresses.extend(detcore_proof_functions(elf)?.keys().copied());
+        addresses.extend(detcore_proof_functions(elf, bytes)?.keys().copied());
     } else {
         addresses.insert(export(elf, initializer_name)?.1.st_value);
     }
-    addresses.extend(generic_symbols(elf)?.values().map(|s| s.st_value));
+    addresses.extend(generic_symbols(elf, bytes)?.values().map(|s| s.st_value));
     for shim in SHIMS {
         let candidates: Vec<_> = elf
             .syms
@@ -27055,12 +27317,17 @@ fn proof_functions(elf: &Elf<'_>, initializer_name: &str) -> Result<BTreeMap<u64
 
 /// The standalone constructor scope is independent of diagnostic M1 exports,
 /// but retains every private constructor and generic bootstrap role.
-fn constructor_proof_functions(elf: &Elf<'_>) -> Result<BTreeMap<u64, u64>> {
+fn constructor_proof_functions(elf: &Elf<'_>, bytes: &[u8]) -> Result<BTreeMap<u64, u64>> {
     require_legacy_standalone_gate(elf)?;
-    let addresses = combined_bootstrap_symbols(elf)?
+    let addresses = combined_bootstrap_symbols(elf, bytes)?
         .values()
         .map(|s| s.st_value)
-        .chain(fixed_role_symbols(elf)?.values().map(|s| s.st_value))
+        .chain(
+            fixed_role_symbols_in_file(elf, bytes)?
+                .values()
+                .map(|s| s.st_value),
+        )
+        .chain(fixed_heap_max_candidates(elf)?.values().map(|s| s.st_value))
         .chain(
             fixed_heap_equal_candidates(elf)?
                 .values()
@@ -27071,9 +27338,9 @@ fn constructor_proof_functions(elf: &Elf<'_>) -> Result<BTreeMap<u64, u64>> {
     selected_function_ranges(elf, addresses)
 }
 
-fn detcore_proof_functions(elf: &Elf<'_>) -> Result<BTreeMap<u64, u64>> {
-    let mut symbols = detcore_symbols(elf)?;
-    for (name, function) in generic_symbols(elf)? {
+fn detcore_proof_functions(elf: &Elf<'_>, bytes: &[u8]) -> Result<BTreeMap<u64, u64>> {
+    let mut symbols = detcore_symbols(elf, bytes)?;
+    for (name, function) in generic_symbols(elf, bytes)? {
         if let Some(shared) = symbols.get(&name) {
             require(
                 *shared == function,
@@ -27087,7 +27354,12 @@ fn detcore_proof_functions(elf: &Elf<'_>) -> Result<BTreeMap<u64, u64>> {
     let addresses = symbols
         .values()
         .map(|s| s.st_value)
-        .chain(fixed_role_symbols(elf)?.values().map(|s| s.st_value))
+        .chain(
+            fixed_role_symbols_in_file(elf, bytes)?
+                .values()
+                .map(|s| s.st_value),
+        )
+        .chain(fixed_heap_max_candidates(elf)?.values().map(|s| s.st_value))
         .chain(compiler_shim_symbols(elf)?.values().map(|s| s.st_value))
         .collect();
     selected_function_ranges(elf, addresses)
@@ -28061,7 +28333,7 @@ fn qualify_standalone_constructor(
     disassembly: &str,
     got: &BTreeMap<u64, u64>,
 ) -> Result<StandaloneConstructorEvidence> {
-    let symbols = standalone_symbols(elf)?;
+    let symbols = standalone_symbols(elf, bytes)?;
     let symbol = |name| symbol_evidence(name, &symbols[name]);
     let address = |name| symbols[name].st_value;
     let prefix = standalone_prefix(
@@ -28092,7 +28364,7 @@ fn qualify_standalone_constructor(
         fixed_native_gate.as_ref(),
         &symbol_evidence(CONSTRUCTOR_GATE, &gate_label),
     )?;
-    let preparation_helpers = preparation_symbols(elf)?;
+    let preparation_helpers = preparation_symbols(elf, bytes)?;
     let initializing: Vec<_> = elf
         .syms
         .iter()
@@ -28181,7 +28453,7 @@ fn qualify_detcore_constructor_route(
     disassembly: &str,
     got: &BTreeMap<u64, u64>,
 ) -> Result<DetcoreConstructorEvidence> {
-    let symbols = detcore_symbols(elf)?;
+    let symbols = detcore_symbols(elf, bytes)?;
     let symbol = |name| symbol_evidence(name, &symbols[name]);
     let address = |name| symbols[name].st_value;
     let (body_materialization, entry_bridge_transfer) = generic_entry_prefix(
@@ -28203,7 +28475,7 @@ fn qualify_detcore_constructor_route(
         fixed_native_gate.as_ref(),
         &symbol_evidence(CONSTRUCTOR_GATE, &gate_label),
     )?;
-    let preparation_helpers = preparation_symbols(elf)?;
+    let preparation_helpers = preparation_symbols(elf, bytes)?;
     // The native election must use the same actual single-byte local guard;
     // an invented data address or a guard for a different region earns no proof.
     let initializing: Vec<_> = elf
@@ -28311,7 +28583,7 @@ fn qualify_generic_bootstrap(
     disassembly: &str,
     got: &BTreeMap<u64, u64>,
 ) -> Result<GenericBootstrapEvidence> {
-    let symbols = generic_symbols(elf)?;
+    let symbols = generic_symbols(elf, bytes)?;
     let symbol = |name| symbol_evidence(name, &symbols[name]);
     let address = |name| symbols[name].st_value;
     let mut registration_roles: BTreeSet<_> = [
@@ -28366,7 +28638,7 @@ fn qualify_generic_bootstrap(
         fixed_native_gate.as_ref(),
         &symbol_evidence(CONSTRUCTOR_GATE, &gate_label),
     )?;
-    let preparation_helpers = preparation_symbols(elf)?;
+    let preparation_helpers = preparation_symbols(elf, bytes)?;
     // The native election must use the same actual single-byte local guard;
     // an invented data address or a guard for a different region earns no proof.
     let initializing: Vec<_> = elf
@@ -28686,7 +28958,7 @@ fn qualify_elf_in_source_context(
     let bytes = fs::read(&artifact.path).map_err(|e| e.to_string())?;
     let elf = Elf::parse(&bytes).map_err(|e| format!("parse actual runtime ELF: {e}"))?;
     authenticate_loader_metadata(&elf, &bytes)?;
-    let scope = proof_functions(&elf, initializer_name)?;
+    let scope = proof_functions(&elf, &bytes, initializer_name)?;
     let evidence =
         collect_proof_evidence(&artifact, &elf, &bytes, initializer_name, &scope, runner)?;
     qualify_elf_from_evidence_in_source_context(
@@ -28729,7 +29001,7 @@ fn qualify_constructor_in_source_context(
     let elf = Elf::parse(&bytes).map_err(|e| format!("parse actual runtime ELF: {e}"))?;
     require_legacy_standalone_gate(&elf)?;
     authenticate_loader_metadata(&elf, &bytes)?;
-    let scope = constructor_proof_functions(&elf)?;
+    let scope = constructor_proof_functions(&elf, &bytes)?;
     let evidence =
         collect_proof_evidence(&artifact, &elf, &bytes, STANDALONE_ROOT, &scope, runner)?;
     qualify_constructor_from_evidence_in_source_context(
@@ -28770,7 +29042,7 @@ fn qualify_detcore_constructor_in_source_context(
     let bytes = fs::read(&artifact.path).map_err(|e| e.to_string())?;
     let elf = Elf::parse(&bytes).map_err(|e| format!("parse actual runtime ELF: {e}"))?;
     authenticate_loader_metadata(&elf, &bytes)?;
-    let scope = detcore_proof_functions(&elf)?;
+    let scope = detcore_proof_functions(&elf, &bytes)?;
     let evidence = collect_proof_evidence(&artifact, &elf, &bytes, DETCORE_ROOT, &scope, runner)?;
     qualify_detcore_constructor_from_evidence_in_source_context(
         path,
@@ -28834,8 +29106,8 @@ fn qualify_detcore_constructor_from_evidence_in_source_context(
     let required_versions = qualify_portability(&elf, &version_text)?;
     let initializer = detcore_public_initializer(&elf)?;
     let (init_array_slot, init_array_resolution) =
-        detcore_init_slot(&elf, &bytes, &detcore_symbols(&elf)?)?;
-    let scope = detcore_proof_functions(&elf)?;
+        detcore_init_slot(&elf, &bytes, &detcore_symbols(&elf, &bytes)?)?;
+    let scope = detcore_proof_functions(&elf, &bytes)?;
     let expected_bytes = proof_function_bytes(&elf, &bytes, &scope)?;
     verify_constructor_complete_bytes(&elf, DETCORE_ROOT, &disassembly, &expected_bytes)?;
     let got_targets = local_got_targets(&elf, &bytes)?;
@@ -29069,7 +29341,7 @@ pub fn qualify_detcore_native_entry_with_sources(
     let elf = Elf::parse(&bytes).map_err(|e| format!("parse native Detcore ELF: {e}"))?;
     authenticate_loader_metadata(&elf, &bytes)?;
     let native_entry = detcore_native_entry(&elf)?;
-    let mut scope = detcore_proof_functions(&elf)?;
+    let mut scope = detcore_proof_functions(&elf, &bytes)?;
     require(
         scope
             .insert(native_entry.st_value, native_entry.st_size)
@@ -29246,7 +29518,7 @@ fn qualify_constructor_from_evidence_in_source_context(
     let initializer = private_function(&elf, STANDALONE_ROOT)?;
     let (init_array_slot, init_array_resolution) =
         standalone_init_slot(&elf, &bytes, &initializer)?;
-    let scope = constructor_proof_functions(&elf)?;
+    let scope = constructor_proof_functions(&elf, &bytes)?;
     let expected_bytes = proof_function_bytes(&elf, &bytes, &scope)?;
     verify_constructor_complete_bytes(&elf, STANDALONE_ROOT, &disassembly, &expected_bytes)?;
     let got_targets = local_got_targets(&elf, &bytes)?;
@@ -29336,20 +29608,21 @@ fn qualify_elf_from_evidence_in_source_context(
     let bytes = fs::read(&artifact.path).map_err(|e| e.to_string())?;
     let elf = Elf::parse(&bytes).map_err(|e| format!("parse actual runtime ELF: {e}"))?;
     authenticate_loader_metadata(&elf, &bytes)?;
-    let (initializer, init_array_slot, init_array_resolution) =
-        if initializer_name == STANDALONE_ROOT {
-            let initializer = private_function(&elf, STANDALONE_ROOT)?;
-            let (slot, resolution) = standalone_init_slot(&elf, &bytes, &initializer)?;
-            (initializer, slot, resolution)
-        } else if initializer_name == DETCORE_ROOT {
-            let initializer = detcore_public_initializer(&elf)?;
-            let (slot, resolution) = detcore_init_slot(&elf, &bytes, &detcore_symbols(&elf)?)?;
-            (initializer, slot, resolution)
-        } else {
-            let (index, initializer) = export(&elf, initializer_name)?;
-            let (slot, resolution) = init_array_slot(&elf, &bytes, index, &initializer)?;
-            (initializer, slot, resolution)
-        };
+    let (initializer, init_array_slot, init_array_resolution) = if initializer_name
+        == STANDALONE_ROOT
+    {
+        let initializer = private_function(&elf, STANDALONE_ROOT)?;
+        let (slot, resolution) = standalone_init_slot(&elf, &bytes, &initializer)?;
+        (initializer, slot, resolution)
+    } else if initializer_name == DETCORE_ROOT {
+        let initializer = detcore_public_initializer(&elf)?;
+        let (slot, resolution) = detcore_init_slot(&elf, &bytes, &detcore_symbols(&elf, &bytes)?)?;
+        (initializer, slot, resolution)
+    } else {
+        let (index, initializer) = export(&elf, initializer_name)?;
+        let (slot, resolution) = init_array_slot(&elf, &bytes, index, &initializer)?;
+        (initializer, slot, resolution)
+    };
     let exports = EXPORTS
         .iter()
         .map(|name| export(&elf, name).map(|(_, s)| symbol_evidence(name, &s)))
@@ -29405,7 +29678,7 @@ fn qualify_elf_from_evidence_in_source_context(
         &objdump_disassembly,
     )?;
     let required_versions = qualify_portability(&elf, &version_text)?;
-    let scope = proof_functions(&elf, initializer_name)?;
+    let scope = proof_functions(&elf, &bytes, initializer_name)?;
     let expected_bytes = proof_function_bytes(&elf, &bytes, &scope)?;
     verify_constructor_complete_bytes(&elf, initializer_name, &disassembly, &expected_bytes)?;
     let functions = elf
@@ -29456,8 +29729,15 @@ fn qualify_elf_from_evidence_in_source_context(
                 call_paths.insert(key, path);
             }
             Err(_) => {
-                let route =
-                    qualify_inline_route(&key, &elf, entry, shim, &graph, &local_got_edges)?;
+                let route = qualify_inline_route(
+                    &key,
+                    &elf,
+                    &bytes,
+                    entry,
+                    shim,
+                    &graph,
+                    &local_got_edges,
+                )?;
                 inline_routes.insert(key, route);
             }
         }
@@ -42599,9 +42879,9 @@ mod tests {
             .unwrap()
             .unwrap();
         assert!(require_legacy_standalone_gate(&elf).is_err());
-        assert!(standalone_symbols(&elf).is_err());
-        assert!(constructor_proof_functions(&elf).is_err());
-        assert!(proof_functions(&elf, STANDALONE_ROOT).is_err());
+        assert!(standalone_symbols(&elf, &bytes).is_err());
+        assert!(constructor_proof_functions(&elf, &bytes).is_err());
+        assert!(proof_functions(&elf, &bytes, STANDALONE_ROOT).is_err());
         // Selector absence restores the source-domain check, not native proof.
         let mut ordinary = bytes.clone();
         put(&mut ordinary, 0x3718, 4, 0);
@@ -43993,6 +44273,631 @@ mod tests {
 
     // These complete miniature ELFs exercise caller-bound selection, not whole
     // artifact admission. Original dev-heap body/data/census controls also run.
+    // Actual ELF bytes exercise the production coexistence binder and all three
+    // scope builders. Synthetic unrelated bootstrap functions grant scope only;
+    // this fixture never claims complete artifact/source/runtime qualification.
+    #[test]
+    fn fixed_heap_max_owner_physical_controls() {
+        const ALLOCATE: u64 = 0x1000;
+        const LAYOUT: u64 = 0x2000;
+        const PROVIDERS: [u64; 2] = [0x3000, 0x3100];
+        const SLOTS: [u64; 3] = [0x8000, 0x8008, 0x8010];
+        const OTHER_SLOT: u64 = 0x8050;
+        const STRINGS: usize = 0x9000;
+        const SYMBOLS: usize = 0xb000;
+        const RELOCATIONS: usize = 0xd000;
+        const DYNAMIC_SYMBOLS: usize = 0xe000;
+        const HASH: usize = 0xf000;
+        const SECTIONS: usize = 0x18000;
+        fn put(bytes: &mut [u8], offset: usize, width: usize, value: u64) {
+            bytes[offset..offset + width].copy_from_slice(&value.to_le_bytes()[..width]);
+        }
+        fn word(bytes: &[u8], offset: usize) -> u64 {
+            u64::from_le_bytes(bytes[offset..offset + 8].try_into().unwrap())
+        }
+        fn relative(bytes: &mut [u8], address: u64, displacement: usize, next: usize, target: u64) {
+            let delta = i32::try_from(target as i64 - (address + next as u64) as i64).unwrap();
+            bytes[displacement..displacement + 4].copy_from_slice(&delta.to_le_bytes());
+        }
+        fn spelling(role: &str) -> String {
+            FIXED_EMITTED_ROLE_SYMBOLS
+                .iter()
+                .chain(FIXED_OPERATION_ROLE_SYMBOLS)
+                .chain(FIXED_SUPPORT_ROLE_SYMBOLS)
+                .find(|(name, _)| *name == role)
+                .unwrap()
+                .1
+                .replace("Cs_", "Cs1_")
+        }
+        fn row(bytes: &[u8], canonical: &str) -> usize {
+            let elf = Elf::parse(bytes).unwrap();
+            let indices: Vec<_> = elf
+                .syms
+                .iter()
+                .enumerate()
+                .filter(|(_, s)| {
+                    elf.strtab.get_at(s.st_name).is_some_and(|name| {
+                        name == canonical
+                            || canonical_rust_symbol(name).as_deref() == Some(canonical)
+                    })
+                })
+                .map(|(index, _)| index)
+                .collect();
+            assert_eq!(indices.len(), 1, "one actual fixture symbol {canonical}");
+            SYMBOLS + indices[0] * 24
+        }
+        fn caller_row(bytes: &[u8], role: &str) -> usize {
+            row(bytes, &spelling(role))
+        }
+        fn context(
+            selected: usize,
+        ) -> (
+            BTreeMap<String, u64>,
+            BTreeMap<u64, u64>,
+            BTreeMap<u64, Vec<u8>>,
+        ) {
+            let mut targets = BTreeMap::new();
+            let mut readonly = BTreeMap::new();
+            for op in DEV_FIXED_HEAP_OPERANDS_0
+                .iter()
+                .chain(DEV_FIXED_HEAP_OPERANDS_2)
+            {
+                if targets.contains_key(op.key) {
+                    continue;
+                }
+                if op.kind == 0 {
+                    let spec = FIXED_READONLY_SPECS
+                        .iter()
+                        .find(|s| s.key == op.key)
+                        .unwrap();
+                    let address = 0x1_0000 + readonly.len() as u64 * 0x100;
+                    targets.insert(op.key.into(), address);
+                    readonly.insert(address, fixed_hex(spec.hex));
+                    if !spec.file_hex.is_empty() {
+                        targets.insert(format!("{}_file", op.key), address + 0x80);
+                        readonly.insert(address + 0x80, fixed_hex(spec.file_hex));
+                    }
+                } else {
+                    targets.insert(op.key.into(), 0x7000);
+                }
+            }
+            targets.insert("fixed_heap_usize_max".into(), PROVIDERS[selected]);
+            let got = SLOTS
+                .into_iter()
+                .map(|slot| (slot, PROVIDERS[selected]))
+                .chain([(OTHER_SLOT, 0x7000)])
+                .collect();
+            (targets, got, readonly)
+        }
+        fn fixture(selected: usize) -> Vec<u8> {
+            let mut bytes = vec![0_u8; 0x2_0000];
+            bytes[..7].copy_from_slice(b"\x7fELF\x02\x01\x01");
+            for (offset, width, value) in [
+                (16, 2, 3),
+                (18, 2, 62),
+                (20, 4, 1),
+                (32, 8, 64),
+                (40, 8, SECTIONS as u64),
+                (52, 2, 64),
+                (54, 2, 56),
+                (56, 2, 7),
+                (58, 2, 64),
+                (60, 2, 9),
+            ] {
+                put(&mut bytes, offset, width, value);
+            }
+            for (index, kind, flags, address, size) in [
+                (0, 1, 4, 0, 0x1000),
+                (1, 1, 5, 0x1000, 0x7000),
+                (2, 1, 6, 0x8000, 0x1000),
+                (3, 1, 4, 0x9000, 0x1_7000),
+                (4, 0x6474_e552, 4, 0x8000, 0x1000),
+                (5, 2, 6, 0x8200, 16 * 10),
+                (6, 6, 4, 64, 56 * 7),
+            ] {
+                let base = 64 + index * 56;
+                for (offset, width, value) in [
+                    (0, 4, kind),
+                    (4, 4, flags),
+                    (8, 8, address),
+                    (16, 8, address),
+                    (24, 8, address),
+                    (32, 8, size),
+                    (40, 8, size),
+                    (48, 8, 4096),
+                ] {
+                    put(&mut bytes, base + offset, width, value);
+                }
+            }
+            let (targets, _, _) = context(selected);
+            for (role, address, hex, operands) in [
+                (
+                    "fixed_heap_allocate",
+                    ALLOCATE,
+                    DEV_FIXED_HEAP_HEX_0,
+                    DEV_FIXED_HEAP_OPERANDS_0,
+                ),
+                (
+                    "fixed_heap_layout_end",
+                    LAYOUT,
+                    DEV_FIXED_HEAP_HEX_2,
+                    DEV_FIXED_HEAP_OPERANDS_2,
+                ),
+            ] {
+                let mut body = fixed_hex(hex);
+                let mut max_site = if role == "fixed_heap_allocate" { 0 } else { 1 };
+                for op in operands {
+                    let operand = if op.key == "fixed_heap_usize_max" {
+                        let slot = SLOTS[max_site];
+                        max_site += 1;
+                        slot
+                    } else if op.kind == 2 {
+                        OTHER_SLOT
+                    } else {
+                        targets[op.key] + op.addend
+                    };
+                    relative(&mut body, address, op.displacement, op.next, operand);
+                }
+                bytes[address as usize..address as usize + body.len()].copy_from_slice(&body);
+            }
+            for address in PROVIDERS {
+                let body = fixed_hex(DEV_FIXED_HEAP_HEX_27);
+                assert_eq!(body.len(), 95);
+                bytes[address as usize..address as usize + body.len()].copy_from_slice(&body);
+            }
+            let mut entries: Vec<(String, u64, u64, u8, u8)> = FIXED_REQUIRED_ROLES
+                .iter()
+                .enumerate()
+                .map(|(index, role)| (spelling(role), 0x4000 + index as u64 * 32, 16, 0, 2))
+                .collect();
+            entries.extend([
+                (spelling("fixed_heap_allocate"), ALLOCATE, 2384, 0, 2),
+                (spelling("fixed_heap_layout_end"), LAYOUT, 668, 0, 2),
+            ]);
+            entries.extend(
+                FIXED_HEAP_MAX_PROVIDERS
+                    .iter()
+                    .zip(PROVIDERS)
+                    .map(|(name, address)| (name.replace("Cs_", "Cs1_"), address, 95, 0, 0)),
+            );
+            entries.push(("fixture_other_local".into(), 0x7000, 16, 0, 2));
+            let private_names = [
+                STANDALONE_ROOT,
+                STANDALONE_BODY,
+                STANDALONE_INITIALIZER,
+                STANDALONE_RESOLVER,
+                CONSTRUCTOR_BRIDGE,
+                CONSTRUCTOR_ADOPTION,
+                CONSTRUCTOR_GATE_OWNER,
+                GENERIC_BODY,
+                GENERIC_BRIDGE,
+                GENERIC_ADOPTION,
+                DETCORE_BODY,
+            ];
+            for (index, name) in private_names.into_iter().chain(SHIMS).enumerate() {
+                entries.push((name.into(), 0x5000 + index as u64 * 32, 16, 0, 2));
+            }
+            for (index, name) in EXPORTS
+                .into_iter()
+                .chain([GENERIC_INITIALIZER, DETCORE_ROOT])
+                .enumerate()
+            {
+                entries.push((
+                    name.into(),
+                    0x6000 + index as u64 * 32,
+                    16,
+                    1,
+                    if name == DETCORE_ROOT { 3 } else { 0 },
+                ));
+            }
+            let mut strings = vec![0];
+            let mut dynamic_entries = Vec::new();
+            for (index, (name, address, size, binding, visibility)) in entries.iter().enumerate() {
+                let row = SYMBOLS + (index + 1) * 24;
+                for (offset, width, value) in [
+                    (0, 4, strings.len() as u64),
+                    (4, 1, u64::from(*binding << 4 | 2)),
+                    (5, 1, u64::from(*visibility)),
+                    (6, 2, 1),
+                    (8, 8, *address),
+                    (16, 8, *size),
+                ] {
+                    put(&mut bytes, row + offset, width, value);
+                }
+                strings.extend_from_slice(name.as_bytes());
+                strings.push(0);
+                if *binding == 1 {
+                    dynamic_entries.push(bytes[row..row + 24].to_vec());
+                }
+            }
+            assert!(strings.len() < SYMBOLS - STRINGS);
+            bytes[STRINGS..STRINGS + strings.len()].copy_from_slice(&strings);
+            for (index, entry) in dynamic_entries.iter().enumerate() {
+                bytes[DYNAMIC_SYMBOLS + (index + 1) * 24..DYNAMIC_SYMBOLS + (index + 2) * 24]
+                    .copy_from_slice(entry);
+            }
+            let dynamic_count = dynamic_entries.len() + 1;
+            put(&mut bytes, HASH, 4, 1);
+            put(&mut bytes, HASH + 4, 4, dynamic_count as u64);
+            put(&mut bytes, HASH + 8, 4, 1);
+            for index in 1..dynamic_count - 1 {
+                put(&mut bytes, HASH + 12 + index * 4, 4, (index + 1) as u64);
+            }
+            for (index, slot) in SLOTS.into_iter().chain([OTHER_SLOT]).enumerate() {
+                put(&mut bytes, RELOCATIONS + index * 24, 8, slot);
+                put(&mut bytes, RELOCATIONS + index * 24 + 8, 8, 8);
+                put(
+                    &mut bytes,
+                    RELOCATIONS + index * 24 + 16,
+                    8,
+                    if slot == OTHER_SLOT {
+                        0x7000
+                    } else {
+                        PROVIDERS[selected]
+                    },
+                );
+            }
+            for (index, (tag, value)) in [
+                (7, RELOCATIONS as u64),
+                (8, 96),
+                (9, 24),
+                (6, DYNAMIC_SYMBOLS as u64),
+                (11, 24),
+                (5, STRINGS as u64),
+                (10, strings.len() as u64),
+                (4, HASH as u64),
+                (24, 0),
+                (0, 0),
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                put(&mut bytes, 0x8200 + index * 16, 8, tag);
+                put(&mut bytes, 0x8208 + index * 16, 8, value);
+            }
+            for (index, kind, flags, address, size, link, entry) in [
+                (1, 1, 6, 0x1000, 0x7000, 0, 0),
+                (2, 1, 3, 0x8000, 0x1000, 0, 0),
+                (3, 3, 2, STRINGS as u64, strings.len() as u64, 0, 0),
+                (
+                    4,
+                    2,
+                    0,
+                    SYMBOLS as u64,
+                    (entries.len() as u64 + 1) * 24,
+                    3,
+                    24,
+                ),
+                (5, 4, 2, RELOCATIONS as u64, 96, 7, 24),
+                (6, 6, 3, 0x8200, 16 * 10, 3, 16),
+                (
+                    7,
+                    11,
+                    2,
+                    DYNAMIC_SYMBOLS as u64,
+                    dynamic_count as u64 * 24,
+                    3,
+                    24,
+                ),
+                (8, 5, 2, HASH as u64, (dynamic_count as u64 + 3) * 4, 7, 4),
+            ] {
+                let base = SECTIONS + index * 64;
+                for (offset, width, value) in [
+                    (4, 4, kind),
+                    (8, 8, flags),
+                    (16, 8, address),
+                    (24, 8, address),
+                    (32, 8, size),
+                    (40, 4, link),
+                    (48, 8, 8),
+                    (56, 8, entry),
+                ] {
+                    put(&mut bytes, base + offset, width, value);
+                }
+            }
+            bytes
+        }
+        fn select(bytes: &[u8]) -> Result<BTreeMap<String, sym::Sym>> {
+            let elf = Elf::parse(bytes).map_err(|error| error.to_string())?;
+            fixed_role_symbols_in_file(&elf, bytes)
+        }
+        fn extra_relocation(bytes: &mut [u8], slot: u64, kind: u64, target: u64) {
+            put(bytes, RELOCATIONS + 96, 8, slot);
+            put(bytes, RELOCATIONS + 104, 8, kind);
+            put(bytes, RELOCATIONS + 112, 8, target);
+            put(bytes, 0x8208 + 16, 8, 120);
+            put(bytes, SECTIONS + 5 * 64 + 32, 8, 120);
+        }
+        for selected in 0..2 {
+            let bytes = fixture(selected);
+            let elf = Elf::parse(&bytes).unwrap();
+            authenticate_loader_metadata(&elf, &bytes).unwrap();
+            assert!(
+                fixed_role_symbols(&elf).is_err(),
+                "symbol-only ambiguity stays strict"
+            );
+            let chosen = select(&bytes).expect("both exact providers, one caller-bound owner");
+            assert_eq!(chosen["fixed_heap_usize_max"].st_value, PROVIDERS[selected]);
+            for scope in [
+                proof_functions(&elf, &bytes, STANDALONE_ROOT).unwrap(),
+                constructor_proof_functions(&elf, &bytes).unwrap(),
+                detcore_proof_functions(&elf, &bytes).unwrap(),
+            ] {
+                let full = proof_function_bytes(&elf, &bytes, &scope).unwrap();
+                for address in PROVIDERS {
+                    assert_eq!(scope.get(&address), Some(&95));
+                    assert_eq!(full[&address], fixed_hex(DEV_FIXED_HEAP_HEX_27));
+                }
+            }
+            let (targets, got, readonly) = context(selected);
+            for (role, address, length) in [
+                ("fixed_heap_allocate", ALLOCATE, 2384),
+                ("fixed_heap_layout_end", LAYOUT, 668),
+            ] {
+                dev_fixed_heap_recipe(
+                    role,
+                    address,
+                    &bytes[address as usize..address as usize + length],
+                    &targets,
+                    &got,
+                    &readonly,
+                )
+                .expect("unchanged complete caller recipe positive");
+            }
+            for provider in 0..2 {
+                for index in 0..95 {
+                    let mut bad = bytes.clone();
+                    bad[PROVIDERS[provider] as usize + index] ^= 1;
+                    assert!(
+                        select(&bad).is_err(),
+                        "provider {provider} byte {index}, including unchosen"
+                    );
+                }
+                let symbol = row(&bytes, FIXED_HEAP_MAX_PROVIDERS[provider]);
+                for (offset, width, value) in [
+                    (4, 1, 0x12),
+                    (4, 1, 0x22),
+                    (4, 1, 0),
+                    (4, 1, 1),
+                    (6, 2, 0),
+                    (8, 8, 0x9000),
+                    (16, 8, 0),
+                    (16, 8, 94),
+                    (16, 8, 96),
+                ] {
+                    let mut bad = bytes.clone();
+                    put(&mut bad, symbol + offset, width, value);
+                    assert!(
+                        select(&bad).is_err(),
+                        "provider metadata {provider}:{offset}/{value}"
+                    );
+                }
+                let mut duplicate = bytes.clone();
+                let end = word(&bytes, SECTIONS + 4 * 64 + 32) as usize;
+                duplicate[SYMBOLS + end..SYMBOLS + end + 24]
+                    .copy_from_slice(&bytes[symbol..symbol + 24]);
+                put(&mut duplicate, SECTIONS + 4 * 64 + 32, 8, end as u64 + 24);
+                assert!(
+                    select(&duplicate).is_err(),
+                    "duplicate raw canonical provider"
+                );
+                let mut dynamic = bytes.clone();
+                dynamic[DYNAMIC_SYMBOLS + 24..DYNAMIC_SYMBOLS + 48]
+                    .copy_from_slice(&bytes[symbol..symbol + 24]);
+                assert!(
+                    select(&dynamic).is_err(),
+                    "canonical dynamic provider exposure"
+                );
+                let mut code_writer = bytes.clone();
+                extra_relocation(&mut code_writer, PROVIDERS[provider] - 7, 8, 0x7000);
+                assert!(
+                    select(&code_writer).is_err(),
+                    "partial writer overlaps provider"
+                );
+            }
+            let second = row(&bytes, FIXED_HEAP_MAX_PROVIDERS[1]);
+            for address in [PROVIDERS[0], PROVIDERS[0] + 1] {
+                let mut bad = bytes.clone();
+                put(&mut bad, second + 8, 8, address);
+                assert!(select(&bad).is_err(), "same-address/overlapping providers");
+            }
+            for (role, address, hex, operands) in [
+                (
+                    "fixed_heap_allocate",
+                    ALLOCATE,
+                    DEV_FIXED_HEAP_HEX_0,
+                    DEV_FIXED_HEAP_OPERANDS_0,
+                ),
+                (
+                    "fixed_heap_layout_end",
+                    LAYOUT,
+                    DEV_FIXED_HEAP_HEX_2,
+                    DEV_FIXED_HEAP_OPERANDS_2,
+                ),
+            ] {
+                let symbol = caller_row(&bytes, role);
+                let length = fixed_hex(hex).len();
+                for (offset, width, value) in [
+                    (4, 1, 0),
+                    (6, 2, 0),
+                    (16, 8, length as u64 - 1),
+                    (16, 8, length as u64 + 1),
+                ] {
+                    let mut bad = bytes.clone();
+                    put(&mut bad, symbol + offset, width, value);
+                    assert!(
+                        select(&bad).is_err(),
+                        "missing/truncated/extended caller {role}"
+                    );
+                }
+                let masked: BTreeSet<_> = operands
+                    .iter()
+                    .flat_map(|op| op.displacement..op.displacement + 4)
+                    .collect();
+                for index in (0..length).filter(|index| !masked.contains(index)) {
+                    let mut bad = bytes.clone();
+                    bad[address as usize + index] ^= 1;
+                    assert!(
+                        select(&bad).is_err(),
+                        "complete {role} literal byte {index}"
+                    );
+                }
+                let mut code_writer = bytes.clone();
+                extra_relocation(&mut code_writer, address - 7, 8, 0x7000);
+                assert!(
+                    select(&code_writer).is_err(),
+                    "writer overlaps caller first byte"
+                );
+                // Coexistence only chooses an owner. An unrelated removed
+                // displacement still requires its original complete operation
+                // proof; the unchanged recipe must reject every such mutation.
+                for op in operands
+                    .iter()
+                    .filter(|op| op.key != "fixed_heap_usize_max")
+                {
+                    let mut bad = bytes.clone();
+                    bad[address as usize + op.displacement] ^= 1;
+                    select(&bad).expect("owner binder does not authenticate unrelated operands");
+                    assert!(
+                        dev_fixed_heap_recipe(
+                            role,
+                            address,
+                            &bad[address as usize..address as usize + length],
+                            &targets,
+                            &got,
+                            &readonly
+                        )
+                        .is_err(),
+                        "unchanged full caller proof accepted unrelated operand {}",
+                        op.key
+                    );
+                }
+            }
+            for (site, (address, displacement, next)) in
+                [(ALLOCATE, 409, 413), (LAYOUT, 309, 313), (LAYOUT, 419, 423)]
+                    .into_iter()
+                    .enumerate()
+            {
+                for slot in [0x8070, 0x8001, 0x9000, 0x7ffc] {
+                    let mut bad = bytes.clone();
+                    relative(
+                        &mut bad[address as usize..],
+                        address,
+                        displacement,
+                        next,
+                        slot,
+                    );
+                    assert!(
+                        select(&bad).is_err(),
+                        "site {site} missing/partial/outside GOT"
+                    );
+                }
+                let relocation = RELOCATIONS + site * 24;
+                for (offset, width, value) in [
+                    (8, 8, 0),
+                    (8, 8, 6),
+                    (8, 8, (1 << 32) | 8),
+                    (8, 8, 10),
+                    (16, 8, 0),
+                    (16, 8, 0x7000),
+                    (16, 8, PROVIDERS[1 - selected]),
+                ] {
+                    let mut bad = bytes.clone();
+                    put(&mut bad, relocation + offset, width, value);
+                    assert!(
+                        select(&bad).is_err(),
+                        "site {site} missing/foreign/partial/wrong/split writer"
+                    );
+                }
+                let mut nonzero = bytes.clone();
+                put(&mut nonzero, SLOTS[site] as usize, 8, 1);
+                assert!(select(&nonzero).is_err(), "site {site} nonzero raw GOT");
+                for slot in [SLOTS[site], SLOTS[site] - 1, SLOTS[site] + 7] {
+                    let mut duplicate = bytes.clone();
+                    extra_relocation(&mut duplicate, slot, 8, PROVIDERS[selected]);
+                    assert!(
+                        select(&duplicate).is_err(),
+                        "site {site} duplicate/overlapping writer"
+                    );
+                }
+            }
+            for (offset, width, value) in [
+                (64 + 56 + 4, 4, 7),                 // writable code
+                (64 + 56 + 4, 4, 4),                 // nonexecutable code
+                (64 + 56 + 8, 8, 0x2000),            // wrong actual file/code join
+                (64 + 56 + 32, 8, 0x2000),           // provider is memory-only
+                (64 + 2 * 56 + 4, 4, 2),             // unreadable GOT mapping
+                (64 + 2 * 56 + 32, 8, 8),            // truncated GOT file backing
+                (64 + 4 * 56, 4, 0),                 // missing RELRO
+                (64 + 4 * 56 + 16, 8, 0x8008),       // partial first slot
+                (64 + 4 * 56 + 40, 8, 0xfff),        // unprotected final page
+                (SECTIONS + 2 * 64 + 4, 4, 8),       // NOBITS is not file proof
+                (SECTIONS + 2 * 64 + 8, 8, 0),       // no allocated section
+                (SECTIONS + 2 * 64 + 8, 8, 7),       // executable data section
+                (SECTIONS + 2 * 64 + 8, 8, 0x403),   // TLS section
+                (SECTIONS + 2 * 64 + 24, 8, 0x8008), // file/load mismatch
+                (SECTIONS + 2 * 64 + 32, 8, 7),      // partial data section
+            ] {
+                let mut bad = bytes.clone();
+                put(&mut bad, offset, width, value);
+                assert!(
+                    select(&bad).is_err(),
+                    "physical mapping/section/RELRO mutation {offset:#x}/{value:#x}"
+                );
+            }
+            for header in [1, 4] {
+                let mut duplicate = bytes.clone();
+                duplicate[64 + 7 * 56..64 + 8 * 56]
+                    .copy_from_slice(&bytes[64 + header * 56..64 + (header + 1) * 56]);
+                put(&mut duplicate, 56, 2, 8);
+                // Keep the loaded PHDR representation correct so this control
+                // tests duplicate load/RELRO refusal, not stale header length.
+                put(&mut duplicate, 64 + 6 * 56 + 32, 8, 56 * 8);
+                put(&mut duplicate, 64 + 6 * 56 + 40, 8, 56 * 8);
+                assert!(select(&duplicate).is_err(), "duplicate load/RELRO");
+            }
+            // A malformed selected spelling falls back only to the historical
+            // single-provider census. It still cannot satisfy the mandatory
+            // complete caller operand proof against the remaining owner.
+            let symbol = row(&bytes, FIXED_HEAP_MAX_PROVIDERS[selected]);
+            let string = STRINGS
+                + u32::from_le_bytes(bytes[symbol..symbol + 4].try_into().unwrap()) as usize;
+            let length = bytes[string..].iter().position(|b| *b == 0).unwrap();
+            let raw_name = std::str::from_utf8(&bytes[string..string + length]).unwrap();
+            for part in [
+                "Yj",
+                "3max",
+                if selected == 0 {
+                    "6goblin"
+                } else {
+                    "10serde_core"
+                },
+            ] {
+                let mut wrong = bytes.clone();
+                wrong[string + raw_name.find(part).unwrap() + part.len() - 1] = b'z';
+                let chosen = select(&wrong).expect("old single-provider census remains available");
+                assert_eq!(
+                    chosen["fixed_heap_usize_max"].st_value,
+                    PROVIDERS[1 - selected]
+                );
+                let mut expected_targets = targets.clone();
+                expected_targets.insert("fixed_heap_usize_max".into(), PROVIDERS[1 - selected]);
+                assert!(
+                    dev_fixed_heap_recipe(
+                        "fixed_heap_allocate",
+                        ALLOCATE,
+                        &wrong[ALLOCATE as usize..ALLOCATE as usize + 2384],
+                        &expected_targets,
+                        &got,
+                        &readonly
+                    )
+                    .is_err(),
+                    "wrong selected exact type/method/crate"
+                );
+            }
+        }
+    }
+
     fn fixed_heap_equal_cohort_controls() {
         const OPTIONS: [u64; 3] = [0x2000, 0x2200, 0x2400];
         const SCALARS: [u64; 3] = [0x2100, 0x2300, 0x2500];
