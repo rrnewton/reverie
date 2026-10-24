@@ -786,7 +786,7 @@ impl GuestClock {
             let error = self.poison(reason);
             // The pin is released after poisoning, as it was when it was
             // this function's local.
-            drop(affinity.take());
+            *affinity = None;
             return Err(error);
         }
         #[cfg(test)]
@@ -1420,8 +1420,8 @@ impl Drop for CountInterval<'_> {
             self.clock.poison("unwound during counted KVM_RUN");
         }
         // Released with the interval, after any poisoning, as a field it
-        // owned inline would be.
-        drop(self.affinity.take());
+        // owned inline would be. Dropped in place: `take` would copy it out.
+        *self.affinity = None;
     }
 }
 
