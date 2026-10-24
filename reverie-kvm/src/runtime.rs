@@ -600,6 +600,13 @@ trait GuestSyscallExecutor<T: Tool>:
         true
     }
 
+    /// How this executor spells the pidfd self sentinels
+    /// ([`reverie::pidfd_self`]). An executor states it; one that does not,
+    /// such as a caller-supplied executor, is unknown.
+    fn pidfd_self_spelling(&self) -> reverie::PidfdSelfSpelling {
+        reverie::PidfdSelfSpelling::Unknown
+    }
+
     /// Stages a segment base that a provider's `SegmentBase` outcome
     /// reported, for the next return to the guest. An adapter that cannot
     /// apply one refuses: it ends the run rather than dropping the base.
@@ -1427,6 +1434,13 @@ where
         self.backend.vcpu.read_clock()
     }
 
+    /// The static-ELF executor answers every syscall itself and implements no
+    /// `pidfd_send_signal`: a call naming either sentinel would get its
+    /// unsupported-syscall fallback. It declares that, and nothing is probed.
+    fn pidfd_self_spelling(&self) -> reverie::PidfdSelfSpelling {
+        reverie::PidfdSelfSpelling::Unsupported
+    }
+
     fn has_cpuid_interception(&self) -> bool {
         self.backend.has_cpuid_interception()
     }
@@ -1948,6 +1962,10 @@ impl<T: Tool> GlobalRPC<T::GlobalState> for KvmGuest<'_, T> {
 impl<T: Tool> Guest<T> for KvmGuest<'_, T> {
     fn has_cpuid_interception(&self) -> bool {
         self.executor.has_cpuid_interception()
+    }
+
+    fn pidfd_self_spelling(&self) -> reverie::PidfdSelfSpelling {
+        self.executor.pidfd_self_spelling()
     }
 
     type Memory = UserMemory;

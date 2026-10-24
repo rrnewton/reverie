@@ -40,6 +40,8 @@ pub mod native_exec_fds;
 pub mod native_exec_mappings;
 #[cfg(feature = "coordinator-rpc")]
 pub mod patcher;
+#[cfg(feature = "coordinator-rpc")]
+pub(crate) mod pidfd_self;
 pub mod protect;
 pub mod restorer;
 #[cfg(feature = "coordinator-rpc")]

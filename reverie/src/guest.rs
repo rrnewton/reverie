@@ -1093,6 +1093,17 @@ pub trait Guest<T: Tool>: Send + GlobalRPC<T::GlobalState> {
         None
     }
 
+    /// How the kernel that physically executes this guest's syscalls spells
+    /// the pidfd self sentinels ([`crate::pidfd_self`]): a stable fact of the
+    /// backend's execution, qualified once by the backend at its own raw
+    /// native leaf, or declared by a backend that executes these calls itself.
+    /// A tool that forwards a call naming a sentinel spells it this way below
+    /// any record of the call. The default, for a backend that states nothing,
+    /// is [`crate::PidfdSelfSpelling::Unknown`].
+    fn pidfd_self_spelling(&self) -> crate::PidfdSelfSpelling {
+        crate::PidfdSelfSpelling::Unknown
+    }
+
     /// Returns half-open guest address ranges, `(start, end)`, that together
     /// contain every address at which a syscall could store its output into
     /// guest memory, as Linux's `put_user` does for `time(2)`'s `tloc`.
@@ -1442,6 +1453,10 @@ where
 
     fn take_unsupported_refusal(&mut self) -> Option<crate::UnsupportedRefusal> {
         self.inner.take_unsupported_refusal()
+    }
+
+    fn pidfd_self_spelling(&self) -> crate::PidfdSelfSpelling {
+        self.inner.pidfd_self_spelling()
     }
 
     fn storable_memory_ranges(&self) -> Result<Vec<(u64, u64)>, crate::Error> {

@@ -24,6 +24,7 @@ mod evidence;
 mod host_linux;
 mod launcher;
 mod mapping_capture;
+mod pidfd_self;
 pub mod sync_rpc;
 #[cfg(feature = "prototype-runtime")]
 mod tools;
@@ -823,6 +824,10 @@ where
 {
     type Memory = DbtMemory;
     type Stack = DbtStack;
+
+    fn pidfd_self_spelling(&self) -> reverie::PidfdSelfSpelling {
+        crate::pidfd_self::spelling(self.tid, self.pid, self.context, self.invoke_syscall)
+    }
 
     fn tid(&self) -> Pid {
         self.tid

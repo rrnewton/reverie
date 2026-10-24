@@ -13109,6 +13109,10 @@ impl<L: Tool + 'static> Guest<L> for TracedTask<L> {
     type Memory = crate::tool_memory::ToolMemory;
     type Stack = GuestStack;
 
+    fn pidfd_self_spelling(&self) -> reverie::PidfdSelfSpelling {
+        crate::pidfd_self::spelling()
+    }
+
     fn signal_info(&self) -> Option<[u8; reverie::SIGNAL_INFO_SIZE]> {
         self.reported_signal.and_then(|(_, info)| info)
     }

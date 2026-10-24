@@ -2992,6 +2992,37 @@ impl<'a, T: Tool, R: HostRuntime> Guest<T> for InGuest<'a, T, R> {
         unsafe { runtime_tool_syscall(number, args) }
     }
 
+    /// Qualified at the guest's trusted physical gate, where this backend's
+    /// forwarded syscalls run ([`host_linux::forward`]), and only inside the
+    /// admitted Tool callback that owns this guest thread's turn. Outside
+    /// that scope, or once the guest admitted a seccomp filter of its own
+    /// (which could fail or fake the gate's calls), nothing is executed and
+    /// the spelling is unknown.
+    fn pidfd_self_spelling(&self) -> reverie::PidfdSelfSpelling {
+        if !tool_callback_active() || guest_filter_admitted() {
+            return reverie::PidfdSelfSpelling::Unknown;
+        }
+        let tid = self.tid;
+        let runtime = self.runtime;
+        super::pidfd_self::spelling(|pidfd| {
+            let number = libc::SYS_pidfd_send_signal;
+            let args = reverie::pidfd_self::probe_args(pidfd).map(|arg| arg as u64);
+            // `inject`'s admission for this call: the guard any forwarded
+            // call passes. A signal-0 send names no descriptor, mapping,
+            // exit, protection key or signal mask, and `sigalrm::intercept`
+            // does not handle pidfd_send_signal, so no other admission step
+            // of `inject` applies to it.
+            if let Some(error) = injected_syscall_guard(runtime, number, args) {
+                return Err(error);
+            }
+            // SAFETY: on this guest thread, in its own turn inside the Tool
+            // callback, with every applicable admission filter run above on
+            // exactly these arguments.
+            let raw = unsafe { host_linux::forward(tid, number, args) };
+            Errno::from_ret(raw as usize)
+        })
+    }
+
     fn thread_state_mut(&mut self) -> &mut T::ThreadState {
         self.state
     }
@@ -3706,6 +3737,124 @@ mod tests {
             // callback means the method must still use an intercepted site.
             let _ = guest.tool_syscall(Sysno::getpid, [0; 6]);
             super::super::support::exit_now(118);
+        }
+    }
+
+    /// The spelling is qualified only inside the admitted Tool callback.
+    #[test]
+    fn pidfd_self_spelling_outside_callback_executes_nothing() {
+        use std::io::Write;
+        const CHILD: &str = "REVERIE_PIDFD_SELF_SPELLING_TEST_CHILD";
+        const TEST: &str =
+            "guest::host::tests::pidfd_self_spelling_outside_callback_executes_nothing";
+        const READY: &[u8] = b"pidfd-self-outside-ready\n";
+        if std::env::var_os(CHILD).as_deref() != Some(std::ffi::OsStr::new(TEST)) {
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", TEST, "--nocapture", "--test-threads=1"])
+                .env(CHILD, TEST)
+                .output()
+                .unwrap();
+            assert_eq!(output.status.code(), Some(0), "{output:?}");
+            assert_eq!(output.stderr, READY, "{output:?}");
+            return;
+        }
+
+        assert!(!tool_callback_active());
+        let mut filter =
+            crate::seccomp::SeccompFilter::for_trusted_gate(crate::trap::trusted_gate()).unwrap();
+        // Prewrite the actual config handshake; no server thread or pending
+        // RPC survives installation. No operation below may send an RPC.
+        let (client, mut peer) = std::os::unix::net::UnixStream::pair().unwrap();
+        client
+            .set_read_timeout(Some(std::time::Duration::from_secs(2)))
+            .unwrap();
+        let config = reverie_rpc_transport::codec::encode(&()).unwrap();
+        peer.write_all(&(config.len() as u32).to_be_bytes())
+            .unwrap();
+        peer.write_all(&config).unwrap();
+        let client = reverie_rpc_transport::BlockingRpcClient::<(), _>::from_connected_stream(
+            super::super::rpc::GuestRpcStream::from(client),
+            raw_pid(libc::SYS_gettid),
+        )
+        .unwrap();
+        let rpc = CoordinatorRpc::from_live_client("unused-tool-syscall-test", client, |_, _| {
+            panic!("Tool syscall test must not reconnect")
+        })
+        .unwrap();
+        let mut event = SyscallEvent {
+            number: libc::SYS_getpid,
+            args: [0; 6],
+            instruction_pointer: 0,
+            result: 0,
+            context: 0,
+            dispatch: SyscallDispatch::InstalledHook,
+            guest_pkru: None,
+        };
+        let tail = TailResult::default();
+        let mut state = ();
+        let tid = raw_pid(libc::SYS_gettid);
+        let guest = InGuest::<(), _> {
+            event: &mut event,
+            tid,
+            pid: raw_pid(libc::SYS_getpid),
+            ppid: None,
+            state: &mut state,
+            rpc: &rpc,
+            tail: &tail,
+            cpuid_interception: false,
+            fork_parent_state: None,
+            runtime: &ToolSyscallRuntime,
+            staged_signals: Vec::new(),
+            staged_signal_delivery: false,
+            in_syscall_handler: false,
+            #[cfg(feature = "exec-native-injection")]
+            exec: None,
+            #[cfg(feature = "exec-native-injection")]
+            mapping_driver: None,
+            unsupported_refusal: None,
+        };
+        let mut action: libc::sigaction = unsafe { core::mem::zeroed() };
+        action.sa_sigaction = libc::SIG_DFL;
+        let mut unblock: libc::sigset_t = unsafe { core::mem::zeroed() };
+        assert_eq!(unsafe { libc::sigemptyset(&mut action.sa_mask) }, 0);
+        assert_eq!(unsafe { libc::sigemptyset(&mut unblock) }, 0);
+        assert_eq!(unsafe { libc::sigaddset(&mut unblock, libc::SIGSYS) }, 0);
+        let no_core = libc::rlimit {
+            rlim_cur: 0,
+            rlim_max: 0,
+        };
+        unsafe {
+            if libc::setrlimit(libc::RLIMIT_CORE, &no_core) != 0
+                || libc::sigaction(libc::SIGSYS, &action, core::ptr::null_mut()) != 0
+                || libc::sigprocmask(libc::SIG_UNBLOCK, &unblock, core::ptr::null_mut()) != 0
+                || filter.install().is_err()
+            {
+                super::super::support::exit_now(117);
+            }
+            if raw_syscall6(libc::SYS_getpid, [0; 6]) != i64::from(guest.pid.as_raw()) {
+                super::super::support::exit_now(119);
+            }
+            if raw_syscall6(
+                libc::SYS_write,
+                [
+                    libc::STDERR_FILENO as u64,
+                    READY.as_ptr() as u64,
+                    READY.len() as u64,
+                    0,
+                    0,
+                    0,
+                ],
+            ) != READY.len() as i64
+            {
+                super::super::support::exit_now(120);
+            }
+            // Outside a Tool callback the spelling must be unknown with nothing
+            // executed: a gate probe would answer and change the result, and
+            // any other syscall (reading /proc, say) would meet the filter.
+            if guest.pidfd_self_spelling() != reverie::PidfdSelfSpelling::Unknown {
+                super::super::support::exit_now(121);
+            }
+            super::super::support::exit_now(0);
         }
     }
 
