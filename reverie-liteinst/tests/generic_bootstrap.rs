@@ -172,6 +172,17 @@ fn positive(s: &[u64], case: &str, runtime: &Path, stderr: &[u8]) -> Result<(), 
                 && String::from_utf8_lossy(stderr).contains("[liteinst strace pid "),
             "actual getter-selected Strace/registered alternate stack not reached",
         )
+    } else if case == "passthrough" {
+        let stderr = String::from_utf8_lossy(stderr);
+        need(
+            (BASE..END).contains(&after[5])
+                && after[5] >= BASE + 0x902000
+                && after[6] == 65536
+                && after[7] == 0
+                && !stderr.contains("[liteinst strace pid ")
+                && !stderr.contains("tool=compat"),
+            "actual getter-selected builtin/registered alternate stack not reached",
+        )
     } else {
         need(
             after[5..8] == before[5..8]
@@ -290,7 +301,7 @@ fn trial(case: &str) -> Result<(), String> {
             &serde_json::to_vec_pretty(&raw).map_err(|e| e.to_string())?,
         )?;
         match case {
-            "strace" | "none" => {
+            "strace" | "passthrough" | "none" => {
                 need(
                     run.status.is_some_and(|x| x.success()) && s[2] == 1 && s[17] == 1,
                     "genuine explicit generic call/return exit0 required",
@@ -372,8 +383,14 @@ fn trial(case: &str) -> Result<(), String> {
 }
 
 #[test]
+#[cfg(feature = "liteinst")]
 fn explicit_getter_strace_uses_owned_generic_stack() {
     trial("strace").unwrap();
+}
+#[test]
+#[cfg(not(feature = "liteinst"))]
+fn explicit_getter_builtin_uses_owned_generic_stack() {
+    trial("passthrough").unwrap();
 }
 #[test]
 fn explicit_none_reserves_owned_stack_without_runtime() {
@@ -393,6 +410,7 @@ fn ordinary_region_is_not_adopted_by_generic_entry() {
 }
 
 #[test]
+#[cfg(all(feature = "liteinst", not(feature = "fixed-syscall-gates")))]
 fn actual_scoped_compat_public_caller_remains_supported() -> Result<(), String> {
     let evidence = liteinst_runtime::evidence_directory("generic-scoped-compat")?;
     let before = liteinst_runtime::current_source(&evidence, "before")?;
@@ -465,5 +483,73 @@ fn actual_scoped_compat_public_caller_remains_supported() -> Result<(), String> 
             errors.join("; "),
             evidence.display()
         ))
+    }
+}
+
+#[test]
+#[cfg(any(not(feature = "liteinst"), feature = "fixed-syscall-gates"))]
+fn actual_scoped_compat_public_caller_refuses_before_legacy_installation() -> Result<(), String> {
+    let evidence = liteinst_runtime::evidence_directory("generic-scoped-compat-install-refusal")?;
+    let before = liteinst_runtime::current_source(&evidence, "before")?;
+    let binary = m1_artifact::FileIdentity::read(Path::new(env!(
+        "CARGO_BIN_EXE_reverie-liteinst-rpc-tool-guest"
+    )))?;
+    let mut held = liteinst_runtime::held_environment(
+        b"actual ScopedToolAllocator public Compat caller; explicit early refusal, not positive parity".to_vec(),
+    );
+    held.environment.retain(|(key, _)| {
+        ![
+            "LD_PRELOAD",
+            "REVERIE_LITEINST_TOOL",
+            "REVERIE_INGUEST_TOOL",
+        ]
+        .iter()
+        .any(|name| key == &OsString::from(name))
+    });
+    let mut command = Command::new(&binary.path);
+    command.arg("syscall-fallback-refusal").arg("unused");
+    let result = (|| {
+        let run = match contract::run_without_input(command, &held) {
+            Ok(run) => {
+                liteinst_runtime::retain_capture(&evidence, "actual-scoped-compat", &run)?;
+                run
+            }
+            Err(error) => {
+                liteinst_runtime::retain_failure(&evidence, "actual-scoped-compat", &error)?;
+                return Err(error.to_string());
+            }
+        };
+        let message = if cfg!(feature = "liteinst") {
+            "fixed syscall gates require the in-guest FullTool installation route"
+        } else {
+            "legacy compat runtime was built without LiteInst; enable the `liteinst` Cargo feature or use the in-guest FullTool installation route"
+        };
+        need(
+            run.end == contract::CaptureEnd::Complete
+                && !run.output_truncated
+                && run.input.is_none()
+                && run.status.is_some_and(|status| status.code() == Some(127))
+                && run.stdout.is_empty()
+                && run.stderr
+                    == format!("reverie-liteinst initialization failed: {message}\n").as_bytes(),
+            "actual public Compat caller must refuse before any fallback dispatch",
+        )
+    })();
+    let after = (|| {
+        binary.verify()?;
+        need(
+            liteinst_runtime::current_source(&evidence, "after")? == before,
+            "Scoped Compat refusal source changed",
+        )
+    })();
+    match (result, after) {
+        (Ok(()), Ok(())) => Ok(()),
+        (Err(error), Ok(())) | (Ok(()), Err(error)) => {
+            Err(format!("{error}; evidence {}", evidence.display()))
+        }
+        (Err(error), Err(after)) => Err(format!(
+            "{error}; final guard: {after}; evidence {}",
+            evidence.display()
+        )),
     }
 }

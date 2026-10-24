@@ -217,9 +217,13 @@ pub(super) fn run(route_name: &str, operation: &str) {
         "inject" => 1,
         "tail" => 2,
         "nested-hook" => 3,
+        #[cfg(not(feature = "liteinst"))]
+        "nested-repeated-trap" => 3,
         "rewrite-protected" => 4,
         "rewrite-outside" => 5,
         "nested-trap" => 6,
+        #[cfg(not(feature = "liteinst"))]
+        "nested-cold-trap" => 6,
         _ => panic!("unknown mapping route"),
     };
     let number = match operation {
@@ -259,7 +263,17 @@ pub(super) fn run(route_name: &str, operation: &str) {
         ))
     }
     .expect("actual FullTool install");
-    assert!(pkey_probe_call(libc::SYS_getppid, [0; 4]) > 0);
+    #[cfg(not(feature = "liteinst"))]
+    let warmup_before =
+        reverie_liteinst::reverie_liteinst_fallback_syscall_count(libc::SYS_getppid);
+    if cfg!(feature = "liteinst") || route != 6 {
+        assert!(pkey_probe_call(libc::SYS_getppid, [0; 4]) > 0);
+    }
+    #[cfg(not(feature = "liteinst"))]
+    let warmup_delta = reverie_liteinst::reverie_liteinst_fallback_syscall_count(libc::SYS_getppid)
+        - warmup_before;
+    #[cfg(not(feature = "liteinst"))]
+    assert_eq!(warmup_delta, u64::from(route != 6));
     let site = core::ptr::addr_of!(reverie_liteinst_pkey_probe_site);
     let warm = site_counts(site);
     if route == 6 || !cfg!(feature = "liteinst") {
@@ -299,11 +313,27 @@ pub(super) fn run(route_name: &str, operation: &str) {
     } else {
         before.free_base
     };
+    #[cfg(not(feature = "liteinst"))]
+    let outer_number = if matches!(route, 3 | 6) {
+        libc::SYS_getpid
+    } else {
+        number
+    };
+    #[cfg(not(feature = "liteinst"))]
+    let fallback_before = (
+        reverie_liteinst::reverie_liteinst_fallback_dispatch_count(),
+        reverie_liteinst::reverie_liteinst_fallback_syscall_count(outer_number),
+    );
     let result = if matches!(route, 3 | 6) {
         pkey_probe_call(libc::SYS_getpid, [0; 4])
     } else {
         pkey_probe_call(number, arguments(original))
     };
+    #[cfg(not(feature = "liteinst"))]
+    let fallback_delta = (
+        reverie_liteinst::reverie_liteinst_fallback_dispatch_count() - fallback_before.0,
+        reverie_liteinst::reverie_liteinst_fallback_syscall_count(outer_number) - fallback_before.1,
+    );
     let entered = ENTERED.load(Ordering::Relaxed);
     let recorded_original = ORIGINAL.load(Ordering::Relaxed);
     let final_address = FINAL.load(Ordering::Relaxed);
@@ -378,11 +408,23 @@ pub(super) fn run(route_name: &str, operation: &str) {
                     }
         }
     };
-    let physical = if route == 6 {
+    let physical = if route == 6 || !cfg!(feature = "liteinst") {
         counters == (0, 0)
     } else {
         counters.0 == warm.0 && counters.1 > warm.1
     };
+    #[cfg(not(feature = "liteinst"))]
+    {
+        // Exactly one guest syscall enters this measurement window. For the
+        // nested rows it is getpid; the callback's two marked mapping calls
+        // are independently counted as nested SIGSYS by the host, not as
+        // top-level fallback dispatches.
+        assert_eq!(fallback_delta, (1, 1));
+        println!(
+            "MAPPING_TRAP_PROOF total={} syscall={} warmup={} sites=0 hooks=0",
+            fallback_delta.0, fallback_delta.1, warmup_delta
+        );
+    }
     println!(
         "MAPPING_OWNER_FACTS version={} owner={:#x} control={:#x} state={:#x} pid={} tid={} alt_bottom={:#x} alt_top={:#x} live={:#x} live_bytes={} live_owned={} free={:#x} free_bytes={} free_unowned={}",
         before.version,

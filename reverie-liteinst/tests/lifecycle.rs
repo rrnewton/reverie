@@ -2139,17 +2139,33 @@ async fn fallback_fork_reports_both_process_dispatch_paths() {
     assert!(output.stderr.is_empty(), "{output:?}");
     assert_eq!(global.fork.load(Ordering::Relaxed), 1);
     assert_eq!(stats.snapshot().process_reports(), 2, "{stats}");
-    assert_eq!(
-        stats
-            .dispatch_path_counts()
-            .count(&if cfg!(feature = "liteinst") {
-                LiteinstDispatchPath::UnpatchableOrOtherFallback
-            } else {
-                LiteinstDispatchPath::PatchingDisabledFallback
-            }),
-        2,
-        "{stats}"
-    );
+    if cfg!(feature = "liteinst") {
+        assert_eq!(
+            stats
+                .dispatch_path_counts()
+                .count(&LiteinstDispatchPath::UnpatchableOrOtherFallback),
+            2,
+            "{stats}"
+        );
+    } else {
+        // Without a patcher every physical top-level entry is a disabled
+        // fallback, including libc output and both processes' exit calls.
+        // Compare the two independent classifications of those entries;
+        // only the fork-specific RPC and inherited entry have a literal 1.
+        let paths = stats.dispatch_path_counts();
+        assert_eq!(
+            paths.count(&LiteinstDispatchPath::PatchingDisabledFallback),
+            paths.count(&LiteinstDispatchPath::InGuestSigsys),
+            "{stats}"
+        );
+        for path in [
+            LiteinstDispatchPath::UnpatchableOrOtherFallback,
+            LiteinstDispatchPath::DirectHook,
+            LiteinstDispatchPath::InGuestNestedHook,
+        ] {
+            assert_eq!(paths.count(&path), 0, "{path:?}: {stats}");
+        }
+    }
     assert_eq!(
         stats
             .dispatch_path_counts()

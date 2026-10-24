@@ -516,6 +516,7 @@ pub(super) fn run_straddler(path: &Path) {
 /// are unchanged) must not be patched: the stale jump still counts as
 /// published. It runs through the continuation and falls into the
 /// neighbour's surviving jump, which still reaches the Tool.
+#[cfg(feature = "liteinst")]
 fn run_stale_jump_neighbour() {
     let before = straddler_stale_before as *const u8;
     let patched = straddler_stale_patched as *const u8;
@@ -829,6 +830,11 @@ pub(super) fn run_syscall_reservation(path: &Path) {
         assert_eq!(registers.rax, pid, "the syscall must return getpid");
         assert_untouched(&registers, "syscall");
     };
+    #[cfg(not(feature = "liteinst"))]
+    let original = unsafe { core::ptr::read_unaligned(cpuid_site.cast::<[u8; 10]>()) };
+    #[cfg(not(feature = "liteinst"))]
+    let fallback_before =
+        reverie_liteinst::reverie_liteinst_fallback_syscall_count(libc::SYS_getpid);
     for _ in 0..STRADDLER_REPEATS {
         call_syscall();
     }
@@ -839,7 +845,18 @@ pub(super) fn run_syscall_reservation(path: &Path) {
         )
     };
     let (syscall_traps, syscall_hooks) = count(syscall_site);
-    assert!(syscall_traps > 0, "the syscall site must have trapped");
+    if cfg!(feature = "liteinst") {
+        assert!(syscall_traps > 0, "the syscall site must have trapped");
+    } else {
+        assert_eq!(syscall_traps, 0, "the trap-only runtime claims no site");
+        #[cfg(not(feature = "liteinst"))]
+        assert_eq!(
+            reverie_liteinst::reverie_liteinst_fallback_syscall_count(libc::SYS_getpid)
+                - fallback_before,
+            STRADDLER_REPEATS as u64,
+            "every real getpid must enter the syscall continuation"
+        );
+    }
     assert_eq!(syscall_hooks, 0, "the syscall site must not be patched");
     let page = (syscall_site as usize & !4095) as *mut libc::c_void;
     let remapped = unsafe { libc::mremap(page, 4096, 4096, 0) };
@@ -872,6 +889,20 @@ pub(super) fn run_syscall_reservation(path: &Path) {
         (0, 0),
         "neither site may be patched"
     );
+    #[cfg(not(feature = "liteinst"))]
+    {
+        // Eight standalone syscalls, eight CPUID-then-syscall calls, and eight
+        // final standalone syscalls execute the original getpid instruction.
+        let fallback = reverie_liteinst::reverie_liteinst_fallback_syscall_count(libc::SYS_getpid)
+            - fallback_before;
+        assert_eq!(fallback, (3 * STRADDLER_REPEATS) as u64);
+        assert_eq!(
+            unsafe { core::ptr::read_unaligned(cpuid_site.cast::<[u8; 10]>()) },
+            original,
+            "the complete CPUID/getpid/return stub must stay unchanged"
+        );
+        println!("SYSCALL_RESERVATION_TRAP_PROOF getpid={fallback} bytes=unchanged");
+    }
     println!(
         "straddler-syscall-reservation cpuid=tool syscall=getpid traps={cpuid_traps} hooks=0+0"
     );
@@ -1079,7 +1110,9 @@ unsafe extern "C" {
     fn straddler_rdtscp();
     fn straddler_neighbour();
     fn straddler_covered();
+    #[cfg(feature = "liteinst")]
     fn straddler_stale_before();
+    #[cfg(feature = "liteinst")]
     fn straddler_stale_patched();
     fn straddler_page_end();
     fn reservation_cpuid();

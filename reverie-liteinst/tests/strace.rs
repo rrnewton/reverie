@@ -1,9 +1,14 @@
+#[cfg(feature = "liteinst")]
 use std::collections::BTreeSet;
 use std::ffi::OsString;
 use std::fs::File;
+#[cfg(feature = "liteinst")]
 use std::io::Read;
+#[cfg(feature = "liteinst")]
 use std::os::fd::AsRawFd;
+#[cfg(feature = "liteinst")]
 use std::os::fd::FromRawFd;
+#[cfg(feature = "liteinst")]
 use std::os::fd::OwnedFd;
 use std::os::unix::process::CommandExt;
 use std::path::PathBuf;
@@ -15,7 +20,9 @@ use std::time::Duration;
 use std::time::Instant;
 
 use reverie_liteinst::BuiltinTool;
+#[cfg(feature = "liteinst")]
 use reverie_liteinst::COMPAT_EVENT_COOKIE_ENV;
+#[cfg(feature = "liteinst")]
 use reverie_liteinst::COMPAT_EVENT_FD_ENV;
 use reverie_liteinst::PreloadTool;
 use reverie_liteinst::SITE_PATCHING_ENV;
@@ -24,11 +31,16 @@ use reverie_liteinst::STRADDLER_STALENESS_TICKS_ENV;
 use reverie_liteinst::configure_command;
 use reverie_liteinst::configure_command_builtin;
 
+#[cfg(not(feature = "liteinst"))]
+#[path = "support/fulltool_capture.rs"]
+mod fulltool_capture;
 #[allow(dead_code)]
 #[path = "support/liteinst_runtime.rs"]
 mod liteinst_runtime;
 
+#[cfg(feature = "liteinst")]
 const TEST_EVENT_COOKIE: u64 = 7_915_913_731_959_187_131;
+#[cfg(feature = "liteinst")]
 const TEST_EVENT_FD_ENV: &str = "REVERIE_LITEINST_TEST_EVENT_FD";
 const TEST_STRADDLER_STALENESS_TICKS: &str = "20000";
 
@@ -39,6 +51,7 @@ fn enable_concurrent_patch_testing(command: &mut Command) {
     );
 }
 
+#[cfg(feature = "liteinst")]
 fn strace_guest_command(program: &str, arguments: &[&str]) -> Command {
     let mut command = Command::new(env!("CARGO_BIN_EXE_reverie-liteinst-strace"));
     command
@@ -52,6 +65,7 @@ fn strace_guest_command(program: &str, arguments: &[&str]) -> Command {
     command
 }
 
+#[cfg(feature = "liteinst")]
 fn run_guest(program: &str, arguments: &[&str]) -> Output {
     strace_guest_command(program, arguments).output().unwrap()
 }
@@ -62,6 +76,7 @@ fn run_guest(program: &str, arguments: &[&str]) -> Output {
 /// instead of stalling the test run. A task it leaves behind in the group is
 /// killed with the group, so it cannot hold the output pipes open; that alone
 /// does not fail the test.
+#[cfg(feature = "liteinst")]
 fn output_within(command: &mut Command, limit: Duration) -> Output {
     fn read_to_end_in_background(
         mut pipe: impl Read + Send + 'static,
@@ -122,6 +137,7 @@ fn output_within(command: &mut Command, limit: Duration) -> Output {
     output
 }
 
+#[cfg(feature = "liteinst")]
 fn run_compat_guest(program: &str, arguments: &[&str]) -> Output {
     let mut command = Command::new(program);
     command.args(arguments);
@@ -130,6 +146,7 @@ fn run_compat_guest(program: &str, arguments: &[&str]) -> Output {
     command.output().unwrap()
 }
 
+#[cfg(feature = "liteinst")]
 fn compile_fixture(name: &str) -> (tempfile::TempDir, PathBuf) {
     let directory = tempfile::tempdir().unwrap();
     let source = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -162,12 +179,14 @@ fn run_builtin_guest(tool: BuiltinTool, program: &str, arguments: &[&str]) -> Ou
     command.output().unwrap()
 }
 
+#[cfg(feature = "liteinst")]
 fn run_compat_guest_with_event_pipe(program: &str, arguments: &[&str]) -> (Output, Vec<u8>) {
     run_compat_guest_with_event_pipe_within(program, arguments, None)
 }
 
 /// As [`run_compat_guest_with_event_pipe`], but with `Some(limit)` the guest
 /// runs through [`output_within`].
+#[cfg(feature = "liteinst")]
 fn run_compat_guest_with_event_pipe_within(
     program: &str,
     arguments: &[&str],
@@ -231,6 +250,7 @@ fn preload_path() -> PathBuf {
 }
 
 #[test]
+#[cfg(feature = "liteinst")]
 fn strace_tool_observes_echo_syscalls() {
     let output = run_guest("/bin/echo", &["hello"]);
     assert!(
@@ -261,21 +281,87 @@ fn first_sigsys_installs_a_hook_for_later_calls() {
     assert_eq!(output.stdout, b"calls=32 traps=1 hooks=32\n");
 }
 
-#[cfg(not(feature = "liteinst"))]
 #[test]
-fn every_syscall_reaches_strace_without_site_patching() {
-    let output = run_guest(env!("CARGO_BIN_EXE_reverie-liteinst-trap-count-guest"), &[]);
-    assert!(output.status.success(), "{output:?}");
-    assert_eq!(output.stdout, b"calls=32 traps=0 hooks=0\n");
-    let stderr = String::from_utf8(output.stderr).unwrap();
+#[cfg(not(feature = "liteinst"))]
+fn fulltool_traps_preserve_original_pc_relative_addresses() -> Result<(), String> {
+    let native = run_pc_relative_guest(false);
+    assert!(native.status.success(), "native oracle: {native:?}");
+    assert_eq!(native.stderr, b"");
     assert_eq!(
-        stderr
-            .lines()
-            .filter(|line| line.contains("syscall(39,"))
-            .count(),
-        32,
-        "every getpid must reach the Tool: {stderr}"
+        native.stdout,
+        b"pc-relative native: calls=32 addresses=32 start_addresses=32\n"
     );
+    let qualified = liteinst_runtime::required_runtime()?;
+    let evidence = liteinst_runtime::evidence_directory("pc-relative-fulltool-traps")?;
+    let before = liteinst_runtime::current_source(&evidence, "before")?;
+    assert_eq!(before, qualified.source);
+    let binary = liteinst_runtime::artifact::FileIdentity::read(std::path::Path::new(env!(
+        "CARGO_BIN_EXE_reverie-liteinst-trap-count-guest"
+    )))?;
+    let socket = evidence.join("coordinator.sock");
+    let mut held = liteinst_runtime::held_environment(
+        b"same two original assembly/LEA sites, 32 calls each; genuine Fixed FullTool; exact 64 callbacks and fallbacks; unchanged function bytes; zero sites/hooks".to_vec(),
+    );
+    held.environment.retain(|(key, _)| {
+        ![
+            "LD_PRELOAD",
+            "REVERIE_LITEINST_TOOL",
+            "REVERIE_INGUEST_TOOL",
+            reverie_liteinst::COORDINATOR_ENV,
+            SITE_PATCHING_ENV,
+        ]
+        .iter()
+        .any(|name| key == name)
+    });
+    held.environment.extend([
+        ("LD_PRELOAD".into(), qualified.path.as_os_str().to_owned()),
+        (
+            reverie_liteinst::COORDINATOR_ENV.into(),
+            socket.as_os_str().to_owned(),
+        ),
+        (SITE_PATCHING_ENV.into(), "0".into()),
+    ]);
+    let mut command = Command::new(&binary.path);
+    command
+        .arg("pc-relative-trapped")
+        .current_dir(&qualified.source.root);
+    let result = (|| -> Result<(), String> {
+        let run = match fulltool_capture::run(command, held, socket) {
+            Ok(run) => {
+                liteinst_runtime::retain_capture(&evidence, "actual-fulltool", &run)?;
+                run
+            }
+            Err(error) => {
+                liteinst_runtime::retain_failure(&evidence, "actual-fulltool", &error)?;
+                return Err(error.to_string());
+            }
+        };
+        assert_eq!(run.end, liteinst_runtime::contract::CaptureEnd::Complete);
+        assert!(!run.output_truncated && run.input.is_none());
+        assert!(run.status.is_some_and(|status| status.success()), "{run:?}");
+        assert_eq!(run.stdout, b"pc-relative trapped: calls=32 addresses=32 start_addresses=32 fallback=64 callbacks=64 sites=0 hooks=0 bytes=unchanged\n");
+        assert!(run.stderr.is_empty(), "{run:?}");
+        Ok(())
+    })();
+    let after = (|| -> Result<(), String> {
+        binary.verify()?;
+        qualified.receipt.artifact.verify()?;
+        assert_eq!(
+            liteinst_runtime::current_source(&evidence, "after")?,
+            before
+        );
+        Ok(())
+    })();
+    match (result, after) {
+        (Ok(()), Ok(())) => Ok(()),
+        (Err(error), Ok(())) | (Ok(()), Err(error)) => {
+            Err(format!("{error}; evidence {}", evidence.display()))
+        }
+        (Err(error), Err(after)) => Err(format!(
+            "{error}; final guard: {after}; evidence {}",
+            evidence.display()
+        )),
+    }
 }
 
 fn run_pc_relative_guest(hooked: bool) -> Output {
@@ -339,6 +425,7 @@ fn run_pc_relative_guest(hooked: bool) -> Output {
 }
 
 #[test]
+#[cfg(feature = "liteinst")]
 fn syscall_hook_preserves_displaced_self_relative_address() {
     let native = run_pc_relative_guest(false);
     assert!(native.status.success(), "native oracle: {native:?}");
@@ -375,6 +462,7 @@ fn syscall_hook_preserves_displaced_self_relative_address() {
 }
 
 #[test]
+#[cfg(feature = "liteinst")]
 fn compatibility_tool_emits_stable_events() {
     let first = run_compat_guest("/bin/echo", &["hello"]);
     let second = run_compat_guest("/bin/echo", &["hello"]);
@@ -395,6 +483,7 @@ fn compatibility_tool_emits_stable_events() {
 }
 
 #[test]
+#[cfg(feature = "liteinst")]
 fn compatibility_event_fd_separates_guest_stderr() {
     let spoof = "reverie-liteinst: tool=compat syscall=999999\n";
     let (output, events) = run_compat_guest_with_event_pipe(
@@ -430,6 +519,7 @@ fn compatibility_event_fd_separates_guest_stderr() {
 }
 
 #[test]
+#[cfg(feature = "liteinst")]
 fn compatibility_event_fd_survives_guest_close() {
     let (output, events) = run_compat_guest_with_event_pipe(
         "/bin/sh",
@@ -450,6 +540,7 @@ fn compatibility_event_fd_survives_guest_close() {
 }
 
 #[test]
+#[cfg(feature = "liteinst")]
 fn compatibility_event_fd_rejects_guest_spoof_write() {
     let forged = format!(
         "reverie-liteinst: tool=compat cookie={TEST_EVENT_COOKIE} pid=999999 syscall=999999"
@@ -472,6 +563,7 @@ fn compatibility_event_fd_rejects_guest_spoof_write() {
 }
 
 #[test]
+#[cfg(feature = "liteinst")]
 fn compatibility_event_fd_backpressure_fails_without_hanging() {
     let mut descriptors = [0; 2];
     assert_eq!(
@@ -522,6 +614,7 @@ fn compatibility_event_fd_backpressure_fails_without_hanging() {
 }
 
 #[test]
+#[cfg(feature = "liteinst")]
 fn compatibility_event_fd_recovers_when_delayed_reader_drains() {
     let mut descriptors = [0; 2];
     assert_eq!(
@@ -575,6 +668,7 @@ fn compatibility_event_fd_recovers_when_delayed_reader_drains() {
 }
 
 #[test]
+#[cfg(feature = "liteinst")]
 fn compatibility_tool_rejects_process_group_escape() {
     let (_directory, guest) = compile_fixture("compat_setsid.c");
     let output = run_compat_guest(guest.to_str().unwrap(), &[]);
@@ -583,6 +677,7 @@ fn compatibility_tool_rejects_process_group_escape() {
 }
 
 #[test]
+#[cfg(feature = "liteinst")]
 fn compatibility_event_fd_rejects_read_only_descriptor() {
     let mut descriptors = [0; 2];
     assert_eq!(
@@ -651,6 +746,7 @@ fn other_runtimes_refuse_site_patching_selector() {
         }
     }
     for value in ["1", "0", "2"] {
+        #[cfg(feature = "liteinst")]
         for (tool, runtime) in [
             (PreloadTool::Strace, "strace"),
             (PreloadTool::Compatibility, "compat"),
@@ -666,6 +762,123 @@ fn other_runtimes_refuse_site_patching_selector() {
 }
 
 #[test]
+#[cfg(not(feature = "liteinst"))]
+fn legacy_launcher_api_refuses_with_typed_error_before_command_mutation() {
+    for (tool, name) in [
+        (PreloadTool::Strace, "strace"),
+        (PreloadTool::Compatibility, "compat"),
+    ] {
+        let mut command = Command::new("/nonexistent-command-must-not-run");
+        command
+            .arg("literal-argument")
+            .env("LITERAL_MARKER", "unchanged")
+            .env(
+                "REVERIE_LITEINST_PRELOAD",
+                "/nonexistent-preload-must-not-resolve",
+            );
+        let arguments = command
+            .get_args()
+            .map(|value| value.to_owned())
+            .collect::<Vec<_>>();
+        let environment = command
+            .get_envs()
+            .map(|(key, value)| (key.to_owned(), value.map(|value| value.to_owned())))
+            .collect::<Vec<_>>();
+        let error = configure_command(&mut command, tool).unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::Unsupported);
+        assert_eq!(
+            error.to_string(),
+            format!(
+                "legacy {name} runtime was built without LiteInst; enable the `liteinst` Cargo feature or use the in-guest FullTool installation route"
+            )
+        );
+        assert_eq!(command.get_program(), "/nonexistent-command-must-not-run");
+        assert_eq!(
+            command
+                .get_args()
+                .map(|value| value.to_owned())
+                .collect::<Vec<_>>(),
+            arguments
+        );
+        assert_eq!(
+            command
+                .get_envs()
+                .map(|(key, value)| (key.to_owned(), value.map(|value| value.to_owned())))
+                .collect::<Vec<_>>(),
+            environment
+        );
+    }
+}
+
+#[test]
+#[cfg(not(feature = "liteinst"))]
+fn raw_legacy_constructor_selectors_refuse_before_main() -> Result<(), String> {
+    let qualified = liteinst_runtime::required_runtime()?;
+    let evidence = liteinst_runtime::evidence_directory("raw-legacy-selector-refusal")?;
+    let before = liteinst_runtime::current_source(&evidence, "before")?;
+    assert_eq!(before, qualified.source);
+    let result = (|| {
+        for name in ["strace", "compat"] {
+            let mut held = liteinst_runtime::held_environment(
+                format!("raw {name} selector; genuine qualified constructor; explicit refusal, no positive parity").into_bytes(),
+            );
+            held.environment.retain(|(key, _)| {
+                ![
+                    "LD_PRELOAD",
+                    "REVERIE_LITEINST_TOOL",
+                    "REVERIE_INGUEST_TOOL",
+                    SITE_PATCHING_ENV,
+                ]
+                .iter()
+                .any(|value| key == &OsString::from(value))
+            });
+            held.environment.extend([
+                ("LD_PRELOAD".into(), qualified.path.as_os_str().to_owned()),
+                ("REVERIE_LITEINST_TOOL".into(), name.into()),
+                (SITE_PATCHING_ENV.into(), "0".into()),
+            ]);
+            let mut command = Command::new("/bin/echo");
+            command.arg("main-must-not-run");
+            let run = match liteinst_runtime::contract::run_without_input(command, &held) {
+                Ok(run) => {
+                    liteinst_runtime::retain_capture(&evidence, name, &run)?;
+                    run
+                }
+                Err(error) => {
+                    liteinst_runtime::retain_failure(&evidence, name, &error)?;
+                    return Err(error.to_string());
+                }
+            };
+            assert_eq!(run.end, liteinst_runtime::contract::CaptureEnd::Complete);
+            assert!(!run.output_truncated && run.input.is_none());
+            assert_eq!(run.status.and_then(|status| status.code()), Some(127));
+            assert!(run.stdout.is_empty());
+            assert_eq!(run.stderr, format!("reverie-liteinst initialization failed: legacy {name} runtime was built without LiteInst; enable the `liteinst` Cargo feature or use the in-guest FullTool installation route\n").as_bytes());
+        }
+        Ok(())
+    })();
+    let after = (|| -> Result<(), String> {
+        qualified.receipt.artifact.verify()?;
+        assert_eq!(
+            liteinst_runtime::current_source(&evidence, "after")?,
+            before
+        );
+        Ok(())
+    })();
+    match (result, after) {
+        (Ok(()), Ok(())) => Ok(()),
+        (Err(error), Ok(())) | (Ok(()), Err(error)) => {
+            Err(format!("{error}; evidence {}", evidence.display()))
+        }
+        (Err(error), Err(after)) => Err(format!(
+            "{error}; final guard: {after}; evidence {}",
+            evidence.display()
+        )),
+    }
+}
+
+#[test]
+#[cfg(feature = "liteinst")]
 fn fork_child_inherits_preload_instrumentation() {
     let output = run_guest(env!("CARGO_BIN_EXE_reverie-liteinst-fork-guest"), &[]);
     assert!(
@@ -693,16 +906,19 @@ fn fork_child_inherits_preload_instrumentation() {
 }
 
 #[test]
+#[cfg(feature = "liteinst")]
 fn compatibility_fork_reports_clone_only_from_parent() {
     assert_compatibility_fork_event(&[], libc::SYS_clone);
 }
 
 #[test]
+#[cfg(feature = "liteinst")]
 fn compatibility_raw_fork_reports_once_before_child() {
     assert_compatibility_fork_event(&["--raw-fork"], libc::SYS_fork);
 }
 
 #[test]
+#[cfg(feature = "liteinst")]
 fn unsafe_clone_is_rejected_in_compatibility_and_strace_modes() {
     let guest = env!("CARGO_BIN_EXE_reverie-liteinst-fork-guest");
     let compatibility = run_compat_guest(guest, &["--unsafe-clone"]);
@@ -724,6 +940,7 @@ fn unsafe_clone_is_rejected_in_compatibility_and_strace_modes() {
 /// milliseconds. A regression that forwards one of the probed calls can leave
 /// the guest, or a task it created, running forever; the test must then fail
 /// rather than hang.
+#[cfg(feature = "liteinst")]
 const PROCESS_CREATION_PROBE_LIMIT: Duration = Duration::from_secs(30);
 
 // https://github.com/rrnewton/reverie/issues/758: a raw vfork that
@@ -741,6 +958,7 @@ const PROCESS_CREATION_PROBE_LIMIT: Duration = Duration::from_secs(30);
 // counts separate a refusal in process_syscall from the SIGSYS handler's
 // untraced fallback, which returns the same errno.
 #[test]
+#[cfg(feature = "liteinst")]
 fn raw_vfork_and_clone3_are_refused_in_compatibility_and_strace_modes() {
     let guest = env!("CARGO_BIN_EXE_reverie-liteinst-fork-guest");
     let expected = format!(
@@ -803,6 +1021,7 @@ fn raw_vfork_and_clone3_are_refused_in_compatibility_and_strace_modes() {
     assert_eq!(pids.len(), 1, "only the parent may emit records:\n{stderr}");
 }
 
+#[cfg(feature = "liteinst")]
 fn assert_compatibility_fork_event(arguments: &[&str], syscall: i64) {
     let (output, events) = run_compat_guest_with_event_pipe(
         env!("CARGO_BIN_EXE_reverie-liteinst-fork-guest"),
@@ -862,6 +1081,7 @@ fn assert_compatibility_fork_event(arguments: &[&str], syscall: i64) {
 }
 
 #[test]
+#[cfg(feature = "liteinst")]
 fn exec_fails_closed_before_runtime_is_replaced() {
     let output = run_guest(env!("CARGO_BIN_EXE_reverie-liteinst-exec-guest"), &[]);
     assert!(

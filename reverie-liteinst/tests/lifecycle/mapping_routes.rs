@@ -186,7 +186,7 @@ async fn row(route: &str, operation: &str) {
             assert_eq!(address(&literal, "recorded_original"), 0);
             assert_eq!(address(&literal, "final"), 0);
         }
-        "nested-hook" | "nested-trap" => {
+        "nested-hook" | "nested-trap" | "nested-repeated-trap" | "nested-cold-trap" => {
             assert_eq!(number(&literal, "entered"), 1);
             assert_eq!(address(&literal, "original"), 0);
             assert_eq!(address(&literal, "recorded_original"), 0);
@@ -197,14 +197,21 @@ async fn row(route: &str, operation: &str) {
                 0
             };
             assert_eq!(number(&literal, "nested_outside"), expected_outside);
-            let path = if route == "nested-hook" {
+            let path = if route == "nested-hook" && cfg!(feature = "liteinst") {
                 LiteinstDispatchPath::InGuestNestedHook
             } else {
                 LiteinstDispatchPath::InGuestNestedSigsys
             };
+            #[cfg(feature = "liteinst")]
             assert!(
                 stats.dispatch_path_counts().count(&path) >= 2,
                 "two actual nested mutations required: {stats}"
+            );
+            #[cfg(not(feature = "liteinst"))]
+            assert_eq!(
+                stats.dispatch_path_counts().count(&path),
+                2,
+                "one callback must issue exactly the protected and outside nested mutations: {stats}"
             );
         }
         _ => {
@@ -253,6 +260,20 @@ async fn row(route: &str, operation: &str) {
         );
         assert_eq!(number(&literal, "traps"), 0);
         assert_eq!(number(&literal, "hooks"), 0);
+        if !cfg!(feature = "liteinst") {
+            let proof = fields(stdout, "MAPPING_TRAP_PROOF ");
+            for key in ["total", "syscall"] {
+                assert_eq!(number(&proof, key), 1, "{key}: {stdout}");
+            }
+            for key in ["sites", "hooks"] {
+                assert_eq!(number(&proof, key), 0, "{key}: {stdout}");
+            }
+            assert_eq!(
+                number(&proof, "warmup"),
+                i64::from(route != "nested-cold-trap"),
+                "exact marked-site warmup: {stdout}"
+            );
+        }
     } else {
         assert!(number(&literal, "hooks") > 1);
     }
@@ -276,16 +297,32 @@ async fn published_owner_survives_tail_injected_fulltool_mapping_changes() {
         row("tail", operation).await;
     }
 }
+#[cfg(feature = "liteinst")]
 #[tokio::test(flavor = "current_thread")]
 async fn published_owner_survives_nested_hook_mapping_changes() {
     for operation in ["mprotect", "munmap"] {
         row("nested-hook", operation).await;
     }
 }
+#[cfg(not(feature = "liteinst"))]
+#[tokio::test(flavor = "current_thread")]
+async fn published_owner_survives_nested_repeated_sigsys_mapping_changes() {
+    for operation in ["mprotect", "munmap"] {
+        row("nested-repeated-trap", operation).await;
+    }
+}
+#[cfg(feature = "liteinst")]
 #[tokio::test(flavor = "current_thread")]
 async fn published_owner_survives_nested_sigsys_mapping_changes() {
     for operation in ["mprotect", "munmap"] {
         row("nested-trap", operation).await;
+    }
+}
+#[cfg(not(feature = "liteinst"))]
+#[tokio::test(flavor = "current_thread")]
+async fn published_owner_survives_nested_cold_sigsys_mapping_changes() {
+    for operation in ["mprotect", "munmap"] {
+        row("nested-cold-trap", operation).await;
     }
 }
 #[tokio::test(flavor = "current_thread")]
@@ -298,7 +335,12 @@ async fn published_owner_mapping_guard_uses_rewritten_final_arguments() {
 }
 #[tokio::test(flavor = "current_thread")]
 async fn published_owner_guards_nested_raw_mseal_and_reports_kernel_support() {
-    for route in ["nested-hook", "nested-trap"] {
+    let routes = if cfg!(feature = "liteinst") {
+        ["nested-hook", "nested-trap"]
+    } else {
+        ["nested-repeated-trap", "nested-cold-trap"]
+    };
+    for route in routes {
         row(route, "mseal").await;
     }
 }

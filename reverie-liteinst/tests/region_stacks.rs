@@ -125,9 +125,14 @@ fn trial(label: &str, inert: bool, alt_stack: bool) -> Result<(), String> {
     if inert {
         // Load the genuine constructor-bearing leaf, with no active selector.
         environment.insert("LD_PRELOAD".into(), runtime.path.as_os_str().to_owned());
-    } else {
+    } else if cfg!(feature = "liteinst") {
         // The public strace launcher itself selects exactly the qualified leaf.
         command.arg(&launcher);
+    } else {
+        // The same actual constructor and M2 query/guard/altstack probes are
+        // available through the shared builtin without legacy forwarding.
+        environment.insert("LD_PRELOAD".into(), runtime.path.as_os_str().to_owned());
+        environment.insert("REVERIE_LITEINST_TOOL".into(), "passthrough".into());
     }
     command
         .arg(&guest)
