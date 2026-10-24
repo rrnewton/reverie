@@ -2076,6 +2076,34 @@ mod tests {
         assert!(same_affinity(&affinity().unwrap(), &original));
     }
 
+    /// The caller only stores an interval's CPU pin: dropping the interval,
+    /// finished or not, releases the pin (an active one restores the saved
+    /// affinity) and empties the storage, as when the interval held the pin
+    /// inline. An unfinished interval also poisons the clock.
+    #[test]
+    fn a_dropped_interval_releases_the_pin_its_caller_stores() {
+        let original = affinity().unwrap();
+        for finished in [true, false] {
+            let mut clock = GuestClock {
+                tracking: true,
+                binding: Some(reader(&[])),
+                ..Default::default()
+            };
+            let mut pin = Some(CpuAffinity::enter().unwrap());
+            let cpu = pin.as_ref().unwrap().cpu;
+            assert_eq!(unsafe { libc::sched_getcpu() }, cpu as libc::c_int);
+            drop(CountInterval {
+                clock: &mut clock,
+                affinity: &mut pin,
+                finished,
+            });
+            assert!(pin.is_none(), "finished={finished}");
+            assert!(same_affinity(&affinity().unwrap(), &original));
+            assert_eq!(clock.binding.is_none(), !finished);
+            assert_eq!(clock.read().is_err(), !finished);
+        }
+    }
+
     fn single_cpu_interval_counts_no_host_work(original: &libc::cpu_set_t) -> usize {
         let mut allocation = CpuAffinity::enter().unwrap();
         let cpu = allocation.cpu;

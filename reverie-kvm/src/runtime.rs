@@ -7498,6 +7498,13 @@ impl KvmBackend {
     }
 }
 
+/// Whether [`KvmBackend::route_finished_entry_handler`] has anything to do
+/// for `outcome` after an entry check that returned `entry`: a failed check
+/// is routed, and so is a runtime error. Anything else it returns unchanged.
+fn entry_handler_outcome_needs_routing<R>(outcome: &HandlerOutcome<R>, entry: &Result<()>) -> bool {
+    entry.is_err() || matches!(outcome, HandlerOutcome::RuntimeError(_))
+}
+
 /// Resolve a Tool handler's return value into the raw word written to the
 /// guest's syscall frame, or `None` when the `ERESTARTSYS` protocol requires
 /// either re-running the Tool callback or applying signal-disposition restart
@@ -7523,13 +7530,6 @@ impl KvmBackend {
 /// Isolating the policy in one pure function keeps it directly testable. Note
 /// that testing it does not test restart execution; integration tests cover
 /// both callback re-entry and signal-disposition-dependent frame restoration.
-/// Whether [`KvmBackend::route_finished_entry_handler`] has anything to do
-/// for `outcome` after an entry check that returned `entry`: a failed check
-/// is routed, and so is a runtime error. Anything else it returns unchanged.
-fn entry_handler_outcome_needs_routing<R>(outcome: &HandlerOutcome<R>, entry: &Result<()>) -> bool {
-    entry.is_err() || matches!(outcome, HandlerOutcome::RuntimeError(_))
-}
-
 fn classify_handler_result(
     result: std::result::Result<i64, reverie::Error>,
 ) -> Result<Option<i64>> {
