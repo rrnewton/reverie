@@ -3296,6 +3296,38 @@ pub struct NoInstallationScopeEvidence {
     other_tls_getters: Vec<UnisolatedTlsGetter>,
     other_getter_pointer_slots: Vec<u64>,
     other_tls_unisolated: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    native_tls_layout100: Option<NativeNoScopeLayout100Evidence>,
+}
+
+// This distinct optional payload is emitted only for the complete new native
+// layout. Historical no-scope v1 and all existing-installation JSON stay exact.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct NativeNoScopeLayout100Evidence {
+    tls_program_header_index: usize,
+    tls_file_offset: u64,
+    tls_virtual_address: u64,
+    tls_file_size: u64,
+    tls_memory_size: u64,
+    tls_alignment: u64,
+    cells: Vec<NativeNoScopeCellEvidence>,
+    pending_initializer_sha256: String,
+    getter_pointer_targets: BTreeMap<u64, u64>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct NativeNoScopeCellEvidence {
+    symbol: SymbolEvidence,
+    symbol_type: u8,
+    section_index: usize,
+    section_name: String,
+    section_type: u32,
+    section_flags: u64,
+    section_file_offset: u64,
+    section_virtual_address: u64,
+    section_size: u64,
 }
 const NO_INSTALLATION_SCOPE_POLICY: &str =
     "detcore_native_off_alloc101_reviewed_source_current_build_rx_loader_census_v1";
@@ -3324,6 +3356,47 @@ const NO_SCOPE_OTHER_GETTERS: [(&str, u64); 4] = [
         0x140,
     ),
 ];
+// Complete native OFF layout measured in the maintained pinned-root build.
+// The compiler version is provenance context, never a selector or permission
+// to ignore bytes. All four typed roles must select this vector together.
+const NATIVE100_NO_SCOPE_POLICY: &str =
+    "detcore_native_off_alloc101_tls100_reviewed_source_current_build_rx_loader_census_v2";
+const NATIVE100_NO_SCOPE_OTHER_GETTERS: [(&str, u64); 4] = [
+    (NO_SCOPE_OTHER_GETTERS[0].0, 0xe8),
+    (NO_SCOPE_OTHER_GETTERS[1].0, 0xf0),
+    (NO_SCOPE_OTHER_GETTERS[2].0, 0),
+    (NO_SCOPE_OTHER_GETTERS[3].0, 0x100),
+];
+// Getter order, exact actual LOCAL STT_TLS cell, size, and section kind. PENDING
+// is initialized data, not zero-fill; its complete 16 B payload is bound below.
+const NATIVE100_NO_SCOPE_CELLS: [(&str, u64, u64, u32); 4] = [
+    (
+        "_RNvNCNKNvNtNtCs_15reverie_inguest5guest7support20TOOL_CALLBACK_ACTIVE0s_023___RUST_STD_INTERNAL_VAL",
+        0xe8,
+        1,
+        section_header::SHT_NOBITS,
+    ),
+    (
+        "_RNvNCNKNvNtNtCs_15reverie_inguest5guest12continuation5OWNER0s_023___RUST_STD_INTERNAL_VAL",
+        0xf0,
+        8,
+        section_header::SHT_NOBITS,
+    ),
+    (
+        "_RNvNCNKNvNtNtCs_15reverie_inguest5guest12continuation7PENDING0s_023___RUST_STD_INTERNAL_VAL",
+        0,
+        16,
+        section_header::SHT_PROGBITS,
+    ),
+    (
+        "_RNvNCNKNvNtNtCs_15reverie_inguest5guest5alloc14DISPATCH_DEPTH0s_023___RUST_STD_INTERNAL_VAL",
+        0x100,
+        8,
+        section_header::SHT_NOBITS,
+    ),
+];
+const NATIVE100_PENDING_INITIALIZER_HEX: &str = "0000000000000000fe00000000000000";
+
 // The ordinary OFF image has the same101B allocation body, but its complete
 // typed getter population has different OWNER/DISPATCH offsets. These are
 // distinct measured cohorts, not interchangeable TLS layouts.
@@ -18121,6 +18194,15 @@ fn no_installation_scope_census_in_cohort(
     bytes: &[u8],
     cohort: NoScopeCohort,
 ) -> Result<NoScopeCensus> {
+    no_installation_scope_census_with_getters(elf, bytes, cohort, cohort.getters())
+}
+
+fn no_installation_scope_census_with_getters(
+    elf: &Elf<'_>,
+    bytes: &[u8],
+    cohort: NoScopeCohort,
+    expected_getters: &[(&str, u64)],
+) -> Result<NoScopeCensus> {
     let mut raw_names = Vec::new();
     for (dynamic, symbols, strings) in [
         (false, &elf.syms, &elf.strtab),
@@ -18158,7 +18240,7 @@ fn no_installation_scope_census_in_cohort(
         }
     }
     let mut other_tls_getters = Vec::new();
-    for &(canonical, cell_offset) in cohort.getters() {
+    for &(canonical, cell_offset) in expected_getters {
         let candidates: Vec<_> = elf
             .syms
             .iter()
@@ -18355,6 +18437,410 @@ fn no_installation_scope_census_in_cohort(
     })
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum NativeNoScopeTlsLayout {
+    Dispatch140,
+    Dispatch100,
+}
+
+// Select the joint complete typed getter/cell vector. No individual getter
+// retries, compiler-version inference, or swallowed whole-census error.
+fn native_no_scope_tls_layout(elf: &Elf<'_>, bytes: &[u8]) -> Result<NativeNoScopeTlsLayout> {
+    let mut observed = Vec::new();
+    let mut actual_cells = Vec::new();
+    for (&(canonical, _), &(cell_name, _, cell_size, _)) in
+        NO_SCOPE_OTHER_GETTERS.iter().zip(&NATIVE100_NO_SCOPE_CELLS)
+    {
+        let matches: Vec<_> = elf
+            .syms
+            .iter()
+            .filter(|symbol| {
+                elf.strtab
+                    .get_at(symbol.st_name)
+                    .and_then(canonical_rust_symbol)
+                    .as_deref()
+                    == Some(canonical)
+            })
+            .collect();
+        require(
+            matches.len() == 1,
+            "native TLS layout has a missing/duplicate typed getter",
+        )?;
+        let symbol = matches[0];
+        require(
+            symbol.st_type() == sym::STT_FUNC
+                && symbol.st_bind() == sym::STB_LOCAL
+                && symbol.st_size == 22,
+            "native TLS layout getter type/locality/size differs",
+        )?;
+        let (_, at) = unique_file_mapping(elf, bytes, symbol.st_value, 22)?;
+        let code = loader_meta_slice(bytes, at, 22)?;
+        observed.push(u64::from(u32::from_le_bytes(
+            code[16..20].try_into().unwrap(),
+        )));
+        let cells: Vec<_> = elf
+            .syms
+            .iter()
+            .filter(|cell| {
+                elf.strtab
+                    .get_at(cell.st_name)
+                    .and_then(canonical_rust_symbol)
+                    .as_deref()
+                    == Some(cell_name)
+            })
+            .collect();
+        require(
+            cells.len() == 1,
+            "native TLS vector has a missing/duplicate actual typed cell",
+        )?;
+        let cell = cells[0];
+        require(
+            cell.st_type() == sym::STT_TLS
+                && cell.st_bind() == sym::STB_LOCAL
+                && cell.st_size == cell_size
+                && !elf.dynsyms.iter().any(|dynamic| {
+                    elf.dynstrtab
+                        .get_at(dynamic.st_name)
+                        .and_then(canonical_rust_symbol)
+                        .as_deref()
+                        == Some(cell_name)
+                }),
+            "native TLS vector cell loses exact type/locality/size/identity",
+        )?;
+        actual_cells.push(cell.st_value);
+    }
+    let old: Vec<_> = NO_SCOPE_OTHER_GETTERS
+        .iter()
+        .map(|(_, offset)| *offset)
+        .collect();
+    let new: Vec<_> = NATIVE100_NO_SCOPE_OTHER_GETTERS
+        .iter()
+        .map(|(_, offset)| *offset)
+        .collect();
+    require(
+        observed == actual_cells,
+        "native TLS getter literals and actual typed cells form a mixed layout",
+    )?;
+    if observed == old {
+        Ok(NativeNoScopeTlsLayout::Dispatch140)
+    } else if observed == new {
+        Ok(NativeNoScopeTlsLayout::Dispatch100)
+    } else {
+        Err("native TLS population has no exact complete measured vector".into())
+    }
+}
+
+fn native_no_scope_layout100_census(
+    elf: &Elf<'_>,
+    bytes: &[u8],
+) -> Result<(NoScopeCensus, NativeNoScopeLayout100Evidence)> {
+    let census = no_installation_scope_census_with_getters(
+        elf,
+        bytes,
+        NoScopeCohort::DetcoreNative101,
+        &NATIVE100_NO_SCOPE_OTHER_GETTERS,
+    )?;
+    let segments: Vec<_> = elf
+        .program_headers
+        .iter()
+        .enumerate()
+        .filter(|(_, segment)| segment.p_type == program_header::PT_TLS)
+        .collect();
+    require(segments.len() == 1, "native100 requires one exact PT_TLS")?;
+    let (tls_index, tls) = segments[0];
+    require(
+        tls.p_flags == program_header::PF_R
+            && tls.p_filesz == 0xe8
+            && tls.p_memsz == 0x1c8
+            && tls.p_align == 8,
+        "native100 complete initialized/zero-fill TLS layout differs",
+    )?;
+    let initialized_end = tls
+        .p_vaddr
+        .checked_add(tls.p_filesz)
+        .ok_or("native100 initialized TLS template span overflow")?;
+    let writers = loader_writers(elf)?;
+    require(
+        writers.iter().all(|writer| {
+            writer.end <= tls.p_vaddr || writer.relocation.r_offset >= initialized_end
+        }),
+        "native100 initialized TLS template has a loader writer",
+    )?;
+    let mut cells = Vec::new();
+    for &(canonical, offset, size, kind) in &NATIVE100_NO_SCOPE_CELLS {
+        let candidates: Vec<_> = elf
+            .syms
+            .iter()
+            .enumerate()
+            .filter(|(_, symbol)| {
+                elf.strtab
+                    .get_at(symbol.st_name)
+                    .and_then(canonical_rust_symbol)
+                    .as_deref()
+                    == Some(canonical)
+            })
+            .collect();
+        require(
+            candidates.len() == 1,
+            "native100 exact TLS cell absent/duplicated",
+        )?;
+        let (selected_index, symbol) = &candidates[0];
+        require(
+            symbol.st_type() == sym::STT_TLS
+                && symbol.st_bind() == sym::STB_LOCAL
+                && symbol.st_visibility() == sym::STV_DEFAULT
+                && symbol.st_value == offset
+                && symbol.st_size == size
+                && !elf.dynsyms.iter().any(|other| {
+                    elf.dynstrtab
+                        .get_at(other.st_name)
+                        .and_then(canonical_rust_symbol)
+                        .as_deref()
+                        == Some(canonical)
+                }),
+            "native100 typed cell identity/type/locality/size/offset differs",
+        )?;
+        let section = elf
+            .section_headers
+            .get(symbol.st_shndx)
+            .ok_or("native100 TLS cell section absent")?;
+        let name = elf
+            .shdr_strtab
+            .get_at(section.sh_name)
+            .ok_or("native100 TLS section name absent")?;
+        let flags = u64::from(
+            section_header::SHF_ALLOC | section_header::SHF_WRITE | section_header::SHF_TLS,
+        );
+        let initialized = kind == section_header::SHT_PROGBITS;
+        let section_start = if initialized { 0 } else { 0xe8 };
+        let section_size = if initialized { 0xe8 } else { 0xe0 };
+        require(
+            section.sh_type == kind
+                && section.sh_flags == flags
+                && name == if initialized { ".tdata" } else { ".tbss" }
+                && tls.p_vaddr.checked_add(section_start) == Some(section.sh_addr)
+                && tls.p_offset.checked_add(section_start) == Some(section.sh_offset)
+                && section.sh_size == section_size
+                && offset >= section_start
+                && offset
+                    .checked_add(size)
+                    .is_some_and(|end| end <= section_start + section_size),
+            "native100 typed cell does not join its exact actual TLS section/span",
+        )?;
+        for (index, other) in elf.syms.iter().enumerate() {
+            require(
+                index == *selected_index
+                    || other.st_type() != sym::STT_TLS
+                    || other.st_shndx == section_header::SHN_UNDEF as usize
+                    || other.st_size == 0
+                    || other.st_value >= offset + size
+                    || other
+                        .st_value
+                        .checked_add(other.st_size)
+                        .is_some_and(|end| end <= offset),
+                "native100 actual cell overlaps another static TLS identity",
+            )?;
+        }
+        require(
+            elf.dynsyms.iter().all(|other| {
+                other.st_type() != sym::STT_TLS
+                    || other.st_shndx == section_header::SHN_UNDEF as usize
+                    || other.st_size == 0
+                    || other.st_value >= offset + size
+                    || other
+                        .st_value
+                        .checked_add(other.st_size)
+                        .is_some_and(|end| end <= offset)
+            }),
+            "native100 actual cell overlaps a dynamic TLS identity",
+        )?;
+        cells.push(NativeNoScopeCellEvidence {
+            symbol: symbol_evidence(elf.strtab.get_at(symbol.st_name).unwrap(), symbol),
+            symbol_type: symbol.st_type(),
+            section_index: symbol.st_shndx,
+            section_name: name.into(),
+            section_type: section.sh_type,
+            section_flags: section.sh_flags,
+            section_file_offset: section.sh_offset,
+            section_virtual_address: section.sh_addr,
+            section_size: section.sh_size,
+        });
+    }
+    let pending = loader_meta_slice(bytes, loader_meta_usize(tls.p_offset)?, 16)?;
+    require(
+        pending == fixed_hex(NATIVE100_PENDING_INITIALIZER_HEX),
+        "native100 complete initialized PENDING payload differs",
+    )?;
+    let (mapping, mapped_at) =
+        unique_file_mapping(elf, bytes, tls.p_vaddr, loader_meta_usize(tls.p_filesz)?)?;
+    require(
+        mapping.p_flags == program_header::PF_R | program_header::PF_W
+            && mapped_at == loader_meta_usize(tls.p_offset)?,
+        "native100 initialized TLS has no unique exact RW template mapping",
+    )?;
+    let first = &census.other_tls_getters[0];
+    require(
+        census.other_tls_getters.iter().all(|getter| {
+            getter.module_slot == first.module_slot && getter.plt_address == first.plt_address
+        }),
+        "native100 complete getter population uses different modules/providers",
+    )?;
+    let expected_pointer_targets: BTreeSet<_> = [1usize, 2]
+        .into_iter()
+        .map(|index| {
+            census
+                .other_tls_getters
+                .iter()
+                .find(|getter| {
+                    canonical_rust_symbol(&getter.getter.name).as_deref()
+                        == Some(NO_SCOPE_OTHER_GETTERS[index].0)
+                })
+                .unwrap()
+                .getter
+                .address
+        })
+        .collect();
+    let mut getter_pointer_targets = BTreeMap::new();
+    for &slot in &census.other_getter_pointer_slots {
+        let records: Vec<_> = writers
+            .iter()
+            .filter(|writer| writer.relocation.r_offset == slot)
+            .collect();
+        require(
+            records.len() == 1,
+            "native100 other-getter pointer writer missing/duplicated",
+        )?;
+        let writer = records[0];
+        let r = &writer.relocation;
+        let target = r
+            .r_addend
+            .and_then(|value| u64::try_from(value).ok())
+            .ok_or("native100 other-getter pointer has no actual target")?;
+        require(
+            r.r_type == reloc::R_X86_64_RELATIVE
+                && r.r_sym == 0
+                && writer.end
+                    == slot
+                        .checked_add(8)
+                        .ok_or("native100 pointer slot overflow")?
+                && expected_pointer_targets.contains(&target)
+                && fixed_readonly_range(elf, bytes, slot, 8)? == [0; 8],
+            "native100 other-getter pointer loses exact RELATIVE/RELRO/entry binding",
+        )?;
+        getter_pointer_targets.insert(slot, target);
+    }
+    require(
+        getter_pointer_targets.len() == 2
+            && getter_pointer_targets
+                .values()
+                .copied()
+                .collect::<BTreeSet<_>>()
+                == expected_pointer_targets,
+        "native100 exact OWNER/PENDING pointer pair absent/duplicated/foreign",
+    )?;
+    let proof = NativeNoScopeLayout100Evidence {
+        tls_program_header_index: tls_index,
+        tls_file_offset: tls.p_offset,
+        tls_virtual_address: tls.p_vaddr,
+        tls_file_size: tls.p_filesz,
+        tls_memory_size: tls.p_memsz,
+        tls_alignment: tls.p_align,
+        cells,
+        pending_initializer_sha256: sha256(pending),
+        getter_pointer_targets,
+    };
+    Ok((census, proof))
+}
+
+fn validate_native_no_scope_layout100(
+    proof: &NoInstallationScopeEvidence,
+    layout: &NativeNoScopeLayout100Evidence,
+) -> Result<()> {
+    require(
+        layout.tls_file_size == 0xe8
+            && layout.tls_memory_size == 0x1c8
+            && layout.tls_alignment == 8
+            && layout.cells.len() == 4
+            && layout.pending_initializer_sha256
+                == sha256(&fixed_hex(NATIVE100_PENDING_INITIALIZER_HEX))
+            && layout
+                .tls_file_offset
+                .checked_add(layout.tls_file_size)
+                .is_some()
+            && layout
+                .tls_virtual_address
+                .checked_add(layout.tls_memory_size)
+                .is_some(),
+        "native100 retained full TLS layout/initializer differs",
+    )?;
+    for (cell, &(canonical, offset, size, kind)) in
+        layout.cells.iter().zip(&NATIVE100_NO_SCOPE_CELLS)
+    {
+        let initialized = kind == section_header::SHT_PROGBITS;
+        let start = if initialized { 0 } else { 0xe8 };
+        require(
+            canonical_rust_symbol(&cell.symbol.name).as_deref() == Some(canonical)
+                && cell.symbol.address == offset
+                && cell.symbol.size == size
+                && cell.symbol.binding == sym::STB_LOCAL
+                && cell.symbol.visibility == sym::STV_DEFAULT
+                && cell.symbol_type == sym::STT_TLS
+                && cell.section_index != 0
+                && cell.section_type == kind
+                && cell.section_name == if initialized { ".tdata" } else { ".tbss" }
+                && cell.section_flags
+                    == u64::from(
+                        section_header::SHF_ALLOC
+                            | section_header::SHF_WRITE
+                            | section_header::SHF_TLS,
+                    )
+                && layout.tls_file_offset.checked_add(start) == Some(cell.section_file_offset)
+                && layout.tls_virtual_address.checked_add(start)
+                    == Some(cell.section_virtual_address)
+                && cell.section_size == if initialized { 0xe8 } else { 0xe0 },
+            "native100 retained typed TLS cell differs from complete cohort",
+        )?;
+    }
+    let first = &proof.other_tls_getters[0];
+    require(
+        proof.other_tls_getters.iter().all(|getter| {
+            getter.module_slot == first.module_slot && getter.plt_address == first.plt_address
+        }),
+        "native100 retained module/provider population differs",
+    )?;
+    let targets: BTreeSet<_> = [1usize, 2]
+        .into_iter()
+        .map(|index| {
+            proof
+                .other_tls_getters
+                .iter()
+                .find(|getter| {
+                    canonical_rust_symbol(&getter.getter.name).as_deref()
+                        == Some(NO_SCOPE_OTHER_GETTERS[index].0)
+                })
+                .map(|getter| getter.getter.address)
+        })
+        .collect::<Option<_>>()
+        .ok_or("native100 retained OWNER/PENDING getter absent")?;
+    require(
+        layout.getter_pointer_targets.len() == 2
+            && layout
+                .getter_pointer_targets
+                .keys()
+                .copied()
+                .collect::<Vec<_>>()
+                == proof.other_getter_pointer_slots
+            && layout
+                .getter_pointer_targets
+                .values()
+                .copied()
+                .collect::<BTreeSet<_>>()
+                == targets,
+        "native100 retained exact other-getter pointer bindings differ",
+    )?;
+    Ok(())
+}
+
 fn derive_no_installation_scope_evidence(
     elf: &Elf<'_>,
     bytes: &[u8],
@@ -18419,11 +18905,26 @@ fn derive_no_installation_scope_evidence(
         )?;
     }
     authenticate_loader_metadata(elf, bytes)?;
-    let census = no_installation_scope_census_in_cohort(elf, bytes, cohort)?;
+    let native100 = cohort == NoScopeCohort::DetcoreNative101
+        && native_no_scope_tls_layout(elf, bytes)? == NativeNoScopeTlsLayout::Dispatch100;
+    let (census, native_tls_layout100) = if native100 {
+        let (census, layout) = native_no_scope_layout100_census(elf, bytes)?;
+        (census, Some(layout))
+    } else {
+        (
+            no_installation_scope_census_in_cohort(elf, bytes, cohort)?,
+            None,
+        )
+    };
     Ok(NoInstallationScopeEvidence {
         kind: "no_installation_scope".into(),
-        version: 1,
-        policy: cohort.policy().into(),
+        version: if native100 { 2 } else { 1 },
+        policy: if native100 {
+            NATIVE100_NO_SCOPE_POLICY
+        } else {
+            cohort.policy()
+        }
+        .into(),
         elf_sha256: sha256(bytes),
         compiled_sources_sha256,
         reverie_pin: sources.record.reverie_pin.clone(),
@@ -18443,6 +18944,7 @@ fn derive_no_installation_scope_evidence(
         other_tls_getters: census.other_tls_getters,
         other_getter_pointer_slots: census.other_getter_pointer_slots,
         other_tls_unisolated: true,
+        native_tls_layout100,
     })
 }
 
@@ -18455,11 +18957,25 @@ fn validate_no_installation_scope_evidence(
         value.len() == n && value.bytes().all(|byte| byte.is_ascii_hexdigit())
     };
     let cohort = no_scope_build_features(&proof.current_build)?;
+    let native100 = cohort == NoScopeCohort::DetcoreNative101
+        && proof.version == 2
+        && proof.policy == NATIVE100_NO_SCOPE_POLICY;
+    let expected_getters = if native100 {
+        &NATIVE100_NO_SCOPE_OTHER_GETTERS[..]
+    } else {
+        cohort.getters()
+    };
     require(
         image_kind == cohort.image_kind()
             && proof.kind == "no_installation_scope"
-            && proof.version == 1
-            && proof.policy == cohort.policy()
+            && proof.version == if native100 { 2 } else { 1 }
+            && proof.policy
+                == if native100 {
+                    NATIVE100_NO_SCOPE_POLICY
+                } else {
+                    cohort.policy()
+                }
+            && proof.native_tls_layout100.is_some() == native100
             && proof.other_tls_unisolated
             && hash(&proof.reverie_pin, 40)
             && proof.source.sha256 == NO_INSTALLATION_SCOPE_SOURCE.2
@@ -18524,7 +19040,7 @@ fn validate_no_installation_scope_evidence(
                         name.starts_with("_RNvXs2_NtCs_16reverie_liteinst11patch_alloc")
                     })
             })
-            && proof.other_tls_getters.len() == cohort.getters().len()
+            && proof.other_tls_getters.len() == expected_getters.len()
             && proof
                 .other_tls_getters
                 .windows(2)
@@ -18540,9 +19056,7 @@ fn validate_no_installation_scope_evidence(
         let canonical = canonical_rust_symbol(&getter.getter.name)
             .ok_or("other TLS getter type name malformed")?;
         require(
-            cohort
-                .getters()
-                .contains(&(canonical.as_str(), getter.cell_offset))
+            expected_getters.contains(&(canonical.as_str(), getter.cell_offset))
                 && retained.insert(canonical)
                 && getter.getter.binding == sym::STB_LOCAL
                 && getter.getter.size == 22
@@ -18553,6 +19067,9 @@ fn validate_no_installation_scope_evidence(
                 && getter.plt_address != 0,
             "no-scope other TLS getter loses its exact unisolated population",
         )?;
+    }
+    if let Some(layout) = &proof.native_tls_layout100 {
+        validate_native_no_scope_layout100(proof, layout)?;
     }
     Ok(())
 }
@@ -40943,11 +41460,13 @@ mod tests {
                 .collect(),
             other_getter_pointer_slots: vec![],
             other_tls_unisolated: true,
+            native_tls_layout100: None,
         };
         let check = |proof: &NoInstallationScopeEvidence| {
             validate_no_installation_scope_evidence(&backing, proof, FixedImageKind::Detcore)
         };
         check(&proof).unwrap();
+        native_no_scope_layout100_wire_controls(&backing, &proof);
         let value = serde_json::to_value(AllocatorInstallationEvidence::NoInstallationScope(
             Box::new(proof.clone()),
         ))
@@ -41446,6 +41965,7 @@ mod tests {
         assert_eq!(good.loader_writer_count, 2);
         assert!(good.other_getter_pointer_slots.is_empty());
         assert_eq!(good.mappings.len(), 1);
+        native_no_scope_layout100_physical_controls();
         // Each additional measured population has its own complete physical
         // positive. No old native negative is redirected to another cohort.
         let mut ordinary = base.clone();
@@ -41665,6 +42185,1193 @@ mod tests {
             census(&changed).unwrap().mappings,
             good.mappings,
             "every physical RX byte contributes to evidence"
+        );
+    }
+
+    // Actual mini-ELF controls only. These helpers never construct verified
+    // compiled sources or claim constructor/allocator/runtime qualification.
+    struct NativeNoScopeTestFixture {
+        bytes: Vec<u8>,
+        getter_names: Vec<usize>,
+        cell_names: Vec<usize>,
+        provider_version: usize,
+        provider_library: usize,
+    }
+
+    fn native_no_scope_test_put(bytes: &mut [u8], at: usize, width: usize, value: u64) {
+        bytes[at..at + width].copy_from_slice(&value.to_le_bytes()[..width]);
+    }
+
+    fn native_no_scope_test_word(bytes: &[u8], at: usize) -> u64 {
+        u64::from_le_bytes(bytes[at..at + 8].try_into().unwrap())
+    }
+
+    fn native_no_scope_test_static_name(bytes: &mut [u8], name: &str) -> u64 {
+        let size_at = 0x8000 + 3 * 64 + 32;
+        let offset = native_no_scope_test_word(bytes, size_at) as usize;
+        assert!(offset + name.len() + 1 < 0x1000);
+        bytes[0x6000 + offset..0x6000 + offset + name.len()].copy_from_slice(name.as_bytes());
+        bytes[0x6000 + offset + name.len()] = 0;
+        native_no_scope_test_put(bytes, size_at, 8, (offset + name.len() + 1) as u64);
+        offset as u64
+    }
+
+    fn native_no_scope_test_dynamic_symbol(
+        bytes: &mut [u8],
+        name: &str,
+        kind: u8,
+        value: u64,
+        size: u64,
+        section: u64,
+    ) {
+        let string_size = native_no_scope_test_word(bytes, 0x8000 + 5 * 64 + 32) as usize;
+        assert!(string_size + name.len() + 1 < 0x200);
+        bytes[0x4600 + string_size..0x4600 + string_size + name.len()]
+            .copy_from_slice(name.as_bytes());
+        bytes[0x4600 + string_size + name.len()] = 0;
+        let new_size = (string_size + name.len() + 1) as u64;
+        native_no_scope_test_put(bytes, 0x3800 + 16 + 8, 8, new_size);
+        native_no_scope_test_put(bytes, 0x8000 + 5 * 64 + 32, 8, new_size);
+        for (offset, width, value) in [
+            (0, 4, string_size as u64),
+            (4, 1, ((sym::STB_GLOBAL << 4) | kind) as u64),
+            (6, 2, section),
+            (8, 8, value),
+            (16, 8, size),
+        ] {
+            native_no_scope_test_put(bytes, 0x4430 + offset, width, value);
+        }
+        native_no_scope_test_put(bytes, 0x8000 + 4 * 64 + 32, 8, 72);
+        native_no_scope_test_put(bytes, 0x5404, 4, 3);
+        native_no_scope_test_put(bytes, 0x8000 + 8 * 64 + 32, 8, 6);
+        native_no_scope_test_put(bytes, 0x5204, 2, 1);
+    }
+
+    fn native_no_scope_test_extra_writer(bytes: &mut [u8], slot: u64, target: u64) {
+        let size = native_no_scope_test_word(bytes, 0x3800 + 6 * 16 + 8);
+        assert!(size + 24 <= 0x100);
+        let at = 0x4800 + size as usize;
+        native_no_scope_test_put(bytes, at, 8, slot);
+        native_no_scope_test_put(bytes, at + 8, 8, reloc::R_X86_64_RELATIVE as u64);
+        native_no_scope_test_put(bytes, at + 16, 8, target);
+        native_no_scope_test_put(bytes, 0x3800 + 6 * 16 + 8, 8, size + 24);
+        native_no_scope_test_put(bytes, 0x8000 + 6 * 64 + 32, 8, size + 24);
+    }
+
+    fn native_no_scope_test_fixture(dispatch: u64) -> NativeNoScopeTestFixture {
+        fn put(bytes: &mut [u8], at: usize, width: usize, value: u64) {
+            bytes[at..at + width].copy_from_slice(&value.to_le_bytes()[..width]);
+        }
+        fn rip(bytes: &mut [u8], address: u64, field: usize, next: usize, target: u64) {
+            let displacement =
+                i32::try_from(target as i64 - (address + next as u64) as i64).unwrap();
+            bytes[field..next].copy_from_slice(&displacement.to_le_bytes());
+        }
+        let mut base = vec![0u8; 0x9000];
+        base[..7].copy_from_slice(b"\x7fELF\x02\x01\x01");
+        for (at, width, value) in [
+            (16, 2, 3),
+            (18, 2, 62),
+            (20, 4, 1),
+            (32, 8, 64),
+            (40, 8, 0x8000),
+            (52, 2, 64),
+            (54, 2, 56),
+            (56, 2, 6),
+            (58, 2, 64),
+            (60, 2, 12),
+            (62, 2, 11),
+        ] {
+            put(&mut base, at, width, value);
+        }
+        for (index, kind, flags, address, size) in [
+            (0, 1, 4, 0, 0x1000),
+            (1, 1, 5, 0x1000, 0x1000),
+            (2, 1, 6, 0x3000, 0x1000),
+            (3, 1, 4, 0x4000, 0x5000),
+            (4, 2, 6, 0x3800, 0x200),
+            (5, program_header::PT_GNU_RELRO as u64, 4, 0x3000, 0x1000),
+        ] {
+            let at = 64 + index * 56;
+            for (offset, width, value) in [
+                (0, 4, kind),
+                (4, 4, flags),
+                (8, 8, address),
+                (16, 8, address),
+                (24, 8, address),
+                (32, 8, size),
+                (40, 8, size),
+                (48, 8, 4096),
+            ] {
+                put(&mut base, at + offset, width, value);
+            }
+        }
+        let mut static_names = vec![0u8];
+        let mut static_offsets = Vec::new();
+        for (index, (canonical, cell_offset)) in NO_SCOPE_OTHER_GETTERS.into_iter().enumerate() {
+            static_offsets.push(static_names.len());
+            static_names.extend_from_slice(canonical.replace("Cs_", "Cs1_").as_bytes());
+            static_names.push(0);
+            let row = 0x4000 + (index + 1) * 24;
+            let address = 0x1500 + index * 0x40;
+            for (offset, width, value) in [
+                (0, 4, static_offsets[index] as u64),
+                (4, 1, sym::STT_FUNC as u64),
+                (6, 2, 1),
+                (8, 8, address as u64),
+                (16, 8, 22),
+            ] {
+                put(&mut base, row + offset, width, value);
+            }
+            let mut getter = fixed_hex("50488d3d00000000e800000000488d800000000059c3");
+            getter[16..20].copy_from_slice(&(cell_offset as u32).to_le_bytes());
+            rip(&mut getter, address as u64, 4, 8, 0x3300);
+            rip(&mut getter, address as u64, 9, 13, 0x1810);
+            base[address..address + 22].copy_from_slice(&getter);
+        }
+        let _forbidden_name_offset = static_names.len();
+        static_names.extend_from_slice(FIXED_TLS_CELL_ROLE.replace("Cs_", "Cs1_").as_bytes());
+        static_names.push(0);
+        assert!(static_names.len() < 0x1000);
+        base[0x6000..0x6000 + static_names.len()].copy_from_slice(&static_names);
+        let dynamic_names =
+            b"\0__tls_get_addr\0GLIBC_2.3\0ld-linux-x86-64.so.2\0INSTALLATION_DEPTH\0";
+        base[0x4600..0x4600 + dynamic_names.len()].copy_from_slice(dynamic_names);
+        for (offset, width, value) in [
+            (0, 4, 1),
+            (4, 1, ((sym::STB_GLOBAL << 4) | sym::STT_FUNC) as u64),
+        ] {
+            put(&mut base, 0x4418 + offset, width, value);
+        }
+        for (index, (tag, value)) in [
+            (goblin::elf::dynamic::DT_STRTAB, 0x4600),
+            (goblin::elf::dynamic::DT_STRSZ, dynamic_names.len() as u64),
+            (goblin::elf::dynamic::DT_SYMTAB, 0x4400),
+            (goblin::elf::dynamic::DT_SYMENT, 24),
+            (goblin::elf::dynamic::DT_HASH, 0x5400),
+            (goblin::elf::dynamic::DT_RELA, 0x4800),
+            (goblin::elf::dynamic::DT_RELASZ, 24),
+            (goblin::elf::dynamic::DT_RELAENT, 24),
+            (goblin::elf::dynamic::DT_JMPREL, 0x4900),
+            (goblin::elf::dynamic::DT_PLTRELSZ, 24),
+            (
+                goblin::elf::dynamic::DT_PLTREL,
+                goblin::elf::dynamic::DT_RELA,
+            ),
+            (goblin::elf::dynamic::DT_VERSYM, 0x5200),
+            (goblin::elf::dynamic::DT_VERNEED, 0x5300),
+            (goblin::elf::dynamic::DT_VERNEEDNUM, 1),
+            (goblin::elf::dynamic::DT_BIND_NOW, 0),
+            (goblin::elf::dynamic::DT_NULL, 0),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            put(&mut base, 0x3800 + index * 16, 8, tag);
+            put(&mut base, 0x3808 + index * 16, 8, value);
+        }
+        for (index, value) in [1, 2, 1, 0, 0].into_iter().enumerate() {
+            put(&mut base, 0x5400 + index * 4, 4, value);
+        }
+        put(&mut base, 0x5202, 2, 2);
+        let provider_library = dynamic_names
+            .windows(b"ld-linux-x86-64.so.2".len())
+            .position(|window| window == b"ld-linux-x86-64.so.2")
+            .unwrap();
+        let provider_version = dynamic_names
+            .windows(b"GLIBC_2.3".len())
+            .position(|window| window == b"GLIBC_2.3")
+            .unwrap();
+        for (offset, width, value) in [
+            (0, 2, 1),
+            (2, 2, 1),
+            (4, 4, provider_library as u64),
+            (8, 4, 16),
+            (16, 4, 0),
+            (20, 2, 0),
+            (22, 2, 2),
+            (24, 4, provider_version as u64),
+        ] {
+            put(&mut base, 0x5300 + offset, width, value);
+        }
+        for (at, slot, kind, index) in [
+            (0x4800, 0x3300, reloc::R_X86_64_DTPMOD64, 0),
+            (0x4900, 0x3380, reloc::R_X86_64_JUMP_SLOT, 1),
+        ] {
+            put(&mut base, at, 8, slot);
+            put(
+                &mut base,
+                at + 8,
+                8,
+                ((index as u64) << 32) | u64::from(kind),
+            );
+        }
+        let mut plt = fixed_hex("ff25000000006800000000e900000000");
+        rip(&mut plt, 0x1810, 2, 6, 0x3380);
+        rip(&mut plt, 0x1810, 12, 16, 0x1800);
+        base[0x1810..0x1820].copy_from_slice(&plt);
+        let section_names=b"\0.plt\0.symtab\0.strtab\0.dynsym\0.dynstr\0.rela.dyn\0.rela.plt\0.gnu.version\0.gnu.version_r\0.got\0.shstrtab\0";
+        base[0x5500..0x5500 + section_names.len()].copy_from_slice(section_names);
+        for (index, name, kind, flags, address, size, link, entry) in [
+            (1, ".plt", 1, 6, 0x1800, 32, 0, 16),
+            (2, ".symtab", 2, 0, 0x4000, 120, 3, 24),
+            (3, ".strtab", 3, 0, 0x6000, static_names.len() as u64, 0, 0),
+            (4, ".dynsym", 11, 2, 0x4400, 48, 5, 24),
+            (5, ".dynstr", 3, 2, 0x4600, dynamic_names.len() as u64, 0, 0),
+            (6, ".rela.dyn", 4, 2, 0x4800, 24, 4, 24),
+            (7, ".rela.plt", 4, 2, 0x4900, 24, 4, 24),
+            (8, ".gnu.version", 0x6fffffff, 2, 0x5200, 4, 4, 2),
+            (9, ".gnu.version_r", 0x6ffffffe, 2, 0x5300, 32, 5, 0),
+            (10, ".got", 1, 3, 0x3300, 0x110, 0, 0),
+            (
+                11,
+                ".shstrtab",
+                3,
+                0,
+                0x5500,
+                section_names.len() as u64,
+                0,
+                0,
+            ),
+        ] {
+            let name_offset = section_names
+                .windows(name.len() + 1)
+                .position(|window| {
+                    window[..name.len()] == *name.as_bytes() && window[name.len()] == 0
+                })
+                .unwrap();
+            let at = 0x8000 + index * 64;
+            for (offset, width, value) in [
+                (0, 4, name_offset as u64),
+                (4, 4, kind),
+                (8, 8, flags),
+                (16, 8, address),
+                (24, 8, address),
+                (32, 8, size),
+                (40, 4, link),
+                (48, 8, 8),
+                (56, 8, entry),
+            ] {
+                put(&mut base, at + offset, width, value);
+            }
+        }
+        put(&mut base, 0x8000 + 9 * 64 + 44, 4, 1);
+
+        assert!([0x140, 0x100].contains(&dispatch));
+        put(&mut base, 56, 2, 7);
+        put(&mut base, 60, 2, 14);
+        let tls_memory_size = if dispatch == 0x140 { 0x1c0 } else { 0x1c8 };
+        let tls_header = 64 + 6 * 56;
+        for (offset, width, value) in [
+            (0, 4, program_header::PT_TLS as u64),
+            (4, 4, program_header::PF_R as u64),
+            (8, 8, 0x3600),
+            (16, 8, 0x3600),
+            (24, 8, 0x3600),
+            (32, 8, 0xe8),
+            (40, 8, tls_memory_size),
+            (48, 8, 8),
+        ] {
+            put(&mut base, tls_header + offset, width, value);
+        }
+        let pending = fixed_hex(NATIVE100_PENDING_INITIALIZER_HEX);
+        base[0x3600..0x3610].copy_from_slice(&pending);
+        put(&mut base, 0x15c0 + 16, 4, dispatch);
+        let mut cell_names = Vec::new();
+        for (index, &(name, offset, size, _)) in NATIVE100_NO_SCOPE_CELLS.iter().enumerate() {
+            cell_names.push(static_names.len());
+            static_names.extend_from_slice(name.replace("Cs_", "Cs1_").as_bytes());
+            static_names.push(0);
+            for (field, width, value) in [
+                (0, 4, cell_names[index] as u64),
+                (4, 1, sym::STT_TLS as u64),
+                (6, 2, if index == 2 { 12 } else { 13 }),
+                (8, 8, if index == 3 { dispatch } else { offset }),
+                (16, 8, size),
+            ] {
+                put(&mut base, 0x4000 + (index + 5) * 24 + field, width, value);
+            }
+        }
+        assert!(static_names.len() < 0x1000);
+        base[0x6000..0x6000 + static_names.len()].copy_from_slice(&static_names);
+        put(&mut base, 0x8000 + 2 * 64 + 32, 8, 9 * 24);
+        put(
+            &mut base,
+            0x8000 + 3 * 64 + 32,
+            8,
+            static_names.len() as u64,
+        );
+        let mut names = section_names.to_vec();
+        let tdata_name = names.len();
+        names.extend_from_slice(b".tdata\0");
+        let tbss_name = names.len();
+        names.extend_from_slice(b".tbss\0");
+        base[0x5500..0x5500 + names.len()].copy_from_slice(&names);
+        put(&mut base, 0x8000 + 11 * 64 + 32, 8, names.len() as u64);
+        for (index, name, kind, address, size) in [
+            (12, tdata_name, section_header::SHT_PROGBITS, 0x3600, 0xe8),
+            (
+                13,
+                tbss_name,
+                section_header::SHT_NOBITS,
+                0x36e8,
+                tls_memory_size - 0xe8,
+            ),
+        ] {
+            for (field, width, value) in [
+                (0, 4, name as u64),
+                (4, 4, kind as u64),
+                (
+                    8,
+                    8,
+                    u64::from(
+                        section_header::SHF_ALLOC
+                            | section_header::SHF_WRITE
+                            | section_header::SHF_TLS,
+                    ),
+                ),
+                (16, 8, address),
+                (24, 8, address),
+                (32, 8, size),
+                (48, 8, 8),
+            ] {
+                put(&mut base, 0x8000 + index * 64 + field, width, value);
+            }
+        }
+        for (index, slot, target) in [(1, 0x3400, 0x1540), (2, 0x3408, 0x1580)] {
+            let at = 0x4800 + index * 24;
+            put(&mut base, at, 8, slot);
+            put(&mut base, at + 8, 8, reloc::R_X86_64_RELATIVE as u64);
+            put(&mut base, at + 16, 8, target);
+        }
+        put(&mut base, 0x3800 + 6 * 16 + 8, 8, 72);
+        put(&mut base, 0x8000 + 6 * 64 + 32, 8, 72);
+        // Complete canonical loader metadata is an actual precondition for
+        // the symbolic writer control; it is never bypassed by the fixture.
+        put(&mut base, 56, 2, 8);
+        put(&mut base, 60, 2, 16);
+        let phdr = 64 + 7 * 56;
+        for (field, width, value) in [
+            (0, 4, program_header::PT_PHDR as u64),
+            (4, 4, program_header::PF_R as u64),
+            (8, 8, 64),
+            (16, 8, 64),
+            (24, 8, 64),
+            (32, 8, 8 * 56),
+            (40, 8, 8 * 56),
+            (48, 8, 8),
+        ] {
+            put(&mut base, phdr + field, width, value);
+        }
+        put(
+            &mut base,
+            0x3800 + 15 * 16,
+            8,
+            goblin::elf::dynamic::DT_NEEDED,
+        );
+        put(&mut base, 0x3808 + 15 * 16, 8, provider_library as u64);
+        put(
+            &mut base,
+            0x3800 + 16 * 16,
+            8,
+            goblin::elf::dynamic::DT_NULL,
+        );
+        put(&mut base, 0x3808 + 16 * 16, 8, 0);
+        put(
+            &mut base,
+            0x5310,
+            4,
+            u64::from(loader_meta_elf_hash(b"GLIBC_2.3")),
+        );
+        let dynamic_section_name = names.len();
+        names.extend_from_slice(b".dynamic\0");
+        let hash_section_name = names.len();
+        names.extend_from_slice(b".hash\0");
+        base[0x5500..0x5500 + names.len()].copy_from_slice(&names);
+        put(&mut base, 0x8000 + 11 * 64 + 32, 8, names.len() as u64);
+        for (index, name, kind, flags, address, size, link, entry, alignment) in [
+            (
+                14,
+                dynamic_section_name,
+                section_header::SHT_DYNAMIC,
+                3,
+                0x3800,
+                0x200,
+                5,
+                16,
+                8,
+            ),
+            (
+                15,
+                hash_section_name,
+                section_header::SHT_HASH,
+                2,
+                0x5400,
+                20,
+                4,
+                4,
+                4,
+            ),
+        ] {
+            for (field, width, value) in [
+                (0, 4, name as u64),
+                (4, 4, u64::from(kind)),
+                (8, 8, flags),
+                (16, 8, address),
+                (24, 8, address),
+                (32, 8, size),
+                (40, 4, link),
+                (48, 8, alignment),
+                (56, 8, entry),
+            ] {
+                put(&mut base, 0x8000 + index * 64 + field, width, value);
+            }
+        }
+        NativeNoScopeTestFixture {
+            bytes: base,
+            getter_names: static_offsets,
+            cell_names,
+            provider_version,
+            provider_library,
+        }
+    }
+
+    fn native_no_scope_test_select_and_census(bytes: &[u8]) -> Result<NativeNoScopeTlsLayout> {
+        let elf = Elf::parse(bytes).map_err(|error| error.to_string())?;
+        let layout = native_no_scope_tls_layout(&elf, bytes)?;
+        match layout {
+            NativeNoScopeTlsLayout::Dispatch140 => {
+                no_installation_scope_census_in_cohort(
+                    &elf,
+                    bytes,
+                    NoScopeCohort::DetcoreNative101,
+                )?;
+            }
+            NativeNoScopeTlsLayout::Dispatch100 => {
+                native_no_scope_layout100_census(&elf, bytes)?;
+            }
+        }
+        Ok(layout)
+    }
+
+    fn native_no_scope_layout100_physical_controls() {
+        let fixture = native_no_scope_test_fixture(0x100);
+        let good = &fixture.bytes;
+        let old = native_no_scope_test_fixture(0x140);
+        // These are real successful canonical metadata checks, not a
+        // synthetic label authorizing the later template-specific refusal.
+        for bytes in [good, &old.bytes] {
+            authenticate_loader_metadata(&Elf::parse(bytes).unwrap(), bytes).unwrap();
+        }
+        for (at, width, value) in [
+            (64 + 7 * 56, 4, program_header::PT_NULL as u64),
+            (64 + 7 * 56 + 32, 8, 7 * 56),
+            (0x8000 + 14 * 64 + 4, 4, section_header::SHT_NULL as u64),
+            (0x8000 + 15 * 64 + 4, 4, section_header::SHT_NULL as u64),
+            (0x3800 + 15 * 16, 8, goblin::elf::dynamic::DT_SONAME),
+            (0x5310, 4, 0),
+        ] {
+            let mut bad_metadata = good.clone();
+            native_no_scope_test_put(&mut bad_metadata, at, width, value);
+            assert!(
+                authenticate_loader_metadata(&Elf::parse(&bad_metadata).unwrap(), &bad_metadata)
+                    .is_err(),
+                "canonical fixture metadata cannot omit or corrupt a required header/table/provider"
+            );
+        }
+        assert_eq!(
+            native_no_scope_test_select_and_census(&old.bytes).unwrap(),
+            NativeNoScopeTlsLayout::Dispatch140
+        );
+        assert_eq!(
+            native_no_scope_test_select_and_census(good).unwrap(),
+            NativeNoScopeTlsLayout::Dispatch100
+        );
+        let elf = Elf::parse(good).unwrap();
+        assert!(
+            no_installation_scope_census_in_cohort(&elf, good, NoScopeCohort::DetcoreNative101)
+                .is_err(),
+            "new100 is not an old140 census"
+        );
+        let (_, retained) = native_no_scope_layout100_census(&elf, good).unwrap();
+        assert_eq!(retained.cells.len(), 4);
+        assert_eq!(retained.getter_pointer_targets.len(), 2);
+        // Both complete protected pointer slots must join real non-TLS data.
+        // Retain the exact failure observed with the truncated fixture section.
+        for size in [0x100, 0x108] {
+            let mut truncated = good.clone();
+            native_no_scope_test_put(&mut truncated, 0x8000 + 10 * 64 + 32, 8, size);
+            let failure = native_no_scope_test_select_and_census(&truncated)
+                .err()
+                .expect("truncated pointer section must refuse");
+            assert!(
+                failure.contains("Fixed data section/load physical join differs"),
+                "section size {size:#x}: {failure}"
+            );
+        }
+        assert_eq!(
+            retained.pending_initializer_sha256,
+            sha256(&fixed_hex(NATIVE100_PENDING_INITIALIZER_HEX))
+        );
+        assert!(
+            derive_no_installation_scope_evidence(
+                &elf,
+                good,
+                &BTreeMap::new(),
+                &BTreeMap::new(),
+                None
+            )
+            .is_err(),
+            "new physical layout does not create source/current-build authority"
+        );
+        let rejected = |bytes: &[u8], label: &str| {
+            assert!(
+                native_no_scope_test_select_and_census(bytes).is_err(),
+                "{label}"
+            );
+        };
+        for index in 0..4 {
+            let address = 0x1500 + index * 0x40;
+            let getter_row = 0x4000 + (index + 1) * 24;
+            let cell_row = 0x4000 + (index + 5) * 24;
+            for byte in 0..22 {
+                let mut bad = good.clone();
+                bad[address + byte] ^= 1;
+                rejected(&bad, &format!("new100 whole getter {index} byte {byte}"));
+            }
+            for mutation in 0..8 {
+                let mut bad = good.clone();
+                match mutation {
+                    0 => native_no_scope_test_put(&mut bad, getter_row, 4, 0),
+                    1 => native_no_scope_test_put(
+                        &mut bad,
+                        getter_row + 4,
+                        1,
+                        sym::STT_OBJECT as u64,
+                    ),
+                    2 => native_no_scope_test_put(
+                        &mut bad,
+                        getter_row + 4,
+                        1,
+                        ((sym::STB_GLOBAL << 4) | sym::STT_FUNC) as u64,
+                    ),
+                    3 => native_no_scope_test_put(&mut bad, getter_row + 16, 8, 21),
+                    4 => {
+                        bad.copy_within(getter_row..getter_row + 24, 0x4000 + 9 * 24);
+                        native_no_scope_test_put(&mut bad, 0x8000 + 2 * 64 + 32, 8, 10 * 24);
+                    }
+                    5 => {
+                        let wrong = NO_SCOPE_OTHER_GETTERS[index]
+                            .0
+                            .replace("15reverie_inguest", "16reverie_liteinst");
+                        let offset = native_no_scope_test_static_name(&mut bad, &wrong);
+                        native_no_scope_test_put(&mut bad, getter_row, 4, offset);
+                    }
+                    6 => bad[0x6000 + fixture.getter_names[index]] = b'X',
+                    7 => {
+                        let name = NO_SCOPE_OTHER_GETTERS[index].0.replace("Cs_", "Cs1_");
+                        native_no_scope_test_dynamic_symbol(
+                            &mut bad,
+                            &name,
+                            sym::STT_FUNC,
+                            address as u64,
+                            22,
+                            1,
+                        );
+                    }
+                    _ => unreachable!(),
+                }
+                rejected(&bad, &format!("new100 getter identity {index}:{mutation}"));
+            }
+            for mutation in 0..14 {
+                let mut bad = good.clone();
+                match mutation {
+                    0 => native_no_scope_test_put(&mut bad, cell_row, 4, 0),
+                    1 => {
+                        native_no_scope_test_put(&mut bad, cell_row + 4, 1, sym::STT_OBJECT as u64)
+                    }
+                    2 => native_no_scope_test_put(
+                        &mut bad,
+                        cell_row + 4,
+                        1,
+                        ((sym::STB_GLOBAL << 4) | sym::STT_TLS) as u64,
+                    ),
+                    3 => {
+                        native_no_scope_test_put(&mut bad, cell_row + 5, 1, sym::STV_HIDDEN as u64)
+                    }
+                    4 => native_no_scope_test_put(&mut bad, cell_row + 16, 8, 0),
+                    5 => native_no_scope_test_put(
+                        &mut bad,
+                        cell_row + 16,
+                        8,
+                        NATIVE100_NO_SCOPE_CELLS[index].2 + 1,
+                    ),
+                    6 => native_no_scope_test_put(
+                        &mut bad,
+                        cell_row + 8,
+                        8,
+                        NATIVE100_NO_SCOPE_CELLS[index].1 + 1,
+                    ),
+                    7 => native_no_scope_test_put(&mut bad, cell_row + 6, 2, 0),
+                    8 => native_no_scope_test_put(
+                        &mut bad,
+                        cell_row + 6,
+                        2,
+                        if index == 2 { 13 } else { 12 },
+                    ),
+                    9 => {
+                        bad.copy_within(cell_row..cell_row + 24, 0x4000 + 9 * 24);
+                        native_no_scope_test_put(&mut bad, 0x8000 + 2 * 64 + 32, 8, 10 * 24);
+                    }
+                    10 => {
+                        let wrong = NATIVE100_NO_SCOPE_CELLS[index]
+                            .0
+                            .replace("15reverie_inguest", "16reverie_liteinst");
+                        let offset = native_no_scope_test_static_name(&mut bad, &wrong);
+                        native_no_scope_test_put(&mut bad, cell_row, 4, offset);
+                    }
+                    11 => bad[0x6000 + fixture.cell_names[index]] = b'X',
+                    12 => {
+                        let name = NATIVE100_NO_SCOPE_CELLS[index].0.replace("Cs_", "Cs1_");
+                        native_no_scope_test_dynamic_symbol(
+                            &mut bad,
+                            &name,
+                            sym::STT_TLS,
+                            NATIVE100_NO_SCOPE_CELLS[index].1,
+                            NATIVE100_NO_SCOPE_CELLS[index].2,
+                            if index == 2 { 12 } else { 13 },
+                        );
+                    }
+                    13 => {
+                        let overlap = 0x4000 + 9 * 24;
+                        native_no_scope_test_put(&mut bad, overlap + 4, 1, sym::STT_TLS as u64);
+                        native_no_scope_test_put(
+                            &mut bad,
+                            overlap + 6,
+                            2,
+                            if index == 2 { 12 } else { 13 },
+                        );
+                        native_no_scope_test_put(
+                            &mut bad,
+                            overlap + 8,
+                            8,
+                            NATIVE100_NO_SCOPE_CELLS[index].1,
+                        );
+                        native_no_scope_test_put(&mut bad, overlap + 16, 8, 1);
+                        native_no_scope_test_put(&mut bad, 0x8000 + 2 * 64 + 32, 8, 10 * 24);
+                    }
+                    _ => unreachable!(),
+                }
+                rejected(&bad, &format!("new100 typed cell {index}:{mutation}"));
+            }
+        }
+        // The distinguishing role cannot switch layouts without its real cell.
+        for (from, other) in [(good, 0x140), (&old.bytes, 0x100)] {
+            let mut bad = from.clone();
+            native_no_scope_test_put(&mut bad, 0x15c0 + 16, 4, other);
+            rejected(&bad, "mixed getter/cell dispatch vector");
+            let mut bad = from.clone();
+            native_no_scope_test_put(&mut bad, 0x4000 + 8 * 24 + 8, 8, other);
+            rejected(&bad, "mixed cell/getter dispatch vector");
+        }
+        for (index, offset) in [(0, 0xf0), (1, 0x100), (2, 8), (3, 0x148)] {
+            let mut bad = good.clone();
+            native_no_scope_test_put(&mut bad, 0x1500 + index * 0x40 + 16, 4, offset);
+            native_no_scope_test_put(&mut bad, 0x4000 + (index + 5) * 24 + 8, 8, offset);
+            rejected(&bad, "unobserved complete cross-role vector");
+        }
+        for mutation in 0..3 {
+            let mut bad = old.bytes.clone();
+            let row = 0x4000 + 5 * 24;
+            match mutation {
+                0 => native_no_scope_test_put(&mut bad, row, 4, 0),
+                1 => native_no_scope_test_put(&mut bad, row + 16, 8, 2),
+                2 => {
+                    bad.copy_within(row..row + 24, 0x4000 + 9 * 24);
+                    native_no_scope_test_put(&mut bad, 0x8000 + 2 * 64 + 32, 8, 10 * 24);
+                }
+                _ => unreachable!(),
+            }
+            rejected(
+                &bad,
+                "old140 joint selector requires its actual unique typed cells",
+            );
+        }
+        let mut forbidden = good.clone();
+        let name = native_no_scope_test_static_name(
+            &mut forbidden,
+            &FIXED_TLS_CELL_ROLE.replace("Cs_", "Cs1_"),
+        );
+        native_no_scope_test_put(&mut forbidden, 0x4000 + 9 * 24, 4, name);
+        native_no_scope_test_put(&mut forbidden, 0x8000 + 2 * 64 + 32, 8, 10 * 24);
+        rejected(
+            &forbidden,
+            "new layout still refuses every installation-scope identity",
+        );
+        for (index, old_name, new_name) in [(3, "Cellj", "Cellm"), (2, "9call_once", "5clone")] {
+            let mut bad = good.clone();
+            let name = NO_SCOPE_OTHER_GETTERS[index].0.replace(old_name, new_name);
+            assert_ne!(name, NO_SCOPE_OTHER_GETTERS[index].0);
+            let offset = native_no_scope_test_static_name(&mut bad, &name);
+            native_no_scope_test_put(&mut bad, 0x4000 + (index + 1) * 24, 4, offset);
+            rejected(&bad, "wrong primitive or exact FnOnce method");
+        }
+        for byte in 0..16 {
+            let mut bad = good.clone();
+            bad[0x3600 + byte] ^= 1;
+            rejected(&bad, "full initialized PENDING payload");
+        }
+        for (at, width, value) in [
+            (64 + 6 * 56, 4, program_header::PT_NULL as u64),
+            (64 + 6 * 56 + 4, 4, 6),
+            (64 + 6 * 56 + 32, 8, 0xe7),
+            (64 + 6 * 56 + 40, 8, 0x1c0),
+            (64 + 6 * 56 + 48, 8, 16),
+            (0x8000 + 12 * 64 + 4, 4, section_header::SHT_NOBITS as u64),
+            (0x8000 + 13 * 64 + 4, 4, section_header::SHT_PROGBITS as u64),
+            (0x8000 + 12 * 64 + 8, 8, 3),
+            (0x8000 + 13 * 64 + 8, 8, 0x401),
+            (0x8000 + 12 * 64 + 16, 8, 0x3608),
+            (0x8000 + 12 * 64 + 24, 8, 0x3608),
+            (0x8000 + 13 * 64 + 32, 8, 0xd8),
+            (64 + 2 * 56 + 4, 4, 4),
+        ] {
+            let mut bad = good.clone();
+            native_no_scope_test_put(&mut bad, at, width, value);
+            rejected(&bad, "exact PT_TLS/storage/mapping span");
+        }
+        let mut duplicate_tls = good.clone();
+        duplicate_tls.copy_within(64 + 6 * 56..64 + 7 * 56, 64 + 8 * 56);
+        native_no_scope_test_put(&mut duplicate_tls, 56, 2, 9);
+        native_no_scope_test_put(&mut duplicate_tls, 64 + 7 * 56 + 32, 8, 9 * 56);
+        native_no_scope_test_put(&mut duplicate_tls, 64 + 7 * 56 + 40, 8, 9 * 56);
+        rejected(&duplicate_tls, "duplicate PT_TLS header");
+        let mut aliased_template = good.clone();
+        aliased_template.copy_within(64 + 2 * 56..64 + 3 * 56, 64 + 8 * 56);
+        native_no_scope_test_put(&mut aliased_template, 56, 2, 9);
+        native_no_scope_test_put(&mut aliased_template, 64 + 7 * 56 + 32, 8, 9 * 56);
+        native_no_scope_test_put(&mut aliased_template, 64 + 7 * 56 + 40, 8, 9 * 56);
+        rejected(&aliased_template, "ambiguous RW template mapping");
+        let mut dynamic_overlap = good.clone();
+        native_no_scope_test_dynamic_symbol(
+            &mut dynamic_overlap,
+            "foreign_tls",
+            sym::STT_TLS,
+            0xf0,
+            1,
+            13,
+        );
+        rejected(&dynamic_overlap, "foreign dynamic TLS cell overlap");
+        for byte in 0..16 {
+            let mut bad = good.clone();
+            bad[0x3300 + byte] ^= 1;
+            rejected(&bad, "full local TLS module descriptor");
+        }
+        for (at, width, value) in [
+            (0x4810, 8, 1),
+            (
+                0x4808,
+                8,
+                (1u64 << 32) | u64::from(reloc::R_X86_64_DTPMOD64),
+            ),
+            (
+                0x4908,
+                8,
+                (1u64 << 32) | u64::from(reloc::R_X86_64_GLOB_DAT),
+            ),
+            (0x5202, 2, 1),
+            (0x1816, 4, 1),
+            (64 + 5 * 56, 4, program_header::PT_NULL as u64),
+        ] {
+            let mut bad = good.clone();
+            native_no_scope_test_put(&mut bad, at, width, value);
+            rejected(
+                &bad,
+                "exact descriptor/import/provider/version/PLT/RELRO binding",
+            );
+        }
+        for at in [
+            0x4600 + fixture.provider_version,
+            0x4600 + fixture.provider_library,
+            0x1810,
+            0x181c,
+        ] {
+            let mut bad = good.clone();
+            bad[at] ^= 1;
+            rejected(&bad, "exact provider or complete classic PLT");
+        }
+        for mutation in 0..10 {
+            let mut bad = good.clone();
+            match mutation {
+                0 => {
+                    native_no_scope_test_put(&mut bad, 0x3800 + 6 * 16 + 8, 8, 48);
+                    native_no_scope_test_put(&mut bad, 0x8000 + 6 * 64 + 32, 8, 48);
+                }
+                1 => {
+                    native_no_scope_test_extra_writer(&mut bad, 0x3400, 0x1540);
+                }
+                2 => native_no_scope_test_put(&mut bad, 0x4828, 8, 0x1541),
+                3 => native_no_scope_test_put(&mut bad, 0x4840, 8, 0x1540),
+                4 => native_no_scope_test_put(
+                    &mut bad,
+                    0x4820,
+                    8,
+                    (1u64 << 32) | u64::from(reloc::R_X86_64_RELATIVE),
+                ),
+                5 => native_no_scope_test_put(
+                    &mut bad,
+                    0x4820,
+                    8,
+                    (1u64 << 32) | u64::from(reloc::R_X86_64_GLOB_DAT),
+                ),
+                6 => bad[0x3400] = 1,
+                7 => {
+                    native_no_scope_test_put(&mut bad, 64 + 5 * 56 + 32, 8, 0x400);
+                    native_no_scope_test_put(&mut bad, 64 + 5 * 56 + 40, 8, 0x400);
+                }
+                8 => native_no_scope_test_extra_writer(&mut bad, 0x3410, 0x1500),
+                9 => native_no_scope_test_put(&mut bad, 0x4840, 8, 1),
+                _ => unreachable!(),
+            }
+            rejected(
+                &bad,
+                &format!("complete OWNER/PENDING pointer binding {mutation}"),
+            );
+        }
+        // A raw valid initializer must not hide a load-time mutation. Check
+        // half-open intervals, including straddling and genuinely adjacent writes.
+        for (slot, label) in [
+            (0x3600, "PENDING start"),
+            (0x3608, "PENDING interior"),
+            (0x360f, "PENDING last byte"),
+            (0x3618, "other initialized TLS interior"),
+            (0x35fc, "left overlap"),
+            (0x36e4, "right overlap"),
+            (0x36e7, "last initialized byte"),
+        ] {
+            let mut bad = good.clone();
+            native_no_scope_test_extra_writer(&mut bad, slot, 1);
+            assert_eq!(&bad[0x3600..0x3610], &good[0x3600..0x3610]);
+            let failure = native_no_scope_test_select_and_census(&bad)
+                .err()
+                .expect("overlapping template writer must refuse");
+            assert!(
+                failure.contains("initialized TLS template"),
+                "{label}: {failure}"
+            );
+        }
+        // A valid symbol-based loader write must reach the same template
+        // exclusion, even with the exact initializer left unchanged on disk.
+        let mut symbolic = good.clone();
+        let writer_at = 0x4800 + native_no_scope_test_word(&symbolic, 0x3800 + 6 * 16 + 8) as usize;
+        native_no_scope_test_extra_writer(&mut symbolic, 0x3608, 0);
+        native_no_scope_test_put(
+            &mut symbolic,
+            writer_at + 8,
+            8,
+            (1u64 << 32) | u64::from(reloc::R_X86_64_GLOB_DAT),
+        );
+        assert_eq!(&symbolic[0x3600..0x3610], &good[0x3600..0x3610]);
+        let parsed = Elf::parse(&symbolic).unwrap();
+        authenticate_loader_metadata(&parsed, &symbolic)
+            .expect("versioned __tls_get_addr GLOB_DAT writer has valid loader metadata");
+        let symbol = parsed.dynsyms.get(1).unwrap();
+        assert_eq!(
+            parsed.dynstrtab.get_at(symbol.st_name),
+            Some("__tls_get_addr")
+        );
+        assert_eq!(symbol.st_shndx, section_header::SHN_UNDEF as usize);
+        let failure = native_no_scope_test_select_and_census(&symbolic)
+            .err()
+            .expect("symbol-based initialized-template writer must refuse");
+        assert!(failure.contains("initialized TLS template"), "{failure}");
+        for slot in [0x35f8, 0x36e8, 0x3710] {
+            let mut adjacent = good.clone();
+            native_no_scope_test_extra_writer(&mut adjacent, slot, 1);
+            assert_eq!(
+                native_no_scope_test_select_and_census(&adjacent).unwrap(),
+                NativeNoScopeTlsLayout::Dispatch100,
+                "wholly adjacent/ordinary NOBITS-VA writer is not a template overlap"
+            );
+        }
+        let mut overflow = good.clone();
+        native_no_scope_test_extra_writer(&mut overflow, u64::MAX - 3, 1);
+        rejected(&overflow, "loader writer interval overflow");
+        let mut overflow = good.clone();
+        native_no_scope_test_put(&mut overflow, 64 + 6 * 56 + 16, 8, u64::MAX - 0xe0);
+        let failure = native_no_scope_test_select_and_census(&overflow)
+            .err()
+            .unwrap();
+        assert!(failure.contains("template span overflow"), "{failure}");
+        let mut unnamed = good.clone();
+        unnamed.copy_within(0x1500..0x1516, 0x1e00);
+        let rip = |code: &mut [u8], address: u64, field: usize, next: usize, target: u64| {
+            let displacement =
+                i32::try_from(target as i64 - (address + next as u64) as i64).unwrap();
+            code[field..next].copy_from_slice(&displacement.to_le_bytes());
+        };
+        rip(&mut unnamed[0x1e00..0x1e16], 0x1e00, 4, 8, 0x3300);
+        rip(&mut unnamed[0x1e00..0x1e16], 0x1e00, 9, 13, 0x1810);
+        rejected(&unnamed, "extra complete unnamed RX getter");
+        let mut rx_writer = good.clone();
+        native_no_scope_test_extra_writer(&mut rx_writer, 0x1f00, 1);
+        rejected(&rx_writer, "loader writer anywhere in RX");
+    }
+
+    fn native_no_scope_layout100_wire_controls(
+        backing: &AllocatorBackingEvidence,
+        old: &NoInstallationScopeEvidence,
+    ) {
+        let old_json = serde_json::to_value(old).unwrap();
+        assert!(
+            old_json.get("native_tls_layout100").is_none(),
+            "old v1 JSON omits the new optional payload entirely"
+        );
+        let fixture = native_no_scope_test_fixture(0x100);
+        let elf = Elf::parse(&fixture.bytes).unwrap();
+        assert_eq!(
+            native_no_scope_tls_layout(&elf, &fixture.bytes).unwrap(),
+            NativeNoScopeTlsLayout::Dispatch100
+        );
+        let (census, layout) = native_no_scope_layout100_census(&elf, &fixture.bytes).unwrap();
+        let mut proof = old.clone();
+        proof.version = 2;
+        proof.policy = NATIVE100_NO_SCOPE_POLICY.into();
+        proof.mappings = census.mappings;
+        proof.static_symbol_count = elf.syms.len();
+        proof.dynamic_symbol_count = elf.dynsyms.len();
+        proof.raw_names_sha256 = census.raw_names_sha256;
+        proof.loader_writer_count = census.loader_writer_count;
+        proof.loader_writers_sha256 = census.loader_writers_sha256;
+        proof.other_tls_getters = census.other_tls_getters;
+        proof.other_getter_pointer_slots = census.other_getter_pointer_slots;
+        proof.native_tls_layout100 = Some(layout);
+        let check = |value: &NoInstallationScopeEvidence| {
+            validate_no_installation_scope_evidence(backing, value, FixedImageKind::Detcore)
+        };
+        check(&proof).unwrap();
+        let encoded = serde_json::to_vec(&AllocatorInstallationEvidence::NoInstallationScope(
+            Box::new(proof.clone()),
+        ))
+        .unwrap();
+        assert_eq!(encoded, serde_json::to_vec(&proof).unwrap());
+        assert_eq!(
+            serde_json::from_slice::<AllocatorInstallationEvidence>(&encoded).unwrap(),
+            AllocatorInstallationEvidence::NoInstallationScope(Box::new(proof.clone()))
+        );
+        let value = serde_json::to_value(&proof).unwrap();
+        let reject_wire = |value: serde_json::Value| match serde_json::from_value::<
+            AllocatorInstallationEvidence,
+        >(value)
+        {
+            Err(_) => {}
+            Ok(AllocatorInstallationEvidence::NoInstallationScope(candidate)) => {
+                assert!(
+                    check(&candidate).is_err(),
+                    "decoded bad v2 record must still fail validation"
+                );
+            }
+            Ok(_) => panic!("absence wire must not become existing-installation evidence"),
+        };
+        for field in value.as_object().unwrap().keys() {
+            let mut bad = value.clone();
+            bad.as_object_mut().unwrap().remove(field);
+            reject_wire(bad);
+        }
+        for field in value["native_tls_layout100"].as_object().unwrap().keys() {
+            let mut bad = value.clone();
+            bad["native_tls_layout100"]
+                .as_object_mut()
+                .unwrap()
+                .remove(field);
+            reject_wire(bad);
+        }
+        for field in value["native_tls_layout100"]["cells"][0]
+            .as_object()
+            .unwrap()
+            .keys()
+        {
+            let mut bad = value.clone();
+            bad["native_tls_layout100"]["cells"][0]
+                .as_object_mut()
+                .unwrap()
+                .remove(field);
+            reject_wire(bad);
+        }
+        for scope in 0..3 {
+            let mut bad = value.clone();
+            match scope {
+                0 => bad["unreviewed"] = serde_json::json!(true),
+                1 => bad["native_tls_layout100"]["unreviewed"] = serde_json::json!(true),
+                _ => {
+                    bad["native_tls_layout100"]["cells"][0]["unreviewed"] = serde_json::json!(true)
+                }
+            }
+            reject_wire(bad);
+        }
+        for mutation in 0..43 {
+            let mut bad = proof.clone();
+            match mutation {
+                0 => bad.native_tls_layout100 = None,
+                1 => bad.version = 1,
+                2 => bad.policy = NO_INSTALLATION_SCOPE_POLICY.into(),
+                3 => bad.other_tls_getters[3].cell_offset = 0x140,
+                4 => {
+                    bad.native_tls_layout100.as_mut().unwrap().cells[3]
+                        .symbol
+                        .address = 0x140
+                }
+                5 => bad.native_tls_layout100.as_mut().unwrap().cells.swap(0, 1),
+                6 => {
+                    bad.native_tls_layout100.as_mut().unwrap().cells[0]
+                        .symbol
+                        .binding = sym::STB_GLOBAL
+                }
+                7 => {
+                    bad.native_tls_layout100.as_mut().unwrap().cells[0].symbol_type =
+                        sym::STT_OBJECT
+                }
+                8 => {
+                    bad.native_tls_layout100.as_mut().unwrap().cells[0]
+                        .symbol
+                        .size += 1
+                }
+                9 => {
+                    bad.native_tls_layout100.as_mut().unwrap().cells[0]
+                        .symbol
+                        .visibility = sym::STV_HIDDEN
+                }
+                10 => bad.native_tls_layout100.as_mut().unwrap().cells[0].section_index = 0,
+                11 => {
+                    bad.native_tls_layout100.as_mut().unwrap().cells[0].section_type =
+                        section_header::SHT_PROGBITS
+                }
+                12 => bad.native_tls_layout100.as_mut().unwrap().cells[0].section_flags = 3,
+                13 => {
+                    bad.native_tls_layout100.as_mut().unwrap().cells[0].section_name =
+                        ".tdata".into()
+                }
+                14 => bad.native_tls_layout100.as_mut().unwrap().cells[0].section_file_offset += 1,
+                15 => {
+                    bad.native_tls_layout100.as_mut().unwrap().cells[0].section_virtual_address += 1
+                }
+                16 => bad.native_tls_layout100.as_mut().unwrap().cells[0].section_size += 1,
+                17 => bad.native_tls_layout100.as_mut().unwrap().tls_file_size += 1,
+                18 => bad.native_tls_layout100.as_mut().unwrap().tls_memory_size += 1,
+                19 => bad.native_tls_layout100.as_mut().unwrap().tls_alignment = 16,
+                20 => {
+                    bad.native_tls_layout100
+                        .as_mut()
+                        .unwrap()
+                        .pending_initializer_sha256 = "0".repeat(64)
+                }
+                21 => bad
+                    .native_tls_layout100
+                    .as_mut()
+                    .unwrap()
+                    .getter_pointer_targets
+                    .clear(),
+                22 => {
+                    let map = &mut bad
+                        .native_tls_layout100
+                        .as_mut()
+                        .unwrap()
+                        .getter_pointer_targets;
+                    let (slot, target) = map.pop_first().unwrap();
+                    map.insert(slot + 1, target);
+                }
+                23 => {
+                    *bad.native_tls_layout100
+                        .as_mut()
+                        .unwrap()
+                        .getter_pointer_targets
+                        .values_mut()
+                        .next()
+                        .unwrap() += 1
+                }
+                24 => {
+                    bad.native_tls_layout100.as_mut().unwrap().cells.pop();
+                }
+                25 => {
+                    let cells = &mut bad.native_tls_layout100.as_mut().unwrap().cells;
+                    cells[1] = cells[0].clone();
+                }
+                26 => bad.other_tls_getters[1].module_slot += 8,
+                27 => bad.other_tls_getters[1].plt_address += 16,
+                28 => {
+                    bad.other_tls_getters.pop();
+                }
+                29 => {
+                    for (name, features) in NoScopeCohort::DetcoreOrdinary101.features() {
+                        bad.current_build.packages.get_mut(*name).unwrap().features = features
+                            .iter()
+                            .map(|feature| (*feature).to_owned())
+                            .collect();
+                    }
+                }
+                30 => bad.native_tls_layout100.as_mut().unwrap().tls_file_offset = u64::MAX,
+                31 => {
+                    bad.native_tls_layout100
+                        .as_mut()
+                        .unwrap()
+                        .tls_virtual_address = u64::MAX
+                }
+                32 => bad.source.sha256 = "0".repeat(64),
+                33 => bad
+                    .current_build
+                    .packages
+                    .get_mut("reverie-liteinst")
+                    .unwrap()
+                    .features
+                    .push("liteinst".into()),
+                34 => {
+                    bad.current_build
+                        .packages
+                        .get_mut("detcore-liteinst")
+                        .unwrap()
+                        .profile["test"] = serde_json::json!(true)
+                }
+                35 => bad.current_build.command.status = 1,
+                36 => bad.current_build.artifact.sha256 = "0".repeat(64),
+                37 => bad.allocation.size = 241,
+                38 => bad.mappings[0].flags = 7,
+                39 => bad.other_tls_getters[1] = bad.other_tls_getters[0].clone(),
+                40 => bad.native_tls_layout100.as_mut().unwrap().cells[0]
+                    .symbol
+                    .name
+                    .push('x'),
+                41 => bad.version = 3,
+                42 => bad.policy.push('x'),
+                _ => unreachable!(),
+            }
+            assert!(
+                check(&bad).is_err(),
+                "new100 complete wire/schema mutation {mutation}"
+            );
+        }
+        let mut old_with_payload = old.clone();
+        old_with_payload.native_tls_layout100 = proof.native_tls_layout100.clone();
+        assert!(
+            check(&old_with_payload).is_err(),
+            "native100 payload cannot be attached to historical v1 policy"
+        );
+        let mut ordinary_with_payload = proof.clone();
+        ordinary_with_payload.version = 1;
+        ordinary_with_payload.policy = NoScopeCohort::DetcoreOrdinary101.policy().into();
+        for (name, features) in NoScopeCohort::DetcoreOrdinary101.features() {
+            ordinary_with_payload
+                .current_build
+                .packages
+                .get_mut(*name)
+                .unwrap()
+                .features = features
+                .iter()
+                .map(|feature| (*feature).to_owned())
+                .collect();
+        }
+        assert!(
+            check(&ordinary_with_payload).is_err(),
+            "ordinary build identity cannot carry native100 payload"
         );
     }
 
