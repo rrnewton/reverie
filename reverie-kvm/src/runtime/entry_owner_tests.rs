@@ -324,3 +324,76 @@ fn a_callback_watch_is_the_watch_its_callback_memory_would_build() {
     backend.restore_entry_origin();
     drop(driver);
 }
+
+/// The syscall callback returns a settled outcome itself, without building
+/// `route_finished_entry_handler`'s future, exactly when that future would
+/// return it unchanged at its first poll.
+#[test]
+fn a_settled_outcome_after_a_passing_entry_check_is_returned_unrouted() {
+    type Outcome = HandlerOutcome<std::result::Result<i64, reverie::Error>>;
+    fn settled() -> Vec<Outcome> {
+        vec![
+            HandlerOutcome::Returned(Ok(7)),
+            HandlerOutcome::Returned(Err(reverie::Error::Errno(Errno::EPERM))),
+            HandlerOutcome::RunFailed,
+            HandlerOutcome::ThreadCancelled,
+            HandlerOutcome::GroupExit(ExitStatus::Exited(3)),
+            HandlerOutcome::ThreadRetired,
+            HandlerOutcome::TailInjected {
+                result: Err(Errno::EINTR),
+                image_replaced: true,
+                process_exited: false,
+            },
+        ]
+    }
+    fn same(left: &Outcome, right: &Outcome) -> bool {
+        match (left, right) {
+            (HandlerOutcome::Returned(Ok(left)), HandlerOutcome::Returned(Ok(right))) => {
+                left == right
+            }
+            (HandlerOutcome::Returned(Err(left)), HandlerOutcome::Returned(Err(right))) => {
+                left.to_string() == right.to_string()
+            }
+            (HandlerOutcome::RunFailed, HandlerOutcome::RunFailed)
+            | (HandlerOutcome::ThreadCancelled, HandlerOutcome::ThreadCancelled)
+            | (HandlerOutcome::ThreadRetired, HandlerOutcome::ThreadRetired) => true,
+            (HandlerOutcome::GroupExit(left), HandlerOutcome::GroupExit(right)) => left == right,
+            (
+                HandlerOutcome::TailInjected {
+                    result: left,
+                    image_replaced: left_image,
+                    process_exited: left_exit,
+                },
+                HandlerOutcome::TailInjected {
+                    result: right,
+                    image_replaced: right_image,
+                    process_exited: right_exit,
+                },
+            ) => (left, left_image, left_exit) == (right, right_image, right_exit),
+            _ => false,
+        }
+    }
+
+    let mut backend = backend();
+    let waker = Waker::noop();
+    let mut cx = Context::from_waker(waker);
+    for (outcome, expected) in settled().into_iter().zip(settled()) {
+        assert!(!entry_handler_outcome_needs_routing(&outcome, &Ok(())));
+        let mut routed =
+            Box::pin(backend.route_finished_entry_handler(outcome, Ok(()), Error::Reverie));
+        let Poll::Ready(Ok(routed)) = routed.as_mut().poll(&mut cx) else {
+            panic!("a settled outcome after a passing check was routed");
+        };
+        assert!(same(&routed, &expected));
+    }
+    // Everything else is routed: a runtime error, and any outcome after a
+    // failed check.
+    let runtime_error: Outcome = HandlerOutcome::RuntimeError(Error::RunAborted);
+    assert!(entry_handler_outcome_needs_routing(&runtime_error, &Ok(())));
+    for outcome in settled() {
+        assert!(entry_handler_outcome_needs_routing(
+            &outcome,
+            &Err(Error::RunAborted)
+        ));
+    }
+}
