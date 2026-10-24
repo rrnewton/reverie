@@ -1409,6 +1409,26 @@ impl ClockCounter {
         }
     }
 
+    /// Brings the counter to `rcbs`, the clock now, after the guest ran one
+    /// instruction outside the steps: gdb's step over a breakpoint that a
+    /// step ran into. The interrupted step counted the breakpoint's `int3`
+    /// as an instruction, which then stands for the instruction it
+    /// replaced. So only a conditional branch the replaced instruction
+    /// retired short of the target is counted, as a step counts it
+    /// (`single_step_with_clock`); at the target the counter holds its
+    /// count and counts instructions, the `int3` among them. A clock that
+    /// has not moved changes nothing, as for every stop where the guest ran
+    /// nothing outside the steps. Where the breakpoint was removed instead
+    /// of stepped over (by gdb, or by Reverie in a process gdb does not
+    /// follow), the replaced instruction has not run yet and is counted
+    /// twice, so an instruction offset past the target, which no in-tree
+    /// Tool requests, lands one instruction early.
+    fn catch_up(&mut self, rcbs: u64) {
+        if self.rcbs < self.target_rcb && rcbs > self.rcbs {
+            self.single_step_with_clock(rcbs);
+        }
+    }
+
     /// If a counter behind a given (rcb, instr) pair.
     ///
     /// Note: this is not always comparable. [None] will be returned in this case
@@ -2386,10 +2406,13 @@ impl TimerImpl {
         waits: &std::sync::Arc<PtracerWaitOwner>,
     ) -> Result<Stopped, HandleFailure> {
         match unfinished {
-            Unfinished::Steps(steps) => {
+            Unfinished::Steps(mut steps) => {
                 // Steps are only interrupted, and so only continued, once the
                 // event has been decided on.
                 debug_assert_eq!(self.timer_status, EventStatus::Armed);
+                // The guest can have run since the stop: gdb steps over its
+                // breakpoint before it lets the guest go on.
+                steps.steps.catch_up(self.read_clock());
                 self.attempt_single_step(
                     task,
                     steps.steps,
@@ -5590,6 +5613,24 @@ mod tests {
         expected: (u64, u64),
     ) {
         counter.single_step_with_clock(new_clock);
+        assert_eq!((counter.rcbs, counter.instr), expected);
+    }
+
+    // Short of the target, a moved clock is counted as a step counts it,
+    // and an unmoved one changes nothing. At the target the counter counts
+    // instructions, so a clock past it changes nothing either: the `int3`
+    // the interrupted step counted stands for the replaced instruction.
+    #[test_case(ClockCounter::new(10, 1, 11), 10, (10, 1); "unmoved short of the target")]
+    #[test_case(ClockCounter::new(10, 1, 11), 11, (11, 0); "a branch to the target")]
+    #[test_case(ClockCounter::new(9, 1, 11), 10, (10, 0); "a branch short of the target")]
+    #[test_case(ClockCounter::new(11, 2, 11), 11, (11, 2); "unmoved at the target")]
+    #[test_case(ClockCounter::new(11, 2, 11), 13, (11, 2); "past the target")]
+    fn test_catch_up_counter_with_clock(
+        mut counter: ClockCounter,
+        new_clock: u64,
+        expected: (u64, u64),
+    ) {
+        counter.catch_up(new_clock);
         assert_eq!((counter.rcbs, counter.instr), expected);
     }
 

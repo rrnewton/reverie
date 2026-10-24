@@ -198,6 +198,20 @@ enum ExpectedGdbResume {
     StepOnly,
 }
 
+/// Whether the timer observed a breakpoint stop (`Timer::observe_event`).
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum BreakpointStop {
+    /// A stop that the run loop handles (`handle_sigtrap`), the latest stop
+    /// the timer observed. It makes no Tool callback, so gdb's continue
+    /// without a signal leaves the timer event as it was
+    /// (`TracedTask::resume_at_breakpoint`).
+    Observed,
+    /// A stop that a step inside another stop's handling ran into
+    /// (`check_swbreak`). The timer did not observe it, and the stop being
+    /// handled decides the timer event.
+    Unobserved,
+}
+
 enum OrdinaryStart {
     Stopped(Stopped),
     Exec(Stopped),
@@ -5864,6 +5878,21 @@ impl<L: Tool + 'static> TracedTask<L> {
         Ok((true, task))
     }
 
+    /// Disregards the thread's latest stop, one that makes no Tool callback,
+    /// so that it leaves the timer event as it was, and finishes what of the
+    /// event nothing else will drive: the single steps toward it that the
+    /// stop interrupted, or the whole event if the stop found its
+    /// notification lost (`Timer::disregard_stop`). The guest then resumes
+    /// toward the event as if the stop had not happened. Does not return if
+    /// the steps run into another stop, which goes to the run loop
+    /// (`drive_timer`, `abort`).
+    async fn disregard_stop_for_timer(&mut self, task: Stopped) -> Result<Stopped, TraceError> {
+        match self.timer.disregard_stop()? {
+            Some(unfinished) => Ok(self.drive_timer(task, Some(unfinished)).await?.1),
+            None => Ok(task),
+        }
+    }
+
     /// Finishes, before the guest resumes, what of the timer event a
     /// disregarded stop left (`disregarded`, from `Timer::disregard_stop`), or
     /// a notification an injection took (`Timer::take_notification`), by
@@ -6223,7 +6252,8 @@ impl<L: Tool + 'static> TracedTask<L> {
         Ok(if self.breakpoints().contains_key(&rip_minus_one) {
             *regs.ip_mut() = rip_minus_one;
             let next_state = if self.attached_by_gdb {
-                self.resume_from_swbreak(task, regs).await?
+                self.resume_from_swbreak(task, regs, BreakpointStop::Observed)
+                    .await?
             } else {
                 self.step_over_unfollowed_breakpoint(task, regs).await?
             };
@@ -6271,14 +6301,8 @@ impl<L: Tool + 'static> TracedTask<L> {
             }
         } else {
             UNCLAIMED_SIGTRAPS_SUPPRESSED.fetch_add(1, Ordering::Relaxed);
-            // The trap is not delivered and makes no Tool callback, so it
-            // leaves the timer event as it was, and what of the event nothing
-            // else will drive, the single steps toward it that it interrupted
-            // or a lost notification, is finished here.
-            let task = match self.timer.disregard_stop()? {
-                Some(unfinished) => self.drive_timer(task, Some(unfinished)).await?.1,
-                None => task,
-            };
+            // The trap is not delivered and makes no Tool callback.
+            let task = self.disregard_stop_for_timer(task).await?;
             let running = self.resume_stopped(task, None)?;
             HandleSignalResult::SignalSuppressed(
                 running.next_state_with_owner(&self.ptracer_waits).await?,
@@ -7047,10 +7071,7 @@ impl<L: Tool + 'static> TracedTask<L> {
             // callback and leaves the timer event as it was.
             // Under a tracer filter it is not told apart, as on main, and is
             // reported again (`is_group_stop_unless_filtered`).
-            let task = match self.timer.disregard_stop()? {
-                Some(unfinished) => self.drive_timer(task, Some(unfinished)).await?.1,
-                None => task,
-            };
+            let task = self.disregard_stop_for_timer(task).await?;
             return self
                 .resume_stopped(task, None)?
                 .next_state_with_owner(&self.ptracer_waits)
@@ -13281,9 +13302,6 @@ impl<L: Tool + 'static> TracedTask<L> {
         })
     }
 
-    /// Resume from a software breakpoint set by gdb. The resume action is
-    /// initiated from gdb (client).
-    // NB: caller to %rip accordingly prior to hitting breakpoint.
     /// Runs a thread gdb does not follow past a breakpoint gdb set before the
     /// thread's process was forked from one it follows: a process gdb was not
     /// told of (`handle_new_task`) carries gdb's breakpoints in its copy of
@@ -13293,6 +13311,15 @@ impl<L: Tool + 'static> TracedTask<L> {
     /// parent, the instruction is stepped with the breakpoint out and the
     /// breakpoint put back, whatever stop the step ends at. `regs` are the
     /// thread's registers with rip at the breakpoint.
+    ///
+    /// The breakpoint stop makes no Tool callback, so before the thread runs
+    /// on it leaves the timer event as it was, and what of the event it
+    /// interrupted is finished (`disregard_stop_for_timer`), as at a
+    /// breakpoint gdb continues from (`resume_at_breakpoint`): in a copy once
+    /// the breakpoint is out, in shared memory after the step, once the
+    /// breakpoint lock is released. A step that ends at another stop (the
+    /// instruction is a system call, or faults) leaves the breakpoint stop
+    /// to decide the event, as before.
     async fn step_over_unfollowed_breakpoint(
         &mut self,
         mut task: Stopped,
@@ -13305,6 +13332,7 @@ impl<L: Tool + 'static> TracedTask<L> {
             let insn = self.breakpoints().remove(&addr).ok_or(Errno::ENOENT)?;
             let current: u64 = task.read_value(at)?;
             task.write_value(at, &breakpoint_removed(current, insn))?;
+            let task = self.disregard_stop_for_timer(task).await?;
             return self
                 .resume_stopped(task, None)?
                 .next_state_with_owner(&self.ptracer_waits)
@@ -13312,10 +13340,11 @@ impl<L: Tool + 'static> TracedTask<L> {
         }
         // As a gdb step-over does: no other thread may find the breakpoint
         // out meanwhile.
-        let needs_step_over = self.needs_step_over.clone();
-        let _guard = needs_step_over.lock().await;
+        let step_over = self.needs_step_over.clone().lock_owned().await;
         let Some(insn) = self.breakpoints().get(&addr).copied() else {
             // gdb removed it meanwhile, through the process it follows.
+            drop(step_over);
+            let task = self.disregard_stop_for_timer(task).await?;
             return self
                 .resume_stopped(task, None)?
                 .next_state_with_owner(&self.ptracer_waits)
@@ -13358,8 +13387,10 @@ impl<L: Tool + 'static> TracedTask<L> {
             let current: u64 = task.read_value(at)?;
             task.write_value(at, &breakpoint_inserted(current))?;
         }
+        drop(step_over);
         match event {
             Event::Signal(Signal::SIGTRAP) if task.getsiginfo()?.si_code == libc::TRAP_TRACE => {
+                let task = self.disregard_stop_for_timer(task).await?;
                 self.resume_stopped(task, None)?
                     .next_state_with_owner(&self.ptracer_waits)
                     .await
@@ -13369,10 +13400,15 @@ impl<L: Tool + 'static> TracedTask<L> {
         }
     }
 
+    /// Resume from a software breakpoint set by gdb. The resume action is
+    /// initiated from gdb (client). `stop` says whether the timer observed
+    /// the breakpoint stop (`resume_at_breakpoint`).
+    // NB: caller to %rip accordingly prior to hitting breakpoint.
     async fn resume_from_swbreak(
         &mut self,
         task: Stopped,
         regs: libc::user_regs_struct,
+        stop: BreakpointStop,
     ) -> Result<Wait, TraceError> {
         task.setregs(&regs)?;
 
@@ -13404,8 +13440,7 @@ impl<L: Tool + 'static> TracedTask<L> {
         // thread might miss the breakpoint after the breakpoint is removed
         // and before the breakpoint is (re-)inserted. Hence we must make
         // serialize this sequence.
-        let needs_step_over = self.needs_step_over.clone();
-        let _guard = needs_step_over.lock().await;
+        let mut step_over = Some(self.needs_step_over.clone().lock_owned().await);
 
         self.notify_gdb_stop(StopReason::stopped(
             task.pid(),
@@ -13418,7 +13453,7 @@ impl<L: Tool + 'static> TracedTask<L> {
         self.freeze_all().await?;
 
         let running = self
-            .await_gdb_resume(task, ExpectedGdbResume::StepOver)
+            .resume_at_breakpoint(task, ExpectedGdbResume::StepOver, &mut step_over, stop)
             .await?;
 
         // If gdb removed the breakpoint at the current PC and issued a plain
@@ -13433,7 +13468,8 @@ impl<L: Tool + 'static> TracedTask<L> {
             // task's next event. gdb has resumed everything, and this task may
             // now block on a sibling -- a join, a futex, a pipe read -- which a
             // frozen sibling can never satisfy. Waiting first deadlocks the
-            // guest.
+            // guest. (A continue without a signal has released them already,
+            // in `resume_at_breakpoint`.)
             self.thaw_all().await?;
             let wait = running.next_state_with_owner(&self.ptracer_waits).await?;
             self.arm_liteinst_wait(&wait);
@@ -13497,7 +13533,7 @@ impl<L: Tool + 'static> TracedTask<L> {
         .await?;
 
         let running = self
-            .await_gdb_resume(task, ExpectedGdbResume::Resume)
+            .resume_at_breakpoint(task, ExpectedGdbResume::Resume, &mut step_over, stop)
             .await?;
         // Same ordering requirement as the plain-continue path above: the
         // step-over is finished and the breakpoint is back in place, so the
@@ -13506,6 +13542,52 @@ impl<L: Tool + 'static> TracedTask<L> {
         let wait = running.next_state_with_owner(&self.ptracer_waits).await?;
         self.arm_liteinst_wait(&wait);
         Ok(wait)
+    }
+
+    /// Waits in this thread's breakpoint stop for gdb's resume, and applies
+    /// it as `await_gdb_resume` does. A resume that lets the thread run on
+    /// without a signal (gdb's continue, a detach, or a session that lets
+    /// the thread go) first releases the breakpoint lock (`step_over`) and
+    /// thaws the other threads. Then, for a stop the timer observed, it
+    /// finishes the timer event as if the stop had not happened
+    /// (`disregard_stop_for_timer`), as the run without gdb, which has no
+    /// breakpoint, does. The lock goes first because the event's Tool
+    /// callback can wait for another thread, which can stop at a breakpoint
+    /// and need the lock. gdb's step over its breakpoint leaves the decision
+    /// to its next resume at this stop (`resume_from_swbreak`). Any other
+    /// step, or a resume with a signal, leaves the stop to decide the timer
+    /// event, as any stop does: the guest then runs under gdb's control, or
+    /// takes a signal that no run without gdb takes.
+    async fn resume_at_breakpoint(
+        &mut self,
+        task: Stopped,
+        expected: ExpectedGdbResume,
+        step_over: &mut Option<OwnedMutexGuard<()>>,
+        stop: BreakpointStop,
+    ) -> Result<Running, TraceError> {
+        let (resume, released_by_session) = if self.attached_by_gdb {
+            self.wait_for_gdb_resume().await?
+        } else {
+            (None, false)
+        };
+        // Recorded before the timer is finished, which may not return
+        // (`disregard_stop_for_timer`); a detach also ends the timer
+        // callback's parking for gdb.
+        self.note_gdb_resume(resume, released_by_session);
+        let runs_on =
+            resume.is_none_or(|resume| matches!(resume.action, ResumeAction::Continue(None)));
+        let task = if runs_on {
+            drop(step_over.take());
+            self.thaw_all().await?;
+            match stop {
+                BreakpointStop::Observed => self.disregard_stop_for_timer(task).await?,
+                BreakpointStop::Unobserved => task,
+            }
+        } else {
+            task
+        };
+        let (running, _) = self.handle_gdb_resume(resume, task, expected).await?;
+        Ok(running)
     }
 
     /// check if the stop is caused by sw breakpoint.
@@ -13517,7 +13599,8 @@ impl<L: Tool + 'static> TracedTask<L> {
                 let rip_minus_one = regs.ip() - 1;
                 if self.breakpoints().contains_key(&rip_minus_one) {
                     *regs.ip_mut() = rip_minus_one;
-                    self.resume_from_swbreak(task, regs).await
+                    self.resume_from_swbreak(task, regs, BreakpointStop::Unobserved)
+                        .await
                 } else {
                     Ok(Wait::Stopped(task, event))
                 }
