@@ -1269,6 +1269,16 @@ fn coordinator(path: &Path) {
 
 unsafe extern "C" fn forbidden_signal_handler(_signal: libc::c_int) {}
 
+// Site diagnostics describe patcher-owned sites. Trap-only builds claim none;
+// syscall/continuation and Tool callback counters remain independently checked.
+fn expected_site_count(with_liteinst: u64) -> u64 {
+    if cfg!(feature = "liteinst") {
+        with_liteinst
+    } else {
+        0
+    }
+}
+
 fn guest(path: &Path) {
     let mut expected_mask = 0_u64;
     let mask_query = unsafe {
@@ -1328,13 +1338,13 @@ fn guest(path: &Path) {
     println!(
         "calls={CALLS} traps={traps} hooks={hooks} rpc_delta={rpc_delta} nested_traps={nested_traps} nested_hooks={nested_hooks} mask_traps={mask_traps} mask_hooks={mask_hooks} mask_result={mask_result} first_use_exec_result={first_use_exec_result} first_use_signal_result={first_use_signal_result} nested_uid={nested_uid} expected_uid={expected_uid}"
     );
-    assert_eq!(traps, 1);
-    assert_eq!(hooks, CALLS);
+    assert_eq!(traps, expected_site_count(1));
+    assert_eq!(hooks, expected_site_count(CALLS));
     assert_eq!(rpc_delta, CALLS + 2);
-    assert_eq!(nested_traps, 1);
-    assert_eq!(nested_hooks, CALLS + 1);
-    assert_eq!(mask_traps, 1);
-    assert_eq!(mask_hooks, CALLS + 1);
+    assert_eq!(nested_traps, expected_site_count(1));
+    assert_eq!(nested_hooks, expected_site_count(CALLS + 1));
+    assert_eq!(mask_traps, expected_site_count(1));
+    assert_eq!(mask_hooks, expected_site_count(CALLS + 1));
     assert_eq!(mask_result, -i64::from(libc::EPERM));
     assert_eq!(first_use_exec_result, -i64::from(libc::ENOTSUP));
     assert_eq!(first_use_signal_result, -i64::from(libc::EPERM));
@@ -1420,7 +1430,11 @@ fn tool_signal_runtime_guest(path: &Path) {
 
     unsafe { reverie_liteinst::install_tool::<CounterTool>(path) }.unwrap();
     assert!(reverie_inguest::trap::signal_return_restricted());
-    for signal in [libc::SIGSYS, libc::SIGTRAP] {
+    for signal in [
+        libc::SIGSYS,
+        #[cfg(feature = "liteinst")]
+        libc::SIGTRAP,
+    ] {
         let mut action = KernelSigaction::default();
         unsafe { raw_sigaction(signal, None, Some(&mut action)) }.unwrap();
         assert_ne!(action.handler, libc::SIG_DFL as u64, "signal {signal}");
@@ -1461,8 +1475,14 @@ fn tool_guest_sigreturn_guest(path: &Path, through_hook: bool, alias: bool) -> !
             );
         }
         let site = core::ptr::addr_of!(reverie_liteinst_rpc_numbered_site) as usize as u64;
-        assert!(reverie_liteinst::reverie_liteinst_site_hook_count(site) >= 1);
-        println!("numbered-site-hooked");
+        if cfg!(feature = "liteinst") {
+            assert!(reverie_liteinst::reverie_liteinst_site_hook_count(site) >= 1);
+            println!("numbered-site-hooked");
+        } else {
+            assert_eq!(reverie_liteinst::reverie_liteinst_site_hook_count(site), 0);
+            assert_eq!(reverie_liteinst::reverie_liteinst_site_trap_count(site), 0);
+            println!("numbered-site-trapped");
+        }
         unsafe { reverie_liteinst_rpc_numbered(number) };
     } else if alias {
         println!("sigreturn-site-fresh");
@@ -2730,11 +2750,11 @@ fn instruction_guest(path: &Path, publication: InstructionPublication) {
         core::ptr::addr_of!(reverie_liteinst_rpc_nested_cpuid_site) as usize as u64;
     assert_eq!(
         reverie_liteinst::reverie_liteinst_site_trap_count(patched_cpuid_address),
-        1
+        expected_site_count(1)
     );
     assert_eq!(
         reverie_liteinst::reverie_liteinst_site_hook_count(patched_cpuid_address),
-        2,
+        expected_site_count(2),
         "the planted nested call must traverse the existing hook exactly once"
     );
     let first_use_rdtsc_address =
@@ -2756,11 +2776,11 @@ fn instruction_guest(path: &Path, publication: InstructionPublication) {
     );
     assert_eq!(
         reverie_liteinst::reverie_liteinst_site_trap_count(first_use_rdtsc_address),
-        1
+        expected_site_count(1)
     );
     assert_eq!(
         reverie_liteinst::reverie_liteinst_site_hook_count(first_use_rdtsc_address),
-        1
+        expected_site_count(1)
     );
     assert_eq!(
         unsafe { reverie_liteinst_straddling_cpuid() } as u32,
@@ -2803,9 +2823,15 @@ fn instruction_guest(path: &Path, publication: InstructionPublication) {
     );
     assert_eq!(INSTRUCTION_HANDLER_RPC_CALLS.load(Ordering::Relaxed), 1);
     assert_eq!(INSTRUCTION_TOOL_CALLBACKS.load(Ordering::Relaxed), 9);
-    println!(
-        "cpuid=tool rdtsc=tool rdtscp=tool rdrand=masked rdseed=masked instruction-handler-rpc=1 patched-native=1 first-use-native=1 nested-syscall-native=1 tool-callbacks=9"
-    );
+    if cfg!(feature = "liteinst") {
+        println!(
+            "cpuid=tool rdtsc=tool rdtscp=tool rdrand=masked rdseed=masked instruction-handler-rpc=1 patched-native=1 first-use-native=1 nested-syscall-native=1 tool-callbacks=9"
+        );
+    } else {
+        println!(
+            "cpuid=tool rdtsc=tool rdtscp=tool rdrand=masked rdseed=masked instruction-handler-rpc=1 trapped-native=1 first-use-native=1 nested-syscall-native=1 tool-callbacks=9"
+        );
+    }
     std::io::stdout().flush().unwrap();
 }
 
@@ -2902,11 +2928,11 @@ fn fork_guest(path: &Path) {
     let wait_address = core::ptr::addr_of!(reverie_liteinst_rpc_wait4_site) as usize as u64;
     assert_eq!(
         reverie_liteinst::reverie_liteinst_site_trap_count(wait_address),
-        1
+        expected_site_count(1)
     );
     assert_eq!(
         reverie_liteinst::reverie_liteinst_site_hook_count(wait_address),
-        1
+        expected_site_count(1)
     );
     let observed = unsafe { reverie_liteinst_rpc_getpid() };
     assert_eq!(observed, i64::from(unsafe { libc::getpid() }));
@@ -3211,11 +3237,11 @@ fn signal_mask_checks(label: &str, expected_uid: i64, full_mask: u64) -> u64 {
         core::ptr::addr_of!(reverie_liteinst_rpc_sigprocmask_first_site) as usize as u64;
     assert_eq!(
         reverie_liteinst::reverie_liteinst_site_trap_count(first_site),
-        1
+        expected_site_count(1)
     );
     assert_eq!(
         reverie_liteinst::reverie_liteinst_site_hook_count(first_site),
-        1
+        expected_site_count(1)
     );
     assert_eq!(current_signal_mask(), full_mask);
 
@@ -3238,7 +3264,10 @@ fn signal_mask_checks(label: &str, expected_uid: i64, full_mask: u64) -> u64 {
     };
     assert_eq!((fallback, old), (0, initial));
     assert_eq!(current_signal_mask(), full_mask);
-    assert_eq!(reverie_liteinst::reverie_liteinst_site_trap_count(site), 2);
+    assert_eq!(
+        reverie_liteinst::reverie_liteinst_site_trap_count(site),
+        expected_site_count(2)
+    );
     assert_eq!(reverie_liteinst::reverie_liteinst_site_hook_count(site), 0);
 
     // The first call at this site traps with SIGSYS. Had SIGSYS been blocked,
@@ -3248,7 +3277,7 @@ fn signal_mask_checks(label: &str, expected_uid: i64, full_mask: u64) -> u64 {
     let getuid_site = core::ptr::addr_of!(reverie_liteinst_rpc_getuid_site) as usize as u64;
     assert_eq!(
         reverie_liteinst::reverie_liteinst_site_trap_count(getuid_site),
-        1
+        expected_site_count(1)
     );
     let unreadable = 0x10 as *const u64;
     assert_eq!(
@@ -3420,7 +3449,7 @@ fn mask_instruction_guest(path: &Path) {
     let rdtsc_site = core::ptr::addr_of!(reverie_liteinst_rpc_mask_rdtsc_site) as usize as u64;
     assert_eq!(
         reverie_liteinst::reverie_liteinst_site_trap_count(rdtsc_site),
-        1
+        expected_site_count(1)
     );
     assert_eq!(MASK_INSTRUCTION_CALLBACKS.load(Ordering::Relaxed), 1);
     assert_eq!(

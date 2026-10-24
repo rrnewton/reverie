@@ -897,18 +897,18 @@ const CONTENT_REVERIE_CATALOG: [(&str, u64, &str); 53] = [
     ),
     (
         "reverie-liteinst/Cargo.toml",
-        5330,
-        "fc279871c9080a72f399090a16d08ab0ffb298301bf992375a46da0d844d8f14",
+        5684,
+        "3004bbd27466808ed4603e7bcb9f982639203124bdbe7369c4acb7e8542b49b9",
     ),
     (
         "reverie-liteinst/src/lib.rs",
-        23426,
-        "311108e16c3b071bb762a64a467660dde936f5369009ce3ad759aa8b3900b679",
+        24731,
+        "06231627366dd013ea21abbf7664800fc341a26473ac86d886f065a82768dcd8",
     ),
     (
         "reverie-liteinst-preload/Cargo.toml",
-        916,
-        "bb955ebff9395a9beeae17dfc90894393ea1275578b87475ed4621b4cbfb5aa6",
+        980,
+        "f415026eb39851b042371dd671f7c4373a0efb9ebe31bf861a8736de147b2ff0",
     ),
     (
         "reverie-liteinst-preload/src/lib.rs",
@@ -917,8 +917,8 @@ const CONTENT_REVERIE_CATALOG: [(&str, u64, &str); 53] = [
     ),
     (
         "reverie-liteinst/src/patch_alloc.rs",
-        24730,
-        "4e624b555d15acaeb72c9d4bf4d29e52666b377fb9a9ef48ef07447b6e834561",
+        24943,
+        "9336107f903561bb5297f9897fd4c222e9cd2f80715817a07e330498ab7c17f5",
     ),
     (
         "reverie-inguest/src/guest/alloc.rs",
@@ -967,8 +967,8 @@ const CONTENT_REVERIE_CATALOG: [(&str, u64, &str); 53] = [
     ),
     (
         "reverie-liteinst/src/tool_host.rs",
-        50362,
-        "ab33f9d70b7e5d3dad34bb3b14e1f78b45b36527eae9e8ca30f900c054869626",
+        50535,
+        "9421cff88f61cba52a6501bd333226423c3c6b35cead48afa97bdacbf322f5b0",
     ),
     (
         "reverie/Cargo.toml",
@@ -27950,6 +27950,46 @@ pub struct ConsumerExpectation<'a> {
     pub oracle_sha256: &'a BTreeMap<String, String>,
 }
 
+fn require_explicit_cargo_features(arguments: &[String], features: &[String]) -> Result<()> {
+    require(
+        arguments
+            .iter()
+            .filter(|argument| argument.as_str() == "--no-default-features")
+            .count()
+            == 1,
+        "producer command requires explicit --no-default-features",
+    )?;
+    require(
+        !arguments.iter().any(|argument| {
+            argument.starts_with("--all-features")
+                || argument.starts_with("--features=")
+                || argument.starts_with("-F")
+        }),
+        "producer command has a noncanonical Cargo feature selector",
+    )?;
+    let mut requested = Vec::new();
+    for (index, argument) in arguments.iter().enumerate() {
+        if argument == "--features" {
+            requested.push(
+                arguments
+                    .get(index + 1)
+                    .ok_or("producer command has --features without a value")?
+                    .as_str(),
+            );
+        }
+    }
+    let joined = features.join(",");
+    let expected = if features.is_empty() {
+        Vec::new()
+    } else {
+        vec![joined.as_str()]
+    };
+    require(
+        requested == expected,
+        "producer command's explicit feature selection differs from the independent expectation",
+    )
+}
+
 /// Requires caller-provided identities independent of this receipt. Does not
 /// dlopen, invoke Cargo or silently return on absence. The test must separately
 /// validate dladdr owner/base/hash and the genuine configured guest bootstrap.
@@ -28050,6 +28090,7 @@ pub fn verify_runtime_receipt(
         "runtime receipt requires one explicit successful Cargo leaf build",
     )?;
     let arguments = &builds[0].arguments;
+    require_explicit_cargo_features(arguments, &features)?;
     for flag in [
         "--locked",
         "--offline",
@@ -28063,7 +28104,6 @@ pub fn verify_runtime_receipt(
     }
     for (option, value) in [
         ("-p", expected.package.name.as_str()),
-        ("--features", "allocator-fixture"),
         ("--profile", expected.profile_name),
     ] {
         require(
@@ -28244,6 +28284,45 @@ pub fn verify_runtime_receipt(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn runtime_receipt_cargo_features_require_an_explicit_matching_configuration() {
+        for selection in [
+            Vec::<String>::new(),
+            vec!["liteinst".to_owned()],
+            vec!["allocator-fixture".to_owned()],
+            vec!["allocator-fixture".to_owned(), "liteinst".to_owned()],
+        ] {
+            let mut arguments = vec!["build".to_owned(), "--no-default-features".to_owned()];
+            if !selection.is_empty() {
+                arguments.extend(["--features".to_owned(), selection.join(",")]);
+            }
+            require_explicit_cargo_features(&arguments, &selection).unwrap();
+            let mut defaults = arguments.clone();
+            defaults.remove(1);
+            assert!(require_explicit_cargo_features(&defaults, &selection).is_err());
+            for extra in [
+                vec!["--all-features".to_owned()],
+                vec!["--features=liteinst".to_owned()],
+                vec!["-F".to_owned(), "liteinst".to_owned()],
+                vec!["-Fliteinst".to_owned()],
+                vec!["--features".to_owned(), "liteinst".to_owned()],
+                vec!["--features".to_owned()],
+            ] {
+                let mut changed = arguments.clone();
+                changed.extend(extra);
+                assert!(require_explicit_cargo_features(&changed, &selection).is_err());
+            }
+        }
+        let enabled = vec![
+            "build".to_owned(),
+            "--no-default-features".to_owned(),
+            "--features".to_owned(),
+            "liteinst".to_owned(),
+        ];
+        assert!(require_explicit_cargo_features(&enabled, &[]).is_err());
+        assert!(require_explicit_cargo_features(&enabled[..2], &["liteinst".to_owned()]).is_err());
+    }
 
     /// A child stream scripted read by read. `on_read` runs before the
     /// scripted result is returned, standing in for the child process and the
@@ -49426,6 +49505,7 @@ pub mod private_static {
                         "metadata".into(),
                         "--locked".into(),
                         "--offline".into(),
+                        "--no-default-features".into(),
                         "--format-version=1".into(),
                         "--manifest-path".into(),
                         manifest.to_str().ok_or("non-UTF8 manifest")?.into(),
@@ -49565,6 +49645,7 @@ pub mod private_static {
                         "rustc".into(),
                         "--locked".into(),
                         "--offline".into(),
+                        "--no-default-features".into(),
                         "--manifest-path".into(),
                         self.package
                             .manifest

@@ -5,11 +5,13 @@
 use std::io;
 use std::path::Path;
 
+#[cfg(feature = "liteinst")]
 use liteinst2::trampoline::HookContext;
 #[cfg(feature = "exec-private-init")]
 use reverie::GlobalRPC;
 use reverie::Pid;
 use reverie::Tool;
+#[cfg(feature = "liteinst")]
 use reverie_inguest::guest::context::RegisterContext;
 use reverie_inguest::guest::host::HostRuntime;
 #[cfg(feature = "exec-private-init")]
@@ -27,6 +29,7 @@ use crate::runtime::SyscallEvent;
 
 // Patched trampolines save HookContext; the shared entry reads RegisterContext.
 // The shared fallback continuation already owns RegisterContext.
+#[cfg(feature = "liteinst")]
 const _: () = {
     use core::mem::align_of;
     use core::mem::offset_of;
@@ -1062,6 +1065,7 @@ where
             std::env::var_os(runtime::SITE_PATCHING_ENV).as_deref(),
         ))
     };
+    let site_patching = install_try!(runtime::validate_site_patching(site_patching));
     // With site patching off, the vDSO gets ptrace's full trapping stubs and no
     // hooks, so its fast paths reach the Tool through the SIGSYS fallback too.
     #[cfg(feature = "exec-private-init")]

@@ -228,6 +228,7 @@ fn delta(after: [u64; 3], before: [u64; 3]) -> [u64; 3] {
 /// `trap_only`: the runtime runs with site patching off, so the in-arena
 /// ("patched path") instructions take the continuation too.
 pub(super) fn run_instruction(path: &Path, trap_only: bool) {
+    let trap_only = trap_only || !cfg!(feature = "liteinst");
     install(path);
     let page = map_late_code();
     let fallback_before = observations();
@@ -491,7 +492,7 @@ pub(super) fn run_straddler(path: &Path) {
         let address = stub as u64;
         assert_eq!(
             reverie_liteinst::reverie_liteinst_site_trap_count(address),
-            expected,
+            super::expected_site_count(expected),
             "the site at line offset {offset} must trap on every execution"
         );
         assert_eq!(
@@ -505,6 +506,7 @@ pub(super) fn run_straddler(path: &Path) {
         fallback[0]
     );
     run_straddler_neighbour();
+    #[cfg(feature = "liteinst")]
     run_stale_jump_neighbour();
     std::io::stdout().flush().unwrap();
 }
@@ -617,7 +619,10 @@ fn run_straddler_neighbour() {
         .map(|site| reverie_liteinst::reverie_liteinst_site_hook_count(site as u64));
     assert_eq!(
         traps,
-        [calls, 3 * calls],
+        [
+            super::expected_site_count(calls),
+            super::expected_site_count(3 * calls)
+        ],
         "both sites must trap on every execution"
     );
     assert_eq!(hooks, [0, 0], "neither site may be patched");
@@ -774,7 +779,7 @@ pub(super) fn run_private_alias(path: &Path) {
     let alias_hooks = reverie_liteinst::reverie_liteinst_site_hook_count(alias as u64);
     assert_eq!(
         (alias_traps, alias_hooks),
-        (STRADDLER_REPEATS as u64, 0),
+        (super::expected_site_count(STRADDLER_REPEATS as u64), 0),
         "the shared alias must trap every time and never be patched"
     );
     let covered = unsafe { private.add(58) };
@@ -858,7 +863,10 @@ pub(super) fn run_syscall_reservation(path: &Path) {
     }
     let (cpuid_traps, cpuid_hooks) = count(cpuid_site);
     let (_, syscall_hooks) = count(syscall_site);
-    assert_eq!(cpuid_traps, STRADDLER_REPEATS as u64);
+    assert_eq!(
+        cpuid_traps,
+        super::expected_site_count(STRADDLER_REPEATS as u64)
+    );
     assert_eq!(
         (cpuid_hooks, syscall_hooks),
         (0, 0),
@@ -971,13 +979,14 @@ pub(super) fn run_shared_mapping(path: &Path) {
         let hooks = reverie_liteinst::reverie_liteinst_site_hook_count(site as u64);
         assert_eq!(
             (traps, hooks),
-            (STRADDLER_REPEATS as u64, 0),
+            (super::expected_site_count(STRADDLER_REPEATS as u64), 0),
             "the shared CPUID at offset {offset} must trap every time and never be patched"
         );
     }
     let now = unsafe { core::slice::from_raw_parts(page, 4096) };
     assert_eq!(now, &code[..], "the shared page must stay unchanged");
-    println!("shared-mapping cpuid=tool traps=8+8 hooks=0+0 page=unchanged");
+    let traps = super::expected_site_count(STRADDLER_REPEATS as u64);
+    println!("shared-mapping cpuid=tool traps={traps}+{traps} hooks=0+0 page=unchanged");
     std::io::stdout().flush().unwrap();
 }
 
@@ -1042,7 +1051,7 @@ pub(super) fn run_split_mapping(path: &Path) {
         assert_untouched(&registers, "page-end cpuid");
     }
     let traps = reverie_liteinst::reverie_liteinst_site_trap_count(site as u64);
-    assert_eq!(traps, STRADDLER_REPEATS as u64);
+    assert_eq!(traps, super::expected_site_count(STRADDLER_REPEATS as u64));
     println!("split-mapping cpuid=tool traps={traps}");
     std::io::stdout().flush().unwrap();
 }

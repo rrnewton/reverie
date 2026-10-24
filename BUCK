@@ -322,6 +322,7 @@ rust_library(
                     "reverie-loader": {"optional": True},
                     "reverie-memory": {"optional": True},
                     "safeptrace": {"optional": True, "features": ["memory", "notifier"]},
+                    "sha2": {"optional": True},
                     "tempfile": {"optional": True},
                     "tokio": {"optional": True, "features": ["macros", "net", "rt", "time"]},
                     "tracing": {"optional": True},
@@ -332,6 +333,7 @@ rust_library(
                 },
             },
             "features": {
+                "allocator-fixture": [],
                 "coordinator-rpc": [
                     "serde",
                     "bincode",
@@ -342,9 +344,14 @@ rust_library(
                 "exec-stop": ["launcher", "dep:reverie-loader", "dep:safeptrace", "dep:reverie-memory", "dep:nix"],
                 "fixed-syscall-gates": [],
                 "exec-private-init": ["fixed-syscall-gates"],
+                "exec-private-successor": ["exec-private-init", "coordinator-rpc"],
+                "exec-native-injection": ["exec-private-successor", "dep:sha2"],
                 "loader-private-runtime": ["exec-private-init", "dep:reverie-loader"],
                 "launcher": ["coordinator-rpc", "dep:tempfile", "dep:tokio", "dep:tracing"],
+                "native-exec-state": ["coordinator-rpc"],
+                "native-exec-state-fixture": ["native-exec-state"],
                 "preload-constructor": [],
+                "rpc-io-fixture": ["coordinator-rpc"],
                 "rcb-clock": [
                     "reverie",
                 ],
@@ -385,33 +392,154 @@ rust_library(
 )
 
 rust_library(
-    name = "reverie-liteinst",
-    srcs = glob(["reverie-liteinst/src/**/*.rs"]),
-    autocargo = {
-        "cargo_toml_config": {
-            "package": dict(_PUBLIC_CRATE_METADATA, documentation = "https://docs.rs/reverie-liteinst"),
-            "features": {
-                "default": ["preload-constructor"],
-                "preload-constructor": [],
-            },
-        },
-        "cargo_toml_dir": "reverie-liteinst",
-    },
+    name = "reverie-inguest-native",
+    crate = "reverie_inguest",
+    srcs = glob(
+        ["reverie-inguest/src/**/*.rs"],
+        exclude = ["reverie-inguest/src/bin/**"],
+    ),
+    skip_autocargo_manifest = True,
+    features = [
+        "coordinator-rpc",
+        "exec-native-injection",
+        "exec-private-init",
+        "exec-private-successor",
+        "exec-stop",
+        "fixed-syscall-gates",
+        "launcher",
+        "loader-private-runtime",
+        "native-exec-state",
+        "rcb-clock",
+    ],
     test_deps = [
+        "fbsource//third-party/rust:iced-x86",
+        "fbsource//third-party/rust:tokio",
         "fbsource//third-party/rust:tracing-subscriber",
     ],
     deps = [
         "fbsource//third-party/rust:bincode",
-        "fbsource//third-party/rust:iced-x86",
         "fbsource//third-party/rust:libc",
-        "fbsource//third-party/rust:liteinst2",
+        "fbsource//third-party/rust:nix",
         "fbsource//third-party/rust:serde",
+        "fbsource//third-party/rust:sha2",
+        "fbsource//third-party/rust:syscalls",
         "fbsource//third-party/rust:tempfile",
         "fbsource//third-party/rust:tokio",
         "fbsource//third-party/rust:tracing",
         ":reverie",
-        ":reverie-inguest",
+        ":reverie-loader",
+        ":reverie-memory",
         ":reverie-rpc-transport",
+        ":reverie-syscalls",
+        ":safeptrace",
+    ],
+)
+
+_INGUEST_RUNTIME_SRCS = glob(
+    ["reverie-liteinst/src/**/*.rs"],
+    exclude = ["reverie-liteinst/src/bin/**"],
+)
+
+# Native admission is selected explicitly, preserving the ordinary targets'
+# constructor/bootstrap feature configuration.
+_INGUEST_NATIVE_RUNTIME_FEATURES = [
+    "exec-native-injection",
+    "exec-private-init",
+    "exec-private-successor",
+    "fixed-syscall-gates",
+    "loader-private-runtime",
+    "native-exec-state",
+]
+
+_INGUEST_RUNTIME_DEPS = [
+    "fbsource//third-party/rust:bincode",
+    "fbsource//third-party/rust:libc",
+    "fbsource//third-party/rust:serde",
+    "fbsource//third-party/rust:tempfile",
+    "fbsource//third-party/rust:tokio",
+    "fbsource//third-party/rust:tracing",
+    ":reverie",
+    ":reverie-rpc-transport",
+]
+
+_INGUEST_RUNTIME_TEST_DEPS = [
+    "fbsource//third-party/rust:goblin",
+    "fbsource//third-party/rust:serde_json",
+    "fbsource//third-party/rust:sha2",
+    "fbsource//third-party/rust:tracing-subscriber",
+    ":safeptrace",
+]
+
+rust_library(
+    name = "reverie-liteinst",
+    crate = "reverie_liteinst",
+    srcs = _INGUEST_RUNTIME_SRCS,
+    autocargo = {
+        "cargo_toml_config": {
+            "package": dict(_PUBLIC_CRATE_METADATA, documentation = "https://docs.rs/reverie-liteinst"),
+            "dependencies_override": {
+                "dependencies": {
+                    "iced-x86": {"version": "1.21.0", "optional": True, "default-features": False, "features": ["std", "decoder"]},
+                    "liteinst2": {"version": "0.1.0", "git": "https://github.com/rrnewton/liteinst2", "rev": "d64dc833418a4c265803645653b8f597d0f25060", "optional": True},
+                    "reverie-inguest": {"default-features": False, "features": ["coordinator-rpc", "rcb-clock", "launcher"]},
+                },
+            },
+            "features": {
+                "default": ["liteinst"],
+                "liteinst": ["dep:iced-x86", "dep:liteinst2"],
+                "preload-constructor": [],
+                "allocator-fixture": ["reverie-inguest/allocator-fixture"],
+                "rpc-io-fixture": ["reverie-inguest/rpc-io-fixture"],
+                "fixed-syscall-gates": ["reverie-inguest/fixed-syscall-gates"],
+                "exec-private-init": ["fixed-syscall-gates", "reverie-inguest/exec-private-init"],
+                "loader-private-runtime": ["exec-private-init", "reverie-inguest/loader-private-runtime"],
+                "native-exec-state": ["exec-private-init", "reverie-inguest/native-exec-state"],
+                "exec-private-successor": ["exec-private-init", "native-exec-state", "reverie-inguest/exec-private-successor"],
+                "exec-native-injection": ["exec-private-successor", "reverie-inguest/exec-native-injection"],
+            },
+        },
+        "cargo_toml_dir": "reverie-liteinst",
+    },
+    features = [],
+    test_deps = _INGUEST_RUNTIME_TEST_DEPS,
+    deps = _INGUEST_RUNTIME_DEPS + [":reverie-inguest"],
+)
+
+rust_library(
+    name = "reverie-liteinst-with-patching",
+    crate = "reverie_liteinst",
+    srcs = _INGUEST_RUNTIME_SRCS,
+    skip_autocargo_manifest = True,
+    features = ["liteinst"],
+    test_deps = _INGUEST_RUNTIME_TEST_DEPS,
+    deps = _INGUEST_RUNTIME_DEPS + [
+        "fbsource//third-party/rust:iced-x86",
+        "fbsource//third-party/rust:liteinst2",
+        ":reverie-inguest",
+    ],
+)
+
+rust_library(
+    name = "reverie-liteinst-native",
+    crate = "reverie_liteinst",
+    srcs = _INGUEST_RUNTIME_SRCS,
+    skip_autocargo_manifest = True,
+    features = _INGUEST_NATIVE_RUNTIME_FEATURES,
+    test_deps = _INGUEST_RUNTIME_TEST_DEPS,
+    deps = _INGUEST_RUNTIME_DEPS + [":reverie-inguest-native"],
+)
+
+rust_library(
+    name = "reverie-liteinst-native-with-patching",
+    crate = "reverie_liteinst",
+    srcs = _INGUEST_RUNTIME_SRCS,
+    skip_autocargo_manifest = True,
+    features = _INGUEST_NATIVE_RUNTIME_FEATURES + ["liteinst"],
+    test_deps = _INGUEST_RUNTIME_TEST_DEPS,
+    deps = _INGUEST_RUNTIME_DEPS + [
+        "fbsource//third-party/rust:iced-x86",
+        "fbsource//third-party/rust:liteinst2",
+        ":reverie-inguest-native",
     ],
 )
 

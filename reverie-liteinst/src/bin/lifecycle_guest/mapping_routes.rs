@@ -262,7 +262,7 @@ pub(super) fn run(route_name: &str, operation: &str) {
     assert!(pkey_probe_call(libc::SYS_getppid, [0; 4]) > 0);
     let site = core::ptr::addr_of!(reverie_liteinst_pkey_probe_site);
     let warm = site_counts(site);
-    if route == 6 {
+    if route == 6 || !cfg!(feature = "liteinst") {
         assert_eq!(warm, (0, 0));
     } else {
         assert_eq!(warm, (1, 1));

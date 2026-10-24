@@ -314,7 +314,7 @@ fn trial(case: &str, expected: Expected) -> Result<(), String> {
         "guest_source":guest_receipt.source, "root_interposer":root_receipt.binary,
         "root_source":root_receipt.source, "constructor_snapshot":"main-time retained record",
         "first_instruction_credit":false, "whole_window_credit":false,
-        "site_patching":true, "alt_stack":true, "stdin":"closed"
+        "site_patching":cfg!(feature = "liteinst"), "alt_stack":true, "stdin":"closed"
     }))
     .map_err(|e| e.to_string())?;
     let mut held = liteinst_runtime::held_environment(policy);
@@ -329,7 +329,10 @@ fn trial(case: &str, expected: Expected) -> Result<(), String> {
     ] {
         environment.remove(&OsString::from(name));
     }
-    environment.insert(reverie_liteinst::SITE_PATCHING_ENV.into(), "1".into());
+    environment.insert(
+        reverie_liteinst::SITE_PATCHING_ENV.into(),
+        if cfg!(feature = "liteinst") { "1" } else { "0" }.into(),
+    );
     environment.insert(reverie_liteinst::ALT_STACK_ENV.into(), "1".into());
     held.environment = environment.into_iter().collect();
     let mut command = Command::new(&guest);

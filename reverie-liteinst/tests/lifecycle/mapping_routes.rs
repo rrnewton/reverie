@@ -50,7 +50,11 @@ async fn row(route: &str, operation: &str) {
     command.arg(route).arg(operation);
     command.env(
         SITE_PATCHING_ENV,
-        if route == "nested-trap" { "0" } else { "1" },
+        if route == "nested-trap" || !cfg!(feature = "liteinst") {
+            "0"
+        } else {
+            "1"
+        },
     );
     command.env(reverie_liteinst::SIGALRM_HANDLERS_ENV, "0");
     let (output, global, stats) = tokio::time::timeout(
@@ -234,7 +238,7 @@ async fn row(route: &str, operation: &str) {
     assert_eq!(record.inconsistencies(), Vec::<String>::new(), "{record}");
     assert_physical_signals_agree(&stats, &record);
     assert_tool_callbacks_were_delivered(&global, &stats);
-    if route == "nested-trap" {
+    if route == "nested-trap" || !cfg!(feature = "liteinst") {
         assert_eq!(
             stats
                 .dispatch_path_counts()

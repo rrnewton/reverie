@@ -90,7 +90,7 @@ fn trial(label: &str, inert: bool, alt_stack: bool) -> Result<(), String> {
         "setarch": setarch_identity,
         "mode": mode,
         "alt_stack": alt_stack,
-        "site_patching": true,
+        "site_patching": cfg!(feature = "liteinst"),
         "personality": "ADDR_NO_RANDOMIZE via setarch -R",
         "stdin": "closed; fixture reads no input",
         "full_entry_isolation_claimed": false,
@@ -110,7 +110,7 @@ fn trial(label: &str, inert: bool, alt_stack: bool) -> Result<(), String> {
     }
     environment.insert(
         reverie_liteinst::SITE_PATCHING_ENV.into(),
-        OsString::from("1"),
+        OsString::from(if cfg!(feature = "liteinst") { "1" } else { "0" }),
     );
     environment.insert(
         reverie_liteinst::ALT_STACK_ENV.into(),
