@@ -106,6 +106,9 @@ fn trial(label: &str, inert: bool, alt_stack: bool) -> Result<(), String> {
     if let Some((_, identity)) = &final_exec_environment {
         policy["final_exec_environment"] =
             serde_json::to_value(identity).map_err(|error| error.to_string())?;
+        policy["activation"] = serde_json::json!(
+            "qualified fixture explicit-config shared passthrough; builtin constructor defaults unchanged; no FullTool continuation"
+        );
     }
     let policy = serde_json::to_vec(&policy).map_err(|error| error.to_string())?;
     let mut held = liteinst_runtime::held_environment(policy);
@@ -140,23 +143,24 @@ fn trial(label: &str, inert: bool, alt_stack: bool) -> Result<(), String> {
         // The public strace launcher itself selects exactly the qualified leaf.
         command.arg(&launcher);
     } else {
-        // The same actual constructor and M2 query/guard/altstack probes are
-        // available through the shared builtin without legacy forwarding.
-        // Keep setarch and env uninstrumented: the builtin refuses exec, so
-        // only the final M2 guest may receive its active preload selector.
+        // Keep setarch and env uninstrumented. The final guest loads the
+        // genuine leaf inertly and invokes its distinct fixture startup with
+        // explicit config; the normal builtin constructor retains its default.
         environment.remove(&OsString::from("LD_PRELOAD"));
         let mut preload = OsString::from("LD_PRELOAD=");
         preload.push(runtime.path.as_os_str());
         command
             .arg(&final_exec_environment.as_ref().unwrap().0)
-            .arg(preload)
-            .arg("REVERIE_LITEINST_TOOL=passthrough");
+            .arg(preload);
     }
     command
         .arg(&guest)
         .arg(mode)
         .arg(&runtime.path)
         .current_dir(&runtime.source.root);
+    if !cfg!(feature = "liteinst") && !inert {
+        command.arg("explicit-builtin");
+    }
     held.environment = environment.into_iter().collect();
 
     let result = (|| -> Result<(), String> {
