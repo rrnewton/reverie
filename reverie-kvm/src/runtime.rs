@@ -1642,7 +1642,7 @@ impl<G: GlobalTool> GlobalRPC<G> for KvmGlobal<'_, G> {
 }
 
 /// All-zero user registers, lent to test handles that never read them.
-#[cfg(test)]
+#[cfg(any(test, feature = "native-test-support"))]
 pub(crate) const ZEROED_USER_REGISTERS: libc::user_regs_struct =
     // SAFETY: user_regs_struct is plain integers, for which zero is valid.
     unsafe { std::mem::zeroed() };
