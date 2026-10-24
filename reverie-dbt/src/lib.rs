@@ -826,7 +826,7 @@ where
     type Stack = DbtStack;
 
     fn pidfd_self_spelling(&self) -> reverie::PidfdSelfSpelling {
-        crate::pidfd_self::spelling(self.tid, self.pid, self.context, self.invoke_syscall)
+        crate::pidfd_self::spelling()
     }
 
     fn tid(&self) -> Pid {
@@ -1524,6 +1524,9 @@ pub fn run_tool_thread_start<T: Tool>(
     write_registers: RegisterWriter,
 ) -> Result<(), Error> {
     sync_rpc::prepare_guest(context, invoke_syscall)?;
+    // The image's first lifecycle callback qualifies its pidfd self-sentinel
+    // spelling, before any handler can ask for it.
+    pidfd_self::initialize();
     let mut guest = DbtGuest::new(
         context,
         tid,
@@ -1563,6 +1566,8 @@ pub fn run_tool_post_exec<T: Tool>(
     read_registers: RegisterReader,
     write_registers: RegisterWriter,
 ) -> Result<(), Errno> {
+    // A new image qualifies its own spelling ([`run_tool_thread_start`]).
+    pidfd_self::initialize();
     let mut guest = DbtGuest::new(
         context,
         tid,

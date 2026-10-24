@@ -70,7 +70,7 @@ fn send_zero(pidfd: i32) -> Result<(), i32> {
 fn the_tracer_answers_what_the_guests_own_kernel_answers() {
     // The tracer qualifies only without a seccomp filter; the guest, forked
     // from this process, carries the same filters.
-    let unfiltered = reverie::pidfd_self::process_has_exactly_seccomp_filters(0);
+    let unfiltered = reverie::pidfd_self::thread_has_exactly_seccomp_filters(0);
     eprintln!(
         "test process unfiltered={unfiltered}; this kernel answers -10001 with {:?} and -20000 with {:?}",
         send_zero(-10001),

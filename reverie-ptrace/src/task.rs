@@ -3382,6 +3382,11 @@ struct GlobalState<G: GlobalTool> {
     /// before the launch filter is installed, where one fewer is. `None` if
     /// the tracer's count cannot be read.
     seccomp_filter_baseline: Option<u64>,
+    /// How the kernel executing this session's guests spells the pidfd self
+    /// sentinels, qualified once when the root task is created
+    /// (`pidfd_self::qualify_session`) and read by
+    /// `Guest::pidfd_self_spelling`.
+    pidfd_self_spelling: reverie::PidfdSelfSpelling,
 
     /// Optional collector for general ptrace lifecycle activity.
     backend_stats: Option<PtraceBackendStatsSource>,
@@ -3615,6 +3620,7 @@ impl<G: GlobalTool> Clone for GlobalState<G> {
             sigtrap_tables: self.sigtrap_tables.clone(),
             sigtrap_scratch_lock: self.sigtrap_scratch_lock.clone(),
             seccomp_filter_baseline: self.seccomp_filter_baseline,
+            pidfd_self_spelling: self.pidfd_self_spelling,
             backend_stats: self.backend_stats.clone(),
             #[cfg(test)]
             final_resume_signal_for_test: self.final_resume_signal_for_test.clone(),
@@ -4119,6 +4125,7 @@ impl<L: Tool> TracedTask<L> {
                         .and_then(|count| count.trim().parse::<u64>().ok())
                 })
                 .map(|own| own + 1),
+            pidfd_self_spelling: crate::pidfd_self::qualify_session(),
             backend_stats: options.backend_stats,
             #[cfg(test)]
             final_resume_signal_for_test: options.final_resume_signal_for_test,
@@ -13110,7 +13117,7 @@ impl<L: Tool + 'static> Guest<L> for TracedTask<L> {
     type Stack = GuestStack;
 
     fn pidfd_self_spelling(&self) -> reverie::PidfdSelfSpelling {
-        crate::pidfd_self::spelling()
+        self.global_state.pidfd_self_spelling
     }
 
     fn signal_info(&self) -> Option<[u8; reverie::SIGNAL_INFO_SIZE]> {

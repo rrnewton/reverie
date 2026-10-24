@@ -7,87 +7,118 @@
  */
 
 //! The pidfd self-sentinel spelling of the kernel that executes this guest's
-//! syscalls ([`reverie::pidfd_self`]), qualified once per process at the
-//! guest's trusted physical gate and then kept. An interrupted qualification
-//! is kept nowhere and is repeated on the next request.
-
-use std::sync::OnceLock;
+//! syscalls ([`reverie::pidfd_self`]).
+//!
+//! The runtime qualifies it once per process image, while it installs its
+//! syscall trap (`lifecycle::install_in_process_trap`), immediately before
+//! its own seccomp filter: the last point at which the runtime's syscalls
+//! meet no filter of its own, and before any guest code runs. Every syscall
+//! there is the runtime's raw gate: the thread's `/proc/thread-self/status`
+//! is read with raw `openat`/`read`/`close`, and the probe is a raw signal-0
+//! `pidfd_send_signal` naming the process itself. It qualifies only when that
+//! status shows no seccomp filter at all, so a success can only be the
+//! kernel's own answer; otherwise nothing is executed. The runtime cannot
+//! rule out a filter that forges its own evidence; as for
+//! `set_physical_creation_hook`, the registering side establishes from
+//! outside the process that no filter but the runtime's is attached.
+//!
+//! The answer, Unknown included, is published once and read by
+//! `Guest::pidfd_self_spelling` without any syscall, which a Tool callback
+//! under the runtime's filter could not make through an ordinary path. A
+//! forked child keeps its parent's answer (the same kernel); an exec starts a
+//! new image, which qualifies again.
 
 use reverie::Errno;
 use reverie::PidfdSelfSpelling;
 use reverie::pidfd_self;
+use reverie::pidfd_self::PidfdSelfFact;
 
-/// The runtime's own filter: the only one a qualifying process may carry.
-const RUNTIME_FILTERS: u64 = 1;
+static SPELLING: PidfdSelfFact = PidfdSelfFact::new();
 
-static SPELLING: OnceLock<PidfdSelfSpelling> = OnceLock::new();
-
-/// The spelling, qualified with `probe` (a signal-0 `pidfd_send_signal` at
-/// the trusted gate) on first use in this process. The process qualifies
-/// only while it carries exactly the runtime's filter.
-pub(crate) fn spelling(probe: impl FnMut(i32) -> Result<usize, Errno>) -> PidfdSelfSpelling {
-    spelling_in(
-        &SPELLING,
-        pidfd_self::process_has_exactly_seccomp_filters(RUNTIME_FILTERS),
-        probe,
-    )
+/// Qualifies this image's spelling through the runtime's raw gate, if it has
+/// not been. Call only before the runtime's seccomp filter is installed.
+pub(crate) fn initialize_before_runtime_filter() -> PidfdSelfSpelling {
+    SPELLING.initialize(|| {
+        pidfd_self::qualify(thread_has_no_seccomp_filter(), |pidfd| {
+            let args = pidfd_self::probe_args(pidfd).map(|arg| arg as u64);
+            // SAFETY: signal 0 with a null siginfo reads and writes no memory.
+            let raw = unsafe { crate::trap::raw_syscall6(libc::SYS_pidfd_send_signal, args) };
+            Errno::from_ret(raw as usize)
+        })
+    })
 }
 
-/// [`spelling`], kept in `cell`, with the admission decided by the caller.
-fn spelling_in(
-    cell: &OnceLock<PidfdSelfSpelling>,
-    admitted: bool,
-    probe: impl FnMut(i32) -> Result<usize, Errno>,
-) -> PidfdSelfSpelling {
-    if let Some(spelling) = cell.get() {
-        return *spelling;
+/// The image's published spelling: Unknown before it is qualified. Makes no
+/// syscall.
+pub(crate) fn spelling() -> PidfdSelfSpelling {
+    SPELLING.get()
+}
+
+/// Whether the calling thread's `/proc/thread-self/status`, read through the
+/// raw gate, shows no seccomp filter. Anything unreadable is `false`.
+fn thread_has_no_seccomp_filter() -> bool {
+    const PATH: &[u8] = b"/proc/thread-self/status\0";
+    let mut status = [0_u8; 8192];
+    // SAFETY: a NUL-terminated path; the descriptor is closed below.
+    let fd = unsafe {
+        crate::trap::raw_syscall6(
+            libc::SYS_openat,
+            [
+                libc::AT_FDCWD as u64,
+                PATH.as_ptr() as u64,
+                (libc::O_RDONLY | libc::O_CLOEXEC) as u64,
+                0,
+                0,
+                0,
+            ],
+        )
+    };
+    if fd < 0 {
+        return false;
     }
-    match pidfd_self::qualify(admitted, probe) {
-        Some(spelling) => *cell.get_or_init(|| spelling),
-        None => PidfdSelfSpelling::Unknown,
-    }
+    let mut length = 0;
+    let complete = loop {
+        if length == status.len() {
+            break false;
+        }
+        // SAFETY: reads into the unfilled tail of `status`.
+        let read = unsafe {
+            crate::trap::raw_syscall6(
+                libc::SYS_read,
+                [
+                    fd as u64,
+                    status[length..].as_mut_ptr() as u64,
+                    (status.len() - length) as u64,
+                    0,
+                    0,
+                    0,
+                ],
+            )
+        };
+        match read {
+            0 => break true,
+            read if read > 0 => length += read as usize,
+            _ => break false,
+        }
+    };
+    // SAFETY: closes the descriptor opened above.
+    unsafe { crate::trap::raw_syscall6(libc::SYS_close, [fd as u64, 0, 0, 0, 0, 0]) };
+    complete
+        && std::str::from_utf8(&status[..length])
+            .is_ok_and(|status| pidfd_self::status_has_exactly_seccomp_filters(status, 0))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// This (unfiltered) test thread's status reads as unfiltered through the
+    /// raw gate, as the shared reader reads it.
     #[test]
-    fn the_gate_answer_is_kept_and_an_unadmitted_process_probes_nothing() {
-        let cell = OnceLock::new();
-        let mut calls = Vec::new();
-        let spelling = spelling_in(&cell, true, |pidfd| {
-            calls.push(pidfd);
-            Ok(0)
-        });
-        assert_eq!(spelling, PidfdSelfSpelling::Modern);
-        assert_eq!(calls, [-10001]);
+    fn the_raw_status_read_agrees_with_the_shared_reader() {
         assert_eq!(
-            spelling_in(&cell, true, |_| panic!("a kept answer was qualified again")),
-            PidfdSelfSpelling::Modern
-        );
-        let cell = OnceLock::new();
-        assert_eq!(
-            spelling_in(&cell, false, |_| panic!("an unadmitted process was probed")),
-            PidfdSelfSpelling::Unknown
-        );
-    }
-
-    #[test]
-    fn an_interrupted_gate_call_is_not_kept() {
-        let cell = OnceLock::new();
-        assert_eq!(
-            spelling_in(&cell, true, |_| Err(Errno::ERESTARTSYS)),
-            PidfdSelfSpelling::Unknown
-        );
-        assert!(cell.get().is_none());
-        assert_eq!(
-            spelling_in(&cell, true, |pidfd| if pidfd == -10001 {
-                Err(Errno::EBADF)
-            } else {
-                Ok(0)
-            }),
-            PidfdSelfSpelling::Legacy
+            thread_has_no_seccomp_filter(),
+            pidfd_self::thread_has_exactly_seccomp_filters(0)
         );
     }
 }

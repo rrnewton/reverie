@@ -2999,28 +2999,15 @@ impl<'a, T: Tool, R: HostRuntime> Guest<T> for InGuest<'a, T, R> {
     /// (which could fail or fake the gate's calls), nothing is executed and
     /// the spelling is unknown.
     fn pidfd_self_spelling(&self) -> reverie::PidfdSelfSpelling {
+        // Read, never qualified, here: the image qualified it before its
+        // filter was installed (`pidfd_self::initialize_before_runtime_filter`).
+        // Outside the admitted callback, or once the guest has installed a
+        // filter of its own that could stand between the gate and the
+        // kernel, it is unknown. No syscall either way.
         if !tool_callback_active() || guest_filter_admitted() {
             return reverie::PidfdSelfSpelling::Unknown;
         }
-        let tid = self.tid;
-        let runtime = self.runtime;
-        super::pidfd_self::spelling(|pidfd| {
-            let number = libc::SYS_pidfd_send_signal;
-            let args = reverie::pidfd_self::probe_args(pidfd).map(|arg| arg as u64);
-            // `inject`'s admission for this call: the guard any forwarded
-            // call passes. A signal-0 send names no descriptor, mapping,
-            // exit, protection key or signal mask, and `sigalrm::intercept`
-            // does not handle pidfd_send_signal, so no other admission step
-            // of `inject` applies to it.
-            if let Some(error) = injected_syscall_guard(runtime, number, args) {
-                return Err(error);
-            }
-            // SAFETY: on this guest thread, in its own turn inside the Tool
-            // callback, with every applicable admission filter run above on
-            // exactly these arguments.
-            let raw = unsafe { host_linux::forward(tid, number, args) };
-            Errno::from_ret(raw as usize)
-        })
+        super::pidfd_self::spelling()
     }
 
     fn thread_state_mut(&mut self) -> &mut T::ThreadState {
@@ -3740,18 +3727,39 @@ mod tests {
         }
     }
 
-    /// The spelling is qualified only inside the admitted Tool callback.
+    /// Outside the admitted Tool callback the spelling is unknown, even with
+    /// the image's fact published, and nothing is executed.
     #[test]
     fn pidfd_self_spelling_outside_callback_executes_nothing() {
+        pidfd_self_spelling_under_the_runtime_filter(
+            "guest::host::tests::pidfd_self_spelling_outside_callback_executes_nothing",
+            false,
+        );
+    }
+
+    /// Inside the admitted Tool callback, under the runtime's real filter
+    /// with no SIGSYS handler (so any syscall but the trusted gate's kills the
+    /// process), the getter returns the fact the image published before the
+    /// filter, repeatedly, making no syscall.
+    #[test]
+    fn pidfd_self_spelling_inside_callback_reads_the_published_fact_without_syscalls() {
+        pidfd_self_spelling_under_the_runtime_filter(
+            "guest::host::tests::pidfd_self_spelling_inside_callback_reads_the_published_fact_without_syscalls",
+            true,
+        );
+    }
+
+    /// Runs `test` again in a child process that publishes the image's fact,
+    /// installs the runtime's real filter and asks for the spelling, inside a
+    /// Tool callback or not.
+    fn pidfd_self_spelling_under_the_runtime_filter(test: &str, inside: bool) {
         use std::io::Write;
         const CHILD: &str = "REVERIE_PIDFD_SELF_SPELLING_TEST_CHILD";
-        const TEST: &str =
-            "guest::host::tests::pidfd_self_spelling_outside_callback_executes_nothing";
-        const READY: &[u8] = b"pidfd-self-outside-ready\n";
-        if std::env::var_os(CHILD).as_deref() != Some(std::ffi::OsStr::new(TEST)) {
+        const READY: &[u8] = b"pidfd-self-filter-ready\n";
+        if std::env::var_os(CHILD).as_deref() != Some(std::ffi::OsStr::new(test)) {
             let output = std::process::Command::new(std::env::current_exe().unwrap())
-                .args(["--exact", TEST, "--nocapture", "--test-threads=1"])
-                .env(CHILD, TEST)
+                .args(["--exact", test, "--nocapture", "--test-threads=1"])
+                .env(CHILD, test)
                 .output()
                 .unwrap();
             assert_eq!(output.status.code(), Some(0), "{output:?}");
@@ -3760,6 +3768,8 @@ mod tests {
         }
 
         assert!(!tool_callback_active());
+        // Published as the runtime publishes it, before its filter.
+        let published = crate::guest::pidfd_self::initialize_before_runtime_filter();
         let mut filter =
             crate::seccomp::SeccompFilter::for_trusted_gate(crate::trap::trusted_gate()).unwrap();
         // Prewrite the actual config handshake; no server thread or pending
@@ -3848,10 +3858,18 @@ mod tests {
             {
                 super::super::support::exit_now(120);
             }
-            // Outside a Tool callback the spelling must be unknown with nothing
-            // executed: a gate probe would answer and change the result, and
-            // any other syscall (reading /proc, say) would meet the filter.
-            if guest.pidfd_self_spelling() != reverie::PidfdSelfSpelling::Unknown {
+            if inside {
+                // Any syscall but the gate's would meet the filter and, with
+                // SIGSYS at its default action, end the process.
+                let _callback = crate::guest::support::ToolCallbackGuard::enter();
+                for _ in 0..3 {
+                    if guest.pidfd_self_spelling() != published {
+                        super::super::support::exit_now(122);
+                    }
+                }
+            } else if guest.pidfd_self_spelling() != reverie::PidfdSelfSpelling::Unknown {
+                // Outside a Tool callback the spelling must be unknown with
+                // nothing executed.
                 super::super::support::exit_now(121);
             }
             super::super::support::exit_now(0);

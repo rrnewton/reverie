@@ -9,160 +9,98 @@
 //! The pidfd self-sentinel spelling of the kernel that executes this guest's
 //! syscalls ([`reverie::pidfd_self`]).
 //!
-//! The DBT backend executes a forwarded syscall through the task's native
-//! invoker ([`crate::host_linux::forward`]), in the guest process, on the
-//! guest thread. It qualifies that same leaf once per process with a
-//! signal-0 `pidfd_send_signal` naming the process itself, which sends
-//! nothing. It qualifies only while the process carries no seccomp filter,
+//! A DBT guest's syscalls run in its own process, on the kernel the runtime
+//! runs on. The runtime qualifies that kernel once per process image, at the
+//! first Tool lifecycle callback of the image (thread start or post-exec),
+//! with a signal-0 `pidfd_send_signal` naming the process itself, made by the
+//! runtime's own code as the Tool's other native observations are
+//! (`tools.rs`): never through the application syscall invoker, so no guest
+//! syscall, interruption state or lifecycle bookkeeping is involved. It
+//! qualifies only when the thread making the probe carries no seccomp filter,
 //! so a success can only be the kernel's own answer; otherwise nothing is
-//! executed and the spelling is unknown. An interrupted qualification is
-//! kept nowhere and is repeated on the next request.
-
-use std::sync::OnceLock;
+//! executed. The answer, Unknown included, is published once for the image
+//! and `Guest::pidfd_self_spelling` reads it without any I/O. A forked child
+//! keeps its parent's answer (the same kernel); an exec starts a new image,
+//! which qualifies again.
 
 use reverie::Errno;
-use reverie::InjectionPurpose;
-use reverie::Pid;
 use reverie::PidfdSelfSpelling;
 use reverie::pidfd_self;
-use reverie::provider::SyscallRequest;
+use reverie::pidfd_self::PidfdSelfFact;
 
-use crate::SyscallInvoker;
+static SPELLING: PidfdSelfFact = PidfdSelfFact::new();
 
-static SPELLING: OnceLock<PidfdSelfSpelling> = OnceLock::new();
-
-/// The spelling for the task whose native invoker is `invoke`, qualified on
-/// first use in this process and then kept.
-pub(crate) fn spelling(
-    tid: Pid,
-    pid: Pid,
-    context: usize,
-    invoke: SyscallInvoker,
-) -> PidfdSelfSpelling {
-    spelling_in(
-        &SPELLING,
-        pidfd_self::process_has_exactly_seccomp_filters(0),
-        tid,
-        pid,
-        context,
-        invoke,
-    )
+/// Qualifies this image's spelling on the calling thread if no earlier
+/// lifecycle callback has.
+pub(crate) fn initialize() {
+    initialize_in(&SPELLING);
 }
 
-/// [`spelling`], kept in `cell`, with the admission decided by the caller.
-fn spelling_in(
-    cell: &OnceLock<PidfdSelfSpelling>,
-    admitted: bool,
-    tid: Pid,
-    pid: Pid,
-    context: usize,
-    invoke: SyscallInvoker,
-) -> PidfdSelfSpelling {
-    if let Some(spelling) = cell.get() {
-        return *spelling;
-    }
-    let probe = |pidfd: i32| {
-        let args = pidfd_self::probe_args(pidfd).map(|arg| arg as u64);
-        let raw = crate::host_linux::forward(
-            tid,
-            pid,
-            context,
-            invoke,
-            InjectionPurpose::Application,
-            &SyscallRequest::new(libc::SYS_pidfd_send_signal as u64, args),
-        );
-        Errno::from_ret(raw as usize)
-    };
-    match pidfd_self::qualify(admitted, probe) {
-        Some(spelling) => *cell.get_or_init(|| spelling),
-        None => PidfdSelfSpelling::Unknown,
+/// The image's published spelling: Unknown before [`initialize`].
+pub(crate) fn spelling() -> PidfdSelfSpelling {
+    SPELLING.get()
+}
+
+fn initialize_in(fact: &PidfdSelfFact) -> PidfdSelfSpelling {
+    fact.initialize(|| {
+        pidfd_self::qualify(
+            pidfd_self::thread_has_exactly_seccomp_filters(0),
+            native_probe,
+        )
+    })
+}
+
+/// `pidfd_send_signal(pidfd, 0, NULL, 0)` from the runtime's own code on the
+/// calling thread.
+fn native_probe(pidfd: i32) -> Result<usize, Errno> {
+    let [a0, a1, a2, a3, _, _] = pidfd_self::probe_args(pidfd);
+    // SAFETY: signal 0 with a null siginfo reads and writes no memory.
+    let result = unsafe { libc::syscall(libc::SYS_pidfd_send_signal, a0, a1, a2, a3) };
+    if result < 0 {
+        Err(Errno::last())
+    } else {
+        Ok(result as usize)
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use std::cell::RefCell;
-
     use super::*;
 
-    std::thread_local! {
-        /// The raw results the scripted invoker returns, in order.
-        static ANSWERS: RefCell<Vec<i64>> = const { RefCell::new(Vec::new()) };
-    }
-
-    unsafe extern "C" fn scripted(
-        _context: usize,
-        _number: i64,
-        _args: *const u64,
-        _purpose: u32,
-    ) -> i64 {
-        ANSWERS.with(|answers| answers.borrow_mut().remove(0))
-    }
-
-    fn run(
-        cell: &OnceLock<PidfdSelfSpelling>,
-        admitted: bool,
-        answers: &[i64],
-    ) -> (PidfdSelfSpelling, Vec<[u64; 6]>) {
-        ANSWERS.with(|a| *a.borrow_mut() = answers.to_vec());
-        let _ = crate::host_linux::take_observed();
-        let tid = Pid::from_raw(7);
-        let spelling = spelling_in(cell, admitted, tid, Pid::from_raw(5), 0x1234, scripted);
-        let observed = crate::host_linux::take_observed();
-        for call in &observed {
-            assert_eq!(call.request.number(), libc::SYS_pidfd_send_signal as u64);
-            assert_eq!(call.purpose, InjectionPurpose::Application);
-            assert_eq!(call.tid, tid);
-            assert_eq!(call.context, 0x1234);
+    /// The image's fact is the kernel's own answer on this host, qualified
+    /// once: a qualified spelling's sentinels answer signal 0 natively, and
+    /// a second initialization keeps the first answer.
+    #[test]
+    fn the_image_qualifies_once_from_the_kernel() {
+        let fact = PidfdSelfFact::new();
+        assert_eq!(fact.get(), PidfdSelfSpelling::Unknown);
+        let spelling = initialize_in(&fact);
+        assert_eq!(fact.get(), spelling);
+        assert_eq!(initialize_in(&fact), spelling);
+        assert_ne!(spelling, PidfdSelfSpelling::Unsupported);
+        if spelling != PidfdSelfSpelling::Unknown {
+            assert_eq!(native_probe(spelling.thread_group().unwrap()), Ok(0));
         }
-        assert!(
-            ANSWERS.with(|a| a.borrow().is_empty()),
-            "unused scripted answers"
-        );
-        (
-            spelling,
-            observed.iter().map(|call| *call.request.args()).collect(),
-        )
+        assert_eq!(native_probe(-10002), Err(Errno::EBADF));
     }
 
-    const EBADF: i64 = -(libc::EBADF as i64);
-
+    /// The qualification has no route to the application syscall invoker:
+    /// nothing it calls takes the task's invoker or context, so a guest's
+    /// interruption state cannot be touched by it. Pinned by source, as the
+    /// review asked: the probe is `libc::syscall` in the runtime's own code.
     #[test]
-    fn the_native_invoker_leaf_qualifies_and_the_answer_is_kept() {
-        let cell = OnceLock::new();
-        let (spelling, calls) = run(&cell, true, &[0]);
-        assert_eq!(spelling, PidfdSelfSpelling::Modern);
-        assert_eq!(
-            calls,
-            [pidfd_self::probe_args(-10001).map(|arg| arg as u64)]
-        );
-        // Kept: a second request issues nothing.
-        let (spelling, calls) = run(&cell, true, &[]);
-        assert_eq!(spelling, PidfdSelfSpelling::Modern);
-        assert!(calls.is_empty());
-
-        let cell = OnceLock::new();
-        let (spelling, calls) = run(&cell, true, &[EBADF, 0]);
-        assert_eq!(spelling, PidfdSelfSpelling::Legacy);
-        assert_eq!(calls[1][0] as i64, -20000);
-    }
-
-    #[test]
-    fn an_unadmitted_process_executes_nothing_and_an_interruption_is_not_kept() {
-        let cell = OnceLock::new();
-        let (spelling, calls) = run(&cell, false, &[]);
-        assert_eq!(spelling, PidfdSelfSpelling::Unknown);
-        assert!(calls.is_empty());
-
-        let cell = OnceLock::new();
-        let restart = -(Errno::ERESTARTSYS.into_raw() as i64);
-        let (spelling, _) = run(&cell, true, &[restart]);
-        assert_eq!(spelling, PidfdSelfSpelling::Unknown);
-        assert!(
-            cell.get().is_none(),
-            "an interrupted qualification was kept"
-        );
-        let (spelling, _) = run(&cell, true, &[0]);
-        assert_eq!(spelling, PidfdSelfSpelling::Modern);
+    fn the_qualification_never_reaches_the_application_invoker() {
+        let source = include_str!("pidfd_self.rs");
+        let body = source
+            .split_once("fn initialize_in(")
+            .expect("initialize_in")
+            .1
+            .split_once("#[cfg(test)]")
+            .expect("end of the qualification")
+            .0;
+        for forbidden in ["host_linux", "invoke", "InjectionPurpose", "context"] {
+            assert!(!body.contains(forbidden), "{forbidden} in:\n{body}");
+        }
+        assert!(body.contains("libc::syscall(libc::SYS_pidfd_send_signal"));
     }
 }
