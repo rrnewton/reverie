@@ -17,11 +17,13 @@ mod commands;
 mod error;
 mod hex;
 mod inferior;
+mod interrupt;
 mod logger;
 mod packet;
 mod request;
 mod server;
 mod session;
+mod signals;
 
 mod regs;
 
@@ -40,6 +42,12 @@ pub use inferior::Inferior;
 pub use inferior::InferiorThreadId;
 pub use inferior::ResumeInferior;
 pub use inferior::StoppedInferior;
+pub use inferior::ThreadState;
+pub use inferior::ThreadStateGuard;
+pub use inferior::ThreadView;
+pub use interrupt::Interrupt;
 pub use regs::CoreRegs;
 pub use request::GdbRequest;
 pub use server::GdbServer;
+pub use signals::PassedSignals;
+pub use signals::signal_has_gdb_number;
