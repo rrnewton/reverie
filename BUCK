@@ -394,10 +394,32 @@ rust_library(
 rust_library(
     name = "reverie-inguest-native",
     crate = "reverie_inguest",
+    crate_root = "reverie-inguest/src/lib.rs",
     srcs = glob(
         ["reverie-inguest/src/**/*.rs"],
         exclude = ["reverie-inguest/src/bin/**"],
-    ),
+    ) + [
+        # native_exec_sources::digest includes these actual sibling inputs.
+        # Preserve their repository-relative paths for include_bytes!.
+        "reverie-inguest/native_exec/private-bootstrap.c",
+        "reverie-inguest/native_exec/private-bootstrap.ld",
+        "reverie-inguest/native_exec/private-control.h",
+        "reverie-inguest/native_exec/private-entry.S",
+        "reverie-inguest/native_exec/private-fs.S",
+        "reverie-inguest/native_exec/private-kernel-state.c",
+        "reverie-inguest/native_exec/private-maps.c",
+        "reverie-inguest/native_exec/private-runner.c",
+        "reverie-liteinst/src/native_exec_state.rs",
+        "reverie-liteinst/src/runtime.rs",
+        "reverie-liteinst/src/tool_host.rs",
+        "reverie-process/src/builder.rs",
+        "reverie-process/src/lib.rs",
+        "reverie-process/src/spawn.rs",
+        "reverie-rpc-transport/src/blocking_client.rs",
+        "reverie-rpc-transport/src/codec.rs",
+        "reverie-rpc-transport/src/server.rs",
+        "reverie-rpc-transport/src/successor.rs",
+    ],
     skip_autocargo_manifest = True,
     features = [
         "coordinator-rpc",

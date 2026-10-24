@@ -40,6 +40,21 @@ in sealed bootstrap data, reports that the runtime was built without LiteInst.
 Consumers that disable dependency defaults can enable the extension explicitly
 with `reverie-liteinst/liteinst`.
 
+The standalone legacy Strace and Compatibility frontends require `liteinst`.
+Without it, `configure_command` returns `Unsupported` before resolving a
+preload or changing the command; raw `strace`/`compat` environment selection
+also refuses before runtime activation. The installed FullTool path used by
+Hermit and the shared `BuiltinTool` paths remain available. Supporting legacy
+Strace/Compat without patching requires a separate adapter with its own
+signal, syscall and entry-ownership review.
+
+Both feature configurations run the shared Tool, constructor, allocator,
+owner/mapping, RPC, loader and native-exec checks. Historical standalone
+Strace/Compat positive controls remain in the feature-enabled suites. The
+trap-only suites test their explicit refusal separately; a refusal supplies
+no allocator, stack or native-I/O parity evidence. Mixed suites keep their
+actual FullTool checks in the trap-only configuration.
+
 The historical crate names remain for compatibility. The shared runtime and
 declining patcher interface already live in `reverie-inguest`; renaming the
 remaining wrapper crates is a separate packaging change.
