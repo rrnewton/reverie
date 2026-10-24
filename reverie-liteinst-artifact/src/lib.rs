@@ -9610,6 +9610,11 @@ const FIXED_SUPPORT_ROLE_SYMBOLS: &[(&str, &str)] = &[
         "fixed_heap_option_usize_branch",
         "_RNvXsJ_NtCs_4core6optionINtB5_6OptionjENtNtNtB7_3ops9try_trait3Try6branchCs_6goblin",
     ),
+    // Current ON/OFF complete668B layout_end callers bind this exact67B helper.
+    (
+        "fixed_heap_option_usize_branch",
+        "_RNvXsJ_NtCs_4core6optionINtB5_6OptionjENtNtNtB7_3ops9try_trait3Try6branchCs_6memchr",
+    ),
     (
         "fixed_heap_option_usize_equal",
         "_RNvXsf_NtCs_4core6optionINtB5_6OptionjENtNtB7_3cmp9PartialEq2eqCs_12regex_syntax",
@@ -9647,6 +9652,11 @@ const FIXED_SUPPORT_ROLE_SYMBOLS: &[(&str, &str)] = &[
     (
         "fixed_heap_usize_max",
         "_RNvYjNtNtCs_4core3cmp3Ord3maxCs_6goblin",
+    ),
+    // Current ON/OFF complete2384B/668B callers bind this exact95B helper.
+    (
+        "fixed_heap_usize_max",
+        "_RNvYjNtNtCs_4core3cmp3Ord3maxCs_10serde_core",
     ),
     (
         "fixed_metadata_atomic_load_bool",
@@ -9886,7 +9896,9 @@ const FIXED_READONLY_SPECS: &[FixedReadonlySpec] = &[
     FixedReadonlySpec {
         key: "publication_dev_data_369138",
         kind: "location",
-        hex: "00000000000000002e00000000000000de00000013000000",
+        // The current published_metadata dereference is tool_region_arena.rs:227:19.
+        // Retain the exact whole Location and independently bound filename.
+        hex: "00000000000000002e00000000000000e300000013000000",
         file_hex: "726576657269652d696e67756573742f7372632f67756573742f746f6f6c5f726567696f6e5f6172656e612e7273",
         owner: "",
         switch: &[],
@@ -10898,6 +10910,11 @@ const FIXED_OPERATION_ROLE_SYMBOLS: &[(&str, &str)] = &[
         "_RNvXsk_NtNtCs_4core3ops5rangeINtB5_5RangejEINtB5_11RangeBoundsjE11start_boundCs_6ruzstd",
         "_RNvXsk_NtNtCs_4core3ops5rangeINtB5_5RangejEINtB5_11RangeBoundsjE11start_boundCs_12regex_syntax",
     ),
+    // Current DEV ON/OFF callers select this exact complete 11B provider.
+    (
+        "_RNvXsk_NtNtCs_4core3ops5rangeINtB5_5RangejEINtB5_11RangeBoundsjE11start_boundCs_6ruzstd",
+        "_RNvXsk_NtNtCs_4core3ops5rangeINtB5_5RangejEINtB5_11RangeBoundsjE11start_boundCs_8tempfile",
+    ),
     (
         "_RNvXsk_NtNtCs_4core3ops5rangeINtB5_5RangejEINtB5_11RangeBoundsjE9end_boundCs_6ruzstd",
         "_RNvXsk_NtNtCs_4core3ops5rangeINtB5_5RangejEINtB5_11RangeBoundsjE9end_boundCs_6ruzstd",
@@ -10908,9 +10925,19 @@ const FIXED_OPERATION_ROLE_SYMBOLS: &[(&str, &str)] = &[
         "_RNvXsk_NtNtCs_4core3ops5rangeINtB5_5RangejEINtB5_11RangeBoundsjE9end_boundCs_6ruzstd",
         "_RNvXsk_NtNtCs_4core3ops5rangeINtB5_5RangejEINtB5_11RangeBoundsjE9end_boundCs_12regex_syntax",
     ),
+    // Current DEV ON/OFF callers select this exact complete 18B provider.
+    (
+        "_RNvXsk_NtNtCs_4core3ops5rangeINtB5_5RangejEINtB5_11RangeBoundsjE9end_boundCs_6ruzstd",
+        "_RNvXsk_NtNtCs_4core3ops5rangeINtB5_5RangejEINtB5_11RangeBoundsjE9end_boundCs_8tempfile",
+    ),
     (
         "_RNvYjNtNtCs_4core3cmp3Ord3minCs_6goblin",
         "_RNvYjNtNtCs_4core3cmp3Ord3minCs_6goblin",
+    ),
+    // Both origins coexist ON, so retain this exact provider as a distinct role.
+    (
+        "_RNvYjNtNtCs_4core3cmp3Ord3minCs_10serde_core",
+        "_RNvYjNtNtCs_4core3cmp3Ord3minCs_10serde_core",
     ),
     (
         "reverie_inguest_trusted_syscall",
@@ -13692,6 +13719,11 @@ const PUBLICATION_ROLE_SYMBOLS: &[(&str, &str)] = &[
         "_RINvNtNtCs_4core4sync6atomic23atomic_compare_exchangejECs_3log",
         "_RINvNtNtCs_4core4sync6atomic23atomic_compare_exchangejECs_3log",
     ),
+    // Same complete 1224B strong-CAS recipe, selected by the actual caller.
+    (
+        "_RINvNtNtCs_4core4sync6atomic23atomic_compare_exchangejECs_3log",
+        "_RINvNtNtCs_4core4sync6atomic23atomic_compare_exchangejECs_12futures_core",
+    ),
     (
         "_RINvYINtNtNtCs_4core3ops5range5RangejENtNtNtNtBa_4iter6traits8iterator8Iterator3allNCNvMs_NtNtNtCs_15reverie_inguest5guest11tool_region11constructorNtB1B_16NativeFreshOwner11from_natives_0EB1H_",
         "_RINvYINtNtNtCs_4core3ops5range5RangejENtNtNtNtBa_4iter6traits8iterator8Iterator3allNCNvMs_NtNtNtCs_15reverie_inguest5guest11tool_region11constructorNtB1B_16NativeFreshOwner11from_natives_0EB1H_",
@@ -13742,13 +13774,27 @@ const PUBLICATION_ROLE_SYMBOLS: &[(&str, &str)] = &[
         "_RNvXNtNtCs_4core3cmp5implsuNtB4_9PartialEq2eqCs_6goblin",
         "_RNvXNtNtCs_4core3cmp5implsuNtB4_9PartialEq2eqCs_6goblin",
     ),
+    // Current ON/OFF callers select this exact serde_core unit/ControlFlow
+    // cohort. Existing complete recipes and caller transfers remain mandatory.
+    (
+        "_RNvXNtNtCs_4core3cmp5implsuNtB4_9PartialEq2eqCs_6goblin",
+        "_RNvXNtNtCs_4core3cmp5implsuNtB4_9PartialEq2eqCs_10serde_core",
+    ),
     (
         "_RNvXNtNtCs_4core3ops12control_flowINtB2_11ControlFlowuENtNtB4_9try_trait3Try11from_outputCs_6goblin",
         "_RNvXNtNtCs_4core3ops12control_flowINtB2_11ControlFlowuENtNtB4_9try_trait3Try11from_outputCs_6goblin",
     ),
     (
+        "_RNvXNtNtCs_4core3ops12control_flowINtB2_11ControlFlowuENtNtB4_9try_trait3Try11from_outputCs_6goblin",
+        "_RNvXNtNtCs_4core3ops12control_flowINtB2_11ControlFlowuENtNtB4_9try_trait3Try11from_outputCs_10serde_core",
+    ),
+    (
         "_RNvXNtNtCs_4core3ops12control_flowINtB2_11ControlFlowuENtNtB4_9try_trait3Try6branchCs_6goblin",
         "_RNvXNtNtCs_4core3ops12control_flowINtB2_11ControlFlowuENtNtB4_9try_trait3Try6branchCs_6goblin",
+    ),
+    (
+        "_RNvXNtNtCs_4core3ops12control_flowINtB2_11ControlFlowuENtNtB4_9try_trait3Try6branchCs_6goblin",
+        "_RNvXNtNtCs_4core3ops12control_flowINtB2_11ControlFlowuENtNtB4_9try_trait3Try6branchCs_10serde_core",
     ),
     (
         "_RNvXs3_NtNtCs_4core4iter5rangeINtNtNtB9_3ops5range5RangejENtB5_17RangeIteratorImpl9spec_nextCs_6ruzstd",
@@ -13775,6 +13821,10 @@ const PUBLICATION_ROLE_SYMBOLS: &[(&str, &str)] = &[
         "_RNvXs9_NtNtCs_4core3ops12control_flowINtB5_11ControlFlowuENtNtB9_3cmp9PartialEq2eqCs_6goblin",
     ),
     (
+        "_RNvXs9_NtNtCs_4core3ops12control_flowINtB5_11ControlFlowuENtNtB9_3cmp9PartialEq2eqCs_6goblin",
+        "_RNvXs9_NtNtCs_4core3ops12control_flowINtB5_11ControlFlowuENtNtB9_3cmp9PartialEq2eqCs_10serde_core",
+    ),
+    (
         "_RNvXsL_NtNtCs_4core4iter5rangejNtB5_4Step17forward_uncheckedCs_6ruzstd",
         "_RNvXsL_NtNtCs_4core4iter5rangejNtB5_4Step17forward_uncheckedCs_6ruzstd",
     ),
@@ -13787,6 +13837,10 @@ const PUBLICATION_ROLE_SYMBOLS: &[(&str, &str)] = &[
     (
         "_RNvXs_NtNtCs_4core3ops12control_flowINtB4_11ControlFlowuEINtNtB6_9try_trait12FromResidualIBK_uNtNtB8_7convert10InfallibleEE13from_residualCs_6goblin",
         "_RNvXs_NtNtCs_4core3ops12control_flowINtB4_11ControlFlowuEINtNtB6_9try_trait12FromResidualIBK_uNtNtB8_7convert10InfallibleEE13from_residualCs_6goblin",
+    ),
+    (
+        "_RNvXs_NtNtCs_4core3ops12control_flowINtB4_11ControlFlowuEINtNtB6_9try_trait12FromResidualIBK_uNtNtB8_7convert10InfallibleEE13from_residualCs_6goblin",
+        "_RNvXs_NtNtCs_4core3ops12control_flowINtB4_11ControlFlowuEINtNtB6_9try_trait12FromResidualIBK_uNtNtB8_7convert10InfallibleEE13from_residualCs_10serde_core",
     ),
     (
         "_RNvXsp_NtCs_4core6resultINtB5_6ResultjlENtNtNtB7_3ops9try_trait3Try6branchCs_15reverie_inguest",
@@ -13877,6 +13931,415 @@ const PUBLICATION_ROLE_SYMBOLS: &[(&str, &str)] = &[
 const FIXED_NORMAL_FROM_NATIVE_291: &str = "5541574156534883ec1848bb001000000060000080f901b83000020041b8a00002004c0f44c04909d84939f00f85950000000fb605c73b090249b800f0efffff9fffff4c01c24881faffff7f00777884c0747489cd4989febfba0000004989f731f631d231c9e855daffff4885c07e7f4c89f94939474075764883795001756f488379380074688b0183e00f83f808755e488d3d703b0902e823ccffff4885c0754dba02000000b801000000f0490fb15748753b0fb60384c074144c89f741c7060b000000eb32c70716000000eb2a48c74424080001000048c744241002090000488d7c2408e8a5feffff84c0741b4c89f741c7061600000031ed40886f084883c4185b415e415f5dc34889dfe8aeccffff4c89f7a8017405418916ebdb4d893eebd8";
 
 const FIXED_WRAPPER_RECIPES: &[FixedWrapperRecipe] = &[
+    // Current OFF alloc_zeroed: complete89B and all four original bindings;
+    // the exact existing futures provider supplies only the null test.
+    FixedWrapperRecipe {
+        role: "fixed_patch_alloc_zeroed",
+        hex: "4883ec284889742408488954241048897c2418488b742408488b542410ff15e5f820004889c748893c2448897c2420ff15db0b2100a8017517488d7c2408e83d5a0000488b3c244889c6ff1588102100488b04244883c428c3",
+        operands: &[
+            FixedWrapperOperand {
+                displacement: 31,
+                next: 35,
+                target: "fixed_patch_alloc",
+                got: true,
+                target_offset: 0,
+            },
+            FixedWrapperOperand {
+                displacement: 49,
+                next: 53,
+                target: "_RNvMNtNtCs_4core3ptr7mut_ptrOh7is_nullCs_7futures",
+                got: true,
+                target_offset: 0,
+            },
+            FixedWrapperOperand {
+                displacement: 63,
+                next: 67,
+                target: "_RNvMNtNtCs_4core5alloc6layoutNtB2_6Layout4sizeCs_16reverie_liteinst",
+                got: false,
+                target_offset: 0,
+            },
+            FixedWrapperOperand {
+                displacement: 76,
+                next: 80,
+                target: "fixed_zero_bytes",
+                got: true,
+                target_offset: 0,
+            },
+        ],
+        transfers: &[
+            (29, 31, "fixed_patch_alloc", true),
+            (
+                47,
+                49,
+                "_RNvMNtNtCs_4core3ptr7mut_ptrOh7is_nullCs_7futures",
+                true,
+            ),
+            (
+                62,
+                63,
+                "_RNvMNtNtCs_4core5alloc6layoutNtB2_6Layout4sizeCs_16reverie_liteinst",
+                false,
+            ),
+            (74, 76, "fixed_zero_bytes", true),
+        ],
+    },
+    // Current ON patch realloc: complete378B, exact liteinst2 null and serde minimum.
+    FixedWrapperRecipe {
+        role: "fixed_patch_realloc",
+        hex: "4881ec980000004c894424184889742420488954242848894c243048897c24704c89442478488b7c2420ff15c00e2100e80bf2ffff4889c74889d6488d542420ff15d2f9200048894424404889542448488b542440b80100000031c94883fa00480f44c148a9010000007450488b4c2440488b44244848894c24504889442458488d7c2428e876580000488b7c24184889c6e8695700004889442460488954246831c0b90100000048837c246000480f44c148a901000000752beb344c8b442418488b742420488b542428488b4c2430bf01000000ff15850e21004889442438e98800000048c744243800000000eb7d488b742460488b5424684889b424800000004889942488000000488d7c2450e8dceeffff4889c748897c24104889bc2490000000ff1556092100a8017535488b4424204889442408488d7c2428e8ae570000488b7424184889c7ff15f8f52000488b7c2408488b7424104889c2ff15050e2100488b4424104889442438488b4424384881c498000000c3",
+        operands: &[
+            FixedWrapperOperand {
+                displacement: 44,
+                next: 48,
+                target: "fixed_patch_require_owned",
+                got: true,
+                target_offset: 0,
+            },
+            FixedWrapperOperand {
+                displacement: 49,
+                next: 53,
+                target: "fixed_patch_heap",
+                got: false,
+                target_offset: 0,
+            },
+            FixedWrapperOperand {
+                displacement: 66,
+                next: 70,
+                target: "fixed_patch_realloc_option_filter",
+                got: true,
+                target_offset: 0,
+            },
+            FixedWrapperOperand {
+                displacement: 134,
+                next: 138,
+                target: "_RNvMNtNtCs_4core5alloc6layoutNtB2_6Layout5alignCs_16reverie_liteinst",
+                got: false,
+                target_offset: 0,
+            },
+            FixedWrapperOperand {
+                displacement: 147,
+                next: 151,
+                target: "_RNvMNtNtCs_4core5alloc6layoutNtB2_6Layout15from_size_alignCs_16reverie_liteinst",
+                got: false,
+                target_offset: 0,
+            },
+            FixedWrapperOperand {
+                displacement: 215,
+                next: 219,
+                target: "fixed_tool_realloc",
+                got: true,
+                target_offset: 0,
+            },
+            FixedWrapperOperand {
+                displacement: 272,
+                next: 276,
+                target: "fixed_patch_allocate",
+                got: false,
+                target_offset: 0,
+            },
+            FixedWrapperOperand {
+                displacement: 294,
+                next: 298,
+                target: "_RNvMNtNtCs_4core3ptr7mut_ptrOh7is_nullCs_9liteinst2",
+                got: true,
+                target_offset: 0,
+            },
+            FixedWrapperOperand {
+                displacement: 318,
+                next: 322,
+                target: "_RNvMNtNtCs_4core5alloc6layoutNtB2_6Layout4sizeCs_16reverie_liteinst",
+                got: false,
+                target_offset: 0,
+            },
+            FixedWrapperOperand {
+                displacement: 332,
+                next: 336,
+                target: "_RNvYjNtNtCs_4core3cmp3Ord3minCs_10serde_core",
+                got: true,
+                target_offset: 0,
+            },
+            FixedWrapperOperand {
+                displacement: 351,
+                next: 355,
+                target: "fixed_copy_bytes",
+                got: true,
+                target_offset: 0,
+            },
+        ],
+        transfers: &[
+            (42, 44, "fixed_patch_require_owned", true),
+            (48, 49, "fixed_patch_heap", false),
+            (64, 66, "fixed_patch_realloc_option_filter", true),
+            (
+                133,
+                134,
+                "_RNvMNtNtCs_4core5alloc6layoutNtB2_6Layout5alignCs_16reverie_liteinst",
+                false,
+            ),
+            (
+                146,
+                147,
+                "_RNvMNtNtCs_4core5alloc6layoutNtB2_6Layout15from_size_alignCs_16reverie_liteinst",
+                false,
+            ),
+            (213, 215, "fixed_tool_realloc", true),
+            (271, 272, "fixed_patch_allocate", false),
+            (
+                292,
+                294,
+                "_RNvMNtNtCs_4core3ptr7mut_ptrOh7is_nullCs_9liteinst2",
+                true,
+            ),
+            (
+                317,
+                318,
+                "_RNvMNtNtCs_4core5alloc6layoutNtB2_6Layout4sizeCs_16reverie_liteinst",
+                false,
+            ),
+            (
+                330,
+                332,
+                "_RNvYjNtNtCs_4core3cmp3Ord3minCs_10serde_core",
+                true,
+            ),
+            (349, 351, "fixed_copy_bytes", true),
+        ],
+    },
+    // Current OFF patch realloc: complete378B, exact futures null and serde minimum.
+    FixedWrapperRecipe {
+        role: "fixed_patch_realloc",
+        hex: "4881ec980000004c894424184889742420488954242848894c243048897c24704c89442478488b7c2420ff15c00e2100e80bf2ffff4889c74889d6488d542420ff15d2f9200048894424404889542448488b542440b80100000031c94883fa00480f44c148a9010000007450488b4c2440488b44244848894c24504889442458488d7c2428e876580000488b7c24184889c6e8695700004889442460488954246831c0b90100000048837c246000480f44c148a901000000752beb344c8b442418488b742420488b542428488b4c2430bf01000000ff15850e21004889442438e98800000048c744243800000000eb7d488b742460488b5424684889b424800000004889942488000000488d7c2450e8dceeffff4889c748897c24104889bc2490000000ff1556092100a8017535488b4424204889442408488d7c2428e8ae570000488b7424184889c7ff15f8f52000488b7c2408488b7424104889c2ff15050e2100488b4424104889442438488b4424384881c498000000c3",
+        operands: &[
+            FixedWrapperOperand {
+                displacement: 44,
+                next: 48,
+                target: "fixed_patch_require_owned",
+                got: true,
+                target_offset: 0,
+            },
+            FixedWrapperOperand {
+                displacement: 49,
+                next: 53,
+                target: "fixed_patch_heap",
+                got: false,
+                target_offset: 0,
+            },
+            FixedWrapperOperand {
+                displacement: 66,
+                next: 70,
+                target: "fixed_patch_realloc_option_filter",
+                got: true,
+                target_offset: 0,
+            },
+            FixedWrapperOperand {
+                displacement: 134,
+                next: 138,
+                target: "_RNvMNtNtCs_4core5alloc6layoutNtB2_6Layout5alignCs_16reverie_liteinst",
+                got: false,
+                target_offset: 0,
+            },
+            FixedWrapperOperand {
+                displacement: 147,
+                next: 151,
+                target: "_RNvMNtNtCs_4core5alloc6layoutNtB2_6Layout15from_size_alignCs_16reverie_liteinst",
+                got: false,
+                target_offset: 0,
+            },
+            FixedWrapperOperand {
+                displacement: 215,
+                next: 219,
+                target: "fixed_tool_realloc",
+                got: true,
+                target_offset: 0,
+            },
+            FixedWrapperOperand {
+                displacement: 272,
+                next: 276,
+                target: "fixed_patch_allocate",
+                got: false,
+                target_offset: 0,
+            },
+            FixedWrapperOperand {
+                displacement: 294,
+                next: 298,
+                target: "_RNvMNtNtCs_4core3ptr7mut_ptrOh7is_nullCs_7futures",
+                got: true,
+                target_offset: 0,
+            },
+            FixedWrapperOperand {
+                displacement: 318,
+                next: 322,
+                target: "_RNvMNtNtCs_4core5alloc6layoutNtB2_6Layout4sizeCs_16reverie_liteinst",
+                got: false,
+                target_offset: 0,
+            },
+            FixedWrapperOperand {
+                displacement: 332,
+                next: 336,
+                target: "_RNvYjNtNtCs_4core3cmp3Ord3minCs_10serde_core",
+                got: true,
+                target_offset: 0,
+            },
+            FixedWrapperOperand {
+                displacement: 351,
+                next: 355,
+                target: "fixed_copy_bytes",
+                got: true,
+                target_offset: 0,
+            },
+        ],
+        transfers: &[
+            (42, 44, "fixed_patch_require_owned", true),
+            (48, 49, "fixed_patch_heap", false),
+            (64, 66, "fixed_patch_realloc_option_filter", true),
+            (
+                133,
+                134,
+                "_RNvMNtNtCs_4core5alloc6layoutNtB2_6Layout5alignCs_16reverie_liteinst",
+                false,
+            ),
+            (
+                146,
+                147,
+                "_RNvMNtNtCs_4core5alloc6layoutNtB2_6Layout15from_size_alignCs_16reverie_liteinst",
+                false,
+            ),
+            (213, 215, "fixed_tool_realloc", true),
+            (271, 272, "fixed_patch_allocate", false),
+            (
+                292,
+                294,
+                "_RNvMNtNtCs_4core3ptr7mut_ptrOh7is_nullCs_7futures",
+                true,
+            ),
+            (
+                317,
+                318,
+                "_RNvMNtNtCs_4core5alloc6layoutNtB2_6Layout4sizeCs_16reverie_liteinst",
+                false,
+            ),
+            (
+                330,
+                332,
+                "_RNvYjNtNtCs_4core3cmp3Ord3minCs_10serde_core",
+                true,
+            ),
+            (349, 351, "fixed_copy_bytes", true),
+        ],
+    },
+    // Current ON/OFF tool realloc: complete255B, exact futures null and serde minimum.
+    FixedWrapperRecipe {
+        role: "fixed_tool_realloc",
+        hex: "4881ec8800000048897424084c89442410488954241848894c242048897c245848897424604c89442468488d7c2430e83cf2ffff488d7c2418e8c2010000488b7c24104889c6e8b50000004889442448488954245031c0b90100000048837c244800480f44c148a901000000740b48c744242800000000eb79488b742448488b54245048897424704889542478488d7c2430e809e8ffff4889c748893c244889bc2480000000ff1504181b00a8017539488d7c2418e836010000488b7424104889c7ff1550d51a00488b3424488b7c24084889c2ff155eed1a00488b742408488d7c2430e8f7d9ffff488b04244889442428488b4424284881c488000000c3",
+        operands: &[
+            FixedWrapperOperand {
+                displacement: 48,
+                next: 52,
+                target: "fixed_tool_owned_heap",
+                got: false,
+                target_offset: 0,
+            },
+            FixedWrapperOperand {
+                displacement: 58,
+                next: 62,
+                target: "_RNvMNtNtCs_4core5alloc6layoutNtB2_6Layout5alignCs_15reverie_inguest",
+                got: false,
+                target_offset: 0,
+            },
+            FixedWrapperOperand {
+                displacement: 71,
+                next: 75,
+                target: "_RNvMNtNtCs_4core5alloc6layoutNtB2_6Layout15from_size_alignCs_15reverie_inguest",
+                got: false,
+                target_offset: 0,
+            },
+            FixedWrapperOperand {
+                displacement: 147,
+                next: 151,
+                target: "fixed_span_allocate",
+                got: false,
+                target_offset: 0,
+            },
+            FixedWrapperOperand {
+                displacement: 168,
+                next: 172,
+                target: "_RNvMNtNtCs_4core3ptr7mut_ptrOh7is_nullCs_7futures",
+                got: true,
+                target_offset: 0,
+            },
+            FixedWrapperOperand {
+                displacement: 182,
+                next: 186,
+                target: "_RNvMNtNtCs_4core5alloc6layoutNtB2_6Layout4sizeCs_15reverie_inguest",
+                got: false,
+                target_offset: 0,
+            },
+            FixedWrapperOperand {
+                displacement: 196,
+                next: 200,
+                target: "_RNvYjNtNtCs_4core3cmp3Ord3minCs_10serde_core",
+                got: true,
+                target_offset: 0,
+            },
+            FixedWrapperOperand {
+                displacement: 214,
+                next: 218,
+                target: "fixed_copy_bytes",
+                got: true,
+                target_offset: 0,
+            },
+            FixedWrapperOperand {
+                displacement: 229,
+                next: 233,
+                target: "fixed_span_deallocate",
+                got: false,
+                target_offset: 0,
+            },
+        ],
+        transfers: &[
+            (47, 48, "fixed_tool_owned_heap", false),
+            (
+                57,
+                58,
+                "_RNvMNtNtCs_4core5alloc6layoutNtB2_6Layout5alignCs_15reverie_inguest",
+                false,
+            ),
+            (
+                70,
+                71,
+                "_RNvMNtNtCs_4core5alloc6layoutNtB2_6Layout15from_size_alignCs_15reverie_inguest",
+                false,
+            ),
+            (146, 147, "fixed_span_allocate", false),
+            (
+                166,
+                168,
+                "_RNvMNtNtCs_4core3ptr7mut_ptrOh7is_nullCs_7futures",
+                true,
+            ),
+            (
+                181,
+                182,
+                "_RNvMNtNtCs_4core5alloc6layoutNtB2_6Layout4sizeCs_15reverie_inguest",
+                false,
+            ),
+            (
+                194,
+                196,
+                "_RNvYjNtNtCs_4core3cmp3Ord3minCs_10serde_core",
+                true,
+            ),
+            (212, 214, "fixed_copy_bytes", true),
+            (228, 229, "fixed_span_deallocate", false),
+        ],
+    },
+    // Complete95B provider remains distinct from the coexisting goblin minimum.
+    FixedWrapperRecipe {
+        role: "_RNvYjNtNtCs_4core3cmp3Ord3minCs_10serde_core",
+        hex: "48897c24d048897424d8c64424ef01488d4424d848894424f0488d4424d048894424f8488b4424d8483b4424d00f92c0884424cf8a4424cfa8017513eb00c64424ef00488b4424d048894424e0eb0a488b4424d848894424e0488b4424e0c3",
+        operands: &[],
+        transfers: &[],
+    },
     // Insert this exact new typed strong-CAS entry in FIXED_WRAPPER_RECIPES.
     FixedWrapperRecipe {
         role: "_RINvNtNtCs_4core4sync6atomic23atomic_compare_exchangejECs_3log",
@@ -17319,9 +17782,9 @@ fn fixed_role_symbols(elf: &Elf<'_>) -> Result<BTreeMap<String, sym::Sym>> {
     Ok(result)
 }
 
-// Both observed equality cohorts can coexist in one DSO. This finite census
+// The observed equality cohorts can coexist in one DSO. This finite census
 // grants byte coverage only; admission chooses one pair from complete callers.
-const FIXED_HEAP_EQUAL_COHORTS: [(&str, &str); 2] = [
+const FIXED_HEAP_EQUAL_COHORTS: [(&str, &str); 3] = [
     (
         "_RNvXsf_NtCs_4core6optionINtB5_6OptionjENtNtB7_3cmp9PartialEq2eqCs_12regex_syntax",
         "_RNvXsj_NtNtCs_4core3cmp5implsjNtB7_9PartialEq2eqCs_12regex_syntax",
@@ -17329,6 +17792,10 @@ const FIXED_HEAP_EQUAL_COHORTS: [(&str, &str); 2] = [
     (
         "_RNvXsf_NtCs_4core6optionINtB5_6OptionjENtNtB7_3cmp9PartialEq2eqCs_10safeptrace",
         "_RNvXsj_NtNtCs_4core3cmp5implsjNtB7_9PartialEq2eqCs_10safeptrace",
+    ),
+    (
+        "_RNvXsf_NtCs_4core6optionINtB5_6OptionjENtNtB7_3cmp9PartialEq2eqCs_15reverie_inguest",
+        "_RNvXsj_NtNtCs_4core3cmp5implsjNtB7_9PartialEq2eqCs_15reverie_inguest",
     ),
 ];
 
@@ -41444,6 +41911,10 @@ mod tests {
     // These complete miniature ELFs exercise caller-bound selection, not whole
     // artifact admission. Original dev-heap body/data/census controls also run.
     fn fixed_heap_equal_cohort_controls() {
+        const OPTIONS: [u64; 3] = [0x2000, 0x2200, 0x2400];
+        const SCALARS: [u64; 3] = [0x2100, 0x2300, 0x2500];
+        const ORIGINS: [&str; 3] = ["regex_syntax", "safeptrace", "reverie_inguest"];
+        assert_eq!(FIXED_HEAP_EQUAL_COHORTS.len(), OPTIONS.len());
         fn put(bytes: &mut [u8], offset: usize, width: usize, value: u64) {
             bytes[offset..offset + width].copy_from_slice(&value.to_le_bytes()[..width]);
         }
@@ -41506,15 +41977,26 @@ mod tests {
                 relative(&mut caller, 0x1000, displacement, next, slot);
             }
             bytes[0x1000..0x1000 + caller.len()].copy_from_slice(&caller);
-            let names = [
-                "fixture_heap_deallocate".to_owned(),
-                FIXED_HEAP_EQUAL_COHORTS[0].0.replace("Cs_", "Cs1_"),
-                FIXED_HEAP_EQUAL_COHORTS[0].1.replace("Cs_", "Cs1_"),
-                FIXED_HEAP_EQUAL_COHORTS[1].0.replace("Cs_", "Cs1_"),
-                FIXED_HEAP_EQUAL_COHORTS[1].1.replace("Cs_", "Cs1_"),
-            ];
-            let addresses = [0x1000, 0x2000, 0x2100, 0x2200, 0x2300];
-            let sizes = [2690, 124, 22, 124, 22];
+            let names: Vec<_> = std::iter::once("fixture_heap_deallocate".to_owned())
+                .chain(
+                    FIXED_HEAP_EQUAL_COHORTS
+                        .iter()
+                        .flat_map(|(option, scalar)| {
+                            [option.replace("Cs_", "Cs1_"), scalar.replace("Cs_", "Cs1_")]
+                        }),
+                )
+                .collect();
+            let addresses: Vec<_> = std::iter::once(0x1000)
+                .chain(
+                    OPTIONS
+                        .into_iter()
+                        .zip(SCALARS)
+                        .flat_map(|(option, scalar)| [option, scalar]),
+                )
+                .collect();
+            let sizes: Vec<_> = std::iter::once(2690)
+                .chain(FIXED_HEAP_EQUAL_COHORTS.iter().flat_map(|_| [124, 22]))
+                .collect();
             let mut strings = vec![0];
             for (index, name) in names.iter().enumerate() {
                 let row = 0x6000 + (index + 1) * 24;
@@ -41527,7 +42009,7 @@ mod tests {
                 strings.push(0);
             }
             bytes[0x5000..0x5000 + strings.len()].copy_from_slice(&strings);
-            for (option, scalar) in [(0x2000, 0x2100), (0x2200, 0x2300)] {
+            for (option, scalar) in OPTIONS.into_iter().zip(SCALARS) {
                 let mut body = fixed_hex(DEV_FIXED_HEAP_HEX_23);
                 relative(&mut body, option, 105, 109, scalar);
                 bytes[option as usize..option as usize + body.len()].copy_from_slice(&body);
@@ -41538,7 +42020,7 @@ mod tests {
                 let row = 0x6500 + index * 24;
                 put(&mut bytes, row, 8, slot);
                 put(&mut bytes, row + 8, 8, 8);
-                put(&mut bytes, row + 16, 8, [0x2000, 0x2200][cohort]);
+                put(&mut bytes, row + 16, 8, OPTIONS[cohort]);
             }
             // One null dynamic symbol. Mutation controls expose a real provider.
             for (index, word) in [1, 1, 0, 0, 0].into_iter().enumerate() {
@@ -41565,7 +42047,15 @@ mod tests {
                 (1, 1, 6, 0x1000, 0x3000, 0, 0),
                 (2, 1, 3, 0x4000, 0x1000, 0, 0),
                 (3, 3, 0, 0x5000, strings.len() as u64, 0, 0),
-                (4, 2, 0, 0x6000, 24 * 6, 3, 24),
+                (
+                    4,
+                    2,
+                    0,
+                    0x6000,
+                    24 * (2 + FIXED_HEAP_EQUAL_COHORTS.len() as u64 * 2),
+                    3,
+                    24,
+                ),
                 (5, 4, 2, 0x6500, 48, 7, 24),
                 (6, 6, 3, 0x4200, 16 * 9, 3, 16),
                 (7, 11, 2, 0x6800, 48, 3, 24),
@@ -41597,9 +42087,13 @@ mod tests {
                 ),
                 ("fixed_heap_usize_equal".into(), elf.syms.get(3).unwrap()),
             ]);
-            let code = [0x1000, 0x2000, 0x2100, 0x2200, 0x2300]
-                .into_iter()
-                .zip([2690, 124, 22, 124, 22])
+            let code = std::iter::once((0x1000, 2690))
+                .chain(
+                    OPTIONS
+                        .into_iter()
+                        .zip(SCALARS)
+                        .flat_map(|(option, scalar)| [(option, 124), (scalar, 22)]),
+                )
                 .map(|(address, size)| {
                     (
                         address,
@@ -41617,21 +42111,17 @@ mod tests {
             fixed_select_heap_equal_cohort(&elf, bytes, &code, &got, &mut roles)?;
             Ok(roles)
         }
-        for cohort in [0, 1] {
+        for cohort in 0..FIXED_HEAP_EQUAL_COHORTS.len() {
             let bytes = fixture(cohort);
             let selected = select(&bytes, false).unwrap();
             assert_eq!(
                 selected["fixed_heap_option_usize_equal"].st_value,
-                [0x2000, 0x2200][cohort]
+                OPTIONS[cohort]
             );
-            assert_eq!(
-                selected["fixed_heap_usize_equal"].st_value,
-                [0x2100, 0x2300][cohort]
-            );
+            assert_eq!(selected["fixed_heap_usize_equal"].st_value, SCALARS[cohort]);
             assert!(select(&bytes, true).is_err());
             for (offset, width, value) in [
                 (0x4000, 8, 1),
-                (0x6528, 8, [0x2200, 0x2000][cohort]),
                 (0x6508, 8, 6),
                 (64 + 4 * 56 + 40, 8, 0x800),
                 (64 + 56 + 4, 4, 4),
@@ -41645,17 +42135,30 @@ mod tests {
                     "accepted cohort metadata mutation {offset:#x}"
                 );
             }
-            let option = [0x2000, 0x2200][cohort];
-            let scalar = [0x2100, 0x2300][cohort];
-            let mut cross = bytes.clone();
-            relative(
-                &mut cross[option as usize..option as usize + 124],
-                option,
-                105,
-                109,
-                [0x2300, 0x2100][cohort],
-            );
-            assert!(select(&cross, false).is_err());
+            let option = OPTIONS[cohort];
+            let scalar = SCALARS[cohort];
+            for other_cohort in 0..FIXED_HEAP_EQUAL_COHORTS.len() {
+                if other_cohort == cohort {
+                    continue;
+                }
+                let mut disagreeing_got = bytes.clone();
+                put(&mut disagreeing_got, 0x6528, 8, OPTIONS[other_cohort]);
+                assert!(select(&disagreeing_got, false).is_err());
+                let mut cross = bytes.clone();
+                relative(
+                    &mut cross[option as usize..option as usize + 124],
+                    option,
+                    105,
+                    109,
+                    SCALARS[other_cohort],
+                );
+                assert!(select(&cross, false).is_err());
+                let mut duplicate = bytes.clone();
+                let row = 0x6000 + (2 + cohort * 2) * 24;
+                let other = 0x6000 + (2 + other_cohort * 2) * 24;
+                duplicate[other..other + 4].copy_from_slice(&bytes[row..row + 4]);
+                assert!(select(&duplicate, false).is_err());
+            }
             for address in [option, scalar] {
                 let mut bad = bytes.clone();
                 bad[address as usize] ^= 1;
@@ -41675,11 +42178,7 @@ mod tests {
                         "implsj"
                     },
                     "2eq",
-                    if cohort == 0 {
-                        "regex_syntax"
-                    } else {
-                        "safeptrace"
-                    },
+                    ORIGINS[cohort],
                 ] {
                     let mut bad = bytes.clone();
                     let offset = name + spelling.find(pattern).unwrap() + pattern.len() - 1;
@@ -41695,10 +42194,6 @@ mod tests {
             exposed[0x6818..0x6830].copy_from_slice(&bytes[row..row + 24]);
             put(&mut exposed, 0x6a04, 4, 2);
             assert!(select(&exposed, false).is_err());
-            let mut duplicate = bytes.clone();
-            let other = 0x6000 + (4 - cohort * 2) * 24;
-            duplicate[other..other + 4].copy_from_slice(&bytes[row..row + 4]);
-            assert!(select(&duplicate, false).is_err());
             // An inactive selector does not admit a different caller body:
             // the unchanged complete production recipe must still refuse it.
             let mut bad = bytes.clone();
@@ -41811,26 +42306,36 @@ mod tests {
         // Exact observed atomic helper spellings feed the same production
         // role census. These controls qualify selection only; existing full
         // provider/switch/readonly/constant-order/GOT mutation tests stay.
-        for (role, old, new) in [
+        for (role, old, new, crate_name) in [
             (
                 "_RINvNtNtCs_4core4sync6atomic11atomic_loadhECs_9once_cell",
                 "_RINvNtNtCs_4core4sync6atomic11atomic_loadhECs_9once_cell",
                 "_RINvNtNtCs_4core4sync6atomic11atomic_loadhECs_11parking_lot",
+                "11parking_lot",
             ),
             (
                 "fixed_heap_atomic_compare_u8",
                 "_RINvNtNtCs_4core4sync6atomic28atomic_compare_exchange_weakhECs_12futures_util",
                 "_RINvNtNtCs_4core4sync6atomic28atomic_compare_exchange_weakhECs_11parking_lot",
+                "11parking_lot",
             ),
             (
                 "fixed_heap_atomic_store_u8",
                 "_RINvNtNtCs_4core4sync6atomic12atomic_storehECs_9once_cell",
                 "_RINvNtNtCs_4core4sync6atomic12atomic_storehECs_11parking_lot",
+                "11parking_lot",
             ),
             (
                 "_RINvNtNtCs_4core4sync6atomic12atomic_storejECs_3nix",
                 "_RINvNtNtCs_4core4sync6atomic12atomic_storejECs_3nix",
                 "_RINvNtNtCs_4core4sync6atomic12atomic_storejECs_11parking_lot",
+                "11parking_lot",
+            ),
+            (
+                "_RINvNtNtCs_4core4sync6atomic23atomic_compare_exchangejECs_3log",
+                "_RINvNtNtCs_4core4sync6atomic23atomic_compare_exchangejECs_3log",
+                "_RINvNtNtCs_4core4sync6atomic23atomic_compare_exchangejECs_12futures_core",
+                "12futures_core",
             ),
         ] {
             let old = old.replace("Cs_", "Cs1_");
@@ -41860,7 +42365,7 @@ mod tests {
             for wrong in [
                 wrong_primitive,
                 new.replace("atomic_", "changed_"),
-                new.replace("11parking_lot", "9untrusted"),
+                new.replace(crate_name, "9untrusted"),
             ] {
                 assert_ne!(fixed_emitted_role(&wrong), Some(role));
                 let bytes = elf_symbols(&[(&wrong, sym::STB_LOCAL)]);
@@ -41870,8 +42375,37 @@ mod tests {
             let bytes = elf_symbols(&[]);
             let roles = fixed_role_symbols(&Elf::parse(&bytes).unwrap()).unwrap();
             assert!(fixed_private_role_code(role, &roles, &BTreeMap::new()).is_err());
+            if crate_name == "12futures_core" {
+                let bytes = elf_symbols(&[(&new, sym::STB_LOCAL)]);
+                let roles = fixed_role_symbols(&Elf::parse(&bytes).unwrap()).unwrap();
+                let target = roles[role].st_value;
+                let wrapper = "_RNvMs16_NtNtCs_4core4sync6atomicINtB6_6AtomicjE16compare_exchangeCs_15reverie_inguest";
+                let recipe = PUBLICATION_WRAPPER_RECIPES
+                    .iter()
+                    .find(|r| r.role == wrapper)
+                    .unwrap();
+                let body = fixed_hex(recipe.hex);
+                let address = 0x1ed470;
+                let slot = fixed_rip_target(address, &body, 40, 44).unwrap();
+                let targets = BTreeMap::from([(role.to_owned(), target)]);
+                let got = BTreeMap::from([(slot, target)]);
+                fixed_wrapper_recipe(wrapper, address, &body, &targets, &got, &BTreeMap::new())
+                    .unwrap();
+                let wrong_got = BTreeMap::from([(slot, target + 1)]);
+                assert!(
+                    fixed_wrapper_recipe(
+                        wrapper,
+                        address,
+                        &body,
+                        &targets,
+                        &wrong_got,
+                        &BTreeMap::new()
+                    )
+                    .is_err()
+                );
+            }
         }
-        // Exact range helpers selected by retained production caller operands.
+        // Exact typed helpers selected by retained production caller operands.
         // These miniature ELFs qualify selection only; whole-body, readonly,
         // terminal and transfer qualification remains in the existing recipes.
         for (role, old, new, primitive, method, crate_name) in [
@@ -41890,6 +42424,38 @@ mod tests {
                 "5RangejE",
                 "9end_bound",
                 "12regex_syntax",
+            ),
+            (
+                "_RNvXsk_NtNtCs_4core3ops5rangeINtB5_5RangejEINtB5_11RangeBoundsjE11start_boundCs_6ruzstd",
+                "_RNvXsk_NtNtCs_4core3ops5rangeINtB5_5RangejEINtB5_11RangeBoundsjE11start_boundCs_6ruzstd",
+                "_RNvXsk_NtNtCs_4core3ops5rangeINtB5_5RangejEINtB5_11RangeBoundsjE11start_boundCs_8tempfile",
+                "5RangejE",
+                "11start_bound",
+                "8tempfile",
+            ),
+            (
+                "fixed_heap_usize_max",
+                "_RNvYjNtNtCs_4core3cmp3Ord3maxCs_6goblin",
+                "_RNvYjNtNtCs_4core3cmp3Ord3maxCs_10serde_core",
+                "Yj",
+                "3max",
+                "10serde_core",
+            ),
+            (
+                "fixed_heap_option_usize_branch",
+                "_RNvXsJ_NtCs_4core6optionINtB5_6OptionjENtNtNtB7_3ops9try_trait3Try6branchCs_6goblin",
+                "_RNvXsJ_NtCs_4core6optionINtB5_6OptionjENtNtNtB7_3ops9try_trait3Try6branchCs_6memchr",
+                "6OptionjE",
+                "6branch",
+                "6memchr",
+            ),
+            (
+                "_RNvXsk_NtNtCs_4core3ops5rangeINtB5_5RangejEINtB5_11RangeBoundsjE9end_boundCs_6ruzstd",
+                "_RNvXsk_NtNtCs_4core3ops5rangeINtB5_5RangejEINtB5_11RangeBoundsjE9end_boundCs_6ruzstd",
+                "_RNvXsk_NtNtCs_4core3ops5rangeINtB5_5RangejEINtB5_11RangeBoundsjE9end_boundCs_8tempfile",
+                "5RangejE",
+                "9end_bound",
+                "8tempfile",
             ),
             (
                 "_RNvNvMs9_NtCs_4core3numj13unchecked_add18precondition_checkCs_6ruzstd",
@@ -41942,14 +42508,319 @@ mod tests {
                 let bytes = elf_symbols(&extras);
                 assert!(fixed_role_symbols(&Elf::parse(&bytes).unwrap()).is_err());
             }
+            if crate_name == "8tempfile" {
+                let prior = new.replace("8tempfile", "12regex_syntax");
+                let bytes = elf_symbols(&[
+                    (prior.as_str(), sym::STB_LOCAL),
+                    (new.as_str(), sym::STB_LOCAL),
+                ]);
+                assert!(fixed_role_symbols(&Elf::parse(&bytes).unwrap()).is_err());
+                let bytes = elf_symbols(&[(new.as_str(), sym::STB_WEAK)]);
+                assert!(fixed_role_symbols(&Elf::parse(&bytes).unwrap()).is_err());
+            }
             assert!(new.contains(primitive) && new.contains(method) && new.contains(crate_name));
             for wrong in [
                 new.replace(primitive, &primitive.replace('j', "m")),
-                new.replace(method, &format!("{}x", &method[..method.len() - 1])),
+                new.replace(
+                    method,
+                    &if method == "3max" {
+                        "3min".to_owned()
+                    } else {
+                        format!("{}x", &method[..method.len() - 1])
+                    },
+                ),
                 new.replace(crate_name, "9untrusted"),
                 // Another physically present helper cohort must not become an
                 // alternative merely because it has the same Rust primitive.
                 new.replace(crate_name, "8iced_x86"),
+            ] {
+                assert_ne!(wrong, new);
+                assert_ne!(fixed_emitted_role(&wrong), Some(role));
+                let bytes = elf_symbols(&[(&wrong, sym::STB_LOCAL)]);
+                let roles = fixed_role_symbols(&Elf::parse(&bytes).unwrap()).unwrap();
+                assert!(fixed_private_role_code(role, &roles, &BTreeMap::new()).is_err());
+            }
+            let bytes = elf_symbols(&[]);
+            let roles = fixed_role_symbols(&Elf::parse(&bytes).unwrap()).unwrap();
+            assert!(fixed_private_role_code(role, &roles, &BTreeMap::new()).is_err());
+            if role == "fixed_heap_usize_max" {
+                for wrong in [
+                    new.replace("10serde_core", "11miniz_oxide"),
+                    new.replace("10serde_core", "12cpp_demangle"),
+                    new.replace("3max", "3min"),
+                ] {
+                    assert_ne!(fixed_emitted_role(&wrong), Some(role));
+                    let bytes = elf_symbols(&[(&wrong, sym::STB_LOCAL)]);
+                    let roles = fixed_role_symbols(&Elf::parse(&bytes).unwrap()).unwrap();
+                    assert!(fixed_private_role_code(role, &roles, &BTreeMap::new()).is_err());
+                }
+            }
+        }
+        // The exact serde minimum is a distinct role: its goblin counterpart
+        // physically coexists ON and cannot be selected by an arbitrary alias.
+        let minimum = "_RNvYjNtNtCs_4core3cmp3Ord3minCs_10serde_core";
+        let new_minimum = minimum.replace("Cs_", "Cs1_");
+        let old_minimum = new_minimum.replace("10serde_core", "6goblin");
+        let bytes = elf_symbols(&[
+            (&old_minimum, sym::STB_LOCAL),
+            (&new_minimum, sym::STB_LOCAL),
+        ]);
+        let roles = fixed_role_symbols(&Elf::parse(&bytes).unwrap()).unwrap();
+        assert!(roles.contains_key(minimum));
+        assert!(roles.contains_key("_RNvYjNtNtCs_4core3cmp3Ord3minCs_6goblin"));
+        assert_ne!(
+            roles[minimum].st_value,
+            roles["_RNvYjNtNtCs_4core3cmp3Ord3minCs_6goblin"].st_value
+        );
+        for extras in [
+            vec![
+                (new_minimum.as_str(), sym::STB_LOCAL),
+                (new_minimum.as_str(), sym::STB_LOCAL),
+            ],
+            vec![(new_minimum.as_str(), sym::STB_GLOBAL)],
+            vec![(new_minimum.as_str(), sym::STB_WEAK)],
+        ] {
+            let bytes = elf_symbols(&extras);
+            assert!(fixed_role_symbols(&Elf::parse(&bytes).unwrap()).is_err());
+        }
+        for names in [
+            vec![],
+            vec![new_minimum.replace("Yj", "Ym")],
+            vec![new_minimum.replace("3min", "3max")],
+            vec![new_minimum.replace("10serde_core", "9untrusted")],
+            vec![new_minimum.replace("10serde_core", "8iced_x86")],
+        ] {
+            let extra: Vec<_> = names
+                .iter()
+                .map(|name| (name.as_str(), sym::STB_LOCAL))
+                .collect();
+            let bytes = elf_symbols(&extra);
+            let roles = fixed_role_symbols(&Elf::parse(&bytes).unwrap()).unwrap();
+            assert!(!roles.contains_key(minimum));
+            assert!(fixed_private_role_code(minimum, &roles, &BTreeMap::new()).is_err());
+        }
+        let minimum_recipe = FIXED_WRAPPER_RECIPES
+            .iter()
+            .find(|recipe| recipe.role == minimum)
+            .unwrap();
+        let body = fixed_hex(minimum_recipe.hex);
+        assert_eq!(body.len(), 95);
+        fixed_wrapper_recipe(
+            minimum,
+            0x3000,
+            &body,
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+        )
+        .unwrap();
+        for offset in 0..body.len() {
+            let mut wrong = body.clone();
+            wrong[offset] ^= 1;
+            assert!(
+                fixed_wrapper_recipe(
+                    minimum,
+                    0x3000,
+                    &wrong,
+                    &BTreeMap::new(),
+                    &BTreeMap::new(),
+                    &BTreeMap::new()
+                )
+                .is_err()
+            );
+        }
+        let variants: Vec<_> = FIXED_WRAPPER_RECIPES
+            .iter()
+            .filter(|recipe| {
+                recipe.operands.iter().any(|op| op.target == minimum)
+                    || (recipe.role == "fixed_patch_alloc_zeroed"
+                        && recipe.operands.iter().any(|op| {
+                            op.target == "_RNvMNtNtCs_4core3ptr7mut_ptrOh7is_nullCs_7futures"
+                        }))
+            })
+            .collect();
+        assert_eq!(variants.len(), 4);
+        for recipe in variants {
+            let targets: BTreeMap<_, _> = recipe
+                .operands
+                .iter()
+                .enumerate()
+                .map(|(index, op)| (op.target.to_owned(), 0x100000 + index as u64 * 0x1000))
+                .collect();
+            let address = 0x1000;
+            let mut body = fixed_hex(recipe.hex);
+            let mut got = BTreeMap::new();
+            let mut masked = BTreeSet::new();
+            for (index, op) in recipe.operands.iter().enumerate() {
+                let expected = targets[op.target] + op.target_offset;
+                let resolved = if op.got {
+                    let slot = 0x400000 + index as u64 * 8;
+                    got.insert(slot, expected);
+                    slot
+                } else {
+                    expected
+                };
+                let displacement =
+                    i32::try_from(resolved as i64 - (address + op.next as u64) as i64).unwrap();
+                body[op.displacement..op.displacement + 4]
+                    .copy_from_slice(&displacement.to_le_bytes());
+                masked.extend(op.displacement..op.displacement + 4);
+            }
+            let edges = fixed_wrapper_recipe(
+                recipe.role,
+                address,
+                &body,
+                &targets,
+                &got,
+                &BTreeMap::new(),
+            )
+            .unwrap();
+            assert_eq!(edges.len(), recipe.transfers.len());
+            for op in recipe.operands {
+                let slot = fixed_rip_target(address, &body, op.displacement, op.next).unwrap();
+                let mut wrong = got.clone();
+                let mut wrong_body = body.clone();
+                if op.got {
+                    wrong.insert(slot, targets[op.target] + 1);
+                } else {
+                    let displacement = i32::from_le_bytes(
+                        body[op.displacement..op.displacement + 4]
+                            .try_into()
+                            .unwrap(),
+                    );
+                    wrong_body[op.displacement..op.displacement + 4]
+                        .copy_from_slice(&(displacement + 1).to_le_bytes());
+                }
+                assert!(
+                    fixed_wrapper_recipe(
+                        recipe.role,
+                        address,
+                        &wrong_body,
+                        &targets,
+                        &wrong,
+                        &BTreeMap::new()
+                    )
+                    .is_err()
+                );
+            }
+            let peer_op = recipe
+                .operands
+                .iter()
+                .find(|op| op.target == minimum || op.target == "fixed_zero_bytes")
+                .unwrap();
+            let null_op = recipe
+                .operands
+                .iter()
+                .find(|op| op.target.contains("7is_null"))
+                .unwrap();
+            let peer_slot =
+                fixed_rip_target(address, &body, peer_op.displacement, peer_op.next).unwrap();
+            let null_slot =
+                fixed_rip_target(address, &body, null_op.displacement, null_op.next).unwrap();
+            let mut swapped = got.clone();
+            swapped.insert(peer_slot, targets[null_op.target]);
+            swapped.insert(null_slot, targets[peer_op.target]);
+            assert!(
+                fixed_wrapper_recipe(
+                    recipe.role,
+                    address,
+                    &body,
+                    &targets,
+                    &swapped,
+                    &BTreeMap::new()
+                )
+                .is_err()
+            );
+            for missing in [peer_op.target, null_op.target] {
+                let mut wrong_targets = targets.clone();
+                wrong_targets.remove(missing);
+                assert!(
+                    fixed_wrapper_recipe(
+                        recipe.role,
+                        address,
+                        &body,
+                        &wrong_targets,
+                        &got,
+                        &BTreeMap::new()
+                    )
+                    .is_err()
+                );
+            }
+            for offset in (0..body.len()).filter(|offset| !masked.contains(offset)) {
+                let mut wrong = body.clone();
+                wrong[offset] ^= 1;
+                assert!(
+                    fixed_wrapper_recipe(
+                        recipe.role,
+                        address,
+                        &wrong,
+                        &targets,
+                        &got,
+                        &BTreeMap::new()
+                    )
+                    .is_err()
+                );
+            }
+        }
+        // These exact unit/ControlFlow providers are selected by the complete
+        // current callers. Symbol census grants no machine-code admission.
+        for (role, primitive, wrong_primitive, method) in [
+            (
+                "_RNvXNtNtCs_4core3cmp5implsuNtB4_9PartialEq2eqCs_6goblin",
+                "5implsu",
+                "5implsj",
+                "2eq",
+            ),
+            (
+                "_RNvXNtNtCs_4core3ops12control_flowINtB2_11ControlFlowuENtNtB4_9try_trait3Try11from_outputCs_6goblin",
+                "11ControlFlowuE",
+                "11ControlFlowjE",
+                "11from_output",
+            ),
+            (
+                "_RNvXNtNtCs_4core3ops12control_flowINtB2_11ControlFlowuENtNtB4_9try_trait3Try6branchCs_6goblin",
+                "11ControlFlowuE",
+                "11ControlFlowjE",
+                "6branch",
+            ),
+            (
+                "_RNvXs9_NtNtCs_4core3ops12control_flowINtB5_11ControlFlowuENtNtB9_3cmp9PartialEq2eqCs_6goblin",
+                "11ControlFlowuE",
+                "11ControlFlowjE",
+                "2eq",
+            ),
+            (
+                "_RNvXs_NtNtCs_4core3ops12control_flowINtB4_11ControlFlowuEINtNtB6_9try_trait12FromResidualIBK_uNtNtB8_7convert10InfallibleEE13from_residualCs_6goblin",
+                "11ControlFlowuE",
+                "11ControlFlowjE",
+                "13from_residual",
+            ),
+        ] {
+            let old = role.replace("Cs_", "Cs1_");
+            let new = old.replace("6goblin", "10serde_core");
+            for name in [&old, &new] {
+                let bytes = elf_symbols(&[(name, sym::STB_LOCAL)]);
+                let roles = fixed_role_symbols(&Elf::parse(&bytes).unwrap()).unwrap();
+                assert_eq!(fixed_emitted_role(name), Some(role));
+                assert!(roles.contains_key(role));
+            }
+            for extras in [
+                vec![
+                    (old.as_str(), sym::STB_LOCAL),
+                    (new.as_str(), sym::STB_LOCAL),
+                ],
+                vec![(new.as_str(), sym::STB_GLOBAL)],
+                vec![(new.as_str(), sym::STB_WEAK)],
+            ] {
+                let bytes = elf_symbols(&extras);
+                assert!(fixed_role_symbols(&Elf::parse(&bytes).unwrap()).is_err());
+            }
+            assert!(new.contains(primitive) && new.contains(method));
+            for wrong in [
+                new.replace(primitive, wrong_primitive),
+                new.replace(method, &format!("{}x", &method[..method.len() - 1])),
+                new.replace("10serde_core", "9untrusted"),
+                new.replace("10serde_core", "8iced_x86"),
             ] {
                 assert_ne!(wrong, new);
                 assert_ne!(fixed_emitted_role(&wrong), Some(role));

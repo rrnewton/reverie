@@ -37,6 +37,9 @@ cargo test --locked -p reverie-liteinst-preload -p reverie-loader \
 cargo check --locked -p reverie-inguest --no-default-features \
     --features exec-stop,stage1a-probe,exec-native-injection,loader-private-runtime \
     --all-targets
+cargo test --locked -p reverie-inguest --no-default-features \
+    --features coordinator-rpc,rcb-clock,launcher,allocator-fixture,rpc-io-fixture,exec-stop,stage1a-probe,exec-native-injection,loader-private-runtime,native-exec-state-fixture \
+    --lib --no-fail-fast -- --test-threads=1
 cargo build --locked -p reverie-examples --no-default-features
 cargo test --locked -p reverie-examples --no-default-features \
     --test liteinst -- --test-threads=1
