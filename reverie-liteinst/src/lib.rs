@@ -210,8 +210,14 @@ fn preload_library_beside(executable: &std::path::Path) -> io::Result<PathBuf> {
     })
 }
 
-/// Configures a guest command to load the runtime and select a built-in tool.
+/// Configures a guest command to load the runtime and select a legacy tool.
+///
+/// Strace and Compatibility require the `liteinst` Cargo feature. Without it,
+/// this returns [`io::ErrorKind::Unsupported`] before resolving a preload or
+/// changing the command. The shared [`BuiltinTool`] and installed Tool routes
+/// remain available through their own entry points.
 pub fn configure_command(command: &mut Command, tool: PreloadTool) -> io::Result<()> {
+    runtime::require_legacy_tool(tool.as_str())?;
     let mut preload = preload_library_path()?.into_os_string();
     if let Some(existing) = env::var_os("LD_PRELOAD").filter(|value| !value.is_empty()) {
         preload.push(OsStr::new(":"));
@@ -576,6 +582,44 @@ mod tests {
             let error = site_patching_from_env_value(Some(OsStr::new(rejected)))
                 .expect_err("invalid selectors must still be rejected");
             assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
+        }
+    }
+
+    #[cfg(not(feature = "liteinst"))]
+    #[test]
+    fn trap_only_legacy_configuration_refuses_before_mutating_the_command() {
+        for tool in [
+            super::PreloadTool::Strace,
+            super::PreloadTool::Compatibility,
+        ] {
+            let mut command = Command::new("/a/guest/that/must/not/be/launched");
+            command
+                .arg("retained argument")
+                .env("LD_PRELOAD", "retained-preload")
+                .env("REVERIE_LITEINST_TOOL", "retained-selector");
+            let before = command
+                .get_envs()
+                .map(|(key, value)| (key.to_owned(), value.map(ToOwned::to_owned)))
+                .collect::<Vec<_>>();
+            let error = super::configure_command(&mut command, tool).unwrap_err();
+            assert_eq!(error.kind(), std::io::ErrorKind::Unsupported);
+            assert!(error.to_string().contains(tool.as_str()));
+            assert!(error.to_string().contains("built without LiteInst"));
+            assert_eq!(
+                command
+                    .get_envs()
+                    .map(|(key, value)| (key.to_owned(), value.map(ToOwned::to_owned)))
+                    .collect::<Vec<_>>(),
+                before
+            );
+            assert_eq!(
+                command.get_program(),
+                OsStr::new("/a/guest/that/must/not/be/launched")
+            );
+            assert_eq!(
+                command.get_args().collect::<Vec<_>>(),
+                [OsStr::new("retained argument")]
+            );
         }
     }
 }

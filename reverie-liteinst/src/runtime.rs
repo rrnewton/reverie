@@ -456,8 +456,9 @@ pub const PROCESS_FORK_ENV: &str = "REVERIE_LITEINST_PROCESS_FORK";
 /// environment, the built-in, `strace`, and `compat` runtimes do not take
 /// this selector (the built-ins never patch syscall sites; the others always
 /// do), so they refuse to start when this variable holds anything but `1`.
-/// In a build without LiteInst those modes use the trap runtime and accept
-/// only unset or `0`.
+/// In a build without LiteInst the built-ins use the trap runtime and accept
+/// only unset or `0`. The legacy `strace` and `compat` runtimes require the
+/// `liteinst` Cargo feature.
 pub const SITE_PATCHING_ENV: &str = "REVERIE_LITEINST_SITE_PATCHING";
 /// [`SITE_PATCHING_ENV`] for the non-allocating constructor check.
 const SITE_PATCHING_ENV_C: &CStr = c"REVERIE_LITEINST_SITE_PATCHING";
@@ -597,10 +598,36 @@ pub(crate) fn initialize_from_environment() -> io::Result<()> {
     initialize_from_selected_value(tool_value.as_deref())
 }
 
+/// The historical synchronous Strace/Compat frontends forward through
+/// patcher-owned entries. A trap-only build supports the installed FullTool
+/// and shared built-ins, but cannot admit either legacy frontend.
+pub(crate) fn require_legacy_tool(tool: &str) -> io::Result<()> {
+    #[cfg(feature = "liteinst")]
+    {
+        let _ = tool;
+        Ok(())
+    }
+    #[cfg(not(feature = "liteinst"))]
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        format!(
+            "legacy {tool} runtime was built without LiteInst; enable the `liteinst` Cargo feature \
+             or use the in-guest FullTool installation route"
+        ),
+    ))
+}
+
 // Both acquisition paths own the selected value across initialization. The
 // actual standalone leaf reads the same raw environment vector as its native
 // activation prefix; generic embeddings retain std::env/getenv acquisition.
 pub(crate) fn initialize_from_selected_value(tool_value: Option<&OsStr>) -> io::Result<()> {
+    // Refuse raw environment selection as well as the public launcher API,
+    // before changing any mode, connecting RPC or publishing a frontend.
+    if let Some(value) = tool_value
+        && (value == OsStr::new("strace") || value == OsStr::new("compat"))
+    {
+        require_legacy_tool(value.to_str().expect("literal legacy selector"))?;
+    }
     // The experimental artifact has only a FullTool contract. Refuse before
     // reserving its page or changing a handler, rather than silently changing
     // the compatibility/built-in signal-return policy.
@@ -3923,6 +3950,7 @@ mod tests {
 
     #[cfg(feature = "liteinst")]
     use super::InstallFailure;
+    #[cfg(feature = "liteinst")]
     use super::SITE_PATCHING_ENABLED;
     #[cfg(feature = "liteinst")]
     use super::site_patching_enabled;
@@ -4013,6 +4041,22 @@ mod tests {
         let error = super::install_vdso_sites(&sites).unwrap_err();
         assert_eq!(error.kind(), std::io::ErrorKind::Unsupported);
         assert!(error.to_string().contains("built without LiteInst"));
+    }
+
+    #[cfg(not(feature = "liteinst"))]
+    #[test]
+    fn trap_only_raw_legacy_selection_refuses_without_a_frontend() {
+        let mode = super::TOOL_MODE.load(Ordering::Acquire);
+        let gates = reverie_inguest::trap::fixed_gates_published();
+        for selector in ["strace", "compat"] {
+            let error = super::initialize_from_selected_value(Some(OsStr::new(selector)))
+                .expect_err("a raw environment selector must not bypass the legacy refusal");
+            assert_eq!(error.kind(), std::io::ErrorKind::Unsupported);
+            assert!(error.to_string().contains(selector));
+            assert!(error.to_string().contains("built without LiteInst"));
+            assert_eq!(super::TOOL_MODE.load(Ordering::Acquire), mode);
+            assert_eq!(reverie_inguest::trap::fixed_gates_published(), gates);
+        }
     }
 
     #[cfg(feature = "liteinst")]
@@ -4665,6 +4709,7 @@ mod tests {
     use super::neighbours_conflict;
     #[cfg(feature = "liteinst")]
     use super::object_image;
+    #[cfg(feature = "liteinst")]
     use super::parse_runtime_maps;
     use super::record_fallback_dispatch;
     use super::refused_process_creation;

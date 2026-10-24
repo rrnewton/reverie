@@ -56,8 +56,11 @@ use crate::trap::raw_syscall6;
 /// A backend's part in [`install_tool_with`]: its patcher, the steps that
 /// prepare it, its runtime services and its option selectors, called on the
 /// installing thread before application threads start. The steps from
-/// [`Self::preflight`] to [`Self::runtime_config`] run once each, in the order
-/// listed; [`Self::patcher`] and [`Self::runtime`] are asked when needed.
+/// [`Self::preflight`] to [`Self::runtime_config`] run once each. Fixed-gate
+/// builds capture [`Self::site_patching`] immediately after preflight so an
+/// invalid selector is refused before irreversible gate publication. Other
+/// steps retain the order listed; [`Self::patcher`] and [`Self::runtime`] are
+/// asked when needed.
 ///
 /// # Safety
 ///
@@ -150,6 +153,11 @@ where
     // heap, never in the guest's own malloc heap; see LiteInst's installer.
     let _private_allocations = crate::guest::alloc::enter_dispatch();
     host.preflight()?;
+    // Once fixed gates are published, every later installation error must
+    // terminate rather than return. Validate and capture this fallible input
+    // first; the same value is consumed after coordinator setup.
+    #[cfg(feature = "fixed-syscall-gates")]
+    let site_patching = host.site_patching()?;
     #[cfg(feature = "fixed-syscall-gates")]
     let mut fixed_install = FixedGateInstallation { complete: false };
     #[cfg(feature = "fixed-syscall-gates")]
@@ -194,6 +202,7 @@ where
         rdtsc: subscriptions.has_rdtsc(),
     };
     crate::guest::instruction::preflight_instruction_faulting(instruction_subscriptions)?;
+    #[cfg(not(feature = "fixed-syscall-gates"))]
     let site_patching = host.site_patching()?;
     let vdso_sites = if site_patching {
         reverie::vdso::patch_current_vdso(&subscriptions)
