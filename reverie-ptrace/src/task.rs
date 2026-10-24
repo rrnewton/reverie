@@ -1875,6 +1875,23 @@ thread_local! {
     pub(crate) static TIMER_STEP_HOOK: std::cell::RefCell<Option<TimerStepHook>> = const { std::cell::RefCell::new(None) };
 }
 
+/// Whether the SIGTRAP `task` stopped to take was sent by a process: by
+/// `kill`, `tgkill`, `raise`, `sigqueue`, or a POSIX timer or `F_SETSIG` file
+/// that names SIGTRAP. Linux marks every such signal with a `si_code` of zero
+/// or below (`SI_FROMUSER`); every trap of Reverie's own, a single step
+/// (`TRAP_TRACE`), a breakpoint (`TRAP_BRKPT`, `SI_KERNEL`) or a rewritten
+/// site's trap, has a positive one. The kernel's one sender-coded SIGTRAP,
+/// the legacy exec report (`SI_USER`), never comes: Reverie sets
+/// `PTRACE_O_TRACEEXEC`. A siginfo that cannot be read is not evidence, and
+/// the stop keeps its other handling. Not covered: a thread that queues
+/// itself a SIGTRAP with a positive code (`rt_sigqueueinfo` and
+/// `rt_tgsigqueueinfo` allow that only to the calling thread itself) is not
+/// told apart from a kernel trap.
+fn is_sigtrap_sent_by_a_process(task: &Stopped) -> bool {
+    task.getsiginfo()
+        .is_ok_and(|info| info.si_signo == libc::SIGTRAP && info.si_code <= 0)
+}
+
 /// Whether the SIGTRAP `task` stopped with is the guest's own `int3`, retired
 /// just before `rip`. Two observations must agree: the kernel's `si_code` is
 /// `SI_KERNEL`, which no single step (`TRAP_TRACE`), ptrace breakpoint report
@@ -6079,6 +6096,14 @@ impl<L: Tool + 'static> TracedTask<L> {
             ));
         }
         let mut regs = task.getregs()?;
+        // A SIGTRAP a process sent (the guest's own `raise(SIGTRAP)`, say) is
+        // a signal like any other: Linux delivers it, so a handler runs or the
+        // default action kills the guest with a core. None of the traps below
+        // carries a sender's code. Before, it fell to the last arm and was
+        // dropped, so a guest that raised SIGTRAP to die ran on.
+        if is_sigtrap_sent_by_a_process(&task) {
+            return self.deliver_guest_sigtrap(task, regs).await;
+        }
         // TODO-HUMAN-REVIEW(PR-103): Review rewritten-trap provenance validation.
         #[cfg(target_arch = "x86_64")]
         if let Some(trap) = self.global_state.injected_syscall_trap.as_ref()
@@ -6127,27 +6152,7 @@ impl<L: Tool + 'static> TracedTask<L> {
             // runs, or the default action kills the guest with a core. Before,
             // it fell to the arm below, and the guest ran past its own
             // breakpoint (https://github.com/rrnewton/hermit/issues/1715).
-            if self.attached_by_gdb {
-                // Under a debugger, as natively, the trap stops the guest and
-                // is reported to GDB, whose resume decides whether the guest
-                // gets the signal (`continue` drops it; `signal SIGTRAP`
-                // passes it on).
-                self.notify_gdb_stop(StopReason::stopped(
-                    task.pid(),
-                    self.pid(),
-                    StopEvent::Signal(Signal::SIGTRAP),
-                    regs.into(),
-                ))
-                .await?;
-                let running = self
-                    .await_gdb_resume(task, ExpectedGdbResume::Resume)
-                    .await?;
-                HandleSignalResult::SignalSuppressed(
-                    running.next_state_with_owner(&self.ptracer_waits).await?,
-                )
-            } else {
-                HandleSignalResult::SignalToDeliver(task, Signal::SIGTRAP.into())
-            }
+            self.deliver_guest_sigtrap(task, regs).await?
         } else {
             UNCLAIMED_SIGTRAPS_SUPPRESSED.fetch_add(1, Ordering::Relaxed);
             // The trap is not delivered and makes no Tool callback, so it
@@ -6163,6 +6168,36 @@ impl<L: Tool + 'static> TracedTask<L> {
                 running.next_state_with_owner(&self.ptracer_waits).await?,
             )
         })
+    }
+
+    /// Hands the guest a SIGTRAP of its own (its `int3`, or one a process
+    /// sent), as Linux does. Under a debugger, as natively, the signal stops
+    /// the guest and is reported to GDB, whose resume decides whether the
+    /// guest gets it (`continue` drops it; `signal SIGTRAP` passes it on).
+    async fn deliver_guest_sigtrap(
+        &mut self,
+        task: Stopped,
+        regs: libc::user_regs_struct,
+    ) -> Result<HandleSignalResult, TraceError> {
+        if !self.attached_by_gdb {
+            return Ok(HandleSignalResult::SignalToDeliver(
+                task,
+                Signal::SIGTRAP.into(),
+            ));
+        }
+        self.notify_gdb_stop(StopReason::stopped(
+            task.pid(),
+            self.pid(),
+            StopEvent::Signal(Signal::SIGTRAP),
+            regs.into(),
+        ))
+        .await?;
+        let running = self
+            .await_gdb_resume(task, ExpectedGdbResume::Resume)
+            .await?;
+        Ok(HandleSignalResult::SignalSuppressed(
+            running.next_state_with_owner(&self.ptracer_waits).await?,
+        ))
     }
 
     async fn handle_sigstop(&mut self, task: Stopped) -> Result<HandleSignalResult, TraceError> {
@@ -9606,6 +9641,10 @@ impl<L: Tool + 'static> TracedTask<L> {
                 self.note_sigtrap_repair(SigtrapRepair::Ignored);
             }
             match wait {
+                // A SIGTRAP another task sent, pending at this step, absorbs
+                // the step's own (Linux queues one standard signal) and is
+                // taken for it here, so it is lost: a known gap of this
+                // window (https://github.com/rrnewton/hermit/issues/4555).
                 Wait::Stopped(task, Event::Signal(Signal::SIGTRAP)) => {
                     #[cfg(target_arch = "x86_64")]
                     task.setregs(&regs)?;
@@ -9792,8 +9831,10 @@ impl<L: Tool + 'static> TracedTask<L> {
         // before the `syscall` ran; a stale step SIGTRAP was discarded there
         // already (`step_private_syscall`). `status_to_result` would report
         // that the syscall did not run (`-ERESTARTSYS`). The trap is
-        // discarded instead, as the main loop discards an unclaimed SIGTRAP
-        // (`handle_sigtrap`), and the step runs the syscall. A held signal is
+        // discarded instead, and the step runs the syscall. The main loop
+        // delivers a sent SIGTRAP (`handle_sigtrap`), so discarding one here
+        // loses it: a known gap of this window
+        // (https://github.com/rrnewton/hermit/issues/4555). A held signal is
         // not reported while the trap could be claimed
         // (`sigtrap_may_be_claimed`). A frame-mode injection holds the trap
         // for the resume instead (`status_to_result`). Under a tracer filter
