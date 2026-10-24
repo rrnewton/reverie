@@ -6661,9 +6661,42 @@ static void set_in_syscall_event(void* drcontext, bool value) {
     counters->in_syscall_event = value;
 }
 
+/* The `syscall` instruction loads %rcx with the address of the instruction
+ * after it and %r11 with RFLAGS, and Linux's return leaves them there. A call
+ * this client services itself, or one DynamoRIO executes from its code cache,
+ * can leave other values in them, including a DynamoRIO address. So the
+ * application resumes from every system call with %rcx holding its next
+ * instruction and %r11 its RFLAGS, as from a native return. It runs once the
+ * outcome is final: after a call the pre-syscall event skipped (DynamoRIO
+ * delivers no post-syscall event for those) and after the post-syscall event.
+ * `rt_sigreturn` is left alone: it restores both registers from the signal
+ * frame. So is the signal stub's call: while a signal continuation runs
+ * (`signal_token` set), that call is the client's, not the application's, and
+ * the register callbacks address the saved interrupted context, whose %rcx and
+ * %r11 must survive the delivery. A preemption stub's `sched_yield` is covered,
+ * harmlessly: its return restores the whole interrupted context.
+ */
+static void canonicalize_syscall_clobbers(void* drcontext, int sysnum) {
+  struct user_regs_struct registers;
+  prototype_counters_t* counters =
+      drmgr_get_tls_field(drcontext, thread_state_index);
+  if (sysnum == SYS_rt_sigreturn)
+    return;
+  if (counters != NULL && counters->signal_token != 0)
+    return;
+  DR_ASSERT(read_registers((uintptr_t)drcontext, &registers));
+  if (registers.rcx == registers.rip && registers.r11 == registers.eflags)
+    return;
+  registers.rcx = registers.rip;
+  registers.r11 = registers.eflags;
+  DR_ASSERT(write_registers((uintptr_t)drcontext, &registers));
+}
+
 static bool pre_syscall_event(void* drcontext, int sysnum) {
   set_in_syscall_event(drcontext, true);
   bool execute = pre_syscall(drcontext, sysnum);
+  if (!execute)
+    canonicalize_syscall_clobbers(drcontext, sysnum);
   set_in_syscall_event(drcontext, false);
   return execute;
 }
@@ -6671,6 +6704,7 @@ static bool pre_syscall_event(void* drcontext, int sysnum) {
 static void post_syscall_event(void* drcontext, int sysnum) {
   set_in_syscall_event(drcontext, true);
   post_syscall(drcontext, sysnum);
+  canonicalize_syscall_clobbers(drcontext, sysnum);
   set_in_syscall_event(drcontext, false);
 }
 

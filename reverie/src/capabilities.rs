@@ -36,6 +36,42 @@
 //! `capabilities()` on backends that do not implement that trait. Those return
 //! the matching constant. The tests below pin every constant field by field.
 //!
+//! # What every backend does
+//!
+//! A fact that holds on every backend is part of the backend contract, not a
+//! field here. One that used to be a field:
+//!
+//! - **Registers a `syscall` instruction clobbers.** On x86-64, when a guest
+//!   resumes at the instruction after its `syscall`, `%rcx` holds that
+//!   instruction's address and `%r11` the guest's RFLAGS, as after a native
+//!   Linux return, however the backend serviced the call. `rt_sigreturn` is not
+//!   such a resumption (it restores both registers from the signal frame), nor
+//!   is a successful `execve`, whose new image starts afresh.
+//!   - reverie-ptrace leaves the kernel's values, and restores the guest's own
+//!     after an injected call. With e9patch preprocessing, the frame a
+//!     rewritten site restores is given the native values (the site's address
+//!     plus two, and the guest's RFLAGS) before the call is dispatched.
+//!   - reverie-dbt's client sets them after each call it skips or completes,
+//!     except the private call its signal continuation makes, whose registers
+//!     are the interrupted context's.
+//!   - reverie-kvm returns with SYSRETQ from the staged return address and
+//!     RFLAGS.
+//!   - The in-guest backends (LiteInst) set them from the context captured at
+//!     the guest's `syscall`: its address plus two, and the RFLAGS saved there.
+//!   - SaBRe's rewriter loads them before its handler runs: the trampoline of
+//!     each rewritten `syscall` sets `%r11` from RFLAGS and `%rcx` to the site's
+//!     next address (`experimental/reverie-sabre/vendor/sabre`, rewriter.c).
+//!
+//!   Two known exceptions remain:
+//!   - On reverie-kvm, a signal handler whose frame is set up at a syscall's
+//!     return starts with the handler's address in `%rcx` and the handler's
+//!     RFLAGS in `%r11`, where Linux leaves the interrupted call's values.
+//!   - On reverie-dbt, the child of a `vfork` starts with a DynamoRIO address
+//!     in `%rcx` (the same value in four runs of one probe). DynamoRIO delivers
+//!     no post-syscall event to it, so the client's correction does not reach
+//!     it. The child of a shared-memory clone takes the same path and has not
+//!     been measured.
+//!
 //! # Adding a field
 //!
 //! The struct is `#[non_exhaustive]`, so code outside this crate cannot build
@@ -76,11 +112,6 @@ pub struct BackendCapabilities {
     /// absolute futex deadline may have been computed from the host clock
     /// rather than from the tool's logical clock.
     pub guest_clock_reads_bypass_backend: bool,
-
-    /// The backend already returns deterministic values in every register that
-    /// a `syscall` instruction clobbers, so the tool must not write the whole
-    /// register set back after a syscall.
-    pub virtualizes_syscall_clobbers: bool,
 
     /// A pending tool request from a thread that the tool has logically killed
     /// is not resolved by the kernel's exit-group teardown, so the tool must
@@ -309,7 +340,6 @@ impl BackendCapabilities {
         rediscovers_descriptors_after_exec: false,
         loopback_pollers_yield_to_peers: false,
         guest_clock_reads_bypass_backend: false,
-        virtualizes_syscall_clobbers: false,
         needs_killed_thread_rpc_cancellation: false,
         reports_physical_process_exits: false,
         process_exits_complete_asynchronously: false,
@@ -376,7 +406,6 @@ impl BackendCapabilities {
         rediscovers_descriptors_after_exec: true,
         loopback_pollers_yield_to_peers: true,
         guest_clock_reads_bypass_backend: true,
-        virtualizes_syscall_clobbers: true,
         needs_killed_thread_rpc_cancellation: true,
         reports_physical_process_exits: true,
         runs_exit_robust_list: false,
@@ -421,17 +450,6 @@ impl BackendCapabilities {
     /// `reverie-kvm`: guest threads run in a virtual machine that the backend
     /// drives, and the backend implements many syscalls itself.
     pub const KVM: Self = Self {
-        // Every return to a syscall's caller sets RCX and R11 from values
-        // reverie-kvm chose, never from host state: SYSRETQ from the staged
-        // return RIP and RFLAGS (an ordinary return, and the entry of a
-        // handler whose frame is set up at the return, where Linux would leave
-        // the interrupted call's RCX and R11 instead), IRETQ with a restored
-        // signal context's own RCX and R11, and zero in an exec'd image. The
-        // Tool's register snapshot at a syscall already has RCX == RIP and
-        // R11 == RFLAGS, and the backend offers a Tool no register write
-        // (`Guest::set_regs` is unsupported), so a Tool's canonicalization
-        // could change nothing here.
-        virtualizes_syscall_clobbers: true,
         needs_killed_thread_rpc_cancellation: true,
         runs_exit_robust_list: false,
         defers_vfork_child_registration: true,
@@ -470,7 +488,6 @@ mod tests {
             "rediscovers_descriptors_after_exec": false,
             "loopback_pollers_yield_to_peers": false,
             "guest_clock_reads_bypass_backend": false,
-            "virtualizes_syscall_clobbers": false,
             "needs_killed_thread_rpc_cancellation": false,
             "reports_physical_process_exits": false,
             "process_exits_complete_asynchronously": false,
@@ -569,7 +586,6 @@ mod tests {
                 "rediscovers_descriptors_after_exec": true,
                 "loopback_pollers_yield_to_peers": true,
                 "guest_clock_reads_bypass_backend": true,
-                "virtualizes_syscall_clobbers": true,
                 "needs_killed_thread_rpc_cancellation": true,
                 "reports_physical_process_exits": true,
                 "runs_exit_robust_list": false,
@@ -618,7 +634,6 @@ mod tests {
         assert_eq!(
             table(BackendCapabilities::KVM),
             ptrace_with(serde_json::json!({
-                "virtualizes_syscall_clobbers": true,
                 "needs_killed_thread_rpc_cancellation": true,
                 "runs_exit_robust_list": false,
                 "defers_vfork_child_registration": true,
