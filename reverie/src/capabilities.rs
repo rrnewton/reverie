@@ -67,13 +67,6 @@ pub struct BackendCapabilities {
     /// handed across the exec explicitly.
     pub rediscovers_descriptors_after_exec: bool,
 
-    /// Scheduler turns for I/O on a tool-managed internal pipe (a pipe that is
-    /// physically nonblocking while the guest sees it as blocking) include a
-    /// descriptor-discovery turn whose count depends on host timing. The tool
-    /// marks those turns so their count is not treated as guest-visible
-    /// progress.
-    pub internal_pipe_turns_are_host_timed: bool,
-
     /// A zero-timeout poll by a task that owns a loopback connection must
     /// yield its turn to another runnable task first; without that yield a
     /// poller can starve the loopback peer it is waiting for.
@@ -107,12 +100,6 @@ pub struct BackendCapabilities {
     /// descriptors still open.
     pub process_exits_complete_asynchronously: bool,
 
-    /// A signal interrupts a blocking syscall that the backend runs outside the
-    /// tool's scheduler, and the interrupted thread's continuation request
-    /// arrives only afterwards. The tool must wait for that continuation
-    /// instead of treating the thread as parked inside its own scheduler.
-    pub signal_interrupts_external_syscalls: bool,
-
     /// The backend reports every process child through the tool's
     /// child-registration callbacks, so the tool's own record of children is
     /// complete. When this is false the tool must not conclude ECHILD from an
@@ -141,13 +128,11 @@ pub struct BackendCapabilities {
     pub defers_vfork_child_registration: bool,
 
     /// The backend implements guest-visible `madvise` semantics, so the tool
-    /// may forward an `madvise` call to it.
+    /// may forward an `madvise` call to it. Every backend implements
+    /// `MADV_DONTNEED` (private anonymous pages then read as zeros; shared
+    /// contents survive), so the tool may forward that advice whatever this
+    /// field says.
     pub supports_madvise: bool,
-
-    /// The backend implements `MADV_DONTNEED` (private anonymous pages then
-    /// read as zeros; shared contents survive), so the tool may forward that
-    /// advice even when it may not forward the others (`supports_madvise`).
-    pub supports_madv_dontneed: bool,
 
     /// The backend reports, through
     /// [`GlobalTool::on_backend_process_exited`](crate::GlobalTool::on_backend_process_exited),
@@ -322,21 +307,18 @@ impl BackendCapabilities {
     pub const PTRACE: Self = Self {
         tool_shares_guest_descriptor_table: false,
         rediscovers_descriptors_after_exec: false,
-        internal_pipe_turns_are_host_timed: false,
         loopback_pollers_yield_to_peers: false,
         guest_clock_reads_bypass_backend: false,
         virtualizes_syscall_clobbers: false,
         needs_killed_thread_rpc_cancellation: false,
         reports_physical_process_exits: false,
         process_exits_complete_asynchronously: false,
-        signal_interrupts_external_syscalls: false,
         tracks_process_children: true,
         runs_exit_robust_list: true,
         requires_thread_directed_process_signals: false,
         supports_parked_write_signal_interruption: true,
         defers_vfork_child_registration: false,
         supports_madvise: true,
-        supports_madv_dontneed: true,
         reports_child_exit_publication: true,
         reports_kernel_child_exit_signals: true,
         provides_process_signal_control: false,
@@ -392,13 +374,11 @@ impl BackendCapabilities {
     pub const SABRE: Self = Self {
         tool_shares_guest_descriptor_table: true,
         rediscovers_descriptors_after_exec: true,
-        internal_pipe_turns_are_host_timed: true,
         loopback_pollers_yield_to_peers: true,
         guest_clock_reads_bypass_backend: true,
         virtualizes_syscall_clobbers: true,
         needs_killed_thread_rpc_cancellation: true,
         reports_physical_process_exits: true,
-        signal_interrupts_external_syscalls: true,
         runs_exit_robust_list: false,
         supports_parked_write_signal_interruption: false,
         reports_child_exit_publication: false,
@@ -488,21 +468,18 @@ mod tests {
         serde_json::json!({
             "tool_shares_guest_descriptor_table": false,
             "rediscovers_descriptors_after_exec": false,
-            "internal_pipe_turns_are_host_timed": false,
             "loopback_pollers_yield_to_peers": false,
             "guest_clock_reads_bypass_backend": false,
             "virtualizes_syscall_clobbers": false,
             "needs_killed_thread_rpc_cancellation": false,
             "reports_physical_process_exits": false,
             "process_exits_complete_asynchronously": false,
-            "signal_interrupts_external_syscalls": false,
             "tracks_process_children": true,
             "runs_exit_robust_list": true,
             "requires_thread_directed_process_signals": false,
             "supports_parked_write_signal_interruption": true,
             "defers_vfork_child_registration": false,
             "supports_madvise": true,
-            "supports_madv_dontneed": true,
             "reports_child_exit_publication": true,
             "reports_kernel_child_exit_signals": true,
             "provides_process_signal_control": false,
@@ -590,13 +567,11 @@ mod tests {
             ptrace_with(serde_json::json!({
                 "tool_shares_guest_descriptor_table": true,
                 "rediscovers_descriptors_after_exec": true,
-                "internal_pipe_turns_are_host_timed": true,
                 "loopback_pollers_yield_to_peers": true,
                 "guest_clock_reads_bypass_backend": true,
                 "virtualizes_syscall_clobbers": true,
                 "needs_killed_thread_rpc_cancellation": true,
                 "reports_physical_process_exits": true,
-                "signal_interrupts_external_syscalls": true,
                 "runs_exit_robust_list": false,
                 "supports_parked_write_signal_interruption": false,
                 "reports_child_exit_publication": false,
