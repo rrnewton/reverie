@@ -2161,13 +2161,79 @@ fn sigalrm_inherited_filter_guest(path: &Path) {
         )
     };
     assert_eq!(added, 0);
-    unsafe { reverie_liteinst::install_tool::<CounterTool>(path) }.unwrap();
-    assert!(!reverie_inguest::guest::sigalrm::admitted());
-    assert_eq!(
-        sigalrm_sigaction(&guest_handler_action(0)),
-        Err(libc::EPERM)
-    );
-    println!("sigalrm-inherited-filter-ok");
+    #[cfg(not(feature = "fixed-syscall-gates"))]
+    {
+        unsafe { reverie_liteinst::install_tool::<CounterTool>(path) }.unwrap();
+        assert!(!reverie_inguest::guest::sigalrm::admitted());
+        assert_eq!(
+            sigalrm_sigaction(&guest_handler_action(0)),
+            Err(libc::EPERM)
+        );
+        println!("sigalrm-inherited-filter-ok");
+    }
+    #[cfg(feature = "fixed-syscall-gates")]
+    {
+        // Fixed-gate installation has a stronger admission rule: refuse the
+        // complete runtime before publishing gates, a dispatcher or a Tool.
+        let action = physical_sigalrm_action();
+        let mask = physical_mask();
+        assert_eq!(
+            unsafe { reverie_inguest::guest::sigalrm::seccomp_filter_count() },
+            Some(1)
+        );
+        assert_eq!(REFUSED_INSTALL_CALLBACKS.load(Ordering::Relaxed), 0);
+        let error =
+            unsafe { reverie_liteinst::install_tool::<RefusedInstallTool>(path) }.unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::Unsupported);
+        assert_eq!(
+            error.to_string(),
+            "fixed syscall gates refuse an inherited or unreadable seccomp filter state"
+        );
+        assert!(!reverie_inguest::trap::fixed_gates_published());
+        assert!(!reverie_inguest::trap::has_dispatcher());
+        fixed_gates_guest::assert_page_absent();
+        assert!(!reverie_inguest::guest::sigalrm::admitted());
+        assert_eq!(REFUSED_INSTALL_CALLBACKS.load(Ordering::Relaxed), 0);
+        assert_eq!(
+            unsafe { reverie_inguest::guest::sigalrm::seccomp_filter_count() },
+            Some(1)
+        );
+        let after = physical_sigalrm_action();
+        assert_eq!(
+            (after.handler, after.flags, after.restorer, after.mask),
+            (action.handler, action.flags, action.restorer, action.mask)
+        );
+        assert_eq!(physical_mask(), mask);
+        // Exercise a genuine syscall after refusal: it must not reach a Tool.
+        assert!(unsafe { libc::syscall(libc::SYS_getpid) } > 0);
+        assert_eq!(REFUSED_INSTALL_CALLBACKS.load(Ordering::Relaxed), 0);
+        println!(
+            "sigalrm-inherited-filter-refused Unsupported gates=absent dispatcher=absent callbacks=0 filter=unchanged action=unchanged mask=unchanged"
+        );
+    }
+}
+
+#[cfg(feature = "fixed-syscall-gates")]
+static REFUSED_INSTALL_CALLBACKS: AtomicU64 = AtomicU64::new(0);
+
+#[cfg(feature = "fixed-syscall-gates")]
+#[derive(Default)]
+struct RefusedInstallTool;
+
+#[cfg(feature = "fixed-syscall-gates")]
+#[reverie::tool]
+impl Tool for RefusedInstallTool {
+    type GlobalState = CounterGlobal;
+    type ThreadState = ();
+
+    async fn handle_syscall_event<G: Guest<Self>>(
+        &self,
+        guest: &mut G,
+        syscall: Syscall,
+    ) -> Result<i64, Error> {
+        REFUSED_INSTALL_CALLBACKS.fetch_add(1, Ordering::Relaxed);
+        Ok(guest.inject(syscall).await?)
+    }
 }
 
 /// Memory with a protection key other than 0 before the runtime starts keeps

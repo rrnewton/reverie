@@ -115,6 +115,12 @@ fn release_page() {
     );
 }
 
+#[cfg(feature = "fixed-syscall-gates")]
+pub(super) fn assert_page_absent() {
+    reserve_page();
+    release_page();
+}
+
 pub fn collision(path: &Path) {
     reserve_page();
     unsafe {

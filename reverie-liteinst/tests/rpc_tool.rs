@@ -365,6 +365,7 @@ fn an_anonymous_syscall_site_stays_on_the_fallback_path() {
 }
 
 #[test]
+#[cfg(all(feature = "liteinst", not(feature = "fixed-syscall-gates")))]
 fn fallback_refusal_is_counted_separately_from_tool_errors() {
     let mut command = Command::new(env!("CARGO_BIN_EXE_reverie-liteinst-rpc-tool-guest"));
     command.arg("syscall-fallback-refusal").arg("unused");
@@ -384,6 +385,28 @@ fn fallback_refusal_is_counted_separately_from_tool_errors() {
             .parse::<i64>()
             .expect("invalid compatibility syscall record");
     }
+}
+
+#[test]
+#[cfg(any(not(feature = "liteinst"), feature = "fixed-syscall-gates"))]
+fn legacy_compatibility_installation_refuses_before_fallback_dispatch() {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_reverie-liteinst-rpc-tool-guest"));
+    command.arg("syscall-fallback-refusal").arg("unused");
+    let output = output_with_timeout(command, Duration::from_secs(20));
+    assert_eq!(output.status.code(), Some(127), "{output:?}");
+    assert!(
+        output.stdout.is_empty(),
+        "no fallback dispatch may occur: {output:?}"
+    );
+    let message = if cfg!(feature = "liteinst") {
+        "fixed syscall gates require the in-guest FullTool installation route"
+    } else {
+        "legacy compat runtime was built without LiteInst; enable the `liteinst` Cargo feature or use the in-guest FullTool installation route"
+    };
+    assert_eq!(
+        output.stderr,
+        format!("reverie-liteinst initialization failed: {message}\n").as_bytes()
+    );
 }
 
 /// Own direct-child cleanup through capture errors and caller unwinding.
@@ -767,7 +790,14 @@ fn installed_hook_reentry_bypasses_tool_with_shared_coordinator_rpc() {
     assert_eq!(extra_filter.stdout, b"sigalrm-extra-filter-ok\n");
     let inherited_filter = admitted("sigalrm-inherited-filter", true);
     assert!(inherited_filter.status.success(), "{inherited_filter:?}");
-    assert_eq!(inherited_filter.stdout, b"sigalrm-inherited-filter-ok\n");
+    if cfg!(feature = "fixed-syscall-gates") {
+        assert_eq!(
+            inherited_filter.stdout,
+            b"sigalrm-inherited-filter-refused Unsupported gates=absent dispatcher=absent callbacks=0 filter=unchanged action=unchanged mask=unchanged\n"
+        );
+    } else {
+        assert_eq!(inherited_filter.stdout, b"sigalrm-inherited-filter-ok\n");
+    }
     let pkey_before = admitted("sigalrm-pkey-before-install", true);
     assert!(pkey_before.status.success(), "{pkey_before:?}");
     assert_eq!(pkey_before.stdout, b"sigalrm-pkey-before-install-ok\n");
@@ -1527,7 +1557,16 @@ fn dlopen_constructor_cpuid_reaches_the_tool_through_the_continuation() {
             "stage=instruction-fault-continuation-cpuid",
             "stage=instruction-fault-continuation-rdtsc",
         ] {
-            assert_eq!(stage_count(stage), 1, "{stage}: {stderr}");
+            if cfg!(feature = "liteinst") {
+                assert_eq!(stage_count(stage), 1, "{stage}: {stderr}");
+            } else {
+                // The C constructor executes CPUID and RDTSC once each.
+                // run_dlopen then executes its original-image comparison
+                // CPUID; without patching that instruction also uses the
+                // continuation and emits a second CPUID stage.
+                let expected = if stage.ends_with("-cpuid") { 2 } else { 1 };
+                assert_eq!(stage_count(stage), expected, "{stage}: {stderr}");
+            }
         }
         assert!(
             !stderr.contains("instruction-sigsegv-"),
@@ -1764,7 +1803,7 @@ fn a_stale_syscall_fallback_site_keeps_its_continuation_reservation() {
             if cfg!(feature = "liteinst") {
                 "straddler-syscall-reservation cpuid=tool syscall=getpid traps=8 hooks=0+0\n"
             } else {
-                "straddler-syscall-reservation cpuid=tool syscall=getpid traps=0 hooks=0+0\n"
+                "SYSCALL_RESERVATION_TRAP_PROOF getpid=24 bytes=unchanged\nstraddler-syscall-reservation cpuid=tool syscall=getpid traps=0 hooks=0+0\n"
             },
             "alt_stack={on_alt_stack}: {output:?}"
         );

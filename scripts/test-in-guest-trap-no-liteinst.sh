@@ -30,8 +30,14 @@ scripts/build-liteinst-test-runtime.rs --for-ci "$generation" --no-liteinst
 # The producer binds this exact feature set and source identity. The test
 # consumers reject an ON runtime, a dirty tree, or a mismatched receipt.
 source "$generation/bundle/fixture.env"
+# The full shared cohort exercises fixed gates, native exec and the private
+# loader. The lean cohort also executes the original nongate branch of the
+# inherited-filter assertion and the public generic Compatibility controls.
 cargo test --locked -p reverie-liteinst --no-default-features \
     --features "$features" --no-fail-fast -- --test-threads=1
+cargo test --locked -p reverie-liteinst --no-default-features \
+    --features allocator-fixture,rpc-io-fixture \
+    --test generic_bootstrap --test rpc_tool --no-fail-fast -- --test-threads=1
 cargo test --locked -p reverie-liteinst-preload -p reverie-loader \
     --no-default-features --no-fail-fast -- --test-threads=1
 cargo check --locked -p reverie-inguest --no-default-features \

@@ -117,6 +117,16 @@ jobs:
         --skip tests::port_isolation
         --skip tests::seccomp_notify
         --skip tests::uid_namespace
+    - name: LiteInst lean generic and RPC controls
+      timeout-minutes: 10
+      run: |
+        set -euo pipefail
+        # Keep the original nongate Compatibility positives alongside the
+        # full-feature fixed-gate controls above. The default LiteInst feature
+        # and strict runtime consumer require the existing qualified ON leaf.
+        cargo test --locked -p reverie-liteinst \
+          --features allocator-fixture,rpc-io-fixture \
+          --test generic_bootstrap --test rpc_tool --no-fail-fast -- --test-threads=1
     - name: Documentation tests
       run: cargo test --workspace --doc
     - name: Clippy
@@ -129,7 +139,9 @@ jobs:
     - name: Reverie-layer cross-backend e2e (no device)
       run: reverie-examples/e2e/run.sh --backends ptrace,liteinst,in-guest-trap,e9patch,dbt,sabre
     - name: In-guest trap without LiteInst
-      timeout-minutes: 20
+      # Original full OFF cohort measured 1180 s locally; the additive complete
+      # lean generic/RPC targets budget another 240 s without dropping cases.
+      timeout-minutes: 30
       run: |
         set -euo pipefail
         generation="$RUNNER_TEMP/in-guest-trap-$GITHUB_JOB-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"

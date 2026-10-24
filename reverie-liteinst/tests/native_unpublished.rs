@@ -1,8 +1,10 @@
 //! Native Strace exact-syscall trampoline contract. Calibration is absent.
-//! Without LiteInst, the same guests exercise the shared continuation: no
-//! patcher admission cache or SIGTRAP guard is present to refuse their calls.
+//! These standalone legacy Strace positive controls require LiteInst. The
+//! trap-only build refuses that frontend before installation; installed Tool
+//! continuation, context and native-exec positives remain in their shared suites.
 //! The separately ignored installed-hook pkey_alloc regression remains a loss,
 //! not a passing part of this deliberately bounded read/write capability.
+#![cfg(feature = "liteinst")]
 use std::collections::BTreeMap;
 use std::ffi::OsString;
 use std::fs;
