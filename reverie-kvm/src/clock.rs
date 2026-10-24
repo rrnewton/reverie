@@ -397,7 +397,7 @@ impl CountedVcpu {
         self.clock.tracking = true;
         // Admit the pinned event before the first lifecycle callback. No guest
         // has run yet, and excluded host work must not contribute to its clock.
-        self.clock.begin()?.finish()?;
+        self.clock.begin(&mut None)?.finish()?;
         if self.clock.total != 0 {
             return Err(self.clock.poison("counter counted outside KVM_RUN"));
         }
@@ -449,7 +449,10 @@ impl CountedVcpu {
             }
             return exit.map(Some);
         }
-        let interval = match self.clock.begin() {
+        // The interval's CPU pin, if any, lives here rather than inside the
+        // interval, which then stays small enough to move without a copy.
+        let mut affinity = None;
+        let interval = match self.clock.begin(&mut affinity) {
             Ok(interval) => interval,
             Err(error) => return finish_entry(Err(error), entry),
         };
@@ -724,20 +727,25 @@ impl GuestClock {
         failure(reason)
     }
 
-    fn begin(&mut self) -> Result<CountInterval<'_>> {
+    /// Starts a counted interval. `affinity` is empty storage, owned by the
+    /// caller, for the interval's CPU pin under
+    /// `CounterPlacement::PinEachEntry`; the interval holds it as its own and
+    /// releases it when it is dropped, as if it held the pin inline.
+    fn begin<'a>(&'a mut self, affinity: &'a mut Option<CpuAffinity>) -> Result<CountInterval<'a>> {
         #[cfg(test)]
         if let Some(probe) = &self.run_probe {
             probe.prepare.increment(&probe.clock_begins);
         }
-        self.begin_with_raw_event(current_raw_event)
+        self.begin_with_raw_event(affinity, current_raw_event)
     }
 
-    fn begin_with_raw_event(
-        &mut self,
+    fn begin_with_raw_event<'a>(
+        &'a mut self,
+        affinity: &'a mut Option<CpuAffinity>,
         raw_event: impl FnOnce() -> Result<u64>,
-    ) -> Result<CountInterval<'_>> {
+    ) -> Result<CountInterval<'a>> {
         self.read()?;
-        let mut affinity = match self.placement {
+        *affinity = match self.placement {
             CounterPlacement::FollowTask => None,
             CounterPlacement::PinEachEntry => match CpuAffinity::enter() {
                 Ok(affinity) => Some(affinity),
@@ -775,7 +783,11 @@ impl GuestClock {
                 Ok(()) => error.to_string(),
                 Err(cleanup) => format!("{error}; cleanup also failed: {cleanup}"),
             };
-            return Err(self.poison(reason));
+            let error = self.poison(reason);
+            // The pin is released after poisoning, as it was when it was
+            // this function's local.
+            *affinity = None;
+            return Err(error);
         }
         #[cfg(test)]
         if let Some(probe) = &self.run_probe {
@@ -1360,8 +1372,9 @@ impl CounterBinding {
 
 struct CountInterval<'a> {
     clock: &'a mut GuestClock,
-    /// Present only under `CounterPlacement::PinEachEntry`.
-    affinity: Option<CpuAffinity>,
+    /// Present only under `CounterPlacement::PinEachEntry`. The interval owns
+    /// the pin; only its storage is the caller's (see `GuestClock::begin`).
+    affinity: &'a mut Option<CpuAffinity>,
     finished: bool,
 }
 
@@ -1406,6 +1419,9 @@ impl Drop for CountInterval<'_> {
             // the event before restoring affinity; later clock reads fail.
             self.clock.poison("unwound during counted KVM_RUN");
         }
+        // Released with the interval, after any poisoning, as a field it
+        // owned inline would be. Dropped in place: `take` would copy it out.
+        *self.affinity = None;
     }
 }
 
@@ -1871,7 +1887,8 @@ mod tests {
             .collect();
         for round in 0..2 {
             for index in 0..clocks.len() {
-                let interval = clocks[index].begin().unwrap();
+                let mut pin = None;
+                let interval = clocks[index].begin(&mut pin).unwrap();
                 for value in 0..10_000 {
                     std::hint::black_box(value);
                 }
@@ -1958,7 +1975,7 @@ mod tests {
         };
         let interval = CountInterval {
             clock: &mut clock,
-            affinity: Some(CpuAffinity::enter().unwrap()),
+            affinity: &mut Some(CpuAffinity::enter().unwrap()),
             finished: false,
         };
         let result = finish_run::<()>(Err(kvm_ioctls::Error::new(libc::EINTR)), interval);
@@ -2012,9 +2029,9 @@ mod tests {
                 ..Default::default()
             };
             let fd = clock.binding.as_ref().unwrap().fd.as_raw_fd();
-            let mut interval = CountInterval {
+            let interval = CountInterval {
                 clock: &mut clock,
-                affinity: Some(CpuAffinity::enter().unwrap()),
+                affinity: &mut Some(CpuAffinity::enter().unwrap()),
                 finished: false,
             };
             interval.affinity.as_mut().unwrap().closed_fd_before_restore = Some(fd);
@@ -2031,7 +2048,7 @@ mod tests {
             assert!(clock.binding.is_none());
             assert_eq!(clock.total, 100);
             assert!(clock.read().is_err());
-            assert!(clock.begin().is_err());
+            assert!(clock.begin(&mut None).is_err());
             assert!(same_affinity(&affinity().unwrap(), &original));
         }
         println!("\n{COMPLETE}");
@@ -2048,7 +2065,7 @@ mod tests {
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             let _interval = CountInterval {
                 clock: &mut clock,
-                affinity: Some(CpuAffinity::enter().unwrap()),
+                affinity: &mut Some(CpuAffinity::enter().unwrap()),
                 finished: false,
             };
             panic!("simulated vCPU unwinding");
@@ -2057,6 +2074,34 @@ mod tests {
         assert!(clock.binding.is_none());
         assert!(clock.read().unwrap_err().to_string().contains("unwound"));
         assert!(same_affinity(&affinity().unwrap(), &original));
+    }
+
+    /// The caller only stores an interval's CPU pin: dropping the interval,
+    /// finished or not, releases the pin (an active one restores the saved
+    /// affinity) and empties the storage, as when the interval held the pin
+    /// inline. An unfinished interval also poisons the clock.
+    #[test]
+    fn a_dropped_interval_releases_the_pin_its_caller_stores() {
+        let original = affinity().unwrap();
+        for finished in [true, false] {
+            let mut clock = GuestClock {
+                tracking: true,
+                binding: Some(reader(&[])),
+                ..Default::default()
+            };
+            let mut pin = Some(CpuAffinity::enter().unwrap());
+            let cpu = pin.as_ref().unwrap().cpu;
+            assert_eq!(unsafe { libc::sched_getcpu() }, cpu as libc::c_int);
+            drop(CountInterval {
+                clock: &mut clock,
+                affinity: &mut pin,
+                finished,
+            });
+            assert!(pin.is_none(), "finished={finished}");
+            assert!(same_affinity(&affinity().unwrap(), &original));
+            assert_eq!(clock.binding.is_none(), !finished);
+            assert_eq!(clock.read().is_err(), !finished);
+        }
     }
 
     fn single_cpu_interval_counts_no_host_work(original: &libc::cpu_set_t) -> usize {
@@ -2070,7 +2115,8 @@ mod tests {
             tracking: true,
             ..Default::default()
         };
-        let interval = clock.begin().unwrap();
+        let mut pin = None;
+        let interval = clock.begin(&mut pin).unwrap();
         let pinned = interval.affinity.as_ref().unwrap();
         assert_eq!(pinned.cpu, cpu);
         assert!(same_affinity(&pinned.saved, &singleton));
@@ -2102,7 +2148,8 @@ mod tests {
             ..Default::default()
         };
         for _ in 0..3 {
-            let interval = clock.begin().unwrap();
+            let mut pin = None;
+            let interval = clock.begin(&mut pin).unwrap();
             assert!(interval.affinity.is_none());
             assert!(same_affinity(&affinity().unwrap(), &original));
             for value in 0..1_000_000 {
@@ -2149,7 +2196,8 @@ mod tests {
             tracking: true,
             ..Default::default()
         };
-        let interval = clock.begin().unwrap();
+        let mut pin = None;
+        let interval = clock.begin(&mut pin).unwrap();
         let cpu = interval.affinity.as_ref().unwrap().cpu;
         let other = (0..libc::CPU_SETSIZE as usize)
             .find(|&candidate| candidate != cpu && unsafe { libc::CPU_ISSET(candidate, &original) })
@@ -2192,7 +2240,7 @@ mod tests {
             binding: Some(binding),
             ..Default::default()
         };
-        let error = match clock.begin_with_raw_event(|| Ok(0)) {
+        let error = match clock.begin_with_raw_event(&mut None, || Ok(0)) {
             Err(error) => error,
             Ok(_) => panic!("a pipe cannot enable a perf event"),
         };
@@ -2234,9 +2282,9 @@ mod tests {
             }))),
             ..Default::default()
         };
-        let mut interval = CountInterval {
+        let interval = CountInterval {
             clock: &mut clock,
-            affinity: Some(CpuAffinity::enter().unwrap()),
+            affinity: &mut Some(CpuAffinity::enter().unwrap()),
             finished: false,
         };
         // The real sched_setaffinity syscall rejects an empty saved mask.

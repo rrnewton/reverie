@@ -1641,13 +1641,21 @@ impl<G: GlobalTool> GlobalRPC<G> for KvmGlobal<'_, G> {
     }
 }
 
+/// All-zero user registers, lent to test handles that never read them.
+#[cfg(test)]
+pub(crate) const ZEROED_USER_REGISTERS: libc::user_regs_struct =
+    // SAFETY: user_regs_struct is plain integers, for which zero is valid.
+    unsafe { std::mem::zeroed() };
+
 struct KvmGuest<'a, T: Tool> {
     pid: Pid,
     tid: Pid,
     process_state: Arc<T>,
     memory: GuestMemory,
     auxv: &'a [(libc::c_ulong, libc::c_ulong)],
-    registers: libc::user_regs_struct,
+    // Lent, not copied: a handle only reads them, and the caller keeps them
+    // for at least as long as the handle.
+    registers: &'a libc::user_regs_struct,
     thread_state: &'a mut T::ThreadState,
     executor: &'a mut dyn GuestSyscallExecutor<T>,
     global_state: &'a T::GlobalState,
@@ -1680,7 +1688,7 @@ impl<'a, T: Tool> KvmGuest<'a, T> {
         process_state: Arc<T>,
         memory: GuestMemory,
         auxv: &'a [(libc::c_ulong, libc::c_ulong)],
-        registers: libc::user_regs_struct,
+        registers: &'a libc::user_regs_struct,
         thread_state: &'a mut T::ThreadState,
         executor: &'a mut dyn GuestSyscallExecutor<T>,
         global_state: &'a T::GlobalState,
@@ -1726,7 +1734,7 @@ impl<'a, T: Tool> KvmGuest<'a, T> {
         process_state: Arc<T>,
         memory: GuestMemory,
         auxv: &'a [(libc::c_ulong, libc::c_ulong)],
-        registers: libc::user_regs_struct,
+        registers: &'a libc::user_regs_struct,
         thread_state: &'a mut T::ThreadState,
         executor: &'a mut dyn GuestSyscallExecutor<T>,
         global_state: &'a T::GlobalState,
@@ -1986,7 +1994,7 @@ impl<T: Tool> Guest<T> for KvmGuest<'_, T> {
     }
 
     async fn regs(&mut self) -> libc::user_regs_struct {
-        self.registers
+        *self.registers
     }
 
     async fn defer_signal_delivery(
@@ -3482,7 +3490,7 @@ where
                 tool.clone(),
                 memory.clone(),
                 auxv,
-                registers,
+                &registers,
                 thread_state,
                 &mut guest_executor,
                 global_state.as_ref(),
@@ -3649,7 +3657,7 @@ where
             tool.clone(),
             memory.clone(),
             auxv,
-            registers,
+            &registers,
             thread_state,
             &mut guest_executor,
             global_state.as_ref(),
@@ -4733,7 +4741,23 @@ impl KvmBackend {
         watch: &crate::entry::driver::EntryDriverWatch,
     ) -> Result<HandlerOutcome<std::result::Result<T, E>>> {
         let outcome = self.finish_handler_completion(completion, hidden, map_error)?;
-        let outcome = if let Err(entry) = watch.check() {
+        let entry = watch.check();
+        self.route_finished_entry_handler(outcome, entry, map_error)
+            .await
+    }
+
+    /// The rest of [`Self::finish_entry_handler_completion`], after its entry
+    /// check: `entry` is that check's result. It awaits only when
+    /// [`entry_handler_outcome_needs_routing`] holds; otherwise it returns
+    /// `outcome` unchanged, which a caller may then do itself without
+    /// building this future.
+    async fn route_finished_entry_handler<T, E>(
+        &mut self,
+        outcome: HandlerOutcome<std::result::Result<T, E>>,
+        entry: Result<()>,
+        map_error: impl Fn(E) -> Error + Copy,
+    ) -> Result<HandlerOutcome<std::result::Result<T, E>>> {
+        let outcome = if let Err(entry) = entry {
             let error = match outcome {
                 HandlerOutcome::RuntimeError(error) => {
                     crate::entry::driver::combine_pending::<()>(Err(error), Err(entry)).unwrap_err()
@@ -5264,7 +5288,7 @@ impl KvmBackend {
                     tool.clone(),
                     memory.clone(),
                     &auxv,
-                    registers,
+                    &registers,
                     &mut thread_state,
                     &mut guest_executor,
                     &global_state,
@@ -5370,6 +5394,8 @@ impl KvmBackend {
                                         executor: &mut executor,
                                         vcpu: &self.vcpu,
                                     };
+                                    let callback_registers =
+                                        kvm_registers(registers, request.number());
                                     let mut guest = KvmGuest::<T>::new_with_watch(
                                         pid,
                                         // run_with_tool drives a single root thread.
@@ -5377,7 +5403,7 @@ impl KvmBackend {
                                         tool.clone(),
                                         memory.clone(),
                                         &auxv,
-                                        kvm_registers(registers, request.number()),
+                                        &callback_registers,
                                         &mut thread_state,
                                         &mut guest_executor,
                                         &global_state,
@@ -5888,16 +5914,17 @@ impl KvmBackend {
                 polled_read_attempt: None,
                 process_completed: &mut process_completed,
             };
+            let callback_registers = fault.map_or_else(
+                || kvm_registers(registers, syscall_number),
+                UserTrap::user_registers,
+            );
             let mut guest = KvmGuest::<T>::new_with_watch(
                 pid,
                 tid,
                 tool.clone(),
                 memory.clone(),
                 auxv,
-                fault.map_or_else(
-                    || kvm_registers(registers, syscall_number),
-                    UserTrap::user_registers,
-                ),
+                &callback_registers,
                 thread_state,
                 &mut guest_executor,
                 global_state.as_ref(),
@@ -6134,7 +6161,7 @@ impl KvmBackend {
                     tool.clone(),
                     memory.clone(),
                     &auxv,
-                    registers,
+                    &registers,
                     &mut thread_state,
                     &mut guest_executor,
                     global_state.as_ref(),
@@ -6457,13 +6484,14 @@ impl KvmBackend {
                                     polled_read_attempt: None,
                                     process_completed: &mut process_completed,
                                 };
+                                let callback_registers = boundary.user_registers();
                                 let mut guest = KvmGuest::<T>::new_with_watch(
                                     pid,
                                     tid,
                                     tool.clone(),
                                     memory.clone(),
                                     &auxv,
-                                    boundary.user_registers(),
+                                    &callback_registers,
                                     &mut thread_state,
                                     &mut guest_executor,
                                     global_state.as_ref(),
@@ -6890,7 +6918,7 @@ impl KvmBackend {
                                 tool.clone(),
                                 memory,
                                 &auxv,
-                                callback_registers,
+                                &callback_registers,
                                 &mut thread_state,
                                 &mut guest_executor,
                                 global_state.as_ref(),
@@ -6920,14 +6948,21 @@ impl KvmBackend {
                         self.restore_entry_origin();
                         executor.bind_address_space(&self.memory);
 
-                        let outcome = self
-                            .finish_entry_handler_completion(
-                                outcome,
-                                hide_tool_scratch(&memory, tool_stack_top),
-                                Error::Reverie,
-                                &callback_watch,
-                            )
-                            .await?;
+                        // `finish_entry_handler_completion`, with its usual
+                        // result (no routing) returned without building and
+                        // moving its future: the same steps in the same order.
+                        let outcome = self.finish_handler_completion(
+                            outcome,
+                            hide_tool_scratch(&memory, tool_stack_top),
+                            Error::Reverie,
+                        )?;
+                        let entry = callback_watch.check();
+                        let outcome = if entry_handler_outcome_needs_routing(&outcome, &entry) {
+                            self.route_finished_entry_handler(outcome, entry, Error::Reverie)
+                                .await?
+                        } else {
+                            outcome
+                        };
                         let classified = match outcome {
                             HandlerOutcome::Returned(result) => {
                                 let classified = match classify_handler_result(result) {
@@ -7461,6 +7496,13 @@ impl KvmBackend {
         )
         .await
     }
+}
+
+/// Whether [`KvmBackend::route_finished_entry_handler`] has anything to do
+/// for `outcome` after an entry check that returned `entry`: a failed check
+/// is routed, and so is a runtime error. Anything else it returns unchanged.
+fn entry_handler_outcome_needs_routing<R>(outcome: &HandlerOutcome<R>, entry: &Result<()>) -> bool {
+    entry.is_err() || matches!(outcome, HandlerOutcome::RuntimeError(_))
 }
 
 /// Resolve a Tool handler's return value into the raw word written to the
@@ -8552,8 +8594,7 @@ mod tests {
             Arc::new(crate::StraceTool),
             memory,
             &auxv,
-            // SAFETY: the test does not inspect any register field.
-            unsafe { std::mem::zeroed() },
+            &crate::runtime::ZEROED_USER_REGISTERS,
             &mut thread_state,
             &mut executor,
             &global_state,
@@ -8652,8 +8693,7 @@ mod tests {
             Arc::new(crate::StraceTool),
             memory,
             &auxv,
-            // SAFETY: the test does not inspect any register field.
-            unsafe { std::mem::zeroed() },
+            &crate::runtime::ZEROED_USER_REGISTERS,
             &mut thread_state,
             &mut executor,
             &global_state,
@@ -8735,8 +8775,7 @@ mod tests {
                     Arc::new(crate::StraceTool),
                     memory,
                     &auxv,
-                    // SAFETY: the test does not inspect any register field.
-                    unsafe { std::mem::zeroed() },
+                    &crate::runtime::ZEROED_USER_REGISTERS,
                     &mut thread_state,
                     &mut executor,
                     &global_state,
@@ -8797,8 +8836,7 @@ mod tests {
                 Arc::new(crate::StraceTool),
                 memory,
                 &auxv,
-                // SAFETY: the test does not inspect any register field.
-                unsafe { std::mem::zeroed() },
+                &crate::runtime::ZEROED_USER_REGISTERS,
                 &mut thread_state,
                 &mut executor,
                 &global_state,
@@ -8841,8 +8879,7 @@ mod tests {
             Arc::new(crate::StraceTool),
             memory,
             &auxv,
-            // SAFETY: the test does not inspect any register field.
-            unsafe { std::mem::zeroed() },
+            &crate::runtime::ZEROED_USER_REGISTERS,
             &mut thread_state,
             executor,
             &global_state,
@@ -8981,8 +9018,7 @@ mod tests {
                 Arc::new(crate::StraceTool),
                 memory,
                 &auxv,
-                // SAFETY: the test does not inspect any register field.
-                unsafe { std::mem::zeroed() },
+                &crate::runtime::ZEROED_USER_REGISTERS,
                 &mut thread_state,
                 &mut executor,
                 &global_state,
