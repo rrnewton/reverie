@@ -35,6 +35,7 @@ use tokio::sync::oneshot;
 
 use super::Breakpoint;
 use super::BreakpointType;
+use super::ClientFeatures;
 use super::Error;
 use super::GdbRequest;
 use super::Inferior;
@@ -110,6 +111,10 @@ pub struct Session {
     /// The signals gdb asked to have passed without a stop (`QPassSignals`),
     /// shared with the traced threads, which deliver them unreported.
     pub passed_signals: PassedSignals,
+
+    /// The optional stop events gdb asked for in its `qSupported`, shared
+    /// with the traced threads, which report only those.
+    pub client_features: ClientFeatures,
 
     /// gdb's interrupt, armed while gdb waits for a stop and shared with the
     /// packet relay, which raises it, and the traced threads, which take it.
@@ -274,6 +279,7 @@ impl Session {
             replied: Vec::new(),
             commands: 0,
             passed_signals: PassedSignals::default(),
+            client_features: ClientFeatures::default(),
             interrupt: Interrupt::default(),
             gdb_stop_rx: Some(gdb_stop_rx),
         }
@@ -560,7 +566,9 @@ impl Session {
                 self.no_ack_mode = true;
                 writer.put_str("OK");
             }
-            Base::qSupported(_) => {
+            Base::qSupported(supported) => {
+                self.client_features
+                    .set_from_qsupported(&supported.features);
                 writer.put_str("PacketSize=8000;vContSupported+;multiprocess+;exec-events+;fork-events+;vfork-events+;QThreadEvents+;QStartNoAckMode+;QPassSignals+;swbreak+;qXfer:features:read+;qXfer:auxv:read+;qXfer:threads:read+;");
             }
             // LLDB extensions. See

@@ -15,6 +15,7 @@
 mod breakpoint;
 mod commands;
 mod error;
+mod features;
 mod hex;
 mod inferior;
 mod interrupt;
@@ -38,6 +39,7 @@ pub use commands::ResumeAction;
 pub use commands::StopEvent;
 pub use commands::StopReason;
 pub use error::Error;
+pub use features::ClientFeatures;
 pub use inferior::Inferior;
 pub use inferior::InferiorThreadId;
 pub use inferior::ResumeInferior;

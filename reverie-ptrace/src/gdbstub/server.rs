@@ -22,6 +22,7 @@ use tokio::sync::mpsc;
 use tokio::sync::oneshot;
 
 use super::error::Error;
+use super::features::ClientFeatures;
 use super::inferior::StoppedInferior;
 use super::interrupt::Interrupt;
 use super::packet::Packet;
@@ -45,6 +46,9 @@ pub struct GdbServer {
     /// gdb's interrupt, which the packet relay raises and a traced thread
     /// takes.
     pub interrupt: Interrupt,
+    /// The optional stop events gdb asked for, which the session records and
+    /// the traced threads read.
+    pub client_features: ClientFeatures,
 }
 
 impl GdbServer {
@@ -57,12 +61,14 @@ impl GdbServer {
 
         let passed_signals = PassedSignals::default();
         let interrupt = Interrupt::default();
+        let client_features = ClientFeatures::default();
         let server = GdbServerImpl::from_addr(
             addr,
             server_rx,
             inferior_attached_rx,
             passed_signals.clone(),
             interrupt.clone(),
+            client_features.clone(),
         )
         .await?;
         tokio::task::spawn(async move {
@@ -76,6 +82,7 @@ impl GdbServer {
             sequentialized_guest: false,
             passed_signals,
             interrupt,
+            client_features,
         })
     }
 
@@ -88,12 +95,14 @@ impl GdbServer {
 
         let passed_signals = PassedSignals::default();
         let interrupt = Interrupt::default();
+        let client_features = ClientFeatures::default();
         let server = GdbServerImpl::from_path(
             path,
             server_rx,
             inferior_attached_rx,
             passed_signals.clone(),
             interrupt.clone(),
+            client_features.clone(),
         )
         .await?;
         tokio::task::spawn(async move {
@@ -107,6 +116,7 @@ impl GdbServer {
             sequentialized_guest: false,
             passed_signals,
             interrupt,
+            client_features,
         })
     }
 
@@ -215,6 +225,7 @@ impl GdbServerImpl {
         inferior_attached_rx: mpsc::Receiver<StoppedInferior>,
         passed_signals: PassedSignals,
         interrupt: Interrupt,
+        client_features: ClientFeatures,
     ) -> Result<Self, Error> {
         let stream = wait_for_tcp_connection(addr)
             .await
@@ -226,6 +237,7 @@ impl GdbServerImpl {
         let mut session = Session::new(Box::new(writer), rx, inferior_attached_rx);
         session.passed_signals = passed_signals;
         session.interrupt = interrupt.clone();
+        session.client_features = client_features;
 
         Ok(GdbServerImpl {
             reader: Box::new(reader),
@@ -245,6 +257,7 @@ impl GdbServerImpl {
         inferior_attached_rx: mpsc::Receiver<StoppedInferior>,
         passed_signals: PassedSignals,
         interrupt: Interrupt,
+        client_features: ClientFeatures,
     ) -> Result<Self, Error> {
         let stream = wait_for_unix_connection(path)
             .await
@@ -257,6 +270,7 @@ impl GdbServerImpl {
         let mut session = Session::new(Box::new(writer), rx, inferior_attached_rx);
         session.passed_signals = passed_signals;
         session.interrupt = interrupt.clone();
+        session.client_features = client_features;
 
         Ok(GdbServerImpl {
             reader: Box::new(reader),

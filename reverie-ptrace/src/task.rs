@@ -90,6 +90,7 @@ use crate::error::Error;
 use crate::error::TraceResultExt;
 use crate::failure::PtraceCleanupFailure;
 use crate::failure::PtraceRunFailure;
+use crate::gdbstub::ClientFeatures;
 use crate::gdbstub::CoreRegs;
 use crate::gdbstub::GdbRequest;
 use crate::gdbstub::GdbServer;
@@ -4003,6 +4004,20 @@ pub struct TracedTask<L: Tool> {
     /// The signals gdb asked to have delivered without a stop.
     gdb_passed_signals: PassedSignals,
 
+    /// The optional stop events gdb asked for: a fork, a vfork or an exec is
+    /// reported only if gdb follows it.
+    gdb_client_features: ClientFeatures,
+
+    /// This thread reported a vfork to gdb, whose return gdb waits for as a
+    /// `vforkdone` stop (`handle_vfork_done_event`).
+    gdb_vfork_reported: bool,
+
+    /// This thread shares its address space with the process it was forked
+    /// from (a vfork, or a clone with `CLONE_VM` into a new process), so a
+    /// breakpoint gdb set there is in its memory too and must stay there
+    /// (`step_over_unfollowed_breakpoint`).
+    shares_breakpoint_memory: bool,
+
     /// Notify gdbserver start accepting incoming packets.
     gdbserver_start_tx: Option<oneshot::Sender<()>>,
 
@@ -4164,6 +4179,10 @@ impl<L: Tool> TracedTask<L> {
             .as_ref()
             .map(|server| server.passed_signals.clone())
             .unwrap_or_default();
+        let gdb_client_features = gdbserver
+            .as_ref()
+            .map(|server| server.client_features.clone())
+            .unwrap_or_default();
         let gdb_interrupt = gdbserver
             .as_ref()
             .map(|server| server.interrupt.clone())
@@ -4247,6 +4266,9 @@ impl<L: Tool> TracedTask<L> {
             breakpoints: Default::default(),
             gdb_view: ThreadView::default(),
             gdb_passed_signals: gdb_passed_signals.clone(),
+            gdb_client_features,
+            gdb_vfork_reported: false,
+            shares_breakpoint_memory: false,
             suspended: Arc::new(AtomicBool::new(false)),
             gdb_request_tx: Some(gdb_request_tx),
             gdb_ports: GdbPorts::new(gdb_resume_rx, gdb_request_rx),
@@ -4350,6 +4372,9 @@ impl<L: Tool> TracedTask<L> {
             breakpoints: self.breakpoints.clone(),
             gdb_view: ThreadView::default(),
             gdb_passed_signals: self.gdb_passed_signals.clone(),
+            gdb_client_features: self.gdb_client_features.clone(),
+            gdb_vfork_reported: false,
+            shares_breakpoint_memory: self.shares_breakpoint_memory,
             suspended: Arc::new(AtomicBool::new(false)),
             gdb_request_tx: Some(gdb_request_tx),
             gdb_ports: GdbPorts::new(gdb_resume_rx, gdb_request_rx),
@@ -4469,14 +4494,24 @@ impl<L: Tool> TracedTask<L> {
             attached_by_gdb: self.attached_by_gdb,
             resumed_by_gdb: None,
             gdb_resume_tx: Some(gdb_resume_tx),
-            breakpoints: Arc::new(StdMutex::new(
-                self.breakpoints
-                    .lock()
-                    .expect("should not be poisoned: no code panics while holding it")
-                    .clone(),
-            )),
+            // A shared address space holds the same breakpoints, which gdb
+            // may insert or remove through either process; a copy holds a
+            // copy of them.
+            breakpoints: if shares_address_space {
+                self.breakpoints.clone()
+            } else {
+                Arc::new(StdMutex::new(
+                    self.breakpoints
+                        .lock()
+                        .expect("should not be poisoned: no code panics while holding it")
+                        .clone(),
+                ))
+            },
             gdb_view: ThreadView::default(),
             gdb_passed_signals: self.gdb_passed_signals.clone(),
+            gdb_client_features: self.gdb_client_features.clone(),
+            gdb_vfork_reported: false,
+            shares_breakpoint_memory: shares_address_space,
             suspended: Arc::new(AtomicBool::new(false)),
             gdb_request_tx: Some(gdb_request_tx),
             gdb_ports: GdbPorts::new(gdb_resume_rx, gdb_request_rx),
@@ -4485,7 +4520,13 @@ impl<L: Tool> TracedTask<L> {
             gdb_sent_signal: SentSignal::default(),
             exit_suspend_tx: Some(exit_suspend_tx),
             exit_suspend_rx: Some(exit_suspend_rx),
-            needs_step_over: Arc::new(Mutex::new(())),
+            // A step over a breakpoint in shared memory takes it out of
+            // both processes.
+            needs_step_over: if shares_address_space {
+                self.needs_step_over.clone()
+            } else {
+                Arc::new(Mutex::new(()))
+            },
             suspended_tasks: BTreeMap::new(),
             stack_checked_out: Arc::new(AtomicBool::new(false)),
         }
@@ -6181,7 +6222,11 @@ impl<L: Tool + 'static> TracedTask<L> {
 
         Ok(if self.breakpoints().contains_key(&rip_minus_one) {
             *regs.ip_mut() = rip_minus_one;
-            let next_state = self.resume_from_swbreak(task, regs).await?;
+            let next_state = if self.attached_by_gdb {
+                self.resume_from_swbreak(task, regs).await?
+            } else {
+                self.step_over_unfollowed_breakpoint(task, regs).await?
+            };
             HandleSignalResult::SignalSuppressed(next_state)
         } else if resumed_by_gdb_step {
             self.notify_gdb_stop(StopReason::stopped(
@@ -7162,6 +7207,12 @@ impl<L: Tool + 'static> TracedTask<L> {
         // inject or tail inject after execve succeeded.
         self.pending_syscall = None;
         self.injected_syscall_frame = None;
+        // The new image is a new address space, of this process alone,
+        // holding none of gdb's breakpoints: a later `z0` for an old one
+        // fails instead of writing the old image's byte into the new one.
+        self.breakpoints = Arc::new(StdMutex::new(HashMap::new()));
+        self.needs_step_over = Arc::new(Mutex::new(()));
+        self.shares_breakpoint_memory = false;
 
         // TODO: Update PID? Need to write a test checking this.
 
@@ -7371,13 +7422,17 @@ impl<L: Tool + 'static> TracedTask<L> {
                 proc_exe.clone().into()
             });
 
+            // An exec is reported as one only if gdb follows execs
+            // (`exec-events+`); otherwise, as natively without
+            // `PTRACE_O_TRACEEXEC`, as the trap that stops the thread after
+            // it. The first stop, the guest's own start, is not reported.
+            let event = if self.gdb_client_features.exec_events() {
+                StopEvent::Exec(exe)
+            } else {
+                StopEvent::Signal(Signal::SIGTRAP.into())
+            };
             let stopped = StoppedInferior {
-                reason: StopReason::stopped(
-                    task.pid(),
-                    self.pid(),
-                    StopEvent::Exec(exe),
-                    task.getregs()?.into(),
-                ),
+                reason: StopReason::stopped(task.pid(), self.pid(), event, task.getregs()?.into()),
                 request_tx: request_tx.ok_or(Errno::EIO)?,
                 resume_tx: resume_tx.ok_or(Errno::EIO)?,
                 view: self.gdb_view.clone(),
@@ -8085,6 +8140,20 @@ impl<L: Tool + 'static> TracedTask<L> {
         {
             child_task.ppid = Some(parent);
         }
+        // gdb is told of a new thread, and of a new process only if it asked
+        // to follow forks or vforks (`fork-events+`, `vfork-events+` in its
+        // `qSupported`). Natively gdbserver does not even trace a process gdb
+        // does not follow; here the child runs on under the Tool alone, and
+        // the parent goes on without a stop.
+        let reported_to_gdb = self.attached_by_gdb
+            && match op {
+                ChildOp::Clone => true,
+                ChildOp::Fork => self.gdb_client_features.fork_events(),
+                ChildOp::Vfork => self.gdb_client_features.vfork_events(),
+            };
+        if !reported_to_gdb {
+            child_task.attached_by_gdb = false;
+        }
         child_task.ptracer_waits.bind_running(&child);
 
         let (child_stop_tx, child_stop_rx) = mpsc::channel(1);
@@ -8209,7 +8278,10 @@ impl<L: Tool + 'static> TracedTask<L> {
             TraceError::from(Errno::new(error.raw_os_error().unwrap_or(libc::EIO)))
         })?;
         let parent_regs = parent.getregs()?;
-        if self.attached_by_gdb {
+        if reported_to_gdb {
+            // gdb waits for the parent's return from a vfork it was told of
+            // (`handle_vfork_done_event`).
+            self.gdb_vfork_reported = op == ChildOp::Vfork;
             // NB: We report T05;create event (for clone). However gdbserver
             // from binutils-gdb doesn't report it, even after toggling
             // QThreadEvents, as mentioned in https://sourceware.org/gdb/onlinedocs/gdb/General-Query-Packets.html#QThreadEvents
@@ -8299,7 +8371,56 @@ impl<L: Tool + 'static> TracedTask<L> {
         }
     }
 
+    /// Reports the parent's return from a vfork gdb was told of, reached as
+    /// `wait` inside an injected vfork, as the `vforkdone` stop gdb waits for
+    /// (`handle_vfork_done_event`). The thread stays stopped for the rest of
+    /// its injection, and gdb's resume applies as from a stop made inside a
+    /// callback (`apply_resume_from_gdb_stop`).
+    async fn report_vfork_done_in_place(&mut self, wait: &Wait) -> Result<(), TraceError> {
+        if let Wait::Stopped(parent, Event::VforkDone) = wait
+            && self.gdb_vfork_reported
+        {
+            self.gdb_vfork_reported = false;
+            if !self.attached_by_gdb {
+                return Ok(());
+            }
+            let regs = parent.getregs()?;
+            self.notify_gdb_stop(StopReason::stopped(
+                parent.pid(),
+                self.pid(),
+                StopEvent::Vforkdone,
+                regs.into(),
+            ))
+            .await?;
+            // The thread's stop is still to be handled by its injection: gdb
+            // sees its registers but may not change them.
+            let shown = CoreRegs::from_parts(regs, parent.getfpregs()?);
+            let (resume, released_by_session) = self.serve_gdb_stop(Some(&shown)).await?;
+            self.apply_resume_from_gdb_stop(resume, released_by_session, parent.pid(), true);
+        }
+        Ok(())
+    }
+
     async fn handle_vfork_done_event(&mut self, stopped: Stopped) -> Result<Wait, TraceError> {
+        // Told of the vfork, gdb took its breakpoints out of the address space
+        // the parent shared with the child, and puts them back only at this
+        // stop, the parent's return from the vfork ("Stop Reply Packets",
+        // `vforkdone`). Until then it reports any other fork as an internal
+        // error.
+        if std::mem::take(&mut self.gdb_vfork_reported) && self.attached_by_gdb {
+            let regs = stopped.getregs()?;
+            self.notify_gdb_stop(StopReason::stopped(
+                stopped.pid(),
+                self.pid(),
+                StopEvent::Vforkdone,
+                regs.into(),
+            ))
+            .await?;
+            let running = self
+                .await_gdb_resume(stopped, ExpectedGdbResume::Resume)
+                .await?;
+            return running.next_state_with_owner(&self.ptracer_waits).await;
+        }
         self.resume_stopped(stopped, None)?
             .next_state_with_owner(&self.ptracer_waits)
             .await
@@ -12487,6 +12608,7 @@ impl<L: Tool + 'static> TracedTask<L> {
                         }
                         wait => wait,
                     };
+                    self.report_vfork_done_in_place(&wait).await?;
                     // That stop, not the event stop, is the one a resume from
                     // a signal callback leaves (`report_held_signal`).
                     self.note_injection_stop(&wait)?;
@@ -13162,6 +13284,91 @@ impl<L: Tool + 'static> TracedTask<L> {
     /// Resume from a software breakpoint set by gdb. The resume action is
     /// initiated from gdb (client).
     // NB: caller to %rip accordingly prior to hitting breakpoint.
+    /// Runs a thread gdb does not follow past a breakpoint gdb set before the
+    /// thread's process was forked from one it follows: a process gdb was not
+    /// told of (`handle_new_task`) carries gdb's breakpoints in its copy of
+    /// the parent's memory, or in the memory it shares with the parent, and
+    /// would otherwise stop at them for good. In a copy, the breakpoint is
+    /// removed. In shared memory, where gdb's breakpoint must stay for the
+    /// parent, the instruction is stepped with the breakpoint out and the
+    /// breakpoint put back, whatever stop the step ends at. `regs` are the
+    /// thread's registers with rip at the breakpoint.
+    async fn step_over_unfollowed_breakpoint(
+        &mut self,
+        mut task: Stopped,
+        regs: libc::user_regs_struct,
+    ) -> Result<Wait, TraceError> {
+        task.setregs(&regs)?;
+        let addr = regs.ip();
+        let at = AddrMut::<u64>::from_raw(addr as usize).ok_or(Errno::EFAULT)?;
+        if !self.shares_breakpoint_memory {
+            let insn = self.breakpoints().remove(&addr).ok_or(Errno::ENOENT)?;
+            let current: u64 = task.read_value(at)?;
+            task.write_value(at, &breakpoint_removed(current, insn))?;
+            return self
+                .resume_stopped(task, None)?
+                .next_state_with_owner(&self.ptracer_waits)
+                .await;
+        }
+        // As a gdb step-over does: no other thread may find the breakpoint
+        // out meanwhile.
+        let needs_step_over = self.needs_step_over.clone();
+        let _guard = needs_step_over.lock().await;
+        let Some(insn) = self.breakpoints().get(&addr).copied() else {
+            // gdb removed it meanwhile, through the process it follows.
+            return self
+                .resume_stopped(task, None)?
+                .next_state_with_owner(&self.ptracer_waits)
+                .await;
+        };
+        let current: u64 = task.read_value(at)?;
+        task.write_value(at, &breakpoint_removed(current, insn))?;
+        // The step's trap must not reset a blocked or ignored SIGTRAP, as at
+        // Reverie's other steps (`sigtrap_state`).
+        let (shielded, ignored) = if self.keeps_sigtrap_state() {
+            let ignored = self.sigtrap_ignored(&task)?;
+            self.forget_sigtrap_ignored();
+            (
+                self.shield_sigtrap_for_step(&task, "unfollowed gdb breakpoint")?,
+                ignored,
+            )
+        } else {
+            (false, false)
+        };
+        let wait = self
+            .step_stopped(task, None)?
+            .next_state_with_owner(&self.ptracer_waits)
+            .await?;
+        self.arm_liteinst_wait(&wait);
+        if ignored {
+            self.note_sigtrap_repair(SigtrapRepair::Ignored);
+        }
+        if shielded {
+            reblock_sigtrap_after_step(&wait)?;
+        }
+        let Wait::Stopped(mut task, event) = wait else {
+            // The thread is gone. Its process shared the memory, whose
+            // breakpoint a thread that stops there next finds out: gdb
+            // inserts it again (`add_breakpoint`) once it sees it missing.
+            return Ok(wait);
+        };
+        // Put gdb's breakpoint back, whatever stop the step ended at, unless
+        // gdb removed it meanwhile.
+        if self.breakpoints().contains_key(&addr) {
+            let current: u64 = task.read_value(at)?;
+            task.write_value(at, &breakpoint_inserted(current))?;
+        }
+        match event {
+            Event::Signal(Signal::SIGTRAP) if task.getsiginfo()?.si_code == libc::TRAP_TRACE => {
+                self.resume_stopped(task, None)?
+                    .next_state_with_owner(&self.ptracer_waits)
+                    .await
+            }
+            // Another trap, an event or a signal, handled as any stop is.
+            event => Ok(Wait::Stopped(task, event)),
+        }
+    }
+
     async fn resume_from_swbreak(
         &mut self,
         task: Stopped,

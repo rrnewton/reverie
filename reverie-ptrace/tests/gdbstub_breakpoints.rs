@@ -32,7 +32,9 @@
 //! `int3` bytes that the server's `m` packet hides.
 //!
 //! The file also drives GDB's interrupt (the byte 0x03 of Ctrl-C) against a
-//! guest that never stops on its own (`fixtures/gdbstub_interrupt.c`).
+//! guest that never stops on its own (`fixtures/gdbstub_interrupt.c`), and
+//! the fork, vfork and exec stops a client gets only if it asks for them in
+//! its `qSupported` (`fixtures/gdbstub_fork_events.c`, `gdbstub_exec.c`).
 
 #![cfg(target_arch = "x86_64")]
 
@@ -271,6 +273,15 @@ impl Remote {
 
     async fn remove(&mut self, addr: u64) {
         assert_eq!(self.request(&format!("z0,{addr:x},1")).await, "OK");
+    }
+
+    /// Lists the client's features, as GDB's first packet does, and checks
+    /// that the server answers with its own. Then has SIGCHLD passed without
+    /// a stop, as GDB does by default (`QPassSignals`, gdb's number 0x14).
+    async fn supported(&mut self, features: &str) {
+        let reply = self.request(&format!("qSupported:{features}")).await;
+        assert!(reply.starts_with("PacketSize="), "{reply:?}");
+        assert_eq!(self.request("QPassSignals:14").await, "OK");
     }
 
     /// Resumes every thread of the guest, as GDB's `continue` does.
@@ -850,5 +861,224 @@ async fn an_interrupt_stops_a_guest_blocked_in_the_kernel() {
     assert!(
         matches!(status, ExitStatus::Signaled(reverie::Signal::SIGKILL, _)),
         "{status:?}"
+    );
+}
+
+/// A Tool that runs every system call the guest makes as its own injection,
+/// as Detcore runs many: a fork, a vfork or an exec then happens inside the
+/// Tool's callback.
+#[derive(Default)]
+struct InjectTool;
+
+#[reverie::tool]
+impl Tool for InjectTool {
+    type GlobalState = ();
+    type ThreadState = ();
+
+    async fn handle_syscall_event<G: reverie::Guest<Self>>(
+        &self,
+        guest: &mut G,
+        syscall: Syscall,
+    ) -> Result<i64, Error> {
+        Ok(guest.inject(syscall).await?)
+    }
+}
+
+/// The fork-events guest and the address of `in_child`.
+struct ForkGuest {
+    path: PathBuf,
+    in_child: u64,
+}
+
+fn fork_guest() -> &'static ForkGuest {
+    static GUEST: LazyLock<ForkGuest> = LazyLock::new(|| {
+        let (path, addresses) = build_guest("gdbstub_fork_events", &[], &["in_child"]);
+        ForkGuest {
+            path,
+            in_child: addresses[0],
+        }
+    });
+    &GUEST
+}
+
+/// GDB's features less the optional stop events.
+const NO_EVENTS: &str = "multiprocess+;swbreak+;hwbreak+;vContSupported+;QThreadEvents+";
+
+/// A client that follows no forks is told of none ("General Query Packets",
+/// `qSupported`): the guest's vforks and fork run as if no client were
+/// there. Its children run through the breakpoint the client set before
+/// they were made, which a fork child carries in its copy of the memory and
+/// a vfork child shares, and the breakpoint still stops the parent.
+async fn a_client_that_follows_no_forks_sees_none<T>(name: &str)
+where
+    T: Tool + Default + 'static,
+    T::GlobalState: Default,
+{
+    let ForkGuest { path, in_child } = fork_guest();
+    let in_child = *in_child;
+    let status = debug_to_end_with::<T, _, _>(path, name, false, |mut remote| async move {
+        remote.supported(NO_EVENTS).await;
+        remote.insert(in_child).await;
+        let main = remote.thread.clone();
+        let stop = remote.resume().await;
+        assert!(
+            stop.starts_with("T05swbreak:"),
+            "the parent's own call, and no fork stop, comes first: {stop:?}"
+        );
+        assert_eq!(stop_thread(&stop), main);
+        assert_eq!(stop_rip(&stop), in_child);
+        remote.remove(in_child).await;
+        assert_exited_zero(&remote.resume().await, "after the parent's breakpoint");
+    })
+    .await;
+    assert_eq!(
+        status,
+        ExitStatus::Exited(0),
+        "every child exited as expected"
+    );
+}
+
+#[tokio::test]
+async fn a_client_that_follows_no_forks_sees_none_and_its_breakpoint_stays_in_the_parent() {
+    a_client_that_follows_no_forks_sees_none::<NoopTool>("no-forks").await;
+}
+
+#[tokio::test]
+async fn a_client_that_follows_no_forks_sees_none_of_those_a_tool_injects() {
+    a_client_that_follows_no_forks_sees_none::<InjectTool>("no-forks-injected").await;
+}
+
+/// A client that follows vforks, and not forks, is told of each vfork and,
+/// once it has let the child go, of the parent's return from it
+/// (`vforkdone`), which it waits for before it reports another fork: GDB
+/// fails an internal assertion otherwise. The fork is not reported.
+async fn a_client_that_follows_vforks_is_told_when_each_is_done<T>(name: &str)
+where
+    T: Tool + Default + 'static,
+    T::GlobalState: Default,
+{
+    let ForkGuest { path, .. } = fork_guest();
+    let status = debug_to_end_with::<T, _, _>(path, name, false, |mut remote| async move {
+        remote
+            .supported(&format!("{NO_EVENTS};vfork-events+"))
+            .await;
+        let main = remote.thread.clone();
+        let mut stop = remote.resume().await;
+        for vfork in 0..2 {
+            let child = stop
+                .strip_prefix("T05vfork:")
+                .and_then(|rest| rest.split(';').next())
+                .unwrap_or_else(|| panic!("vfork {vfork}: expected a vfork stop: {stop:?}"))
+                .to_owned();
+            assert_eq!(stop_thread(&stop), main);
+            let pid = child
+                .strip_prefix('p')
+                .and_then(|id| id.split('.').next())
+                .expect("the child's process");
+            assert_eq!(remote.request(&format!("D;{pid}")).await, "OK");
+            let done = remote.request(&format!("vCont;c:{main}")).await;
+            assert!(
+                done.starts_with("T05vforkdone:"),
+                "vfork {vfork}: expected the parent's vforkdone: {done:?}"
+            );
+            assert_eq!(stop_thread(&done), main);
+            stop = remote.resume().await;
+        }
+        assert_exited_zero(&stop, "the fork is not reported");
+    })
+    .await;
+    assert_eq!(
+        status,
+        ExitStatus::Exited(0),
+        "every child exited as expected"
+    );
+}
+
+#[tokio::test]
+async fn a_client_that_follows_vforks_is_told_when_each_vfork_is_done() {
+    a_client_that_follows_vforks_is_told_when_each_is_done::<NoopTool>("vforks").await;
+}
+
+#[tokio::test]
+async fn a_client_that_follows_vforks_is_told_when_each_injected_one_is_done() {
+    a_client_that_follows_vforks_is_told_when_each_is_done::<InjectTool>("vforks-injected").await;
+}
+
+/// An exec is reported as an `exec` stop only to a client that follows
+/// execs; to another it is the trap that stops the thread after an exec
+/// natively, when the tracer does not ask Linux for exec events.
+#[tokio::test]
+async fn an_exec_is_reported_as_one_only_to_a_client_that_follows_execs() {
+    static GUEST: LazyLock<PathBuf> = LazyLock::new(|| build_guest("gdbstub_exec", &[], &[]).0);
+    for follows in [false, true] {
+        let features = if follows {
+            format!("{NO_EVENTS};exec-events+")
+        } else {
+            NO_EVENTS.to_owned()
+        };
+        let name = if follows {
+            "exec-events"
+        } else {
+            "no-exec-events"
+        };
+        let status = debug_to_end(&GUEST, name, |mut remote| async move {
+            remote.supported(&features).await;
+            let stop = remote.resume().await;
+            assert!(stop.starts_with("T05"), "{stop:?}");
+            assert_eq!(
+                stop.contains("exec:"),
+                follows,
+                "the exec's stop as a client that follows execs: {follows}: {stop:?}"
+            );
+            assert_exited_zero(&remote.resume().await, "after the exec");
+        })
+        .await;
+        assert_eq!(status, ExitStatus::Exited(0));
+    }
+}
+
+/// A breakpoint the client inserts while a vfork child it was told of lives,
+/// through the parent, is in the memory the child shares and in the child's
+/// breakpoints too. Once the client has let the child go without removing it
+/// (GDB removes its breakpoints first; the protocol does not require it), the
+/// child runs through it, and it still stops the parent.
+#[tokio::test]
+async fn a_breakpoint_inserted_while_a_vfork_child_lives_is_the_childs_too() {
+    let ForkGuest { path, in_child } = fork_guest();
+    let in_child = *in_child;
+    let status = debug_to_end(path, "vfork-insert", |mut remote| async move {
+        remote
+            .supported(&format!("{NO_EVENTS};vfork-events+"))
+            .await;
+        let main = remote.thread.clone();
+        let mut stop = remote.resume().await;
+        for vfork in 0..2 {
+            let child = stop
+                .strip_prefix("T05vfork:p")
+                .and_then(|rest| rest.split('.').next())
+                .unwrap_or_else(|| panic!("vfork {vfork}: expected a vfork stop: {stop:?}"))
+                .to_owned();
+            if vfork == 0 {
+                remote.insert(in_child).await;
+            }
+            assert_eq!(remote.request(&format!("D;{child}")).await, "OK");
+            let done = remote.request(&format!("vCont;c:{main}")).await;
+            assert!(done.starts_with("T05vforkdone:"), "{done:?}");
+            stop = remote.resume().await;
+        }
+        assert!(
+            stop.starts_with("T05swbreak:"),
+            "the children ran through the breakpoint, which stops the parent: {stop:?}"
+        );
+        assert_eq!(stop_thread(&stop), main);
+        assert_eq!(stop_rip(&stop), in_child);
+        remote.remove(in_child).await;
+        assert_exited_zero(&remote.resume().await, "after the parent's breakpoint");
+    })
+    .await;
+    assert_eq!(
+        status,
+        ExitStatus::Exited(0),
+        "every child exited as expected"
     );
 }
