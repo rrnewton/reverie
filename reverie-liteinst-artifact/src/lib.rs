@@ -17696,6 +17696,10 @@ const FIXED_OPTIMIZED_TLS_THUNK_EVENT_ARGUMENT_HEX: &str =
 const FIXED_OPTIMIZED_PATCH_ALLOC_DIAGNOSTIC_EVENT_ARGUMENT_HEX: &str = "41574156415453504889d34989f6ff1554a00a004885c074774c8b78204d85ff746e4989c4488d3dfc9a0a00e8ef330a004883b880000000007463498b542410498b0f498d76ff49f7de31c04889cf4801d7723e4801f772394c21f74989f84929d04901d8410f92c14981f801000002410f93c24508ca75194889c8f04d0fb1074889c1b80000000075c14889f8eb0231c04883c4085b415c415e415fc3bf010000004c89f64889da4883c4085b415c415e415fff2596a00a00";
 const FIXED_OPTIMIZED_TLS_THUNK_DIAGNOSTIC_EVENT_ARGUMENT_HEX: &str =
     "50488d3da0980a00e893310a00488d808000000059c3";
+// Actual clean bb79 OFF FullTool fixture: complete 38 B getter, cell 0x98.
+// Existing module/PLT operands are bound; the cell displacement remains literal.
+const FIXED_DEV_TLS_CELL_GETTER_FULLTOOL_OFF_DIAGNOSTIC_HEX: &str =
+    "4883ec1848897c24084889742410488d3dc3ea1700e8b6ea1600488d80980000004883c418c3";
 // Only the enumerated whole observed cell-access recipes are accepted. The caller must
 // authenticate STT_TLS/zero-fill/module identity with fixed_tls_cell and the
 // descriptor/provider joins; a synthetic SymbolEvidence is not ELF admission.
@@ -17739,6 +17743,11 @@ fn fixed_tls_cell_access_recipe(
         ),
         ("fixed_tls_cell_getter", 0x80) => (
             FIXED_DEV_TLS_CELL_GETTER_DIAGNOSTIC_EVENT_ARGUMENT_HEX,
+            29,
+            &[(17, 21), (22, 26)],
+        ),
+        ("fixed_tls_cell_getter", 0x98) => (
+            FIXED_DEV_TLS_CELL_GETTER_FULLTOOL_OFF_DIAGNOSTIC_HEX,
             29,
             &[(17, 21), (22, 26)],
         ),
@@ -19934,6 +19943,16 @@ fn validate_existing_allocator_tls_boundary(
             && match image_kind {
                 FixedImageKind::Standalone => {
                     matches!(tls.tls_cell.address, 0x40 | 0x48 | 0x80 | 0x88)
+                        // The measured 0x98/d8 DEV getters are admitted only through
+                        // its retained LocalKey route, never a direct or
+                        // optimized absence claim. The complete 177 B chain
+                        // of nine roles and actual indirect edge are required below.
+                        || (matches!(tls.tls_cell.address, 0x98 | 0xd8)
+                            && tls.direct_allocation.is_none()
+                            && tls.local_key_object.is_some()
+                            && tls.local_key_transfer.is_some()
+                            && tls.local_key_resolution.as_deref()
+                                == Some("local_relative_readonly_function_pointer"))
                 }
                 FixedImageKind::Detcore => {
                     matches!(
@@ -19982,7 +20001,7 @@ fn validate_existing_allocator_tls_boundary(
             resolution == "local_relative_readonly_function_pointer"
                 && (tls.tls_cell.address == 0x48
                     || (image_kind == FixedImageKind::Standalone
-                        && matches!(tls.tls_cell.address, 0x40 | 0x80)))
+                        && matches!(tls.tls_cell.address, 0x40 | 0x80 | 0x98 | 0xd8)))
                 && edge.local_got_slot.is_none()
                 && tls
                     .local_chain
@@ -20039,7 +20058,7 @@ fn validate_existing_allocator_tls_boundary(
         _ => return Err("Fixed TLS local function-pointer evidence is inconsistent".into()),
     }
     if image_kind == FixedImageKind::Standalone
-        && matches!(tls.tls_cell.address, 0x40 | 0x80)
+        && matches!(tls.tls_cell.address, 0x40 | 0x80 | 0x98 | 0xd8)
         && tls.local_key_object.is_some()
     {
         let try_with = tls.local_chain.get("fixed_tls_try_with");
@@ -39203,6 +39222,14 @@ mod tests {
     fn fixed_tls_cell_access_mutation_controls() {
         type TlsAccessSample<'a> = (&'a str, u64, &'a str, u64, &'a [(usize, usize, u64)]);
         let samples: &[TlsAccessSample<'_>] = &[
+            // Actual clean bb79 OFF FullTool fixture: authenticated cell 0x98.
+            (
+                "fixed_tls_cell_getter",
+                0x11eb00,
+                "4883ec1848897c24084889742410488d3dc3ea1700e8b6ea1600488d80980000004883c418c3",
+                0x98,
+                &[(17, 21, 0x29d5d8), (22, 26, 0x28d5d0)],
+            ),
             // Actual ef5ea dev FullTool fixture: full 38 B, authenticated cell 0xd8.
             (
                 "fixed_tls_cell_getter",
@@ -39354,6 +39381,9 @@ mod tests {
                 0x80,
                 0x88,
                 0x90,
+                0x97,
+                0x98,
+                0x99,
                 0xd0,
                 0xd7,
                 0xd8,
@@ -39370,7 +39400,7 @@ mod tests {
                     fixed_tls_cell_access_recipe(role, address, &bytes, &bad, operands).is_err()
                 );
             }
-            if offset == 0xd8 {
+            if matches!(offset, 0x98 | 0xd8) {
                 for other_role in ["fixed_patch_alloc", "fixed_tls_fn_once"] {
                     assert!(
                         fixed_tls_cell_access_recipe(other_role, address, &bytes, &cell, operands)
@@ -41987,6 +42017,19 @@ mod tests {
         let decoded: AllocatorBackingEvidence = serde_json::from_value(value.clone()).unwrap();
         validate_fixed_backing_evidence(&decoded).unwrap();
         assert_eq!(serde_json::to_value(&decoded).unwrap(), value);
+        // Both measured DEV offsets require the retained177B LocalKey recipe.
+        // A valid old direct absence witness cannot substitute for that chain.
+        for offset in [0x98, 0xd8] {
+            let mut unsupported = decoded.clone();
+            unsupported.tls_boundary.existing_mut().tls_cell.address = offset;
+            assert!(validate_fixed_backing_evidence(&unsupported).is_err());
+            let unsupported = unsupported.tls_boundary.existing().unwrap();
+            assert!(validate_direct_allocation_tls_evidence(
+                unsupported,
+                unsupported.direct_allocation.as_ref().unwrap(),
+            )
+            .is_err());
+        }
         for (field, replacement) in [
             ("version", serde_json::json!(2)),
             ("policy", serde_json::json!("empty_role_map")),
@@ -42196,6 +42239,157 @@ mod tests {
             &'a [(u64, u64)],
         );
         let profiles: &[ProfileSample<'_>] = &[
+            // Actual clean bb79 OFF DEV chain, physical packet a37ca9e3.
+            // The exact schema sample does not itself qualify the retained ELF.
+            (
+                FixedImageKind::Standalone,
+                0x98,
+                &[
+                    (
+                        "fixed_patch_alloc",
+                        "_RNvXs3_NtCscaQKJQc56J2_16reverie_liteinst11patch_allocNtB5_26FixedPrivatePatchAllocatorNtNtNtCsayI02cGi06u_4core5alloc6global11GlobalAlloc5alloc",
+                        0xf8ef0,
+                        177,
+                        "617aee689417ec54becb1615e431ce7c3dc770a05edb9643f09cf8c3c706f160",
+                    ),
+                    (
+                        "fixed_installation_active",
+                        "_RNvNtCscaQKJQc56J2_16reverie_liteinst11patch_alloc19installation_active",
+                        0xf8330,
+                        25,
+                        "b52d94f6e19c77583fa02fbf6c2274c90845111cfb3521a7535500fbb8b83186",
+                    ),
+                    (
+                        "fixed_tls_fn_once",
+                        "_RNvYNCNKNvNtCscaQKJQc56J2_16reverie_liteinst11patch_alloc18INSTALLATION_DEPTH0s_0INtNtNtCsayI02cGi06u_4core3ops8function6FnOnceTINtNtB1o_6option6OptionQIB23_INtNtB1o_4cell4CelljEEEEE9call_onceBa_",
+                        0x1250e0,
+                        37,
+                        "e9ae01f627ef2d67783e28fbff382c3ec89c53e17473448bfac1807265f02829",
+                    ),
+                    (
+                        "fixed_tls_get",
+                        "_RNvMs3_NtNtCsa2m0ZrbF74z_3std6thread5localINtB5_8LocalKeyINtNtCsayI02cGi06u_4core4cell4CelljEE3getCsdvqdzgwEw5h_15reverie_inguest",
+                        0x1425b0,
+                        13,
+                        "9c7cae9a475fe232d16589e6c9ad71581d71d4ed47df68347d2cdb2335843602",
+                    ),
+                    (
+                        "fixed_tls_with",
+                        "_RINvMs2_NtNtCsa2m0ZrbF74z_3std6thread5localINtB6_8LocalKeyINtNtCsayI02cGi06u_4core4cell4CelljEE4withNvMs8_BX_BU_3getjECsdvqdzgwEw5h_15reverie_inguest",
+                        0x141ac0,
+                        62,
+                        "2dcf6bd6fa674db3c6fae4a4b825d5fa67baa56ec2d75e0d9e35e7cd2cad907d",
+                    ),
+                    (
+                        "fixed_tls_try_with",
+                        "_RINvMs2_NtNtCsa2m0ZrbF74z_3std6thread5localINtB6_8LocalKeyINtNtCsayI02cGi06u_4core4cell4CelljEE8try_withNvMs8_BX_BU_3getjECsdvqdzgwEw5h_15reverie_inguest",
+                        0x141b00,
+                        175,
+                        "52b04328ac7be45da5155ca99cd313e6c0ec6296338a794c65b8de8ce05489fa",
+                    ),
+                    (
+                        "fixed_tls_cell_getter",
+                        "_RNCNKNvNtCscaQKJQc56J2_16reverie_liteinst11patch_alloc18INSTALLATION_DEPTH0s_0B7_",
+                        0x11eb00,
+                        38,
+                        "ba711f14e8d95e2e91c717db2b849989374984ac1069c992e2a802d718612d47",
+                    ),
+                    (
+                        "fixed_tls_cell_callback",
+                        "_RNvYNvMs8_NtCsayI02cGi06u_4core4cellINtB8_4CelljE3getINtNtNtBa_3ops8function6FnOnceTRBy_EE9call_onceCsdvqdzgwEw5h_15reverie_inguest",
+                        0x12b690,
+                        25,
+                        "e17399523f79a0c2e189d9ece819ed6e6ea965db2723d5a6064fe6208cda80fd",
+                    ),
+                    (
+                        "fixed_tls_cell_read",
+                        "_RNvMs8_NtCsayI02cGi06u_4core4cellINtB5_4CelljE3getCsco5iqk9nC1o_11parking_lot",
+                        0x1bed60,
+                        9,
+                        "19c145446b1c59b56ba7b422314ffa92488b16a4819eeaff9f55e7130028c0d3",
+                    ),
+                ],
+                Some(0x28e840),
+                0x29d5d8,
+                0x28d5d0,
+                &[(0x11eb15, 0x28d5d0)],
+            ),
+            // Actual ef5ea/new FullTool bridge DEV chain, physical packet
+            // eb2f7bce: exact d8 cell, 177 B allocation and immutable LocalKey.
+            // This schema sample does not itself qualify the retained ELF.
+            (
+                FixedImageKind::Standalone,
+                0xd8,
+                &[
+                    (
+                        "fixed_patch_alloc",
+                        "_RNvXs3_NtCsikwTbW12jsg_16reverie_liteinst11patch_allocNtB5_26FixedPrivatePatchAllocatorNtNtNtCsayI02cGi06u_4core5alloc6global11GlobalAlloc5alloc",
+                        0x2042a0,
+                        177,
+                        "fa4e0ff50796bf1ffbcb66606cbd04899df313f3b5502560eb0695531c4b7d36",
+                    ),
+                    (
+                        "fixed_installation_active",
+                        "_RNvNtCsikwTbW12jsg_16reverie_liteinst11patch_alloc19installation_active",
+                        0x2036e0,
+                        25,
+                        "424004291d457397686badb2b6546858cdebbe6ffd06454c435349f0d25b3baf",
+                    ),
+                    (
+                        "fixed_tls_fn_once",
+                        "_RNvYNCNKNvNtCsikwTbW12jsg_16reverie_liteinst11patch_alloc18INSTALLATION_DEPTH0s_0INtNtNtCsayI02cGi06u_4core3ops8function6FnOnceTINtNtB1o_6option6OptionQIB23_INtNtB1o_4cell4CelljEEEEE9call_onceBa_",
+                        0x1c4120,
+                        37,
+                        "9281edfdbc10ee608a8ab7c39a7719b4a7e9cf421aa08a62d9f91fda498e2021",
+                    ),
+                    (
+                        "fixed_tls_get",
+                        "_RNvMs3_NtNtCsa2m0ZrbF74z_3std6thread5localINtB5_8LocalKeyINtNtCsayI02cGi06u_4core4cell4CelljEE3getCsdvqdzgwEw5h_15reverie_inguest",
+                        0x32a320,
+                        13,
+                        "0965e08d2883d3a6f42f78147ceb3fb662363b480aab82b123c58d42fbb20e58",
+                    ),
+                    (
+                        "fixed_tls_with",
+                        "_RINvMs2_NtNtCsa2m0ZrbF74z_3std6thread5localINtB6_8LocalKeyINtNtCsayI02cGi06u_4core4cell4CelljEE4withNvMs8_BX_BU_3getjECsdvqdzgwEw5h_15reverie_inguest",
+                        0x329830,
+                        62,
+                        "ceba86fe7670b98c210ad1f05f5f2aa9824517a09c588020f571f31f6bee3315",
+                    ),
+                    (
+                        "fixed_tls_try_with",
+                        "_RINvMs2_NtNtCsa2m0ZrbF74z_3std6thread5localINtB6_8LocalKeyINtNtCsayI02cGi06u_4core4cell4CelljEE8try_withNvMs8_BX_BU_3getjECsdvqdzgwEw5h_15reverie_inguest",
+                        0x329870,
+                        175,
+                        "26ba8aae36b7ffd9d7e088147201d0b60242ed4a51e52b7a88cc4a00b743dae7",
+                    ),
+                    (
+                        "fixed_tls_cell_getter",
+                        "_RNCNKNvNtCsikwTbW12jsg_16reverie_liteinst11patch_alloc18INSTALLATION_DEPTH0s_0B7_",
+                        0x1f24c0,
+                        38,
+                        "ecb021d066e095c1c9005436e5138db4f00cf5d7677454cce19a6fc9e0a932dd",
+                    ),
+                    (
+                        "fixed_tls_cell_callback",
+                        "_RNvYNvMs8_NtCsayI02cGi06u_4core4cellINtB8_4CelljE3getINtNtNtBa_3ops8function6FnOnceTRBy_EE9call_onceCsdvqdzgwEw5h_15reverie_inguest",
+                        0x312ea0,
+                        25,
+                        "ba8968c82da4a5d535ef484a7541860eb83eb948837daa0a65d3cfc3c91374fd",
+                    ),
+                    (
+                        "fixed_tls_cell_read",
+                        "_RNvMs8_NtCsayI02cGi06u_4core4cellINtB5_4CelljE3getCsco5iqk9nC1o_11parking_lot",
+                        0x3a9050,
+                        9,
+                        "19c145446b1c59b56ba7b422314ffa92488b16a4819eeaff9f55e7130028c0d3",
+                    ),
+                ],
+                Some(0x47de00),
+                0x4b7000,
+                0x4797d0,
+                &[(0x1f24d5, 0x4797d0)],
+            ),
             // Actual a746cd77 DEV chain. Schema controls below do not replace
             // the physical whole-body, ELF, provider and source qualification.
             (
@@ -42544,6 +42738,55 @@ mod tests {
                 validate_fixed_backing_evidence_in_source_context(b, kind)
             };
             check(&sample).unwrap();
+            if kind == FixedImageKind::Standalone && matches!(offset, 0x98 | 0xd8) {
+                // The new offset must execute the old complete Some-LocalKey
+                // checks; admitting a numeric offset alone must not pass.
+                assert!(validate_existing_allocator_tls_boundary(
+                    sample.tls_boundary.existing().unwrap(),
+                    FixedImageKind::Detcore,
+                )
+                .is_err(), "standalone DEV{offset:#x} cannot substitute for a Detcore TLS cohort");
+                for mutation in 0..6 {
+                    let mut bad = sample.clone();
+                    let tls = bad.tls_boundary.existing_mut();
+                    match mutation {
+                        0 => tls.callsites.clear(),
+                        1 => tls.callsites[0].local_got_slot = Some(tls.got_slot),
+                        2 => tls.unisolated = false,
+                        3 => tls.local_chain.get_mut("fixed_patch_alloc").unwrap().size = 186,
+                        4 => {
+                            tls.local_chain.insert(
+                                "unexpected_tls_role".into(),
+                                tls.local_chain["fixed_tls_cell_getter"].clone(),
+                            );
+                            tls.function_sha256.insert(
+                                "unexpected_tls_role".into(),
+                                tls.function_sha256["fixed_tls_cell_getter"].clone(),
+                            );
+                        }
+                        5 => {
+                            tls.local_key_object = None;
+                            tls.local_key_transfer = None;
+                            tls.local_key_resolution = None;
+                            tls.local_chain.retain(|role, _| {
+                                matches!(role.as_str(), "fixed_patch_alloc" | "fixed_tls_fn_once")
+                            });
+                            tls.function_sha256.retain(|role, _| {
+                                matches!(role.as_str(), "fixed_patch_alloc" | "fixed_tls_fn_once")
+                            });
+                            tls.local_chain.get_mut("fixed_patch_alloc").unwrap().size = 186;
+                            tls.local_chain.get_mut("fixed_tls_fn_once").unwrap().size = 22;
+                        }
+                        _ => unreachable!(),
+                    }
+                    assert!(check(&bad).is_err(), "DEV{offset:#x} incomplete/optimized boundary{mutation}");
+                }
+                for wrong in [0, 0x90, 0x97, 0x99, 0xd0, 0xd7, 0xd9, 0xe0, u64::MAX] {
+                    let mut bad = sample.clone();
+                    bad.tls_boundary.existing_mut().tls_cell.address = wrong;
+                    assert!(check(&bad).is_err(), "unmeasured DEV TLS offset{wrong:#x}");
+                }
+            }
             if kind == FixedImageKind::Detcore && offset == 0xe8 {
                 fixed_detcore_tls_direct_schema_controls(&sample);
             }
