@@ -697,6 +697,9 @@ struct CompilerRootBinding {
 pub struct VerifiedCompiledSources {
     record: CompiledSources,
     current_build: Option<CurrentBuildEvidence>,
+    // Fresh factory metadata only. Wrapper validation activates exclusively in
+    // the OFF standalone build factory; historical ON records/gates do not change.
+    standalone_metadata: Option<Value>,
 }
 const COMPILED_RV_LOCATION_FILES: [&str; 7] = [
     "reverie-liteinst/src/patch_alloc.rs",
@@ -2080,6 +2083,9 @@ impl VerifiedCompiledSources {
         Ok(Self {
             record,
             current_build: None,
+            standalone_metadata: (expected.layout == CompiledSourceLayout::HermitGit
+                && expected.image_kind == FixedImageKind::Standalone)
+                .then(|| metadata.clone()),
         })
     }
     /// Explicit closed-profile Hermit source-copy authority. It never catches a Git error
@@ -2264,6 +2270,8 @@ impl VerifiedCompiledSources {
                 leaf,
             },
             current_build: None,
+            standalone_metadata: (expected.image_kind == FixedImageKind::Standalone)
+                .then(|| metadata.clone()),
         };
         verified.verify_unchanged(runner)?;
         Ok(verified)
@@ -2292,6 +2300,49 @@ impl VerifiedCompiledSources {
         Ok(Self {
             record: self.record.clone(),
             current_build: Some(current_build),
+            standalone_metadata: self.standalone_metadata.clone(),
+        })
+    }
+    /// Bind only the measured nonfixture OFF standalone release build. Its
+    /// nested workspace and both selected packages differ from Detcore's
+    /// command. All six owned workspace files are tied to the existing source
+    /// authority before wrapper metadata or compiler output can earn admission.
+    /// Success and failure both close the original source boundary.
+    pub fn with_standalone_current_build(
+        &self,
+        command: &CommandEvidence,
+        selected_elf: &Path,
+        target_directory: &Path,
+        runner: &mut Runner,
+    ) -> Result<Self> {
+        let result = self.verify_unchanged(runner).and_then(|_| {
+            let metadata = self
+                .standalone_metadata
+                .as_ref()
+                .ok_or("standalone build lacks fresh factory metadata")?;
+            let binding = standalone_current_build_sources(&self.record, metadata, runner)?;
+            current_build_evidence_in_scope(
+                &self.record,
+                command,
+                selected_elf,
+                target_directory,
+                Some(&binding),
+            )
+        });
+        let closed = self.verify_unchanged(runner);
+        let current_build = match (result, closed) {
+            (Ok(value), Ok(())) => value,
+            (Err(error), Ok(())) | (Ok(_), Err(error)) => return Err(error),
+            (Err(error), Err(close)) => {
+                return Err(format!(
+                    "{error}; standalone build source close failed: {close}"
+                ));
+            }
+        };
+        Ok(Self {
+            record: self.record.clone(),
+            current_build: Some(current_build),
+            standalone_metadata: self.standalone_metadata.clone(),
         })
     }
     /// Exact retained Cargo compiler spelling; canonical PackageIdentity remains
@@ -2579,6 +2630,149 @@ pub fn select_artifact(
     Ok(candidates.remove(0))
 }
 
+fn standalone_current_build_sources(
+    sources: &CompiledSources,
+    metadata: &Value,
+    runner: &mut Runner,
+) -> Result<StandaloneCurrentBuildSources> {
+    require(
+        sources.layout == CompiledSourceLayout::HermitGit
+            && sources.image_kind == FixedImageKind::Standalone,
+        "standalone build source binding requires the owned Hermit nested workspace",
+    )?;
+    let mut workspace_files = BTreeMap::new();
+    match &sources.authority {
+        CompiledSourceAuthority::Git { workspace_head, .. } => {
+            for relative in CONTENT_WORKSPACE_FILES {
+                workspace_files.insert(
+                    relative.to_owned(),
+                    compiled_blob_file(&sources.workspace_root, workspace_head, relative, runner)?,
+                );
+            }
+        }
+        CompiledSourceAuthority::DeclaredContent {
+            workspace_inventory,
+            ..
+        } => {
+            require(
+                workspace_inventory
+                    .iter()
+                    .map(|entry| entry.relative.as_str())
+                    .collect::<BTreeSet<_>>()
+                    == BTreeSet::from(CONTENT_WORKSPACE_FILES)
+                    && workspace_inventory.len() == CONTENT_WORKSPACE_FILES.len(),
+                "standalone declared workspace inventory differs from its six owned files",
+            )?;
+            for relative in CONTENT_WORKSPACE_FILES {
+                let file = sources
+                    .files
+                    .get(&format!("workspace:{relative}"))
+                    .ok_or("standalone declared workspace file absent")?;
+                let declared = workspace_inventory
+                    .iter()
+                    .find(|entry| entry.relative == relative)
+                    .ok_or("standalone workspace file has no declared authority")?;
+                file.verify()?;
+                require(
+                    file.path == sources.workspace_root.join(relative)
+                        && file.sha256 == declared.sha256
+                        && fs::metadata(&file.path).map_err(|e| e.to_string())?.len()
+                            == declared.size,
+                    "standalone workspace file differs from declared source authority",
+                )?;
+                workspace_files.insert(relative.to_owned(), file.clone());
+            }
+        }
+    }
+    require(
+        workspace_files.get("liteinst-runtime-build/Cargo.toml") == Some(&sources.manifest),
+        "standalone workspace manifest differs from the existing source authority",
+    )?;
+    let wrapper = standalone_wrapper_package(metadata, &sources.workspace_root, &workspace_files)?;
+    Ok(StandaloneCurrentBuildSources {
+        wrapper,
+        workspace_files,
+    })
+}
+
+fn standalone_wrapper_package(
+    metadata: &Value,
+    root: &Path,
+    workspace_files: &BTreeMap<String, FileIdentity>,
+) -> Result<PackageIdentity> {
+    let name = "hermit-liteinst-runtime-artifact";
+    let target = "hermit_liteinst_runtime_artifact";
+    let manifest = workspace_files
+        .get("liteinst-runtime-build/runtime/Cargo.toml")
+        .ok_or("authorized standalone wrapper manifest absent")?;
+    let source_file = workspace_files
+        .get("liteinst-runtime-build/runtime/src/lib.rs")
+        .ok_or("authorized standalone wrapper source absent")?;
+    manifest.verify()?;
+    source_file.verify()?;
+    let nested = root.join("liteinst-runtime-build");
+    require(
+        manifest.path == nested.join("runtime/Cargo.toml")
+            && source_file.path == nested.join("runtime/src/lib.rs")
+            && metadata["workspace_root"].as_str() == nested.to_str(),
+        "standalone wrapper or metadata belongs to a different nested workspace",
+    )?;
+    let id = format!(
+        "path+file://{}#{name}@0.5.1",
+        nested.join("runtime").display()
+    );
+    let packages: Vec<_> = metadata["packages"]
+        .as_array()
+        .ok_or("fresh standalone metadata packages absent")?
+        .iter()
+        .filter(|package| package["name"] == name)
+        .collect();
+    require(
+        packages.len() == 1,
+        "fresh standalone wrapper package absent or duplicated",
+    )?;
+    let package = packages[0];
+    require(
+        package["id"] == id
+            && package["version"] == "0.5.1"
+            && package.get("source") == Some(&Value::Null)
+            && package["manifest_path"].as_str() == manifest.path.to_str()
+            && strings(&metadata["workspace_members"])?
+                .iter()
+                .filter(|member| *member == &id)
+                .count()
+                == 1,
+        "fresh standalone wrapper identity differs from its authorized local package",
+    )?;
+    let targets: Vec<_> = package["targets"]
+        .as_array()
+        .ok_or("standalone wrapper targets absent")?
+        .iter()
+        .filter(|candidate| candidate["name"] == target)
+        .collect();
+    require(
+        targets.len() == 1,
+        "standalone wrapper target absent or duplicated",
+    )?;
+    let target_record = targets[0];
+    require(
+        target_record["src_path"].as_str() == source_file.path.to_str()
+            && strings(&target_record["kind"])? == ["lib"]
+            && strings(&target_record["crate_types"])? == ["lib"],
+        "standalone wrapper target differs from its exact lib/lib source",
+    )?;
+    Ok(PackageIdentity {
+        id,
+        name: name.into(),
+        manifest: manifest.path.clone(),
+        source: None,
+        target: target.into(),
+        kind: vec!["lib".into()],
+        crate_types: vec!["lib".into()],
+        target_source: source_file.path.clone(),
+    })
+}
+
 fn current_cargo_executable(program: &str) -> Result<Option<FileIdentity>> {
     if program == "cargo" {
         return Ok(None);
@@ -2606,6 +2800,11 @@ fn verify_current_build_files(build: &CurrentBuildEvidence) -> Result<()> {
     build.command.stdout.verify()?;
     build.command.stderr.verify()?;
     build.artifact.verify()?;
+    if let Some(sources) = &build.standalone_sources {
+        for file in sources.workspace_files.values() {
+            file.verify()?;
+        }
+    }
     require(
         current_cargo_executable(&build.command.program)? == build.cargo_executable,
         "current Cargo executable identity changed after binding",
@@ -2688,11 +2887,76 @@ fn current_build_evidence(
     selected_elf: &Path,
     target_directory: &Path,
 ) -> Result<CurrentBuildEvidence> {
-    // This returns data only. The public factory first verifies its opaque
-    // source context; callers cannot obtain one by deserializing these records.
     require(
         sources.image_kind == FixedImageKind::Detcore,
         "current build witness requires a Detcore source identity",
+    )?;
+    current_build_evidence_in_scope(sources, command, selected_elf, target_directory, None)
+}
+
+fn standalone_current_build_command(
+    command: &CommandEvidence,
+    sources: &CompiledSources,
+    target: &Path,
+) -> Result<Option<FileIdentity>> {
+    let cargo_executable = current_cargo_executable(&command.program)?;
+    let expected = standalone_current_build_arguments(target)?;
+    require(
+        command.status == 0
+            && sources.layout == CompiledSourceLayout::HermitGit
+            && sources.image_kind == FixedImageKind::Standalone
+            && sources.manifest.path
+                == sources
+                    .workspace_root
+                    .join("liteinst-runtime-build/Cargo.toml")
+            && Some(command.cwd.as_path()) == sources.manifest.path.parent()
+            && command.arguments == expected,
+        "standalone current build differs from the exact nested release multipackage command",
+    )?;
+    Ok(cargo_executable)
+}
+
+fn standalone_current_build_arguments(target: &Path) -> Result<Vec<String>> {
+    Ok(vec![
+        "build",
+        "--locked",
+        "--no-default-features",
+        "--manifest-path",
+        "Cargo.toml",
+        "-p",
+        "hermit-liteinst-runtime-artifact",
+        "-p",
+        "reverie-liteinst-preload",
+        "--lib",
+        "--profile",
+        "release",
+        "--target-dir",
+        target.to_str().ok_or("standalone target is not UTF-8")?,
+        "--message-format=json-render-diagnostics",
+    ]
+    .into_iter()
+    .map(str::to_owned)
+    .collect())
+}
+
+fn current_build_evidence_in_scope(
+    sources: &CompiledSources,
+    command: &CommandEvidence,
+    selected_elf: &Path,
+    target_directory: &Path,
+    standalone: Option<&StandaloneCurrentBuildSources>,
+) -> Result<CurrentBuildEvidence> {
+    // Data only. Public factories require fresh opaque sources; the standalone
+    // factory additionally binds all owned workspace files to that authority.
+    require(
+        if standalone.is_some() {
+            sources.layout == CompiledSourceLayout::HermitGit
+                && sources.image_kind == FixedImageKind::Standalone
+                && sources.leaf.name == "reverie-liteinst-preload"
+        } else {
+            sources.image_kind == FixedImageKind::Detcore
+        },
+        "current build source image differs from its explicit witness scope",
     )?;
     command.stdout.verify()?;
     command.stderr.verify()?;
@@ -2710,9 +2974,31 @@ fn current_build_evidence(
             && canonical_target != sources.workspace_root,
         "current build target must be an explicit separate directory",
     )?;
+    if let Some(binding) = standalone {
+        require(
+            binding
+                .workspace_files
+                .values()
+                .all(|file| !file.path.starts_with(&canonical_target)),
+            "standalone current build target overlaps authorized source paths",
+        )?;
+    }
     let target_directory = canonical_target;
-    let expected_profile = serde_json::json!({"opt_level":"3", "debuginfo":0,
-        "debug_assertions":true,"overflow_checks":true,"test":false});
+    let expected_profile = if standalone.is_some() {
+        NoScopeCohort::StandaloneRelease62.profile()
+    } else {
+        NoScopeCohort::DetcoreNative101.profile()
+    };
+    let required_names: &[&str] = if standalone.is_some() {
+        &[
+            "hermit-liteinst-runtime-artifact",
+            "reverie-liteinst-preload",
+            "reverie-liteinst",
+            "reverie-inguest",
+        ]
+    } else {
+        &["detcore-liteinst", "reverie-inguest", "reverie-liteinst"]
+    };
     let mut packages = BTreeMap::new();
     for line in messages.lines().filter(|line| !line.is_empty()) {
         let event: Value = serde_json::from_str(line)
@@ -2723,9 +3009,9 @@ fn current_build_evidence(
         let candidates: Vec<_> = sources
             .packages
             .values()
+            .chain(standalone.map(|binding| &binding.wrapper))
             .filter(|package| {
-                ["reverie-liteinst", "reverie-inguest", "detcore-liteinst"]
-                    .contains(&package.name.as_str())
+                required_names.contains(&package.name.as_str())
                     && event["package_id"] == package.id
                     && event["target"]["name"] == package.target
             })
@@ -2788,10 +3074,10 @@ fn current_build_evidence(
     }
     require(
         packages.keys().map(String::as_str).collect::<BTreeSet<_>>()
-            == BTreeSet::from(["detcore-liteinst", "reverie-inguest", "reverie-liteinst"]),
+            == required_names.iter().copied().collect(),
         "current build lacks the actual leaf/core/inguest compiler events",
     )?;
-    let leaf = &packages["detcore-liteinst"];
+    let leaf = &packages[&sources.leaf.name];
     let selected = select_artifact(
         &messages,
         &leaf.package,
@@ -2804,16 +3090,27 @@ fn current_build_evidence(
         artifact.path == selected.reported_path,
         "current build witness selects a different actual Cargo ELF",
     )?;
-    let cargo_executable =
-        current_build_command(command, sources, &target_directory, &leaf.features)?;
-    Ok(CurrentBuildEvidence {
+    let cargo_executable = if standalone.is_some() {
+        standalone_current_build_command(command, sources, &target_directory)?
+    } else {
+        current_build_command(command, sources, &target_directory, &leaf.features)?
+    };
+    let evidence = CurrentBuildEvidence {
         command: command.clone(),
         cargo_executable,
         target_directory,
         artifact,
         compiled_sources_sha256: sha256(&serde_json::to_vec(sources).map_err(|e| e.to_string())?),
         packages,
-    })
+        standalone_sources: standalone.cloned(),
+    };
+    if standalone.is_some() {
+        require(
+            no_scope_build_features(&evidence)? == NoScopeCohort::StandaloneRelease62,
+            "standalone current build is not the measured nonfixture OFF release cohort",
+        )?;
+    }
+    Ok(evidence)
 }
 
 const ALLOCATOR_BACKING_SYMBOL: &str = "reverie_liteinst_allocator_backing_v1";
@@ -2940,8 +3237,9 @@ struct CurrentBuildPackage {
     profile: Value,
     outputs: Vec<PathBuf>,
 }
-/// Data retained inside the new absence arm. Only with_current_build can bind
-/// it to an opaque source context; deserializing it does not create authority.
+/// Data retained inside the new absence arm. Only the explicit current-build
+/// factories can bind it to an opaque source context; deserializing it does not
+/// create authority.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct CurrentBuildEvidence {
@@ -2951,6 +3249,15 @@ struct CurrentBuildEvidence {
     artifact: FileIdentity,
     compiled_sources_sha256: String,
     packages: BTreeMap<String, CurrentBuildPackage>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    standalone_sources: Option<StandaloneCurrentBuildSources>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct StandaloneCurrentBuildSources {
+    wrapper: PackageIdentity,
+    workspace_files: BTreeMap<String, FileIdentity>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -3017,6 +3324,113 @@ const NO_SCOPE_OTHER_GETTERS: [(&str, u64); 4] = [
         0x140,
     ),
 ];
+// The ordinary OFF image has the same101B allocation body, but its complete
+// typed getter population has different OWNER/DISPATCH offsets. These are
+// distinct measured cohorts, not interchangeable TLS layouts.
+const ORDINARY_NO_SCOPE_OTHER_GETTERS: [(&str, u64); 4] = [
+    (NO_SCOPE_OTHER_GETTERS[0].0, 0xe8),
+    (NO_SCOPE_OTHER_GETTERS[1].0, 0x100),
+    (NO_SCOPE_OTHER_GETTERS[2].0, 0),
+    (NO_SCOPE_OTHER_GETTERS[3].0, 0xf0),
+];
+const STANDALONE_RELEASE_NO_SCOPE_OTHER_GETTERS: [(&str, u64); 2] = [
+    (NO_SCOPE_OTHER_GETTERS[0].0, 0x40),
+    (NO_SCOPE_OTHER_GETTERS[2].0, 0),
+];
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum NoScopeCohort {
+    DetcoreNative101,
+    DetcoreOrdinary101,
+    StandaloneRelease62,
+}
+impl NoScopeCohort {
+    fn policy(self) -> &'static str {
+        match self {
+            Self::DetcoreNative101 => NO_INSTALLATION_SCOPE_POLICY,
+            Self::DetcoreOrdinary101 => {
+                "detcore_ordinary_off_alloc101_reviewed_source_current_build_rx_loader_census_v1"
+            }
+            Self::StandaloneRelease62 => {
+                "standalone_release_off_alloc62_reviewed_source_current_build_rx_loader_census_v1"
+            }
+        }
+    }
+    fn image_kind(self) -> FixedImageKind {
+        match self {
+            Self::DetcoreNative101 | Self::DetcoreOrdinary101 => FixedImageKind::Detcore,
+            Self::StandaloneRelease62 => FixedImageKind::Standalone,
+        }
+    }
+    fn allocation_size(self) -> u64 {
+        match self {
+            Self::DetcoreNative101 | Self::DetcoreOrdinary101 => 101,
+            Self::StandaloneRelease62 => 62,
+        }
+    }
+    fn getters(self) -> &'static [(&'static str, u64)] {
+        match self {
+            Self::DetcoreNative101 => &NO_SCOPE_OTHER_GETTERS,
+            Self::DetcoreOrdinary101 => &ORDINARY_NO_SCOPE_OTHER_GETTERS,
+            Self::StandaloneRelease62 => &STANDALONE_RELEASE_NO_SCOPE_OTHER_GETTERS,
+        }
+    }
+    fn profile(self) -> Value {
+        let debug = self != Self::StandaloneRelease62;
+        serde_json::json!({"opt_level":"3", "debuginfo":0,
+            "debug_assertions":debug,"overflow_checks":debug,"test":false})
+    }
+    fn features(self) -> &'static [(&'static str, &'static [&'static str])] {
+        match self {
+            Self::DetcoreNative101 => &[
+                (
+                    "detcore-liteinst",
+                    &["exec-native-injection", "exec-private-init"],
+                ),
+                (
+                    "reverie-liteinst",
+                    &[
+                        "exec-native-injection",
+                        "exec-private-init",
+                        "exec-private-successor",
+                        "fixed-syscall-gates",
+                        "native-exec-state",
+                    ],
+                ),
+                (
+                    "reverie-inguest",
+                    &[
+                        "coordinator-rpc",
+                        "exec-native-injection",
+                        "exec-private-init",
+                        "exec-private-successor",
+                        "fixed-syscall-gates",
+                        "launcher",
+                        "native-exec-state",
+                        "rcb-clock",
+                    ],
+                ),
+            ],
+            Self::DetcoreOrdinary101 => &[
+                ("detcore-liteinst", &[]),
+                ("reverie-liteinst", &[]),
+                (
+                    "reverie-inguest",
+                    &["coordinator-rpc", "launcher", "rcb-clock"],
+                ),
+            ],
+            Self::StandaloneRelease62 => &[
+                ("hermit-liteinst-runtime-artifact", &[]),
+                ("reverie-liteinst-preload", &[]),
+                ("reverie-liteinst", &[]),
+                (
+                    "reverie-inguest",
+                    &["coordinator-rpc", "launcher", "rcb-clock"],
+                ),
+            ],
+        }
+    }
+}
 
 /// Versioned finite absence evidence, not a TLS-isolation or source authority.
 /// Consumer admission always re-extracts this from its actual ELF and verified
@@ -17272,6 +17686,10 @@ const FIXED_DEV_TLS_CELL_GETTER_EVENT_ARGUMENT_HEX: &str =
     "4883ec1848897c24084889742410488d3ddb4a2200e8a6d11e00488d80400000004883c418c3";
 const FIXED_DEV_TLS_CELL_GETTER_DIAGNOSTIC_EVENT_ARGUMENT_HEX: &str =
     "4883ec1848897c24084889742410488d3d7bfc2200e8967f1f00488d80800000004883c418c3";
+// Actual signed ef5ea FullTool C fixture leaf: complete 38 B getter, cell 0xd8.
+// Only the existing module/PLT RIP fields are bound; cell displacement stays literal.
+const FIXED_DEV_TLS_CELL_GETTER_FULLTOOL_DIAGNOSTIC_HEX: &str =
+    "4883ec1848897c24084889742410488d3d2b4b2c00e8f6722800488d80d80000004883c418c3";
 const FIXED_OPTIMIZED_PATCH_ALLOC_EVENT_ARGUMENT_HEX: &str = "41574156415453504889d34989f6ff157c850a004885c074774c8b78204d85ff746e4989c4488d3dec7f0a00e80f190a004883b840000000007463498b542410498b0f498d76ff49f7de31c04889cf4801d7723e4801f772394c21f74989f84929d04901d8410f92c14981f801000002410f93c24508ca75194889c8f04d0fb1074889c1b80000000075c14889f8eb0231c04883c4085b415c415e415fc3bf010000004c89f64889da4883c4085b415c415e415fff25fe840a00";
 const FIXED_OPTIMIZED_TLS_THUNK_EVENT_ARGUMENT_HEX: &str =
     "50488d3d907d0a00e8b3160a00488d804000000059c3";
@@ -17321,6 +17739,11 @@ fn fixed_tls_cell_access_recipe(
         ),
         ("fixed_tls_cell_getter", 0x80) => (
             FIXED_DEV_TLS_CELL_GETTER_DIAGNOSTIC_EVENT_ARGUMENT_HEX,
+            29,
+            &[(17, 21), (22, 26)],
+        ),
+        ("fixed_tls_cell_getter", 0xd8) => (
+            FIXED_DEV_TLS_CELL_GETTER_FULLTOOL_DIAGNOSTIC_HEX,
             29,
             &[(17, 21), (22, 26)],
         ),
@@ -17582,55 +18005,84 @@ fn direct_tls_getter_census(
     })
 }
 
-fn no_scope_build_features(build: &CurrentBuildEvidence) -> Result<()> {
-    let expected = [
-        (
-            "detcore-liteinst",
-            vec!["exec-native-injection", "exec-private-init"],
-        ),
-        (
-            "reverie-liteinst",
-            vec![
-                "exec-native-injection",
-                "exec-private-init",
-                "exec-private-successor",
-                "fixed-syscall-gates",
-                "native-exec-state",
-            ],
-        ),
-        (
-            "reverie-inguest",
-            vec![
-                "coordinator-rpc",
-                "exec-native-injection",
-                "exec-private-init",
-                "exec-private-successor",
-                "fixed-syscall-gates",
-                "launcher",
-                "native-exec-state",
-                "rcb-clock",
-            ],
-        ),
-    ];
+fn no_scope_build_features(build: &CurrentBuildEvidence) -> Result<NoScopeCohort> {
+    let candidates: Vec<_> = [
+        NoScopeCohort::DetcoreNative101,
+        NoScopeCohort::DetcoreOrdinary101,
+        NoScopeCohort::StandaloneRelease62,
+    ]
+    .into_iter()
+    .filter(|cohort| {
+        let expected = cohort.features();
+        build.packages.len() == expected.len()
+            && expected.iter().all(|(name, features)| {
+                build.packages.get(*name).is_some_and(|package| {
+                    package
+                        .features
+                        .iter()
+                        .map(String::as_str)
+                        .eq(features.iter().copied())
+                        && package.profile == cohort.profile()
+                })
+            })
+    })
+    .collect();
     require(
-        build.packages.len() == expected.len(),
-        "no-scope build package population differs",
+        candidates.len() == 1,
+        "no-scope build has an unreviewed package/feature/test/profile cohort",
     )?;
-    for (name, features) in expected {
-        let package = build
-            .packages
-            .get(name)
-            .ok_or("no-scope compiler package absent")?;
+    let cohort = candidates[0];
+    if cohort == NoScopeCohort::StandaloneRelease62 {
+        let binding = build
+            .standalone_sources
+            .as_ref()
+            .ok_or("standalone no-scope build lacks its authorized workspace binding")?;
+        let root = build
+            .command
+            .cwd
+            .parent()
+            .ok_or("standalone workspace parent absent")?;
         require(
-            package.features == features
-                && package.profile
-                    == serde_json::json!({
-            "opt_level":"3", "debuginfo":0, "debug_assertions":true,
-            "overflow_checks":true, "test":false}),
-            "no-scope build has an unreviewed feature/test/profile selection",
+            build.command.cwd == root.join("liteinst-runtime-build")
+                && build.command.arguments
+                    == standalone_current_build_arguments(&build.target_directory)?
+                && build.target_directory.is_absolute()
+                && binding
+                    .workspace_files
+                    .keys()
+                    .map(String::as_str)
+                    .collect::<BTreeSet<_>>()
+                    == BTreeSet::from(CONTENT_WORKSPACE_FILES)
+                && binding.workspace_files.len() == CONTENT_WORKSPACE_FILES.len()
+                && binding.workspace_files.iter().all(|(relative, file)| {
+                    file.path == root.join(relative)
+                        && file.sha256.len() == 64
+                        && file.sha256.bytes().all(|byte| byte.is_ascii_hexdigit())
+                })
+                && binding.wrapper == build.packages["hermit-liteinst-runtime-artifact"].package
+                && binding.wrapper.id
+                    == format!(
+                        "path+file://{}#hermit-liteinst-runtime-artifact@0.5.1",
+                        root.join("liteinst-runtime-build/runtime").display()
+                    )
+                && binding.wrapper.name == "hermit-liteinst-runtime-artifact"
+                && binding.wrapper.source.is_none()
+                && binding.wrapper.target == "hermit_liteinst_runtime_artifact"
+                && binding.wrapper.kind == ["lib"]
+                && binding.wrapper.crate_types == ["lib"]
+                && binding.wrapper.manifest
+                    == binding.workspace_files["liteinst-runtime-build/runtime/Cargo.toml"].path
+                && binding.wrapper.target_source
+                    == binding.workspace_files["liteinst-runtime-build/runtime/src/lib.rs"].path,
+            "standalone no-scope wrapper/source inventory binding is inconsistent",
+        )?;
+    } else {
+        require(
+            build.standalone_sources.is_none(),
+            "Detcore no-scope build has a foreign standalone binding",
         )?;
     }
-    Ok(())
+    Ok(cohort)
 }
 
 fn installation_scope_raw_name(name: &str) -> bool {
@@ -17649,9 +18101,17 @@ struct NoScopeCensus {
     other_tls_getters: Vec<UnisolatedTlsGetter>,
     other_getter_pointer_slots: Vec<u64>,
 }
-// Physical census only. The production caller separately requires actual
-// verified sources, actual compiler feature events and the whole101B recipe.
+#[cfg(test)]
 fn no_installation_scope_census(elf: &Elf<'_>, bytes: &[u8]) -> Result<NoScopeCensus> {
+    no_installation_scope_census_in_cohort(elf, bytes, NoScopeCohort::DetcoreNative101)
+}
+// Physical census only. The production caller separately requires actual
+// verified sources, actual compiler feature events and the whole cohort recipe.
+fn no_installation_scope_census_in_cohort(
+    elf: &Elf<'_>,
+    bytes: &[u8],
+    cohort: NoScopeCohort,
+) -> Result<NoScopeCensus> {
     let mut raw_names = Vec::new();
     for (dynamic, symbols, strings) in [
         (false, &elf.syms, &elf.strtab),
@@ -17674,10 +18134,22 @@ fn no_installation_scope_census(elf: &Elf<'_>, bytes: &[u8]) -> Result<NoScopeCe
                 !installation_scope_raw_name(name),
                 "no-scope image retains an installation cell/getter/writer identity",
             )?;
+            if let Some(canonical) = canonical_rust_symbol(name) {
+                require(
+                    !NO_SCOPE_OTHER_GETTERS
+                        .iter()
+                        .any(|(known, _)| *known == canonical)
+                        || cohort
+                            .getters()
+                            .iter()
+                            .any(|(known, _)| *known == canonical),
+                    "no-scope image retains a typed getter from a different measured cohort",
+                )?;
+            }
         }
     }
     let mut other_tls_getters = Vec::new();
-    for (canonical, cell_offset) in NO_SCOPE_OTHER_GETTERS {
+    for &(canonical, cell_offset) in cohort.getters() {
         let candidates: Vec<_> = elf
             .syms
             .iter()
@@ -17882,13 +18354,13 @@ fn derive_no_installation_scope_evidence(
     sources: Option<&VerifiedCompiledSources>,
 ) -> Result<NoInstallationScopeEvidence> {
     let sources = sources.ok_or("no-scope allocation needs verified compiled sources")?;
-    sources.require_image(DETCORE_ROOT)?;
     sources.verify_files()?;
     let build = sources
         .current_build
         .as_ref()
         .ok_or("no-scope allocation needs actual current-build witness")?;
-    no_scope_build_features(build)?;
+    let cohort = no_scope_build_features(build)?;
+    sources.require_image(cohort.image_kind().initializer())?;
     let compiled_sources_sha256 =
         sha256(&serde_json::to_vec(sources.record()).map_err(|e| e.to_string())?);
     require(
@@ -17915,8 +18387,15 @@ fn derive_no_installation_scope_evidence(
         .get(&allocation.st_value)
         .ok_or("no-scope allocation full bytes absent")?;
     require(
-        detcore_no_scope_allocation_shape(allocation_bytes),
-        "no-scope allocation is not the exact101B body",
+        match cohort {
+            NoScopeCohort::DetcoreNative101 | NoScopeCohort::DetcoreOrdinary101 => {
+                detcore_no_scope_allocation_shape(allocation_bytes)
+            }
+            NoScopeCohort::StandaloneRelease62 => {
+                standalone_no_scope_allocation_shape(allocation_bytes)
+            }
+        },
+        "no-scope allocation differs from its exact measured cohort body",
     )?;
     for role in &FIXED_REQUIRED_ROLES[..4] {
         let symbol = &roles[*role];
@@ -17931,11 +18410,11 @@ fn derive_no_installation_scope_evidence(
         )?;
     }
     authenticate_loader_metadata(elf, bytes)?;
-    let census = no_installation_scope_census(elf, bytes)?;
+    let census = no_installation_scope_census_in_cohort(elf, bytes, cohort)?;
     Ok(NoInstallationScopeEvidence {
         kind: "no_installation_scope".into(),
         version: 1,
-        policy: NO_INSTALLATION_SCOPE_POLICY.into(),
+        policy: cohort.policy().into(),
         elf_sha256: sha256(bytes),
         compiled_sources_sha256,
         reverie_pin: sources.record.reverie_pin.clone(),
@@ -17966,12 +18445,12 @@ fn validate_no_installation_scope_evidence(
     let hash = |value: &str, n: usize| {
         value.len() == n && value.bytes().all(|byte| byte.is_ascii_hexdigit())
     };
-    no_scope_build_features(&proof.current_build)?;
+    let cohort = no_scope_build_features(&proof.current_build)?;
     require(
-        image_kind == FixedImageKind::Detcore
+        image_kind == cohort.image_kind()
             && proof.kind == "no_installation_scope"
             && proof.version == 1
-            && proof.policy == NO_INSTALLATION_SCOPE_POLICY
+            && proof.policy == cohort.policy()
             && proof.other_tls_unisolated
             && hash(&proof.reverie_pin, 40)
             && proof.source.sha256 == NO_INSTALLATION_SCOPE_SOURCE.2
@@ -18024,7 +18503,7 @@ fn validate_no_installation_scope_evidence(
                 .all(|pair| pair[0].program_header_index < pair[1].program_header_index)
             && backing.functions.get("fixed_patch_alloc") == Some(&proof.allocation)
             && backing.function_sha256.get("fixed_patch_alloc") == Some(&proof.allocation_sha256)
-            && proof.allocation.size == 101
+            && proof.allocation.size == cohort.allocation_size()
             && proof.allocation.binding == sym::STB_LOCAL
             && fixed_emitted_role(&proof.allocation.name) == Some("fixed_patch_alloc")
             && FIXED_REQUIRED_ROLES[..4].iter().all(|role| {
@@ -18036,7 +18515,7 @@ fn validate_no_installation_scope_evidence(
                         name.starts_with("_RNvXs2_NtCs_16reverie_liteinst11patch_alloc")
                     })
             })
-            && proof.other_tls_getters.len() == NO_SCOPE_OTHER_GETTERS.len()
+            && proof.other_tls_getters.len() == cohort.getters().len()
             && proof
                 .other_tls_getters
                 .windows(2)
@@ -18052,7 +18531,9 @@ fn validate_no_installation_scope_evidence(
         let canonical = canonical_rust_symbol(&getter.getter.name)
             .ok_or("other TLS getter type name malformed")?;
         require(
-            NO_SCOPE_OTHER_GETTERS.contains(&(canonical.as_str(), getter.cell_offset))
+            cohort
+                .getters()
+                .contains(&(canonical.as_str(), getter.cell_offset))
                 && retained.insert(canonical)
                 && getter.getter.binding == sym::STB_LOCAL
                 && getter.getter.size == 22
@@ -19669,10 +20150,13 @@ fn qualify_fixed_allocator_in_source_context(
             )?;
         }
     }
-    let tls = if image_kind == FixedImageKind::Detcore
-        && code
-            .get(&roles["fixed_patch_alloc"].st_value)
-            .is_some_and(|body| body.len() == 101)
+    let no_scope_extent = match image_kind {
+        FixedImageKind::Detcore => 101,
+        FixedImageKind::Standalone => 62,
+    };
+    let tls = if code
+        .get(&roles["fixed_patch_alloc"].st_value)
+        .is_some_and(|body| body.len() == no_scope_extent)
     {
         AllocatorInstallationEvidence::NoInstallationScope(derive_no_installation_scope_evidence(
             elf, bytes, code, &roles, sources,
@@ -23089,6 +23573,50 @@ fn detcore_no_scope_allocation_shape(bytes: &[u8]) -> bool {
             .map(|operand| operand.displacement),
     )
 }
+// Actual nonfixture standalone OFF release image fb366892 retains this entire
+//62B/22-instruction body. Only its two RIP operands vary; both must bind the
+// existing exact local Fixed backing/tool allocator roles through protected GOT.
+const STANDALONE_NO_SCOPE_ALLOC62: &str = "415653504889d34989f6ff15000000004885c0741f48837820007418bf010000004c89f64889da4883c4085b415eff250000000031c04883c4085b415ec3";
+fn standalone_no_scope_allocation_shape(bytes: &[u8]) -> bool {
+    fixed_template_shape(
+        bytes,
+        &fixed_hex(STANDALONE_NO_SCOPE_ALLOC62),
+        [12, 48].into_iter(),
+    )
+}
+fn fixed_standalone_no_scope_allocation_recipe(
+    address: u64,
+    bytes: &[u8],
+    targets: &BTreeMap<String, u64>,
+    got: &BTreeMap<u64, u64>,
+) -> Result<Vec<ConstructorTransfer>> {
+    let mut fields = Vec::new();
+    let mut transfers = Vec::new();
+    for (displacement, next, pc, role) in [
+        (12, 16, 10, "fixed_arena_backing"),
+        (48, 52, 46, "fixed_tool_alloc"),
+    ] {
+        let target = *targets
+            .get(role)
+            .ok_or("standalone62 typed target absent")?;
+        require(target != 0, "standalone62 typed target is null")?;
+        let slot = fixed_rip_target(address, bytes, displacement, next)?;
+        require(
+            got.get(&slot) == Some(&target),
+            "standalone62 operand loses its exact LOCAL RELATIVE/RELRO target",
+        )?;
+        fields.push((displacement, next, slot));
+        transfers.push(ConstructorTransfer {
+            instruction: address
+                .checked_add(pc)
+                .ok_or("standalone62 transfer overflows")?,
+            target,
+            local_got_slot: Some(slot),
+        });
+    }
+    fixed_whole_recipe(address, bytes, STANDALONE_NO_SCOPE_ALLOC62, &fields)?;
+    Ok(transfers)
+}
 fn fixed_detcore_no_scope_allocation_recipe(
     address: u64,
     bytes: &[u8],
@@ -24706,7 +25234,7 @@ fn qualify_fixed_operation_closure(
                 }
                 continue;
             }
-            let attempts = if image_kind == FixedImageKind::Detcore {
+            let mut attempts = if image_kind == FixedImageKind::Detcore {
                 let bindings = DetcoreRecipeBindings {
                     targets: &context.targets,
                     got,
@@ -24755,6 +25283,18 @@ fn qualify_fixed_operation_closure(
                     fixed_scalar_helper_recipe(role, address, actual, got, trusted.st_value),
                 ]
             };
+            if image_kind == FixedImageKind::Standalone
+                && role == "fixed_patch_alloc"
+                && matches!(tls, AllocatorInstallationEvidence::NoInstallationScope(proof)
+                    if proof.policy == NoScopeCohort::StandaloneRelease62.policy())
+            {
+                attempts.push(fixed_standalone_no_scope_allocation_recipe(
+                    address,
+                    actual,
+                    &context.targets,
+                    got,
+                ));
+            }
             let mut valid = None;
             for attempt in attempts {
                 match attempt {
@@ -30484,6 +31024,72 @@ mod tests {
         no_scope_build_features(&good).unwrap();
         assert_eq!(good.artifact.path, selected);
         assert_eq!(good.packages.len(), 3);
+        let mut ordinary_events = events.clone();
+        for (index, name) in ["detcore-liteinst", "reverie-liteinst", "reverie-inguest"]
+            .into_iter()
+            .enumerate()
+        {
+            let features = NoScopeCohort::DetcoreOrdinary101
+                .features()
+                .iter()
+                .find(|(candidate, _)| *candidate == name)
+                .unwrap()
+                .1;
+            ordinary_events[index]["features"] = serde_json::json!(features);
+        }
+        let mut ordinary_command = command.clone();
+        let at = ordinary_command
+            .arguments
+            .iter()
+            .position(|arg| arg == "--features")
+            .unwrap();
+        ordinary_command.arguments.drain(at..at + 2);
+        let ordinary = check(&ordinary_events, &ordinary_command).unwrap();
+        assert_eq!(
+            no_scope_build_features(&ordinary).unwrap(),
+            NoScopeCohort::DetcoreOrdinary101
+        );
+        assert_eq!(
+            no_scope_build_features(&good).unwrap(),
+            NoScopeCohort::DetcoreNative101
+        );
+        assert!(
+            check(&ordinary_events, &command).is_err(),
+            "ordinary stream cannot earn native argv"
+        );
+        assert!(
+            check(&events, &ordinary_command).is_err(),
+            "native stream cannot earn ordinary argv"
+        );
+        for name in ["detcore-liteinst", "reverie-liteinst", "reverie-inguest"] {
+            let mut partial = ordinary.clone();
+            partial.packages.get_mut(name).unwrap().features = good.packages[name].features.clone();
+            assert!(
+                no_scope_build_features(&partial).is_err(),
+                "mixed native/ordinary {name}"
+            );
+            for feature in ["allocator-fixture", "default", "liteinst"] {
+                let mut bad = ordinary.clone();
+                bad.packages
+                    .get_mut(name)
+                    .unwrap()
+                    .features
+                    .push(feature.into());
+                assert!(
+                    no_scope_build_features(&bad).is_err(),
+                    "ordinary forbidden {name}/{feature}"
+                );
+            }
+            for field in ["debug_assertions", "overflow_checks", "test"] {
+                let mut bad = ordinary.clone();
+                bad.packages.get_mut(name).unwrap().profile[field] =
+                    serde_json::json!(field == "test");
+                assert!(
+                    no_scope_build_features(&bad).is_err(),
+                    "ordinary profile {name}/{field}"
+                );
+            }
+        }
         let mut absolute = command.clone();
         absolute.program = fs::canonicalize(env!("CARGO"))
             .unwrap()
@@ -30650,6 +31256,420 @@ mod tests {
         );
         fs::write(&stderr, b"changed retained stderr").unwrap();
         assert!(current_build_evidence(&sources, &current.command, &selected, &target).is_err());
+    }
+
+    // Source/parser controls only: this never constructs VerifiedCompiledSources,
+    // qualifies a fake ELF, or grants source/execution authority to test JSON.
+    #[test]
+    fn standalone_no_installation_scope_current_build_controls() {
+        static NEXT: AtomicUsize = AtomicUsize::new(0);
+        struct Scratch(PathBuf);
+        impl Drop for Scratch {
+            fn drop(&mut self) {
+                fs::remove_dir_all(&self.0).unwrap();
+            }
+        }
+        let root = fs::canonicalize(std::env::temp_dir())
+            .unwrap()
+            .join(format!(
+                "standalone-build-controls-{}-{}",
+                std::process::id(),
+                NEXT.fetch_add(1, Ordering::Relaxed)
+            ));
+        fs::create_dir(&root).unwrap();
+        let _scratch = Scratch(root.clone());
+        for relative in CONTENT_WORKSPACE_FILES {
+            let path = root.join(relative);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(path, format!("owned source control: {relative}\n")).unwrap();
+        }
+        let mut runner = Runner::new(
+            root.join("proof-logs"),
+            Duration::from_secs(30),
+            1024 * 1024,
+        )
+        .unwrap();
+        runner.text("git", &["init", "--quiet"], &root).unwrap();
+        let mut add = vec!["add".to_owned(), "--".to_owned()];
+        add.extend(CONTENT_WORKSPACE_FILES.into_iter().map(str::to_owned));
+        runner.run("git", &add, &root).unwrap();
+        runner
+            .text(
+                "git",
+                &[
+                    "-c",
+                    "user.name=artifact-controls",
+                    "-c",
+                    "user.email=artifact-controls@example.invalid",
+                    "-c",
+                    "commit.gpgsign=false",
+                    "commit",
+                    "--quiet",
+                    "-m",
+                    "source controls",
+                ],
+                &root,
+            )
+            .unwrap();
+        let head = runner
+            .text("git", &["rev-parse", "HEAD"], &root)
+            .unwrap()
+            .trim()
+            .to_owned();
+        let tree = runner
+            .text("git", &["rev-parse", "HEAD^{tree}"], &root)
+            .unwrap()
+            .trim()
+            .to_owned();
+        let target = root.join("isolated-target");
+        fs::create_dir(&target).unwrap();
+        let nested = root.join("liteinst-runtime-build");
+        let profile = NoScopeCohort::StandaloneRelease62.profile();
+        let mut packages = BTreeMap::new();
+        let mut events = Vec::new();
+        for (name, kind) in [
+            ("reverie-liteinst-preload", vec!["cdylib"]),
+            ("reverie-liteinst", vec!["rlib"]),
+            ("reverie-inguest", vec!["cdylib", "rlib"]),
+        ] {
+            let dir = root.join("rv").join(name);
+            fs::create_dir_all(dir.join("src")).unwrap();
+            fs::write(dir.join("Cargo.toml"), "package source control").unwrap();
+            fs::write(dir.join("src/lib.rs"), "source control").unwrap();
+            let package = PackageIdentity {
+                id: format!("git+source#{name}@0.5.1"),
+                name: name.into(),
+                manifest: dir.join("Cargo.toml"),
+                source: Some("git+source".into()),
+                target: name.replace('-', "_"),
+                kind: kind.iter().map(|s| (*s).into()).collect(),
+                crate_types: kind.iter().map(|s| (*s).into()).collect(),
+                target_source: dir.join("src/lib.rs"),
+            };
+            let output = target.join(format!(
+                "lib{}.{}",
+                package.target,
+                if name == "reverie-liteinst-preload" {
+                    "so"
+                } else {
+                    "rlib"
+                }
+            ));
+            fs::write(&output, "data-only Cargo output, not ELF qualification").unwrap();
+            let features = NoScopeCohort::StandaloneRelease62
+                .features()
+                .iter()
+                .find(|(candidate, _)| *candidate == name)
+                .unwrap()
+                .1;
+            events.push(serde_json::json!({"reason":"compiler-artifact","package_id":package.id,
+                "manifest_path":package.manifest,"target":{"name":package.target,"kind":package.kind,
+                    "crate_types":package.crate_types,"src_path":package.target_source},
+                "profile":profile,"features":features,"filenames":[output],"fresh":false}));
+            packages.insert(name.into(), package);
+        }
+        let sources = CompiledSources {
+            layout: CompiledSourceLayout::HermitGit,
+            image_kind: FixedImageKind::Standalone,
+            workspace_root: root.clone(),
+            authority: CompiledSourceAuthority::Git {
+                workspace_head: head,
+                workspace_tree: tree,
+                reverie_tree: "1".repeat(40),
+            },
+            manifest: FileIdentity::read(&nested.join("Cargo.toml")).unwrap(),
+            reverie_pin: "2".repeat(40),
+            reverie_root: root.join("rv"),
+            files: BTreeMap::new(),
+            leaf: packages["reverie-liteinst-preload"].clone(),
+            packages,
+        };
+        let wrapper_id = format!(
+            "path+file://{}#hermit-liteinst-runtime-artifact@0.5.1",
+            nested.join("runtime").display()
+        );
+        let metadata = serde_json::json!({"workspace_root":nested,"workspace_members":[wrapper_id],"packages":[{
+            "name":"hermit-liteinst-runtime-artifact","version":"0.5.1","source":null,"id":wrapper_id,
+            "manifest_path":nested.join("runtime/Cargo.toml"),"targets":[{"name":"hermit_liteinst_runtime_artifact",
+            "src_path":nested.join("runtime/src/lib.rs"),"kind":["lib"],"crate_types":["lib"]}]}]});
+        let binding = standalone_current_build_sources(&sources, &metadata, &mut runner).unwrap();
+        assert_eq!(binding.workspace_files.len(), 6);
+        assert_eq!(binding.wrapper.kind, ["lib"]);
+        for relative in CONTENT_WORKSPACE_FILES {
+            let path = root.join(relative);
+            let bytes = fs::read(&path).unwrap();
+            fs::write(&path, "uncommitted replacement source").unwrap();
+            assert!(
+                standalone_current_build_sources(&sources, &metadata, &mut runner).is_err(),
+                "Git blob source identity cannot be replaced by a fresh file hash {relative}"
+            );
+            fs::write(path, bytes).unwrap();
+        }
+        let (workspace_inventory, workspace_files) =
+            declared_inventory(&root, &CONTENT_WORKSPACE_FILES).unwrap();
+        let mut declared = sources.clone();
+        declared.authority = CompiledSourceAuthority::DeclaredContent {
+            workspace_sha256: declared_inventory_sha256(&workspace_inventory).unwrap(),
+            workspace_inventory: workspace_inventory.clone(),
+            reverie_inventory: vec![],
+            reverie_sha256: "3".repeat(64),
+            compiler_root: CompilerRootBinding {
+                logical_root: root.join("rv"),
+                canonical_root: root.join("rv"),
+                cargo_home: None,
+            },
+        };
+        declared.files = workspace_files
+            .into_iter()
+            .map(|(name, file)| (format!("workspace:{name}"), file))
+            .collect();
+        assert_eq!(
+            standalone_current_build_sources(&declared, &metadata, &mut runner).unwrap(),
+            binding
+        );
+        for relative in CONTENT_WORKSPACE_FILES {
+            let mut bad = declared.clone();
+            bad.files.remove(&format!("workspace:{relative}"));
+            assert!(
+                standalone_current_build_sources(&bad, &metadata, &mut runner).is_err(),
+                "missing declared binding {relative}"
+            );
+            let mut bad = declared.clone();
+            bad.files
+                .get_mut(&format!("workspace:{relative}"))
+                .unwrap()
+                .sha256 = "0".repeat(64);
+            assert!(
+                standalone_current_build_sources(&bad, &metadata, &mut runner).is_err(),
+                "wrong declared binding {relative}"
+            );
+        }
+        for mutation in 0..13 {
+            let mut bad = metadata.clone();
+            match mutation {
+                0 => bad["workspace_root"] = serde_json::json!(root),
+                1 => bad["workspace_members"] = serde_json::json!([]),
+                2 => bad["workspace_members"] = serde_json::json!([wrapper_id, wrapper_id]),
+                3 => bad["packages"][0]["id"] = serde_json::json!("foreign wrapper"),
+                4 => bad["packages"][0]["version"] = serde_json::json!("0.5.2"),
+                5 => bad["packages"][0]["source"] = serde_json::json!("git+foreign"),
+                6 => {
+                    bad["packages"][0]["manifest_path"] =
+                        serde_json::json!(nested.join("Cargo.toml"))
+                }
+                7 => {
+                    bad["packages"][0]["targets"][0]["src_path"] =
+                        serde_json::json!(nested.join("build.rs"))
+                }
+                8 => bad["packages"][0]["targets"][0]["kind"] = serde_json::json!(["rlib"]),
+                9 => bad["packages"][0]["targets"][0]["crate_types"] = serde_json::json!(["rlib"]),
+                10 => {
+                    let duplicate = bad["packages"][0].clone();
+                    bad["packages"].as_array_mut().unwrap().push(duplicate);
+                }
+                11 => {
+                    let duplicate = bad["packages"][0]["targets"][0].clone();
+                    bad["packages"][0]["targets"]
+                        .as_array_mut()
+                        .unwrap()
+                        .push(duplicate);
+                }
+                12 => bad["packages"][0]["name"] = serde_json::json!("lookalike-wrapper"),
+                _ => unreachable!(),
+            }
+            assert!(
+                standalone_wrapper_package(&bad, &root, &binding.workspace_files).is_err(),
+                "wrapper metadata mutation {mutation}"
+            );
+        }
+        let wrapper_output = target.join("libhermit_liteinst_runtime_artifact.rlib");
+        fs::write(&wrapper_output, "data-only wrapper compiler output").unwrap();
+        let wrapper = &binding.wrapper;
+        events.push(serde_json::json!({"reason":"compiler-artifact","package_id":wrapper.id,"manifest_path":wrapper.manifest,
+            "target":{"name":wrapper.target,"kind":wrapper.kind,"crate_types":wrapper.crate_types,"src_path":wrapper.target_source},
+            "profile":profile,"features":[],"filenames":[wrapper_output],"fresh":false}));
+        events.push(serde_json::json!({"reason":"build-finished","success":true}));
+        let stdout = root.join("cargo.stdout");
+        let stderr = root.join("cargo.stderr");
+        fs::write(&stdout, "").unwrap();
+        fs::write(&stderr, "").unwrap();
+        let command = CommandEvidence {
+            program: "cargo".into(),
+            arguments: standalone_current_build_arguments(&target).unwrap(),
+            cwd: nested.clone(),
+            status: 0,
+            elapsed_millis: 0,
+            stdout: FileIdentity::read(&stdout).unwrap(),
+            stderr: FileIdentity::read(&stderr).unwrap(),
+        };
+        let selected = target.join("libreverie_liteinst_preload.so");
+        let check = |messages: &[Value], template: &CommandEvidence| {
+            fs::write(
+                &stdout,
+                messages
+                    .iter()
+                    .map(|event| serde_json::to_string(event).unwrap())
+                    .collect::<Vec<_>>()
+                    .join("\n"),
+            )
+            .unwrap();
+            let mut command = template.clone();
+            command.stdout = FileIdentity::read(&stdout).unwrap();
+            current_build_evidence_in_scope(&sources, &command, &selected, &target, Some(&binding))
+        };
+        let good = check(&events, &command).unwrap();
+        assert_eq!(
+            no_scope_build_features(&good).unwrap(),
+            NoScopeCohort::StandaloneRelease62
+        );
+        assert_eq!(good.packages.len(), 4);
+        verify_current_build_files(&good).unwrap();
+        assert!(
+            current_build_evidence(&sources, &good.command, &selected, &target).is_err(),
+            "Detcore factory never falls back to standalone"
+        );
+        let mut absolute = command.clone();
+        absolute.program = fs::canonicalize(env!("CARGO"))
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .into();
+        let actual = check(&events, &absolute)
+            .expect("the actual Cargo toolchain executable also binds the standalone command");
+        assert_eq!(
+            actual.cargo_executable,
+            Some(FileIdentity::read(Path::new(&absolute.program)).unwrap())
+        );
+        verify_current_build_files(&actual).unwrap();
+        for source_target in [
+            nested.clone(),
+            nested.join("runtime"),
+            nested.join("runtime/src"),
+        ] {
+            let mut bad = good.command.clone();
+            bad.arguments = standalone_current_build_arguments(&source_target).unwrap();
+            let error = current_build_evidence_in_scope(
+                &sources,
+                &bad,
+                &selected,
+                &source_target,
+                Some(&binding),
+            )
+            .unwrap_err();
+            assert!(
+                error.contains("standalone current build target overlaps authorized source paths"),
+                "authorized source directories are not isolated targets: {error}"
+            );
+        }
+        for index in 0..4 {
+            let mut bad = events.clone();
+            bad.remove(index);
+            assert!(
+                check(&bad, &command).is_err(),
+                "missing actual event {index}"
+            );
+            let mut bad = events.clone();
+            bad.insert(index, bad[index].clone());
+            assert!(
+                check(&bad, &command).is_err(),
+                "duplicate actual event {index}"
+            );
+            for (field, value) in [
+                ("package_id", serde_json::json!("foreign package")),
+                ("manifest_path", serde_json::json!(sources.manifest.path)),
+                ("features", serde_json::json!(["default"])),
+                ("features", serde_json::json!(["liteinst"])),
+                ("features", serde_json::json!(["allocator-fixture"])),
+                ("profile", NoScopeCohort::DetcoreOrdinary101.profile()),
+                (
+                    "filenames",
+                    serde_json::json!([root.join("liteinst-runtime-build/Cargo.toml")]),
+                ),
+            ] {
+                let mut bad = events.clone();
+                bad[index][field] = value;
+                assert!(check(&bad, &command).is_err(), "event {index}/{field}");
+            }
+            for field in ["name", "src_path", "kind", "crate_types"] {
+                let mut bad = events.clone();
+                bad[index]["target"][field] = if ["kind", "crate_types"].contains(&field) {
+                    serde_json::json!(["bin"])
+                } else {
+                    serde_json::json!("foreign target")
+                };
+                assert!(
+                    check(&bad, &command).is_err(),
+                    "typed target {index}/{field}"
+                );
+            }
+        }
+        for index in 0..command.arguments.len() {
+            let mut bad = command.clone();
+            bad.arguments.remove(index);
+            assert!(check(&events, &bad).is_err(), "missing exact argv {index}");
+            let mut bad = command.clone();
+            bad.arguments.insert(index, bad.arguments[index].clone());
+            assert!(
+                check(&events, &bad).is_err(),
+                "duplicate exact argv {index}"
+            );
+        }
+        for mutation in 0..7 {
+            let mut bad = command.clone();
+            match mutation {
+                0 => bad.arguments.push("--offline".into()),
+                1 => bad.cwd = root.clone(),
+                2 => bad.arguments[4] = sources.manifest.path.to_str().unwrap().into(),
+                3 => bad.arguments[11] = "dev".into(),
+                4 => bad.arguments.swap(6, 8),
+                5 => bad.arguments[13] = "isolated-target".into(),
+                6 => bad.status = 1,
+                _ => unreachable!(),
+            }
+            assert!(
+                check(&events, &bad).is_err(),
+                "unreviewed standalone argv/source {mutation}"
+            );
+        }
+        for alteration in 0..3 {
+            let mut bad = events.clone();
+            match alteration {
+                0 => {
+                    bad.pop();
+                }
+                1 => bad[4]["success"] = Value::Bool(false),
+                2 => bad.push(bad[4].clone()),
+                _ => unreachable!(),
+            };
+            assert!(
+                check(&bad, &command).is_err(),
+                "noncurrent build finish {alteration}"
+            );
+        }
+        let retained = check(&events, &command).unwrap();
+        for relative in CONTENT_WORKSPACE_FILES {
+            let path = root.join(relative);
+            let bytes = fs::read(&path).unwrap();
+            fs::write(&path, "changed retained source").unwrap();
+            assert!(
+                verify_current_build_files(&retained).is_err(),
+                "all authorized source files remain bound {relative}"
+            );
+            fs::write(path, bytes).unwrap();
+        }
+        let copy = target.join("staged-copy.so");
+        fs::copy(&selected, &copy).unwrap();
+        assert!(
+            current_build_evidence_in_scope(
+                &sources,
+                &retained.command,
+                &copy,
+                &target,
+                Some(&binding)
+            )
+            .is_err(),
+            "staged copy is not actual current output"
+        );
     }
 
     // Additional controls in the existing current-artifact test. These exercise
@@ -38183,6 +39203,14 @@ mod tests {
     fn fixed_tls_cell_access_mutation_controls() {
         type TlsAccessSample<'a> = (&'a str, u64, &'a str, u64, &'a [(usize, usize, u64)]);
         let samples: &[TlsAccessSample<'_>] = &[
+            // Actual ef5ea dev FullTool fixture: full 38 B, authenticated cell 0xd8.
+            (
+                "fixed_tls_cell_getter",
+                0x1f24c0,
+                "4883ec1848897c24084889742410488d3d2b4b2c00e8f6722800488d80d80000004883c418c3",
+                0xd8,
+                &[(17, 21, 0x4b7000), (22, 26, 0x4797d0)],
+            ),
             // Actual DEV image a746cd77: INSTALLATION_DEPTH at TLS offset 0x80.
             (
                 "fixed_tls_cell_getter",
@@ -38318,7 +39346,21 @@ mod tests {
                 );
             }
             // Even another observed offset cannot substitute for this actual cell.
-            for wrong in [0, 0x40, 0x48, 0x50, 0x80, 0x88, 0x90, u64::MAX] {
+            for wrong in [
+                0,
+                0x40,
+                0x48,
+                0x50,
+                0x80,
+                0x88,
+                0x90,
+                0xd0,
+                0xd7,
+                0xd8,
+                0xd9,
+                0xe0,
+                u64::MAX,
+            ] {
                 if wrong == offset {
                     continue;
                 }
@@ -38327,6 +39369,14 @@ mod tests {
                 assert!(
                     fixed_tls_cell_access_recipe(role, address, &bytes, &bad, operands).is_err()
                 );
+            }
+            if offset == 0xd8 {
+                for other_role in ["fixed_patch_alloc", "fixed_tls_fn_once"] {
+                    assert!(
+                        fixed_tls_cell_access_recipe(other_role, address, &bytes, &cell, operands)
+                            .is_err()
+                    );
+                }
             }
             let mut bad = cell.clone();
             bad.name.push_str("_foreign");
@@ -39812,6 +40862,7 @@ mod tests {
                 artifact: file("/schema/target/lib.so", &"1".repeat(64)),
                 compiled_sources_sha256: "2".repeat(64),
                 packages,
+                standalone_sources: None,
             },
             allocation,
             allocation_sha256: "5".repeat(64),
@@ -39942,6 +40993,203 @@ mod tests {
                 .is_err(),
                 "historical ON method cannot be substituted in no-scope OFF cohort{required}"
             );
+        }
+        assert!(
+            serde_json::to_value(&proof.current_build)
+                .unwrap()
+                .get("standalone_sources")
+                .is_none(),
+            "the existing native JSON gains no optional standalone field"
+        );
+        let mut ordinary = proof.clone();
+        ordinary.policy = NoScopeCohort::DetcoreOrdinary101.policy().into();
+        for (name, features) in NoScopeCohort::DetcoreOrdinary101.features() {
+            ordinary
+                .current_build
+                .packages
+                .get_mut(*name)
+                .unwrap()
+                .features = features
+                .iter()
+                .map(|feature| (*feature).to_owned())
+                .collect();
+        }
+        for getter in &mut ordinary.other_tls_getters {
+            let canonical = canonical_rust_symbol(&getter.getter.name).unwrap();
+            getter.cell_offset = ORDINARY_NO_SCOPE_OTHER_GETTERS
+                .iter()
+                .find(|(name, _)| *name == canonical)
+                .unwrap()
+                .1;
+        }
+        check(&ordinary).unwrap();
+        for mutation in 0..3 {
+            let mut bad = ordinary.clone();
+            match mutation {
+                0 => bad.policy = proof.policy.clone(),
+                1 => bad.other_tls_getters = proof.other_tls_getters.clone(),
+                2 => bad.current_build = proof.current_build.clone(),
+                _ => unreachable!(),
+            }
+            assert!(
+                check(&bad).is_err(),
+                "ordinary/native schema substitution {mutation}"
+            );
+        }
+        let mut standalone = ordinary.clone();
+        standalone.policy = NoScopeCohort::StandaloneRelease62.policy().into();
+        standalone.allocation.size = 62;
+        standalone.current_build.command.cwd = "/schema/liteinst-runtime-build".into();
+        standalone.current_build.command.arguments =
+            standalone_current_build_arguments(&standalone.current_build.target_directory).unwrap();
+        let mut leaf = standalone
+            .current_build
+            .packages
+            .remove("detcore-liteinst")
+            .unwrap();
+        leaf.package.name = "reverie-liteinst-preload".into();
+        standalone
+            .current_build
+            .packages
+            .insert(leaf.package.name.clone(), leaf);
+        let workspace_files: BTreeMap<_, _> = CONTENT_WORKSPACE_FILES
+            .into_iter()
+            .map(|relative| {
+                (
+                    relative.to_owned(),
+                    file(&format!("/schema/{relative}"), &"0".repeat(64)),
+                )
+            })
+            .collect();
+        let wrapper = PackageIdentity {
+            id: "path+file:///schema/liteinst-runtime-build/runtime#hermit-liteinst-runtime-artifact@0.5.1".into(),
+            name: "hermit-liteinst-runtime-artifact".into(),
+            manifest: workspace_files["liteinst-runtime-build/runtime/Cargo.toml"].path.clone(),
+            source: None,
+            target: "hermit_liteinst_runtime_artifact".into(),
+            kind: vec!["lib".into()],
+            crate_types: vec!["lib".into()],
+            target_source: workspace_files["liteinst-runtime-build/runtime/src/lib.rs"].path.clone(),
+        };
+        standalone.current_build.packages.insert(
+            wrapper.name.clone(),
+            CurrentBuildPackage {
+                package: wrapper.clone(),
+                features: vec![],
+                profile: NoScopeCohort::StandaloneRelease62.profile(),
+                outputs: vec!["/schema/target/wrapper.rlib".into()],
+            },
+        );
+        for package in standalone.current_build.packages.values_mut() {
+            package.profile = NoScopeCohort::StandaloneRelease62.profile();
+        }
+        standalone.current_build.standalone_sources = Some(StandaloneCurrentBuildSources {
+            wrapper,
+            workspace_files,
+        });
+        standalone.other_tls_getters = [(0, 0x40), (2, 0)]
+            .into_iter()
+            .map(|(index, offset)| {
+                let mut getter = proof.other_tls_getters[index].clone();
+                getter.cell_offset = offset;
+                getter
+            })
+            .collect();
+        let mut standalone_backing = backing.clone();
+        standalone_backing
+            .functions
+            .get_mut("fixed_patch_alloc")
+            .unwrap()
+            .size = 62;
+        let check_standalone = |value: &NoInstallationScopeEvidence| {
+            validate_no_installation_scope_evidence(
+                &standalone_backing,
+                value,
+                FixedImageKind::Standalone,
+            )
+        };
+        check_standalone(&standalone).unwrap();
+        let serialized = serde_json::to_vec(&AllocatorInstallationEvidence::NoInstallationScope(
+            standalone.clone(),
+        ))
+        .unwrap();
+        assert_eq!(
+            serde_json::from_slice::<AllocatorInstallationEvidence>(&serialized).unwrap(),
+            AllocatorInstallationEvidence::NoInstallationScope(standalone.clone())
+        );
+        for relative in CONTENT_WORKSPACE_FILES {
+            let mut bad = standalone.clone();
+            bad.current_build
+                .standalone_sources
+                .as_mut()
+                .unwrap()
+                .workspace_files
+                .remove(relative);
+            assert!(
+                check_standalone(&bad).is_err(),
+                "standalone missing authorized source {relative}"
+            );
+            let mut bad = standalone.clone();
+            bad.current_build
+                .standalone_sources
+                .as_mut()
+                .unwrap()
+                .workspace_files
+                .get_mut(relative)
+                .unwrap()
+                .path = "/schema/foreign".into();
+            assert!(
+                check_standalone(&bad).is_err(),
+                "standalone substituted source {relative}"
+            );
+        }
+        for mutation in 0..9 {
+            let mut bad = standalone.clone();
+            match mutation {
+                0 => bad.current_build.standalone_sources = None,
+                1 => bad.policy = proof.policy.clone(),
+                2 => bad.policy = ordinary.policy.clone(),
+                3 => bad.other_tls_getters = ordinary.other_tls_getters.clone(),
+                4 => bad.allocation.size = 101,
+                5 => bad.current_build.command.arguments.push("--offline".into()),
+                6 => bad.current_build.command.cwd = "/schema".into(),
+                7 => {
+                    bad.current_build
+                        .standalone_sources
+                        .as_mut()
+                        .unwrap()
+                        .wrapper
+                        .kind = vec!["rlib".into()]
+                }
+                8 => bad
+                    .current_build
+                    .standalone_sources
+                    .as_mut()
+                    .unwrap()
+                    .wrapper
+                    .id
+                    .push('x'),
+                _ => unreachable!(),
+            }
+            assert!(
+                check_standalone(&bad).is_err(),
+                "standalone cohort/source substitution {mutation}"
+            );
+        }
+        for (name, _) in NoScopeCohort::StandaloneRelease62.features() {
+            for feature in ["allocator-fixture", "default", "liteinst"] {
+                let mut bad = standalone.clone();
+                bad.current_build
+                    .packages
+                    .get_mut(*name)
+                    .unwrap()
+                    .features
+                    .push(feature.into());
+                assert!(
+                    check_standalone(&bad).is_err(),
+                    "standalone forbidden package feature {name}/{feature}"
+                );
+            }
         }
     }
 
@@ -40154,6 +41402,113 @@ mod tests {
         assert_eq!(good.loader_writer_count, 2);
         assert!(good.other_getter_pointer_slots.is_empty());
         assert_eq!(good.mappings.len(), 1);
+        // Each additional measured population has its own complete physical
+        // positive. No old native negative is redirected to another cohort.
+        let mut ordinary = base.clone();
+        for (index, (_, offset)) in ORDINARY_NO_SCOPE_OTHER_GETTERS.iter().enumerate() {
+            put(&mut ordinary, 0x1500 + index * 0x40 + 16, 4, *offset);
+        }
+        let mut standalone = base.clone();
+        put(&mut standalone, 0x1510, 4, 0x40);
+        for index in [1, 3] {
+            standalone[0x4000 + (index + 1) * 24..0x4000 + (index + 2) * 24].fill(0);
+            standalone[0x1500 + index * 0x40..0x1500 + index * 0x40 + 22].fill(0x90);
+        }
+        for (cohort, fixture, selected) in [
+            (
+                NoScopeCohort::DetcoreOrdinary101,
+                ordinary,
+                vec![0, 1, 2, 3],
+            ),
+            (NoScopeCohort::StandaloneRelease62, standalone, vec![0, 2]),
+        ] {
+            let in_cohort = |bytes: &[u8]| {
+                no_installation_scope_census_in_cohort(&Elf::parse(bytes).unwrap(), bytes, cohort)
+            };
+            assert_eq!(
+                in_cohort(&fixture).unwrap().other_tls_getters.len(),
+                cohort.getters().len()
+            );
+            for other in [
+                NoScopeCohort::DetcoreNative101,
+                NoScopeCohort::DetcoreOrdinary101,
+                NoScopeCohort::StandaloneRelease62,
+            ]
+            .into_iter()
+            .filter(|other| *other != cohort)
+            {
+                assert!(
+                    no_installation_scope_census_in_cohort(
+                        &Elf::parse(&fixture).unwrap(),
+                        &fixture,
+                        other
+                    )
+                    .is_err(),
+                    "cross-cohort getter vector {cohort:?}->{other:?}"
+                );
+            }
+            for index in selected {
+                let address = 0x1500 + index * 0x40;
+                let row = 0x4000 + (index + 1) * 24;
+                for byte in 0..22 {
+                    let mut bad = fixture.clone();
+                    bad[address + byte] ^= 1;
+                    assert!(
+                        in_cohort(&bad).is_err(),
+                        "{cohort:?} complete getter{index} byte{byte}"
+                    );
+                }
+                for alteration in 0..4 {
+                    let mut bad = fixture.clone();
+                    match alteration {
+                        0 => put(&mut bad, row, 4, 0),
+                        1 => put(
+                            &mut bad,
+                            row + 4,
+                            1,
+                            ((sym::STB_GLOBAL << 4) | sym::STT_FUNC) as u64,
+                        ),
+                        2 => put(&mut bad, row + 16, 8, 21),
+                        3 => {
+                            bad.copy_within(row..row + 24, 0x4000 + 5 * 24);
+                            put(&mut bad, 0x8000 + 2 * 64 + 32, 8, 144);
+                        }
+                        _ => unreachable!(),
+                    }
+                    assert!(
+                        in_cohort(&bad).is_err(),
+                        "{cohort:?} getter missing/nonlocal/partial/duplicate{index}:{alteration}"
+                    );
+                }
+            }
+            for alteration in 0..6 {
+                let mut bad = fixture.clone();
+                match alteration {
+                    0 => bad[0x4600 + provider_version] ^= 1,
+                    1 => bad[0x4600 + provider_library] ^= 1,
+                    2 => put(&mut bad, 0x4810, 8, 1),
+                    3 => bad[0x1810] ^= 1,
+                    4 => put(&mut bad, 64 + 5 * 56, 4, program_header::PT_NULL as u64),
+                    5 => {
+                        put(&mut bad, 0x4000 + 5 * 24, 4, forbidden_name_offset as u64);
+                        put(&mut bad, 0x8000 + 2 * 64 + 32, 8, 144);
+                    }
+                    _ => unreachable!(),
+                }
+                assert!(
+                    in_cohort(&bad).is_err(),
+                    "{cohort:?} provider/descriptor/PLT/RELRO/installation{alteration}"
+                );
+            }
+            let mut unknown = fixture.clone();
+            unknown.copy_within(0x1500..0x1516, 0x1e00);
+            rip(&mut unknown[0x1e00..0x1e16], 0x1e00, 4, 8, 0x3300);
+            rip(&mut unknown[0x1e00..0x1e16], 0x1e00, 9, 13, 0x1810);
+            assert!(
+                in_cohort(&unknown).is_err(),
+                "{cohort:?} unnamed complete getter"
+            );
+        }
         assert!(
             derive_no_installation_scope_evidence(
                 &Elf::parse(&base).unwrap(),
@@ -52338,6 +53693,162 @@ mod tests {
             )
             .is_err(),
             "no-scope selection must not remove the cell requirement from the old241B body"
+        );
+    }
+
+    // Entire body and both measured typed bindings from standalone OFF ELF
+    // fb366892. Recipe/census controls only; no invented verified-source context.
+    #[test]
+    fn observed_standalone_no_installation_scope_whole_recipe() {
+        let address = 0x430a0;
+        let bytes = fixed_hex(
+            "415653504889d34989f6ff1548cd04004885c0741f48837820007418bf010000004c89f64889da4883c4085b415eff2564cd040031c04883c4085b415ec3",
+        );
+        let targets = BTreeMap::from([
+            ("fixed_arena_backing".into(), 0x4b8a0),
+            ("fixed_tool_alloc".into(), 0x4df70),
+        ]);
+        let got = BTreeMap::from([(0x8fdf8, 0x4b8a0), (0x8fe38, 0x4df70)]);
+        let check = |body: &[u8], targets: &BTreeMap<String, u64>, got: &BTreeMap<u64, u64>| {
+            fixed_standalone_no_scope_allocation_recipe(address, body, targets, got)
+        };
+        let edges = check(&bytes, &targets, &got).unwrap();
+        assert_eq!(
+            edges,
+            [
+                ConstructorTransfer {
+                    instruction: address + 10,
+                    target: 0x4b8a0,
+                    local_got_slot: Some(0x8fdf8)
+                },
+                ConstructorTransfer {
+                    instruction: address + 46,
+                    target: 0x4df70,
+                    local_got_slot: Some(0x8fe38)
+                }
+            ]
+        );
+        assert!(standalone_no_scope_allocation_shape(&bytes));
+        assert!(!detcore_no_scope_allocation_shape(&bytes));
+        assert!(!standalone_no_scope_allocation_shape(&fixed_hex(
+            DETCORE_NO_SCOPE_ALLOC.hex
+        )));
+        let instructions: Vec<_> = [
+            (0, 2),
+            (2, 1),
+            (3, 1),
+            (4, 3),
+            (7, 3),
+            (10, 6),
+            (16, 3),
+            (19, 2),
+            (21, 5),
+            (26, 2),
+            (28, 5),
+            (33, 3),
+            (36, 3),
+            (39, 4),
+            (43, 1),
+            (44, 2),
+            (46, 6),
+            (52, 2),
+            (54, 4),
+            (58, 1),
+            (59, 2),
+            (61, 1),
+        ]
+        .into_iter()
+        .map(|(offset, size)| EncodedConstructorInstruction {
+            address: address + offset as u64,
+            bytes: bytes[offset..offset + size].to_vec(),
+        })
+        .collect();
+        let census = |instructions: &[EncodedConstructorInstruction]| {
+            fixed_census_transfers(instructions, address, &bytes, &edges, &got, false)
+        };
+        census(&instructions).unwrap();
+        for index in 0..instructions.len() {
+            let mut bad = instructions.clone();
+            bad.remove(index);
+            assert!(census(&bad).is_err(), "missing instruction {index}");
+            let mut bad = instructions.clone();
+            bad.insert(index, bad[index].clone());
+            assert!(census(&bad).is_err(), "duplicate instruction {index}");
+            let mut bad = instructions.clone();
+            bad[index].bytes[0] ^= 1;
+            assert!(census(&bad).is_err(), "changed instruction {index}");
+        }
+        for index in 0..bytes.len() {
+            let mut bad = bytes.clone();
+            bad[index] ^= 1;
+            assert!(
+                check(&bad, &targets, &got).is_err(),
+                "complete standalone62 byte {index}"
+            );
+        }
+        assert!(check(&bytes[..61], &targets, &got).is_err());
+        let mut longer = bytes.clone();
+        longer.push(0x90);
+        assert!(check(&longer, &targets, &got).is_err());
+        for key in targets.keys() {
+            let mut bad = targets.clone();
+            bad.remove(key);
+            assert!(
+                check(&bytes, &bad, &got).is_err(),
+                "missing typed target {key}"
+            );
+            for replacement in [
+                0,
+                targets["fixed_arena_backing"],
+                targets["fixed_tool_alloc"],
+                0xfeed,
+            ] {
+                if replacement == targets[key] {
+                    continue;
+                }
+                let mut bad = targets.clone();
+                bad.insert(key.clone(), replacement);
+                assert!(
+                    check(&bytes, &bad, &got).is_err(),
+                    "wrong typed target {key}/{replacement:#x}"
+                );
+            }
+        }
+        for slot in got.keys() {
+            let mut bad = got.clone();
+            bad.remove(slot);
+            assert!(
+                check(&bytes, &targets, &bad).is_err(),
+                "missing protected GOT {slot:#x}"
+            );
+            for target in [
+                0,
+                targets["fixed_arena_backing"],
+                targets["fixed_tool_alloc"],
+                0xfeed,
+            ] {
+                if target == got[slot] {
+                    continue;
+                }
+                let mut bad = got.clone();
+                bad.insert(*slot, target);
+                assert!(
+                    check(&bytes, &targets, &bad).is_err(),
+                    "foreign/swapped GOT target {slot:#x}/{target:#x}"
+                );
+            }
+        }
+        assert!(
+            fixed_wrapper_recipe(
+                "fixed_patch_alloc",
+                address,
+                &bytes,
+                &targets,
+                &got,
+                &BTreeMap::new()
+            )
+            .is_err(),
+            "new no-scope body never weakens a historical TLS-bearing wrapper recipe"
         );
     }
 
