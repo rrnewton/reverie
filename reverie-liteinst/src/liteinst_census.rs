@@ -40,7 +40,7 @@
 //! The in-guest LiteInst runtime builds the census itself. It lived in
 //! reverie-ptrace while the ptrace tracer built it from the tracee's memory
 //! for ptrace-hosted LiteInst, which no longer exists; reverie-ptrace did not
-//! use it (step A10 of <https://github.com/rrnewton/hermit/issues/4485>).
+//! use it (step A10 of <https://github.com/rrnewton/hermit/issues/4659>).
 //!
 //! Residuals: a branch from code that has no unwind information is found only
 //! if the decode of that code happens to align. A code address that is held

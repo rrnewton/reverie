@@ -13,8 +13,7 @@
 //! [`LinuxEmuMemoryMap`] that today's executor still needs.
 //!
 //! The split is step 2 of the minimal provider seam
-//! (<https://github.com/rrnewton/hermit/issues/4485>, epic
-//! <https://github.com/rrnewton/hermit/issues/4492>); step U6a moved the core
+//! (<https://github.com/rrnewton/hermit/issues/4659>); step U6a moved the core
 //! to its own crate, step E1 moved it into Reverie's core, step E2a made its
 //! `execute` an `async` method (implemented in `#[reverie::provider]` blocks),
 //! and step E2b gave `execute` the issuing task and a `&mut` per-call context.

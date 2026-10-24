@@ -1390,7 +1390,7 @@ pub struct PrototypeCounters {
 /// the kernel and to Detcore, not to a backend's own tool. It once carried its
 /// own deterministic `uname`, ports, random bytes, `/proc` snapshots,
 /// `getrusage` and `sysinfo`, a second determinism layer that nothing in
-/// Hermit used (step A10 of <https://github.com/rrnewton/hermit/issues/4485>).
+/// Hermit used (step A10 of <https://github.com/rrnewton/hermit/issues/4659>).
 #[derive(Clone, Copy, Debug, Default)]
 pub struct PrototypeTool;
 

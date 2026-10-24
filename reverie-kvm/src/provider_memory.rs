@@ -12,8 +12,7 @@
 //! ([`GuestMemory`]).
 //!
 //! The traits are step U1 of the minimal provider seam
-//! (<https://github.com/rrnewton/hermit/issues/4485>, epic
-//! <https://github.com/rrnewton/hermit/issues/4492>), moved to their own
+//! (<https://github.com/rrnewton/hermit/issues/4659>), moved to their own
 //! crate in step U6a and into Reverie's core in step E1. The syscall
 //! executor's handlers are generic over them with the error type fixed to
 //! [`crate::Error`].

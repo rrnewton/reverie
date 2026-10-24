@@ -10,8 +10,7 @@
 //! ([`Error`]) and the fixed guest address map ([`layout`]).
 //!
 //! Step U6b-1 of the provider seam
-//! (<https://github.com/rrnewton/hermit/issues/4485>, epic
-//! <https://github.com/rrnewton/hermit/issues/4492>) moved these out of
+//! (<https://github.com/rrnewton/hermit/issues/4659>) moved these out of
 //! reverie-kvm unchanged. The guest arena and the Linux syscall emulator will
 //! move below reverie-kvm in later steps; both need this error type and
 //! address map, so they come first. It is an internal building block of
