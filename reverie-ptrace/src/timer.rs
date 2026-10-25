@@ -179,6 +179,14 @@ pub(crate) enum StepUnit {
     Block,
 }
 
+/// The next step and, on x86, its registers at the same owned stop.
+/// Consumed synchronously by the step callback before resuming the task.
+pub(crate) struct StepRequest {
+    pub(crate) unit: StepUnit,
+    #[cfg(target_arch = "x86_64")]
+    pub(crate) regs: Regs,
+}
+
 /// Steps of each unit taken toward precise event targets, and lookups in the
 /// block bound cache, for tests and measurement.
 pub(crate) static INSTRUCTION_STEPS: std::sync::atomic::AtomicU64 =
@@ -1045,7 +1053,7 @@ impl Timer {
     pub(crate) async fn handle_signal(
         &mut self,
         task: Stopped,
-        step: &mut (dyn FnMut(Stopped, StepUnit) -> Result<Running, TraceError> + Send),
+        step: &mut (dyn FnMut(Stopped, StepRequest) -> Result<Running, TraceError> + Send),
         observe: &mut (dyn FnMut(&Wait) -> Result<(), TraceError> + Send),
         waits: &std::sync::Arc<PtracerWaitOwner>,
     ) -> Result<Stopped, HandleFailure> {
@@ -1065,7 +1073,7 @@ impl Timer {
         &mut self,
         task: Stopped,
         unfinished: Unfinished,
-        step: &mut (dyn FnMut(Stopped, StepUnit) -> Result<Running, TraceError> + Send),
+        step: &mut (dyn FnMut(Stopped, StepRequest) -> Result<Running, TraceError> + Send),
         observe: &mut (dyn FnMut(&Wait) -> Result<(), TraceError> + Send),
         waits: &std::sync::Arc<PtracerWaitOwner>,
     ) -> Result<Stopped, HandleFailure> {
@@ -2788,7 +2796,7 @@ impl TimerImpl {
         &mut self,
         task: Stopped,
         unfinished: Unfinished,
-        step: &mut (dyn FnMut(Stopped, StepUnit) -> Result<Running, TraceError> + Send),
+        step: &mut (dyn FnMut(Stopped, StepRequest) -> Result<Running, TraceError> + Send),
         observe: &mut (dyn FnMut(&Wait) -> Result<(), TraceError> + Send),
         waits: &std::sync::Arc<PtracerWaitOwner>,
     ) -> Result<Stopped, HandleFailure> {
@@ -2983,7 +2991,7 @@ impl TimerImpl {
     async fn handle_signal(
         &mut self,
         task: Stopped,
-        step: &mut (dyn FnMut(Stopped, StepUnit) -> Result<Running, TraceError> + Send),
+        step: &mut (dyn FnMut(Stopped, StepRequest) -> Result<Running, TraceError> + Send),
         observe: &mut (dyn FnMut(&Wait) -> Result<(), TraceError> + Send),
         waits: &std::sync::Arc<PtracerWaitOwner>,
     ) -> Result<Stopped, HandleFailure> {
@@ -3062,7 +3070,7 @@ impl TimerImpl {
     async fn deliver(
         &mut self,
         task: Stopped,
-        step: &mut (dyn FnMut(Stopped, StepUnit) -> Result<Running, TraceError> + Send),
+        step: &mut (dyn FnMut(Stopped, StepRequest) -> Result<Running, TraceError> + Send),
         observe: &mut (dyn FnMut(&Wait) -> Result<(), TraceError> + Send),
         waits: &std::sync::Arc<PtracerWaitOwner>,
     ) -> Result<Stopped, HandleFailure> {
@@ -3116,7 +3124,7 @@ impl TimerImpl {
         task: Stopped,
         mut current: ClockCounter,
         target_instr: u64,
-        step: &mut (dyn FnMut(Stopped, StepUnit) -> Result<Running, TraceError> + Send),
+        step: &mut (dyn FnMut(Stopped, StepRequest) -> Result<Running, TraceError> + Send),
         observe: &mut (dyn FnMut(&Wait) -> Result<(), TraceError> + Send),
         waits: &std::sync::Arc<PtracerWaitOwner>,
     ) -> Result<Stopped, HandleFailure> {
@@ -3207,7 +3215,12 @@ impl TimerImpl {
                 }
             }
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            let wait = step(task, unit)?.next_state_with_owner(waits).await?;
+            let request = StepRequest {
+                unit,
+                #[cfg(target_arch = "x86_64")]
+                regs,
+            };
+            let wait = step(task, request)?.next_state_with_owner(waits).await?;
             observe(&wait)?;
             task = match wait {
                 // a successful single step results in SIGTRAP stop
