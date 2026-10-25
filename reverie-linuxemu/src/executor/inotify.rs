@@ -43,18 +43,18 @@ const INOTIFY_EVENT_COOKIE: usize = 8;
 const INOTIFY_EVENT_LENGTH: usize = 12;
 /// Host cookies remembered for pairing. A pair is normally read together; the
 /// bound only limits memory for programs that rename without ever reading.
-const INOTIFY_COOKIE_CAPACITY: usize = 1 << 16;
+pub(super) const INOTIFY_COOKIE_CAPACITY: usize = 1 << 16;
 
 /// Run-wide map from host rename cookies to deterministic virtual cookies.
 #[derive(Debug, Default)]
 pub struct InotifyCookieTable {
-    last: u32,
-    virtual_by_host: std::collections::BTreeMap<u32, u32>,
-    host_by_age: std::collections::VecDeque<u32>,
+    pub(super) last: u32,
+    pub(super) virtual_by_host: std::collections::BTreeMap<u32, u32>,
+    pub(super) host_by_age: std::collections::VecDeque<u32>,
 }
 
 impl InotifyCookieTable {
-    fn virtualize(&mut self, host: u32) -> u32 {
+    pub(super) fn virtualize(&mut self, host: u32) -> u32 {
         if host == 0 {
             // Events that are not part of a rename carry no cookie.
             return 0;
@@ -77,12 +77,12 @@ impl InotifyCookieTable {
     }
 }
 
-fn host_fd_is_inotify(host_fd: RawFd) -> Result<bool, i64> {
+pub(super) fn host_fd_is_inotify(host_fd: RawFd) -> Result<bool, i64> {
     host_fd_mode_is_inotify(host_fd, fd_mode(host_fd)?)
 }
 
 /// [`host_fd_is_inotify`] with the descriptor's mode already in hand.
-fn host_fd_mode_is_inotify(host_fd: RawFd, mode: libc::mode_t) -> Result<bool, i64> {
+pub(super) fn host_fd_mode_is_inotify(host_fd: RawFd, mode: libc::mode_t) -> Result<bool, i64> {
     // Anonymous-inode descriptors have no file type bits. Only those need the
     // name check, so ordinary files pay one fstat.
     if mode & libc::S_IFMT != 0 {
@@ -94,7 +94,7 @@ fn host_fd_mode_is_inotify(host_fd: RawFd, mode: libc::mode_t) -> Result<bool, i
 
 /// Refuse a blocking inotify wait: no event can arrive while the reading task
 /// holds its turn, and a host wait would escape Detcore's scheduler.
-fn ensure_inotify_nonblocking(host_fd: RawFd) -> Result<(), i64> {
+pub(super) fn ensure_inotify_nonblocking(host_fd: RawFd) -> Result<(), i64> {
     if fd_status_flags(host_fd)? & libc::O_NONBLOCK == 0 {
         return Err(negative_errno(libc::ENOSYS));
     }
@@ -105,7 +105,7 @@ fn ensure_inotify_nonblocking(host_fd: RawFd) -> Result<(), i64> {
 /// record boundary. A trailing partial record exists only after EFAULT; if its
 /// cookie field was partly written, `restore` (the destination's bytes before
 /// the read) supplies those bytes, so no host cookie bits reach the guest.
-fn virtualize_inotify_cookies(
+pub(super) fn virtualize_inotify_cookies(
     bytes: &mut [u8],
     restore: Option<&[u8]>,
     table: &mut InotifyCookieTable,
@@ -145,7 +145,7 @@ fn virtualize_inotify_cookies(
 /// writes whole records, so each vector's transferred prefix starts at a record
 /// boundary. EFAULT is returned only when the first nonempty vector's read
 /// faults, so that vector holds every byte the kernel wrote.
-fn virtualize_staged_inotify_cookies(
+pub(super) fn virtualize_staged_inotify_cookies(
     staged_vectors: &mut [StagedIoVector],
     result: i64,
     original: &[u8],
@@ -185,7 +185,7 @@ fn virtualize_staged_inotify_cookies(
     }
 }
 
-fn inotify_init1(state: &mut LoadedStaticElf, raw_flags: u64) -> i64 {
+pub(super) fn inotify_init1(state: &mut LoadedStaticElf, raw_flags: u64) -> i64 {
     // SYSCALL_DEFINE1(inotify_init1, int, flags) consumes the low int word.
     let flags = raw_flags as libc::c_int;
     if flags & !(libc::IN_CLOEXEC | libc::IN_NONBLOCK) != 0 {
@@ -227,7 +227,7 @@ fn inotify_add_watch_preflight(host_fd: RawFd, mask: u32, valid: libc::c_int) ->
     }
 }
 
-fn inotify_add_watch(memory: &GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) -> i64 {
+pub(super) fn inotify_add_watch(memory: &GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) -> i64 {
     let guest_fd = args[0] as libc::c_int;
     let mask = args[2] as u32;
     // The mask is validated before the descriptor. Use the host kernel's exact
@@ -277,7 +277,7 @@ fn inotify_add_watch(memory: &GuestMemory, state: &LoadedStaticElf, args: &[u64;
     }
 }
 
-fn inotify_rm_watch(state: &LoadedStaticElf, args: &[u64; 6]) -> i64 {
+pub(super) fn inotify_rm_watch(state: &LoadedStaticElf, args: &[u64; 6]) -> i64 {
     let Some(host_fd) = host_fd(state, args[0] as libc::c_int) else {
         return negative_errno(libc::EBADF);
     };
