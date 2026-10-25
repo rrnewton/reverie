@@ -75,6 +75,7 @@ mod error;
 /// Ordered capture for trusted cooperating processes using socket lifetime endpoints.
 #[cfg(target_os = "linux")]
 pub mod guest_log;
+mod root_ready;
 mod server;
 
 #[cfg(target_os = "linux")]
@@ -90,6 +91,7 @@ pub use blocking_client::read_config_frame;
 pub use client::RpcClient;
 pub use envelope::RequestEnvelope;
 pub use error::RpcError;
+pub use root_ready::InitialRootReadyMonitor;
 pub use server::Admitted;
 pub use server::CancellationDrain;
 pub use server::CancelledRequest;

@@ -471,6 +471,21 @@ where
         self.tid
     }
 
+    /// Declare this connection's encoded TID as the initial launch root.
+    ///
+    /// Uses this same configured stream; never sends an application request.
+    /// The server authenticates the connecting process, not the current caller
+    /// thread or Tool installation. A complete ACK does not replace the
+    /// launcher's final monitor, connection-drain and guest-outcome checks.
+    pub fn declare_initial_root_ready(&self) -> Result<(), RpcError> {
+        let mut stream = self.stream.lock().map_err(|_| {
+            RpcError::Io(io::Error::other(
+                "reverie-rpc-transport: blocking client mutex poisoned",
+            ))
+        })?;
+        exchange_initial_root_ready(&mut *stream, self.tid)
+    }
+
     /// Send one request and block until the coordinator returns its response.
     pub fn try_send_rpc(&self, message: G::Request) -> Result<G::Response, RpcError> {
         let request = RpcRequest::<G>::new(self.tid, message)?;
@@ -488,6 +503,20 @@ where
     G: GlobalTool,
     S: Read + Write + Send,
 {
+    /// Declare the borrow's current request TID as the initial root.
+    ///
+    /// No connection, Config read, application serializer or descriptor
+    /// ownership change occurs. A non-root encoded TID refuses; this does not
+    /// authenticate the physical thread executing this method.
+    pub fn declare_initial_root_ready(&self) -> Result<(), RpcError> {
+        let mut stream = self.stream.lock().map_err(|_| {
+            RpcError::Io(io::Error::other(
+                "reverie-rpc-transport: blocking client mutex poisoned",
+            ))
+        })?;
+        exchange_initial_root_ready(&mut **stream, self.tid)
+    }
+
     /// Send one request through the same framing and codec as an owned client.
     pub fn try_send_rpc(&self, message: G::Request) -> Result<G::Response, RpcError> {
         self.receive_response(RpcRequest::new(self.tid, message)?)?
@@ -567,6 +596,17 @@ impl<G: GlobalTool> BlockingRpcClient<G> {
 /// blocking client. Strict consumers can apply [`crate::codec::decode_exact`].
 pub fn read_config_frame(stream: &mut impl Read) -> Result<Vec<u8>, RpcError> {
     read_message(stream, DEFAULT_MAX_FRAME_LEN)
+}
+
+fn exchange_initial_root_ready(
+    stream: &mut (impl Read + Write),
+    sender: Tid,
+) -> Result<(), RpcError> {
+    let request = crate::root_ready::request(sender)?;
+    let mut response = FrameBytes::empty();
+    write_message(stream, &request)?;
+    read_message_into(stream, crate::root_ready::CONTROL_LEN, &mut response)?;
+    crate::root_ready::check_ack(sender, &response)
 }
 
 fn exchange(

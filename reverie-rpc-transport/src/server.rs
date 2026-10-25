@@ -42,6 +42,8 @@ use crate::codec::write_message;
 use crate::envelope::RequestEnvelope;
 use crate::error::RpcError;
 use crate::initial_image::InitialImageAdmission;
+use crate::root_ready::InitialRootConnection;
+use crate::root_ready::InitialRootReadyMonitor;
 use crate::successor::SuccessorAdmission;
 
 /// `SO_PEERPIDFD` (Linux 6.5): a pidfd for the process that connected the
@@ -106,7 +108,7 @@ pub trait ExitReporter: Send + Sync {
 }
 
 /// A pidfd for the process that connected `stream`.
-fn peer_pidfd(stream: &impl AsRawFd) -> std::io::Result<OwnedFd> {
+pub(crate) fn peer_pidfd(stream: &impl AsRawFd) -> std::io::Result<OwnedFd> {
     let mut fd: libc::c_int = -1;
     let mut len = std::mem::size_of::<libc::c_int>() as libc::socklen_t;
     let rc = unsafe {
@@ -177,6 +179,7 @@ pub struct RpcServer<G: GlobalTool> {
     initial_image: Option<InitialImageSetup>,
     native_successor: Option<Arc<dyn SuccessorAdmission>>,
     mapping_capture: Option<reverie::MappingCaptureRun>,
+    initial_root_ready: Option<InitialRootReadyMonitor>,
 }
 
 #[derive(Clone)]
@@ -202,6 +205,7 @@ struct ConnectionSetup {
     native_close: Option<Arc<dyn SuccessorAdmission>>,
     cancellation: Option<(usize, RequestCancellation)>,
     mapping_capture: Option<(reverie::MappingCaptureRun, i32)>,
+    initial_root_ready: Option<InitialRootConnection>,
 }
 
 /// Actual error outcome of cancelling a received, admitted request. Fields are
@@ -667,6 +671,7 @@ where
             initial_image: None,
             native_successor: None,
             mapping_capture: None,
+            initial_root_ready: None,
         })
     }
 
@@ -709,6 +714,7 @@ where
             initial_image: None,
             native_successor: None,
             mapping_capture: None,
+            initial_root_ready: None,
         })
     }
 
@@ -765,6 +771,7 @@ where
             initial_image: None,
             native_successor: None,
             mapping_capture: None,
+            initial_root_ready: None,
         })
     }
 
@@ -774,6 +781,30 @@ where
     pub fn mapping_capture(mut self, run: reverie::MappingCaptureRun) -> Self {
         self.mapping_capture = Some(run);
         self
+    }
+
+    /// Require one initial-root transport declaration, independent of Config
+    /// delivery and application RPC. No Tool-installation proof is inferred.
+    ///
+    /// Clone the monitor before attachment to check it after the launcher's
+    /// existing child wait and connection drain. Private InitialImage/successor
+    /// servers cannot opt in. Existing missing-runtime and run-outcome checks
+    /// remain the caller's responsibility.
+    pub fn require_initial_root_ready(
+        mut self,
+        monitor: InitialRootReadyMonitor,
+    ) -> Result<Self, RpcError> {
+        if self.initial_root_ready.is_some() {
+            return Err(crate::root_ready::invalid("server already has a monitor"));
+        }
+        if self.initial_image.is_some() || self.native_successor.is_some() {
+            return Err(crate::root_ready::invalid(
+                "private image admission is incompatible",
+            ));
+        }
+        monitor.attach()?;
+        self.initial_root_ready = Some(monitor);
+        Ok(self)
     }
 
     /// Admits every later connection through `admission` before serving it;
@@ -796,6 +827,11 @@ where
         &mut self,
         admission: Arc<dyn InitialImageAdmission>,
     ) -> Result<(), RpcError> {
+        if self.initial_root_ready.is_some() {
+            return Err(crate::root_ready::invalid(
+                "private image admission is incompatible",
+            ));
+        }
         if self.admission.is_none() || self.issues.is_none() {
             return Err(crate::initial_image::invalid(
                 "InitialImage requires process admission and retained connection issues",
@@ -960,12 +996,16 @@ where
                 let native_successor = self.native_successor.clone();
                 let request_cancellation = cancellation.clone();
                 let mapping_capture = self.mapping_capture.clone();
+                let initial_root_ready = self.initial_root_ready.clone();
                 connections.spawn(async move {
                     let _connection_guard = connection_guard;
                     let future = async move {
                         let mut stream = stream;
                         let mapping_capture = mapping_capture_peer(mapping_capture, &stream)?;
                         let admitted = admit_connection(admission.as_ref(), &stream)?;
+                        // Required existing admission obtains its fd first. An
+                        // optional capture error is inert until a ready control.
+                        let initial_root_ready = initial_root_ready.map(|monitor| monitor.capture(&stream));
                         let cancellation = request_cancellation.map(|cancel| (connection, cancel));
                         let config_bytes = match initial_image {
                             Some(hook) => Some(connection_io(
@@ -986,6 +1026,7 @@ where
                                 native_close: native_successor,
                                 cancellation,
                                 mapping_capture,
+                                initial_root_ready,
                             },
                         )
                         .await
@@ -1056,6 +1097,10 @@ where
         let result = async {
             let mapping_capture = mapping_capture_peer(self.mapping_capture.clone(), &stream)?;
             let admitted = admit_connection(self.admission.as_ref(), &stream)?;
+            let initial_root_ready = self
+                .initial_root_ready
+                .as_ref()
+                .map(|monitor| monitor.capture(&stream));
             let config = self.config.clone();
             let config_bytes = match &self.initial_image {
                 Some(hook) => Some(
@@ -1081,6 +1126,7 @@ where
                     native_close: self.native_successor.clone(),
                     cancellation: None,
                     mapping_capture,
+                    initial_root_ready,
                 },
             )
             .await
@@ -1309,6 +1355,7 @@ where
         native_close,
         cancellation,
         mapping_capture,
+        initial_root_ready,
     } = setup;
     let cancellation_admitted = admitted;
     let mut request_number = 0usize;
@@ -1378,6 +1425,30 @@ where
             }
             Err(e) => return Err(e),
         };
+        match crate::root_ready::decode_request(&request_bytes) {
+            Err(error) => {
+                return Err(initial_root_ready
+                    .as_ref()
+                    .map_or(error, |ready| ready.malformed())
+                    .into());
+            }
+            Ok(Some(sender)) => {
+                let ready = initial_root_ready
+                    .as_ref()
+                    .ok_or_else(|| crate::root_ready::invalid("server did not opt in"))?;
+                let pending = ready.begin(sender)?;
+                let response = crate::root_ready::ack(sender)?;
+                connection_io(
+                    write_message(&mut stream, &response),
+                    cancellation_admitted,
+                    cancellation.as_ref(),
+                )
+                .await?;
+                pending.commit()?;
+                continue;
+            }
+            Ok(None) => {}
+        }
         if let Some(token) = crate::mapping_capture::decode_request(&request_bytes)? {
             let authorized = mapping_capture
                 .as_ref()
@@ -2094,3 +2165,6 @@ mod owned_request_cancellation_tests {
         }
     }
 }
+
+#[cfg(test)]
+mod root_ready_characterization_tests;
