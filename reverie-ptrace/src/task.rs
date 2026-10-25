@@ -3817,6 +3817,11 @@ thread_local! {
     /// the delivered signal's action and SIGSEGV's. Per thread, as above.
     pub(crate) static SEGV_TRAP_QUERIES_FOR_TEST: std::cell::Cell<u64> =
         const { std::cell::Cell::new(0) };
+
+    /// Scratch checks made by a trap's repair, not by pre-init or action
+    /// learning. Per thread, so a test can isolate its own traced loops.
+    pub(crate) static SEGV_TRAP_SCRATCH_CHECKS_FOR_TEST: std::cell::Cell<u64> =
+        const { std::cell::Cell::new(0) };
 }
 
 /// Test-only: counts every tracer single-step request per tid, so a test
@@ -12025,8 +12030,25 @@ impl<L: Tool + 'static> TracedTask<L> {
             return Ok(task);
         }
         let mask = sigmask(&task)?;
-        let _repairs = self.lock_sigtrap_repairs().await;
-        let scratch = self.sigtrap_scratch(task.pid()).ok().flatten();
+        // A known-blocked default action can need only a mask repair:
+        // Known is not Delivered, and SIG_DFL needs no action query/write.
+        // Defer scratch/filter validation until an injection can be needed;
+        // a contract-violating filter install may consequently be noticed
+        // later, but every actual injection still validates its scratch.
+        let mask_only = run == SignalRun::Known(true)
+            && before.is_some_and(|action| action.handler == libc::SIG_DFL as u64);
+        let _repairs = if mask_only {
+            None
+        } else {
+            Some(self.lock_sigtrap_repairs().await)
+        };
+        let scratch = if mask_only {
+            None
+        } else {
+            #[cfg(test)]
+            SEGV_TRAP_SCRATCH_CHECKS_FOR_TEST.with(|count| count.set(count.get() + 1));
+            self.sigtrap_scratch(task.pid()).ok().flatten()
+        };
         let mut task = task;
         // A thread Reverie does not trace could have changed the delivered
         // signal's action since the delivery: the action read now is no
