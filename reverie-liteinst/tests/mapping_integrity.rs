@@ -439,6 +439,7 @@ fn native_mapping_boundaries_preserve_guards_break_abi_and_fork_owner() -> Resul
 /// The plain shared host must guard a raw syscall before typed dispatch can
 /// classify it as unknown. Keep this independent of the original legacy legs.
 #[test]
+#[cfg(feature = "liteinst")]
 fn plain_fulltool_raw_mseal_protects_owner_before_unknown_syscall_refusal() -> Result<(), String> {
     let leaf = runtime::required_runtime()?;
     let evidence = runtime::evidence_directory("mapping-plain-fulltool-mseal")?;

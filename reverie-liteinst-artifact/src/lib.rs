@@ -1112,6 +1112,7 @@ pub struct VerifiedCompiledSources {
     // Fresh factory metadata only. Wrapper validation activates exclusively in
     // the OFF standalone build factory; historical ON records/gates do not change.
     adapter_metadata: Option<Value>,
+    standalone_metadata: Option<Value>,
 }
 const COMPILED_RV_LOCATION_FILES: [&str; 7] = [
     "reverie-liteinst/src/patch_alloc.rs",
@@ -1376,6 +1377,8 @@ const CONTENT_REVERIE_CATALOG: [(&str, u64, &str); 82] = [
         "ab61e3c7f1097397e478f9302ed3fc29483efb884b287ca123bfec9d1c603b53",
         5783,
         "9c143b5f137270cf9008081cc268c2fa155bb03fe10dcfb7177a3720f56c7c8b",
+        5684,
+        "3004bbd27466808ed4603e7bcb9f982639203124bdbe7369c4acb7e8542b49b9",
     ),
     (
         "reverie-liteinst/src/lib.rs",
@@ -2683,6 +2686,9 @@ impl VerifiedCompiledSources {
             record,
             current_build: None,
             adapter_metadata: Some(metadata.clone()),
+            standalone_metadata: (expected.layout == CompiledSourceLayout::HermitGit
+                && expected.image_kind == FixedImageKind::Standalone)
+                .then(|| metadata.clone()),
         })
     }
     /// Explicit closed-profile Hermit source-copy authority. It never catches a Git error
@@ -2868,6 +2874,8 @@ impl VerifiedCompiledSources {
             },
             current_build: None,
             adapter_metadata: Some(metadata.clone()),
+            standalone_metadata: (expected.image_kind == FixedImageKind::Standalone)
+                .then(|| metadata.clone()),
         };
         verified.verify_unchanged(runner)?;
         Ok(verified)
@@ -2887,6 +2895,26 @@ impl VerifiedCompiledSources {
     pub fn with_consumer_build(
         &self,
         policy: &VerifiedConsumerPolicy,
+    pub fn with_current_build(
+        command: &CommandEvidence,
+        selected_elf: &Path,
+        target_directory: &Path,
+    ) -> Result<Self> {
+        self.verify_files()?;
+        let current_build =
+            current_build_evidence(&self.record, command, selected_elf, target_directory)?;
+        Ok(Self {
+            record: self.record.clone(),
+            current_build: Some(current_build),
+            standalone_metadata: self.standalone_metadata.clone(),
+        })
+    }
+    /// Bind only the measured nonfixture OFF standalone release build. Its
+    /// nested workspace and both selected packages differ from Detcore's
+    /// command. All six owned workspace files are tied to the existing source
+    /// authority before wrapper metadata or compiler output can earn admission.
+    /// Success and failure both close the original source boundary.
+    pub fn with_standalone_current_build(
         command: &CommandEvidence,
         selected_elf: &Path,
         target_directory: &Path,
@@ -2919,25 +2947,38 @@ impl VerifiedCompiledSources {
     // outer source transaction; this is not a serialized-authority constructor.
     fn rebind_consumer_build(&self, policy: &VerifiedConsumerPolicy,
         command: &CommandEvidence, selected_elf: &Path, target: &Path) -> Result<Self> {
-        let result = (|| {
             self.verify_files()?;
-            policy.record.verify_files()?;
-            require(policy.record.compiled_sources_sha256
-                == sha256(&serde_json::to_vec(&self.record).map_err(|e| e.to_string())?),
                 "receipt consumer policy belongs to different compiled sources")?;
             consumer_current_build_evidence(&self.record, command, selected_elf, target,
                 policy.record.standalone_sources.as_ref(), &policy.record)
-        })();
         let source_close = self.verify_files();
-        let policy_close = policy.record.verify_files();
-        let closed = combine_consumer_closes(source_close, policy_close);
         let build = match (result, closed) {
-            (Ok(value), Ok(())) => value,
-            (Err(error), Ok(())) | (Ok(_), Err(error)) => return Err(error),
             (Err(error), Err(close)) => return Err(format!("{error}; receipt source close failed: {close}")),
-        };
         Ok(Self { record: self.record.clone(), current_build: Some(build),
-            adapter_metadata: self.adapter_metadata.clone() })
+        let result = self.verify_unchanged(runner).and_then(|_| {
+            let metadata = self
+                .standalone_metadata
+                .as_ref()
+                .ok_or("standalone build lacks fresh factory metadata")?;
+            let binding = standalone_current_build_sources(&self.record, metadata, runner)?;
+            current_build_evidence_in_scope(
+                &self.record,
+                command,
+                selected_elf,
+                target_directory,
+                Some(&binding),
+        });
+        let closed = self.verify_unchanged(runner);
+            (Err(error), Err(close)) => {
+                return Err(format!(
+                    "{error}; standalone build source close failed: {close}"
+                ));
+            }
+        Ok(Self {
+            record: self.record.clone(),
+            current_build: Some(current_build),
+            standalone_metadata: self.standalone_metadata.clone(),
+        })
     }
     /// Exact retained Cargo compiler spelling; canonical PackageIdentity remains
     /// unchanged for artifact selection. Consumers compare this raw path exactly.
@@ -3245,6 +3286,126 @@ const TEST_WRAPPER_WORKSPACE_FILES: [&str; 6] = [
     "consumer-build/runtime/Cargo.toml", "consumer-build/runtime/src/lib.rs",
     "consumer-build/build.rs", "consumer-build/artifact.rs",
 ];
+fn standalone_current_build_sources(
+    sources: &CompiledSources,
+    metadata: &Value,
+    runner: &mut Runner,
+) -> Result<StandaloneCurrentBuildSources> {
+    require(
+        sources.layout == CompiledSourceLayout::HermitGit
+            && sources.image_kind == FixedImageKind::Standalone,
+        "standalone build source binding requires the owned Hermit nested workspace",
+    )?;
+    let mut workspace_files = BTreeMap::new();
+    match &sources.authority {
+        CompiledSourceAuthority::Git { workspace_head, .. } => {
+            for relative in CONTENT_WORKSPACE_FILES {
+                workspace_files.insert(
+                    relative.to_owned(),
+                    compiled_blob_file(&sources.workspace_root, workspace_head, relative, runner)?,
+                );
+            }
+        }
+        CompiledSourceAuthority::DeclaredContent {
+            workspace_inventory,
+            ..
+        } => {
+            require(
+                workspace_inventory
+                    .iter()
+                    .map(|entry| entry.relative.as_str())
+                    .collect::<BTreeSet<_>>()
+                    == BTreeSet::from(CONTENT_WORKSPACE_FILES)
+                    && workspace_inventory.len() == CONTENT_WORKSPACE_FILES.len(),
+                "standalone declared workspace inventory differs from its six owned files",
+            )?;
+                let file = sources
+                    .files
+                    .get(&format!("workspace:{relative}"))
+                    .ok_or("standalone declared workspace file absent")?;
+                let declared = workspace_inventory
+                    .find(|entry| entry.relative == relative)
+                    .ok_or("standalone workspace file has no declared authority")?;
+                file.verify()?;
+                require(
+                    file.path == sources.workspace_root.join(relative)
+                        && file.sha256 == declared.sha256
+                        && fs::metadata(&file.path).map_err(|e| e.to_string())?.len()
+                            == declared.size,
+                    "standalone workspace file differs from declared source authority",
+                )?;
+                workspace_files.insert(relative.to_owned(), file.clone());
+    }
+        workspace_files.get("liteinst-runtime-build/Cargo.toml") == Some(&sources.manifest),
+        "standalone workspace manifest differs from the existing source authority",
+    let wrapper = standalone_wrapper_package(metadata, &sources.workspace_root, &workspace_files)?;
+    Ok(StandaloneCurrentBuildSources {
+        wrapper,
+        workspace_files,
+    })
+}
+
+fn standalone_wrapper_package(
+    root: &Path,
+    workspace_files: &BTreeMap<String, FileIdentity>,
+) -> Result<PackageIdentity> {
+    let name = "hermit-liteinst-runtime-artifact";
+    let target = "hermit_liteinst_runtime_artifact";
+    let manifest = workspace_files
+        .get("liteinst-runtime-build/runtime/Cargo.toml")
+        .ok_or("authorized standalone wrapper manifest absent")?;
+    let source_file = workspace_files
+        .get("liteinst-runtime-build/runtime/src/lib.rs")
+        .ok_or("authorized standalone wrapper source absent")?;
+    manifest.verify()?;
+    source_file.verify()?;
+    let nested = root.join("liteinst-runtime-build");
+        manifest.path == nested.join("runtime/Cargo.toml")
+            && source_file.path == nested.join("runtime/src/lib.rs")
+            && metadata["workspace_root"].as_str() == nested.to_str(),
+        "standalone wrapper or metadata belongs to a different nested workspace",
+    let id = format!(
+        "path+file://{}#{name}@0.5.1",
+        nested.join("runtime").display()
+    );
+    let packages: Vec<_> = metadata["packages"]
+        .as_array()
+        .ok_or("fresh standalone metadata packages absent")?
+        .iter()
+        .filter(|package| package["name"] == name)
+        .collect();
+        packages.len() == 1,
+        "fresh standalone wrapper package absent or duplicated",
+    let package = packages[0];
+        package["id"] == id
+            && package["version"] == "0.5.1"
+            && package.get("source") == Some(&Value::Null)
+            && package["manifest_path"].as_str() == manifest.path.to_str()
+            && strings(&metadata["workspace_members"])?
+                .iter()
+                .filter(|member| *member == &id)
+                .count()
+                == 1,
+        "fresh standalone wrapper identity differs from its authorized local package",
+    let targets: Vec<_> = package["targets"]
+        .ok_or("standalone wrapper targets absent")?
+        .filter(|candidate| candidate["name"] == target)
+        targets.len() == 1,
+        "standalone wrapper target absent or duplicated",
+    let target_record = targets[0];
+        target_record["src_path"].as_str() == source_file.path.to_str()
+            && strings(&target_record["kind"])? == ["lib"]
+            && strings(&target_record["crate_types"])? == ["lib"],
+        "standalone wrapper target differs from its exact lib/lib source",
+    Ok(PackageIdentity {
+        id,
+        name: name.into(),
+        manifest: manifest.path.clone(),
+        source: None,
+        target: target.into(),
+        kind: vec!["lib".into()],
+        crate_types: vec!["lib".into()],
+        target_source: source_file.path.clone(),
 
 fn current_cargo_executable(program: &str) -> Result<Option<FileIdentity>> {
     if program == "cargo" {
@@ -3295,6 +3456,13 @@ fn current_build_command(
     require(command.status == 0 && command.cwd == sources.workspace_root
         && command.arguments.first().is_some_and(|a| a == "build"),
         "current build lacks its successful Cargo command/source root")?;
+    features: &[String],
+    require(
+        command.status == 0
+            && command.cwd == sources.workspace_root
+            && command.arguments.first().is_some_and(|a| a == "build"),
+        "current build lacks its successful Cargo command/source root",
+    )?;
     let mut switches = BTreeSet::new();
     let mut options = BTreeMap::new();
     let mut arguments = command.arguments.iter().skip(1);
@@ -3307,6 +3475,17 @@ fn current_build_command(
                 let value = arguments.next().ok_or("current build option lacks value")?;
                 require(options.insert(argument.as_str(), value.as_str()).is_none(),
                     "current build repeats a Cargo option")?;
+            "--locked"
+            | "--offline"
+            | "--lib"
+            | "--no-default-features"
+                switches.insert(argument.as_str()),
+                "current build repeats a Cargo switch",
+            )?,
+                require(
+                    options.insert(argument.as_str(), value.as_str()).is_none(),
+                    "current build repeats a Cargo option",
+                )?;
             }
             _ => return Err("current build has an unsupported Cargo argument".into()),
         }
@@ -3323,6 +3502,37 @@ fn current_build_command(
 }
 
 #[cfg(test)]
+    require(
+        switches
+            == BTreeSet::from([
+                "--locked",
+                "--offline",
+                "--lib",
+                "--no-default-features",
+                "--message-format=json-render-diagnostics",
+            ])
+            && options.get("--manifest-path").copied() == sources.manifest.path.to_str()
+            && options.get("-p").copied() == Some("detcore-liteinst")
+            && options.get("--profile").copied() == Some("liteinst-runtime")
+            && options.get("--target-dir").copied() == target.to_str(),
+        "current build command differs from the explicit Detcore profile/target/source",
+    )?;
+    // exec-private-init is an implied feature of exec-native-injection. The
+    // canonical native producer requests the latter, not the derived feature.
+    let mut requested = features.to_vec();
+    if requested
+        .iter()
+        .any(|feature| feature == "exec-native-injection")
+    {
+        require(
+            requested
+                .iter()
+                .any(|feature| feature == "exec-private-init"),
+            "native compiler event lacks its implied private-init feature",
+        )?;
+        requested.retain(|feature| feature != "exec-private-init");
+    }
+    require_explicit_cargo_features(&command.arguments, &requested)?;
 fn current_build_evidence(
     sources: &CompiledSources,
     command: &CommandEvidence,
@@ -3357,6 +3567,19 @@ fn standalone_current_build_command(
 }
 
 #[cfg(test)]
+    let expected = standalone_current_build_arguments(target)?;
+    require(
+        command.status == 0
+            && sources.layout == CompiledSourceLayout::HermitGit
+            && sources.image_kind == FixedImageKind::Standalone
+            && sources.manifest.path
+                == sources
+                    .workspace_root
+                    .join("liteinst-runtime-build/Cargo.toml")
+            && Some(command.cwd.as_path()) == sources.manifest.path.parent()
+            && command.arguments == expected,
+        "standalone current build differs from the exact nested release multipackage command",
+    )?;
 fn standalone_current_build_arguments(target: &Path) -> Result<Vec<String>> {
     Ok(vec![
         "build",
@@ -3366,6 +3589,7 @@ fn standalone_current_build_arguments(target: &Path) -> Result<Vec<String>> {
         "Cargo.toml",
         "-p",
         "consumer-wrapper",
+        "hermit-liteinst-runtime-artifact",
         "-p",
         "reverie-liteinst-preload",
         "--lib",
@@ -3381,6 +3605,7 @@ fn standalone_current_build_arguments(target: &Path) -> Result<Vec<String>> {
 }
 
 fn consumer_current_build_evidence(
+fn current_build_evidence_in_scope(
     sources: &CompiledSources,
     command: &CommandEvidence,
     selected_elf: &Path,
@@ -3395,6 +3620,7 @@ fn consumer_current_build_evidence(
             sources.layout == CompiledSourceLayout::HermitGit
                 && sources.image_kind == FixedImageKind::Standalone
                 && sources.leaf == policy.runtime
+                && sources.leaf.name == "reverie-liteinst-preload"
         } else {
             sources.image_kind == FixedImageKind::Detcore
         },
@@ -3435,6 +3661,19 @@ fn consumer_current_build_evidence(
         "current build policy has ambiguous compiler profiles")?;
     let required_names: Vec<&str> = policy.role_packages.values()
         .map(|package| package.name.as_str()).collect();
+    let expected_profile = if standalone.is_some() {
+        NoScopeCohort::StandaloneRelease62.profile()
+    } else {
+        NoScopeCohort::DetcoreNative101.profile()
+    };
+    let required_names: &[&str] = if standalone.is_some() {
+        &[
+            "hermit-liteinst-runtime-artifact",
+            "reverie-liteinst-preload",
+            "reverie-liteinst",
+            "reverie-inguest",
+        ]
+        &["detcore-liteinst", "reverie-inguest", "reverie-liteinst"]
     let mut packages = BTreeMap::new();
     for line in messages.lines().filter(|line| !line.is_empty()) {
         let event: Value = serde_json::from_str(line)
@@ -3530,6 +3769,13 @@ fn consumer_current_build_evidence(
         consumer_policy: policy.clone(),
         command: command.clone(),
         cargo_executable: None,
+    let cargo_executable = if standalone.is_some() {
+        standalone_current_build_command(command, sources, &target_directory)?
+    } else {
+        current_build_command(command, sources, &target_directory, &leaf.features)?
+    };
+    let evidence = CurrentBuildEvidence {
+        cargo_executable,
         target_directory,
         artifact,
         compiled_sources_sha256: sha256(&serde_json::to_vec(sources).map_err(|e| e.to_string())?),
@@ -3547,15 +3793,12 @@ fn consumer_current_build_evidence(
     Ok(evidence)
 }
 
-
 fn combine_consumer_closes(source: Result<()>, policy: Result<()>) -> Result<()> {
     match (source, policy) {
         (Ok(()), Ok(())) => Ok(()),
         (Err(error), Ok(())) | (Ok(()), Err(error)) => Err(error),
         (Err(error), Err(close)) => Err(format!("{error}; consumer definition close failed: {close}")),
     }
-}
-
 fn consumer_pair_arguments(target: &Path, wrapper: &PackageIdentity,
     runtime: &PackageIdentity, variant: &ConsumerBuildVariant) -> Result<Vec<String>> {
     require(variant.requested_features.is_empty(), "nested nonfixture build requests extra features")?;
@@ -3563,9 +3806,6 @@ fn consumer_pair_arguments(target: &Path, wrapper: &PackageIdentity,
         "-p", wrapper.name.as_str(), "-p", runtime.name.as_str(), "--lib", "--profile",
         variant.profile_name.as_str(), "--target-dir", target.to_str().ok_or("target is not UTF-8")?,
         "--message-format=json-render-diagnostics"].into_iter().map(str::to_owned).collect())
-}
-
-
 #[cfg(test)]
 fn test_policy_for_packages(packages: &BTreeMap<String, CurrentBuildPackage>,
     standalone: Option<&StandaloneCurrentBuildSources>, root: &Path, sources_hash: &str) -> ConsumerPolicyRecord {
@@ -3573,16 +3813,10 @@ fn test_policy_for_packages(packages: &BTreeMap<String, CurrentBuildPackage>,
     let identities: BTreeMap<String, PackageIdentity> = packages.iter()
         .map(|(name, package)| (name.clone(), package.package.clone())).collect();
     test_policy_from_identities(&identities, &identities[runtime], standalone, root, sources_hash)
-}
-
-#[cfg(test)]
 fn test_consumer_policy(sources: &CompiledSources,
     standalone: Option<&StandaloneCurrentBuildSources>) -> ConsumerPolicyRecord {
     test_policy_from_identities(&sources.packages, &sources.leaf, standalone,
         &sources.workspace_root, &sha256(&serde_json::to_vec(sources).unwrap()))
-}
-
-#[cfg(test)]
 fn test_wrapper_spec() -> ConsumerWrapperSpec {
     use ConsumerWorkspaceFileRole as FileRole;
     ConsumerWrapperSpec {
@@ -3598,12 +3832,7 @@ fn test_wrapper_spec() -> ConsumerWrapperSpec {
             manifest: TEST_WRAPPER_WORKSPACE_FILES[2].into(), target: "consumer_wrapper".into(),
             target_source: TEST_WRAPPER_WORKSPACE_FILES[3].into(), kind: vec!["lib".into()],
             crate_types: vec!["lib".into()] },
-    }
-}
-
-#[cfg(test)]
 fn test_policy_from_identities(packages: &BTreeMap<String, PackageIdentity>, runtime: &PackageIdentity,
-    standalone: Option<&StandaloneCurrentBuildSources>, root: &Path, sources_hash: &str) -> ConsumerPolicyRecord {
     use ConsumerPackageRole as Role;
     let mut roles = BTreeMap::from([(Role::Runtime, runtime.clone()),
         (Role::Instrumentation, packages["reverie-liteinst"].clone()),
@@ -3635,9 +3864,6 @@ fn test_policy_from_identities(packages: &BTreeMap<String, PackageIdentity>, run
     ConsumerPolicyRecord { definition_compiled_sha256: definition.sha256.clone(), definition,
         definition_size: size, compiled_sources_sha256: sources_hash.into(), workspace_root: root.into(),
         runtime: runtime.clone(), wrapper_spec, standalone_sources: standalone.cloned(), role_packages: roles, variants }
-}
-
-#[cfg(test)]
 #[test]
 fn consumer_policy_shape_refusal_controls() {
     let packages: BTreeMap<_, _> = ConsumerRecipe::Allocation101LayoutA.features().iter()
@@ -3671,29 +3897,21 @@ fn consumer_policy_shape_refusal_controls() {
                 .unwrap().retain(|feature| feature != "fixed-syscall-gates"),
             11 => bad.variants[0].profile_name.clear(),
             _ => unreachable!(),
-        }
         assert!(bad.validate_shape().is_err(), "invalid consumer policy {alteration}");
-    }
-}
-
-#[cfg(test)]
-#[test]
 fn consumer_relative_source_path_refuses_aliases() {
     for invalid in ["", "/root/file", ".", "..", "a/../b", "a/./b", "a//b", "a/", "a\\b", "a\0b"] {
         assert!(consumer_policy::test_relative_path(invalid).is_err(), "{invalid:?}");
-    }
     for valid in ["package/Cargo.toml", "workspace/runtime/src/lib.rs"] {
         assert!(consumer_policy::test_relative_path(valid).is_ok());
-    }
-}
-
-#[cfg(test)]
 fn current_build_evidence_in_scope(sources: &CompiledSources, command: &CommandEvidence,
     selected_elf: &Path, target: &Path, standalone: Option<&StandaloneCurrentBuildSources>) -> Result<CurrentBuildEvidence> {
     let policy = test_consumer_policy(sources, standalone);
     consumer_current_build_evidence(sources, command, selected_elf, target, standalone, &policy)
-}
-
+    if standalone.is_some() {
+        require(
+            no_scope_build_features(&evidence)? == NoScopeCohort::StandaloneRelease62,
+            "standalone current build is not the measured nonfixture OFF release cohort",
+        )?;
 const ALLOCATOR_BACKING_SYMBOL: &str = "reverie_liteinst_allocator_backing_v1";
 const FIXED_ARENA_VERSION: u32 = 1;
 
@@ -3888,6 +4106,7 @@ pub struct NoInstallationScopeEvidence {
 // layout. Existing-installation JSON stays exact. Consumer-bound no-scope
 // records additionally require the independent policy identity; historical
 // no-scope receipts remain evidence at their original qualifier/source only.
+// layout. Historical no-scope v1 and all existing-installation JSON stay exact.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct NativeNoScopeLayout100Evidence {
@@ -3926,6 +4145,7 @@ struct NativeNoScopeCellEvidence {
 }
 const NO_INSTALLATION_SCOPE_POLICY: &str =
     "allocation101_layout_a_legacy_v1";
+    "detcore_native_off_alloc101_reviewed_source_current_build_rx_loader_census_v1";
 const NO_INSTALLATION_SCOPE_SOURCE: (&str, u64, &str) = (
     "reverie-liteinst/src/patch_alloc.rs",
     24943,
@@ -3956,6 +4176,7 @@ const NO_SCOPE_OTHER_GETTERS: [(&str, u64); 4] = [
 // to ignore bytes. All four typed roles must select this vector together.
 const NATIVE100_NO_SCOPE_POLICY: &str =
     "allocation101_layout_a_tls100_legacy_v2";
+    "detcore_native_off_alloc101_tls100_reviewed_source_current_build_rx_loader_census_v2";
 const NATIVE100_NO_SCOPE_OTHER_GETTERS: [(&str, u64); 4] = [
     (NO_SCOPE_OTHER_GETTERS[0].0, 0xe8),
     (NO_SCOPE_OTHER_GETTERS[1].0, 0xf0),
@@ -4008,7 +4229,6 @@ const NATIVE130_OWNER138_NO_SCOPE_CELLS: [(&str, u64, u64, u32); 4] = [
     (NATIVE100_NO_SCOPE_CELLS[1].0, 0x138, 8, section_header::SHT_NOBITS),
     (NATIVE100_NO_SCOPE_CELLS[2].0, 0, 16, section_header::SHT_PROGBITS),
     (NATIVE100_NO_SCOPE_CELLS[3].0, 0x130, 8, section_header::SHT_NOBITS),
-];
 // Canonical identity, exact TLS offset/size/visibility and section type. Every
 // symbol is LOCAL STT_TLS; no dynamic TLS symbol or extra static alias is allowed.
 const NATIVE130_OWNER138_TLS_POPULATION: [(&str, u64, u64, u8, u32); 29] = [
@@ -4016,119 +4236,62 @@ const NATIVE130_OWNER138_TLS_POPULATION: [(&str, u64, u64, u8, u32); 29] = [
         "_RNvNCNKNvNtNtCs_15reverie_inguest5guest12continuation7PENDING0s_023___RUST_STD_INTERNAL_VAL",
         0x0, 16, sym::STV_DEFAULT, section_header::SHT_PROGBITS,
     ),
-    (
         "_RNvNCNKNvNtCs_15reverie_process13launch_window12AFTER_GUARDS0023___RUST_STD_INTERNAL_VAL",
         0x10, 40, sym::STV_DEFAULT, section_header::SHT_PROGBITS,
-    ),
-    (
         "_RNvNCNKNvNtNtCs_5tokio7runtime7context7CONTEXT0023___RUST_STD_INTERNAL_VAL",
         0x38, 80, sym::STV_DEFAULT, section_header::SHT_PROGBITS,
-    ),
-    (
         "_RNvNCNKNvNtCs_12tracing_core10dispatcher13CURRENT_STATE0023___RUST_STD_INTERNAL_VAL",
         0x88, 48, sym::STV_DEFAULT, section_header::SHT_PROGBITS,
-    ),
-    (
         "_RNvNCNKNvNtNtCs_3std2io5stdio14OUTPUT_CAPTURE0023___RUST_STD_INTERNAL_VAL",
         0xb8, 16, sym::STV_DEFAULT, section_header::SHT_PROGBITS,
-    ),
-    (
         "_RNvNtNtNtNtCs_3std3sys12thread_local11destructors4list5DTORS",
         0xc8, 32, sym::STV_DEFAULT, section_header::SHT_PROGBITS,
-    ),
-    (
         "_RNvNCNKNvNtNtCs_15reverie_inguest5guest7support20TOOL_CALLBACK_ACTIVE0s_023___RUST_STD_INTERNAL_VAL",
         0xe8, 1, sym::STV_DEFAULT, section_header::SHT_NOBITS,
-    ),
-    (
         "_RNvNCNKNvNtNtCs_15reverie_inguest5guest5clock15RCB_CLOCK_OWNER0s_023___RUST_STD_INTERNAL_VAL",
         0xec, 4, sym::STV_DEFAULT, section_header::SHT_NOBITS,
-    ),
-    (
         "_RNvNCNKNvNtNtCs_15reverie_inguest5guest5clock16RCB_CLOCK_OFFSET0s_023___RUST_STD_INTERNAL_VAL",
         0xf0, 8, sym::STV_DEFAULT, section_header::SHT_NOBITS,
-    ),
-    (
         "_RNvNCNKNvNtNtCs_15reverie_inguest5guest5clock17RCB_HANDLER_DEPTH0s_023___RUST_STD_INTERNAL_VAL",
         0xf8, 4, sym::STV_DEFAULT, section_header::SHT_NOBITS,
-    ),
-    (
         "_RNvNCNKNvNtNtCs_15reverie_inguest5guest5clock17RCB_HANDLER_ENTRY0s_023___RUST_STD_INTERNAL_VAL",
         0x100, 8, sym::STV_DEFAULT, section_header::SHT_NOBITS,
-    ),
-    (
         "_RNvNCNKNvNtNtCs_15reverie_inguest5guest5clock18RCB_CLOCK_RESTORED0s_023___RUST_STD_INTERNAL_VAL",
         0x108, 1, sym::STV_DEFAULT, section_header::SHT_NOBITS,
-    ),
-    (
         "_RNvNCNKNvNtNtCs_15reverie_inguest5guest5clock18RCB_COUNTER_ORIGIN0s_023___RUST_STD_INTERNAL_VAL",
         0x110, 8, sym::STV_DEFAULT, section_header::SHT_NOBITS,
-    ),
-    (
         "_RNvNCNKNvNtNtCs_15reverie_inguest5guest5clock21RCB_HANDLER_DEDUCTION0s_023___RUST_STD_INTERNAL_VAL",
         0x118, 8, sym::STV_DEFAULT, section_header::SHT_NOBITS,
-    ),
-    (
         "_RNvNCNKNvNtNtCs_15reverie_inguest5guest5clock22RCB_CLOCK_AVAILABILITY0s_023___RUST_STD_INTERNAL_VAL",
         0x120, 1, sym::STV_DEFAULT, section_header::SHT_NOBITS,
-    ),
-    (
         "_RNvNCNKNvNtNtCs_15reverie_inguest5guest5clock9RCB_CLOCK0s_023___RUST_STD_INTERNAL_VAL",
         0x128, 8, sym::STV_DEFAULT, section_header::SHT_NOBITS,
-    ),
-    (
         "_RNvNCNKNvNtNtCs_15reverie_inguest5guest5alloc14DISPATCH_DEPTH0s_023___RUST_STD_INTERNAL_VAL",
         0x130, 8, sym::STV_DEFAULT, section_header::SHT_NOBITS,
-    ),
-    (
         "_RNvNCNKNvNtNtCs_15reverie_inguest5guest12continuation5OWNER0s_023___RUST_STD_INTERNAL_VAL",
         0x138, 8, sym::STV_DEFAULT, section_header::SHT_NOBITS,
-    ),
-    (
         "_RNvNCNKNvNtNtCs_15reverie_inguest5guest12continuation5READY0s_023___RUST_STD_INTERNAL_VAL",
         0x140, 1, sym::STV_HIDDEN, section_header::SHT_NOBITS,
-    ),
-    (
         "_RNvNCNKNvNtCs_15reverie_inguest4trap10IN_HANDLER0s_023___RUST_STD_INTERNAL_VAL",
         0x141, 1, sym::STV_HIDDEN, section_header::SHT_NOBITS,
-    ),
-    (
         "_RNvNCNKNvNtCs_15reverie_process13launch_window10OPENS_HELD0s_023___RUST_STD_INTERNAL_VAL",
         0x144, 4, sym::STV_HIDDEN, section_header::SHT_NOBITS,
-    ),
-    (
         "_RNvNCNKNvNtCs_15reverie_process13launch_window12LAUNCH_DEPTH0s_023___RUST_STD_INTERNAL_VAL",
         0x148, 4, sym::STV_HIDDEN, section_header::SHT_NOBITS,
-    ),
-    (
         "_RNvNCNKNvNtCs_15reverie_process13launch_window15OPENS_IN_LAUNCH0s_023___RUST_STD_INTERNAL_VAL",
         0x14c, 4, sym::STV_HIDDEN, section_header::SHT_NOBITS,
-    ),
-    (
         "_RNvNCNKNvNtCs_15reverie_process13launch_window8DEFERRED0s_023___RUST_STD_INTERNAL_VAL",
         0x150, 1, sym::STV_DEFAULT, section_header::SHT_NOBITS,
-    ),
-    (
         "_RNvNCNKNvNvNtCs_16parking_lot_core11parking_lot16with_thread_data11THREAD_DATA0023___RUST_STD_INTERNAL_VAL",
         0x158, 48, sym::STV_DEFAULT, section_header::SHT_NOBITS,
-    ),
-    (
         "_RNvNCNKNvNtNtCs_3std9panicking11panic_count17LOCAL_PANIC_COUNT0s_023___RUST_STD_INTERNAL_VAL",
         0x188, 16, sym::STV_DEFAULT, section_header::SHT_NOBITS,
-    ),
-    (
         "_RNvNCNKNvNvMNtNtCs_3std4hash6randomNtBa_11RandomState3new4KEYS0s_023___RUST_STD_INTERNAL_VAL",
         0x198, 24, sym::STV_DEFAULT, section_header::SHT_NOBITS,
-    ),
-    (
         "_RNvNtNtCs_3std6thread7current7CURRENT",
         0x1b0, 8, sym::STV_DEFAULT, section_header::SHT_NOBITS,
-    ),
-    (
         "_RNvNtNtNtCs_3std6thread7current2id2ID",
         0x1b8, 8, sym::STV_DEFAULT, section_header::SHT_NOBITS,
-    ),
-];
 
 // The ordinary OFF image has the same101B allocation body, but its complete
 // typed getter population has different OWNER/DISPATCH offsets. These are
@@ -4162,13 +4325,23 @@ impl ConsumerRecipe {
     }
 
     fn policy(self) -> &'static str {
-        match self {
             Self::Allocation101LayoutA => NO_INSTALLATION_SCOPE_POLICY,
             Self::Allocation101LayoutB => {
                 "allocation101_layout_b_legacy_v1"
             }
             Self::Allocation62 => {
                 "allocation62_legacy_v1"
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum NoScopeCohort {
+    DetcoreNative101,
+    DetcoreOrdinary101,
+    StandaloneRelease62,
+impl NoScopeCohort {
+            Self::DetcoreNative101 => NO_INSTALLATION_SCOPE_POLICY,
+            Self::DetcoreOrdinary101 => {
+                "detcore_ordinary_off_alloc101_reviewed_source_current_build_rx_loader_census_v1"
+            Self::StandaloneRelease62 => {
+                "standalone_release_off_alloc62_reviewed_source_current_build_rx_loader_census_v1"
             }
         }
     }
@@ -4176,12 +4349,16 @@ impl ConsumerRecipe {
         match self {
             Self::Allocation101LayoutA | Self::Allocation101LayoutB => FixedImageKind::Detcore,
             Self::Allocation62 => FixedImageKind::Standalone,
+            Self::DetcoreNative101 | Self::DetcoreOrdinary101 => FixedImageKind::Detcore,
+            Self::StandaloneRelease62 => FixedImageKind::Standalone,
         }
     }
     fn allocation_size(self) -> u64 {
         match self {
             Self::Allocation101LayoutA | Self::Allocation101LayoutB => 101,
             Self::Allocation62 => 62,
+            Self::DetcoreNative101 | Self::DetcoreOrdinary101 => 101,
+            Self::StandaloneRelease62 => 62,
         }
     }
     fn getters(self) -> &'static [(&'static str, u64)] {
@@ -4195,13 +4372,18 @@ impl ConsumerRecipe {
         let debug = self != Self::Allocation62;
         serde_json::json!({"opt_level":"3", "debuginfo":0,
             "debug_assertions":debug,"overflow_checks":debug,"test":false})
-    }
     #[cfg(test)]
     fn features(self) -> &'static [(&'static str, &'static [&'static str])] {
         match self {
             Self::Allocation101LayoutA => &[
                 (
                     "consumer-runtime",
+            Self::DetcoreNative101 => &NO_SCOPE_OTHER_GETTERS,
+            Self::DetcoreOrdinary101 => &ORDINARY_NO_SCOPE_OTHER_GETTERS,
+            Self::StandaloneRelease62 => &STANDALONE_RELEASE_NO_SCOPE_OTHER_GETTERS,
+        let debug = self != Self::StandaloneRelease62;
+            Self::DetcoreNative101 => &[
+                    "detcore-liteinst",
                     &["exec-native-injection", "exec-private-init"],
                 ),
                 (
@@ -4230,6 +4412,8 @@ impl ConsumerRecipe {
             ],
             Self::Allocation101LayoutB => &[
                 ("consumer-runtime", &[]),
+            Self::DetcoreOrdinary101 => &[
+                ("detcore-liteinst", &[]),
                 ("reverie-liteinst", &[]),
                 (
                     "reverie-inguest",
@@ -4238,6 +4422,8 @@ impl ConsumerRecipe {
             ],
             Self::Allocation62 => &[
                 ("consumer-wrapper", &[]),
+            Self::StandaloneRelease62 => &[
+                ("hermit-liteinst-runtime-artifact", &[]),
                 ("reverie-liteinst-preload", &[]),
                 ("reverie-liteinst", &[]),
                 (
@@ -4259,6 +4445,10 @@ const SEMANTIC_NATIVE100_NO_SCOPE_POLICY: &str =
     "allocation101_layout_a_tls100_semantic_v3";
 const SEMANTIC_STANDALONE_NO_SCOPE_POLICY: &str =
     "allocation62_semantic_v2";
+    "ordinary_off_alloc101_semantic_v0_reviewed_source_current_build_rx_loader_census_v2";
+    "native_off_alloc101_tls140_semantic_v0_reviewed_source_current_build_rx_loader_census_v2";
+    "native_off_alloc101_tls100_semantic_v0_reviewed_source_current_build_rx_loader_census_v3";
+    "standalone_release_off_alloc62_semantic_v0_reviewed_source_current_build_rx_loader_census_v2";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum OffGetterRole {
@@ -4275,6 +4465,9 @@ impl OffGetterRole {
         match cohort {
             ConsumerRecipe::Allocation62 => &[Self::Callback, Self::Pending],
             ConsumerRecipe::Allocation101LayoutA | ConsumerRecipe::Allocation101LayoutB => {
+    fn in_cohort(cohort: NoScopeCohort) -> &'static [Self] {
+            NoScopeCohort::StandaloneRelease62 => &[Self::Callback, Self::Pending],
+            NoScopeCohort::DetcoreNative101 | NoScopeCohort::DetcoreOrdinary101 => {
                 &[Self::Callback, Self::Owner, Self::Pending, Self::Dispatch]
             }
         }
@@ -4454,6 +4647,7 @@ impl NoScopeGetterNames {
 
 fn select_no_scope_getter_names<'a>(
     cohort: ConsumerRecipe,
+    cohort: NoScopeCohort,
     static_names: impl IntoIterator<Item = &'a str>,
     dynamic_names: impl IntoIterator<Item = &'a str>,
 ) -> Result<NoScopeGetterNames> {
@@ -4546,11 +4740,13 @@ fn select_no_scope_getter_names<'a>(
 
 fn no_scope_getter_policy(
     cohort: ConsumerRecipe,
+    cohort: NoScopeCohort,
     encoding: NoScopeGetterEncoding,
     native100: bool,
 ) -> Result<(u32, &'static str)> {
     require(
         !native100 || cohort == ConsumerRecipe::Allocation101LayoutA,
+        !native100 || cohort == NoScopeCohort::DetcoreNative101,
         "native100 getter policy used outside the native build cohort",
     )?;
     Ok(match encoding {
@@ -4566,6 +4762,10 @@ fn no_scope_getter_policy(
             ConsumerRecipe::Allocation101LayoutA => (2, SEMANTIC_NATIVE140_NO_SCOPE_POLICY),
             ConsumerRecipe::Allocation101LayoutB => (2, SEMANTIC_ORDINARY_NO_SCOPE_POLICY),
             ConsumerRecipe::Allocation62 => (2, SEMANTIC_STANDALONE_NO_SCOPE_POLICY),
+            NoScopeCohort::DetcoreNative101 if native100 => (3, SEMANTIC_NATIVE100_NO_SCOPE_POLICY),
+            NoScopeCohort::DetcoreNative101 => (2, SEMANTIC_NATIVE140_NO_SCOPE_POLICY),
+            NoScopeCohort::DetcoreOrdinary101 => (2, SEMANTIC_ORDINARY_NO_SCOPE_POLICY),
+            NoScopeCohort::StandaloneRelease62 => (2, SEMANTIC_STANDALONE_NO_SCOPE_POLICY),
         },
     })
 }
@@ -19298,6 +19498,79 @@ fn no_scope_build_features(build: &CurrentBuildEvidence) -> Result<ConsumerRecip
             "single-library no-scope build has a foreign wrapper binding")?;
     }
     Ok(variant.recipe)
+fn no_scope_build_features(build: &CurrentBuildEvidence) -> Result<NoScopeCohort> {
+    let candidates: Vec<_> = [
+        NoScopeCohort::DetcoreNative101,
+        NoScopeCohort::DetcoreOrdinary101,
+        NoScopeCohort::StandaloneRelease62,
+    ]
+    .into_iter()
+    .filter(|cohort| {
+        let expected = cohort.features();
+        build.packages.len() == expected.len()
+            && expected.iter().all(|(name, features)| {
+                build.packages.get(*name).is_some_and(|package| {
+                    package
+                        .features
+                        .iter()
+                        .map(String::as_str)
+                        .eq(features.iter().copied())
+                        && package.profile == cohort.profile()
+                })
+            })
+    })
+    .collect();
+    require(
+        candidates.len() == 1,
+        "no-scope build has an unreviewed package/feature/test/profile cohort",
+    )?;
+    let cohort = candidates[0];
+    if cohort == NoScopeCohort::StandaloneRelease62 {
+        let binding = build
+            .standalone_sources
+            .as_ref()
+            .ok_or("standalone no-scope build lacks its authorized workspace binding")?;
+        let root = build
+            .command
+            .cwd
+            .parent()
+            .ok_or("standalone workspace parent absent")?;
+        require(
+            build.command.cwd == root.join("liteinst-runtime-build")
+                && build.command.arguments
+                    == standalone_current_build_arguments(&build.target_directory)?
+                && build.target_directory.is_absolute()
+                && binding
+                    .workspace_files
+                    .keys()
+                    .map(String::as_str)
+                    .collect::<BTreeSet<_>>()
+                    == BTreeSet::from(CONTENT_WORKSPACE_FILES)
+                && binding.workspace_files.len() == CONTENT_WORKSPACE_FILES.len()
+                && binding.workspace_files.iter().all(|(relative, file)| {
+                    file.path == root.join(relative)
+                        && file.sha256.len() == 64
+                        && file.sha256.bytes().all(|byte| byte.is_ascii_hexdigit())
+                && binding.wrapper == build.packages["hermit-liteinst-runtime-artifact"].package
+                && binding.wrapper.id
+                    == format!(
+                        "path+file://{}#hermit-liteinst-runtime-artifact@0.5.1",
+                        root.join("liteinst-runtime-build/runtime").display()
+                    )
+                && binding.wrapper.name == "hermit-liteinst-runtime-artifact"
+                && binding.wrapper.source.is_none()
+                && binding.wrapper.target == "hermit_liteinst_runtime_artifact"
+                && binding.wrapper.kind == ["lib"]
+                && binding.wrapper.crate_types == ["lib"]
+                && binding.wrapper.manifest
+                    == binding.workspace_files["liteinst-runtime-build/runtime/Cargo.toml"].path
+                && binding.wrapper.target_source
+                    == binding.workspace_files["liteinst-runtime-build/runtime/src/lib.rs"].path,
+            "standalone no-scope wrapper/source inventory binding is inconsistent",
+        )?;
+            build.standalone_sources.is_none(),
+            "Detcore no-scope build has a foreign standalone binding",
+    Ok(cohort)
 }
 
 fn installation_scope_raw_name(name: &str) -> bool {
@@ -19319,6 +19592,7 @@ struct NoScopeCensus {
 #[cfg(test)]
 fn no_installation_scope_census(elf: &Elf<'_>, bytes: &[u8]) -> Result<NoScopeCensus> {
     no_installation_scope_census_in_cohort(elf, bytes, ConsumerRecipe::Allocation101LayoutA)
+    no_installation_scope_census_in_cohort(elf, bytes, NoScopeCohort::DetcoreNative101)
 }
 // Physical census only. The production caller separately requires actual
 // verified sources, actual compiler feature events and the whole cohort recipe.
@@ -19326,6 +19600,7 @@ fn no_installation_scope_census_in_cohort(
     elf: &Elf<'_>,
     bytes: &[u8],
     cohort: ConsumerRecipe,
+    cohort: NoScopeCohort,
 ) -> Result<NoScopeCensus> {
     no_installation_scope_census_with_getters(elf, bytes, cohort, cohort.getters())
 }
@@ -19334,6 +19609,7 @@ fn no_installation_scope_census_with_getters(
     elf: &Elf<'_>,
     bytes: &[u8],
     cohort: ConsumerRecipe,
+    cohort: NoScopeCohort,
     expected_getters: &[(&str, u64)],
 ) -> Result<NoScopeCensus> {
     let mut raw_names = Vec::new();
@@ -19582,8 +19858,6 @@ enum NativeNoScopeTlsLayout {
 #[derive(Clone, Copy)]
 enum NativeNoScopeMeasuredLayout {
     Dispatch100,
-    Dispatch130Owner138,
-}
 impl NativeNoScopeMeasuredLayout {
     fn cells(self) -> &'static [(&'static str, u64, u64, u32); 4] {
         match self {
@@ -19592,23 +19866,14 @@ impl NativeNoScopeMeasuredLayout {
         }
     }
     fn memory_size(self) -> u64 {
-        match self {
             Self::Dispatch100 => 0x1c8,
             Self::Dispatch130Owner138 => 0x1c0,
-        }
-    }
     fn zero_fill_size(self) -> u64 {
-        match self {
             Self::Dispatch100 => 0xe0,
             Self::Dispatch130Owner138 => 0xd8,
-        }
-    }
     fn message(self, old100: &'static str) -> String {
-        match self {
             Self::Dispatch100 => old100.into(),
             Self::Dispatch130Owner138 => old100.replace("native100", "native130-owner138"),
-        }
-    }
 }
 
 // Select the joint complete typed getter/cell vector. No individual getter
@@ -19740,6 +20005,7 @@ fn native_no_scope_measured_layout_census_with_getters(
         elf,
         bytes,
         ConsumerRecipe::Allocation101LayoutA,
+        NoScopeCohort::DetcoreNative101,
         expected_getters,
     )?;
     let segments: Vec<_> = elf
@@ -19749,6 +20015,7 @@ fn native_no_scope_measured_layout_census_with_getters(
         .filter(|(_, segment)| segment.p_type == program_header::PT_TLS)
         .collect();
     require(segments.len() == 1, spec.message("native100 requires one exact PT_TLS"))?;
+    require(segments.len() == 1, "native100 requires one exact PT_TLS")?;
     let (tls_index, tls) = segments[0];
     require(
         tls.p_flags == program_header::PF_R
@@ -19756,11 +20023,14 @@ fn native_no_scope_measured_layout_census_with_getters(
             && tls.p_memsz == spec.memory_size()
             && tls.p_align == 8,
         spec.message("native100 complete initialized/zero-fill TLS layout differs"),
+            && tls.p_memsz == 0x1c8
+        "native100 complete initialized/zero-fill TLS layout differs",
     )?;
     let initialized_end = tls
         .p_vaddr
         .checked_add(tls.p_filesz)
         .ok_or(spec.message("native100 initialized TLS template span overflow"))?;
+        .ok_or("native100 initialized TLS template span overflow")?;
     let writers = loader_writers(elf)?;
     require(
         writers.iter().all(|writer| {
@@ -19770,6 +20040,8 @@ fn native_no_scope_measured_layout_census_with_getters(
     )?;
     let mut cells = Vec::new();
     for &(canonical, offset, size, kind) in spec.cells() {
+        "native100 initialized TLS template has a loader writer",
+    for &(canonical, offset, size, kind) in &NATIVE100_NO_SCOPE_CELLS {
         let candidates: Vec<_> = elf
             .syms
             .iter()
@@ -19785,6 +20057,7 @@ fn native_no_scope_measured_layout_census_with_getters(
         require(
             candidates.len() == 1,
             spec.message("native100 exact TLS cell absent/duplicated"),
+            "native100 exact TLS cell absent/duplicated",
         )?;
         let (selected_index, symbol) = &candidates[0];
         require(
@@ -19801,6 +20074,7 @@ fn native_no_scope_measured_layout_census_with_getters(
                         == Some(canonical)
                 }),
             spec.message("native100 typed cell identity/type/locality/size/offset differs"),
+            "native100 typed cell identity/type/locality/size/offset differs",
         )?;
         let section = elf
             .section_headers
@@ -19810,12 +20084,15 @@ fn native_no_scope_measured_layout_census_with_getters(
             .shdr_strtab
             .get_at(section.sh_name)
             .ok_or(spec.message("native100 TLS section name absent"))?;
+            .ok_or("native100 TLS cell section absent")?;
+            .ok_or("native100 TLS section name absent")?;
         let flags = u64::from(
             section_header::SHF_ALLOC | section_header::SHF_WRITE | section_header::SHF_TLS,
         );
         let initialized = kind == section_header::SHT_PROGBITS;
         let section_start = if initialized { 0 } else { 0xe8 };
         let section_size = if initialized { 0xe8 } else { spec.zero_fill_size() };
+        let section_size = if initialized { 0xe8 } else { 0xe0 };
         require(
             section.sh_type == kind
                 && section.sh_flags == flags
@@ -19828,6 +20105,7 @@ fn native_no_scope_measured_layout_census_with_getters(
                     .checked_add(size)
                     .is_some_and(|end| end <= section_start + section_size),
             spec.message("native100 typed cell does not join its exact actual TLS section/span"),
+            "native100 typed cell does not join its exact actual TLS section/span",
         )?;
         for (index, other) in elf.syms.iter().enumerate() {
             require(
@@ -19841,6 +20119,7 @@ fn native_no_scope_measured_layout_census_with_getters(
                         .checked_add(other.st_size)
                         .is_some_and(|end| end <= offset),
                 spec.message("native100 actual cell overlaps another static TLS identity"),
+                "native100 actual cell overlaps another static TLS identity",
             )?;
         }
         require(
@@ -19855,6 +20134,7 @@ fn native_no_scope_measured_layout_census_with_getters(
                         .is_some_and(|end| end <= offset)
             }),
             spec.message("native100 actual cell overlaps a dynamic TLS identity"),
+            "native100 actual cell overlaps a dynamic TLS identity",
         )?;
         cells.push(NativeNoScopeCellEvidence {
             symbol: symbol_evidence(elf.strtab.get_at(symbol.st_name).unwrap(), symbol),
@@ -19872,6 +20152,7 @@ fn native_no_scope_measured_layout_census_with_getters(
     require(
         pending == fixed_hex(NATIVE100_PENDING_INITIALIZER_HEX),
         spec.message("native100 complete initialized PENDING payload differs"),
+        "native100 complete initialized PENDING payload differs",
     )?;
     let (mapping, mapped_at) =
         unique_file_mapping(elf, bytes, tls.p_vaddr, loader_meta_usize(tls.p_filesz)?)?;
@@ -19879,6 +20160,7 @@ fn native_no_scope_measured_layout_census_with_getters(
         mapping.p_flags == program_header::PF_R | program_header::PF_W
             && mapped_at == loader_meta_usize(tls.p_offset)?,
         spec.message("native100 initialized TLS has no unique exact RW template mapping"),
+        "native100 initialized TLS has no unique exact RW template mapping",
     )?;
     let first = &census.other_tls_getters[0];
     require(
@@ -19886,6 +20168,7 @@ fn native_no_scope_measured_layout_census_with_getters(
             getter.module_slot == first.module_slot && getter.plt_address == first.plt_address
         }),
         spec.message("native100 complete getter population uses different modules/providers"),
+        "native100 complete getter population uses different modules/providers",
     )?;
     let expected_pointer_targets: BTreeSet<_> = [1usize, 2]
         .into_iter()
@@ -19911,6 +20194,7 @@ fn native_no_scope_measured_layout_census_with_getters(
         require(
             records.len() == 1,
             spec.message("native100 other-getter pointer writer missing/duplicated"),
+            "native100 other-getter pointer writer missing/duplicated",
         )?;
         let writer = records[0];
         let r = &writer.relocation;
@@ -19918,6 +20202,7 @@ fn native_no_scope_measured_layout_census_with_getters(
             .r_addend
             .and_then(|value| u64::try_from(value).ok())
             .ok_or(spec.message("native100 other-getter pointer has no actual target"))?;
+            .ok_or("native100 other-getter pointer has no actual target")?;
         require(
             r.r_type == reloc::R_X86_64_RELATIVE
                 && r.r_sym == 0
@@ -19928,6 +20213,8 @@ fn native_no_scope_measured_layout_census_with_getters(
                 && expected_pointer_targets.contains(&target)
                 && fixed_readonly_range(elf, bytes, slot, 8)? == [0; 8],
             spec.message("native100 other-getter pointer loses exact RELATIVE/RELRO/entry binding"),
+                        .ok_or("native100 pointer slot overflow")?
+            "native100 other-getter pointer loses exact RELATIVE/RELRO/entry binding",
         )?;
         getter_pointer_targets.insert(slot, target);
     }
@@ -19939,6 +20226,7 @@ fn native_no_scope_measured_layout_census_with_getters(
                 .collect::<BTreeSet<_>>()
                 == expected_pointer_targets,
         spec.message("native100 exact OWNER/PENDING pointer pair absent/duplicated/foreign"),
+        "native100 exact OWNER/PENDING pointer pair absent/duplicated/foreign",
     )?;
     let proof = NativeNoScopeLayout100Evidence {
         tls_program_header_index: tls_index,
@@ -19973,6 +20261,7 @@ fn validate_native_no_scope_measured_layout(
     require(
         layout.tls_file_size == 0xe8
             && layout.tls_memory_size == spec.memory_size()
+            && layout.tls_memory_size == 0x1c8
             && layout.tls_alignment == 8
             && layout.cells.len() == 4
             && layout.pending_initializer_sha256
@@ -19989,6 +20278,8 @@ fn validate_native_no_scope_measured_layout(
     )?;
     for (cell, &(canonical, offset, size, kind)) in
         layout.cells.iter().zip(spec.cells())
+        "native100 retained full TLS layout/initializer differs",
+        layout.cells.iter().zip(&NATIVE100_NO_SCOPE_CELLS)
     {
         let initialized = kind == section_header::SHT_PROGBITS;
         let start = if initialized { 0 } else { 0xe8 };
@@ -20013,6 +20304,8 @@ fn validate_native_no_scope_measured_layout(
                     == Some(cell.section_virtual_address)
                 && cell.section_size == if initialized { 0xe8 } else { spec.zero_fill_size() },
             spec.message("native100 retained typed TLS cell differs from complete cohort"),
+                && cell.section_size == if initialized { 0xe8 } else { 0xe0 },
+            "native100 retained typed TLS cell differs from complete cohort",
         )?;
     }
     let first = &proof.other_tls_getters[0];
@@ -20021,6 +20314,7 @@ fn validate_native_no_scope_measured_layout(
             getter.module_slot == first.module_slot && getter.plt_address == first.plt_address
         }),
         spec.message("native100 retained module/provider population differs"),
+        "native100 retained module/provider population differs",
     )?;
     let targets: BTreeSet<_> = [1usize, 2]
         .into_iter()
@@ -20036,6 +20330,7 @@ fn validate_native_no_scope_measured_layout(
         })
         .collect::<Option<_>>()
         .ok_or(spec.message("native100 retained OWNER/PENDING getter absent"))?;
+        .ok_or("native100 retained OWNER/PENDING getter absent")?;
     require(
         layout.getter_pointer_targets.len() == 2
             && layout
@@ -20051,6 +20346,7 @@ fn validate_native_no_scope_measured_layout(
                 .collect::<BTreeSet<_>>()
                 == targets,
         spec.message("native100 retained exact other-getter pointer bindings differ"),
+        "native100 retained exact other-getter pointer bindings differ",
     )?;
     Ok(())
 }
@@ -20132,7 +20428,6 @@ fn native_no_scope_layout130_owner138_census(
             section_flags: section.sh_flags, section_file_offset: section.sh_offset,
             section_virtual_address: section.sh_addr, section_size: section.sh_size,
         });
-    }
     validate_native130_tls_population(&layout, &population)?;
     let actual_sections: BTreeSet<_> = elf.section_headers.iter().enumerate()
         .filter(|entry| entry.1.sh_flags & u64::from(section_header::SHF_TLS) != 0)
@@ -20140,18 +20435,13 @@ fn native_no_scope_layout130_owner138_census(
     require(actual_sections == population.iter().map(|cell| cell.section_index).collect(),
         "native130 complete TLS section census differs")?;
     Ok((census, NativeNoScopeLayout130Owner138Evidence { layout, tls_population: population }))
-}
-
 fn validate_native_no_scope_layout130_owner138(
     proof: &NoInstallationScopeEvidence,
     payload: &NativeNoScopeLayout130Owner138Evidence,
     expected_getters: &[(&str, u64)],
-) -> Result<()> {
     validate_native_no_scope_measured_layout(proof, &payload.layout, expected_getters,
         NativeNoScopeMeasuredLayout::Dispatch130Owner138)?;
     validate_native130_tls_population(&payload.layout, &payload.tls_population)
-}
-
 struct SelectedNoScopeCensus {
     census: NoScopeCensus,
     native_tls_layout100: Option<NativeNoScopeLayout100Evidence>,
@@ -20166,6 +20456,7 @@ fn selected_no_scope_census(
     elf: &Elf<'_>,
     bytes: &[u8],
     cohort: ConsumerRecipe,
+    cohort: NoScopeCohort,
 ) -> Result<SelectedNoScopeCensus> {
     let static_names = elf
         .syms
@@ -20200,6 +20491,12 @@ fn selected_no_scope_census(
         let (census, layout) = native_no_scope_layout130_owner138_census(elf, bytes)?;
         (census, None, Some(layout))
     } else if native100 {
+    let native100 = cohort == NoScopeCohort::DetcoreNative101
+        && (if legacy {
+            native_no_scope_tls_layout(elf, bytes)?
+        } else {
+        }) == NativeNoScopeTlsLayout::Dispatch100;
+    let (census, native_tls_layout100) = if native100 {
         let (census, layout) = if legacy {
             native_no_scope_layout100_census(elf, bytes)?
         } else {
@@ -20210,6 +20507,7 @@ fn selected_no_scope_census(
             )?
         };
         (census, Some(layout), None)
+        (census, Some(layout))
     } else {
         (
             if legacy {
@@ -20228,6 +20526,7 @@ fn selected_no_scope_census(
         census,
         native_tls_layout100,
         native_tls_layout130_owner138,
+    let (version, policy) = no_scope_getter_policy(cohort, names.encoding, native100)?;
         version,
         policy,
     })
@@ -20279,6 +20578,9 @@ fn derive_no_installation_scope_evidence(
                 allocation101_shape(allocation_bytes)
             }
             ConsumerRecipe::Allocation62 => {
+            NoScopeCohort::DetcoreNative101 | NoScopeCohort::DetcoreOrdinary101 => {
+                detcore_no_scope_allocation_shape(allocation_bytes)
+            NoScopeCohort::StandaloneRelease62 => {
                 standalone_no_scope_allocation_shape(allocation_bytes)
             }
         },
@@ -20308,6 +20610,7 @@ fn derive_no_installation_scope_evidence(
         kind: "no_installation_scope".into(),
         version,
         policy: build.consumer_policy.label(cohort, policy)?.into(),
+        policy: policy.into(),
         elf_sha256: sha256(bytes),
         compiled_sources_sha256,
         reverie_pin: sources.record.reverie_pin.clone(),
@@ -20364,6 +20667,12 @@ fn validate_no_installation_scope_evidence(
         &NATIVE100_NO_SCOPE_OTHER_GETTERS[..]
     } else if native130 {
         &NATIVE130_OWNER138_NO_SCOPE_OTHER_GETTERS[..]
+    let native100 = cohort == NoScopeCohort::DetcoreNative101
+        && matches!(
+            proof.policy.as_str(),
+            NATIVE100_NO_SCOPE_POLICY | SEMANTIC_NATIVE100_NO_SCOPE_POLICY
+        );
+    let (version, policy) = no_scope_getter_policy(cohort, names.encoding, native100)?;
     } else {
         cohort.getters()
     })?;
@@ -20375,6 +20684,7 @@ fn validate_no_installation_scope_evidence(
             && proof.native_tls_layout100.is_some() == native100
             && proof.native_tls_layout130_owner138.is_some() == native130
             && !(native100 && native130)
+            && proof.policy == policy
             && proof.other_tls_unisolated
             && hash(&proof.reverie_pin, 40)
             && proof.source.sha256 == NO_INSTALLATION_SCOPE_SOURCE.2
@@ -21948,7 +22258,6 @@ fn validate_fixed_backing_evidence_in_source_context(
         }
         AllocatorInstallationEvidence::NoInstallationScope(proof) => {
             validate_no_installation_scope_evidence(backing, proof, image_kind)?
-        }
     }
     require(
         backing
@@ -21976,8 +22285,6 @@ fn validate_fixed_backing_evidence_in_source_context(
                 && route.call_path.last() == Some(&route.implementation.address),
             format!("Fixed {shim} route does not bind its actual distinct typed operation"),
         )?;
-    }
-    require(
         FIXED_REQUIRED_ROLES
             .iter()
             .all(|role| backing.functions.contains_key(*role))
@@ -21992,18 +22299,225 @@ fn validate_fixed_backing_evidence_in_source_context(
                 .function_sha256
                 .values()
                 .all(|hash| hash.len() == 64 && hash.bytes().all(|byte| byte.is_ascii_hexdigit()))
-            && backing
                 .owned_setup_transfers
                 .contains_key("fixed_arena_setup")
             && FIXED_REQUIRED_ROLES[..4]
-                .iter()
                 .all(|role| backing.allocator_transfers.contains_key(*role))
-            && backing
                 .allocator_transfers
                 .keys()
                 .all(|role| backing.functions.contains_key(role)),
         "Fixed backing lacks whole required function/setup evidence",
     )
+}
+
+// Serialized shape only; consumers still requalify the entire physical ELF
+// against independently verified compiled sources and compare the full receipt.
+fn validate_standalone_optimized_d8_tls_pair(tls: &AllocatorTlsBoundary) -> Result<()> {
+    let allocation = tls
+        .local_chain
+        .get("fixed_patch_alloc")
+        .ok_or("standalone d8 pair lacks its allocation role")?;
+    let getter = tls
+        .get("fixed_tls_fn_once")
+        .ok_or("standalone d8 pair lacks its getter role")?;
+    let allocation_end = allocation
+        .address
+        .checked_add(186)
+        .ok_or("standalone d8 allocation extent overflows")?;
+    let getter_end = getter
+        .checked_add(22)
+        .ok_or("standalone d8 getter extent overflows")?;
+    let roles = BTreeSet::from(["fixed_patch_alloc", "fixed_tls_fn_once"]);
+        tls.tls_cell.address == 0xd8
+            && tls.tls_cell.size == 8
+            && tls.tls_cell.binding == sym::STB_LOCAL
+            && canonical_rust_symbol(&tls.tls_cell.name).as_deref() == Some(FIXED_TLS_CELL_ROLE)
+            && tls.local_key_object.is_none()
+            && tls.local_key_transfer.is_none()
+            && tls.local_key_resolution.is_none()
+            && tls.direct_allocation.is_none()
+            && tls
+                .local_chain
+                .map(String::as_str)
+                .collect::<BTreeSet<_>>()
+                == roles
+            && allocation.size == 186
+            && getter.size == 22
+            && allocation.binding == sym::STB_LOCAL
+            && getter.binding == sym::STB_LOCAL
+            && fixed_emitted_role(&allocation.name) == Some("fixed_patch_alloc")
+            && fixed_emitted_role(&getter.name) == Some("fixed_tls_fn_once")
+            && allocation.address != 0
+            && getter.address != 0
+            && (allocation_end <= getter.address || getter_end <= allocation.address)
+            && tls.tls_module_slot != 0
+            && tls.tls_module_slot.is_multiple_of(8)
+            && tls.plt_address != 0
+            && tls.callsites
+                == [
+                    ConstructorTransfer {
+                        instruction: allocation
+                            .address
+                            .checked_add(0x2c)
+                            .ok_or("standalone d8 allocation call overflows")?,
+                        target: tls.plt_address,
+                        local_got_slot: None,
+                    },
+                        instruction: getter
+                            .checked_add(8)
+                            .ok_or("standalone d8 getter call overflows")?,
+                ],
+        "standalone d8 present-getter boundary lacks its exact None-LocalKey two-role/two-edge shape",
+fn validate_existing_allocator_tls_boundary(
+    tls: &AllocatorTlsBoundary,
+    image_kind: FixedImageKind,
+) -> Result<()> {
+        tls.dependency == "existing_installation_depth_tls"
+            && tls.provider_symbol == "__tls_get_addr"
+            && tls.provider_version == "GLIBC_2.3"
+            && tls.provider_library == "ld-linux-x86-64.so.2"
+            && tls.unisolated
+            && match image_kind {
+                FixedImageKind::Standalone => {
+                    matches!(tls.tls_cell.address, 0x40 | 0x48 | 0x80 | 0x88)
+                        // The measured 0x98/d8 DEV getters are admitted only through
+                        // its retained LocalKey route, never a direct or
+                        // optimized absence claim. The complete 177 B chain
+                        // of nine roles and actual indirect edge are required below.
+                        || (matches!(tls.tls_cell.address, 0x98 | 0xd8)
+                            && tls.direct_allocation.is_none()
+                            && tls.local_key_object.is_some()
+                            && tls.local_key_transfer.is_some()
+                            && tls.local_key_resolution.as_deref()
+                                == Some("local_relative_readonly_function_pointer"))
+                        // Optimized d8 is a separate Existing proof. It cannot
+                        // use the DEV LocalKey or default no-evidence arm.
+                        || (tls.tls_cell.address == 0xd8
+                            && tls.direct_allocation.as_ref().is_some_and(|proof| {
+                                proof.version == 3
+                                    && proof.policy == STANDALONE_D8_DIRECT_TLS_CENSUS_POLICY
+                            }))
+                        // The separate measured present-getter pair has no
+                        // LocalKey object or direct-allocation absence claim.
+                        || validate_standalone_optimized_d8_tls_pair(tls).is_ok()
+                }
+                FixedImageKind::Detcore => {
+                    matches!(
+                        tls.tls_cell.address,
+                        0x98 | 0xa0 | 0xd8 | 0xe0 | 0xe8 | 0x128
+                    )
+            }
+            && tls.tls_offset_slot
+                == tls
+                    .tls_module_slot
+                    .checked_add(8)
+                    .ok_or("TLS offset overflows")?
+            && !tls.callsites.is_empty()
+                .callsites
+                .all(|edge| edge.target == tls.plt_address && edge.local_got_slot.is_none())
+            && tls.local_chain.keys().eq(tls.function_sha256.keys())
+            && tls.local_chain.contains_key("fixed_patch_alloc")
+                .all(|symbol| symbol.binding == sym::STB_LOCAL && symbol.size != 0)
+                .chain([&tls.plt_sha256])
+                .all(|hash| hash.len() == 64 && hash.bytes().all(|byte| byte.is_ascii_hexdigit())),
+        "Fixed backing lacks the exact named unisolated TLS boundary",
+        tls.direct_allocation.is_none()
+            || (tls.local_key_object.is_none()
+                && tls.local_key_transfer.is_none()
+                && tls.local_key_resolution.is_none()),
+        "direct TLS provenance cannot relabel a LocalKey chain",
+    match (
+        &tls.local_key_object,
+        &tls.local_key_transfer,
+        &tls.local_key_resolution,
+    ) {
+        (Some(_), Some(edge), Some(resolution)) => require(
+            resolution == "local_relative_readonly_function_pointer"
+                && (tls.tls_cell.address == 0x48
+                    || (image_kind == FixedImageKind::Standalone
+                        && matches!(tls.tls_cell.address, 0x40 | 0x80 | 0x98 | 0xd8)))
+                && edge.local_got_slot.is_none()
+                && tls
+                    .local_chain
+                    .get("fixed_tls_fn_once")
+                    .is_some_and(|symbol| symbol.address == edge.target)
+                && [
+                    "fixed_tls_get",
+                    "fixed_tls_with",
+                    "fixed_tls_try_with",
+                    "fixed_tls_cell_getter",
+                    "fixed_tls_cell_callback",
+                    "fixed_tls_cell_read",
+                ]
+                .all(|role| tls.local_chain.contains_key(*role)),
+            "Fixed TLS local function-pointer chain is incomplete or mislabeled as GOT",
+        )?,
+        (None, None, None) if tls.direct_allocation.is_some() => {
+            let proof = tls.direct_allocation.as_ref().unwrap();
+            match image_kind {
+                FixedImageKind::Standalone => validate_direct_allocation_tls_evidence(tls, proof)?,
+                FixedImageKind::Detcore => validate_direct_allocation_tls_evidence_in_image(
+                    tls,
+                    proof,
+                    FixedImageKind::Detcore,
+                )?,
+        (None, None, None)
+            if image_kind == FixedImageKind::Standalone && tls.tls_cell.address == 0xd8 =>
+        {
+            validate_standalone_optimized_d8_tls_pair(tls)?;
+        (None, None, None) => {
+            let extent = match (image_kind, tls.tls_cell.address) {
+                (FixedImageKind::Standalone, 0x40 | 0x80) => Some(186),
+                (FixedImageKind::Detcore, 0x98 | 0xd8 | 0xe8 | 0x128) => Some(241),
+                _ => None,
+            };
+            if let Some(extent) = extent {
+                require(
+                    tls.local_chain
+                        .get("fixed_patch_alloc")
+                        .is_some_and(|s| s.size == extent)
+                        && tls
+                            .local_chain
+                            .get("fixed_tls_fn_once")
+                            .is_some_and(|s| s.size == 22)
+                            .keys()
+                            .map(String::as_str)
+                            .collect::<BTreeSet<_>>()
+                            == BTreeSet::from(["fixed_patch_alloc", "fixed_tls_fn_once"]),
+                    "new optimized TLS offset lacks its exact None-LocalKey whole chain",
+                )?;
+        _ => return Err("Fixed TLS local function-pointer evidence is inconsistent".into()),
+    if image_kind == FixedImageKind::Standalone
+        && matches!(tls.tls_cell.address, 0x40 | 0x80 | 0x98 | 0xd8)
+        && tls.local_key_object.is_some()
+    {
+        let try_with = tls.local_chain.get("fixed_tls_try_with");
+            tls.local_chain
+                .get("fixed_patch_alloc")
+                .is_some_and(|s| s.size == 177)
+                    .local_key_object
+                    .is_some_and(|key| key != 0 && key.is_multiple_of(8))
+                && tls.local_key_transfer.as_ref().is_some_and(|edge| {
+                    try_with.is_some_and(|caller| {
+                        caller.address.checked_add(0x15) == Some(edge.instruction)
+                    })
+                    .keys()
+                    .map(String::as_str)
+                    .collect::<BTreeSet<_>>()
+                    == BTreeSet::from([
+                        "fixed_patch_alloc",
+                        "fixed_installation_active",
+                        "fixed_tls_fn_once",
+                        "fixed_tls_get",
+                        "fixed_tls_with",
+                        "fixed_tls_try_with",
+                        "fixed_tls_cell_getter",
+                        "fixed_tls_cell_callback",
+                        "fixed_tls_cell_read",
+                    ]),
+            "new DEV TLS offset lacks its complete Some-LocalKey whole chain",
+    }
+    Ok(())
 }
 
 // Serialized shape only; consumers still requalify the entire physical ELF
@@ -22422,6 +22936,7 @@ fn qualify_fixed_allocator_in_source_context(
                 )?
             } else {
                 fixed_compiler_shim_recipe_in_scope(
+                fixed_detcore_compiler_shim_recipe_in_scope(
                     DETCORE_ROOT,
                     shim,
                     shim_symbol.st_value,
@@ -28049,6 +28564,7 @@ const DETCORE_VALIDATE_TEMPLATES: &[DetcoreValidateTemplate] = &[
 // Git840 native OFF DSO c4157195: full101B, b62a329a... before address binding.
 // The only masked fields are the six bound RIP operands below.
 const ALLOCATION101_BYTES: DetcoreValidateTemplate = DetcoreValidateTemplate {
+const DETCORE_NO_SCOPE_ALLOC: DetcoreValidateTemplate = DetcoreValidateTemplate {
     role: "fixed_patch_alloc",
     hex: "415653504889d34989f6ff1530293b004885c07427488b702040f6c60775274885f67434bf010000004c89f64889da4883c4085b415eff2594293b0031c04883c4085b415ec3488d1553fa3700bf08000000ff1598073b00488d3d41fa3700ff15231a3b00",
     operands: &[
@@ -28096,6 +28612,9 @@ fn allocation101_shape(bytes: &[u8]) -> bool {
         bytes,
         &fixed_hex(ALLOCATION101_BYTES.hex),
         ALLOCATION101_BYTES
+fn detcore_no_scope_allocation_shape(bytes: &[u8]) -> bool {
+        &fixed_hex(DETCORE_NO_SCOPE_ALLOC.hex),
+        DETCORE_NO_SCOPE_ALLOC
             .operands
             .iter()
             .map(|operand| operand.displacement),
@@ -28146,6 +28665,7 @@ fn fixed_standalone_no_scope_allocation_recipe(
     Ok(transfers)
 }
 fn fixed_allocation101_recipe(
+fn fixed_detcore_no_scope_allocation_recipe(
     address: u64,
     bytes: &[u8],
     DetcoreRecipeBindings {
@@ -28157,11 +28677,13 @@ fn fixed_allocation101_recipe(
 ) -> Result<Vec<ConstructorTransfer>> {
     require(
         allocation101_shape(bytes),
+        detcore_no_scope_allocation_shape(bytes),
         "unknown whole no-scope allocation recipe",
     )?;
     let mut fields = Vec::new();
     let mut resolved = Vec::new();
     for operand in ALLOCATION101_BYTES.operands {
+    for operand in DETCORE_NO_SCOPE_ALLOC.operands {
         let expected = *targets
             .get(operand.key)
             .ok_or_else(|| format!("unbound no-scope allocation operand {}", operand.key))?;
@@ -28185,6 +28707,8 @@ fn fixed_allocation101_recipe(
     }
     fixed_whole_recipe(address, bytes, ALLOCATION101_BYTES.hex, &fields)?;
     ALLOCATION101_BYTES
+    fixed_whole_recipe(address, bytes, DETCORE_NO_SCOPE_ALLOC.hex, &fields)?;
+    DETCORE_NO_SCOPE_ALLOC
         .transfers
         .iter()
         .map(|&(pc, index)| {
@@ -28271,6 +28795,7 @@ fn fixed_detcore_validate_recipe_identity(
     tls_cell_offset: u64,
 ) -> Result<DetcoreRecipeIdentity> {
     fixed_validate_recipe_in_scope(
+    fixed_detcore_validate_recipe_in_scope(
         role,
         address,
         bytes,
@@ -28284,6 +28809,7 @@ fn fixed_detcore_validate_recipe_identity(
     )
 }
 fn fixed_validate_recipe_in_scope(
+fn fixed_detcore_validate_recipe_in_scope(
     role: &str,
     address: u64,
     bytes: &[u8],
@@ -28433,6 +28959,7 @@ fn fixed_detcore_compiler_shim_recipe(
     tls_cell_offset: u64,
 ) -> Result<Vec<ConstructorTransfer>> {
     fixed_compiler_shim_recipe_in_scope(
+    fixed_detcore_compiler_shim_recipe_in_scope(
         expected_root,
         shim,
         address,
@@ -28448,6 +28975,7 @@ fn fixed_detcore_compiler_shim_recipe(
     )
 }
 fn fixed_compiler_shim_recipe_in_scope(
+fn fixed_detcore_compiler_shim_recipe_in_scope(
     expected_root: &str,
     shim: &str,
     address: u64,
@@ -28477,6 +29005,7 @@ fn fixed_compiler_shim_recipe_in_scope(
         "Detcore shim lacks the selected exact typed implementation",
     )?;
     let edges = fixed_validate_recipe_in_scope(
+    let edges = fixed_detcore_validate_recipe_in_scope(
         shim,
         address,
         bytes,
@@ -28996,6 +29525,7 @@ fn fixed_machine_context(
                 .enumerate()
                 .filter(|(_, t)| {
                 .chain(tls.existing().is_none().then_some(&ALLOCATION101_BYTES))
+                .chain(tls.existing().is_none().then_some(&DETCORE_NO_SCOPE_ALLOC))
                 .filter(|t| {
                     t.role == role
                         && fixed_template_shape(
@@ -29380,6 +29910,34 @@ fn fixed_no_scope_qualified_operation(
         )
     } else {
         let recipe = fixed_validate_recipe_in_scope(role, address, bytes, bindings, None)?;
+        (
+            AuthenticatedDetcoreOperationKind::ValidateTemplate(recipe.template_index),
+            recipe.edges,
+        )
+    };
+    fixed_census_transfers(instructions, address, bytes, &edges, got, internal_switch)?;
+    Ok(AuthenticatedDetcoreOperation {
+        role: role.into(),
+        address,
+        kind,
+        edges,
+    })
+}
+fn fixed_detcore_no_scope_qualified_operation(
+    role: &str,
+    address: u64,
+    (bytes, instructions): (&[u8], &[EncodedConstructorInstruction]),
+    bindings: DetcoreRecipeBindings<'_>,
+    internal_switch: bool,
+) -> Result<AuthenticatedDetcoreOperation> {
+    let got = bindings.got;
+    let (kind, edges) = if role == "fixed_patch_alloc" {
+        (
+            AuthenticatedDetcoreOperationKind::NoInstallationScopeAlloc101,
+            fixed_detcore_no_scope_allocation_recipe(address, bytes, bindings)?,
+        )
+    } else {
+        let recipe = fixed_detcore_validate_recipe_in_scope(role, address, bytes, bindings, None)?;
         (
             AuthenticatedDetcoreOperationKind::ValidateTemplate(recipe.template_index),
             recipe.edges,
@@ -31353,6 +31911,14 @@ fn qualify_fixed_operation_closure(
                     )
                 } else {
                     fixed_no_scope_qualified_operation(
+                    fixed_detcore_no_scope_qualified_operation(
+                        role,
+                        address,
+                        (actual, &instructions),
+                        bindings,
+                        internal_switch,
+                    )
+                };
                 match qualified {
                     Ok(witness) => {
                         chosen = Some((role.clone(), witness.edges.clone()));
@@ -31383,6 +31949,7 @@ fn qualify_fixed_operation_closure(
                     )
                 } else {
                     fixed_validate_recipe_in_scope(role, address, actual, bindings, None)
+                    fixed_detcore_validate_recipe_in_scope(role, address, actual, bindings, None)
                         .map(|identity| identity.edges)
                 }]
             } else {
@@ -31424,6 +31991,8 @@ fn qualify_fixed_operation_closure(
                         || (proof.version == 2 && proof.current_build.consumer_policy
                         .label(ConsumerRecipe::Allocation62, SEMANTIC_STANDALONE_NO_SCOPE_POLICY)
                         .is_ok_and(|label| label == proof.policy)))
+                    if (proof.version == 1 && proof.policy == NoScopeCohort::StandaloneRelease62.policy())
+                        || (proof.version == 2 && proof.policy == SEMANTIC_STANDALONE_NO_SCOPE_POLICY))
             {
                 attempts.push(fixed_standalone_no_scope_allocation_recipe(
                     address,
@@ -36800,6 +37369,7 @@ pub fn verify_runtime_receipt(
         "producer current-Cargo artifact selection does not match receipt",
     )?;
     rebound_sources = if matches!(
+    let rebound_sources = if matches!(
         receipt.qualification.allocator_backing.tls_boundary,
         AllocatorInstallationEvidence::NoInstallationScope(_)
     ) {
@@ -36809,6 +37379,7 @@ pub fn verify_runtime_receipt(
                 .ok_or("no-scope consumer lacks fresh compiled sources")?
                 .rebind_consumer_build(
                     expected.expected_current_policy.ok_or("no-scope consumer lacks independent current policy")?,
+                .with_current_build(
                     builds[0],
                     &receipt.cargo_artifact.reported_path,
                     &receipt.target_directory,
@@ -37146,6 +37717,7 @@ mod tests {
         let mut packages = BTreeMap::new();
         let mut events = Vec::new();
         for (index, name) in ["consumer-runtime", "reverie-liteinst", "reverie-inguest"]
+        for (index, name) in ["detcore-liteinst", "reverie-liteinst", "reverie-inguest"]
             .into_iter()
             .enumerate()
         {
@@ -37156,6 +37728,7 @@ mod tests {
             fs::write(&source, b"data-only source").unwrap();
             let output = target.join(if index == 0 {
                 "libconsumer_runtime.so".into()
+                "libdetcore_liteinst.so".into()
             } else {
                 format!("lib{name}.rlib")
             });
@@ -37194,6 +37767,7 @@ mod tests {
             reverie_pin: "4".repeat(40),
             reverie_root: root.clone(),
             leaf: packages["consumer-runtime"].clone(),
+            leaf: packages["detcore-liteinst"].clone(),
             packages,
             files: BTreeMap::new(),
         };
@@ -37214,11 +37788,13 @@ mod tests {
                 root.join("Cargo.toml").to_str().unwrap().into(),
                 "-p".into(),
                 "consumer-runtime".into(),
+                "detcore-liteinst".into(),
                 "--no-default-features".into(),
                 "--features".into(),
                 "exec-native-injection".into(),
                 "--profile".into(),
                 "fixture-runtime-profile".into(),
+                "liteinst-runtime".into(),
                 "--target-dir".into(),
                 target.to_str().unwrap().into(),
                 "--lib".into(),
@@ -37228,6 +37804,7 @@ mod tests {
             stderr: FileIdentity::read(&stderr).unwrap(),
         };
         let selected = target.join("libconsumer_runtime.so");
+        let selected = target.join("libdetcore_liteinst.so");
         let check = |messages: &[Value], template: &CommandEvidence| {
             fs::write(
                 &stdout,
@@ -37252,6 +37829,8 @@ mod tests {
             .enumerate()
         {
             let features = ConsumerRecipe::Allocation101LayoutB
+        for (index, name) in ["detcore-liteinst", "reverie-liteinst", "reverie-inguest"]
+            let features = NoScopeCohort::DetcoreOrdinary101
                 .features()
                 .iter()
                 .find(|(candidate, _)| *candidate == name)
@@ -37274,6 +37853,8 @@ mod tests {
         assert_eq!(
             no_scope_build_features(&good).unwrap(),
             ConsumerRecipe::Allocation101LayoutA
+            NoScopeCohort::DetcoreOrdinary101
+            NoScopeCohort::DetcoreNative101
         );
         assert!(
             check(&ordinary_events, &command).is_err(),
@@ -37284,6 +37865,7 @@ mod tests {
             "native stream cannot earn ordinary argv"
         );
         for name in ["consumer-runtime", "reverie-liteinst", "reverie-inguest"] {
+        for name in ["detcore-liteinst", "reverie-liteinst", "reverie-inguest"] {
             let mut partial = ordinary.clone();
             partial.packages.get_mut(name).unwrap().features = good.packages[name].features.clone();
             assert!(
@@ -37407,6 +37989,7 @@ mod tests {
             for feature in ["allocator-fixture", "default", "liteinst"] {
                 let mut build = good.clone();
                 let name = ["consumer-runtime", "reverie-liteinst", "reverie-inguest"][index];
+                let name = ["detcore-liteinst", "reverie-liteinst", "reverie-inguest"][index];
                 build
                     .packages
                     .get_mut(name)
@@ -37482,6 +38065,8 @@ mod tests {
 
     // Source/parser controls only: the resolver subcontrol establishes private
     // unit premises; neither synthetic Cargo JSON nor output grants ELF/runtime credit.
+    // Source/parser controls only: this never constructs VerifiedCompiledSources,
+    // qualifies a fake ELF, or grants source/execution authority to test JSON.
     #[test]
     fn standalone_no_installation_scope_current_build_controls() {
         static NEXT: AtomicUsize = AtomicUsize::new(0);
@@ -37501,6 +38086,7 @@ mod tests {
         fs::create_dir(&root).unwrap();
         let _scratch = Scratch(root.clone());
         for relative in TEST_WRAPPER_WORKSPACE_FILES {
+        for relative in CONTENT_WORKSPACE_FILES {
             let path = root.join(relative);
             fs::create_dir_all(path.parent().unwrap()).unwrap();
             fs::write(path, format!("owned source control: {relative}\n")).unwrap();
@@ -37514,6 +38100,7 @@ mod tests {
         runner.text("git", &["init", "--quiet"], &root).unwrap();
         let mut add = vec!["add".to_owned(), "--".to_owned()];
         add.extend(TEST_WRAPPER_WORKSPACE_FILES.into_iter().map(str::to_owned));
+        add.extend(CONTENT_WORKSPACE_FILES.into_iter().map(str::to_owned));
         runner.run("git", &add, &root).unwrap();
         runner
             .text(
@@ -37547,6 +38134,8 @@ mod tests {
         fs::create_dir(&target).unwrap();
         let nested = root.join("consumer-build");
         let profile = ConsumerRecipe::Allocation62.profile();
+        let nested = root.join("liteinst-runtime-build");
+        let profile = NoScopeCohort::StandaloneRelease62.profile();
         let mut packages = BTreeMap::new();
         let mut events = Vec::new();
         for (name, kind) in [
@@ -37579,6 +38168,7 @@ mod tests {
             ));
             fs::write(&output, "data-only Cargo output, not ELF qualification").unwrap();
             let features = ConsumerRecipe::Allocation62
+            let features = NoScopeCohort::StandaloneRelease62
                 .features()
                 .iter()
                 .find(|(candidate, _)| *candidate == name)
@@ -37619,17 +38209,24 @@ mod tests {
         assert_eq!(binding.workspace_files.len(), 6);
         assert_eq!(binding.wrapper.kind, ["lib"]);
         for relative in TEST_WRAPPER_WORKSPACE_FILES {
+            "path+file://{}#hermit-liteinst-runtime-artifact@0.5.1",
+            "name":"hermit-liteinst-runtime-artifact","version":"0.5.1","source":null,"id":wrapper_id,
+            "manifest_path":nested.join("runtime/Cargo.toml"),"targets":[{"name":"hermit_liteinst_runtime_artifact",
+        let binding = standalone_current_build_sources(&sources, &metadata, &mut runner).unwrap();
+        for relative in CONTENT_WORKSPACE_FILES {
             let path = root.join(relative);
             let bytes = fs::read(&path).unwrap();
             fs::write(&path, "uncommitted replacement source").unwrap();
             assert!(
                 consumer_policy::consumer_wrapper_sources(&sources, &metadata, &wrapper_spec, &mut runner).is_err(),
+                standalone_current_build_sources(&sources, &metadata, &mut runner).is_err(),
                 "Git blob source identity cannot be replaced by a fresh file hash {relative}"
             );
             fs::write(path, bytes).unwrap();
         }
         let (workspace_inventory, workspace_files) =
             declared_inventory(&root, &TEST_WRAPPER_WORKSPACE_FILES).unwrap();
+            declared_inventory(&root, &CONTENT_WORKSPACE_FILES).unwrap();
         let mut declared = sources.clone();
         declared.authority = CompiledSourceAuthority::DeclaredContent {
             workspace_sha256: declared_inventory_sha256(&workspace_inventory).unwrap(),
@@ -37655,6 +38252,9 @@ mod tests {
             bad.files.remove(&format!("workspace:{relative}"));
             assert!(
                 consumer_policy::consumer_wrapper_sources(&bad, &metadata, &wrapper_spec, &mut runner).is_err(),
+            standalone_current_build_sources(&declared, &metadata, &mut runner).unwrap(),
+        for relative in CONTENT_WORKSPACE_FILES {
+                standalone_current_build_sources(&bad, &metadata, &mut runner).is_err(),
                 "missing declared binding {relative}"
             );
             let mut bad = declared.clone();
@@ -37664,6 +38264,7 @@ mod tests {
                 .sha256 = "0".repeat(64);
             assert!(
                 consumer_policy::consumer_wrapper_sources(&bad, &metadata, &wrapper_spec, &mut runner).is_err(),
+                standalone_current_build_sources(&bad, &metadata, &mut runner).is_err(),
                 "wrong declared binding {relative}"
             );
         }
@@ -37706,6 +38307,8 @@ mod tests {
             );
         }
         let wrapper_output = target.join("libconsumer_wrapper.rlib");
+                standalone_wrapper_package(&bad, &root, &binding.workspace_files).is_err(),
+        let wrapper_output = target.join("libhermit_liteinst_runtime_artifact.rlib");
         fs::write(&wrapper_output, "data-only wrapper compiler output").unwrap();
         let wrapper = &binding.wrapper;
         events.push(serde_json::json!({"reason":"compiler-artifact","package_id":wrapper.id,"manifest_path":wrapper.manifest,
@@ -37744,6 +38347,7 @@ mod tests {
         assert_eq!(
             no_scope_build_features(&good).unwrap(),
             ConsumerRecipe::Allocation62
+            NoScopeCohort::StandaloneRelease62
         );
         assert_eq!(good.packages.len(), 4);
         verify_current_build_files(&good).unwrap();
@@ -37807,6 +38411,8 @@ mod tests {
                 (
                     "filenames",
                     serde_json::json!([root.join("consumer-build/Cargo.toml")]),
+                ("profile", NoScopeCohort::DetcoreOrdinary101.profile()),
+                    serde_json::json!([root.join("liteinst-runtime-build/Cargo.toml")]),
                 ),
             ] {
                 let mut bad = events.clone();
@@ -37871,6 +38477,7 @@ mod tests {
         }
         let retained = check(&events, &command).unwrap();
         for relative in TEST_WRAPPER_WORKSPACE_FILES {
+        for relative in CONTENT_WORKSPACE_FILES {
             let path = root.join(relative);
             let bytes = fs::read(&path).unwrap();
             fs::write(&path, "changed retained source").unwrap();
@@ -37937,7 +38544,6 @@ mod tests {
                 FileIdentity::read(&package.manifest).unwrap());
             record.files.insert(format!("control:{}:source", package.name),
                 FileIdentity::read(&package.target_source).unwrap());
-        }
         let sources = VerifiedCompiledSources { record, current_build: None,
             adapter_metadata: Some(metadata) };
         sources.verify_unchanged(runner).unwrap();
@@ -37978,20 +38584,15 @@ mod tests {
         assert!(success_error.contains("consumer-policy-control.rs"));
         assert!(policy.record.verify_files().is_err());
         assert!(VerifiedConsumerPolicy::resolve(&sources, spec(), runner).is_err());
-        fs::write(&definition, DEFINITION).unwrap();
         enriched.verify_unchanged(runner).unwrap();
         // Failed operation retains both the original refusal and closing error.
         let refused = enriched.with_qualification_sources::<()>(runner, |_| {
             fs::write(&definition, b"changed again during refused qualification").map_err(|e| e.to_string())?;
             Err("qualification refused".into())
-        });
         let error = refused.unwrap_err();
         assert!(error.contains("qualification refused"));
         assert!(error.contains("qualification source close failed"));
         assert!(error.contains("consumer-policy-control.rs"));
-        fs::write(&definition, DEFINITION).unwrap();
-        policy.record.verify_files().unwrap();
-        enriched.verify_unchanged(runner).unwrap();
     }
 
     // Additional controls in the existing current-artifact test. These exercise
@@ -48127,6 +48728,7 @@ mod tests {
         for (name, features) in [
             (
                 "consumer-runtime",
+                "detcore-liteinst",
                 vec!["exec-native-injection", "exec-private-init"],
             ),
             (
@@ -48335,6 +48937,8 @@ mod tests {
         let mut ordinary = proof.clone();
         ordinary.policy = ConsumerRecipe::Allocation101LayoutB.policy().into();
         for (name, features) in ConsumerRecipe::Allocation101LayoutB.features() {
+        ordinary.policy = NoScopeCohort::DetcoreOrdinary101.policy().into();
+        for (name, features) in NoScopeCohort::DetcoreOrdinary101.features() {
             ordinary
                 .current_build
                 .packages
@@ -48371,12 +48975,15 @@ mod tests {
         standalone.policy = ConsumerRecipe::Allocation62.policy().into();
         standalone.allocation.size = 62;
         standalone.current_build.command.cwd = "/schema/consumer-build".into();
+        standalone.policy = NoScopeCohort::StandaloneRelease62.policy().into();
+        standalone.current_build.command.cwd = "/schema/liteinst-runtime-build".into();
         standalone.current_build.command.arguments =
             standalone_current_build_arguments(&standalone.current_build.target_directory).unwrap();
         let mut leaf = standalone
             .current_build
             .packages
             .remove("consumer-runtime")
+            .remove("detcore-liteinst")
             .unwrap();
         leaf.package.name = "reverie-liteinst-preload".into();
         standalone
@@ -48384,6 +48991,7 @@ mod tests {
             .packages
             .insert(leaf.package.name.clone(), leaf);
         let workspace_files: BTreeMap<_, _> = TEST_WRAPPER_WORKSPACE_FILES
+        let workspace_files: BTreeMap<_, _> = CONTENT_WORKSPACE_FILES
             .into_iter()
             .map(|relative| {
                 (
@@ -48401,6 +49009,11 @@ mod tests {
             kind: vec!["lib".into()],
             crate_types: vec!["lib".into()],
             target_source: workspace_files["consumer-build/runtime/src/lib.rs"].path.clone(),
+            id: "path+file:///schema/liteinst-runtime-build/runtime#hermit-liteinst-runtime-artifact@0.5.1".into(),
+            name: "hermit-liteinst-runtime-artifact".into(),
+            manifest: workspace_files["liteinst-runtime-build/runtime/Cargo.toml"].path.clone(),
+            target: "hermit_liteinst_runtime_artifact".into(),
+            target_source: workspace_files["liteinst-runtime-build/runtime/src/lib.rs"].path.clone(),
         };
         standalone.current_build.packages.insert(
             wrapper.name.clone(),
@@ -48408,11 +49021,13 @@ mod tests {
                 package: wrapper.clone(),
                 features: vec![],
                 profile: ConsumerRecipe::Allocation62.profile(),
+                profile: NoScopeCohort::StandaloneRelease62.profile(),
                 outputs: vec!["/schema/target/wrapper.rlib".into()],
             },
         );
         for package in standalone.current_build.packages.values_mut() {
             package.profile = ConsumerRecipe::Allocation62.profile();
+            package.profile = NoScopeCohort::StandaloneRelease62.profile();
         }
         standalone.current_build.standalone_sources = Some(StandaloneCurrentBuildSources {
             wrapper,
@@ -48460,6 +49075,7 @@ mod tests {
             &standalone,
         );
         for relative in TEST_WRAPPER_WORKSPACE_FILES {
+        for relative in CONTENT_WORKSPACE_FILES {
             let mut bad = standalone.clone();
             bad.current_build
                 .standalone_sources
@@ -48519,6 +49135,7 @@ mod tests {
             );
         }
         for (name, _) in ConsumerRecipe::Allocation62.features() {
+        for (name, _) in NoScopeCohort::StandaloneRelease62.features() {
             for feature in ["allocator-fixture", "default", "liteinst"] {
                 let mut bad = standalone.clone();
                 bad.current_build
@@ -48765,6 +49382,8 @@ mod tests {
                 vec![0, 1, 2, 3],
             ),
             (ConsumerRecipe::Allocation62, standalone, vec![0, 2]),
+                NoScopeCohort::DetcoreOrdinary101,
+            (NoScopeCohort::StandaloneRelease62, standalone, vec![0, 2]),
         ] {
             let in_cohort = |bytes: &[u8]| {
                 no_installation_scope_census_in_cohort(&Elf::parse(bytes).unwrap(), bytes, cohort)
@@ -48777,6 +49396,9 @@ mod tests {
                 ConsumerRecipe::Allocation101LayoutA,
                 ConsumerRecipe::Allocation101LayoutB,
                 ConsumerRecipe::Allocation62,
+                NoScopeCohort::DetcoreNative101,
+                NoScopeCohort::DetcoreOrdinary101,
+                NoScopeCohort::StandaloneRelease62,
             ]
             .into_iter()
             .filter(|other| *other != cohort)
@@ -49439,6 +50061,7 @@ mod tests {
     }
 
     fn semantic_off_test_fixture(cohort: ConsumerRecipe, dispatch: u64, semantic: bool) -> Vec<u8> {
+    fn semantic_off_test_fixture(cohort: NoScopeCohort, dispatch: u64, semantic: bool) -> Vec<u8> {
         let mut bytes = native_no_scope_test_fixture(dispatch).bytes;
         if semantic {
             for role in OffGetterRole::in_cohort(cohort) {
@@ -49456,6 +50079,9 @@ mod tests {
                 native_no_scope_test_put(&mut bytes, 0x15c0 + 16, 4, 0xf0);
             }
             ConsumerRecipe::Allocation62 => {
+            NoScopeCohort::DetcoreNative101 => {}
+            NoScopeCohort::DetcoreOrdinary101 => {
+            NoScopeCohort::StandaloneRelease62 => {
                 native_no_scope_test_put(&mut bytes, 0x1500 + 16, 4, 0x40);
                 for index in [1usize, 3] {
                     bytes[0x4000 + (index + 1) * 24..0x4000 + (index + 2) * 24].fill(0);
@@ -49484,6 +50110,7 @@ mod tests {
     fn semantic_off_test_census(
         bytes: &[u8],
         cohort: ConsumerRecipe,
+        cohort: NoScopeCohort,
     ) -> Result<SelectedNoScopeCensus> {
         let elf = Elf::parse(bytes).map_err(|error| error.to_string())?;
         authenticate_loader_metadata(&elf, bytes)?;
@@ -49510,24 +50137,28 @@ mod tests {
         for (cohort, dispatch, version, policy) in [
             (
                 ConsumerRecipe::Allocation101LayoutA,
+                NoScopeCohort::DetcoreNative101,
                 0x140,
                 2,
                 SEMANTIC_NATIVE140_NO_SCOPE_POLICY,
             ),
             (
                 ConsumerRecipe::Allocation101LayoutA,
+                NoScopeCohort::DetcoreNative101,
                 0x100,
                 3,
                 SEMANTIC_NATIVE100_NO_SCOPE_POLICY,
             ),
             (
                 ConsumerRecipe::Allocation101LayoutB,
+                NoScopeCohort::DetcoreOrdinary101,
                 0x140,
                 2,
                 SEMANTIC_ORDINARY_NO_SCOPE_POLICY,
             ),
             (
                 ConsumerRecipe::Allocation62,
+                NoScopeCohort::StandaloneRelease62,
                 0x140,
                 2,
                 SEMANTIC_STANDALONE_NO_SCOPE_POLICY,
@@ -49701,6 +50332,7 @@ mod tests {
             unnamed.copy_within(0x1500..0x1516, 0x1e00);
             reject(&unnamed, "extra unnamed complete RX getter");
             if cohort == ConsumerRecipe::Allocation62 {
+            if cohort == NoScopeCohort::StandaloneRelease62 {
                 let mut foreign = good.clone();
                 semantic_off_test_name(&mut foreign, 1, SEMANTIC_OFF_TEST_NAMES[1]);
                 reject(&foreign, "foreign standalone OWNER role");
@@ -49735,6 +50367,7 @@ mod tests {
             semantic_off_test_name(&mut actual, index, name);
         }
         let legacy = semantic_off_test_census(&actual, ConsumerRecipe::Allocation101LayoutA).unwrap();
+        let legacy = semantic_off_test_census(&actual, NoScopeCohort::DetcoreNative101).unwrap();
         assert_eq!(
             (legacy.version, legacy.policy),
             (2, NATIVE100_NO_SCOPE_POLICY)
@@ -49743,6 +50376,7 @@ mod tests {
         actual[0x1500] ^= 1;
         assert!(
             semantic_off_test_census(&actual, ConsumerRecipe::Allocation101LayoutA).is_err(),
+            semantic_off_test_census(&actual, NoScopeCohort::DetcoreNative101).is_err(),
             "legacy physical failure must not trigger semantic retry"
         );
         // Keeping some legacy B spellings is legitimate when those exact
@@ -49757,6 +50391,7 @@ mod tests {
             semantic_off_test_name(&mut partial, index, &name);
         }
         let partial = semantic_off_test_census(&partial, ConsumerRecipe::Allocation101LayoutA).unwrap();
+        let partial = semantic_off_test_census(&partial, NoScopeCohort::DetcoreNative101).unwrap();
         assert_eq!(
             (partial.version, partial.policy),
             (2, SEMANTIC_NATIVE140_NO_SCOPE_POLICY)
@@ -49776,6 +50411,10 @@ mod tests {
             (ConsumerRecipe::Allocation101LayoutB, 0x140, backing, ordinary),
             (
                 ConsumerRecipe::Allocation62,
+            (NoScopeCohort::DetcoreNative101, 0x140, backing, native),
+            (NoScopeCohort::DetcoreNative101, 0x100, backing, native),
+            (NoScopeCohort::DetcoreOrdinary101, 0x140, backing, ordinary),
+                NoScopeCohort::StandaloneRelease62,
                 0x140,
                 standalone_backing,
                 standalone,
@@ -49832,6 +50471,7 @@ mod tests {
                     1 => bad.policy = base.policy.clone(),
                     2 => {
                         bad.policy = if cohort == ConsumerRecipe::Allocation62 {
+                        bad.policy = if cohort == NoScopeCohort::StandaloneRelease62 {
                             SEMANTIC_ORDINARY_NO_SCOPE_POLICY
                         } else {
                             SEMANTIC_STANDALONE_NO_SCOPE_POLICY
@@ -49882,6 +50522,7 @@ mod tests {
                             .unwrap()
                             .profile["debug_assertions"] =
                             serde_json::json!(cohort == ConsumerRecipe::Allocation62)
+                            serde_json::json!(cohort == NoScopeCohort::StandaloneRelease62)
                     }
                     16 => bad.source.sha256 = "0".repeat(64),
                     17 => bad.current_build.artifact.sha256 = "0".repeat(64),
@@ -49896,11 +50537,13 @@ mod tests {
                         } else {
                             let fixture = semantic_off_test_fixture(
                                 ConsumerRecipe::Allocation101LayoutA,
+                                NoScopeCohort::DetcoreNative101,
                                 0x100,
                                 true,
                             );
                             bad.native_tls_layout100 =
                                 semantic_off_test_census(&fixture, ConsumerRecipe::Allocation101LayoutA)
+                                semantic_off_test_census(&fixture, NoScopeCohort::DetcoreNative101)
                                     .unwrap()
                                     .native_tls_layout100;
                         }
@@ -49969,6 +50612,7 @@ mod tests {
                     &elf,
                     bytes,
                     ConsumerRecipe::Allocation101LayoutA,
+                    NoScopeCohort::DetcoreNative101,
                 )?;
             }
             NativeNoScopeTlsLayout::Dispatch100 => {
@@ -50017,6 +50661,7 @@ mod tests {
         let elf = Elf::parse(good).unwrap();
         assert!(
             no_installation_scope_census_in_cohort(&elf, good, ConsumerRecipe::Allocation101LayoutA)
+            no_installation_scope_census_in_cohort(&elf, good, NoScopeCohort::DetcoreNative101)
                 .is_err(),
             "new100 is not an old140 census"
         );
@@ -50634,6 +51279,7 @@ mod tests {
                 }
                 29 => {
                     for (name, features) in ConsumerRecipe::Allocation101LayoutB.features() {
+                    for (name, features) in NoScopeCohort::DetcoreOrdinary101.features() {
                         bad.current_build.packages.get_mut(*name).unwrap().features = features
                             .iter()
                             .map(|feature| (*feature).to_owned())
@@ -50659,6 +51305,7 @@ mod tests {
                     bad.current_build
                         .packages
                         .get_mut("consumer-runtime")
+                        .get_mut("detcore-liteinst")
                         .unwrap()
                         .profile["test"] = serde_json::json!(true)
                 }
@@ -50690,6 +51337,8 @@ mod tests {
         ordinary_with_payload.version = 1;
         ordinary_with_payload.policy = ConsumerRecipe::Allocation101LayoutB.policy().into();
         for (name, features) in ConsumerRecipe::Allocation101LayoutB.features() {
+        ordinary_with_payload.policy = NoScopeCohort::DetcoreOrdinary101.policy().into();
+        for (name, features) in NoScopeCohort::DetcoreOrdinary101.features() {
             ordinary_with_payload
                 .current_build
                 .packages
@@ -50718,7 +51367,6 @@ mod tests {
         native_no_scope_test_put(bytes, size_at, 8, (offset + name.len() + 1) as u64);
         offset as u64
     }
-
     fn native130_test_fixture() -> Vec<u8> {
         let mut bytes = native_no_scope_test_fixture(0x100).bytes;
         native_no_scope_test_put(&mut bytes, 0x1540 + 16, 4, 0x138);
@@ -50741,14 +51389,10 @@ mod tests {
         }
         native_no_scope_test_put(&mut bytes, 0x8000 + 2 * 64 + 32, 8, 34 * 24);
         bytes
-    }
-
     fn native130_test_selected(bytes: &[u8]) -> Result<SelectedNoScopeCensus> {
         let elf = Elf::parse(bytes).map_err(|error| error.to_string())?;
         authenticate_loader_metadata(&elf, bytes)?;
         selected_no_scope_census(&elf, bytes, ConsumerRecipe::Allocation101LayoutA)
-    }
-
     #[test]
     fn native130_owner138_complete_physical_controls() {
         let good = native130_test_fixture();
@@ -50777,17 +51421,11 @@ mod tests {
             let result = native130_test_selected(&old.bytes).unwrap();
             assert_eq!((result.version, result.policy), (version, policy));
             assert!(result.native_tls_layout130_owner138.is_none());
-        }
         let reject = |bytes: &[u8], label: &str| {
             assert!(native130_test_selected(bytes).is_err(), "{label}");
         };
         // Every normalized typed row is independently constrained, including
         // noncritical TLS, HIDDEN visibility, section membership and aliases.
-        for (index, &(name, offset, size, visibility, kind)) in
-            NATIVE130_OWNER138_TLS_POPULATION.iter().enumerate()
-        {
-            let row = 0x4000 + (index + 5) * 24;
-            for (field, width, value) in [
                 (0, 4, 0),
                 (4, 1, sym::STT_OBJECT as u64),
                 (4, 1, ((sym::STB_GLOBAL << 4) | sym::STT_TLS) as u64),
@@ -50796,11 +51434,9 @@ mod tests {
                 (6, 2, if kind == section_header::SHT_PROGBITS { 13 } else { 12 }),
                 (8, 8, offset + 1),
                 (16, 8, size + 1),
-            ] {
                 let mut bad = good.clone();
                 native_no_scope_test_put(&mut bad, row + field, width, value);
                 reject(&bad, &format!("complete130 typed row {index} field {field}"));
-            }
             let mut bad = good.clone();
             let wrong = native130_test_static_name(&mut bad, &format!("{name}x"));
             native_no_scope_test_put(&mut bad, row, 4, wrong);
@@ -50809,7 +51445,6 @@ mod tests {
             duplicate.copy_within(row..row + 24, 0x4000 + 34 * 24);
             native_no_scope_test_put(&mut duplicate, 0x8000 + 2 * 64 + 32, 8, 35 * 24);
             reject(&duplicate, "extra static TLS alias");
-        }
         let mut missing = good.clone();
         native_no_scope_test_put(&mut missing, 0x8000 + 2 * 64 + 32, 8, 33 * 24);
         reject(&missing, "missing complete TLS row");
@@ -50839,9 +51474,7 @@ mod tests {
             (6, 2, 13),
             (8, 8, 0x1bf),
             (16, 8, 0),
-        ] {
             native_no_scope_test_put(&mut unique_tls, unique_row + field, width, value);
-        }
         native_no_scope_test_put(&mut unique_tls, 0x8000 + 2 * 64 + 32, 8, 35 * 24);
         let unique_elf = Elf::parse(&unique_tls).unwrap();
         authenticate_loader_metadata(&unique_elf, &unique_tls).unwrap();
@@ -50851,7 +51484,6 @@ mod tests {
             .expect("a uniquely named thirtieth TLS symbol must refuse");
         assert!(unique_error.contains("native130 requires the exact complete static TLS population"),
             "{unique_error}");
-
         // An empty, unreferenced TLS section changes neither the valid segment
         // template nor any symbol, but must still enter the physical census.
         let mut extra_tls_section = good.clone();
@@ -50863,7 +51495,6 @@ mod tests {
             .copy_from_slice(extra_section_name);
         native_no_scope_test_put(&mut extra_tls_section, section_names_size_at, 8,
             section_name_offset + extra_section_name.len() as u64);
-        for (field, width, value) in [
             (0, 4, section_name_offset),
             (4, 4, section_header::SHT_NOBITS as u64),
             (8, 8, u64::from(section_header::SHF_ALLOC | section_header::SHF_WRITE | section_header::SHF_TLS)),
@@ -50871,31 +51502,23 @@ mod tests {
             (24, 8, 0x37c0),
             (32, 8, 0),
             (48, 8, 8),
-        ] {
             native_no_scope_test_put(&mut extra_tls_section, 0x8000 + 16 * 64 + field, width, value);
-        }
         native_no_scope_test_put(&mut extra_tls_section, 60, 2, 17);
         let extra_section_elf = Elf::parse(&extra_tls_section).unwrap();
         authenticate_loader_metadata(&extra_section_elf, &extra_tls_section).unwrap();
         assert_eq!(extra_section_elf.syms.iter().filter(|symbol| symbol.st_type() == sym::STT_TLS).count(), 29);
         let section_error = native130_test_selected(&extra_tls_section)
-            .err()
             .expect("an unreferenced extra TLS section must refuse");
         assert!(section_error.contains("native130 complete TLS section census differs"),
             "{section_error}");
-
         for index in 0..4 {
             for byte in 0..22 {
-                let mut bad = good.clone();
                 bad[0x1500 + index * 0x40 + byte] ^= 1;
                 reject(&bad, &format!("complete130 getter {index} byte {byte}"));
-            }
-        }
         let mut semantic = good.clone();
         for (index, name) in SEMANTIC_OFF_TEST_NAMES.iter().enumerate() {
             let at = native130_test_static_name(&mut semantic, name);
             native_no_scope_test_put(&mut semantic, 0x4000 + (index + 1) * 24, 4, at);
-        }
         let error = native130_test_selected(&semantic).err().unwrap();
         assert!(error.contains("complete LegacyExact"), "{error}");
         for byte in 0..16 {
@@ -50903,7 +51526,6 @@ mod tests {
             reject(&bad, "all16 PENDING initializer bytes");
             let mut bad = good.clone(); bad[0x3300 + byte] ^= 1;
             reject(&bad, "all16 module descriptor bytes");
-        }
         for (at, width, value) in [
             (64 + 6 * 56, 4, program_header::PT_NULL as u64),
             (64 + 6 * 56 + 4, 4, 6), (64 + 6 * 56 + 32, 8, 0xe7),
@@ -50920,24 +51542,17 @@ mod tests {
             (64 + 5 * 56, 4, program_header::PT_NULL as u64),
             (0x4828, 8, 0x1541), (0x4840, 8, 0x1540),
             (0x4820, 8, (1u64 << 32) | u64::from(reloc::R_X86_64_RELATIVE)),
-        ] {
             let mut bad = good.clone(); native_no_scope_test_put(&mut bad, at, width, value);
             reject(&bad, "exact130 TLS/provider/loader/protected-pointer binding");
-        }
         for at in [0x4600 + 16, 0x1810, 0x181c, 0x3400] {
             let mut bad = good.clone(); bad[at] ^= 1;
             reject(&bad, "provider/version/PLT or protected pointer payload");
-        }
         for slot in [0x3600, 0x3608, 0x3618, 0x35fc, 0x36e4, 0x36e7, 0x1f00] {
             let mut bad = good.clone(); native_no_scope_test_extra_writer(&mut bad, slot, 1);
             reject(&bad, "template/RX loader writer");
-        }
         let mut foreign_pointer = good.clone();
         native_no_scope_test_extra_writer(&mut foreign_pointer, 0x3410, 0x1500);
         reject(&foreign_pointer, "foreign callback pointer cannot join OWNER/PENDING pair");
-    }
-
-    #[test]
     fn native130_owner138_complete_wire_controls() {
         // Synthetic structural records only, with a separately extracted real
         // mini-ELF. They grant no source/current-build or runtime qualification.
@@ -50947,19 +51562,15 @@ mod tests {
             size: 16,
             binding: sym::STB_LOCAL,
             visibility: sym::STV_DEFAULT,
-        };
         let mut functions = BTreeMap::new();
         for (index, role) in FIXED_REQUIRED_ROLES
-            .iter()
             .copied()
             .chain(FIXED_PUBLICATION_REQUIRED_ROLES.iter().copied())
             .enumerate()
-        {
             functions.insert(
                 role.to_owned(),
                 function(role, 0x3000 + index as u64 * 0x20),
             );
-        }
         let mut compiler_routes = BTreeMap::new();
         for (index, (shim, role)) in [
             ("__rust_alloc", "fixed_patch_alloc"),
@@ -50969,7 +51580,6 @@ mod tests {
         ]
         .into_iter()
         .enumerate()
-        {
             let shim_symbol = function(shim, 0x2000 + index as u64 * 0x20);
             functions.insert(shim.to_owned(), shim_symbol.clone());
             let implementation = functions[role].clone();
@@ -50981,8 +51591,6 @@ mod tests {
                     implementation,
                     local_got_edges: vec![],
                 },
-            );
-        }
         let backing = AllocatorBackingEvidence {
             fixed_native_syscalls: None,
             fixed_arena_version: 1,
@@ -50993,7 +51601,6 @@ mod tests {
                     size: 16,
                     binding: sym::STB_GLOBAL,
                     visibility: sym::STV_HIDDEN,
-                },
                 version: 1,
                 mode: AllocatorBackingMode::Fixed,
                 payload_sha256: "0".repeat(64),
@@ -51004,16 +51611,13 @@ mod tests {
             compiler_global_type: "reverie_liteinst::patch_alloc::FixedPrivatePatchAllocator"
                 .to_owned(),
             fixed_backing_record: ImmutableAllocatorObject {
-                symbol: SymbolEvidence {
                     name: "_RNvNtNtNtCsk1nybVdH5QO_15reverie_inguest5guest11tool_region5arena13FIXED_BACKING".to_owned(),
                     address: 0x4000, size: 40, binding: sym::STB_LOCAL,
                     visibility: sym::STV_DEFAULT,
-                },
                 payload_sha256: sha256(&[FIXED_TOOL_BOTTOM, FIXED_TOOL_BOTTOM + FIXED_ARENA_BYTES,
                     FIXED_PATCH_BOTTOM, FIXED_PATCH_BOTTOM + FIXED_ARENA_BYTES, FIXED_METADATA + 24]
                     .into_iter().flat_map(u64::to_le_bytes).collect::<Vec<_>>()),
                 file_offset: 0x800, section_index: 1, load_segment_index: 0,
-            },
             tls_boundary: AllocatorInstallationEvidence::Existing(Box::new(AllocatorTlsBoundary {
                 dependency: "existing_installation_depth_tls".to_owned(),
                 provider_symbol: "__tls_get_addr".to_owned(), provider_version: "GLIBC_2.3".to_owned(),
@@ -51041,28 +51645,22 @@ mod tests {
             function_sha256: functions
                 .keys()
                 .map(|role| (role.clone(), "0".repeat(64)))
-                .collect(),
             functions,
             owned_setup_transfers: BTreeMap::from([("fixed_arena_setup".to_owned(), vec![])]),
             owned_setup_got_edges: vec![],
-        };
         let baseline = backing;
         let file = |path: &str, hash: &str| FileIdentity {
             path: path.into(),
             sha256: hash.into(),
-        };
         let mut backing = baseline.clone();
         for required in &FIXED_REQUIRED_ROLES[..4] {
             backing.functions.get_mut(*required).unwrap().name = FIXED_EMITTED_ROLE_SYMBOLS
-                .iter()
                 .find(|&&(role, name)| role == *required && name.starts_with("_RNvXs2_"))
                 .unwrap()
                 .1
                 .replace("Cs_", "CsTest_");
-        }
         let mut allocation = backing.functions["fixed_patch_alloc"].clone();
         allocation.name = FIXED_EMITTED_ROLE_SYMBOLS
-            .iter()
             .find(|&&(role, name)| role == "fixed_patch_alloc" && name.starts_with("_RNvXs2_"))
             .unwrap()
             .1
@@ -51071,7 +51669,6 @@ mod tests {
         backing
             .functions
             .insert("fixed_patch_alloc".into(), allocation.clone());
-        backing
             .function_sha256
             .insert("fixed_patch_alloc".into(), "5".repeat(64));
         let mut packages = BTreeMap::new();
@@ -51080,7 +51677,6 @@ mod tests {
                 "consumer-runtime",
                 vec!["exec-native-injection", "exec-private-init"],
             ),
-            (
                 "reverie-liteinst",
                 vec![
                     "exec-native-injection",
@@ -51089,27 +51685,15 @@ mod tests {
                     "fixed-syscall-gates",
                     "native-exec-state",
                 ],
-            ),
-            (
                 "reverie-inguest",
-                vec![
                     "coordinator-rpc",
-                    "exec-native-injection",
-                    "exec-private-init",
-                    "exec-private-successor",
-                    "fixed-syscall-gates",
                     "launcher",
-                    "native-exec-state",
                     "rcb-clock",
-                ],
-            ),
-        ] {
             packages.insert(name.into(),CurrentBuildPackage {package:PackageIdentity {id:name.into(),name:name.into(),
                 manifest:format!("/schema/{name}/Cargo.toml").into(),source:None,target:name.replace('-',"_"),
                 kind:vec!["lib".into()],crate_types:vec!["lib".into()],target_source:format!("/schema/{name}/lib.rs").into()},
                 features:features.into_iter().map(str::to_owned).collect(),outputs:vec![format!("/schema/target/{name}").into()],
                 profile:serde_json::json!({"opt_level":"3","debuginfo":0,"debug_assertions":true,"overflow_checks":true,"test":false})});
-        }
         let proof = NoInstallationScopeEvidence {
             kind: "no_installation_scope".into(),
             version: 1,
@@ -51120,7 +51704,6 @@ mod tests {
             source: file(
                 "/schema/reverie-liteinst/src/patch_alloc.rs",
                 NO_INSTALLATION_SCOPE_SOURCE.2,
-            ),
             current_build: CurrentBuildEvidence {
                 command: CommandEvidence {
                     program: "cargo".into(),
@@ -51130,7 +51713,6 @@ mod tests {
                     elapsed_millis: 0,
                     stdout: file("/schema/stdout", &"0".repeat(64)),
                     stderr: file("/schema/stderr", &"0".repeat(64)),
-                },
                 cargo_executable: None,
                 target_directory: "/schema/target".into(),
                 artifact: file("/schema/target/lib.so", &"1".repeat(64)),
@@ -51138,7 +51720,6 @@ mod tests {
                 consumer_policy: test_policy_for_packages(&packages, None, Path::new("/schema"), &"2".repeat(64)),
                 packages,
                 standalone_sources: None,
-            },
             allocation,
             allocation_sha256: "5".repeat(64),
             mappings: vec![TlsExecutableMapping {
@@ -51159,7 +51740,6 @@ mod tests {
             installation_getters: vec![],
             installation_writer_count: 0,
             other_tls_getters: NO_SCOPE_OTHER_GETTERS
-                .iter()
                 .enumerate()
                 .map(|(index, (name, offset))| UnisolatedTlsGetter {
                     getter: SymbolEvidence {
@@ -51174,13 +51754,10 @@ mod tests {
                     plt_address: 0x1810,
                     sha256: "9".repeat(64),
                 })
-                .collect(),
             other_getter_pointer_slots: vec![],
             other_tls_unisolated: true,
             native_tls_layout100: None,
             native_tls_layout130_owner138: None,
-        };
-
         let old = proof;
         assert!(old.native_tls_layout130_owner138.is_none());
         let old_bytes = serde_json::to_vec(&old).unwrap();
@@ -51207,7 +51784,6 @@ mod tests {
         proof.native_tls_layout130_owner138 = native_tls_layout130_owner138;
         let check = |candidate: &NoInstallationScopeEvidence| {
             validate_no_installation_scope_evidence(&backing, candidate, FixedImageKind::Detcore)
-        };
         check(&proof).unwrap();
         // Nonzero indices pass the measured tuple gate, isolating the
         // section-alias and exact physical-population membership predicates.
@@ -51220,23 +51796,18 @@ mod tests {
         let split_error = check(&split_section).unwrap_err();
         assert!(split_error.contains("native130 population splits one TLS section across aliases"),
             "{split_error}");
-
         let mut shared_section = proof.clone();
         let shared_payload = shared_section.native_tls_layout130_owner138.as_mut().unwrap();
         let shared_index = shared_payload.tls_population[0].section_index;
         assert_ne!(shared_index, 0);
         for cell in &mut shared_payload.tls_population {
             cell.section_index = shared_index;
-        }
         for cell in &mut shared_payload.layout.cells {
-            cell.section_index = shared_index;
-        }
         assert!(shared_payload.layout.cells.iter()
             .all(|critical| shared_payload.tls_population.contains(critical)));
         let shared_error = check(&shared_section).unwrap_err();
         assert!(shared_error.contains("native130 critical cells do not join the complete physical TLS population"),
             "{shared_error}");
-
         let mut raw_identity = proof.clone();
         let raw_payload = raw_identity.native_tls_layout130_owner138.as_mut().unwrap();
         let original_raw_name = raw_payload.layout.cells[0].symbol.name.clone();
@@ -51248,14 +51819,12 @@ mod tests {
         let raw_error = check(&raw_identity).unwrap_err();
         assert!(raw_error.contains("native130 critical cells do not join the complete physical TLS population"),
             "{raw_error}");
-
         let mut critical_section = proof.clone();
         let critical_payload = critical_section.native_tls_layout130_owner138.as_mut().unwrap();
         critical_payload.layout.cells[0].section_index += 17;
         let critical_error = check(&critical_section).unwrap_err();
         assert!(critical_error.contains("native130 critical cells do not join the complete physical TLS population"),
             "{critical_error}");
-
         let encoded = serde_json::to_vec(&proof).unwrap();
         assert_eq!(encoded, serde_json::to_vec(&AllocatorInstallationEvidence::NoInstallationScope(
             Box::new(proof.clone()))).unwrap());
@@ -51268,8 +51837,6 @@ mod tests {
         let reject_wire = |bad: Value| {
             if let Ok(candidate) = serde_json::from_value::<NoInstallationScopeEvidence>(bad) {
                 assert!(check(&candidate).is_err());
-            }
-        };
         for path in [vec![], vec!["native_tls_layout130_owner138"],
             vec!["native_tls_layout130_owner138", "layout"]] {
             let mut object = &value;
@@ -51278,18 +51845,15 @@ mod tests {
                 let mut bad = value.clone(); let mut object = &mut bad;
                 for key in &path { object = &mut object[*key]; }
                 object.as_object_mut().unwrap().remove(field); reject_wire(bad);
-            }
             let mut bad = value.clone(); let mut object = &mut bad;
             for key in &path { object = &mut object[*key]; }
             object["unknown"] = serde_json::json!(true); reject_wire(bad);
-        }
         for index in 0..29 {
             let base = &value["native_tls_layout130_owner138"]["tls_population"][index];
             for field in base.as_object().unwrap().keys() {
                 let mut bad = value.clone();
                 bad["native_tls_layout130_owner138"]["tls_population"][index]
                     .as_object_mut().unwrap().remove(field); reject_wire(bad);
-            }
             let mutations: &[fn(&mut NativeNoScopeCellEvidence)] = &[
                 |cell| cell.symbol.name.push('x'), |cell| cell.symbol.address += 1,
                 |cell| cell.symbol.size += 1, |cell| cell.symbol.binding = sym::STB_GLOBAL,
@@ -51303,11 +51867,9 @@ mod tests {
                 let mut bad = proof.clone();
                 mutation(&mut bad.native_tls_layout130_owner138.as_mut().unwrap().tls_population[index]);
                 assert!(check(&bad).is_err(), "complete130 retained tuple {index}");
-            }
             let mut bad = value.clone();
             bad["native_tls_layout130_owner138"]["tls_population"][index]["unknown"] = serde_json::json!(true);
             reject_wire(bad);
-        }
         let mutations: &[fn(&mut NoInstallationScopeEvidence)] = &[
             |bad| bad.native_tls_layout130_owner138 = None,
             |bad| bad.version = 1, |bad| bad.version = 3,
@@ -51334,11 +51896,9 @@ mod tests {
         for mutation in mutations {
             let mut bad = proof.clone(); mutation(&mut bad);
             assert!(check(&bad).is_err(), "complete130 policy/build/payload mutation");
-        }
         let mut semantic = proof.clone();
         for (getter, name) in semantic.other_tls_getters.iter_mut().zip(SEMANTIC_OFF_TEST_NAMES) {
             getter.getter.name = name.into();
-        }
         assert!(check(&semantic).is_err(), "semantic130 has no accepted policy");
         let mut old_with_payload = old.clone();
         old_with_payload.native_tls_layout130_owner138 = proof.native_tls_layout130_owner138.clone();
@@ -51347,10 +51907,7 @@ mod tests {
         for (name, features) in ConsumerRecipe::Allocation101LayoutB.features() {
             ordinary.current_build.packages.get_mut(*name).unwrap().features =
                 features.iter().map(|feature| (*feature).into()).collect();
-        }
         assert!(check(&ordinary).is_err(), "ordinary build cannot carry native130 payload");
-    }
-
     // Physical mini-ELF census controls only: no verified-source fabrication,
     // whole constructor qualification, or allocator-execution credit.
     fn fixed_tls_direct_census_controls() {
@@ -56719,6 +57276,8 @@ mod tests {
             ("fixed_patch_dealloc", "7dealloc"),
             ("fixed_patch_realloc", "7realloc"),
             let old = FIXED_EMITTED_ROLE_SYMBOLS
+        ] {
+                .iter()
                 .find(|(name, _)| *name == role)
                 .unwrap()
                 .1
@@ -56730,6 +57289,9 @@ mod tests {
                 assert_eq!(fixed_emitted_role(name), Some(role));
                 assert_eq!(roles.len(), FIXED_REQUIRED_ROLES.len());
                 assert_eq!(roles[role].st_bind(), sym::STB_LOCAL);
+                let roles = fixed_role_symbols(&Elf::parse(&bytes).unwrap()).unwrap();
+            }
+            for extras in [
                 vec![],
                 vec![(new.as_str(), sym::STB_GLOBAL)],
                 vec![(new.as_str(), sym::STB_WEAK)],
@@ -56740,6 +57302,14 @@ mod tests {
                 let bytes = replacing_required_patch_role(role, &extras);
             // No general impl-ordinal, allocator, trait, method, module or
             // originating-crate pattern may authorize these required roles.
+                vec![
+                    (new.as_str(), sym::STB_LOCAL),
+                    (old.as_str(), sym::STB_LOCAL),
+                ],
+            ] {
+                assert!(fixed_role_symbols(&Elf::parse(&bytes).unwrap()).is_err());
+            }
+            for wrong in [
                 new.replace("Xs2_", "Xs1_"),
                 new.replace("Xs2_", "Xs4_"),
                 new.replace("Xs2_", "Xs9_"),
@@ -56750,6 +57320,10 @@ mod tests {
                 new.replace("16reverie_liteinst", "9untrusted"),
                 assert_ne!(new, wrong);
                 let bytes = replacing_required_patch_role(role, &[(&wrong, sym::STB_LOCAL)]);
+            ] {
+                assert_ne!(fixed_emitted_role(&wrong), Some(role));
+                assert!(fixed_role_symbols(&Elf::parse(&bytes).unwrap()).is_err());
+            }
             // Keeping the original required ON symbol must not allow an OFF
             // alias to coexist at another address and choose an arbitrary one.
             let bytes = elf_symbols(&[(&new, sym::STB_LOCAL)]);
@@ -63482,6 +64056,7 @@ mod tests {
     // the retained ELF; production also requires its current-build and census.
     #[test]
     fn observed_no_installation_scope_allocation101_whole_recipe() {
+    fn observed_detcore_no_installation_scope_whole_recipe() {
         let address = 0xb38860;
         let bytes = fixed_hex(
             "415653504889d34989f6ff1530293b004885c07427488b702040f6c60775274885f67434bf010000004c89f64889da4883c4085b415eff2594293b0031c04883c4085b415ec3488d1553fa3700bf08000000ff1598073b00488d3d41fa3700ff15231a3b00",
@@ -63538,6 +64113,7 @@ mod tests {
                      ro: &BTreeMap<u64, Vec<u8>>,
                      ctx: &BTreeMap<String, Vec<u8>>| {
             fixed_allocation101_recipe(
+            fixed_detcore_no_scope_allocation_recipe(
                 address,
                 body,
                 DetcoreRecipeBindings {
@@ -63614,6 +64190,7 @@ mod tests {
         .collect();
         let qualify = |code: &[EncodedConstructorInstruction]| {
             fixed_no_scope_qualified_operation(
+            fixed_detcore_no_scope_qualified_operation(
                 "fixed_patch_alloc",
                 address,
                 (&bytes, code),
@@ -63716,6 +64293,7 @@ mod tests {
             .unwrap();
         assert!(
             fixed_validate_recipe_in_scope(
+            fixed_detcore_validate_recipe_in_scope(
                 "fixed_patch_alloc",
                 address,
                 &fixed_hex(historical.hex),
@@ -63763,6 +64341,8 @@ mod tests {
         assert!(!allocation101_shape(&bytes));
         assert!(!standalone_no_scope_allocation_shape(&fixed_hex(
             ALLOCATION101_BYTES.hex
+        assert!(!detcore_no_scope_allocation_shape(&bytes));
+            DETCORE_NO_SCOPE_ALLOC.hex
         )));
         let instructions: Vec<_> = [
             (0, 2),

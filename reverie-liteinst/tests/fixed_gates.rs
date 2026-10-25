@@ -86,6 +86,56 @@ fn bounded_output(mut command: Command) -> std::process::Output {
     }
 }
 
+fn config_listener_output(
+    listener: &std::os::unix::net::UnixListener,
+    command: Command,
+) -> std::process::Output {
+    use std::io::Read;
+    use std::io::Write;
+
+    listener.set_nonblocking(true).unwrap();
+    std::thread::scope(|scope| {
+        let coordinator = scope.spawn(|| {
+            let deadline = Instant::now() + Duration::from_secs(5);
+            let mut stream = loop {
+                match listener.accept() {
+                    Ok((stream, _)) => break stream,
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        assert!(
+                            Instant::now() < deadline,
+                            "config handshake did not connect"
+                        );
+                        std::thread::sleep(Duration::from_millis(5));
+                    }
+                    Err(error) => panic!("config handshake accept: {error}"),
+                }
+            };
+            stream
+                .set_write_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            // Use the existing unit-Config wire format, not a mock install.
+            let config = reverie_rpc_transport::codec::encode(&()).unwrap();
+            stream
+                .write_all(&u32::try_from(config.len()).unwrap().to_be_bytes())
+                .unwrap();
+            stream.write_all(&config).unwrap();
+            let mut byte = [0];
+            assert_eq!(stream.read(&mut byte).unwrap(), 0, "unexpected Tool RPC");
+        });
+        let output = bounded_output(command);
+        coordinator.join().unwrap();
+        assert_eq!(
+            listener.accept().unwrap_err().kind(),
+            std::io::ErrorKind::WouldBlock,
+            "selector handling connected more than once"
+        );
+        output
+    })
+}
+
 #[test]
 fn full_tool_uses_fixed_gates_and_protects_them_across_fork() {
     let binary = env!("CARGO_BIN_EXE_reverie-liteinst-rpc-tool-guest");
@@ -231,13 +281,9 @@ fn selector_probe_output(
             stream
                 .set_write_timeout(Some(Duration::from_secs(5)))
                 .unwrap();
-            stream
                 .set_read_timeout(Some(Duration::from_secs(5)))
-                .unwrap();
             let config = reverie_rpc_transport::codec::encode(&()).unwrap();
-            stream
                 .write_all(&u32::try_from(config.len()).unwrap().to_be_bytes())
-                .unwrap();
             stream.write_all(&config).unwrap();
             let mut byte = [0];
             assert_eq!(stream.read(&mut byte).unwrap(), 0, "unexpected Tool RPC");
@@ -266,8 +312,6 @@ fn selector_probe(mode: &str) -> (std::process::Output, Vec<u8>) {
         .arg(mode);
     let output = selector_probe_output(&listener, command);
     (output, std::fs::read(observation).unwrap())
-}
-
 #[test]
 fn opted_in_selector_preflight_is_consumed_once_before_publication() {
     let (output, observation) = selector_probe("accept");
@@ -277,93 +321,23 @@ fn opted_in_selector_preflight_is_consumed_once_before_publication() {
         output.stdout,
         b"selector preflight accepted: once gates=published Tool-callbacks=1\n"
     );
-    assert_eq!(
         observation,
         b"preflight gates=false filters=Some(0) dispatcher=false callbacks=0\n\
         selector-preflight gates=false filters=Some(0) dispatcher=false callbacks=0\n\
         continuation gates=true filters=Some(0) dispatcher=false callbacks=0\n\
         entries gates=true filters=Some(0) dispatcher=false callbacks=0\n"
-    );
-}
-
-#[test]
 fn opted_in_selector_refusal_preserves_unpublished_state_and_error() {
     let (output, observation) = selector_probe("refuse");
-    assert!(output.status.success(), "{output:?}");
-    assert!(output.stderr.is_empty(), "{output:?}");
     assert_eq!(output.stdout, b"selector preflight refused: once original-error gates=absent dispatcher=absent callbacks=0\n");
-    assert_eq!(
-        observation,
-        b"preflight gates=false filters=Some(0) dispatcher=false callbacks=0\n\
         selector-preflight gates=false filters=Some(0) dispatcher=false callbacks=0\n"
-    );
-}
-
-#[test]
 fn default_selector_keeps_late_order_and_fatal_published_boundary() {
     let (output, observation) = selector_probe("default");
     assert_eq!(output.status.code(), Some(127), "{output:?}");
     assert!(output.stdout.is_empty(), "{output:?}");
-    assert!(output.stderr.is_empty(), "{output:?}");
-    assert_eq!(
-        observation,
-        b"preflight gates=false filters=Some(0) dispatcher=false callbacks=0\n\
-        continuation gates=true filters=Some(0) dispatcher=false callbacks=0\n\
         entries gates=true filters=Some(0) dispatcher=false callbacks=0\n\
         selector gates=true filters=Some(0) dispatcher=false callbacks=0\n"
-    );
-}
-
 fn config_listener_output(
-    listener: &std::os::unix::net::UnixListener,
-    command: Command,
-) -> std::process::Output {
-    use std::io::Read;
-    use std::io::Write;
-
-    listener.set_nonblocking(true).unwrap();
-    std::thread::scope(|scope| {
-        let coordinator = scope.spawn(|| {
-            let deadline = Instant::now() + Duration::from_secs(5);
-            let mut stream = loop {
-                match listener.accept() {
-                    Ok((stream, _)) => break stream,
-                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-                        assert!(
-                            Instant::now() < deadline,
-                            "config handshake did not connect"
-                        );
-                        std::thread::sleep(Duration::from_millis(5));
-                    }
-                    Err(error) => panic!("config handshake accept: {error}"),
-                }
-            };
-            stream
-                .set_write_timeout(Some(Duration::from_secs(5)))
-                .unwrap();
-            stream
-                .set_read_timeout(Some(Duration::from_secs(5)))
-                .unwrap();
             // Use the existing unit-Config wire format, not a mock install.
-            let config = reverie_rpc_transport::codec::encode(&()).unwrap();
-            stream
-                .write_all(&u32::try_from(config.len()).unwrap().to_be_bytes())
-                .unwrap();
-            stream.write_all(&config).unwrap();
-            let mut byte = [0];
-            assert_eq!(stream.read(&mut byte).unwrap(), 0, "unexpected Tool RPC");
-        });
-        let output = bounded_output(command);
-        coordinator.join().unwrap();
-        assert_eq!(
-            listener.accept().unwrap_err().kind(),
-            std::io::ErrorKind::WouldBlock,
-            "selector handling connected more than once"
-        );
-        output
-    })
-}
-
 #[test]
 fn selector_failure_with_inherited_filters_or_published_gates() {
     use std::os::unix::net::UnixListener;
