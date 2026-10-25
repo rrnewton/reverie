@@ -4369,6 +4369,41 @@ async fn a_trap_that_resets_nothing_takes_no_repair() {
     assert!(made <= 3, "{made} unstepped queries");
 }
 
+/// A known-blocked default SIGSEGV needs only its mask restored: repeated
+/// traps preserve its entire semantic state without checking scratch or
+/// querying the action. Caught/ignored neighbors still check scratch and
+/// query, so a zero counter is not a disabled observer. Both injection
+/// configurations and the native fixture check the same state predicates.
+#[tokio::test(flavor = "current_thread")]
+async fn a_blocked_default_sigsegv_loop_needs_no_repair_scratch() {
+    for (mode, action, mask_only) in [
+        ("segv_blocked_dfl_loop", "dfl", true),
+        ("segv_blocked_caught_loop", "caught", false),
+        ("segv_blocked_ignored_loop", "ign", false),
+    ] {
+        let repairs = crate::task::SEGV_REPAIRS_FOR_TEST.with(|count| count.get());
+        let queries = crate::task::SEGV_TRAP_QUERIES_FOR_TEST.with(|count| count.get());
+        let checks = crate::task::SEGV_TRAP_SCRATCH_CHECKS_FOR_TEST.with(|count| count.get());
+        let expected = [format!(
+            "blocked-loop sigsegv={action} full-state=kept reads=200 deliveries=0 pending=0"
+        )];
+        assert_segv_lines(mode, &expected).await;
+        let repairs = crate::task::SEGV_REPAIRS_FOR_TEST.with(|count| count.get()) - repairs;
+        let queries = crate::task::SEGV_TRAP_QUERIES_FOR_TEST.with(|count| count.get()) - queries;
+        let checks =
+            crate::task::SEGV_TRAP_SCRATCH_CHECKS_FOR_TEST.with(|count| count.get()) - checks;
+        // Each of the two traced configurations executes 200 forced faults.
+        assert!(repairs >= 400, "{mode}: only {repairs} repairs");
+        if mask_only {
+            assert_eq!(checks, 0, "{mode}: scratch checked for a mask-only loop");
+            assert_eq!(queries, 0, "{mode}: action queried for a mask-only loop");
+        } else {
+            assert!(checks >= 400, "{mode}: only {checks} scratch checks");
+            assert!(queries >= 400, "{mode}: only {queries} trap queries");
+        }
+    }
+}
+
 /// A caught, unblocked SIGTRAP needs no repair: no step can reset it, so a run
 /// through every handler shape makes no unstepped injection
 /// (`UNSTEPPED_INJECTIONS_FOR_TEST`) and keeps the handler.
