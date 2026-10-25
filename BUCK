@@ -421,12 +421,28 @@ rust_library(
     autocargo = {
         "cargo_toml_config": {
             "package": dict(_PUBLIC_CRATE_METADATA, documentation = "https://docs.rs/reverie-kvm-core"),
+            "features": {
+                "default": [],
+                "native-test-support": [],
+                "test-support": [],
+            },
+            "lints": {
+                "rust": {
+                    "unexpected_cfgs": {
+                        "check-cfg": ["cfg(reverie_kvm_scratch_probe)"],
+                        "level": "warn",
+                    },
+                },
+            },
         },
         "cargo_toml_dir": "reverie-kvm-core",
     },
     deps = [
+        "fbsource//third-party/rust:futures",
         "fbsource//third-party/rust:goblin",
+        "fbsource//third-party/rust:kvm-bindings",
         "fbsource//third-party/rust:kvm-ioctls",
+        "fbsource//third-party/rust:libc",
         "fbsource//third-party/rust:thiserror",
         ":reverie",
     ],
@@ -447,11 +463,41 @@ rust_library(
 )
 
 fb_native.cxx_library(
-    name = "reverie-kvm-terminal-read",
-    srcs = ["reverie-kvm/src/terminal_read.c"],
-    headers = {"terminal_read.h": "reverie-kvm/src/terminal_read.h"},
+    name = "reverie-linuxemu-terminal-read",
+    srcs = ["reverie-linuxemu/src/terminal_read.c"],
+    headers = {"terminal_read.h": "reverie-linuxemu/src/terminal_read.h"},
     compiler_flags = ["-std=c11", "-pthread", "-fexceptions"],
     exported_linker_flags = ["-pthread"],
+)
+
+rust_library(
+    name = "reverie-linuxemu",
+    srcs = glob(["reverie-linuxemu/src/**/*.rs"]),
+    autocargo = {
+        "cargo_toml_config": {
+            "package": dict(_PUBLIC_CRATE_METADATA, documentation = "https://docs.rs/reverie-linuxemu", build = "build.rs"),
+            "dependencies_override": {
+                "build-dependencies": {"cc": {"version": "1.5.1"}},
+                "dev-dependencies": {"reverie-kvm-core": {"features": ["test-support"]}},
+            },
+            "features": {
+                "default": [],
+                "native-test-support": ["reverie-kvm-core/native-test-support"],
+                "test-support": ["reverie-kvm-core/test-support"],
+            },
+        },
+        "cargo_toml_dir": "reverie-linuxemu",
+    },
+    deps = [
+        "fbsource//third-party/rust:futures",
+        "fbsource//third-party/rust:goblin",
+        "fbsource//third-party/rust:kvm-bindings",
+        "fbsource//third-party/rust:libc",
+        "fbsource//third-party/rust:thiserror",
+        ":reverie",
+        ":reverie-kvm-core",
+        ":reverie-linuxemu-terminal-read",
+    ],
 )
 
 rust_library(
@@ -459,21 +505,19 @@ rust_library(
     srcs = glob(["reverie-kvm/src/**/*.rs"]),
     autocargo = {
         "cargo_toml_config": {
-            "package": dict(_PUBLIC_CRATE_METADATA, documentation = "https://docs.rs/reverie-kvm", build = "build.rs"),
+            "package": dict(_PUBLIC_CRATE_METADATA, documentation = "https://docs.rs/reverie-kvm"),
             "dependencies_override": {
-                "build-dependencies": {"cc": {"version": "1.5.1"}},
+                "dev-dependencies": {
+                    "reverie-kvm-core": {"features": ["test-support"]},
+                    "reverie-linuxemu": {"features": ["test-support"]},
+                },
             },
             "features": {
                 "default": [],
-                "native-test-support": [],
-            },
-            "lints": {
-                "rust": {
-                    "unexpected_cfgs": {
-                        "check-cfg": ["cfg(reverie_kvm_scratch_probe)"],
-                        "level": "warn",
-                    },
-                },
+                "native-test-support": [
+                    "reverie-kvm-core/native-test-support",
+                    "reverie-linuxemu/native-test-support",
+                ],
             },
         },
         "cargo_toml_dir": "reverie-kvm",
@@ -488,7 +532,7 @@ rust_library(
         "fbsource//third-party/rust:thiserror",
         ":reverie",
         ":reverie-kvm-core",
-        ":reverie-kvm-terminal-read",
+        ":reverie-linuxemu",
     ],
 )
 

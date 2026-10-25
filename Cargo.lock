@@ -1588,7 +1588,6 @@ dependencies = [
 name = "reverie-kvm"
 version = "0.5.1"
 dependencies = [
- "cc",
  "futures 0.3.34",
  "goblin",
  "io-uring",
@@ -1598,6 +1597,7 @@ dependencies = [
  "perf-event-open-sys",
  "reverie-core",
  "reverie-kvm-core",
+ "reverie-linuxemu",
  "serde",
  "thiserror 2.0.21",
 ]
@@ -1606,8 +1606,11 @@ dependencies = [
 name = "reverie-kvm-core"
 version = "0.5.1"
 dependencies = [
+ "futures 0.3.34",
  "goblin",
+ "kvm-bindings",
  "kvm-ioctls",
+ "libc",
  "reverie-core",
  "thiserror 2.0.21",
 ]
@@ -1617,6 +1620,20 @@ name = "reverie-linux-provider"
 version = "0.5.1"
 dependencies = [
  "reverie-core",
+]
+
+[[package]]
+name = "reverie-linuxemu"
+version = "0.5.1"
+dependencies = [
+ "cc",
+ "futures 0.3.34",
+ "goblin",
+ "kvm-bindings",
+ "libc",
+ "reverie-core",
+ "reverie-kvm-core",
+ "thiserror 2.0.21",
 ]
 
 [[package]]
