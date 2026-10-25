@@ -715,7 +715,12 @@ where
             .ok()
             .and_then(Sysno::new)
         else {
-            guest.event.result = -i64::from(libc::ENOSYS);
+            // Raw syscalls absent from the typed table still must not mutate
+            // protected owner mappings. Preserve ENOSYS for every call the
+            // existing finite owner guard does not reject.
+            guest.event.result =
+                super::restorer::owner_mapping_change_result(guest.event.number, guest.event.args)
+                    .unwrap_or(-i64::from(libc::ENOSYS));
             return;
         };
         if !self.subscriptions.contains(&number) {

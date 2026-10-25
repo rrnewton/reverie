@@ -260,14 +260,15 @@ pub(super) fn run(path: &Path) {
     );
     assert_eq!(
         reverie_liteinst::reverie_liteinst_site_trap_count(site as u64),
-        2
+        super::expected_site_count(2)
     );
     assert_eq!(
         unsafe { std::slice::from_raw_parts(site, 3) },
         [0x0f, 0x05, 0xc3]
     );
     println!(
-        "memory access: rseq=unregistered native=2 Tool=2 pkru=0,1 xstate-bytes={bytes} scratch=complete readlink=complete inspection=complete faults=EFAULT rpc=2 hooks=0 traps=2"
+        "memory access: rseq=unregistered native=2 Tool=2 pkru=0,1 xstate-bytes={bytes} scratch=complete readlink=complete inspection=complete faults=EFAULT rpc=2 hooks=0 traps={}",
+        super::expected_site_count(2)
     );
     assert_eq!(unsafe { libc::syscall(libc::SYS_pkey_free, key) }, 0);
     for (pointer, length) in [(mapping, length), (inspection, page), (code, page)] {

@@ -27,6 +27,8 @@ char *getenv(const char *name) {
         if (policy && !strcmp(policy, "invalid")) return (char *)"unsupported-provider";
         if (policy && !strcmp(policy, "generic"))
             return generic_enabled ? (char *)"strace" : NULL;
+        if (policy && !strcmp(policy, "builtin-generic"))
+            return generic_enabled ? (char *)"passthrough" : NULL;
     }
     return raw_value(name);
 }
@@ -119,6 +121,9 @@ static int prepare(int argc, char **argv) {
     else if (!strcmp(which, "compat") || !strcmp(which, "replace"))
         env[used++] = (char *)"REVERIE_LITEINST_TOOL=compat";
     else if (!strcmp(which, "passthrough")) env[used++] = (char *)"REVERIE_LITEINST_TOOL=passthrough";
+    else if (!strcmp(which, "builtin-root") || !strcmp(which, "builtin-hide") ||
+             !strcmp(which, "builtin-replace"))
+        env[used++] = (char *)"REVERIE_LITEINST_TOOL=passthrough";
     else if (!strcmp(which, "spoof-getpid")) env[used++] = (char *)"REVERIE_LITEINST_TOOL=spoof-getpid";
     else if (!strcmp(which, "empty")) env[used++] = (char *)"REVERIE_LITEINST_TOOL=";
     else if (!strcmp(which, "invalid")) env[used++] = (char *)"REVERIE_LITEINST_TOOL=unsupported-raw";
@@ -126,18 +131,25 @@ static int prepare(int argc, char **argv) {
     else if (!strcmp(which, "first-valid")) {
         env[used++] = (char *)"REVERIE_LITEINST_TOOL=strace";
         env[used++] = (char *)"REVERIE_LITEINST_TOOL=unsupported-second";
+    } else if (!strcmp(which, "builtin-first-valid")) {
+        env[used++] = (char *)"REVERIE_LITEINST_TOOL=passthrough";
+        env[used++] = (char *)"REVERIE_LITEINST_TOOL=unsupported-second";
     } else if (!strcmp(which, "first-invalid")) {
         env[used++] = (char *)"REVERIE_LITEINST_TOOL=unsupported-first";
         env[used++] = (char *)"REVERIE_LITEINST_TOOL=strace";
     } else if (!strcmp(which, "lookalikes")) {
         env[used++] = (char *)"REVERIE_LITEINST_TOOL_EXTRA=strace";
         env[used++] = (char *)"XREVERIE_LITEINST_TOOL=strace";
-    } else if (strcmp(which, "absent") && strcmp(which, "synthesize") && strcmp(which, "generic"))
+    } else if (strcmp(which, "absent") && strcmp(which, "synthesize") &&
+               strcmp(which, "generic") && strcmp(which, "builtin-generic"))
         return setup_error("unknown finite selector case");
     if (!strcmp(which, "hide")) env[used++] = (char *)"STANDALONE_CONSTRUCTOR_GETENV=hide";
     else if (!strcmp(which, "replace")) env[used++] = (char *)"STANDALONE_CONSTRUCTOR_GETENV=invalid";
     else if (!strcmp(which, "synthesize")) env[used++] = (char *)"STANDALONE_CONSTRUCTOR_GETENV=strace";
     else if (!strcmp(which, "generic")) env[used++] = (char *)"STANDALONE_CONSTRUCTOR_GETENV=generic";
+    else if (!strcmp(which, "builtin-hide")) env[used++] = (char *)"STANDALONE_CONSTRUCTOR_GETENV=hide";
+    else if (!strcmp(which, "builtin-replace")) env[used++] = (char *)"STANDALONE_CONSTRUCTOR_GETENV=invalid";
+    else if (!strcmp(which, "builtin-generic")) env[used++] = (char *)"STANDALONE_CONSTRUCTOR_GETENV=builtin-generic";
     env[used] = NULL;
     char *child[] = {argv[0], (char *)"child", argv[2], argv[3], argv[4], NULL};
     execve(argv[0], child, env);
@@ -161,7 +173,7 @@ int main(int argc, char **argv) {
     int query_before = query(&before), query_after;
     struct kernel_query kernel_before = {0}, kernel_after = {0};
     int kernel_before_result = kernel(&kernel_before, sizeof kernel_before);
-    if (!strcmp(argv[2], "generic")) {
+    if (!strcmp(argv[2], "generic") || !strcmp(argv[2], "builtin-generic")) {
         void *handle = dlopen(argv[3], RTLD_NOW | RTLD_NOLOAD);
         void *entry = handle ? dlsym(handle, "reverie_liteinst_initialize") : NULL;
         Dl_info generic_owner;
