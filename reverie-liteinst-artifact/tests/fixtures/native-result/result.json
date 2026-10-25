@@ -1,0 +1,31 @@
+{
+  "Result": {
+    "result": {
+      "build_response": {
+        "build_targets": [
+          {
+            "target": "example//demo:program-export",
+            "run_args": [],
+            "outputs": [
+              {
+                "path": "buck-out/v2/art/example/product/demo/__program__/program",
+                "providers": {
+                  "default_info": true,
+                  "run_info": false,
+                  "other": false,
+                  "test_info": false
+                }
+              }
+            ],
+            "configuration": "cfg:example#request",
+            "configured_graph_size": null,
+            "target_rule_type_name": "export_file"
+          }
+        ],
+        "project_root": "/work/project",
+        "serialized_build_report": null,
+        "errors": []
+      }
+    }
+  }
+}

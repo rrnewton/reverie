@@ -134,10 +134,13 @@ impl ViewTableLeafObservation {
     pub fn entry(&self) -> u64 {
         self.entry
     }
-    fn require_owner(&self, source: &VerifiedStaticSource, archive: &StaticArchive) -> Result<()> {
+    fn require_owner(
+        &self,
+        source: &StaticSourceRef<'_>,
+        archive: StaticArchiveRef<'_>,
+    ) -> Result<()> {
         require(
-            Arc::ptr_eq(&self.owner.0, &source.archive_owner)
-                && self.runtime_archive == archive.file,
+            Arc::ptr_eq(&self.owner.0, source.owner()) && self.runtime_archive == *archive.file(),
             "View::table observation belongs to another source/archive",
         )
     }
@@ -435,6 +438,58 @@ impl VerifiedStaticSource {
         runner: &mut Runner,
         callback: impl FnOnce(&ViewTableLeafObservation, &mut Runner) -> Result<T>,
     ) -> Result<T> {
+        StaticSourceRef::Cargo(self).with_view_table_leaf(
+            StaticArchiveRef::Cargo(archive),
+            definitions,
+            artifact,
+            link_map,
+            runner,
+            callback,
+        )
+    }
+}
+impl NativeStaticSource<'_> {
+    /// Inspect one source-owned finite table leaf in the existing actual link
+    /// transaction. Result-niche claims are conditional on valid immutable View
+    /// backing, disjoint writable 24-byte output, actual ABI, entry/return and
+    /// signal-state preconditions. This is not a parsed-View or Ready producer.
+    /// Every admitted Result path closes the existing complete producer ledger,
+    /// archive including build outputs, source/ELF/map files and source guard.
+    pub fn with_view_table_leaf<T>(
+        &self,
+        archive: &NativeStaticArchive,
+        definitions: &SelectedInitializerDefinitions,
+        artifact: &FileIdentity,
+        link_map: &FileIdentity,
+        runner: &mut Runner,
+        callback: impl FnOnce(&ViewTableLeafObservation, &mut Runner) -> Result<T>,
+    ) -> Result<T> {
+        StaticSourceRef::Native(self).with_view_table_leaf(
+            StaticArchiveRef::Native(archive),
+            definitions,
+            artifact,
+            link_map,
+            runner,
+            callback,
+        )
+    }
+}
+impl StaticSourceRef<'_> {
+    /// Inspect one source-owned finite table leaf in the existing actual link
+    /// transaction. Result-niche claims are conditional on valid immutable View
+    /// backing, disjoint writable 24-byte output, actual ABI, entry/return and
+    /// signal-state preconditions. This is not a parsed-View or Ready producer.
+    /// Every admitted Result path closes the existing complete producer ledger,
+    /// archive including build outputs, source/ELF/map files and source guard.
+    pub fn with_view_table_leaf<T>(
+        &self,
+        archive: StaticArchiveRef<'_>,
+        definitions: &SelectedInitializerDefinitions,
+        artifact: &FileIdentity,
+        link_map: &FileIdentity,
+        runner: &mut Runner,
+        callback: impl FnOnce(&ViewTableLeafObservation, &mut Runner) -> Result<T>,
+    ) -> Result<T> {
         self.with_plain_leaf(
             PlainLeafKind::ViewTable,
             archive,
@@ -447,7 +502,7 @@ impl VerifiedStaticSource {
     pub(super) fn with_plain_leaf<T>(
         &self,
         kind: PlainLeafKind,
-        archive: &StaticArchive,
+        archive: StaticArchiveRef<'_>,
         definitions: &SelectedInitializerDefinitions,
         outputs: (&FileIdentity, &FileIdentity),
         runner: &mut Runner,
@@ -501,8 +556,8 @@ impl VerifiedStaticSource {
                 // legitimate fields, after complete input/final typed inventories.
                 join_relocated_body(&elf, &bytes, entry, original, body, &[], &[])?;
                 let observation = ViewTableLeafObservation {
-                    owner: DefinitionSourceOwner(self.archive_owner.clone()),
-                    runtime_archive: archive.file.clone(),
+                    owner: DefinitionSourceOwner(Arc::clone(self.owner())),
+                    runtime_archive: archive.file().clone(),
                     artifact: artifact.clone(),
                     link_map: link_map.clone(),
                     source: source.clone(),
@@ -525,7 +580,7 @@ impl VerifiedStaticSource {
     // construction authority. Exact machine/table predicates remain in callers.
     pub(super) fn with_leaf_objects<T>(
         &self,
-        archive: &StaticArchive,
+        archive: StaticArchiveRef<'_>,
         definitions: &SelectedInitializerDefinitions,
         outputs: (&FileIdentity, &FileIdentity),
         runner: &mut Runner,
@@ -537,8 +592,8 @@ impl VerifiedStaticSource {
             .require_archive_owner(archive)
             .and_then(|()| {
                 selected_owner_identity(
-                    &self.archive_owner,
-                    &archive.file,
+                    self.owner(),
+                    archive.file(),
                     &definitions.source_owner,
                     &definitions.core,
                 )
@@ -550,28 +605,19 @@ impl VerifiedStaticSource {
                 )
             });
         if let Err(e) = admission {
-            return close_result(Err(e), self.guard.close(runner));
+            return close_result(Err(e), self.close(runner));
         }
         let mut files = vec![artifact.clone(), link_map.clone()];
         let result = (|| {
             archive.verify()?;
             definitions.verify()?;
-            self.guard.close(runner)?;
+            self.close(runner)?;
             for f in &files {
                 f.verify()?;
             }
-            let roots = self
-                .guard
-                .roots
-                .iter()
-                .filter(|(_, k)| matches!(k, RootBinding::Cargo(_)))
-                .map(|(p, _)| p)
-                .collect::<Vec<_>>();
-            require(roots.len() == 1, "View::table resolved source ambiguous")?;
-            let source = FileIdentity::read(&roots[0].join(SOURCE))?;
-            files.push(source.clone());
+            let source = self.source_file(SOURCE, &mut files)?;
             let expected_symbol = select_symbol(&source.sha256)?;
-            let members = extract_objects(&archive.file, 0)?;
+            let members = extract_objects(archive.file(), 0)?;
             let mut objects = Vec::new();
             for m in &members {
                 let elf = Elf::parse(&m.bytes).map_err(|e| e.to_string())?;
@@ -584,7 +630,7 @@ impl VerifiedStaticSource {
                 )?;
                 checked_object_symbol_authority(&elf, &m.bytes)?;
                 objects.push(ObjectInput {
-                    archive_path: &archive.file.path,
+                    archive_path: &archive.file().path,
                     member_name: &m.name,
                     ordinal: m.ordinal,
                     header_offset: m.header,
@@ -601,6 +647,7 @@ impl VerifiedStaticSource {
                 runner,
             )
         })();
+        self.retain_files(files.iter().chain(&definitions.files));
         let mut errors = Vec::new();
         if let Err(e) = definitions.verify() {
             errors.push(e);
@@ -613,7 +660,7 @@ impl VerifiedStaticSource {
                 errors.push(e);
             }
         }
-        if let Err(e) = self.guard.close(runner) {
+        if let Err(e) = self.close(runner) {
             errors.push(e);
         }
         close_result(result, require(errors.is_empty(), errors.join("; ")))

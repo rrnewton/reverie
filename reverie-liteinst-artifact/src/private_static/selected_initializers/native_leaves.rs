@@ -336,6 +336,63 @@ impl VerifiedStaticSource {
         runner: &mut Runner,
         body: impl FnOnce(&NativeLeafObservations) -> Result<T>,
     ) -> Result<T> {
+        StaticSourceRef::Cargo(self).with_native_leaf_definitions(
+            StaticArchiveRef::Cargo(archive),
+            native,
+            artifact,
+            link_map,
+            runner,
+            body,
+        )
+    }
+}
+impl NativeStaticSource<'_> {
+    /// Observe the two exact private-musl whole-section leaves inside this
+    /// archive's actual source owner. Native recipe/source/member and all source,
+    /// archive, ELF/map identities close even when inspection or the callback
+    /// refuses. The callback receives observations only, never execution authority.
+    ///
+    /// `native` includes the existing pinned memcpy/source-inventory bundle; it
+    /// cannot supply addresses, aliases, native definitions or success records.
+    pub fn with_native_leaf_definitions<T>(
+        &self,
+        archive: &NativeStaticArchive,
+        native: &NativeLeafInputs<'_>,
+        artifact: &FileIdentity,
+        link_map: &FileIdentity,
+        runner: &mut Runner,
+        body: impl FnOnce(&NativeLeafObservations) -> Result<T>,
+    ) -> Result<T> {
+        StaticSourceRef::Native(self).with_native_leaf_definitions(
+            StaticArchiveRef::Native(archive),
+            native,
+            artifact,
+            link_map,
+            runner,
+            body,
+        )
+    }
+}
+impl StaticSourceRef<'_> {
+    /// Observe the two exact private-musl whole-section leaves inside this
+    /// archive's actual source owner. Native recipe/source/member and all source,
+    /// archive, ELF/map identities close even when inspection or the callback
+    /// refuses. The callback receives observations only, never execution authority.
+    ///
+    /// `native` includes the existing pinned memcpy/source-inventory bundle; it
+    /// cannot supply addresses, aliases, native definitions or success records.
+    pub fn with_native_leaf_definitions<T>(
+        &self,
+        archive: StaticArchiveRef<'_>,
+        native: &NativeLeafInputs<'_>,
+        artifact: &FileIdentity,
+        link_map: &FileIdentity,
+        runner: &mut Runner,
+        body: impl FnOnce(&NativeLeafObservations) -> Result<T>,
+    ) -> Result<T> {
+        if let Err(error) = self.require_archive_owner(archive) {
+            return close_result(Err(error), self.close(runner));
+        }
         let mut source_files = Vec::new();
         let result = (|| {
             self.require_archive_owner(archive)?;
@@ -359,7 +416,7 @@ impl VerifiedStaticSource {
                 "native leaf map inputs differ",
             )?;
             // Reuse the exact libc/release/47-file guard and its close-on-error.
-            super::super::super::private_machine_diagnostic::with_native_memcpy(
+            self.with_native_memcpy(
                 &native.memcpy,
                 artifact,
                 |_| {
@@ -397,7 +454,7 @@ impl VerifiedStaticSource {
                             join(role, &object, &map, &elf, &data, &libc)
                         };
                         let observations = NativeLeafObservations {
-                            runtime_archive: archive.file.clone(),
+                            runtime_archive: archive.file().clone(),
                             artifact: artifact.clone(),
                             link_map: link_map.clone(),
                             source_files: source_files.clone(),
@@ -411,6 +468,7 @@ impl VerifiedStaticSource {
                 },
             )
         })();
+        self.retain_files(source_files.iter().chain([artifact, link_map]));
         let mut errors = Vec::new();
         if let Err(e) = archive.verify() {
             errors.push(e);
@@ -425,7 +483,7 @@ impl VerifiedStaticSource {
                 errors.push(e);
             }
         }
-        if let Err(e) = self.guard.close(runner) {
+        if let Err(e) = self.close(runner) {
             errors.push(e);
         }
         close_result(result, require(errors.is_empty(), errors.join("; ")))

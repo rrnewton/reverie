@@ -725,6 +725,54 @@ impl VerifiedStaticSource {
         runner: &mut Runner,
         body: impl FnOnce(&ViewSiteInstallerObservation, &mut Runner) -> Result<T>,
     ) -> Result<T> {
+        StaticSourceRef::Cargo(self).with_view_site_installer_caller(
+            StaticArchiveRef::Cargo(archive),
+            definitions,
+            inputs,
+            runner,
+            body,
+        )
+    }
+}
+impl NativeStaticSource<'_> {
+    /// Observe one finite normal-return caller connection using the actual live
+    /// leaf, source/archive/selected owner. This deliberately returns no complete
+    /// caller-entry fact: exception entries, asynchronous frame/storage integrity,
+    /// physical View provenance and error-terminal closure remain unproved.
+    /// Every callback/error path retains full source/archive/build-output/selected
+    /// and newly read source/tool/disassembly identity closes.
+    pub fn with_view_site_installer_caller<T>(
+        &self,
+        archive: &NativeStaticArchive,
+        definitions: &SelectedInitializerDefinitions,
+        inputs: ViewSiteInstallerInputs<'_>,
+        runner: &mut Runner,
+        body: impl FnOnce(&ViewSiteInstallerObservation, &mut Runner) -> Result<T>,
+    ) -> Result<T> {
+        StaticSourceRef::Native(self).with_view_site_installer_caller(
+            StaticArchiveRef::Native(archive),
+            definitions,
+            inputs,
+            runner,
+            body,
+        )
+    }
+}
+impl StaticSourceRef<'_> {
+    /// Observe one finite normal-return caller connection using the actual live
+    /// leaf, source/archive/selected owner. This deliberately returns no complete
+    /// caller-entry fact: exception entries, asynchronous frame/storage integrity,
+    /// physical View provenance and error-terminal closure remain unproved.
+    /// Every callback/error path retains full source/archive/build-output/selected
+    /// and newly read source/tool/disassembly identity closes.
+    pub fn with_view_site_installer_caller<T>(
+        &self,
+        archive: StaticArchiveRef<'_>,
+        definitions: &SelectedInitializerDefinitions,
+        inputs: ViewSiteInstallerInputs<'_>,
+        runner: &mut Runner,
+        body: impl FnOnce(&ViewSiteInstallerObservation, &mut Runner) -> Result<T>,
+    ) -> Result<T> {
         let ViewSiteInstallerInputs {
             artifact,
             link_map,
@@ -736,12 +784,10 @@ impl VerifiedStaticSource {
             let result=(|| {
                 for f in &files {f.verify()?;}
                 require(objdump.sha256==OBJDUMP_SHA,"installer trusted GNU decoder differs")?;
-                let roots=self.guard.roots.iter().filter(|(_,k)|matches!(k,RootBinding::Cargo(_))).map(|(p,_)|p).collect::<Vec<_>>();
-                require(roots.len()==1,"installer actual source ambiguous")?;
-                let source=FileIdentity::read(&roots[0].join(INSTALLER_SOURCE))?;files.push(source.clone());
+                let source=self.source_file(INSTALLER_SOURCE,&mut files)?;
                 require(source.sha256==INSTALLER_SOURCE_SHA,"installer runtime source differs; fresh qualification required")?;
-                let mut members=extract_objects(&archive.file,0)?;members.extend(extract_objects(&definitions.core.libc,1)?);
-                let paths=[&archive.file.path,&definitions.core.libc.path];let mut objects=Vec::new();
+                let mut members=extract_objects(archive.file(),0)?;members.extend(extract_objects(&definitions.core.libc,1)?);
+                let paths=[&archive.file().path,&definitions.core.libc.path];let mut objects=Vec::new();
                 for m in &members {
                     let elf=Elf::parse(&m.bytes).map_err(|e|e.to_string())?;
                     require(elf.header.e_type==header::ET_REL&&elf.header.e_machine==header::EM_X86_64&&elf.is_64&&elf.little_endian,
@@ -756,7 +802,7 @@ impl VerifiedStaticSource {
                 }}
                 require(matches.len()==1,"installer input defining symbol absent/ambiguous")?;
                 let (oi,s)=matches[0];let o=&objects[oi];
-                require(o.archive_path==archive.file.path.as_path()&&o.member_name.starts_with("reverie_inguest-")&&
+                require(o.archive_path==archive.file().path.as_path()&&o.member_name.starts_with("reverie_inguest-")&&
                     s.st_type()==sym::STT_FUNC&&s.st_bind()==sym::STB_GLOBAL&&s.st_other==0&&s.st_value==0&&s.st_size==INSTALLER_BYTES as u64,
                     "installer actual owner/function shape differs")?;
                 let name=o.elf.strtab.get_at(s.st_name).ok_or("installer name absent")?;let code=s.st_shndx;
@@ -791,6 +837,7 @@ impl VerifiedStaticSource {
                 let args=vec!["--disassemble".into(),"--show-raw-insn".into(),"--disassemble-zeroes".into(),"--insn-width=16".into(),"--wide".into(),
                     format!("--start-address={entry:#x}"),format!("--stop-address={end:#x}"),path.into()];
                 let before=runner.commands.len();objdump.verify()?;
+                self.register_runner(runner)?;
                 let raw=runner.run_with_combined_limit(program,&args,artifact.path.parent().ok_or("installer cwd")?,Some(1024*1024));
                 let mut disassembly=None;
                 if runner.commands.len()>before {let c=runner.commands.last().ok_or("installer tool receipt absent")?;
@@ -798,7 +845,7 @@ impl VerifiedStaticSource {
                 let raw=raw?;let text=std::str::from_utf8(&raw).map_err(|e|e.to_string())?;
                 verify_disassembly_bytes(text,&BTreeMap::from([(entry,linked.to_vec())]))?;
                 let instructions=constructor_instructions(text,entry)?;normal_cfg(entry,&instructions)?;
-                let observation=ViewSiteInstallerObservation {runtime_archive:archive.file.clone(),artifact:artifact.clone(),link_map:link_map.clone(),
+                let observation=ViewSiteInstallerObservation {runtime_archive:archive.file().clone(),artifact:artifact.clone(),link_map:link_map.clone(),
                     source,objdump:objdump.clone(),disassembly:disassembly.ok_or("installer disassembly identity absent")?,
                     member_name:o.member_name.into(),member_ordinal:o.ordinal,member_header:o.header_offset,member_sha256:sha256(o.bytes),
                     input_sha256:sha256(input),final_sha256:sha256(linked),entry,call:offset(entry,CALL)?,leaf_entry:leaf.entry(),
@@ -812,11 +859,12 @@ impl VerifiedStaticSource {
                         "ERROR_ABORT_FAULT_AND_OTHER_HELPER_CLOSURE_NOT_PROVEN"]};
                 body(&observation,runner)
             })();
+            self.retain_files(files.iter().chain(&definitions.files));
             let mut errors=Vec::new();
             if let Err(e)=definitions.verify(){errors.push(e);}
             if let Err(e)=archive.verify(){errors.push(e);}
             for f in &files {if let Err(e)=f.verify(){errors.push(e);}}
-            if let Err(e)=self.guard.close(runner){errors.push(e);}
+            if let Err(e)=self.close(runner){errors.push(e);}
             close_result(result,require(errors.is_empty(),errors.join("; ")))
         })
     }

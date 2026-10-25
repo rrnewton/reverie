@@ -215,10 +215,13 @@ impl BootstrapEnvAuxLeafObservation {
     pub fn conditional_success_words(&self) -> std::ops::RangeInclusive<usize> {
         2..=512
     }
-    fn require_owner(&self, source: &VerifiedStaticSource, archive: &StaticArchive) -> Result<()> {
+    fn require_owner(
+        &self,
+        source: &StaticSourceRef<'_>,
+        archive: StaticArchiveRef<'_>,
+    ) -> Result<()> {
         require(
-            Arc::ptr_eq(&self.owner.0, &source.archive_owner)
-                && self.runtime_archive == archive.file,
+            Arc::ptr_eq(&self.owner.0, source.owner()) && self.runtime_archive == *archive.file(),
             "Bootstrap::env_aux_words belongs to another source/archive",
         )
     }
@@ -242,6 +245,56 @@ impl VerifiedStaticSource {
         runner: &mut Runner,
         callback: impl FnOnce(&BootstrapEnvAuxLeafObservation, &mut Runner) -> Result<T>,
     ) -> Result<T> {
+        StaticSourceRef::Cargo(self).with_bootstrap_env_aux_leaf(
+            StaticArchiveRef::Cargo(archive),
+            definitions,
+            artifact,
+            link_map,
+            runner,
+            callback,
+        )
+    }
+}
+impl NativeStaticSource<'_> {
+    /// Observe the whole finite env/aux leaf within the same live source/archive/
+    /// definitions/ELF/map owner. The existing with_leaf_objects transaction
+    /// independently closes its full definitions ledger, archive/build outputs,
+    /// source and files on every admitted Result path, including callback Err.
+    /// Both project and installer call/output/tag/async contracts remain unproved.
+    pub fn with_bootstrap_env_aux_leaf<T>(
+        &self,
+        archive: &NativeStaticArchive,
+        definitions: &SelectedInitializerDefinitions,
+        artifact: &FileIdentity,
+        link_map: &FileIdentity,
+        runner: &mut Runner,
+        callback: impl FnOnce(&BootstrapEnvAuxLeafObservation, &mut Runner) -> Result<T>,
+    ) -> Result<T> {
+        StaticSourceRef::Native(self).with_bootstrap_env_aux_leaf(
+            StaticArchiveRef::Native(archive),
+            definitions,
+            artifact,
+            link_map,
+            runner,
+            callback,
+        )
+    }
+}
+impl StaticSourceRef<'_> {
+    /// Observe the whole finite env/aux leaf within the same live source/archive/
+    /// definitions/ELF/map owner. The existing with_leaf_objects transaction
+    /// independently closes its full definitions ledger, archive/build outputs,
+    /// source and files on every admitted Result path, including callback Err.
+    /// Both project and installer call/output/tag/async contracts remain unproved.
+    pub fn with_bootstrap_env_aux_leaf<T>(
+        &self,
+        archive: StaticArchiveRef<'_>,
+        definitions: &SelectedInitializerDefinitions,
+        artifact: &FileIdentity,
+        link_map: &FileIdentity,
+        runner: &mut Runner,
+        callback: impl FnOnce(&BootstrapEnvAuxLeafObservation, &mut Runner) -> Result<T>,
+    ) -> Result<T> {
         self.with_leaf_objects(
             archive,
             definitions,
@@ -257,8 +310,8 @@ impl VerifiedStaticSource {
     }
 }
 fn observe(
-    source: &VerifiedStaticSource,
-    archive: &StaticArchive,
+    source: &StaticSourceRef<'_>,
+    archive: StaticArchiveRef<'_>,
     artifact: &FileIdentity,
     link_map: &FileIdentity,
     leaves: LeafObjects<'_, '_>,
@@ -304,8 +357,8 @@ fn observe(
         &[],
     )?;
     Ok(BootstrapEnvAuxLeafObservation {
-        owner: DefinitionSourceOwner(source.archive_owner.clone()),
-        runtime_archive: archive.file.clone(),
+        owner: DefinitionSourceOwner(Arc::clone(source.owner())),
+        runtime_archive: archive.file().clone(),
         artifact: artifact.clone(),
         link_map: link_map.clone(),
         source: leaves.source.clone(),

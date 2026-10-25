@@ -160,10 +160,13 @@ impl ViewSiteLeafObservation {
     pub fn conditional_result_bytes(&self) -> [u8; 5] {
         [0, 1, 2, 3, 0xff]
     }
-    fn require_owner(&self, source: &VerifiedStaticSource, archive: &StaticArchive) -> Result<()> {
+    fn require_owner(
+        &self,
+        source: &StaticSourceRef<'_>,
+        archive: StaticArchiveRef<'_>,
+    ) -> Result<()> {
         require(
-            Arc::ptr_eq(&self.owner.0, &source.archive_owner)
-                && self.runtime_archive == archive.file,
+            Arc::ptr_eq(&self.owner.0, source.owner()) && self.runtime_archive == *archive.file(),
             "View::site contract belongs to another source/archive",
         )
     }
@@ -637,6 +640,66 @@ impl VerifiedStaticSource {
         runner: &mut Runner,
         body: impl FnOnce(&ViewSiteLeafObservation, &mut Runner) -> Result<T>,
     ) -> Result<T> {
+        StaticSourceRef::Cargo(self).with_view_site_leaf(
+            StaticArchiveRef::Cargo(archive),
+            definitions,
+            artifact,
+            link_map,
+            runner,
+            body,
+        )
+    }
+}
+impl NativeStaticSource<'_> {
+    /// Observe the finite complete View::site form under the actual fresh source
+    /// and archive owner. No caller supplies an identity policy, code, table,
+    /// source path or success fact. All Result paths, including callback failure,
+    /// close source/build-output/archive/map/ELF/source-file identities and the
+    /// existing selected-definition producer's complete retained link ledger.
+    ///
+    /// Normal-return semantics are CONDITIONAL on entry at the observed start,
+    /// the actual compiler ABI, immutable valid View/backing, a valid return
+    /// address and disjoint live writable return storage. This method proves
+    /// none of those physical call preconditions and never authorizes entry.
+    pub fn with_view_site_leaf<T>(
+        &self,
+        archive: &NativeStaticArchive,
+        definitions: &SelectedInitializerDefinitions,
+        artifact: &FileIdentity,
+        link_map: &FileIdentity,
+        runner: &mut Runner,
+        body: impl FnOnce(&ViewSiteLeafObservation, &mut Runner) -> Result<T>,
+    ) -> Result<T> {
+        StaticSourceRef::Native(self).with_view_site_leaf(
+            StaticArchiveRef::Native(archive),
+            definitions,
+            artifact,
+            link_map,
+            runner,
+            body,
+        )
+    }
+}
+impl StaticSourceRef<'_> {
+    /// Observe the finite complete View::site form under the actual fresh source
+    /// and archive owner. No caller supplies an identity policy, code, table,
+    /// source path or success fact. All Result paths, including callback failure,
+    /// close source/build-output/archive/map/ELF/source-file identities and the
+    /// existing selected-definition producer's complete retained link ledger.
+    ///
+    /// Normal-return semantics are CONDITIONAL on entry at the observed start,
+    /// the actual compiler ABI, immutable valid View/backing, a valid return
+    /// address and disjoint live writable return storage. This method proves
+    /// none of those physical call preconditions and never authorizes entry.
+    pub fn with_view_site_leaf<T>(
+        &self,
+        archive: StaticArchiveRef<'_>,
+        definitions: &SelectedInitializerDefinitions,
+        artifact: &FileIdentity,
+        link_map: &FileIdentity,
+        runner: &mut Runner,
+        body: impl FnOnce(&ViewSiteLeafObservation, &mut Runner) -> Result<T>,
+    ) -> Result<T> {
         self.with_site_leaf(
             SiteLeafKind::View,
             archive,
@@ -672,7 +735,7 @@ impl VerifiedStaticSource {
     pub(super) fn with_site_leaf<T>(
         &self,
         kind: SiteLeafKind,
-        archive: &StaticArchive,
+        archive: StaticArchiveRef<'_>,
         definitions: &SelectedInitializerDefinitions,
         outputs: (&FileIdentity, &FileIdentity),
         runner: &mut Runner,
@@ -683,8 +746,8 @@ impl VerifiedStaticSource {
             .require_archive_owner(archive)
             .and_then(|()| {
                 selected_owner_identity(
-                    &self.archive_owner,
-                    &archive.file,
+                    self.owner(),
+                    archive.file(),
                     &definitions.source_owner,
                     &definitions.core,
                 )
@@ -697,28 +760,19 @@ impl VerifiedStaticSource {
             });
         if let Err(e) = admission {
             // Unadmitted foreign definitions/outputs are never read as input.
-            return close_result(Err(e), self.guard.close(runner));
+            return close_result(Err(e), self.close(runner));
         }
         let mut files = vec![artifact.clone(), link_map.clone()];
         let result = (|| {
             archive.verify()?;
             definitions.verify()?;
-            self.guard.close(runner)?;
+            self.close(runner)?;
             for f in &files {
                 f.verify()?;
             }
-            let roots = self
-                .guard
-                .roots
-                .iter()
-                .filter(|(_, k)| matches!(k, RootBinding::Cargo(_)))
-                .map(|(path, _)| path)
-                .collect::<Vec<_>>();
-            require(roots.len() == 1, "View::site resolved source ambiguous")?;
-            let source = FileIdentity::read(&roots[0].join(SOURCE))?;
-            files.push(source.clone());
+            let source = self.source_file(SOURCE, &mut files)?;
             let expected_symbol = kind.symbol(&source.sha256)?;
-            let members = extract_objects(&archive.file, 0)?;
+            let members = extract_objects(archive.file(), 0)?;
             let mut objects = Vec::new();
             for m in &members {
                 let elf = Elf::parse(&m.bytes).map_err(|e| e.to_string())?;
@@ -731,7 +785,7 @@ impl VerifiedStaticSource {
                 )?;
                 checked_object_symbol_authority(&elf, &m.bytes)?;
                 objects.push(ObjectInput {
-                    archive_path: &archive.file.path,
+                    archive_path: &archive.file().path,
                     member_name: &m.name,
                     ordinal: m.ordinal,
                     header_offset: m.header,
@@ -850,8 +904,8 @@ impl VerifiedStaticSource {
                 &final_fields(&elf, &data, table, TABLE_BYTES, table_section, code_section)?,
             )?;
             let observation = SiteLeafIdentity {
-                owner: DefinitionSourceOwner(self.archive_owner.clone()),
-                runtime_archive: archive.file.clone(),
+                owner: DefinitionSourceOwner(Arc::clone(self.owner())),
+                runtime_archive: archive.file().clone(),
                 artifact: artifact.clone(),
                 link_map: link_map.clone(),
                 source,
@@ -870,6 +924,7 @@ impl VerifiedStaticSource {
             };
             body(observation, runner)
         })();
+        self.retain_files(files.iter().chain(&definitions.files));
         let mut errors = Vec::new();
         if let Err(e) = definitions.verify() {
             errors.push(e);
@@ -882,7 +937,7 @@ impl VerifiedStaticSource {
                 errors.push(e);
             }
         }
-        if let Err(e) = self.guard.close(runner) {
+        if let Err(e) = self.close(runner) {
             errors.push(e);
         }
         close_result(result, require(errors.is_empty(), errors.join("; ")))
