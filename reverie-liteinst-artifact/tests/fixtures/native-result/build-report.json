@@ -1,0 +1,34 @@
+{
+  "trace_id": "79c4be3c-8b00-4c84-9ee0-b34a20978d41",
+  "success": true,
+  "results": {
+    "example//demo:program-export": {
+      "success": "SUCCESS",
+      "outputs": {
+        "DEFAULT": [
+          "buck-out/v2/art/example/product/demo/__program__/program"
+        ]
+      },
+      "other_outputs": {},
+      "configured_graph_size": null,
+      "configured": {
+        "cfg:example#request": {
+          "errors": [],
+          "success": "SUCCESS",
+          "outputs": {
+            "DEFAULT": [
+              "buck-out/v2/art/example/product/demo/__program__/program"
+            ]
+          },
+          "other_outputs": {},
+          "configured_graph_size": null
+        }
+      },
+      "errors": []
+    }
+  },
+  "failures": {},
+  "project_root": "/work/project",
+  "truncated": false,
+  "strings": {}
+}

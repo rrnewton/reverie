@@ -7,6 +7,47 @@
 use sha2::Digest;
 use sha2::Sha256;
 
+/// Exact compiled bootstrap source bytes, keyed by the same logical names used
+/// by [`digest`]. Producers compare their actual source files with this table
+/// before compilation and again at source close. Content equality alone grants
+/// no compilation, image, or execution authority.
+pub fn bootstrap_sources() -> &'static [(&'static str, &'static [u8])] {
+    &[
+        (
+            "rv/bootstrap/private-bootstrap.c",
+            include_bytes!("../native_exec/private-bootstrap.c"),
+        ),
+        (
+            "rv/bootstrap/private-runner.c",
+            include_bytes!("../native_exec/private-runner.c"),
+        ),
+        (
+            "rv/bootstrap/private-control.h",
+            include_bytes!("../native_exec/private-control.h"),
+        ),
+        (
+            "rv/bootstrap/private-entry.S",
+            include_bytes!("../native_exec/private-entry.S"),
+        ),
+        (
+            "rv/bootstrap/private-fs.S",
+            include_bytes!("../native_exec/private-fs.S"),
+        ),
+        (
+            "rv/bootstrap/private-kernel-state.c",
+            include_bytes!("../native_exec/private-kernel-state.c"),
+        ),
+        (
+            "rv/bootstrap/private-maps.c",
+            include_bytes!("../native_exec/private-maps.c"),
+        ),
+        (
+            "rv/bootstrap/private-bootstrap.ld",
+            include_bytes!("../native_exec/private-bootstrap.ld"),
+        ),
+    ]
+}
+
 /// SHA256 over versioned, length-delimited logical names and actual source bytes.
 /// Both coordinator and in-guest consumer call this same compiled definition.
 pub fn digest() -> [u8; 32] {
@@ -110,38 +151,8 @@ pub fn digest() -> [u8; 32] {
             "rv/liteinst/native_exec_state.rs",
             include_bytes!("../../reverie-liteinst/src/native_exec_state.rs"),
         ),
-        (
-            "rv/bootstrap/private-bootstrap.c",
-            include_bytes!("../native_exec/private-bootstrap.c"),
-        ),
-        (
-            "rv/bootstrap/private-runner.c",
-            include_bytes!("../native_exec/private-runner.c"),
-        ),
-        (
-            "rv/bootstrap/private-control.h",
-            include_bytes!("../native_exec/private-control.h"),
-        ),
-        (
-            "rv/bootstrap/private-entry.S",
-            include_bytes!("../native_exec/private-entry.S"),
-        ),
-        (
-            "rv/bootstrap/private-fs.S",
-            include_bytes!("../native_exec/private-fs.S"),
-        ),
-        (
-            "rv/bootstrap/private-kernel-state.c",
-            include_bytes!("../native_exec/private-kernel-state.c"),
-        ),
-        (
-            "rv/bootstrap/private-maps.c",
-            include_bytes!("../native_exec/private-maps.c"),
-        ),
-        (
-            "rv/bootstrap/private-bootstrap.ld",
-            include_bytes!("../native_exec/private-bootstrap.ld"),
-        ),
+    ];
+    let after_bootstrap: &[(&str, &[u8])] = &[
         (
             "rv/launcher/native.rs",
             include_bytes!("launcher/native.rs"),
@@ -165,7 +176,11 @@ pub fn digest() -> [u8; 32] {
     ];
     let mut digest = Sha256::new();
     digest.update(b"Reverie declared native inputs v1\0");
-    for (name, bytes) in inputs {
+    for (name, bytes) in inputs
+        .iter()
+        .chain(bootstrap_sources())
+        .chain(after_bootstrap)
+    {
         digest.update((name.len() as u64).to_le_bytes());
         digest.update(name.as_bytes());
         digest.update((bytes.len() as u64).to_le_bytes());

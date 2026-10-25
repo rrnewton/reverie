@@ -37,6 +37,30 @@ use serde_json::Value;
 use sha2::Digest;
 use sha2::Sha256;
 
+// Raw native build descriptions and observations remain data. The checked
+// action factory alone binds them to the private native source dispatch.
+pub mod native_action;
+mod native_action_custody;
+pub mod native_action_input;
+pub mod native_build;
+pub mod native_events;
+mod native_execution_context;
+pub mod native_executor_inputs;
+pub mod native_inputs;
+pub mod native_invocation;
+pub mod native_response;
+pub mod native_results;
+mod native_source;
+mod native_wire;
+
+const RUNNER_REMOVED_ENVIRONMENT: [&str; 5] = [
+    "LD_PRELOAD",
+    "HERMIT_LITEINST_STAGE",
+    "HERMIT_LITEINST_TOOL_RUNTIME",
+    "REVERIE_LITEINST_PRELOAD",
+    "REVERIE_LITEINST_TEST_RUNTIME_MANIFEST",
+];
+
 pub type Result<T> = std::result::Result<T, String>;
 pub const SCHEMA: u32 = 2;
 /// Explicit constructor contract for the genuine standalone preload. Generic
@@ -244,12 +268,21 @@ pub fn verify_guest_receipt(
 /// One shared absolute deadline; each stream has its own strict byte ceiling.
 /// Every child is placed in a fresh process group. Overflow/deadline kills that
 /// group; the enclosing DAG cgroup remains the authoritative descendant guard.
+enum CommandObservation {
+    Stream(FileIdentity),
+    Command(usize, CommandEvidence),
+}
+type CommandObservations = Arc<std::sync::Mutex<Vec<CommandObservation>>>;
+
 pub struct Runner {
     pub logs: PathBuf,
     pub deadline: Instant,
     pub max_stream_bytes: usize,
     serial: u32,
     pub commands: Vec<CommandEvidence>,
+    // Original observations survive edits to the public reporting vector.
+    // Native static scopes use this private append-only ledger at final close.
+    command_observations: CommandObservations,
 }
 
 impl Runner {
@@ -265,7 +298,17 @@ impl Runner {
             max_stream_bytes,
             serial: 0,
             commands: Vec::new(),
+            command_observations: Arc::new(std::sync::Mutex::new(Vec::new())),
         })
+    }
+
+    fn observe_stream(&self, path: &Path) -> Result<FileIdentity> {
+        let file = FileIdentity::read(path)?;
+        self.command_observations
+            .lock()
+            .map_err(|_| "command observation ledger poisoned")?
+            .push(CommandObservation::Stream(file.clone()));
+        Ok(file)
     }
 
     pub fn run(&mut self, program: &str, args: &[String], cwd: &Path) -> Result<Vec<u8>> {
@@ -278,6 +321,29 @@ impl Runner {
         args: &[String],
         cwd: &Path,
         combined_limit: Option<usize>,
+    ) -> Result<Vec<u8>> {
+        self.run_with_options(program, args, cwd, combined_limit, None)
+    }
+
+    // Native owned actions pass the complete environment already checked from
+    // their one process-entry context. Other callers retain ambient behavior.
+    fn run_with_environment(
+        &mut self,
+        program: &str,
+        args: &[String],
+        cwd: &Path,
+        environment: &BTreeMap<String, Vec<u8>>,
+    ) -> Result<Vec<u8>> {
+        self.run_with_options(program, args, cwd, None, Some(environment))
+    }
+
+    fn run_with_options(
+        &mut self,
+        program: &str,
+        args: &[String],
+        cwd: &Path,
+        combined_limit: Option<usize>,
+        environment: Option<&BTreeMap<String, Vec<u8>>>,
     ) -> Result<Vec<u8>> {
         require(
             combined_limit != Some(0),
@@ -296,18 +362,31 @@ impl Runner {
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
-        // Do not let a diagnostic producer inherit runtime selectors into Cargo,
-        // linker/tools or readelf; these only belong on the guest test launch.
-        for name in [
-            "LD_PRELOAD",
-            "HERMIT_LITEINST_STAGE",
-            "HERMIT_LITEINST_TOOL_RUNTIME",
-            "REVERIE_LITEINST_PRELOAD",
-            "REVERIE_LITEINST_TEST_RUNTIME_MANIFEST",
-        ] {
-            command.env_remove(name);
+        if let Some(environment) = environment {
+            use std::os::unix::ffi::OsStringExt;
+            for (name, value) in environment {
+                require(
+                    !name.is_empty()
+                        && !name.contains('=')
+                        && !name.contains('\0')
+                        && !value.contains(&0),
+                    "owned command environment contains an invalid name or value",
+                )?;
+            }
+            command.env_clear().envs(
+                environment.iter().map(|(name, value)| {
+                    (name.as_str(), std::ffi::OsString::from_vec(value.clone()))
+                }),
+            );
+        } else {
+            // Do not let a diagnostic producer inherit runtime selectors into Cargo,
+            // linker/tools or readelf; these only belong on the guest test launch.
+            for name in RUNNER_REMOVED_ENVIRONMENT {
+                command.env_remove(name);
+            }
+            command.env("LC_ALL", "C");
         }
-        command.env("LC_ALL", "C").process_group(0);
+        command.process_group(0);
         let start = Instant::now();
         let mut child = command
             .spawn()
@@ -430,9 +509,16 @@ impl Runner {
             cwd: fs::canonicalize(cwd).map_err(|e| e.to_string())?,
             status: status.code().unwrap_or(-1),
             elapsed_millis: start.elapsed().as_millis(),
-            stdout: FileIdentity::read(&stdout_path)?,
-            stderr: FileIdentity::read(&stderr_path)?,
+            stdout: self.observe_stream(&stdout_path)?,
+            stderr: self.observe_stream(&stderr_path)?,
         };
+        self.command_observations
+            .lock()
+            .map_err(|_| "command observation ledger poisoned")?
+            .push(CommandObservation::Command(
+                self.commands.len(),
+                evidence.clone(),
+            ));
         write_new(
             &prefix.with_extension("command.json"),
             &serde_json::to_vec_pretty(&evidence).map_err(|e| e.to_string())?,
@@ -701,6 +787,50 @@ pub struct VerifiedCompiledSources {
     // the OFF standalone build factory; historical ON records/gates do not change.
     standalone_metadata: Option<Value>,
 }
+// Borrowed closed dispatch at the physical proof boundary. Every source
+// owner requires an independently checked factory; raw input records
+// deliberately have no arm here. Public Cargo APIs and wire records stay exact.
+#[derive(Clone, Copy)]
+enum SourceContextRef<'a> {
+    Cargo(&'a VerifiedCompiledSources),
+    Native(&'a native_source::VerifiedNativeSources),
+}
+impl<'a> SourceContextRef<'a> {
+    fn cargo(self) -> Result<&'a VerifiedCompiledSources> {
+        match self {
+            Self::Cargo(sources) => Ok(sources),
+            Self::Native(_) => Err("native source context cannot enter Cargo-only evidence".into()),
+        }
+    }
+    fn require_image(self, initializer: &str) -> Result<()> {
+        match self {
+            Self::Cargo(sources) => sources.require_image(initializer),
+            Self::Native(sources) => sources.require_image(initializer),
+        }
+    }
+    fn verify_unchanged(self, runner: &mut Runner) -> Result<()> {
+        match self {
+            Self::Cargo(sources) => sources.verify_unchanged(runner),
+            Self::Native(sources) => sources.verify_unchanged(),
+        }
+    }
+    fn filename(self, relative: &[u8]) -> Result<Vec<u8>> {
+        match self {
+            Self::Cargo(sources) => sources.filename(relative),
+            Self::Native(sources) => sources.filename(relative),
+        }
+    }
+    fn require_native_cohort(self, expected: NoScopeCohort) -> Result<()> {
+        match self {
+            Self::Cargo(_) => Ok(()),
+            Self::Native(sources) => require(
+                sources.cohort() == expected,
+                "native source cohort does not match the physical qualification route",
+            ),
+        }
+    }
+}
+
 const COMPILED_RV_LOCATION_FILES: [&str; 7] = [
     "reverie-liteinst/src/patch_alloc.rs",
     "reverie-inguest/src/guest/alloc.rs",
@@ -747,23 +877,23 @@ fn content_manifest_relative(image_kind: FixedImageKind) -> &'static str {
 const CONTENT_REVERIE_CATALOG: [(&str, u64, &str); 57] = [
     (
         "reverie-liteinst-artifact/src/private_static/selected_initializers/bootstrap_env_aux.rs",
-        20525,
-        "6784c9ff6433b3bc8ad1e81e0563352b7660f2931aad9bcab6f47cfc02f14759",
+        22613,
+        "7e4720e0dfbc31964a2c9399e228cafb41b7f2dc7b96baf93ad10542441eda4e",
     ),
     (
         "reverie-liteinst-artifact/src/private_static/selected_initializers/bootstrap_descriptor.rs",
-        33962,
-        "eead70fc90371dafaf4068785789854560687d6d3b9314f8b1db48020920955f",
+        36052,
+        "a6a4c6c6a48c172e6b27689d27462f0c0bf241c524d883a65f9e915e71c73637",
     ),
     (
         "reverie-liteinst-artifact/src/private_static/selected_initializers/bootstrap_role.rs",
-        9263,
-        "a8c7e953c0b3d66aa5eb80455ef403d659121949cc7ce7441806b4c52f6492f1",
+        11290,
+        "1e7bda5c6254be9777081a6951f49ad4e4b85feef51b7ea4a200c6ae4bc864ac",
     ),
     (
         "reverie-liteinst-artifact/src/private_static/selected_initializers/bootstrap_site.rs",
-        17921,
-        "babd71dd22528d2a116cb74fd65844d3e7f2a14ee1abfd64634931df3f2a6905",
+        19790,
+        "edd04e574cbadfedd906d62c88cd9956a480ca8a6caf3bec7e93d90da24e02f0",
     ),
     (
         "reverie-loader/src/mapped_inputs.rs",
@@ -772,8 +902,8 @@ const CONTENT_REVERIE_CATALOG: [(&str, u64, &str); 57] = [
     ),
     (
         "reverie-liteinst-artifact/src/private_static/tls_sources.rs",
-        15895,
-        "2e8c776411de4ecc9937bd340420185e8786f770eb96a2c8390504bfea9b0705",
+        16837,
+        "2483033664f7940653f69c0c616510e6fe037e44f768ba3e10c0cffda6bf3ba4",
     ),
     (
         "Cargo.toml",
@@ -787,28 +917,28 @@ const CONTENT_REVERIE_CATALOG: [(&str, u64, &str); 57] = [
     ),
     (
         "reverie-liteinst-artifact/src/private_static/selected_initializers/view_site.rs",
-        52684,
-        "d0fc60d6be526aae972b69b1deb4b2d982e355dcf5b75ce2454d106aff44e992",
+        55026,
+        "392344ff38c110b68769ec0d70a468679c88097e75ee843c6b885cbe7200eaea",
     ),
     (
         "reverie-liteinst-artifact/src/private_static/selected_initializers/view_site/caller.rs",
-        53465,
-        "2c8bfb09a31113f150c44a3964046fc557be24ca5ff9dd078d932f29ad4bc5f3",
+        55445,
+        "295e6d97c5574ae6bb96c4d2e1870a5a63bd7c3ebb602fb23af067490e144ee1",
     ),
     (
         "reverie-liteinst-artifact/src/private_static/selected_initializers/view_table.rs",
-        41315,
-        "6cfc3c67d8485dff9463cff67be604f81fce9d7f92f63f93f118fc7b4a2e7ccb",
+        43202,
+        "a5d6a249e62536bb10888d282f0d0af714281f9cd8f3f1674cbc572193c91404",
     ),
     (
         "reverie-liteinst-artifact/src/private_static/selected_initializers.rs",
-        237052,
-        "7de6b421cd20b9be86ebac8adfcc52e827e968aabed455257b0506b956bc6dfc",
+        239433,
+        "25e956f392dd74ec2147669c21666f752adef16f52c23046efed8511180e0c18",
     ),
     (
         "reverie-liteinst-artifact/src/private_static/selected_initializers/native_leaves.rs",
-        30102,
-        "61df7de3a0b864b9ca40975dfc7500cae27bffcd16681f4b0748dd62b5e54eec",
+        32418,
+        "3b9670d44966fe94ecdca0752e3c7b431413ce815e475ff3e7c3f2a4ece591bc",
     ),
     (
         "reverie-liteinst-artifact/tests/fixtures/musl_memset_member.rs",
@@ -847,13 +977,13 @@ const CONTENT_REVERIE_CATALOG: [(&str, u64, &str); 57] = [
     ),
     (
         "reverie-liteinst-artifact/src/private_static/selected_initializers/ordinary_gate.rs",
-        63386,
-        "a9229d250646b370024ce9f14f060b371b68cc33614099d408b02166545ea09d",
+        67230,
+        "c2e6baf0a6935df3add87b5c4542969c6bde81696365c67f7184fe5be4c014bf",
     ),
     (
         "reverie-liteinst-artifact/src/private_static/selected_initializers/terminal_observation.rs",
-        31597,
-        "18edf50c8eecde1471edbe9bb60c9f39f9874cbde8b8090b9531faaa550ca3c1",
+        32753,
+        "621f99cdad140f1ea2a60dcc60c5e1e925b819eb9918b4c6db47ba3609ec09d2",
     ),
     (
         "reverie-liteinst-artifact/tests/fixtures/ordinary_preceding_gate_page.rs",
@@ -1095,7 +1225,14 @@ fn content_reverie_inventory_for_image(
     }
     relatives.push("reverie-liteinst-artifact/src/lib.rs");
     let (inventory, files) = declared_inventory(root, &relatives)?;
-    for entry in &inventory {
+    validate_reverie_inventory_entries(&inventory, image_kind)?;
+    Ok((inventory, files))
+}
+fn validate_reverie_inventory_entries(
+    inventory: &[DeclaredSourceFile],
+    image_kind: FixedImageKind,
+) -> Result<()> {
+    for entry in inventory {
         if entry.relative == "reverie-liteinst-artifact/src/lib.rs" {
             require(
                 entry.sha256 == qualifier_source_sha256(),
@@ -1197,7 +1334,7 @@ fn content_reverie_inventory_for_image(
             content_catalog_matches(&entry.relative, entry.size, &entry.sha256)?;
         }
     }
-    Ok((inventory, files))
+    Ok(())
 }
 #[cfg(test)]
 fn content_reverie_inventory(
@@ -3234,6 +3371,7 @@ impl<'de> Deserialize<'de> for AllocatorInstallationEvidence {
     }
 }
 impl AllocatorInstallationEvidence {
+    #[cfg(test)]
     fn existing(&self) -> Option<&AllocatorTlsBoundary> {
         match self {
             Self::Existing(boundary) => Some(boundary),
@@ -3318,6 +3456,90 @@ pub struct NoInstallationScopeEvidence {
     other_tls_unisolated: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     native_tls_layout100: Option<NativeNoScopeLayout100Evidence>,
+}
+
+// Private physical payload shared by source authorities. It cannot establish a
+// build or source context and is never accepted by a Cargo receipt reader.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+struct NoScopePhysical {
+    kind: String,
+    version: u32,
+    policy: String,
+    elf_sha256: String,
+    source: FileIdentity,
+    allocation: SymbolEvidence,
+    allocation_sha256: String,
+    mappings: Vec<TlsExecutableMapping>,
+    static_symbol_count: usize,
+    dynamic_symbol_count: usize,
+    raw_names_sha256: String,
+    loader_writer_count: usize,
+    loader_writers_sha256: String,
+    installation_symbols: Vec<String>,
+    installation_getters: Vec<u64>,
+    installation_writer_count: usize,
+    other_tls_getters: Vec<UnisolatedTlsGetter>,
+    other_getter_pointer_slots: Vec<u64>,
+    other_tls_unisolated: bool,
+    native_tls_layout100: Option<NativeNoScopeLayout100Evidence>,
+}
+impl NoInstallationScopeEvidence {
+    fn physical(&self) -> NoScopePhysical {
+        NoScopePhysical {
+            kind: self.kind.clone(),
+            version: self.version,
+            policy: self.policy.clone(),
+            elf_sha256: self.elf_sha256.clone(),
+            source: self.source.clone(),
+            allocation: self.allocation.clone(),
+            allocation_sha256: self.allocation_sha256.clone(),
+            mappings: self.mappings.clone(),
+            static_symbol_count: self.static_symbol_count,
+            dynamic_symbol_count: self.dynamic_symbol_count,
+            raw_names_sha256: self.raw_names_sha256.clone(),
+            loader_writer_count: self.loader_writer_count,
+            loader_writers_sha256: self.loader_writers_sha256.clone(),
+            installation_symbols: self.installation_symbols.clone(),
+            installation_getters: self.installation_getters.clone(),
+            installation_writer_count: self.installation_writer_count,
+            other_tls_getters: self.other_tls_getters.clone(),
+            other_getter_pointer_slots: self.other_getter_pointer_slots.clone(),
+            other_tls_unisolated: self.other_tls_unisolated,
+            native_tls_layout100: self.native_tls_layout100.clone(),
+        }
+    }
+    fn from_physical(
+        physical: NoScopePhysical,
+        compiled_sources_sha256: String,
+        reverie_pin: String,
+        current_build: CurrentBuildEvidence,
+    ) -> Self {
+        Self {
+            compiled_sources_sha256,
+            reverie_pin,
+            current_build,
+            kind: physical.kind,
+            version: physical.version,
+            policy: physical.policy,
+            elf_sha256: physical.elf_sha256,
+            source: physical.source,
+            allocation: physical.allocation,
+            allocation_sha256: physical.allocation_sha256,
+            mappings: physical.mappings,
+            static_symbol_count: physical.static_symbol_count,
+            dynamic_symbol_count: physical.dynamic_symbol_count,
+            raw_names_sha256: physical.raw_names_sha256,
+            loader_writer_count: physical.loader_writer_count,
+            loader_writers_sha256: physical.loader_writers_sha256,
+            installation_symbols: physical.installation_symbols,
+            installation_getters: physical.installation_getters,
+            installation_writer_count: physical.installation_writer_count,
+            other_tls_getters: physical.other_tls_getters,
+            other_getter_pointer_slots: physical.other_getter_pointer_slots,
+            other_tls_unisolated: physical.other_tls_unisolated,
+            native_tls_layout100: physical.native_tls_layout100,
+        }
+    }
 }
 
 // This distinct optional payload is emitted only for the complete new native
@@ -3914,6 +4136,91 @@ pub struct AllocatorBackingEvidence {
     pub function_sha256: BTreeMap<String, String>,
     pub owned_setup_transfers: BTreeMap<String, Vec<ConstructorTransfer>>,
     pub owned_setup_got_edges: Vec<GotEdge>,
+}
+
+// Common physical allocator fields. Provenance is packed only at the outer
+// source-specific boundary; no Cargo command is manufactured by physical proof.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+struct AllocatorBackingPhysical {
+    fixed_native_syscalls: Option<FixedNativeSyscallsEvidence>,
+    fixed_arena_version: u32,
+    descriptor: AllocatorDescriptorEvidence,
+    compiler_global_type: String,
+    fixed_backing_record: ImmutableAllocatorObject,
+    allocator_transfers: BTreeMap<String, Vec<ConstructorTransfer>>,
+    readonly_objects: BTreeMap<String, FixedReadonlyEvidence>,
+    selection_objects: BTreeMap<String, SymbolEvidence>,
+    guard_contract: String,
+    guarded_terminal_edges: BTreeMap<String, FixedGuardedTerminal>,
+    compiler_routes: BTreeMap<String, FixedAllocatorRoute>,
+    functions: BTreeMap<String, SymbolEvidence>,
+    function_sha256: BTreeMap<String, String>,
+    owned_setup_transfers: BTreeMap<String, Vec<ConstructorTransfer>>,
+    owned_setup_got_edges: Vec<GotEdge>,
+}
+impl AllocatorBackingPhysical {
+    fn from_cargo(backing: &AllocatorBackingEvidence) -> Self {
+        Self {
+            fixed_native_syscalls: backing.fixed_native_syscalls.clone(),
+            fixed_arena_version: backing.fixed_arena_version,
+            descriptor: backing.descriptor.clone(),
+            compiler_global_type: backing.compiler_global_type.clone(),
+            fixed_backing_record: backing.fixed_backing_record.clone(),
+            allocator_transfers: backing.allocator_transfers.clone(),
+            readonly_objects: backing.readonly_objects.clone(),
+            selection_objects: backing.selection_objects.clone(),
+            guard_contract: backing.guard_contract.clone(),
+            guarded_terminal_edges: backing.guarded_terminal_edges.clone(),
+            compiler_routes: backing.compiler_routes.clone(),
+            functions: backing.functions.clone(),
+            function_sha256: backing.function_sha256.clone(),
+            owned_setup_transfers: backing.owned_setup_transfers.clone(),
+            owned_setup_got_edges: backing.owned_setup_got_edges.clone(),
+        }
+    }
+    fn into_cargo(self, tls_boundary: AllocatorInstallationEvidence) -> AllocatorBackingEvidence {
+        AllocatorBackingEvidence {
+            tls_boundary,
+            fixed_native_syscalls: self.fixed_native_syscalls,
+            fixed_arena_version: self.fixed_arena_version,
+            descriptor: self.descriptor,
+            compiler_global_type: self.compiler_global_type,
+            fixed_backing_record: self.fixed_backing_record,
+            allocator_transfers: self.allocator_transfers,
+            readonly_objects: self.readonly_objects,
+            selection_objects: self.selection_objects,
+            guard_contract: self.guard_contract,
+            guarded_terminal_edges: self.guarded_terminal_edges,
+            compiler_routes: self.compiler_routes,
+            functions: self.functions,
+            function_sha256: self.function_sha256,
+            owned_setup_transfers: self.owned_setup_transfers,
+            owned_setup_got_edges: self.owned_setup_got_edges,
+        }
+    }
+}
+
+// Closed physical installation view: it is neither serialized nor an authority
+// token. A no-scope payload is admitted only after its source-specific binding.
+enum InstallationPhysical<'a> {
+    Existing(&'a AllocatorTlsBoundary),
+    NoScope(Box<NoScopePhysical>),
+}
+impl<'a> InstallationPhysical<'a> {
+    fn from_cargo(evidence: &'a AllocatorInstallationEvidence) -> Self {
+        match evidence {
+            AllocatorInstallationEvidence::Existing(tls) => Self::Existing(tls),
+            AllocatorInstallationEvidence::NoInstallationScope(proof) => {
+                Self::NoScope(Box::new(proof.physical()))
+            }
+        }
+    }
+    fn existing(&self) -> Option<&AllocatorTlsBoundary> {
+        match self {
+            Self::Existing(tls) => Some(tls),
+            Self::NoScope(_) => None,
+        }
+    }
 }
 
 // Source-defined required identities; actual canonical Rust-v0 names must be
@@ -5374,7 +5681,13 @@ fn canonical_loader_metadata(elf: &Elf<'_>, bytes: &[u8], writers: &[LoaderWrite
         flags & !8 == 0
             && flags1 & !1 == 0
             && (tags.contains_key(&d::DT_BIND_NOW) || flags == 8 || flags1 == 1),
-        "canonical loader contract requires eager binding with supported flags",
+        format!(
+            "canonical loader contract requires eager binding with supported flags: \
+             DT_FLAGS={flags:#x} (present={}), DT_FLAGS_1={flags1:#x} (present={}), DT_BIND_NOW={:?}",
+            tags.contains_key(&d::DT_FLAGS),
+            tags.contains_key(&d::DT_FLAGS_1),
+            tags.get(&d::DT_BIND_NOW),
+        ),
     )?;
     let strings_address = loader_meta_required(&tags, d::DT_STRTAB)?;
     let strings_length = loader_meta_required(&tags, d::DT_STRSZ)?;
@@ -10462,7 +10775,7 @@ fn fixed_bind_readonly_in_source_context(
     targets: &mut BTreeMap<String, u64>,
     readonly: &mut BTreeMap<u64, Vec<u8>>,
     evidence: &mut BTreeMap<String, FixedReadonlyEvidence>,
-    sources: Option<&VerifiedCompiledSources>,
+    sources: Option<SourceContextRef<'_>>,
 ) -> Result<()> {
     if let Some(prior) = targets.get(spec.key) {
         require(
@@ -10627,7 +10940,7 @@ fn fixed_bind_operand_data_in_source_context(
     targets: &mut BTreeMap<String, u64>,
     readonly: &mut BTreeMap<u64, Vec<u8>>,
     evidence: &mut BTreeMap<String, FixedReadonlyEvidence>,
-    sources: Option<&VerifiedCompiledSources>,
+    sources: Option<SourceContextRef<'_>>,
 ) -> Result<()> {
     let spec = FIXED_READONLY_SPECS
         .iter()
@@ -18519,7 +18832,7 @@ fn direct_tls_getter_census(
     })
 }
 
-fn no_scope_build_features(build: &CurrentBuildEvidence) -> Result<NoScopeCohort> {
+fn select_no_scope_cohort(packages: &BTreeMap<&str, (&[String], &Value)>) -> Result<NoScopeCohort> {
     let candidates: Vec<_> = [
         NoScopeCohort::DetcoreNative101,
         NoScopeCohort::DetcoreOrdinary101,
@@ -18528,16 +18841,17 @@ fn no_scope_build_features(build: &CurrentBuildEvidence) -> Result<NoScopeCohort
     .into_iter()
     .filter(|cohort| {
         let expected = cohort.features();
-        build.packages.len() == expected.len()
+        packages.len() == expected.len()
             && expected.iter().all(|(name, features)| {
-                build.packages.get(*name).is_some_and(|package| {
-                    package
-                        .features
-                        .iter()
-                        .map(String::as_str)
-                        .eq(features.iter().copied())
-                        && package.profile == cohort.profile()
-                })
+                packages
+                    .get(*name)
+                    .is_some_and(|(features_actual, profile)| {
+                        features_actual
+                            .iter()
+                            .map(String::as_str)
+                            .eq(features.iter().copied())
+                            && **profile == cohort.profile()
+                    })
             })
     })
     .collect();
@@ -18545,7 +18859,21 @@ fn no_scope_build_features(build: &CurrentBuildEvidence) -> Result<NoScopeCohort
         candidates.len() == 1,
         "no-scope build has an unreviewed package/feature/test/profile cohort",
     )?;
-    let cohort = candidates[0];
+    Ok(candidates[0])
+}
+
+fn no_scope_build_features(build: &CurrentBuildEvidence) -> Result<NoScopeCohort> {
+    let packages = build
+        .packages
+        .iter()
+        .map(|(name, package)| {
+            (
+                name.as_str(),
+                (package.features.as_slice(), &package.profile),
+            )
+        })
+        .collect();
+    let cohort = select_no_scope_cohort(&packages)?;
     if cohort == NoScopeCohort::StandaloneRelease62 {
         let binding = build
             .standalone_sources
@@ -19205,7 +19533,7 @@ fn native_no_scope_layout100_census_with_getters(
 }
 
 fn validate_native_no_scope_layout100(
-    proof: &NoInstallationScopeEvidence,
+    proof: &NoScopePhysical,
     layout: &NativeNoScopeLayout100Evidence,
     expected_getters: &[(&str, u64)],
 ) -> Result<()> {
@@ -19371,9 +19699,11 @@ fn derive_no_installation_scope_evidence(
     bytes: &[u8],
     code: &BTreeMap<u64, Vec<u8>>,
     roles: &BTreeMap<String, sym::Sym>,
-    sources: Option<&VerifiedCompiledSources>,
+    sources: Option<SourceContextRef<'_>>,
 ) -> Result<NoInstallationScopeEvidence> {
-    let sources = sources.ok_or("no-scope allocation needs verified compiled sources")?;
+    let sources = sources
+        .ok_or("no-scope allocation needs verified compiled sources")?
+        .cargo()?;
     sources.verify_files()?;
     let build = sources
         .current_build
@@ -19393,6 +19723,23 @@ fn derive_no_installation_scope_evidence(
         .files
         .get(&format!("rv:{}", NO_INSTALLATION_SCOPE_SOURCE.0))
         .ok_or("reviewed no-scope source identity absent")?;
+    let physical = derive_no_scope_physical(elf, bytes, code, roles, source, cohort)?;
+    Ok(NoInstallationScopeEvidence::from_physical(
+        physical,
+        compiled_sources_sha256,
+        sources.record.reverie_pin.clone(),
+        build.clone(),
+    ))
+}
+
+fn derive_no_scope_physical(
+    elf: &Elf<'_>,
+    bytes: &[u8],
+    code: &BTreeMap<u64, Vec<u8>>,
+    roles: &BTreeMap<String, sym::Sym>,
+    source: &FileIdentity,
+    cohort: NoScopeCohort,
+) -> Result<NoScopePhysical> {
     source.verify()?;
     require(
         source.sha256 == NO_INSTALLATION_SCOPE_SOURCE.2
@@ -19436,15 +19783,12 @@ fn derive_no_installation_scope_evidence(
         version,
         policy,
     } = selected_no_scope_census(elf, bytes, cohort)?;
-    Ok(NoInstallationScopeEvidence {
+    Ok(NoScopePhysical {
         kind: "no_installation_scope".into(),
         version,
         policy: policy.into(),
         elf_sha256: sha256(bytes),
-        compiled_sources_sha256,
-        reverie_pin: sources.record.reverie_pin.clone(),
         source: source.clone(),
-        current_build: build.clone(),
         allocation: symbol_evidence(elf.strtab.get_at(allocation.st_name).unwrap(), allocation),
         allocation_sha256: sha256(allocation_bytes),
         mappings: census.mappings,
@@ -19463,15 +19807,59 @@ fn derive_no_installation_scope_evidence(
     })
 }
 
+fn validate_cargo_no_scope_binding(proof: &NoInstallationScopeEvidence) -> Result<NoScopeCohort> {
+    let hash = |value: &str, n: usize| {
+        value.len() == n && value.bytes().all(|byte| byte.is_ascii_hexdigit())
+    };
+    let cohort = no_scope_build_features(&proof.current_build)?;
+    require(
+        hash(&proof.reverie_pin, 40)
+            && proof.current_build.artifact.sha256 == proof.elf_sha256
+            && proof.current_build.compiled_sources_sha256 == proof.compiled_sources_sha256
+            && proof.current_build.command.status == 0
+            && match &proof.current_build.cargo_executable {
+                None => proof.current_build.command.program == "cargo",
+                Some(executable) => {
+                    executable.path.is_absolute()
+                        && executable
+                            .path
+                            .file_name()
+                            .is_some_and(|name| name == "cargo")
+                        && executable.path.to_str()
+                            == Some(proof.current_build.command.program.as_str())
+                        && hash(&executable.sha256, 64)
+                }
+            }
+            && hash(&proof.compiled_sources_sha256, 64),
+        "no-installation-scope Cargo source/build evidence incomplete or inconsistent",
+    )?;
+    Ok(cohort)
+}
+
+#[cfg(test)]
 fn validate_no_installation_scope_evidence(
     backing: &AllocatorBackingEvidence,
     proof: &NoInstallationScopeEvidence,
     image_kind: FixedImageKind,
 ) -> Result<()> {
+    let cohort = validate_cargo_no_scope_binding(proof)?;
+    validate_no_scope_physical(
+        &AllocatorBackingPhysical::from_cargo(backing),
+        &proof.physical(),
+        cohort,
+        image_kind,
+    )
+}
+
+fn validate_no_scope_physical(
+    backing: &AllocatorBackingPhysical,
+    proof: &NoScopePhysical,
+    cohort: NoScopeCohort,
+    image_kind: FixedImageKind,
+) -> Result<()> {
     let hash = |value: &str, n: usize| {
         value.len() == n && value.bytes().all(|byte| byte.is_ascii_hexdigit())
     };
-    let cohort = no_scope_build_features(&proof.current_build)?;
     let names = select_no_scope_getter_names(
         cohort,
         proof
@@ -19498,27 +19886,9 @@ fn validate_no_installation_scope_evidence(
             && proof.policy == policy
             && proof.native_tls_layout100.is_some() == native100
             && proof.other_tls_unisolated
-            && hash(&proof.reverie_pin, 40)
             && proof.source.sha256 == NO_INSTALLATION_SCOPE_SOURCE.2
-            && proof.current_build.artifact.sha256 == proof.elf_sha256
-            && proof.current_build.compiled_sources_sha256 == proof.compiled_sources_sha256
-            && proof.current_build.command.status == 0
-            && match &proof.current_build.cargo_executable {
-                None => proof.current_build.command.program == "cargo",
-                Some(executable) => {
-                    executable.path.is_absolute()
-                        && executable
-                            .path
-                            .file_name()
-                            .is_some_and(|name| name == "cargo")
-                        && executable.path.to_str()
-                            == Some(proof.current_build.command.program.as_str())
-                        && hash(&executable.sha256, 64)
-                }
-            }
             && [
                 &proof.elf_sha256,
-                &proof.compiled_sources_sha256,
                 &proof.raw_names_sha256,
                 &proof.loader_writers_sha256,
                 &proof.allocation_sha256,
@@ -19596,12 +19966,12 @@ fn validate_no_installation_scope_evidence(
 }
 
 fn direct_tls_source_context(
-    sources: Option<&VerifiedCompiledSources>,
+    sources: Option<SourceContextRef<'_>>,
 ) -> Result<&VerifiedCompiledSources> {
     let sources = sources
         .ok_or("direct allocation TLS proof requires independently verified compiled sources")?;
     sources.require_image(STANDALONE_ROOT)?;
-    Ok(sources)
+    sources.cargo()
 }
 
 fn derive_direct_allocation_tls_evidence(
@@ -19611,7 +19981,7 @@ fn derive_direct_allocation_tls_evidence(
     module: u64,
     plt: u64,
     allocation_bytes: &[u8],
-    sources: Option<&VerifiedCompiledSources>,
+    sources: Option<SourceContextRef<'_>>,
 ) -> Result<DirectAllocationTlsEvidence> {
     let sources = direct_tls_source_context(sources)?;
     authenticate_loader_metadata(elf, bytes)?;
@@ -19654,7 +20024,7 @@ fn derive_standalone_d8_direct_allocation_tls_evidence(
     module: u64,
     plt: u64,
     allocation_bytes: &[u8],
-    sources: Option<&VerifiedCompiledSources>,
+    sources: Option<SourceContextRef<'_>>,
 ) -> Result<DirectAllocationTlsEvidence> {
     require(
         cell.address == 0xd8 && allocation_bytes.len() == 186,
@@ -19675,13 +20045,13 @@ fn derive_standalone_d8_direct_allocation_tls_evidence(
 }
 
 fn detcore_direct_tls_source_context(
-    sources: Option<&VerifiedCompiledSources>,
+    sources: Option<SourceContextRef<'_>>,
 ) -> Result<&VerifiedCompiledSources> {
     let sources = sources.ok_or(
         "Detcore direct allocation TLS proof requires independently verified compiled sources",
     )?;
     sources.require_image(DETCORE_ROOT)?;
-    Ok(sources)
+    sources.cargo()
 }
 
 fn derive_detcore_direct_allocation_tls_evidence(
@@ -19691,7 +20061,7 @@ fn derive_detcore_direct_allocation_tls_evidence(
     module: u64,
     plt: u64,
     allocation_bytes: &[u8],
-    sources: Option<&VerifiedCompiledSources>,
+    sources: Option<SourceContextRef<'_>>,
 ) -> Result<DirectAllocationTlsEvidence> {
     let sources = detcore_direct_tls_source_context(sources)?;
     // The complete existing Detcore operation closure still binds every actual
@@ -19853,7 +20223,7 @@ fn qualify_allocator_tls_boundary_in_source_context(
     _disassembly: &str,
     got: &BTreeMap<u64, u64>,
     image_kind: FixedImageKind,
-    sources: Option<&VerifiedCompiledSources>,
+    sources: Option<SourceContextRef<'_>>,
 ) -> Result<AllocatorTlsBoundary> {
     let roles = fixed_role_symbols_in_file(elf, bytes)?;
     let cell = fixed_tls_cell(elf)?;
@@ -20888,7 +21258,27 @@ fn validate_fixed_backing_evidence_in_source_context(
     backing: &AllocatorBackingEvidence,
     image_kind: FixedImageKind,
 ) -> Result<()> {
-    validate_fixed_native_syscall_evidence(backing, image_kind)?;
+    let cohort = match &backing.tls_boundary {
+        AllocatorInstallationEvidence::Existing(_) => None,
+        AllocatorInstallationEvidence::NoInstallationScope(proof) => {
+            Some(validate_cargo_no_scope_binding(proof)?)
+        }
+    };
+    validate_fixed_backing_physical(
+        &AllocatorBackingPhysical::from_cargo(backing),
+        &InstallationPhysical::from_cargo(&backing.tls_boundary),
+        cohort,
+        image_kind,
+    )
+}
+
+fn validate_fixed_backing_physical(
+    backing: &AllocatorBackingPhysical,
+    installation: &InstallationPhysical<'_>,
+    cohort: Option<NoScopeCohort>,
+    image_kind: FixedImageKind,
+) -> Result<()> {
+    validate_fixed_native_syscall_physical(backing, image_kind)?;
     require(
         backing.fixed_arena_version == FIXED_ARENA_VERSION
             && backing.descriptor.version == 1
@@ -21001,13 +21391,16 @@ fn validate_fixed_backing_evidence_in_source_context(
             && record.payload_sha256 == sha256(&expected),
         "Fixed backing lacks its immutable exact span/cursor record",
     )?;
-    match &backing.tls_boundary {
-        AllocatorInstallationEvidence::Existing(tls) => {
+    match installation {
+        InstallationPhysical::Existing(tls) => {
             validate_existing_allocator_tls_boundary(tls, image_kind)?
         }
-        AllocatorInstallationEvidence::NoInstallationScope(proof) => {
-            validate_no_installation_scope_evidence(backing, proof, image_kind)?
-        }
+        InstallationPhysical::NoScope(proof) => validate_no_scope_physical(
+            backing,
+            proof,
+            cohort.ok_or("no-scope physical proof lacks a source-bound cohort")?,
+            image_kind,
+        )?,
     }
     require(
         backing
@@ -21347,8 +21740,20 @@ fn qualify_fixed_allocator_in_source_context(
     disassembly: &str,
     got: &BTreeMap<u64, u64>,
     image_kind: FixedImageKind,
-    sources: Option<&VerifiedCompiledSources>,
+    sources: Option<SourceContextRef<'_>>,
 ) -> Result<AllocatorBackingEvidence> {
+    qualify_fixed_allocator_with_owner(elf, bytes, code, disassembly, got, image_kind, sources)?
+        .into_cargo()
+}
+fn qualify_fixed_allocator_with_owner(
+    elf: &Elf<'_>,
+    bytes: &[u8],
+    code: &BTreeMap<u64, Vec<u8>>,
+    disassembly: &str,
+    got: &BTreeMap<u64, u64>,
+    image_kind: FixedImageKind,
+    sources: Option<SourceContextRef<'_>>,
+) -> Result<QualifiedAllocator> {
     if let Some(sources) = sources {
         sources.require_image(image_kind.initializer())?;
     }
@@ -21399,15 +21804,34 @@ fn qualify_fixed_allocator_in_source_context(
         FixedImageKind::Detcore => 101,
         FixedImageKind::Standalone => 62,
     };
-    let tls = if code
+    let installation = if code
         .get(&roles["fixed_patch_alloc"].st_value)
         .is_some_and(|body| body.len() == no_scope_extent)
     {
-        AllocatorInstallationEvidence::NoInstallationScope(Box::new(
-            derive_no_installation_scope_evidence(elf, bytes, code, &roles, sources)?,
-        ))
+        match sources {
+            Some(SourceContextRef::Native(native)) => {
+                native.require_artifact_bytes(bytes)?;
+                QualifiedInstallation::Native(Box::new(derive_no_scope_physical(
+                    elf,
+                    bytes,
+                    code,
+                    &roles,
+                    native.no_scope_source()?,
+                    native.cohort(),
+                )?))
+            }
+            _ => QualifiedInstallation::Cargo(AllocatorInstallationEvidence::NoInstallationScope(
+                Box::new(derive_no_installation_scope_evidence(
+                    elf, bytes, code, &roles, sources,
+                )?),
+            )),
+        }
     } else {
-        AllocatorInstallationEvidence::Existing(Box::new(
+        require(
+            !matches!(sources, Some(SourceContextRef::Native(_))),
+            "native constructor requires the exact ordinary OFF no-scope allocator",
+        )?;
+        QualifiedInstallation::Cargo(AllocatorInstallationEvidence::Existing(Box::new(
             qualify_allocator_tls_boundary_in_source_context(
                 elf,
                 bytes,
@@ -21417,15 +21841,113 @@ fn qualify_fixed_allocator_in_source_context(
                 image_kind,
                 sources,
             )?,
-        ))
+        )))
     };
+    let physical_installation = installation.physical();
+    let physical = derive_fixed_allocator_physical(
+        (elf, bytes),
+        (code, disassembly),
+        got,
+        FixedAllocatorPhysicalInputs {
+            descriptor,
+            fixed_backing_record,
+            roles,
+            shims,
+        },
+        &physical_installation,
+        (image_kind, sources),
+    )?;
+    match installation {
+        QualifiedInstallation::Cargo(tls) => {
+            let evidence = physical.into_cargo(tls);
+            validate_fixed_backing_evidence_in_source_context(&evidence, image_kind)?;
+            Ok(QualifiedAllocator::Cargo(Box::new(evidence)))
+        }
+        QualifiedInstallation::Native(proof) => {
+            let Some(SourceContextRef::Native(native)) = sources else {
+                return Err("native allocator lacks its checked source owner".into());
+            };
+            validate_fixed_backing_physical(
+                &physical,
+                &InstallationPhysical::NoScope(proof.clone()),
+                Some(native.cohort()),
+                image_kind,
+            )?;
+            Ok(QualifiedAllocator::Native {
+                physical: Box::new(physical),
+                no_scope: proof,
+            })
+        }
+    }
+}
+
+enum QualifiedInstallation {
+    Cargo(AllocatorInstallationEvidence),
+    Native(Box<NoScopePhysical>),
+}
+impl QualifiedInstallation {
+    fn physical(&self) -> InstallationPhysical<'_> {
+        match self {
+            Self::Cargo(value) => InstallationPhysical::from_cargo(value),
+            Self::Native(value) => InstallationPhysical::NoScope(value.clone()),
+        }
+    }
+}
+
+enum QualifiedAllocator {
+    Cargo(Box<AllocatorBackingEvidence>),
+    Native {
+        physical: Box<AllocatorBackingPhysical>,
+        no_scope: Box<NoScopePhysical>,
+    },
+}
+impl QualifiedAllocator {
+    fn into_cargo(self) -> Result<AllocatorBackingEvidence> {
+        match self {
+            Self::Cargo(value) => Ok(*value),
+            Self::Native { .. } => {
+                Err("native allocator evidence cannot enter Cargo packing".into())
+            }
+        }
+    }
+    fn physical(&self) -> AllocatorBackingPhysical {
+        match self {
+            Self::Cargo(value) => AllocatorBackingPhysical::from_cargo(value),
+            Self::Native { physical, .. } => (**physical).clone(),
+        }
+    }
+}
+
+// Parsed physical inputs only; the caller retains source-specific installation
+// evidence and packs it only after the complete machine/transfer proof succeeds.
+struct FixedAllocatorPhysicalInputs {
+    descriptor: AllocatorDescriptorEvidence,
+    fixed_backing_record: ImmutableAllocatorObject,
+    roles: BTreeMap<String, sym::Sym>,
+    shims: BTreeMap<String, sym::Sym>,
+}
+
+fn derive_fixed_allocator_physical(
+    (elf, bytes): (&Elf<'_>, &[u8]),
+    (code, disassembly): (&BTreeMap<u64, Vec<u8>>, &str),
+    got: &BTreeMap<u64, u64>,
+    inputs: FixedAllocatorPhysicalInputs,
+    installation: &InstallationPhysical<'_>,
+    (image_kind, sources): (FixedImageKind, Option<SourceContextRef<'_>>),
+) -> Result<AllocatorBackingPhysical> {
+    let FixedAllocatorPhysicalInputs {
+        descriptor,
+        fixed_backing_record,
+        roles,
+        shims,
+    } = inputs;
     let context = fixed_machine_context(
         (elf, bytes),
         code,
         got,
         &shims,
         &fixed_backing_record,
-        &tls,
+        installation,
         (image_kind, sources, &roles),
     )?;
     let closure = qualify_fixed_operation_closure(
@@ -21434,7 +21956,7 @@ fn qualify_fixed_allocator_in_source_context(
         got,
         &roles,
         &context,
-        &tls,
+        installation,
         (image_kind, sources),
     )?;
     let functions: BTreeMap<_, _> = code
@@ -21467,7 +21989,7 @@ fn qualify_fixed_allocator_in_source_context(
                 readonly: &context.readonly,
                 context: &context.compiled_filenames,
             };
-            if let Some(tls) = tls.existing() {
+            if let Some(tls) = installation.existing() {
                 fixed_detcore_compiler_shim_recipe(
                     DETCORE_ROOT,
                     shim,
@@ -21603,7 +22125,7 @@ fn qualify_fixed_allocator_in_source_context(
             Ok((role.clone(), sha256(bytes)))
         })
         .collect::<Result<_>>()?;
-    let evidence = AllocatorBackingEvidence {
+    Ok(AllocatorBackingPhysical {
         fixed_native_syscalls: context.native_syscalls.map(|native| native.evidence),
         fixed_arena_version: FIXED_ARENA_VERSION,
         descriptor,
@@ -21611,7 +22133,6 @@ fn qualify_fixed_allocator_in_source_context(
             .to_owned(),
         compiler_routes,
         fixed_backing_record,
-        tls_boundary: tls,
         allocator_transfers: closure.transfers,
         readonly_objects: context.readonly_evidence,
         selection_objects: context.selection_objects,
@@ -21621,9 +22142,7 @@ fn qualify_fixed_allocator_in_source_context(
         function_sha256,
         owned_setup_transfers,
         owned_setup_got_edges,
-    };
-    validate_fixed_backing_evidence_in_source_context(&evidence, image_kind)?;
-    Ok(evidence)
+    })
 }
 
 const FIXED_GUARDED_TERMINAL_PAIRS: &[(&str, &str, &str)] = &[
@@ -25345,7 +25864,7 @@ fn fixed_guarded_terminal_pairs(
 }
 fn fixed_detcore_compiled_filenames(
     kind: FixedImageKind,
-    sources: Option<&VerifiedCompiledSources>,
+    sources: Option<SourceContextRef<'_>>,
 ) -> Result<BTreeMap<String, Vec<u8>>> {
     let mut context = BTreeMap::new();
     if kind == FixedImageKind::Detcore {
@@ -25507,10 +26026,10 @@ fn fixed_machine_context(
     got: &BTreeMap<u64, u64>,
     shims: &BTreeMap<String, sym::Sym>,
     record: &ImmutableAllocatorObject,
-    tls: &AllocatorInstallationEvidence,
+    tls: &InstallationPhysical<'_>,
     (image_kind, sources, roles): (
         FixedImageKind,
-        Option<&VerifiedCompiledSources>,
+        Option<SourceContextRef<'_>>,
         &BTreeMap<String, sym::Sym>,
     ),
 ) -> Result<FixedMachineContext> {
@@ -26327,8 +26846,8 @@ fn qualify_fixed_operation_closure(
     got: &BTreeMap<u64, u64>,
     roles: &BTreeMap<String, sym::Sym>,
     context: &FixedMachineContext,
-    tls: &AllocatorInstallationEvidence,
-    (image_kind, _sources): (FixedImageKind, Option<&VerifiedCompiledSources>),
+    tls: &InstallationPhysical<'_>,
+    (image_kind, _sources): (FixedImageKind, Option<SourceContextRef<'_>>),
 ) -> Result<FixedOperationClosure> {
     let existing_tls = tls.existing();
     let mut pending = FIXED_REQUIRED_ROLES
@@ -26532,7 +27051,7 @@ fn qualify_fixed_operation_closure(
             };
             if image_kind == FixedImageKind::Standalone
                 && role == "fixed_patch_alloc"
-                && matches!(tls, AllocatorInstallationEvidence::NoInstallationScope(proof)
+                && matches!(tls, InstallationPhysical::NoScope(proof)
                     if (proof.version == 1 && proof.policy == NoScopeCohort::StandaloneRelease62.policy())
                         || (proof.version == 2 && proof.policy == SEMANTIC_STANDALONE_NO_SCOPE_POLICY))
             {
@@ -27809,8 +28328,16 @@ fn fixed_native_wrapper_got_edges(wrapper: &FixedNativeSyscallEvidence) -> Resul
         .collect()
 }
 
+#[cfg(test)]
 fn validate_fixed_native_syscall_evidence(
     backing: &AllocatorBackingEvidence,
+    image: FixedImageKind,
+) -> Result<()> {
+    validate_fixed_native_syscall_physical(&AllocatorBackingPhysical::from_cargo(backing), image)
+}
+
+fn validate_fixed_native_syscall_physical(
+    backing: &AllocatorBackingPhysical,
     image: FixedImageKind,
 ) -> Result<()> {
     let Some(record) = &backing.fixed_native_syscalls else {
@@ -27918,6 +28445,13 @@ fn validate_fixed_native_syscall_evidence(
 }
 fn join_fixed_native_syscalls(
     backing: &AllocatorBackingEvidence,
+    gate: Option<&FixedNativeGateEvidence>,
+) -> Result<()> {
+    join_fixed_native_syscalls_physical(&AllocatorBackingPhysical::from_cargo(backing), gate)
+}
+
+fn join_fixed_native_syscalls_physical(
+    backing: &AllocatorBackingPhysical,
     gate: Option<&FixedNativeGateEvidence>,
 ) -> Result<()> {
     match (&backing.fixed_native_syscalls, gate) {
@@ -30728,7 +31262,12 @@ pub fn qualify_elf_with_sources(
     sources: &VerifiedCompiledSources,
 ) -> Result<ElfQualification> {
     sources.verify_unchanged(runner)?;
-    let result = qualify_elf_in_source_context(path, initializer_name, runner, Some(sources))?;
+    let result = qualify_elf_in_source_context(
+        path,
+        initializer_name,
+        runner,
+        Some(SourceContextRef::Cargo(sources)),
+    )?;
     sources.verify_unchanged(runner)?;
     Ok(result)
 }
@@ -30736,7 +31275,7 @@ fn qualify_elf_in_source_context(
     path: &Path,
     initializer_name: &str,
     runner: &mut Runner,
-    sources: Option<&VerifiedCompiledSources>,
+    sources: Option<SourceContextRef<'_>>,
 ) -> Result<ElfQualification> {
     if let Some(sources) = sources {
         sources.require_image(initializer_name)?;
@@ -30771,16 +31310,28 @@ pub fn qualify_constructor_with_sources(
     sources: &VerifiedCompiledSources,
 ) -> Result<ConstructorQualification> {
     sources.verify_unchanged(runner)?;
-    let result = qualify_constructor_in_source_context(path, runner, Some(sources))?;
+    let result = qualify_constructor_in_source_context(
+        path,
+        runner,
+        Some(SourceContextRef::Cargo(sources)),
+    )?;
     sources.verify_unchanged(runner)?;
     Ok(result)
 }
 fn qualify_constructor_in_source_context(
     path: &Path,
     runner: &mut Runner,
-    sources: Option<&VerifiedCompiledSources>,
+    sources: Option<SourceContextRef<'_>>,
 ) -> Result<ConstructorQualification> {
+    collect_standalone_qualification(path, runner, sources)?.into_cargo()
+}
+fn collect_standalone_qualification(
+    path: &Path,
+    runner: &mut Runner,
+    sources: Option<SourceContextRef<'_>>,
+) -> Result<StandalonePhysical> {
     if let Some(sources) = sources {
+        sources.require_native_cohort(NoScopeCohort::StandaloneRelease62)?;
         sources.require_image(STANDALONE_ROOT)?;
     }
 
@@ -30792,7 +31343,7 @@ fn qualify_constructor_in_source_context(
     let scope = constructor_proof_functions(&elf, &bytes)?;
     let evidence =
         collect_proof_evidence(&artifact, &elf, &bytes, STANDALONE_ROOT, &scope, runner)?;
-    qualify_constructor_from_evidence_in_source_context(
+    derive_standalone_qualification(
         path,
         evidence.readelf_versions,
         evidence.readelf_symbols_relocations,
@@ -30813,16 +31364,28 @@ pub fn qualify_detcore_constructor_with_sources(
     sources: &VerifiedCompiledSources,
 ) -> Result<DetcoreConstructorQualification> {
     sources.verify_unchanged(runner)?;
-    let result = qualify_detcore_constructor_in_source_context(path, runner, Some(sources))?;
+    let result = qualify_detcore_constructor_in_source_context(
+        path,
+        runner,
+        Some(SourceContextRef::Cargo(sources)),
+    )?;
     sources.verify_unchanged(runner)?;
     Ok(result)
 }
 fn qualify_detcore_constructor_in_source_context(
     path: &Path,
     runner: &mut Runner,
-    sources: Option<&VerifiedCompiledSources>,
+    sources: Option<SourceContextRef<'_>>,
 ) -> Result<DetcoreConstructorQualification> {
+    collect_constructor_qualification(path, runner, sources)?.into_cargo()
+}
+fn collect_constructor_qualification(
+    path: &Path,
+    runner: &mut Runner,
+    sources: Option<SourceContextRef<'_>>,
+) -> Result<ConstructorPhysical> {
     if let Some(sources) = sources {
+        sources.require_native_cohort(NoScopeCohort::DetcoreOrdinary101)?;
         sources.require_image(DETCORE_ROOT)?;
     }
 
@@ -30832,7 +31395,7 @@ fn qualify_detcore_constructor_in_source_context(
     authenticate_loader_metadata(&elf, &bytes)?;
     let scope = detcore_proof_functions(&elf, &bytes)?;
     let evidence = collect_proof_evidence(&artifact, &elf, &bytes, DETCORE_ROOT, &scope, runner)?;
-    qualify_detcore_constructor_from_evidence_in_source_context(
+    derive_constructor_qualification(
         path,
         evidence.readelf_versions,
         evidence.readelf_symbols_relocations,
@@ -30867,7 +31430,7 @@ pub fn qualify_detcore_constructor_from_evidence_with_sources(
         readelf_versions,
         readelf_symbols_relocations,
         objdump_disassembly,
-        Some(sources),
+        Some(SourceContextRef::Cargo(sources)),
     )?;
     Ok(result)
 }
@@ -30876,9 +31439,59 @@ fn qualify_detcore_constructor_from_evidence_in_source_context(
     readelf_versions: FileIdentity,
     readelf_symbols_relocations: FileIdentity,
     objdump_disassembly: FileIdentity,
-    sources: Option<&VerifiedCompiledSources>,
+    sources: Option<SourceContextRef<'_>>,
 ) -> Result<DetcoreConstructorQualification> {
+    derive_constructor_qualification(
+        path,
+        readelf_versions,
+        readelf_symbols_relocations,
+        objdump_disassembly,
+        sources,
+    )?
+    .into_cargo()
+}
+struct ConstructorPhysical {
+    artifact: FileIdentity,
+    allocator_backing: QualifiedAllocator,
+    initializer: SymbolEvidence,
+    init_array_slot: u64,
+    init_array_resolution: String,
+    detcore_constructor: DetcoreConstructorEvidence,
+    generic_bootstrap: GenericBootstrapEvidence,
+    needed: Vec<String>,
+    required_versions: Vec<String>,
+    readelf_versions: FileIdentity,
+    readelf_symbols_relocations: FileIdentity,
+    objdump_disassembly: FileIdentity,
+}
+impl ConstructorPhysical {
+    fn into_cargo(self) -> Result<DetcoreConstructorQualification> {
+        Ok(DetcoreConstructorQualification {
+            artifact: self.artifact,
+            allocator_backing: self.allocator_backing.into_cargo()?,
+            initializer: self.initializer,
+            init_array_slot: self.init_array_slot,
+            init_array_resolution: self.init_array_resolution,
+            detcore_constructor: self.detcore_constructor,
+            generic_bootstrap: self.generic_bootstrap,
+            needed: self.needed,
+            required_versions: self.required_versions,
+            readelf_versions: self.readelf_versions,
+            readelf_symbols_relocations: self.readelf_symbols_relocations,
+            objdump_disassembly: self.objdump_disassembly,
+        })
+    }
+}
+
+fn derive_constructor_qualification(
+    path: &Path,
+    readelf_versions: FileIdentity,
+    readelf_symbols_relocations: FileIdentity,
+    objdump_disassembly: FileIdentity,
+    sources: Option<SourceContextRef<'_>>,
+) -> Result<ConstructorPhysical> {
     if let Some(sources) = sources {
+        sources.require_native_cohort(NoScopeCohort::DetcoreOrdinary101)?;
         sources.require_image(DETCORE_ROOT)?;
     }
 
@@ -30908,7 +31521,7 @@ fn qualify_detcore_constructor_from_evidence_in_source_context(
     )?;
     let generic_bootstrap =
         qualify_generic_bootstrap(&elf, &bytes, &expected_bytes, &disassembly, &got_targets)?;
-    let allocator_backing = qualify_fixed_allocator_in_source_context(
+    let allocator_backing = qualify_fixed_allocator_with_owner(
         &elf,
         &bytes,
         &expected_bytes,
@@ -30917,12 +31530,12 @@ fn qualify_detcore_constructor_from_evidence_in_source_context(
         FixedImageKind::Detcore,
         sources,
     )?;
-    join_fixed_native_syscalls(
-        &allocator_backing,
+    join_fixed_native_syscalls_physical(
+        &allocator_backing.physical(),
         generic_bootstrap.fixed_native_gate.as_ref(),
     )?;
     artifact.verify()?;
-    Ok(DetcoreConstructorQualification {
+    Ok(ConstructorPhysical {
         artifact,
         allocator_backing,
         initializer: symbol_evidence(DETCORE_ROOT, &initializer),
@@ -31122,6 +31735,56 @@ pub fn qualify_detcore_native_entry_with_sources(
     runner: &mut Runner,
     sources: &VerifiedCompiledSources,
 ) -> Result<DetcoreNativeEntryQualification> {
+    qualify_detcore_native_entry_in_source_context(path, runner, SourceContextRef::Cargo(sources))
+}
+
+fn qualify_detcore_native_entry_in_source_context(
+    path: &Path,
+    runner: &mut Runner,
+    sources: SourceContextRef<'_>,
+) -> Result<DetcoreNativeEntryQualification> {
+    require(
+        matches!(sources, SourceContextRef::Cargo(_)),
+        "ordinary native constructor sources cannot qualify the separate explicit-entry contract",
+    )?;
+    collect_native_entry_qualification(path, runner, sources)?.into_cargo()
+}
+struct NativeEntryPhysical {
+    artifact: FileIdentity,
+    allocator_backing: QualifiedAllocator,
+    native_entry: SymbolEvidence,
+    native_entry_sha256: String,
+    generic_bootstrap: GenericBootstrapEvidence,
+    needed: Vec<String>,
+    required_versions: Vec<String>,
+    readelf_versions: FileIdentity,
+    readelf_symbols_relocations: FileIdentity,
+    objdump_disassembly: FileIdentity,
+    observation: String,
+}
+impl NativeEntryPhysical {
+    fn into_cargo(self) -> Result<DetcoreNativeEntryQualification> {
+        Ok(DetcoreNativeEntryQualification {
+            artifact: self.artifact,
+            allocator_backing: self.allocator_backing.into_cargo()?,
+            native_entry: self.native_entry,
+            native_entry_sha256: self.native_entry_sha256,
+            generic_bootstrap: self.generic_bootstrap,
+            needed: self.needed,
+            required_versions: self.required_versions,
+            readelf_versions: self.readelf_versions,
+            readelf_symbols_relocations: self.readelf_symbols_relocations,
+            objdump_disassembly: self.objdump_disassembly,
+            observation: self.observation,
+        })
+    }
+}
+fn collect_native_entry_qualification(
+    path: &Path,
+    runner: &mut Runner,
+    sources: SourceContextRef<'_>,
+) -> Result<NativeEntryPhysical> {
+    sources.require_native_cohort(NoScopeCohort::DetcoreNative101)?;
     sources.require_image(DETCORE_ROOT)?;
     sources.verify_unchanged(runner)?;
     let artifact = FileIdentity::read(path)?;
@@ -31160,7 +31823,7 @@ pub fn qualify_detcore_native_entry_with_sources(
         generic_bootstrap.fixed_native_gate.is_some(),
         "explicit native entry lacks its qualified fixed selector route",
     )?;
-    let allocator_backing = qualify_fixed_allocator_in_source_context(
+    let allocator_backing = qualify_fixed_allocator_with_owner(
         &elf,
         &bytes,
         &expected_bytes,
@@ -31169,17 +31832,18 @@ pub fn qualify_detcore_native_entry_with_sources(
         FixedImageKind::Detcore,
         Some(sources),
     )?;
+    let allocator_physical = allocator_backing.physical();
     require(
-        allocator_backing.fixed_native_syscalls.is_some(),
+        allocator_physical.fixed_native_syscalls.is_some(),
         "explicit native entry lacks its full native syscall cohort",
     )?;
-    join_fixed_native_syscalls(
-        &allocator_backing,
+    join_fixed_native_syscalls_physical(
+        &allocator_physical,
         generic_bootstrap.fixed_native_gate.as_ref(),
     )?;
     sources.verify_unchanged(runner)?;
     artifact.verify()?;
-    Ok(DetcoreNativeEntryQualification {
+    Ok(NativeEntryPhysical {
         artifact, allocator_backing,
         native_entry: symbol_evidence(DETCORE_NATIVE_ENTRY, &native_entry),
         native_entry_sha256: sha256(&expected_bytes[&native_entry.st_value]),
@@ -31277,7 +31941,7 @@ pub fn qualify_constructor_from_evidence_with_sources(
         readelf_versions,
         readelf_symbols_relocations,
         objdump_disassembly,
-        Some(sources),
+        Some(SourceContextRef::Cargo(sources)),
     )?;
     Ok(result)
 }
@@ -31286,9 +31950,58 @@ fn qualify_constructor_from_evidence_in_source_context(
     readelf_versions: FileIdentity,
     readelf_symbols_relocations: FileIdentity,
     objdump_disassembly: FileIdentity,
-    sources: Option<&VerifiedCompiledSources>,
+    sources: Option<SourceContextRef<'_>>,
 ) -> Result<ConstructorQualification> {
+    derive_standalone_qualification(
+        path,
+        readelf_versions,
+        readelf_symbols_relocations,
+        objdump_disassembly,
+        sources,
+    )?
+    .into_cargo()
+}
+struct StandalonePhysical {
+    artifact: FileIdentity,
+    allocator_backing: QualifiedAllocator,
+    initializer: SymbolEvidence,
+    init_array_slot: u64,
+    init_array_resolution: String,
+    standalone_constructor: StandaloneConstructorEvidence,
+    generic_bootstrap: GenericBootstrapEvidence,
+    needed: Vec<String>,
+    required_versions: Vec<String>,
+    readelf_versions: FileIdentity,
+    readelf_symbols_relocations: FileIdentity,
+    objdump_disassembly: FileIdentity,
+}
+impl StandalonePhysical {
+    fn into_cargo(self) -> Result<ConstructorQualification> {
+        Ok(ConstructorQualification {
+            artifact: self.artifact,
+            allocator_backing: self.allocator_backing.into_cargo()?,
+            initializer: self.initializer,
+            init_array_slot: self.init_array_slot,
+            init_array_resolution: self.init_array_resolution,
+            standalone_constructor: self.standalone_constructor,
+            generic_bootstrap: self.generic_bootstrap,
+            needed: self.needed,
+            required_versions: self.required_versions,
+            readelf_versions: self.readelf_versions,
+            readelf_symbols_relocations: self.readelf_symbols_relocations,
+            objdump_disassembly: self.objdump_disassembly,
+        })
+    }
+}
+fn derive_standalone_qualification(
+    path: &Path,
+    readelf_versions: FileIdentity,
+    readelf_symbols_relocations: FileIdentity,
+    objdump_disassembly: FileIdentity,
+    sources: Option<SourceContextRef<'_>>,
+) -> Result<StandalonePhysical> {
     if let Some(sources) = sources {
+        sources.require_native_cohort(NoScopeCohort::StandaloneRelease62)?;
         sources.require_image(STANDALONE_ROOT)?;
     }
 
@@ -31314,7 +32027,7 @@ fn qualify_constructor_from_evidence_in_source_context(
         qualify_standalone_constructor(&elf, &bytes, &expected_bytes, &disassembly, &got_targets)?;
     let generic_bootstrap =
         qualify_generic_bootstrap(&elf, &bytes, &expected_bytes, &disassembly, &got_targets)?;
-    let allocator_backing = qualify_fixed_allocator_in_source_context(
+    let allocator_backing = qualify_fixed_allocator_with_owner(
         &elf,
         &bytes,
         &expected_bytes,
@@ -31323,12 +32036,12 @@ fn qualify_constructor_from_evidence_in_source_context(
         FixedImageKind::Standalone,
         sources,
     )?;
-    join_fixed_native_syscalls(
-        &allocator_backing,
+    join_fixed_native_syscalls_physical(
+        &allocator_backing.physical(),
         generic_bootstrap.fixed_native_gate.as_ref(),
     )?;
     artifact.verify()?;
-    Ok(ConstructorQualification {
+    Ok(StandalonePhysical {
         artifact,
         allocator_backing,
         initializer: symbol_evidence(STANDALONE_ROOT, &initializer),
@@ -31376,7 +32089,7 @@ pub fn qualify_elf_from_evidence_with_sources(
         readelf_versions,
         readelf_symbols_relocations,
         objdump_disassembly,
-        Some(sources),
+        Some(SourceContextRef::Cargo(sources)),
     )?;
     Ok(result)
 }
@@ -31386,7 +32099,7 @@ fn qualify_elf_from_evidence_in_source_context(
     readelf_versions: FileIdentity,
     readelf_symbols_relocations: FileIdentity,
     objdump_disassembly: FileIdentity,
-    sources: Option<&VerifiedCompiledSources>,
+    sources: Option<SourceContextRef<'_>>,
 ) -> Result<ElfQualification> {
     if let Some(sources) = sources {
         sources.require_image(initializer_name)?;
@@ -31991,7 +32704,10 @@ pub fn verify_runtime_receipt(
         receipt.qualification.readelf_versions.clone(),
         receipt.qualification.readelf_symbols_relocations.clone(),
         receipt.qualification.objdump_disassembly.clone(),
-        rebound_sources.as_ref().or(expected.compiled_sources),
+        rebound_sources
+            .as_ref()
+            .or(expected.compiled_sources)
+            .map(SourceContextRef::Cargo),
     )?;
     require(
         independent == receipt.qualification,
@@ -32006,6 +32722,7 @@ pub fn verify_runtime_receipt(
 
 #[cfg(test)]
 mod tests {
+    include!("native_authority_tests.rs");
     use super::*;
 
     #[test]
@@ -42892,6 +43609,7 @@ mod tests {
             validate_no_installation_scope_evidence(&backing, proof, FixedImageKind::Detcore)
         };
         check(&proof).unwrap();
+        native_authority_physical_boundary_controls(&backing, &proof);
         native_no_scope_layout100_wire_controls(&backing, &proof);
         let value = serde_json::to_value(AllocatorInstallationEvidence::NoInstallationScope(
             Box::new(proof.clone()),
@@ -44677,8 +45395,7 @@ mod tests {
             let mut truncated = good.clone();
             native_no_scope_test_put(&mut truncated, 0x8000 + 10 * 64 + 32, 8, size);
             let failure = native_no_scope_test_select_and_census(&truncated)
-                .err()
-                .expect("truncated pointer section must refuse");
+                .expect_err("truncated pointer section must refuse");
             assert!(
                 failure.contains("Fixed data section/load physical join differs"),
                 "section size {size:#x}: {failure}"
@@ -45028,8 +45745,7 @@ mod tests {
             native_no_scope_test_extra_writer(&mut bad, slot, 1);
             assert_eq!(&bad[0x3600..0x3610], &good[0x3600..0x3610]);
             let failure = native_no_scope_test_select_and_census(&bad)
-                .err()
-                .expect("overlapping template writer must refuse");
+                .expect_err("overlapping template writer must refuse");
             assert!(
                 failure.contains("initialized TLS template"),
                 "{label}: {failure}"
@@ -45057,8 +45773,7 @@ mod tests {
         );
         assert_eq!(symbol.st_shndx, section_header::SHN_UNDEF as usize);
         let failure = native_no_scope_test_select_and_census(&symbolic)
-            .err()
-            .expect("symbol-based initialized-template writer must refuse");
+            .expect_err("symbol-based initialized-template writer must refuse");
         assert!(failure.contains("initialized TLS template"), "{failure}");
         for slot in [0x35f8, 0x36e8, 0x3710] {
             let mut adjacent = good.clone();
@@ -45125,6 +45840,7 @@ mod tests {
             validate_no_installation_scope_evidence(backing, value, FixedImageKind::Detcore)
         };
         check(&proof).unwrap();
+        native_authority_physical_boundary_controls(backing, &proof);
         let encoded = serde_json::to_vec(&AllocatorInstallationEvidence::NoInstallationScope(
             Box::new(proof.clone()),
         ))
@@ -49704,13 +50420,12 @@ mod tests {
         fn caller_row(bytes: &[u8], role: &str) -> usize {
             row(bytes, &spelling(role))
         }
-        fn context(
-            selected: usize,
-        ) -> (
+        type Context = (
             BTreeMap<String, u64>,
             BTreeMap<u64, u64>,
             BTreeMap<u64, Vec<u8>>,
-        ) {
+        );
+        fn context(selected: usize) -> Context {
             let mut targets = BTreeMap::new();
             let mut readonly = BTreeMap::new();
             for op in DEV_FIXED_HEAP_OPERANDS_0
@@ -58713,6 +59428,14 @@ mod tests {
 pub mod private_static {
     use super::*;
 
+    mod native_source;
+    pub use self::native_source::NativeStaticArchive;
+    pub use self::native_source::NativeStaticSource;
+    use self::native_source::StaticArchiveRef;
+    use self::native_source::StaticSourceRef;
+    pub(super) use self::native_source::native_source_roles;
+    pub(super) use self::native_source::with_checked_native_static;
+
     /// Source-owned finite TLS/SSP definition joins; never entry qualification.
     pub mod selected_initializers;
 
@@ -59924,97 +60647,248 @@ pub mod private_static {
             runner: &mut Runner,
         ) -> Result<super::private_machine_diagnostic::startup_census::PrivateStartupCensus>
         {
+            StaticSourceRef::Cargo(self).inspect_private_startup_census(
+                StaticArchiveRef::Cargo(archive),
+                artifact,
+                link_map,
+                objdump,
+                runner,
+            )
+        }
+        /// Inspect the static root with the one exact existing native memcpy
+        /// member. All native source/member identities close on every Result
+        /// path inside this same source transaction. This is a diagnostic, not
+        /// reproduced native-build provenance, a whole pre-TLS proof or Ready.
+        pub fn inspect_entry_transfers_with_musl_memcpy(
+            &self,
+            inputs: &super::private_machine_diagnostic::NativeMemcpyInputs<'_>,
+            artifact: &FileIdentity,
+            objdump: &FileIdentity,
+            runner: &mut Runner,
+        ) -> Result<super::private_machine_diagnostic::EntryTransferDiagnostic> {
+            StaticSourceRef::Cargo(self)
+                .inspect_entry_transfers_with_musl_memcpy(inputs, artifact, objdump, runner)
+        }
+        /// Inspect current bytes and close source/archive/file identities even
+        /// when inspection fails. A successful result is not linked-object
+        /// provenance: the maintained real-link transaction must still join this
+        /// archive and its exact native inputs via trace/map/selected definitions.
+        /// The outer producer must additionally call the actual reverie-loader
+        /// Image::validate + private_runtime_metadata on these SAME bytes. No
+        /// new dependency is added to Rust2021 include-by-source consumers here.
+        pub fn inspect_final(
+            &self,
+            archive: &StaticArchive,
+            path: &Path,
+            runner: &mut Runner,
+        ) -> Result<StaticImageInspection> {
+            StaticSourceRef::Cargo(self).inspect_final(
+                StaticArchiveRef::Cargo(archive),
+                path,
+                runner,
+            )
+        }
+        /// Inspect final image structure using a genuine optional-zero
+        /// observation from this SAME live source/archive transaction. The
+        /// ordinary inspect_final method still rejects every named undefined
+        /// symbol. No source-machine, pre-FS, executable-entry or Ready authority
+        /// follows from either structural inspection result.
+        pub fn inspect_final_with_optional_zero(
+            &self,
+            archive: &StaticArchive,
+            path: &Path,
+            observation: &selected_initializers::OptionalZeroObservation,
+            runner: &mut Runner,
+        ) -> Result<StaticImageInspection> {
+            StaticSourceRef::Cargo(self).inspect_final_with_optional_zero(
+                StaticArchiveRef::Cargo(archive),
+                path,
+                observation,
+                runner,
+            )
+        }
+        /// Inspect the same actual image using genuine selected-definition and
+        /// optional-zero observations from this live source/archive transaction.
+        /// Only the three explicitly joined Rust roles may be localized HIDDEN.
+        /// Default inspection and all other GLOBAL checks remain unchanged.
+        /// This is structural/source-definition evidence, never execution/Ready.
+        pub fn inspect_final_with_selected_and_optional_zero(
+            &self,
+            archive: &StaticArchive,
+            path: &Path,
+            definitions: &selected_initializers::SelectedInitializerDefinitions,
+            observation: &selected_initializers::OptionalZeroObservation,
+            runner: &mut Runner,
+        ) -> Result<StaticImageInspection> {
+            StaticSourceRef::Cargo(self).inspect_final_with_selected_and_optional_zero(
+                StaticArchiveRef::Cargo(archive),
+                path,
+                definitions,
+                observation,
+                runner,
+            )
+        }
+    }
+    impl NativeStaticSource<'_> {
+        /// Observe complete selected private-startup bodies under this actual
+        /// archive owner. This cannot grant source-to-machine qualification,
+        /// syscall-site authority, executable entry or readiness. Call on the
+        /// actual produced ELF/map even if the selected initializer join failed.
+        pub fn inspect_private_startup_census(
+            &self,
+            archive: &NativeStaticArchive,
+            artifact: &FileIdentity,
+            link_map: &FileIdentity,
+            objdump: &FileIdentity,
+            runner: &mut Runner,
+        ) -> Result<super::private_machine_diagnostic::startup_census::PrivateStartupCensus>
+        {
+            StaticSourceRef::Native(self).inspect_private_startup_census(
+                StaticArchiveRef::Native(archive),
+                artifact,
+                link_map,
+                objdump,
+                runner,
+            )
+        }
+        /// Inspect the static root with the one exact existing native memcpy
+        /// member. All native source/member identities close on every Result
+        /// path inside this same source transaction. This is a diagnostic, not
+        /// reproduced native-build provenance, a whole pre-TLS proof or Ready.
+        pub fn inspect_entry_transfers_with_musl_memcpy(
+            &self,
+            inputs: &super::private_machine_diagnostic::NativeMemcpyInputs<'_>,
+            artifact: &FileIdentity,
+            objdump: &FileIdentity,
+            runner: &mut Runner,
+        ) -> Result<super::private_machine_diagnostic::EntryTransferDiagnostic> {
+            StaticSourceRef::Native(self)
+                .inspect_entry_transfers_with_musl_memcpy(inputs, artifact, objdump, runner)
+        }
+        /// Inspect current bytes and close source/archive/file identities even
+        /// when inspection fails. A successful result is not linked-object
+        /// provenance: the maintained real-link transaction must still join this
+        /// archive and its exact native inputs via trace/map/selected definitions.
+        /// The outer producer must additionally call the actual reverie-loader
+        /// Image::validate + private_runtime_metadata on these SAME bytes. No
+        /// new dependency is added to Rust2021 include-by-source consumers here.
+        pub fn inspect_final(
+            &self,
+            archive: &NativeStaticArchive,
+            path: &Path,
+            runner: &mut Runner,
+        ) -> Result<StaticImageInspection> {
+            StaticSourceRef::Native(self).inspect_final(
+                StaticArchiveRef::Native(archive),
+                path,
+                runner,
+            )
+        }
+        /// Inspect final image structure using a genuine optional-zero
+        /// observation from this SAME live source/archive transaction. The
+        /// ordinary inspect_final method still rejects every named undefined
+        /// symbol. No source-machine, pre-FS, executable-entry or Ready authority
+        /// follows from either structural inspection result.
+        pub fn inspect_final_with_optional_zero(
+            &self,
+            archive: &NativeStaticArchive,
+            path: &Path,
+            observation: &selected_initializers::OptionalZeroObservation,
+            runner: &mut Runner,
+        ) -> Result<StaticImageInspection> {
+            StaticSourceRef::Native(self).inspect_final_with_optional_zero(
+                StaticArchiveRef::Native(archive),
+                path,
+                observation,
+                runner,
+            )
+        }
+        /// Inspect the same actual image using genuine selected-definition and
+        /// optional-zero observations from this live source/archive transaction.
+        /// Only the three explicitly joined Rust roles may be localized HIDDEN.
+        /// Default inspection and all other GLOBAL checks remain unchanged.
+        /// This is structural/source-definition evidence, never execution/Ready.
+        pub fn inspect_final_with_selected_and_optional_zero(
+            &self,
+            archive: &NativeStaticArchive,
+            path: &Path,
+            definitions: &selected_initializers::SelectedInitializerDefinitions,
+            observation: &selected_initializers::OptionalZeroObservation,
+            runner: &mut Runner,
+        ) -> Result<StaticImageInspection> {
+            StaticSourceRef::Native(self).inspect_final_with_selected_and_optional_zero(
+                StaticArchiveRef::Native(archive),
+                path,
+                definitions,
+                observation,
+                runner,
+            )
+        }
+    }
+    impl StaticSourceRef<'_> {
+        /// Observe complete selected private-startup bodies under this actual
+        /// archive owner. This cannot grant source-to-machine qualification,
+        /// syscall-site authority, executable entry or readiness. Call on the
+        /// actual produced ELF/map even if the selected initializer join failed.
+        pub fn inspect_private_startup_census(
+            &self,
+            archive: StaticArchiveRef<'_>,
+            artifact: &FileIdentity,
+            link_map: &FileIdentity,
+            objdump: &FileIdentity,
+            runner: &mut Runner,
+        ) -> Result<super::private_machine_diagnostic::startup_census::PrivateStartupCensus>
+        {
             if let Err(error) = self.require_archive_owner(archive) {
-                return close_result(Err(error), self.guard.close(runner));
+                return close_result(Err(error), self.close(runner));
             }
             let mut files = vec![artifact.clone(), link_map.clone(), objdump.clone()];
             let result = (|| {
                 archive.verify()?;
-                self.guard.close(runner)?;
-                let roots = self
-                    .guard
-                    .roots
-                    .iter()
-                    .filter(|(_, kind)| matches!(kind, RootBinding::Cargo(_)))
-                    .map(|(path, _)| path)
-                    .collect::<Vec<_>>();
-                require(
-                    roots.len() == 1,
-                    "startup census resolved R source ambiguous",
-                )?;
+                self.close(runner)?;
                 let mut sources = BTreeMap::new();
-                let tls_variant = tls_sources::bind(roots[0], &mut files)?;
-                for (key, root, relative) in [
-                    (
-                        "entry",
-                        &self.workspace,
-                        "detcore-liteinst/src/exec_initial/mapped_entry.rs",
-                    ),
-                    (
-                        "exec_private",
-                        roots[0],
-                        "reverie-inguest/src/guest/exec_private.rs",
-                    ),
+                let tls_variant = tls_sources::bind_source(*self, &mut files)?;
+                for (key, relative) in [
+                    ("entry", "detcore-liteinst/src/exec_initial/mapped_entry.rs"),
+                    ("exec_private", "reverie-inguest/src/guest/exec_private.rs"),
                     (
                         "mapped",
-                        roots[0],
                         "reverie-inguest/src/guest/exec_private/mapped_initial.rs",
                     ),
                     (
                         "scalar",
-                        roots[0],
                         "reverie-inguest/src/guest/exec_private/mapped_initial/mapped_scalar.rs",
                     ),
-                    (
-                        "mapped_inputs",
-                        roots[0],
-                        "reverie-loader/src/mapped_inputs.rs",
-                    ),
-                    ("handoff", roots[0], "reverie-loader/src/handoff.rs"),
+                    ("mapped_inputs", "reverie-loader/src/mapped_inputs.rs"),
+                    ("handoff", "reverie-loader/src/handoff.rs"),
                     (
                         "relay",
-                        roots[0],
                         "reverie-inguest/src/guest/exec_private/mapped_initial/libc_relay.rs",
                     ),
                     (
                         "frontend",
-                        roots[0],
                         "reverie-inguest/src/guest/exec_private/mapped_initial/libc_relay/frontend.rs",
                     ),
-                    ("frame", roots[0], "reverie-inguest/src/trap/frame.rs"),
-                    ("gate", roots[0], "reverie-inguest/src/trap/fixed_gates.rs"),
-                    ("trap", roots[0], "reverie-inguest/src/trap.rs"),
-                    (
-                        "private",
-                        roots[0],
-                        "reverie-inguest/src/private_runtime/mod.rs",
-                    ),
-                    (
-                        "tls",
-                        roots[0],
-                        "reverie-inguest/src/private_runtime/tls/mod.rs",
-                    ),
+                    ("frame", "reverie-inguest/src/trap/frame.rs"),
+                    ("gate", "reverie-inguest/src/trap/fixed_gates.rs"),
+                    ("trap", "reverie-inguest/src/trap.rs"),
+                    ("private", "reverie-inguest/src/private_runtime/mod.rs"),
+                    ("tls", "reverie-inguest/src/private_runtime/tls/mod.rs"),
                     (
                         "tls_layout_wrapper",
-                        roots[0],
                         "reverie-inguest/src/private_runtime/tls/layout.rs",
                     ),
-                    (
-                        "tls_abi",
-                        roots[0],
-                        "reverie-inguest/src/private_runtime/tls/abi.rs",
-                    ),
+                    ("tls_abi", "reverie-inguest/src/private_runtime/tls/abi.rs"),
                 ] {
-                    let file = FileIdentity::read(&root.join(relative))?;
-                    files.push(file.clone());
+                    let file = self.source_file(relative, &mut files)?;
                     sources.insert(key, file);
                 }
-                let geometry = FileIdentity::read(&roots[0].join(tls_variant.geometry_source()))?;
-                files.push(geometry.clone());
+                let geometry = self.source_file(tls_variant.geometry_source(), &mut files)?;
                 sources.insert("tls_layout", geometry);
+                self.register_runner(runner)?;
                 super::private_machine_diagnostic::startup_census::inspect(
                     tls_variant,
-                    &archive.file,
+                    archive.file(),
                     artifact,
                     link_map,
                     objdump,
@@ -60022,11 +60896,12 @@ pub mod private_static {
                     runner,
                 )
             })();
+            self.retain_files(&files);
             let mut errors = Vec::new();
             if let Err(error) = archive.verify() {
                 errors.push(error);
             }
-            if let Err(error) = self.guard.close(runner) {
+            if let Err(error) = self.close(runner) {
                 errors.push(error);
             }
             for file in files {
@@ -60048,10 +60923,8 @@ pub mod private_static {
             objdump: &FileIdentity,
             runner: &mut Runner,
         ) -> Result<super::private_machine_diagnostic::EntryTransferDiagnostic> {
-            let result = super::private_machine_diagnostic::inspect_entry_transfers_with_memcpy(
-                inputs, artifact, objdump, runner,
-            );
-            close_result(result, self.guard.close(runner))
+            let result = self.inspect_memcpy_entry(inputs, artifact, objdump, runner, None);
+            close_result(result, self.close(runner))
         }
         /// Inspect current bytes and close source/archive/file identities even
         /// when inspection fails. A successful result is not linked-object
@@ -60062,7 +60935,7 @@ pub mod private_static {
         /// new dependency is added to Rust2021 include-by-source consumers here.
         pub fn inspect_final(
             &self,
-            archive: &StaticArchive,
+            archive: StaticArchiveRef<'_>,
             path: &Path,
             runner: &mut Runner,
         ) -> Result<StaticImageInspection> {
@@ -60076,7 +60949,7 @@ pub mod private_static {
         /// follows from either structural inspection result.
         pub fn inspect_final_with_optional_zero(
             &self,
-            archive: &StaticArchive,
+            archive: StaticArchiveRef<'_>,
             path: &Path,
             observation: &selected_initializers::OptionalZeroObservation,
             runner: &mut Runner,
@@ -60091,7 +60964,7 @@ pub mod private_static {
         /// This is structural/source-definition evidence, never execution/Ready.
         pub fn inspect_final_with_selected_and_optional_zero(
             &self,
-            archive: &StaticArchive,
+            archive: StaticArchiveRef<'_>,
             path: &Path,
             definitions: &selected_initializers::SelectedInitializerDefinitions,
             observation: &selected_initializers::OptionalZeroObservation,
@@ -60102,20 +60975,20 @@ pub mod private_static {
 
         fn inspect_final_impl(
             &self,
-            archive: &StaticArchive,
+            archive: StaticArchiveRef<'_>,
             path: &Path,
             optional: Option<&selected_initializers::OptionalZeroObservation>,
             selected: Option<&selected_initializers::SelectedInitializerDefinitions>,
             runner: &mut Runner,
         ) -> Result<StaticImageInspection> {
             if let Err(error) = self.require_archive_owner(archive) {
-                return close_result(Err(error), self.guard.close(runner));
+                return close_result(Err(error), self.close(runner));
             }
             if let Err(error) = selected.map_or(Ok(()), |definitions| {
                 selected_initializers::selected_final_owner(self, archive, definitions)
             }) {
                 // Refuse the owner before reading any foreign proof files.
-                let closes = [archive.verify(), self.guard.close(runner)];
+                let closes = [archive.verify(), self.close(runner)];
                 let errors: Vec<_> = closes.into_iter().filter_map(|r| r.err()).collect();
                 return close_result(Err(error), require(errors.is_empty(), errors.join("; ")));
             }
@@ -60130,7 +61003,7 @@ pub mod private_static {
                         Ok(()),
                         selected_initializers::SelectedInitializerDefinitions::verify,
                     ),
-                    self.guard.close(runner),
+                    self.close(runner),
                 ];
                 let errors: Vec<_> = closes.into_iter().filter_map(|r| r.err()).collect();
                 return close_result(Err(error), require(errors.is_empty(), errors.join("; ")));
@@ -60255,7 +61128,7 @@ pub mod private_static {
                 let layout = layout_words(descriptor)?;
                 Ok(StaticImageInspection {
                     artifact: artifact.clone(),
-                    archive: archive.file.clone(),
+                    archive: archive.file().clone(),
                     entry: entry.st_value,
                     gate_sha256: sha256(executed),
                     layout,
@@ -60266,6 +61139,7 @@ pub mod private_static {
             })();
             // Evaluate all closes even if the first one fails; preserve both
             // the inspection error and every available custody error.
+            self.retain_files(artifact.iter());
             let closes = [
                 artifact.as_ref().map_or(Ok(()), FileIdentity::verify),
                 archive.verify(),
@@ -60277,7 +61151,7 @@ pub mod private_static {
                     Ok(()),
                     selected_initializers::OptionalZeroObservation::verify,
                 ),
-                self.guard.close(runner),
+                self.close(runner),
             ];
             let errors: Vec<_> = closes.into_iter().filter_map(|r| r.err()).collect();
             close_result(body, require(errors.is_empty(), errors.join("; ")))
@@ -61892,6 +62766,16 @@ pub mod private_machine_diagnostic {
         artifact: &FileIdentity,
         body: impl FnOnce(&NativeMemcpyRole) -> Result<T>,
     ) -> Result<T> {
+        with_native_memcpy_files(inputs, artifact, body).0
+    }
+
+    // The closed native static source view retains these already acquired
+    // observations through its outer callback close. They are not authority.
+    pub(super) fn with_native_memcpy_files<T>(
+        inputs: &NativeMemcpyInputs<'_>,
+        artifact: &FileIdentity,
+        body: impl FnOnce(&NativeMemcpyRole) -> Result<T>,
+    ) -> (Result<T>, Vec<FileIdentity>) {
         let mut files = vec![artifact.clone()];
         let result = (|| {
             artifact.verify()?;
@@ -62045,12 +62929,13 @@ pub mod private_machine_diagnostic {
             body(&role)
         })();
         let errors: Vec<_> = files.iter().filter_map(|f| f.verify().err()).collect();
-        match (result, errors.is_empty()) {
+        let result = match (result, errors.is_empty()) {
             (Ok(value), true) => Ok(value),
             (Err(e), true) => Err(e),
             (Ok(_), false) => Err(errors.join("; ")),
             (Err(e), false) => Err(format!("{e}; native custody close: {}", errors.join("; "))),
-        }
+        };
+        (result, files)
     }
 
     const ENTRY: &str = "detcore_liteinst_mapped_entry";
@@ -62264,6 +63149,20 @@ pub mod private_machine_diagnostic {
         with_native_memcpy(inputs, artifact, |role| {
             inspect_entry_transfers_impl(artifact, objdump, runner, Some(role), None)
         })
+    }
+
+    pub(super) fn inspect_entry_transfers_with_memcpy_files(
+        inputs: &NativeMemcpyInputs<'_>,
+        artifact: &FileIdentity,
+        objdump: &FileIdentity,
+        runner: &mut Runner,
+        ordinary: Option<&private_static::selected_initializers::OrdinaryGateObservations>,
+    ) -> (Result<EntryTransferDiagnostic>, Vec<FileIdentity>) {
+        let (result, mut files) = with_native_memcpy_files(inputs, artifact, |role| {
+            inspect_entry_transfers_impl(artifact, objdump, runner, Some(role), ordinary)
+        });
+        files.push(objdump.clone());
+        (result, files)
     }
 
     pub(crate) fn inspect_entry_transfers_with_ordinary(

@@ -1,5 +1,5 @@
 //! Closed runtime TLS source declarations, never machine/entry authority.
-//! Selection occurs only inside the existing authenticated Cargo source owner.
+//! Selection occurs only inside the closed Cargo or checked native archive owner.
 use super::*;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -284,6 +284,31 @@ pub(super) fn bind(root: &Path, files: &mut Vec<FileIdentity>) -> Result<Variant
         let file = FileIdentity::read(&path)?;
         observed.push((relative.to_owned(), metadata.len(), file.sha256.clone()));
         files.push(file);
+    }
+    classify(&observed)
+}
+
+// Native admission requires both shared-inputs optional roles before this
+// binder is called. Cargo retains its original optional-path behavior.
+pub(super) fn bind_source(
+    source: StaticSourceRef<'_>,
+    files: &mut Vec<FileIdentity>,
+) -> Result<Variant> {
+    if let StaticSourceRef::Cargo(cargo) = source {
+        return bind(StaticSourceRef::cargo_runtime_root(cargo)?, files);
+    }
+    let mut observed = Vec::new();
+    for relative in LEGACY.iter().map(|row| row.0).chain([
+        "reverie-loader/src/musl_tls.rs",
+        "reverie-loader/src/mapped_inputs.rs",
+    ]) {
+        let file = source
+            .tls_source_file(relative, files)?
+            .ok_or("native static TLS role unexpectedly absent")?;
+        let size = fs::metadata(&file.path)
+            .map_err(|error| error.to_string())?
+            .len();
+        observed.push((relative.to_owned(), size, file.sha256));
     }
     classify(&observed)
 }

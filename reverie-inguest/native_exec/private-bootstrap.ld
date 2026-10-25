@@ -15,15 +15,15 @@ SECTIONS {
     ASSERT(SIZEOF(.gate) == 0x1000, "exact fixed gate page")
     . = GATE_PAGE + 0x10000;
     private_boot_code_start = .;
-    .text : { *(.text*) *(.rodata*) } :code
+    .text : { *(.text*) *(.ltext*) *(.rodata*) *(.lrodata*) } :code
     private_boot_code_end = .;
     ASSERT(. < GATE_PAGE + 0x20000, "bootstrap code exceeds code band")
     . = GATE_PAGE + 0x20000;
     .locator (NOLOAD) : { KEEP(*(.locator)) } :locator
     . = ALIGN(0x1000);
     private_boot_data_start = .;
-    .data : { *(.data*) } :data
-    .bss (NOLOAD) : { *(.bss*) *(COMMON) } :data
+    .data : { *(.data*) *(.ldata*) } :data
+    .bss (NOLOAD) : { *(.bss*) *(.lbss*) *(COMMON) *(LARGE_COMMON) } :data
     private_boot_data_end = .;
     ASSERT(. <= GATE_PAGE + 0x80000, "bootstrap data exceeds owned band")
     /DISCARD/ : { *(.note*) *(.comment*) *(.eh_frame*) }

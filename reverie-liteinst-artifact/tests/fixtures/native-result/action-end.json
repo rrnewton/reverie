@@ -1,0 +1,83 @@
+{
+  "Event": {
+    "timestamp": [
+      1792923782,
+      433780184
+    ],
+    "trace_id": "79c4be3c-8b00-4c84-9ee0-b34a20978d41",
+    "span_id": 705647,
+    "parent_id": 0,
+    "data": {
+      "SpanEnd": {
+        "stats": {
+          "max_poll_time_us": 4162,
+          "total_poll_time_us": 5062
+        },
+        "duration_us": 5210,
+        "data": {
+          "ActionExecution": {
+            "key": {
+              "id": "1a00000000000000",
+              "key": "_26",
+              "owner": {
+                "TargetLabel": {
+                  "label": {
+                    "package": "example//demo",
+                    "name": "program"
+                  },
+                  "configuration": {
+                    "full_name": "cfg:example#product"
+                  },
+                  "execution_configuration": null
+                }
+              }
+            },
+            "kind": "Run",
+            "name": {
+              "category": "cxx_link_rust_binary",
+              "identifier": "program"
+            },
+            "failed": false,
+            "always_print_stderr": false,
+            "execution_kind": 10,
+            "wall_time_us": 0,
+            "output_size": 363461024,
+            "commands": [],
+            "outputs": [
+              {
+                "tiny_digest": "634a2020"
+              }
+            ],
+            "prefers_local": false,
+            "requires_local": false,
+            "allows_cache_upload": false,
+            "cache_upload_result": 3,
+            "buck2_revision": null,
+            "buck2_build_time": null,
+            "eligible_for_full_hybrid": null,
+            "hostname": "build-host.invalid",
+            "allows_dep_file_cache_upload": false,
+            "dep_file_cache_upload_result": 2,
+            "dep_file_key": null,
+            "error_diagnostics": null,
+            "input_files_bytes": null,
+            "invalidation_info": {
+              "changed_any": {},
+              "changed_file": {}
+            },
+            "target_rule_type_name": "rust_binary",
+            "scheduling_mode": null,
+            "incremental_kind": null,
+            "eligible_for_dedupe": 2,
+            "expected_eligible_for_dedupe": 2,
+            "dep_file_db_writes_queued": 0,
+            "prepare_command_us": null,
+            "finish_action_us": null,
+            "graph_producers": null,
+            "error": null
+          }
+        }
+      }
+    }
+  }
+}

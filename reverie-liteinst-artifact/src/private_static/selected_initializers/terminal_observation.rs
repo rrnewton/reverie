@@ -319,15 +319,57 @@ impl VerifiedStaticSource {
         runner: &mut Runner,
         callback: impl FnOnce(&MappedTerminalObservation, &mut Runner) -> Result<T>,
     ) -> Result<T> {
+        StaticSourceRef::Cargo(self).with_mapped_terminal_observation(
+            StaticArchiveRef::Cargo(archive),
+            definitions,
+            objdump,
+            runner,
+            callback,
+        )
+    }
+}
+impl NativeStaticSource<'_> {
+    /// Observe the finite terminal/observer bodies in this same selected link.
+    /// This never returns an entry/image/Ready permission. Unknown root and
+    /// exception behavior remains refused, even when these five joins succeed.
+    pub fn with_mapped_terminal_observation<T>(
+        &self,
+        archive: &NativeStaticArchive,
+        definitions: &SelectedInitializerDefinitions,
+        objdump: &FileIdentity,
+        runner: &mut Runner,
+        callback: impl FnOnce(&MappedTerminalObservation, &mut Runner) -> Result<T>,
+    ) -> Result<T> {
+        StaticSourceRef::Native(self).with_mapped_terminal_observation(
+            StaticArchiveRef::Native(archive),
+            definitions,
+            objdump,
+            runner,
+            callback,
+        )
+    }
+}
+impl StaticSourceRef<'_> {
+    /// Observe the finite terminal/observer bodies in this same selected link.
+    /// This never returns an entry/image/Ready permission. Unknown root and
+    /// exception behavior remains refused, even when these five joins succeed.
+    pub fn with_mapped_terminal_observation<T>(
+        &self,
+        archive: StaticArchiveRef<'_>,
+        definitions: &SelectedInitializerDefinitions,
+        objdump: &FileIdentity,
+        runner: &mut Runner,
+        callback: impl FnOnce(&MappedTerminalObservation, &mut Runner) -> Result<T>,
+    ) -> Result<T> {
         let admission = self.require_archive_owner(archive).and_then(|_| {
             require(
-                Arc::ptr_eq(&self.archive_owner, &definitions.source_owner.0)
-                    && definitions.core.runtime == archive.file,
+                Arc::ptr_eq(self.owner(), &definitions.source_owner.0)
+                    && definitions.core.runtime == *archive.file(),
                 "terminal definitions belong to another source/archive",
             )
         });
         if let Err(error) = admission {
-            return close_result(Err(error), self.guard.close(runner));
+            return close_result(Err(error), self.close(runner));
         }
         let mut files = definitions.files.clone();
         files.push(objdump.clone());
@@ -348,18 +390,7 @@ impl VerifiedStaticSource {
                     ("detcore-liteinst/src/exec_initial/mapped_entry.rs", false),
                     ("reverie-inguest/src/guest/exec_private.rs", true),
                 ] {
-                    let roots = self
-                        .guard
-                        .roots
-                        .iter()
-                        .filter(|(p, k)| {
-                            matches!(k, RootBinding::Cargo(_)) == cargo
-                                && p.join(relative).is_file()
-                        })
-                        .map(|(p, _)| p)
-                        .collect::<Vec<_>>();
-                    require(roots.len() == 1, "terminal guarded source root ambiguous")?;
-                    let file = FileIdentity::read(&roots[0].join(relative))?;
+                    let file = self.terminal_source_file(relative, cargo, &mut files)?;
                     require(
                         if cargo {
                             accepted_private_source(&file.sha256)
@@ -368,11 +399,10 @@ impl VerifiedStaticSource {
                         },
                         "terminal actual source differs",
                     )?;
-                    files.push(file);
                 }
-                let mut backing = extract_objects(&archive.file, 0)?;
+                let mut backing = extract_objects(archive.file(), 0)?;
                 backing.extend(extract_objects(&definitions.core.libc, 1)?);
-                let archives = [&archive.file, &definitions.core.libc];
+                let archives = [archive.file(), &definitions.core.libc];
                 let objects = backing
                     .iter()
                     .map(|m| {
@@ -411,7 +441,9 @@ impl VerifiedStaticSource {
                 ];
                 let joined = roles
                     .into_iter()
-                    .map(|role| joined_role(role, &objects, &map, &archive.file.path, &elf, &data))
+                    .map(|role| {
+                        joined_role(role, &objects, &map, &archive.file().path, &elf, &data)
+                    })
                     .collect::<Result<Vec<_>>>()?;
                 let [root, mapped, failed, terminal, observed] = joined.as_slice() else {
                     return Err("terminal internal role count".into());
@@ -434,6 +466,7 @@ impl VerifiedStaticSource {
                     .address
                     .checked_add(root.bytes as u64)
                     .ok_or("terminal root end")?;
+                self.register_runner(runner)?;
                 let text = runner.run_with_combined_limit(
                     objdump.path.to_str().ok_or("objdump path")?,
                     &[
@@ -611,12 +644,9 @@ impl VerifiedStaticSource {
                 close_result(result, observation.disassembly.verify())
             },
         );
+        self.retain_files(&files);
         let mut errors = Vec::new();
-        for close in [
-            archive.verify(),
-            definitions.verify(),
-            self.guard.close(runner),
-        ] {
+        for close in [archive.verify(), definitions.verify(), self.close(runner)] {
             if let Err(error) = close {
                 errors.push(error);
             }

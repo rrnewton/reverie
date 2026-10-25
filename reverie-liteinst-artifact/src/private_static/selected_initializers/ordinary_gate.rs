@@ -748,19 +748,15 @@ impl VerifiedStaticSource {
         objdump: &FileIdentity,
         runner: &mut Runner,
     ) -> Result<super::super::super::private_machine_diagnostic::EntryTransferDiagnostic> {
-        self.with_ordinary_trusted_gate(archive, artifact, link_map, runner, |ordinary, runner| {
-            let actual_map = FileIdentity::read(inputs.link_map)?;
-            let result = (|| {
-                same_identity(&actual_map, link_map,
-                    "combined native/ordinary link maps differ")?;
-                super::super::super::private_machine_diagnostic::inspect_entry_transfers_with_ordinary_and_memcpy(
-                    ordinary, inputs, artifact, objdump, runner,
-                )
-            })();
-            close_result(result, actual_map.verify())
-        })
+        StaticSourceRef::Cargo(self).inspect_entry_transfers_with_ordinary_and_musl_memcpy(
+            StaticArchiveRef::Cargo(archive),
+            artifact,
+            link_map,
+            inputs,
+            objdump,
+            runner,
+        )
     }
-
     /// Derive the complete physical members from this live source-built archive.
     /// Only the two closed ordinary44 semantic shapes are admitted; historical
     /// whole-container constants remain strict fixture controls, not live identity.
@@ -774,38 +770,125 @@ impl VerifiedStaticSource {
         runner: &mut Runner,
         body: impl FnOnce(&OrdinaryGateObservations, &mut Runner) -> Result<T>,
     ) -> Result<T> {
+        StaticSourceRef::Cargo(self).with_ordinary_trusted_gate(
+            StaticArchiveRef::Cargo(archive),
+            artifact,
+            link_map,
+            runner,
+            body,
+        )
+    }
+}
+impl NativeStaticSource<'_> {
+    /// Observe both exact finite roles in one diagnostic, created inside this
+    /// same source/archive callback. No provider supplied by another context is
+    /// accepted. All ordinary/native factories and the existing decoder retain
+    /// their checks and closes. This grants no pre-TLS or execution authority.
+    pub fn inspect_entry_transfers_with_ordinary_and_musl_memcpy(
+        &self,
+        archive: &NativeStaticArchive,
+        artifact: &FileIdentity,
+        link_map: &FileIdentity,
+        inputs: &super::super::super::private_machine_diagnostic::NativeMemcpyInputs<'_>,
+        objdump: &FileIdentity,
+        runner: &mut Runner,
+    ) -> Result<super::super::super::private_machine_diagnostic::EntryTransferDiagnostic> {
+        StaticSourceRef::Native(self).inspect_entry_transfers_with_ordinary_and_musl_memcpy(
+            StaticArchiveRef::Native(archive),
+            artifact,
+            link_map,
+            inputs,
+            objdump,
+            runner,
+        )
+    }
+    /// Derive the complete physical members from this live source-built archive.
+    /// Only the two closed ordinary44 semantic shapes are admitted; historical
+    /// whole-container constants remain strict fixture controls, not live identity.
+    /// The source/archive/build-output/file/tool guards close on every Result,
+    /// including callback errors; no supplied paths or names construct a role.
+    pub fn with_ordinary_trusted_gate<T>(
+        &self,
+        archive: &NativeStaticArchive,
+        artifact: &FileIdentity,
+        link_map: &FileIdentity,
+        runner: &mut Runner,
+        body: impl FnOnce(&OrdinaryGateObservations, &mut Runner) -> Result<T>,
+    ) -> Result<T> {
+        StaticSourceRef::Native(self).with_ordinary_trusted_gate(
+            StaticArchiveRef::Native(archive),
+            artifact,
+            link_map,
+            runner,
+            body,
+        )
+    }
+}
+impl StaticSourceRef<'_> {
+    /// Observe both exact finite roles in one diagnostic, created inside this
+    /// same source/archive callback. No provider supplied by another context is
+    /// accepted. All ordinary/native factories and the existing decoder retain
+    /// their checks and closes. This grants no pre-TLS or execution authority.
+    pub fn inspect_entry_transfers_with_ordinary_and_musl_memcpy(
+        &self,
+        archive: StaticArchiveRef<'_>,
+        artifact: &FileIdentity,
+        link_map: &FileIdentity,
+        inputs: &super::super::super::private_machine_diagnostic::NativeMemcpyInputs<'_>,
+        objdump: &FileIdentity,
+        runner: &mut Runner,
+    ) -> Result<super::super::super::private_machine_diagnostic::EntryTransferDiagnostic> {
+        self.with_ordinary_trusted_gate(archive, artifact, link_map, runner, |ordinary, runner| {
+            let actual_map = FileIdentity::read(inputs.link_map)?;
+            let result = (|| {
+                same_identity(
+                    &actual_map,
+                    link_map,
+                    "combined native/ordinary link maps differ",
+                )?;
+                self.inspect_memcpy_entry(inputs, artifact, objdump, runner, Some(ordinary))
+            })();
+            self.retain_files([&actual_map]);
+            close_result(result, actual_map.verify())
+        })
+    }
+
+    /// Derive the complete physical members from this live source-built archive.
+    /// Only the two closed ordinary44 semantic shapes are admitted; historical
+    /// whole-container constants remain strict fixture controls, not live identity.
+    /// The source/archive/build-output/file/tool guards close on every Result,
+    /// including callback errors; no supplied paths or names construct a role.
+    pub fn with_ordinary_trusted_gate<T>(
+        &self,
+        archive: StaticArchiveRef<'_>,
+        artifact: &FileIdentity,
+        link_map: &FileIdentity,
+        runner: &mut Runner,
+        body: impl FnOnce(&OrdinaryGateObservations, &mut Runner) -> Result<T>,
+    ) -> Result<T> {
         if let Err(error) = self.require_archive_owner(archive) {
-            return close_result(Err(error), self.guard.close(runner));
+            return close_result(Err(error), self.close(runner));
         }
         let mut files = vec![artifact.clone(), link_map.clone()];
         let result = (|| {
             archive.verify()?;
-            self.guard.close(runner)?;
+            self.close(runner)?;
             for file in &files {
                 file.verify()?;
             }
-            let roots = self
-                .guard
-                .roots
-                .iter()
-                .filter(|(_, kind)| matches!(kind, RootBinding::Cargo(_)))
-                .map(|(path, _)| path)
-                .collect::<Vec<_>>();
-            require(roots.len() == 1, "ordinary resolved source ambiguous")?;
             for (relative, digest) in [
                 ("reverie-inguest/src/trap.rs", TRAP_SHA),
                 ("reverie-inguest/src/trap/fixed_gates.rs", FIXED_SHA),
             ] {
-                let source = FileIdentity::read(&roots[0].join(relative))?;
-                files.push(source.clone());
+                let source = self.source_file(relative, &mut files)?;
                 source_digest(&source.sha256, digest == FIXED_SHA)?;
             }
-            let members = extract_objects(&archive.file, 0)?;
+            let members = extract_objects(archive.file(), 0)?;
             let (member_index, page_index) = defining_members(&members)?;
             let m = &members[member_index];
             let g = &members[page_index];
             let object = ObjectInput {
-                archive_path: &archive.file.path,
+                archive_path: &archive.file().path,
                 member_name: &m.name,
                 ordinal: m.ordinal,
                 header_offset: m.header,
@@ -813,7 +896,7 @@ impl VerifiedStaticSource {
                 elf: Elf::parse(&m.bytes).map_err(|e| e.to_string())?,
             };
             let gate = ObjectInput {
-                archive_path: &archive.file.path,
+                archive_path: &archive.file().path,
                 member_name: &g.name,
                 ordinal: g.ordinal,
                 header_offset: g.header,
@@ -850,8 +933,15 @@ impl VerifiedStaticSource {
             let table = checked_symtab(&elf, &data)?;
             checked_relocation_inventory(&elf, &data, table)?;
             let role = OrdinaryGateObservations {
-                runtime_archive: archive.file.clone(),
-                identity_policy: "LIVE_SOURCE_ARC_CARGO_ARCHIVE_DERIVED_COMPLETE_MEMBER_IDENTITY",
+                runtime_archive: archive.file().clone(),
+                identity_policy: match self {
+                    StaticSourceRef::Cargo(_) => {
+                        "LIVE_SOURCE_ARC_CARGO_ARCHIVE_DERIVED_COMPLETE_MEMBER_IDENTITY"
+                    }
+                    StaticSourceRef::Native(_) => {
+                        "LIVE_SOURCE_ARC_NATIVE_STATICLIB_ARCHIVE_DERIVED_COMPLETE_MEMBER_IDENTITY"
+                    }
+                },
                 member_name: m.name.clone(),
                 page_member_name: g.name.clone(),
                 artifact: artifact.clone(),
@@ -874,6 +964,7 @@ impl VerifiedStaticSource {
             role.verify_final(&elf, &data)?;
             body(&role, runner)
         })();
+        self.retain_files(&files);
         let mut errors = Vec::new();
         if let Err(e) = archive.verify() {
             errors.push(e);
@@ -883,7 +974,7 @@ impl VerifiedStaticSource {
                 errors.push(e);
             }
         }
-        if let Err(e) = self.guard.close(runner) {
+        if let Err(e) = self.close(runner) {
             errors.push(e);
         }
         close_result(result, require(errors.is_empty(), errors.join("; ")))

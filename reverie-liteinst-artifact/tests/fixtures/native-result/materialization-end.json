@@ -1,0 +1,43 @@
+{
+  "Event": {
+    "timestamp": [
+      1792923782,
+      434004530
+    ],
+    "trace_id": "79c4be3c-8b00-4c84-9ee0-b34a20978d41",
+    "span_id": 705649,
+    "parent_id": 0,
+    "data": {
+      "SpanEnd": {
+        "stats": {
+          "max_poll_time_us": 21,
+          "total_poll_time_us": 28
+        },
+        "duration_us": 60,
+        "data": {
+          "FinalMaterialization": {
+            "artifact": {
+              "key": {
+                "id": "1a00000000000000",
+                "key": "_26",
+                "owner": {
+                  "TargetLabel": {
+                    "label": {
+                      "package": "example//demo",
+                      "name": "program"
+                    },
+                    "configuration": {
+                      "full_name": "cfg:example#product"
+                    },
+                    "execution_configuration": null
+                  }
+                }
+              },
+              "path": "program"
+            }
+          }
+        }
+      }
+    }
+  }
+}
