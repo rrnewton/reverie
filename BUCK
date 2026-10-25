@@ -1,6 +1,7 @@
 load("@fbcode_macros//build_defs:sanitizers.bzl", "sanitizers")
 load("@fbsource//tools/build_defs:fb_native_wrapper.bzl", "fb_native")
 load("@fbsource//tools/build_defs:rust_library.bzl", "rust_library")
+load("@fbsource//tools/build_defs:rust_unittest.bzl", "rust_unittest")
 load("@fbsource//tools/build_defs:selects.bzl", "selects")
 
 oncall("hermit")
@@ -201,6 +202,64 @@ rust_library(
         "fbsource//third-party/rust:unwind",
         ":reverie",
         ":safeptrace",
+    ],
+)
+
+rust_library(
+    name = "reverie-test-support",
+    srcs = glob(["reverie-test-support/src/**/*.rs"]),
+    autocargo = {
+        "cargo_toml_config": {
+            "package": {
+                "version": "0.5.1",
+                "description": "Command helpers for generic Reverie conformance tests.",
+                "publish": False,
+            },
+            "test": [{"name": "basics", "path": "../tests/basics.rs"}],
+            "dependencies_override": {
+                "dev-dependencies": {
+                    "nix": {"features": ["fs", "process", "signal"]},
+                    "reverie-ptrace": {"features": ["nightly"]},
+                    "serde": {"features": ["derive"]},
+                },
+            },
+            "lints": {
+                "rust": {
+                    "unexpected_cfgs": {
+                        "check-cfg": ["cfg(sanitized)"],
+                        "level": "warn",
+                    },
+                },
+            },
+        },
+        "cargo_toml_dir": "reverie-test-support",
+    },
+    test_deps = [
+        "fbsource//third-party/rust:close-err",
+        "fbsource//third-party/rust:libc",
+        "fbsource//third-party/rust:nix",
+        "fbsource//third-party/rust:serde",
+        ":reverie-ptrace",
+    ],
+    deps = [
+        ":reverie",
+        ":reverie-ptrace",
+    ],
+)
+
+rust_unittest(
+    name = "generic-basics",
+    srcs = ["tests/basics.rs", "tests/tool_fixtures/basics.rs"],
+    crate_root = "tests/basics.rs",
+    rustc_flags = sanitized_feature,
+    deps = [
+        "fbsource//third-party/rust:close-err",
+        "fbsource//third-party/rust:libc",
+        "fbsource//third-party/rust:nix",
+        "fbsource//third-party/rust:serde",
+        ":reverie",
+        ":reverie-ptrace",
+        ":reverie-test-support",
     ],
 )
 
