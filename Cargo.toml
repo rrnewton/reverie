@@ -20,6 +20,7 @@ members = [
     "reverie-kvm",
     "reverie-kvm-core",
     "reverie-linux-provider",
+    "reverie-linuxemu",
     "reverie-liteinst",
     "reverie-liteinst-artifact",
     "reverie-liteinst-preload",

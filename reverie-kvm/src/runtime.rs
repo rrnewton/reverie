@@ -3772,7 +3772,13 @@ struct ToolProcessExit {
     disposition: ToolExitDisposition,
 }
 
-impl ProcessExit {
+/// `ProcessExit` is LinuxEmu's type; this backend reports it at a signal
+/// boundary.
+trait ProcessExitBoundary {
+    fn signal_boundary_outcome(self) -> reverie::SignalBoundaryOutcome;
+}
+
+impl ProcessExitBoundary for ProcessExit {
     fn signal_boundary_outcome(self) -> reverie::SignalBoundaryOutcome {
         reverie::SignalBoundaryOutcome::Terminated {
             group: self.group,
@@ -3813,19 +3819,7 @@ impl From<ProcessExit> for ToolProcessExit {
     }
 }
 
-/// A published run failure can interrupt a permitted CLONE_THREAD worker even
-/// before the backend's ordinary cancellation flag becomes visible.
-pub(crate) fn is_peer_cancelled_tool_worker<R>(
-    identity: (Pid, Pid),
-    start_permitted: bool,
-    outcome: &Result<R>,
-) -> bool {
-    start_permitted
-        && identity.0 != identity.1
-        && outcome
-            .as_ref()
-            .is_err_and(|error| matches!(error.primary(), Error::RunAborted))
-}
+pub(crate) use crate::failure::is_peer_cancelled_tool_worker;
 
 /// Keep the interrupted worker's error tree for final cleanup while preserving
 /// ordinary cancellation retirement and any established guest exit status.

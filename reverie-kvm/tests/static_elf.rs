@@ -74,14 +74,14 @@ use reverie_kvm::StraceTool;
 
 const MEMORY_SIZE: usize = 16 * 1024 * 1024;
 
-#[path = "support/alias_failure.rs"]
+#[path = "../../reverie-kvm-core/tests/support/alias_failure.rs"]
 mod alias_failure;
 
-#[path = "support/broker_test_client.rs"]
+#[path = "../../reverie-linuxemu/tests/support/broker_test_client.rs"]
 mod broker_test_client;
 use reverie_kvm::native_exit_broker;
 
-#[path = "support/broker_test_protocol.rs"]
+#[path = "../../reverie-linuxemu/tests/support/broker_test_protocol.rs"]
 mod broker_test_protocol;
 
 static ALIAS_FAILURE_CALLBACKS: AtomicU64 = AtomicU64::new(0);

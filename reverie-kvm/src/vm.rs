@@ -41,6 +41,7 @@ use reverie::Pid;
 use reverie::SignalProcessId;
 use reverie::ThreadOwnership;
 use reverie::Tool;
+pub use reverie_kvm_core::bootstrap::VMCALL_SYSCALL_TRANSPORT;
 
 use crate::Error;
 use crate::GuestMemory;
@@ -113,11 +114,6 @@ use crate::syscall::FRAME_SIZE;
 use crate::syscall::RETURN_FLAGS_WORD;
 use crate::syscall::RETURN_RIP_WORD;
 use crate::syscall::SAVED_RBX_WORD;
-
-/// KVM currently permits userspace exits for this standardized hypercall.
-/// The prototype uses it as a transport opcode and places the syscall frame
-/// address in the first hypercall argument.
-pub const VMCALL_SYSCALL_TRANSPORT: u64 = 12;
 
 const SYSCALL_FRAME_STRIDE: u64 = 4096;
 const PAGE_SIZE: u64 = 4096;
@@ -1274,12 +1270,7 @@ fn validate_root_pid(pid: i32) -> Result<i32> {
     }
 }
 
-/// The PID-namespace init process seen by the deterministic container. The
-/// ptrace backend runs the guest inside a real PID namespace whose `init` is
-/// PID 1, so the conventional root guest (PID 3, see detcore `ROOT_DETPID`) has
-/// `getppid() == 1`. KVM synthesizes the guest identity rather than using a real
-/// namespace, so it must reproduce the same parent value for parity.
-pub(crate) const CONTAINER_INIT_PID: i32 = 1;
+pub(crate) use crate::elf::CONTAINER_INIT_PID;
 
 /// Deterministic parent PID for the container's root guest, matching the ptrace
 /// backend. A guest that is itself the namespace init (PID 1) has no parent and
@@ -2416,7 +2407,7 @@ impl KvmBackend {
 
     /// Ends a public run that returned; see `RunAdmission::finish`.
     pub(crate) fn finish_run(&self, admission: RunAdmission) {
-        admission.finish(&self.thread_group);
+        admission.finish(&*self.thread_group);
     }
 
     /// Releases a guest thread's transport and Tool scratch-page slot.
@@ -6571,7 +6562,7 @@ fn supported_hypercall_instruction(cpuid: &CpuId) -> Result<[u8; 3]> {
 mod worker_panic_tests;
 
 #[cfg(test)]
-pub(crate) use tests::minimal_test_elf;
+pub(crate) use crate::elf::minimal_test_elf;
 
 #[cfg(test)]
 mod user_trap_signal_tests {
@@ -10703,44 +10694,6 @@ mod tests {
                 }
             }
         }
-    }
-
-    pub(crate) fn minimal_test_elf(code: &[u8]) -> Vec<u8> {
-        const LOAD_ADDRESS: u64 = 0x20_0000;
-        const CODE_OFFSET: usize = 0x1000;
-        let mut image = vec![0; CODE_OFFSET + code.len()];
-        let put_u16 = |image: &mut [u8], offset: usize, value: u16| {
-            image[offset..offset + 2].copy_from_slice(&value.to_le_bytes());
-        };
-        let put_u32 = |image: &mut [u8], offset: usize, value: u32| {
-            image[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
-        };
-        let put_u64 = |image: &mut [u8], offset: usize, value: u64| {
-            image[offset..offset + 8].copy_from_slice(&value.to_le_bytes());
-        };
-
-        image[..4].copy_from_slice(b"\x7fELF");
-        image[4] = 2;
-        image[5] = 1;
-        image[6] = 1;
-        put_u16(&mut image, 16, 2);
-        put_u16(&mut image, 18, 62);
-        put_u32(&mut image, 20, 1);
-        put_u64(&mut image, 24, LOAD_ADDRESS);
-        put_u64(&mut image, 32, 64);
-        put_u16(&mut image, 52, 64);
-        put_u16(&mut image, 54, 56);
-        put_u16(&mut image, 56, 1);
-        put_u32(&mut image, 64, 1);
-        put_u32(&mut image, 68, 5);
-        put_u64(&mut image, 72, CODE_OFFSET as u64);
-        put_u64(&mut image, 80, LOAD_ADDRESS);
-        put_u64(&mut image, 88, LOAD_ADDRESS);
-        put_u64(&mut image, 96, code.len() as u64);
-        put_u64(&mut image, 104, 0x2000);
-        put_u64(&mut image, 112, 0x1000);
-        image[CODE_OFFSET..].copy_from_slice(code);
-        image
     }
 
     #[test]
