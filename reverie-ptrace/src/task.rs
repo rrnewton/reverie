@@ -115,6 +115,7 @@ use crate::sigtrap_state::step_kind;
 use crate::stack::GuestStack;
 use crate::timer::HandleFailure;
 use crate::timer::OwnNotification;
+use crate::timer::StepRequest;
 use crate::timer::StepUnit;
 use crate::timer::Timer;
 use crate::timer::TimerEventRequest;
@@ -1166,11 +1167,16 @@ struct TimerStepShield {
 impl TimerStepShield {
     /// Before a step: shield SIGTRAP as `unblock_sigtrap_for_step_with` does, or,
     /// for a guest `rt_sigreturn`, in the frame it restores.
-    fn prepare(&mut self, task: &Stopped) -> Result<(), TraceError> {
+    fn prepare(
+        &mut self,
+        task: &Stopped,
+        #[cfg(target_arch = "x86_64")] regs: &safeptrace::Regs,
+    ) -> Result<(), TraceError> {
         if self.quiet {
             self.stepped = true;
             return Ok(());
         }
+        #[cfg(not(target_arch = "x86_64"))]
         let regs = task.getregs()?;
         // A guest `int3` (or `int 3`, `int1`, behind any prefixes) resets a
         // blocked or ignored SIGTRAP natively, and natively the process then
@@ -1185,7 +1191,7 @@ impl TimerStepShield {
             return Ok(());
         }
         #[cfg(target_arch = "x86_64")]
-        if let Some((address, rip)) = sigreturn_frame_mask_address(task, &regs)? {
+        if let Some((address, rip)) = sigreturn_frame_mask_address(task, regs)? {
             let frame = Addr::<u64>::from_raw(address).ok_or(Errno::EFAULT)?;
             let mask: u64 = task.read_value(frame)?;
             if mask & SIGTRAP_BIT != 0 {
@@ -5635,9 +5641,13 @@ impl<L: Tool + 'static> TracedTask<L> {
         // wrote; every later one is a trap the kernel just reported, which
         // nothing here writes, so it takes the one-call probe.
         let mut first_step = self.held_siginfo_written.swap(false, Ordering::Relaxed);
-        let mut step = move |task: Stopped, unit| {
+        let mut step = move |task: Stopped, request: StepRequest| {
             if !filtered {
-                step_shield.lock().unwrap().prepare(&task)?;
+                step_shield.lock().unwrap().prepare(
+                    &task,
+                    #[cfg(target_arch = "x86_64")]
+                    &request.regs,
+                )?;
             }
             // Each step resumes the held stop, exactly like the run loop's
             // wrappers (https://github.com/rrnewton/reverie/issues/1091).
@@ -5658,7 +5668,7 @@ impl<L: Tool + 'static> TracedTask<L> {
             };
             let lease = RootStopLease::new(task, held_root_stop.clone())
                 .guard_exit_stop(guard.then_some(probe));
-            match unit {
+            match request.unit {
                 StepUnit::Instruction => lease.step(None),
                 #[cfg(target_arch = "x86_64")]
                 StepUnit::Block => lease.block_step(),
