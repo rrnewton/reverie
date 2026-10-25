@@ -535,6 +535,7 @@ static bool test_wait_for_background;
 static bool test_delay_exec_helper_exit;
 static bool test_kill_announced_child;
 static bool test_thread_exit_evidence;
+static bool test_binary_evidence;
 static bool test_leave_process_clone_result_pending;
 static bool test_backend_failure;
 static bool test_copied_backend_failure;
@@ -1389,6 +1390,10 @@ static void evidence_emit_image_initialization(void) {
     return;
   }
   reverie_dbt_emit_evidence(record, sizeof(record) - 1);
+  if (test_binary_evidence) {
+    static const char binary_record[] = "\0\xffrecord\npayload\r\0";
+    reverie_dbt_emit_evidence(binary_record, sizeof(binary_record) - 1);
+  }
 }
 
 static void evidence_initialize_fork_child_thread(
@@ -7366,6 +7371,8 @@ DR_EXPORT void dr_client_main(client_id_t id, int argc, const char* argv[]) {
       test_kill_announced_child = true;
     else if (strcmp(argv[i], "-test-thread-exit-evidence") == 0)
       test_thread_exit_evidence = true;
+    else if (strcmp(argv[i], "-test-binary-evidence") == 0)
+      test_binary_evidence = true;
     else if (strcmp(argv[i], "-test-leave-process-clone-result-pending") == 0)
       test_leave_process_clone_result_pending = true;
     else if (strcmp(argv[i], "-test-backend-failure") == 0)
@@ -7566,6 +7573,7 @@ DR_EXPORT void dr_client_main(client_id_t id, int argc, const char* argv[]) {
         strcmp(argv[i], "-test-delay-exec-helper-exit") == 0 ||
         strcmp(argv[i], "-test-kill-announced-child") == 0 ||
         strcmp(argv[i], "-test-thread-exit-evidence") == 0 ||
+        strcmp(argv[i], "-test-binary-evidence") == 0 ||
         strcmp(argv[i], "-test-reused-tid") == 0 ||
         strcmp(argv[i], "-test-thread-clone-process-exit") == 0 ||
         strcmp(argv[i], "-test-stalled-thread-start") == 0 ||

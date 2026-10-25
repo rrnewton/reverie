@@ -63,7 +63,9 @@ pub use counter2_global::Counter2Global;
 pub use evidence::CoordinatorEvidence;
 pub use evidence::DbtEvidence;
 pub use evidence::DbtEvidenceLogLevel;
+pub use evidence::EvidenceRecordValidator;
 pub use evidence::decode_evidence;
+pub use evidence::decode_evidence_with_validator;
 // TODO-HUMAN-REVIEW(PR-134): Review the native bootstrap failure ABI export.
 pub use launcher::CLIENT_THREAD_START_FAILURE_EXIT_CODE;
 pub use launcher::DbtFailedRunOutput;

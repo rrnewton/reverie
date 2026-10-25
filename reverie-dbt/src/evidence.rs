@@ -6,7 +6,7 @@
  * LICENSE file in the root directory of this source tree.
  */
 
-//! Authenticated transport for canonical DBT runtime evidence.
+//! Authenticated transport for bounded DBT runtime evidence records.
 
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
@@ -61,6 +61,16 @@ const INITIALIZATION_RECORD: &[u8] =
 /// The initialization record with its length prefix, as it enters the stream.
 const ENCODED_INITIALIZATION_LEN: usize = 4 + INITIALIZATION_RECORD.len();
 const INITIALIZATION_MESSAGE_PREFIX: &[u8] = b"reverie_dbt::evidence: protected evidence init";
+/// Optional Tool-owned record policy for collection and artifact decoding.
+///
+/// The transport always enforces its record-size and lifecycle bounds. This
+/// additional validator sees only Tool records. Backend initialization records
+/// and lookalikes remain subject to the transport's reserved-namespace checks.
+/// Use the same deterministic validator at collection and decode. It runs under
+/// the collector lock: it must not block, panic, reenter the session, or have
+/// externally visible side effects.
+pub type EvidenceRecordValidator = fn(&[u8]) -> io::Result<()>;
+
 const SESSION_NEW: u8 = 0;
 const SESSION_RUNNING: u8 = 1;
 const SESSION_FINISHING: u8 = 2;
@@ -161,7 +171,7 @@ pub struct DbtEvidence {
 }
 
 impl DbtEvidence {
-    /// Comparable tracing-callback records in authenticated stream order.
+    /// Tool records in authenticated stream order, with their original bytes.
     ///
     /// Process image initialization records remain authenticated in the
     /// artifact but are represented by [`Self::initialization_records`]
@@ -202,7 +212,7 @@ impl DbtEvidence {
         self.initialization_records
     }
 
-    /// Consumes the stream and returns its comparable tracing-callback records.
+    /// Consumes the stream and returns its Tool records.
     pub fn into_records(self) -> Vec<Vec<u8>> {
         self.records
     }
@@ -210,10 +220,29 @@ impl DbtEvidence {
 
 /// Decodes the framed artifact produced by [`crate::DbtRunner::evidence_file`].
 ///
-/// Every record must be one bounded tracing record with exactly one terminal
-/// newline. Embedded CR/LF bytes are rejected so a guest-controlled field
-/// cannot synthesize an additional parser-visible INFO line.
+/// Records are nonempty, bounded byte strings; their contents and boundaries
+/// are preserved. Backend initialization records and lookalikes occupy a
+/// reserved namespace and are still subject to the protocol's classification.
 pub fn decode_evidence(bytes: &[u8]) -> io::Result<DbtEvidence> {
+    decode_evidence_inner(bytes, None)
+}
+
+/// Decodes protected evidence with the Tool policy used during collection.
+///
+/// Use the same validator supplied to
+/// [`crate::DbtRunner::evidence_file_with_validator`]. All framing, digest,
+/// size, and initialization checks also apply; the validator cannot relax them.
+pub fn decode_evidence_with_validator(
+    bytes: &[u8],
+    validator: EvidenceRecordValidator,
+) -> io::Result<DbtEvidence> {
+    decode_evidence_inner(bytes, Some(validator))
+}
+
+fn decode_evidence_inner(
+    bytes: &[u8],
+    validator: Option<EvidenceRecordValidator>,
+) -> io::Result<DbtEvidence> {
     if bytes.len() < FILE_HEADER_LEN
         || bytes.len() > FILE_HEADER_LEN + MAX_EVIDENCE_BYTES
         || &bytes[..8] != FILE_MAGIC
@@ -254,7 +283,7 @@ pub fn decode_evidence(bytes: &[u8]) -> io::Result<DbtEvidence> {
             .filter(|end| *end <= bytes.len())
             .ok_or_else(|| invalid_data("DBT evidence ends inside a record"))?;
         let record = &bytes[length_end..record_end];
-        validate_record(record)?;
+        validate_record(record, validator)?;
         hash = fnv_update(hash, &encoded_length);
         hash = fnv_update(hash, record);
         payload_bytes = payload_bytes
@@ -311,8 +340,10 @@ pub fn decode_evidence(bytes: &[u8]) -> io::Result<DbtEvidence> {
 struct SharedCollector(Arc<Mutex<Option<Collector>>>);
 
 impl SharedCollector {
-    fn new() -> Self {
-        Self(Arc::new(Mutex::new(Some(Collector::new()))))
+    fn new(validator: Option<EvidenceRecordValidator>) -> Self {
+        Self(Arc::new(Mutex::new(Some(Collector::with_validator(
+            validator,
+        )))))
     }
 
     fn with<T>(&self, absorb: impl FnOnce(&mut Collector) -> io::Result<T>) -> io::Result<T> {
@@ -355,10 +386,10 @@ pub struct CoordinatorEvidence {
 }
 
 impl CoordinatorEvidence {
-    /// Appends one record: a canonical tracing record with exactly one
-    /// terminal newline, as a guest emits. A record that imitates a process
-    /// image initialization record is refused, as is any record after the
-    /// run's evidence was finished.
+    /// Appends one nonempty bounded record using the immutable policy chosen
+    /// when the evidence session was constructed. A record that imitates a
+    /// process image initialization record is refused, as is any record after
+    /// the run's evidence was finished.
     pub fn append(&self, record: &[u8]) -> io::Result<()> {
         self.collector
             .with(|collector| collector.absorb_coordinator_record(record))
@@ -384,7 +415,7 @@ pub(crate) struct EvidenceSession {
 }
 
 impl EvidenceSession {
-    pub(crate) fn new(file: &File) -> io::Result<Self> {
+    pub(crate) fn new(file: &File, validator: Option<EvidenceRecordValidator>) -> io::Result<Self> {
         validate_output_file(file)?;
         let output = OpenOptions::new()
             .read(true)
@@ -404,7 +435,7 @@ impl EvidenceSession {
         let root_process = Arc::new(Mutex::new(None));
         let stop = Arc::new(AtomicBool::new(false));
         let acknowledgement_drops = AcknowledgementDropControl::default();
-        let collector = SharedCollector::new();
+        let collector = SharedCollector::new(validator);
 
         Ok(Self {
             address_hex: encode_hex(address),
@@ -656,6 +687,7 @@ struct Collector {
     /// `encoded_records`: those held by live images and the trailing ones.
     held_initialization_bytes: usize,
     byte_limit: usize,
+    validator: Option<EvidenceRecordValidator>,
     encoded_records: Vec<u8>,
     record_count: u64,
     payload_bytes: u64,
@@ -665,11 +697,7 @@ struct Collector {
 }
 
 impl Collector {
-    fn new() -> Self {
-        Self::with_byte_limit(MAX_EVIDENCE_BYTES)
-    }
-
-    fn with_byte_limit(byte_limit: usize) -> Self {
+    fn with_validator(validator: Option<EvidenceRecordValidator>) -> Self {
         Self {
             images: BTreeMap::new(),
             expected_processes: BTreeSet::new(),
@@ -677,13 +705,27 @@ impl Collector {
             last_receipts: BTreeMap::new(),
             trailing_initializations: 0,
             held_initialization_bytes: 0,
-            byte_limit,
+            byte_limit: MAX_EVIDENCE_BYTES,
+            validator,
             encoded_records: Vec::new(),
             record_count: 0,
             payload_bytes: 0,
             hash: FNV_OFFSET,
             saw_start: false,
             backend_failure: false,
+        }
+    }
+
+    #[cfg(test)]
+    fn new() -> Self {
+        Self::with_validator(None)
+    }
+
+    #[cfg(test)]
+    fn with_byte_limit(byte_limit: usize) -> Self {
+        Self {
+            byte_limit,
+            ..Self::new()
         }
     }
 
@@ -953,7 +995,7 @@ impl Collector {
                 .filter(|end| *end <= payload.len())
                 .ok_or_else(|| invalid_data("DBT DATA ends inside a record"))?;
             let record = &payload[length_end..record_end];
-            validate_record(record)?;
+            validate_record(record, self.validator)?;
             match classify_initialization_record(record) {
                 InitializationRecord::Exact if initialized => {
                     return Err(invalid_data(
@@ -1015,10 +1057,10 @@ impl Collector {
 
     /// Absorbs one record the coordinator emitted. It belongs to no guest
     /// process image, so it is checked as a record and never as image
-    /// lifecycle: it must be one canonical tracing record and must not imitate
-    /// an initialization record, which only a guest image may emit.
+    /// lifecycle: it must satisfy the configured record policy and must not
+    /// imitate an initialization record, which only a guest image may emit.
     fn absorb_coordinator_record(&mut self, record: &[u8]) -> io::Result<()> {
-        validate_record(record)?;
+        validate_record(record, self.validator)?;
         if !matches!(
             classify_initialization_record(record),
             InitializationRecord::Other
@@ -1480,32 +1522,19 @@ fn validate_output_file(file: &File) -> io::Result<()> {
     Ok(())
 }
 
-fn validate_record(record: &[u8]) -> io::Result<()> {
-    if record.is_empty()
-        || record.len() > MAX_FRAME_PAYLOAD
-        || record.last() != Some(&b'\n')
-        || record[..record.len() - 1]
-            .iter()
-            .any(|byte| matches!(*byte, b'\r' | b'\n'))
-    {
-        return Err(invalid_data(
-            "DBT evidence record is not exactly one terminal-newline tracing record",
-        ));
+fn validate_record(record: &[u8], validator: Option<EvidenceRecordValidator>) -> io::Result<()> {
+    if record.is_empty() || record.len() > MAX_FRAME_PAYLOAD {
+        return Err(invalid_data("DBT evidence record length is invalid"));
     }
-    let tagged = record
-        .strip_prefix(CANONICAL_RECORD_PREFIX)
-        .ok_or_else(|| invalid_data("DBT evidence record has no canonical timestamp prefix"))?;
-    if ![
-        b"ERROR ".as_slice(),
-        b"WARN ",
-        b"INFO ",
-        b"DEBUG ",
-        b"TRACE ",
-    ]
-    .iter()
-    .any(|prefix| tagged.starts_with(prefix))
+    // Exact initialization bytes and lookalikes belong to the backend, not
+    // the Tool's grammar. Each caller still applies its existing initialization
+    // lifecycle/reservation checks; this does not admit lookalikes as data.
+    if matches!(
+        classify_initialization_record(record),
+        InitializationRecord::Other
+    ) && let Some(validate) = validator
     {
-        return Err(invalid_data("DBT evidence record has no tracing level tag"));
+        validate(record)?;
     }
     Ok(())
 }
@@ -1633,14 +1662,156 @@ mod tests {
     }
 
     #[test]
-    fn framed_evidence_round_trips_and_rejects_injected_lines() {
+    fn opaque_tool_records_preserve_bytes_and_boundaries() {
+        let process = ProcessKey {
+            pid: 41,
+            start_time: 43,
+        };
+        let shared = SharedCollector::new(None);
+        let coordinator = CoordinatorEvidence {
+            collector: shared.clone(),
+        };
+        let host_record = b"\0\xffhost\nrecord\r\0";
+        let guest_record = b"\0\xffrecord\npayload\r\0";
+        coordinator.append(host_record).unwrap();
+        shared
+            .with(|collector| {
+                start_and_initialize(collector, process);
+                collector.absorb(FRAME_DATA, process, 2, &encode_records(&[guest_record]))?;
+                collector.absorb(FRAME_FINAL, process, 3, &[FINAL_GUEST_COMPLETED])
+            })
+            .unwrap();
+        let collected = shared.take().unwrap().finish().unwrap();
+        let mut output = tempfile::tempfile().unwrap();
+        publish(&mut output, collected).unwrap();
+        output.rewind().unwrap();
+        let mut bytes = Vec::new();
+        output.read_to_end(&mut bytes).unwrap();
+        let decoded = decode_evidence(&bytes).unwrap();
+        assert_eq!(decoded.records(), [host_record.as_slice(), guest_record]);
+        assert_eq!(decoded.initialization_records(), 1);
+        assert_eq!(
+            decoded.all_records(),
+            [host_record.as_slice(), INITIALIZATION_RECORD, guest_record]
+        );
+    }
+
+    fn tool_record_policy(record: &[u8]) -> io::Result<()> {
+        if record.starts_with(b"\0\xff") {
+            Ok(())
+        } else {
+            Err(invalid_data("record rejected by the binary Tool"))
+        }
+    }
+
+    #[test]
+    fn immutable_tool_policy_covers_guest_coordinator_clones_and_decode() {
+        let file = tempfile::tempfile().unwrap();
+        let session = EvidenceSession::new(&file, Some(tool_record_policy)).unwrap();
+        let coordinator = session.coordinator_evidence();
+        let cloned = coordinator.clone();
+        let accepted = b"\0\xffaccepted record\n\r";
+        let rejected = b"blocked\0\xffrecord\n\r";
+        assert!(tool_record_policy(INITIALIZATION_RECORD).is_err());
+        for appender in [&coordinator, &cloned] {
+            assert!(appender.append(rejected).is_err());
+        }
+        assert_eq!(
+            session
+                .collector
+                .with(|collector| Ok(collector.record_count))
+                .unwrap(),
+            0
+        );
+        for appender in [&coordinator, &cloned] {
+            appender.append(accepted).unwrap();
+        }
+        let process = ProcessKey {
+            pid: 41,
+            start_time: 43,
+        };
+        session
+            .collector
+            .with(|collector| {
+                start_and_initialize(collector, process);
+                let before = collector.record_count;
+                assert!(
+                    collector
+                        .absorb(FRAME_DATA, process, 2, &encode_records(&[rejected]))
+                        .is_err()
+                );
+                assert_eq!(collector.record_count, before);
+                collector.absorb(FRAME_DATA, process, 2, &encode_records(&[accepted]))?;
+                collector.absorb(FRAME_FINAL, process, 3, &[FINAL_GUEST_COMPLETED])
+            })
+            .unwrap();
+        let collected = session.collector.take().unwrap().finish().unwrap();
+        let mut output = tempfile::tempfile().unwrap();
+        publish(&mut output, collected).unwrap();
+        output.rewind().unwrap();
+        let mut bytes = Vec::new();
+        output.read_to_end(&mut bytes).unwrap();
+        let decoded = decode_evidence_with_validator(&bytes, tool_record_policy).unwrap();
+        assert_eq!(decoded.records(), [accepted.as_slice(); 3]);
+        assert_eq!(decoded.initialization_records(), 1);
+
+        // A valid generic artifact must still be checked by the Tool decoder.
+        let bytes = encode_artifact(&[INITIALIZATION_RECORD, rejected]);
+        assert_eq!(
+            decode_evidence(&bytes).unwrap().records(),
+            [rejected.as_slice()]
+        );
+        assert!(decode_evidence_with_validator(&bytes, tool_record_policy).is_err());
+    }
+
+    fn accept_tool_record(_record: &[u8]) -> io::Result<()> {
+        Ok(())
+    }
+
+    #[test]
+    fn tool_policy_cannot_relax_transport_record_bounds() {
+        let shared = SharedCollector::new(Some(accept_tool_record));
+        let coordinator = CoordinatorEvidence {
+            collector: shared.clone(),
+        };
+        let process = ProcessKey {
+            pid: 41,
+            start_time: 43,
+        };
+        shared
+            .with(|collector| {
+                start_and_initialize(collector, process);
+                Ok(())
+            })
+            .unwrap();
+        for record in [Vec::new(), vec![b'x'; MAX_FRAME_PAYLOAD + 1]] {
+            assert!(coordinator.append(&record).is_err());
+            assert!(
+                shared
+                    .with(|collector| collector.absorb(
+                        FRAME_DATA,
+                        process,
+                        2,
+                        &encode_records(&[&record]),
+                    ))
+                    .is_err()
+            );
+            assert!(
+                decode_evidence_with_validator(
+                    &encode_artifact(&[INITIALIZATION_RECORD, &record]),
+                    accept_tool_record,
+                )
+                .is_err()
+            );
+        }
+    }
+
+    #[test]
+    fn framed_evidence_round_trips() {
         let raw_records = [INITIALIZATION_RECORD, FIRST_RECORD, SECOND_RECORD];
         let evidence = decode_evidence(&encode_artifact(&raw_records)).unwrap();
         assert_eq!(evidence.initialization_records(), 1);
         assert_eq!(evidence.records(), [FIRST_RECORD, SECOND_RECORD]);
-
-        let injected = b"1970-01-01T00:00:00.000000Z INFO detcore: guest=ok\n1970-01-01T00:00:00.000000Z INFO detcore: forged\n";
-        assert!(validate_record(injected).is_err());
     }
 
     #[test]
@@ -1678,6 +1849,45 @@ mod tests {
         assert!(
             error.to_string().contains("digest does not match"),
             "raw artifact must be authenticated before semantic decoding: {error}"
+        );
+    }
+
+    #[test]
+    fn partial_initialization_is_not_tool_data_with_generic_records() {
+        let process = ProcessKey {
+            pid: 47,
+            start_time: 53,
+        };
+        let shared = SharedCollector::new(None);
+        let coordinator = CoordinatorEvidence {
+            collector: shared.clone(),
+        };
+        shared
+            .with(|collector| {
+                start_and_initialize(collector, process);
+                Ok(())
+            })
+            .unwrap();
+        for partial in [
+            &INITIALIZATION_RECORD[..INITIALIZATION_RECORD.len() - 1],
+            &INITIALIZATION_RECORD[..INITIALIZATION_RECORD.len() - 6],
+        ] {
+            assert!(coordinator.append(partial).is_err());
+            assert!(
+                shared
+                    .with(|collector| collector.absorb(
+                        FRAME_DATA,
+                        process,
+                        2,
+                        &encode_records(&[partial]),
+                    ))
+                    .is_err()
+            );
+            assert!(decode_evidence(&encode_artifact(&[INITIALIZATION_RECORD, partial])).is_err());
+        }
+        assert_eq!(
+            shared.with(|collector| Ok(collector.record_count)).unwrap(),
+            0
         );
     }
 
@@ -1846,7 +2056,7 @@ mod tests {
             pid: 41,
             start_time: 43,
         };
-        let shared = SharedCollector::new();
+        let shared = SharedCollector::new(None);
         let coordinator = CoordinatorEvidence {
             collector: shared.clone(),
         };
@@ -1891,8 +2101,8 @@ mod tests {
     }
 
     #[test]
-    fn coordinator_records_are_refused_unless_canonical_and_comparable() {
-        let shared = SharedCollector::new();
+    fn coordinator_records_preserve_transport_bounds_and_reserved_namespace() {
+        let shared = SharedCollector::new(None);
         let coordinator = CoordinatorEvidence {
             collector: shared.clone(),
         };
@@ -1901,15 +2111,12 @@ mod tests {
         let mut lookalike = INITIALIZATION_RECORD.to_vec();
         lookalike.insert(lookalike.len() - 1, b'!');
         assert!(coordinator.append(&lookalike).is_err());
-        for malformed in [
-            b"".as_slice(),
-            b"INFO detcore: no canonical prefix\n",
-            b"1970-01-01T00:00:00.000000Z INFO detcore: no newline",
-            b"1970-01-01T00:00:00.000000Z INFO detcore: two\nlines\n",
-            b"1970-01-01T00:00:00.000000Z NOTICE detcore: unknown level\n",
-        ] {
-            assert!(coordinator.append(malformed).is_err(), "{malformed:?}");
-        }
+        assert!(coordinator.append(b"").is_err());
+        assert!(
+            coordinator
+                .append(&vec![b'x'; MAX_FRAME_PAYLOAD + 1])
+                .is_err()
+        );
         // Nothing refused reached the stream.
         assert_eq!(
             shared.with(|collector| Ok(collector.record_count)).unwrap(),
@@ -2852,7 +3059,7 @@ mod tests {
     #[test]
     fn evidence_preparation_does_not_allocate_a_collector_task() {
         let file = tempfile::tempfile().unwrap();
-        let session = EvidenceSession::new(&file).unwrap();
+        let session = EvidenceSession::new(&file, None).unwrap();
         assert!(
             session.worker.lock().unwrap().is_none(),
             "preparing evidence must not consume a task ID before the guest is spawned"
@@ -2864,7 +3071,7 @@ mod tests {
     #[test]
     fn unstarted_evidence_is_closed_without_publication() {
         let mut file = tempfile::tempfile().unwrap();
-        let session = EvidenceSession::new(&file).unwrap();
+        let session = EvidenceSession::new(&file, None).unwrap();
         file.write_all(b"unpublished bytes").unwrap();
         let address = session
             .pending_listener
@@ -2885,7 +3092,7 @@ mod tests {
     #[test]
     fn evidence_session_can_be_claimed_only_before_one_run() {
         let file = tempfile::tempfile().unwrap();
-        let session = EvidenceSession::new(&file).unwrap();
+        let session = EvidenceSession::new(&file, None).unwrap();
         session.claim_run().unwrap();
         let error = session.claim_run().unwrap_err();
         assert_eq!(error.kind(), io::ErrorKind::AlreadyExists);

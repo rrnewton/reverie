@@ -41,6 +41,34 @@ fn compile_fixture(source_name: &str, output: &Path, extra_arguments: &[&str]) {
 
 #[test]
 #[ignore = "requires a built DynamoRIO and the reverie-dbt native client; run with --ignored"]
+fn protected_evidence_preserves_native_binary_records() {
+    let mut evidence_file = tempfile::tempfile().expect("evidence tempfile");
+    let runner = DbtRunner::from_env()
+        .expect("DynamoRIO and the native client must be configured")
+        .evidence_file(&evidence_file)
+        .expect("configure protected evidence")
+        .client_argument("-test-binary-evidence");
+    let output = runner
+        .output(&Command::new("/bin/true"))
+        .expect("opaque native evidence must reach the collector");
+    assert!(
+        output.status.success(),
+        "binary evidence run failed: {output:?}"
+    );
+    assert!(output.stdout.is_empty());
+    evidence_file.rewind().unwrap();
+    let mut bytes = Vec::new();
+    evidence_file.read_to_end(&mut bytes).unwrap();
+    let evidence = reverie_dbt::decode_evidence(&bytes).unwrap();
+    assert!(evidence.initialization_records() > 0);
+    assert_eq!(evidence.records().len(), evidence.initialization_records());
+    for record in evidence.records() {
+        assert_eq!(record, b"\0\xffrecord\npayload\r\0");
+    }
+}
+
+#[test]
+#[ignore = "requires a built DynamoRIO and the reverie-dbt native client; run with --ignored"]
 fn protected_evidence_follows_first_syscall_exec() {
     let directory = tempfile::tempdir().expect("fixture tempdir");
     let fixture = directory.path().join("exec-first-syscall");

@@ -207,7 +207,7 @@ impl DbtRunner {
         self
     }
 
-    /// Collects canonical runtime evidence over a protected one-run sideband.
+    /// Collects bounded runtime evidence records over a protected one-run sideband.
     ///
     /// `file` must be a fresh, empty, unlinked `O_RDWR` regular file. The caller
     /// retains its handle for reading after the complete followed process tree
@@ -219,8 +219,33 @@ impl DbtRunner {
     ///
     /// One configured collector is valid for exactly one run. Clones share that
     /// same run; a later run requires a new runner and a new empty file.
-    pub fn evidence_file(mut self, file: &File) -> io::Result<Self> {
-        self.evidence = Some(Arc::new(EvidenceSession::new(file)?));
+    pub fn evidence_file(self, file: &File) -> io::Result<Self> {
+        self.configure_evidence_file(file, None)
+    }
+
+    /// Collects evidence with one immutable Tool-owned record validator.
+    ///
+    /// Guest records and coordinator appenders use the same policy, including
+    /// appenders obtained from runner clones. Backend initialization records
+    /// and lookalikes are checked separately by the transport, so a Tool policy
+    /// need not know their representation. All transport bounds, authentication,
+    /// and lifecycle checks remain enforced. The validator must satisfy the
+    /// nonblocking, nonpanicking contract of [`crate::EvidenceRecordValidator`].
+    /// Decode with [`crate::decode_evidence_with_validator`] and the same policy.
+    pub fn evidence_file_with_validator(
+        self,
+        file: &File,
+        validator: crate::EvidenceRecordValidator,
+    ) -> io::Result<Self> {
+        self.configure_evidence_file(file, Some(validator))
+    }
+
+    fn configure_evidence_file(
+        mut self,
+        file: &File,
+        validator: Option<crate::EvidenceRecordValidator>,
+    ) -> io::Result<Self> {
+        self.evidence = Some(Arc::new(EvidenceSession::new(file, validator)?));
         // Evidence is published only after this non-escapable process group is
         // empty. The native client rejects guest setpgid/setsid while this mode
         // is active, so no followed descendant can outlive publication.
