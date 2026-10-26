@@ -3139,6 +3139,13 @@ impl<'a, T: Tool, R: HostRuntime> Guest<T> for InGuest<'a, T, R> {
         false
     }
 
+    /// The runtime's own descriptors in this process: the coordinator
+    /// connection, the Tool output socket, the performance counters and any
+    /// native-exec lease ([`crate::guest::protect::is_runtime_owned_fd`]).
+    fn is_runtime_owned_fd(&self, fd: i32) -> bool {
+        crate::guest::protect::is_runtime_owned_fd(fd)
+    }
+
     fn memory(&self) -> Self::Memory {
         GuestMemory::new(self.tail)
     }

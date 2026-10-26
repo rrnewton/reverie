@@ -256,6 +256,21 @@ impl<G: GlobalTool, S: AsRawFd> AsRawFd for InitialImageClient<G, S> {
 
 // TODO-HUMAN-REVIEW(PR-212): Review raw descriptor exposure for in-guest
 // runtimes that must hide coordinator transport descriptors from the guest.
+impl<G: GlobalTool, S> BlockingRpcClient<G, S> {
+    /// Replaces this client's stream with `stream` and returns the one it had,
+    /// without I/O, keeping the decoded config and the one-request-at-a-time
+    /// discipline. For an owner that moves the same connection to another
+    /// descriptor; `stream` must continue the exchange where the old one left
+    /// off.
+    pub fn replace_stream(&self, stream: S) -> S {
+        let mut current = self
+            .stream
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        std::mem::replace(&mut *current, stream)
+    }
+}
+
 impl<G: GlobalTool, S: AsRawFd> AsRawFd for BlockingRpcClient<G, S> {
     fn as_raw_fd(&self) -> RawFd {
         self.stream
