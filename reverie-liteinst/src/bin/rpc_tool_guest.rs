@@ -3431,6 +3431,10 @@ fn mask_instruction_guest(path: &Path) {
     println!("rdtsc-after-full-mask=tool");
 }
 
+#[cfg(feature = "fixed-syscall-gates")]
+#[path = "rpc_tool_guest/selector_preflight.rs"]
+mod selector_preflight_guest;
+
 fn main() {
     let mut args = std::env::args_os();
     let _program = args.next();
@@ -3444,6 +3448,12 @@ fn main() {
             fixed_gates_guest::inherited_filter(Path::new(&path))
         }
         Some("fixed-gate-install-failure") => fixed_gates_guest::install_failure(Path::new(&path)),
+        #[cfg(feature = "fixed-syscall-gates")]
+        Some("selector-preflight") => selector_preflight_guest::run(
+            Path::new(&path),
+            Path::new(&args.next().expect("observation path")),
+            &args.next().expect("selector mode").to_string_lossy(),
+        ),
         Some("guest") => guest(Path::new(&path)),
         Some("same-tool") => same_tool_guest::run(
             Path::new(&path),
