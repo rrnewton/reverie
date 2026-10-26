@@ -957,13 +957,13 @@ const CONTENT_REVERIE_CATALOG: [(&str, u64, &str); 57] = [
     ),
     (
         "reverie-inguest/src/guest/host.rs",
-        182692,
-        "20815363b93be9335dacc28c9ae7b15a6be07b766b50200d13c1aa1557e24f00",
+        183146,
+        "2f0674e4f9d46ef495531bb29ccf2ff530af086705bbc159a8e348f7fb4eb1d2",
     ),
     (
         "reverie-inguest/src/guest/host_linux.rs",
-        24766,
-        "49d0a89ebc125001d78a28e52c473f23365f35fc63f2203db9c7075b568ccfff",
+        24800,
+        "e533cb721e3aa4b21b417d5884bee111b5bdcce135a98fdb195fcf6bcb882d34",
     ),
     (
         "reverie-liteinst/src/tool_host.rs",
@@ -1017,8 +1017,8 @@ const CONTENT_REVERIE_CATALOG: [(&str, u64, &str); 57] = [
     ),
     (
         "reverie/src/guest.rs",
-        65505,
-        "c22920923185ad9276b05fd014a3f74e9495318f4faaef47240f92f285fa294a",
+        66297,
+        "a4897159a19321990a1e247f7041bdd1ff57dd3a0bb1a051868e3bdd74a9b130",
     ),
     (
         "reverie/src/pidfd_self.rs",

@@ -293,6 +293,7 @@ where
                 state,
                 rpc: &self.rpc,
                 tail: &tail,
+                injected_syscalls: 0,
             };
 
             if is_new && let Err(error) = drive_ready(tool.handle_thread_start(&mut guest)) {
@@ -429,6 +430,8 @@ struct E9patchGuest<'a, T: Tool> {
     state: &'a mut T::ThreadState,
     rpc: &'a CoordinatorRpc<T::GlobalState>,
     tail: &'a TailResult,
+    /// Injections made through this guest ([`Guest::injected_syscalls`]).
+    injected_syscalls: u64,
 }
 
 #[reverie::tool]
@@ -468,6 +471,10 @@ impl<T: Tool> Guest<T> for E9patchGuest<'_, T> {
     // so the runtime's own setup is never delivered to it.
     fn is_backend_runtime_bootstrap(&self) -> bool {
         false
+    }
+
+    fn injected_syscalls(&self) -> Option<u64> {
+        Some(self.injected_syscalls)
     }
 
     fn memory(&self) -> Self::Memory {
@@ -524,6 +531,7 @@ impl<T: Tool> Guest<T> for E9patchGuest<'_, T> {
     }
 
     async fn inject<S: SyscallInfo>(&mut self, syscall: S) -> Result<i64, Errno> {
+        self.injected_syscalls += 1;
         let (number, args) = syscall.into_parts();
         let number = number.id() as i64;
         let raw_args = [

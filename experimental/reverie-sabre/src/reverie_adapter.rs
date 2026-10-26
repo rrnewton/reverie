@@ -992,6 +992,8 @@ where
     /// `Tool::handle_signal_event` runs (`Guest::signal_info`), with any
     /// replacement the tool made (`Guest::set_signal_info`).
     signal_info: Option<[u8; reverie::SIGNAL_INFO_SIZE]>,
+    /// Injections made through this guest ([`Guest::injected_syscalls`]).
+    injected_syscalls: u64,
 }
 
 impl<'state, 'inject, T> SabreGuest<'state, 'inject, T>
@@ -1028,6 +1030,7 @@ where
             child_threads,
             tail: None,
             signal_info: None,
+            injected_syscalls: 0,
         }
     }
 
@@ -1112,6 +1115,10 @@ where
     // cannot attribute any delivered syscall to a runtime bootstrap.
     fn is_backend_runtime_bootstrap(&self) -> bool {
         false
+    }
+
+    fn injected_syscalls(&self) -> Option<u64> {
+        Some(self.injected_syscalls)
     }
 
     fn signal_info(&self) -> Option<[u8; reverie::SIGNAL_INFO_SIZE]> {
@@ -1254,6 +1261,7 @@ where
     }
 
     async fn inject<S: SyscallInfo>(&mut self, syscall: S) -> Result<i64, Errno> {
+        self.injected_syscalls += 1;
         let (number, args) = syscall.into_parts();
         let terminal_original = self.original == Some((number, args))
             && self.special_inject.is_some()

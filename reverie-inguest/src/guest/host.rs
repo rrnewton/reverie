@@ -634,6 +634,7 @@ where
             #[cfg(feature = "exec-native-injection")]
             mapping_driver: self.native_exec_driver.as_deref(),
             unsupported_refusal: None,
+            injected_syscalls: 0,
         };
 
         if is_new {
@@ -1008,6 +1009,7 @@ where
             #[cfg(feature = "exec-native-injection")]
             mapping_driver: self.native_exec_driver.as_deref(),
             unsupported_refusal: None,
+            injected_syscalls: 0,
         };
         if is_new {
             match callback_result(drive_callback(tool.handle_thread_start(&mut guest), &tail)) {
@@ -1200,6 +1202,7 @@ fn finish_fork_child<T: Tool, R: HostRuntime>(
         #[cfg(feature = "exec-native-injection")]
         mapping_driver: None,
         unsupported_refusal: None,
+        injected_syscalls: 0,
     };
     match callback_result(drive_callback(
         tool.handle_thread_start(&mut child_guest),
@@ -1710,6 +1713,9 @@ struct InGuest<'a, T: Tool, R: HostRuntime> {
     /// The typed refusal of the last injection, if the backend refused it
     /// ([`reverie::Guest::take_unsupported_refusal`]).
     unsupported_refusal: Option<reverie::UnsupportedRefusal>,
+    /// Injections made through this guest
+    /// ([`reverie::Guest::injected_syscalls`]).
+    injected_syscalls: u64,
 }
 
 impl<T: Tool, R: HostRuntime> InGuest<'_, T, R> {
@@ -3094,6 +3100,10 @@ impl<'a, T: Tool, R: HostRuntime> Guest<T> for InGuest<'a, T, R> {
         self.unsupported_refusal.take()
     }
 
+    fn injected_syscalls(&self) -> Option<u64> {
+        Some(self.injected_syscalls)
+    }
+
     async fn inject_with_purpose<S: SyscallInfo>(
         &mut self,
         syscall: S,
@@ -3110,6 +3120,7 @@ impl<'a, T: Tool, R: HostRuntime> Guest<T> for InGuest<'a, T, R> {
 
     async fn inject<S: SyscallInfo>(&mut self, syscall: S) -> Result<i64, Errno> {
         self.unsupported_refusal = None;
+        self.injected_syscalls += 1;
         if self.tail.ending() {
             // The guest is ending (an exit or a SIGKILL of itself was staged,
             // perhaps in a future the Tool abandoned): no further call is
@@ -3685,6 +3696,7 @@ mod tests {
             #[cfg(feature = "exec-native-injection")]
             mapping_driver: None,
             unsupported_refusal: None,
+            injected_syscalls: 0,
         };
         let mut action: libc::sigaction = unsafe { core::mem::zeroed() };
         action.sa_sigaction = libc::SIG_DFL;
@@ -3823,6 +3835,7 @@ mod tests {
             #[cfg(feature = "exec-native-injection")]
             mapping_driver: None,
             unsupported_refusal: None,
+            injected_syscalls: 0,
         };
         let mut action: libc::sigaction = unsafe { core::mem::zeroed() };
         action.sa_sigaction = libc::SIG_DFL;
@@ -4421,6 +4434,7 @@ mod tests {
                 #[cfg(feature = "exec-native-injection")]
                 mapping_driver: None,
                 unsupported_refusal: None,
+                injected_syscalls: 0,
             };
             let waker = Waker::noop();
             let mut context = Context::from_waker(waker);

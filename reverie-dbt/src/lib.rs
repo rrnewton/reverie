@@ -628,6 +628,8 @@ where
     tail_inject_result: Arc<TailInjectResult>,
     signal_info: Option<[u8; reverie::SIGNAL_INFO_SIZE]>,
     signal_info_replacement: Option<[u8; reverie::SIGNAL_INFO_SIZE]>,
+    /// Injections made through this guest ([`Guest::injected_syscalls`]).
+    injected_syscalls: u64,
 }
 
 impl<'a, T> DbtGuest<'a, T>
@@ -666,6 +668,7 @@ where
             tail_inject_result: Arc::new(TailInjectResult::default()),
             signal_info: None,
             signal_info_replacement: None,
+            injected_syscalls: 0,
         }
     }
 
@@ -674,6 +677,7 @@ where
         syscall: S,
         purpose: InjectionPurpose,
     ) -> Result<i64, Errno> {
+        self.injected_syscalls += 1;
         let (number, args) = syscall.into_parts();
         let args = [
             args.arg0 as u64,
@@ -935,6 +939,10 @@ where
     // through its Tool's `handle_cpuid_event`.
     fn has_cpuid_interception(&self) -> bool {
         true
+    }
+
+    fn injected_syscalls(&self) -> Option<u64> {
+        Some(self.injected_syscalls)
     }
 
     fn memory(&self) -> Self::Memory {

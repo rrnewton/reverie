@@ -1692,6 +1692,8 @@ struct KvmGuest<'a, T: Tool> {
     // The thread's kept failure wait for RPCs, where the caller keeps one
     // (the ordinary syscall callback); otherwise each RPC builds its own.
     rpc_failure: Option<&'a dyn crate::failure::RpcFailure>,
+    // Injections made through this handle (`Guest::injected_syscalls`).
+    injected_syscalls: u64,
 }
 
 impl<'a, T: Tool> KvmGuest<'a, T> {
@@ -1789,6 +1791,7 @@ impl<'a, T: Tool> KvmGuest<'a, T> {
             notifying_dequeue: false,
             entry_watch,
             unsupported_refusal: None,
+            injected_syscalls: 0,
             rpc_failure: None,
         }
     }
@@ -2173,6 +2176,7 @@ impl<T: Tool> Guest<T> for KvmGuest<'_, T> {
         self.admit_ordinary_operation().await;
         self.executor.invalidate_polled_read_attempt();
         self.unsupported_refusal = None;
+        self.injected_syscalls += 1;
         let request = SyscallRequest::from_syscall(syscall);
         if !self.executor.ordinary_injection_allowed(&request) {
             return Err(Errno::ENOSYS);
@@ -2471,6 +2475,10 @@ impl<T: Tool> Guest<T> for KvmGuest<'_, T> {
 
     fn take_unsupported_refusal(&mut self) -> Option<reverie::UnsupportedRefusal> {
         self.unsupported_refusal.take()
+    }
+
+    fn injected_syscalls(&self) -> Option<u64> {
+        Some(self.injected_syscalls)
     }
 
     fn storable_memory_ranges(&self) -> std::result::Result<Vec<(u64, u64)>, reverie::Error> {

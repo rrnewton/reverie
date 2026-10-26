@@ -3740,6 +3740,10 @@ pub struct TracedTask<L: Tool> {
     /// it is a Linux restart code, after the callback is dropped.
     injected_tail_result: Option<Result<i64, Errno>>,
 
+    /// Injections the Tool has made through this task
+    /// ([`Guest::injected_syscalls`]).
+    injected_syscalls: u64,
+
     /// pending signal to deliver. This can happen when
     /// syscall got interrupted (by signal)
     pending_signal: Option<AnySignal>,
@@ -4165,6 +4169,7 @@ impl<L: Tool> TracedTask<L> {
                 Timer::new(tid, tid)
             },
             cancel_handler: Arc::new(AtomicBool::new(false)),
+            injected_syscalls: 0,
             pending_signal: None,
             pending_signal_taken: None,
             pending_signal_reported: false,
@@ -4266,6 +4271,7 @@ impl<L: Tool> TracedTask<L> {
             next_state_rx: Some(next_state_rx),
             timer: Timer::new(self.pid, child),
             cancel_handler: Arc::new(AtomicBool::new(false)),
+            injected_syscalls: 0,
             pending_signal: None,
             pending_signal_taken: None,
             pending_signal_reported: false,
@@ -4383,6 +4389,7 @@ impl<L: Tool> TracedTask<L> {
             next_state_rx: Some(next_state_rx),
             timer: Timer::new(child, child),
             cancel_handler: Arc::new(AtomicBool::new(false)),
+            injected_syscalls: 0,
             pending_signal: None,
             pending_signal_taken: None,
             pending_signal_reported: false,
@@ -12421,6 +12428,7 @@ impl<L: Tool + 'static> TracedTask<L> {
         args: SyscallArgs,
     ) -> reverie::provider::ProviderOutcome<std::convert::Infallible> {
         use reverie::provider::LinuxProvider;
+        self.injected_syscalls += 1;
         let request = host_linux::request(nr, args);
         let tid = self.tid();
         match host_linux::HostLinux::<L>::new()
@@ -13539,6 +13547,10 @@ impl<L: Tool + 'static> Guest<L> for TracedTask<L> {
 
     fn has_cpuid_interception(&self) -> bool {
         self.has_cpuid_interception
+    }
+
+    fn injected_syscalls(&self) -> Option<u64> {
+        Some(self.injected_syscalls)
     }
 }
 
