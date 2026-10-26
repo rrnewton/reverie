@@ -155,20 +155,6 @@ pub(super) fn setsockopt(memory: &GuestMemory, state: &LoadedStaticElf, args: &[
 
 // AUTONOMOUS-BOT-IMPLEMENTED
 // TODO-HUMAN-REVIEW(PR-230): Review bounded SO_TYPE copy-out semantics.
-/// Retain the logical TCP state and negotiated option header while hiding all
-/// host timing, rate, packet, and byte counters. Mirrors detcore
-/// `canonicalize_tcp_info` (hermit/detcore/src/syscalls/files.rs:95): keep only
-/// the bytes at offsets 0, 1, 5, and 6 (`tcpi_state`, `tcpi_ca_state`,
-/// `tcpi_options`, and the packed `tcpi_snd/rcv_wscale` nibbles) and zero
-/// everything else, so the guest observes a deterministic connection header.
-fn canonicalize_tcp_info(info: &mut [u8]) {
-    for (offset, byte) in info.iter_mut().enumerate() {
-        if !matches!(offset, 0 | 1 | 5 | 6) {
-            *byte = 0;
-        }
-    }
-}
-
 pub(super) fn getsockopt(
     memory: &mut GuestMemory,
     state: &LoadedStaticElf,
@@ -193,152 +179,36 @@ pub(super) fn getsockopt(
         return negative_errno(libc::EINVAL);
     }
 
-    // TODO-HUMAN-REVIEW(PR-350): Review deterministic TCP_INFO canonicalization.
-    // Golden `handle_getsockopt` (hermit/detcore/src/syscalls/files.rs:2009)
-    // forwards the call to the kernel, then `canonicalize_tcp_info`
-    // (files.rs:95) retains only the logical connection header and zeroes every
-    // host timing, rate, packet, and byte counter. Mirror that here: forward to
-    // the host and canonicalize the returned bytes before copying into the
-    // guest. This implements the already-established detcore strategy on the KVM
-    // executor (routine golden-ptrace parity), not a new determinization.
-    if args[1] as libc::c_int == libc::IPPROTO_TCP && args[2] as libc::c_int == libc::TCP_INFO {
-        if capacity != 0 && args[3] == 0 {
-            return negative_errno(libc::EFAULT);
-        }
-        let mut value = vec![0; capacity];
-        let value_pointer = if value.is_empty() {
-            std::ptr::null_mut()
-        } else {
-            value.as_mut_ptr().cast::<libc::c_void>()
-        };
-        // SAFETY: value_pointer is null for a zero-length request or writable
-        // for capacity bytes; host_fd belongs to the guest descriptor table.
-        if unsafe {
-            libc::getsockopt(
-                host_fd,
-                libc::IPPROTO_TCP,
-                libc::TCP_INFO,
-                value_pointer,
-                &mut length,
-            )
-        } != 0
-        {
-            return io_error(std::io::Error::last_os_error());
-        }
-        let copy_length = capacity.min(length as usize);
-        canonicalize_tcp_info(&mut value[..copy_length]);
-        if copy_length != 0 && memory.user().write(args[3], &value[..copy_length]).is_err() {
-            return negative_errno(libc::EFAULT);
-        }
-        return write_struct(&mut ProviderMemory(memory), args[4], &length);
-    }
-
-    if args[1] as libc::c_int != libc::SOL_SOCKET {
-        return negative_errno(libc::ENOPROTOOPT);
-    }
+    // The host kernel answers every option below, as it does for the ptrace
+    // backend. Where its answer is host state (the TCP_INFO counters,
+    // SO_COOKIE, SO_NETNS_COOKIE and SO_INCOMING_CPU), a Tool that needs a
+    // reproducible value rewrites it after the call, as on every backend.
+    // SO_ERROR reads and clears the socket's pending error; a guest polls for
+    // a nonblocking connect's completion before asking.
+    let level = args[1] as libc::c_int;
     let option = args[2] as libc::c_int;
-    if !matches!(
-        option,
-        libc::SO_NETNS_COOKIE
-            | libc::SO_COOKIE
-            | libc::SO_INCOMING_CPU
-            | libc::SO_TYPE
-            | libc::SO_DOMAIN
-            | libc::SO_ACCEPTCONN
-            | libc::SO_REUSEADDR
-            | libc::SO_KEEPALIVE
-            | libc::SO_BROADCAST
-            | libc::SO_ERROR
-    ) {
+    let forwarded = match level {
+        libc::SOL_SOCKET => matches!(
+            option,
+            libc::SO_TYPE
+                | libc::SO_DOMAIN
+                | libc::SO_ACCEPTCONN
+                | libc::SO_REUSEADDR
+                | libc::SO_KEEPALIVE
+                | libc::SO_BROADCAST
+                | libc::SO_ERROR
+                | libc::SO_COOKIE
+                | libc::SO_NETNS_COOKIE
+                | libc::SO_INCOMING_CPU
+        ),
+        libc::IPPROTO_TCP => option == libc::TCP_INFO,
+        _ => false,
+    };
+    if !forwarded {
         return negative_errno(libc::ENOPROTOOPT);
     }
     if capacity != 0 && args[3] == 0 {
         return negative_errno(libc::EFAULT);
-    }
-
-    // AUTONOMOUS-BOT-IMPLEMENTED
-    // TODO-HUMAN-REVIEW(PR-235): Review deterministic SO_NETNS_COOKIE semantics.
-    if args[2] as libc::c_int == libc::SO_NETNS_COOKIE {
-        let bytes = GUEST_NETNS_COOKIE.to_ne_bytes();
-        let copy_length = capacity.min(bytes.len());
-        if copy_length != 0 && memory.user().write(args[3], &bytes[..copy_length]).is_err() {
-            return negative_errno(libc::EFAULT);
-        }
-        let result_length = copy_length as libc::socklen_t;
-        return write_struct(&mut ProviderMemory(memory), args[4], &result_length);
-    }
-
-    // AUTONOMOUS-BOT-IMPLEMENTED
-    // TODO-HUMAN-REVIEW(PR-235): Review deterministic SO_COOKIE identity semantics.
-    if args[2] as libc::c_int == libc::SO_COOKIE {
-        let Some(identity) = state.fd_object_inodes.get(&guest_fd) else {
-            return negative_errno(libc::EIO);
-        };
-        let bytes = identity.inode.to_ne_bytes();
-        let copy_length = capacity.min(bytes.len());
-        if copy_length != 0 && memory.user().write(args[3], &bytes[..copy_length]).is_err() {
-            return negative_errno(libc::EFAULT);
-        }
-        let result_length = copy_length as libc::socklen_t;
-        return write_struct(&mut ProviderMemory(memory), args[4], &result_length);
-    }
-    // AUTONOMOUS-BOT-IMPLEMENTED
-    // TODO-HUMAN-REVIEW(PR-345): Hermit exposes a single virtual CPU, so
-    // SO_INCOMING_CPU must not leak the host CPU that processed a socket's most
-    // recent packet. Mirror detcore's reviewed handle_getsockopt (hermit
-    // detcore/src/syscalls/files.rs, TODO-HUMAN-REVIEW(PR-898)): forward to the
-    // host for the deterministic option length, then overwrite the CPU id with
-    // a canonical 0.
-    if args[2] as libc::c_int == libc::SO_INCOMING_CPU {
-        let mut value = vec![0; capacity];
-        let value_pointer = if value.is_empty() {
-            std::ptr::null_mut()
-        } else {
-            value.as_mut_ptr().cast::<libc::c_void>()
-        };
-        // SAFETY: value_pointer is null for a zero-length request or writable
-        // for capacity bytes; host_fd belongs to the guest descriptor table.
-        if unsafe {
-            libc::getsockopt(
-                host_fd,
-                libc::SOL_SOCKET,
-                libc::SO_INCOMING_CPU,
-                value_pointer,
-                &mut length,
-            )
-        } != 0
-        {
-            return io_error(std::io::Error::last_os_error());
-        }
-        // Canonicalize the leaked host CPU id to virtual CPU 0, writing at most
-        // the option's returned length (never more than a 32-bit CPU id).
-        let zero_cpu = 0_i32.to_ne_bytes();
-        let copy_length = capacity.min(length as usize).min(zero_cpu.len());
-        if copy_length != 0
-            && memory
-                .user()
-                .write(args[3], &zero_cpu[..copy_length])
-                .is_err()
-        {
-            return negative_errno(libc::EFAULT);
-        }
-        return write_struct(&mut ProviderMemory(memory), args[4], &length);
-    }
-
-    // SO_ERROR reads and clears the socket's pending error, as the kernel
-    // does for the ptrace backend (Detcore forwards it there too); a guest
-    // polls for a nonblocking connect's completion before asking.
-    if !matches!(
-        option,
-        libc::SO_TYPE
-            | libc::SO_DOMAIN
-            | libc::SO_ACCEPTCONN
-            | libc::SO_REUSEADDR
-            | libc::SO_KEEPALIVE
-            | libc::SO_BROADCAST
-            | libc::SO_ERROR
-    ) {
-        return negative_errno(libc::ENOPROTOOPT);
     }
 
     let mut value = vec![0; capacity];
@@ -349,37 +219,27 @@ pub(super) fn getsockopt(
     };
     // SAFETY: value_pointer is null for a zero-length request or writable for
     // capacity bytes; host_fd belongs to the guest descriptor table.
-    if unsafe {
-        libc::getsockopt(
-            host_fd,
-            libc::SOL_SOCKET,
-            option,
-            value_pointer,
-            &mut length,
-        )
-    } != 0
-    {
+    if unsafe { libc::getsockopt(host_fd, level, option, value_pointer, &mut length) } != 0 {
         return io_error(std::io::Error::last_os_error());
     }
     let copy_length = capacity.min(length as usize);
-    // Linux copies the option bytes before publishing optlen. Use syscall
-    // copyout, which respects guest write permissions and preserves a copied
-    // prefix if a later page faults. sk_getsockopt uses copy_to_sockptr for
-    // BOTH value and length, unlike move_addr_to_user's scalar length store:
+    // Linux copies the option bytes and optlen with copy_to_sockptr, which
+    // respects guest write permissions and keeps a copied prefix if a later
+    // page faults, unlike move_addr_to_user's scalar length store. The order
+    // depends on the level: sk_getsockopt copies the value first,
     // https://github.com/torvalds/linux/blob/v6.18/net/core/sock.c#L2159
-    if memory
-        .user()
-        .copy_to_user(args[3], &value[..copy_length])
-        .is_err()
-    {
-        return negative_errno(libc::EFAULT);
-    }
-    if memory
-        .user()
-        .copy_to_user(args[4], &length.to_ne_bytes())
-        .is_err()
-    {
-        return negative_errno(libc::EFAULT);
+    // and do_tcp_getsockopt's TCP_INFO publishes optlen first,
+    // https://github.com/torvalds/linux/blob/v6.18/net/ipv4/tcp.c#L4494
+    let length = length.to_ne_bytes();
+    let copies = if level == libc::IPPROTO_TCP {
+        [(args[4], &length[..]), (args[3], &value[..copy_length])]
+    } else {
+        [(args[3], &value[..copy_length]), (args[4], &length[..])]
+    };
+    for (address, bytes) in copies {
+        if memory.user().copy_to_user(address, bytes).is_err() {
+            return negative_errno(libc::EFAULT);
+        }
     }
     0
 }

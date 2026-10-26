@@ -14783,7 +14783,7 @@ mod tests {
     }
 
     #[test]
-    fn getsockopt_tcp_info_is_canonicalized() {
+    fn getsockopt_tcp_info_returns_the_host_tcp_info() {
         const BIND_ADDRESS: u64 = 0x100;
         const NAME_ADDRESS: u64 = 0x200;
         const NAME_LENGTH: u64 = 0x300;
@@ -14894,7 +14894,7 @@ mod tests {
         assert_eq!(accepted, 5);
 
         // The behavior under test: getsockopt(IPPROTO_TCP, TCP_INFO) on the
-        // established client socket forwards to the host, then canonicalizes.
+        // established client socket returns the host kernel's tcp_info.
         let info_size = std::mem::size_of::<libc::tcp_info>();
         assert_eq!(
             write_struct(
@@ -14923,21 +14923,15 @@ mod tests {
         );
         let returned_len: libc::socklen_t = read_struct(&memory, INFO_LENGTH);
         let returned_len = returned_len as usize;
-        // The kernel returns a nonempty tcp_info no larger than the buffer.
-        assert!(returned_len > 6 && returned_len <= info_size);
-        let mut info = vec![0u8; returned_len];
-        memory.read(INFO_ADDRESS, &mut info).unwrap();
-        // tcpi_state (offset 0) is retained: a completed connect is
-        // TCP_ESTABLISHED (1), proving a real host tcp_info was read, not zeroed
-        // by an error path.
-        assert_eq!(info[0], 1, "tcpi_state should be TCP_ESTABLISHED");
-        // Canonicalization: every byte outside the retained header offsets
-        // {0,1,5,6} is zeroed, hiding host timing/rate/counter nondeterminism.
-        for (offset, byte) in info.iter().enumerate() {
-            if !matches!(offset, 0 | 1 | 5 | 6) {
-                assert_eq!(*byte, 0, "byte at offset {offset} should be canonicalized");
-            }
-        }
+        // The kernel returns a tcp_info no larger than the buffer, reaching at
+        // least tcpi_snd_mss (offset 16).
+        assert!(returned_len >= 20 && returned_len <= info_size);
+        let info: libc::tcp_info = read_struct(&memory, INFO_ADDRESS);
+        // A completed connect is TCP_ESTABLISHED (1).
+        assert_eq!(info.tcpi_state, 1, "tcpi_state should be TCP_ESTABLISHED");
+        // The host's retransmission timeout and send MSS pass through.
+        assert_ne!(info.tcpi_rto, 0, "tcpi_rto should be the host's");
+        assert_ne!(info.tcpi_snd_mss, 0, "tcpi_snd_mss should be the host's");
 
         for fd in [accepted, client, server] {
             assert_eq!(
@@ -16136,16 +16130,30 @@ mod tests {
             value: u64,
             length: u64,
         ) -> Vec<u8> {
+            self.option_fault_matches_native(
+                state,
+                fd,
+                number,
+                (libc::SOL_SOCKET, libc::SO_DOMAIN),
+                value,
+                length,
+            )
+        }
+
+        /// As [`Self::fault_matches_native`], with getsockopt asking for
+        /// `option` at `level` instead of SO_DOMAIN.
+        fn option_fault_matches_native(
+            &mut self,
+            state: &mut LoadedStaticElf,
+            fd: i32,
+            number: libc::c_long,
+            (level, option): (libc::c_int, libc::c_int),
+            value: u64,
+            length: u64,
+        ) -> Vec<u8> {
             let arguments = |fd, value, length| {
                 if number == libc::SYS_getsockopt {
-                    [
-                        fd,
-                        libc::SOL_SOCKET as u64,
-                        libc::SO_DOMAIN as u64,
-                        value,
-                        length,
-                        0,
-                    ]
+                    [fd, level as u64, option as u64, value, length, 0]
                 } else {
                     assert!([libc::SYS_getsockname, libc::SYS_getpeername].contains(&number));
                     [fd, value, length, 0, 0, 0]
@@ -16363,7 +16371,55 @@ mod tests {
     }
 
     #[test]
-    fn getsockopt_so_incoming_cpu_is_canonical_zero() {
+    fn socket_query_copyout_tcp_info_publishes_length_before_value() {
+        let root = TestDir::new();
+        let mut state = test_state(&root.0);
+        let listener = std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let client = std::net::TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        let (_server, _) = listener.accept().unwrap();
+        // SAFETY: into_raw_fd transfers the client's sole ownership to File.
+        let file =
+            unsafe { std::fs::File::from_raw_fd(std::os::fd::IntoRawFd::into_raw_fd(client)) };
+        let fd = insert_file_with_flags(&mut state, file, false, None) as i32;
+        assert!(fd >= 0);
+        // The host's tcp_info length; asking for more makes optlen change.
+        let mut info = [0_u8; 1024];
+        let mut info_length = info.len() as libc::socklen_t;
+        // SAFETY: both pointers name writable host storage for the live socket.
+        assert_eq!(
+            unsafe {
+                libc::getsockopt(
+                    host_fd(&state, fd).unwrap(),
+                    libc::IPPROTO_TCP,
+                    libc::TCP_INFO,
+                    info.as_mut_ptr().cast(),
+                    &mut info_length,
+                )
+            },
+            0
+        );
+        assert!((info_length as usize) < info.len());
+        let mut buffer = SocketQueryCopyoutBuffer::new();
+        buffer.length(0x100, info_length + 8);
+        let mut expected = buffer.bytes();
+        expected[0x100..0x104].copy_from_slice(&info_length.to_ne_bytes());
+        buffer.protect_page(1, libc::PROT_NONE);
+        assert_eq!(
+            buffer.option_fault_matches_native(
+                &mut state,
+                fd,
+                libc::SYS_getsockopt,
+                (libc::IPPROTO_TCP, libc::TCP_INFO),
+                PAGE_SIZE,
+                0x100,
+            ),
+            expected,
+            "TCP_INFO publishes optlen first, then faults copying the value"
+        );
+    }
+
+    #[test]
+    fn getsockopt_so_incoming_cpu_returns_the_host_answer() {
         const RESULT: u64 = 0x100;
         const RESULT_LENGTH: u64 = 0x200;
 
@@ -16378,8 +16434,7 @@ mod tests {
         );
         assert_eq!(socket_fd, 3);
 
-        // Pre-load a non-zero sentinel to prove the handler overwrites whatever
-        // host CPU id the kernel reports with a canonical virtual CPU 0.
+        // Pre-load a sentinel, which the host's answer replaces.
         assert_eq!(
             write_struct(&mut ProviderMemory(&memory), RESULT, &0x5a5a_5a5a_i32),
             0
@@ -16405,13 +16460,16 @@ mod tests {
             ),
             0
         );
-        // Deterministic option length (a 32-bit CPU id) and a canonical 0 value,
-        // matching detcore's handle_getsockopt regardless of the host CPU.
+        // The host's answer for this socket, read again from the descriptor
+        // behind it.
+        let (native, native_length) = host_incoming_cpu(&state, socket_fd as libc::c_int);
+        assert_ne!(native, 0x5a5a_5a5a);
+        assert_eq!(native_length, full_length);
         assert_eq!(
             read_struct::<libc::socklen_t>(&memory, RESULT_LENGTH),
-            full_length
+            native_length
         );
-        assert_eq!(read_struct::<libc::c_int>(&memory, RESULT), 0);
+        assert_eq!(read_struct::<libc::c_int>(&memory, RESULT), native);
 
         // A null optlen pointer is rejected before the host is consulted.
         assert_eq!(
@@ -16433,14 +16491,14 @@ mod tests {
     }
 
     #[test]
-    fn so_incoming_cpu_udp4_loopback_flow_is_canonical_zero() {
+    fn so_incoming_cpu_udp4_loopback_flow_returns_the_host_answer() {
         // End-to-end model of the so_incoming_cpu_udp4 compat cell: an AF_INET
         // SOCK_DGRAM receiver bound to loopback, a real datagram delivered from
         // a second socket, then getsockopt(SO_INCOMING_CPU) on the receiver.
         // This exercises the full executor path the cell drives (socket / bind /
         // getsockname / sendto / recvfrom / getsockopt) rather than the option
-        // read in isolation, proving SO_INCOMING_CPU is canonicalized to virtual
-        // CPU 0 after the socket has actually received data on some host CPU.
+        // read in isolation: after the socket has received data, the option is
+        // still the host kernel's answer for it.
         const BIND_ADDRESS: u64 = 0x100;
         const NAME_ADDRESS: u64 = 0x200;
         const NAME_LENGTH: u64 = 0x300;
@@ -16562,8 +16620,7 @@ mod tests {
         memory.read(RECV_BUFFER, &mut received).unwrap();
         assert_eq!(&received, b"udp4!");
 
-        // The datagram was processed on some host CPU, yet the option must read
-        // back a canonical virtual CPU 0, matching detcore's handle_getsockopt.
+        // The host's answer for the receiver passes through.
         let cpu_length = std::mem::size_of::<libc::c_int>() as libc::socklen_t;
         assert_eq!(
             write_struct(&mut ProviderMemory(&memory), OPT_RESULT, &0x5a5a_5a5a_i32),
@@ -16589,15 +16646,66 @@ mod tests {
             ),
             0
         );
+        let (native, native_length) = host_incoming_cpu(&state, receiver as libc::c_int);
+        assert_ne!(native, 0x5a5a_5a5a);
+        assert_eq!(native_length, cpu_length);
         assert_eq!(
             read_struct::<libc::socklen_t>(&memory, OPT_LENGTH),
-            cpu_length
+            native_length
         );
-        assert_eq!(read_struct::<libc::c_int>(&memory, OPT_RESULT), 0);
+        assert_eq!(read_struct::<libc::c_int>(&memory, OPT_RESULT), native);
+    }
+
+    /// SO_INCOMING_CPU of the host socket behind `guest_fd`, read directly
+    /// from the host kernel, with the length it returned.
+    fn host_incoming_cpu(
+        state: &LoadedStaticElf,
+        guest_fd: libc::c_int,
+    ) -> (libc::c_int, libc::socklen_t) {
+        let mut value = 0x5a5a_5a5a_i32;
+        let mut length = std::mem::size_of::<libc::c_int>() as libc::socklen_t;
+        // SAFETY: both pointers name writable host storage, and the host
+        // descriptor stays open in the guest descriptor table.
+        assert_eq!(
+            unsafe {
+                libc::getsockopt(
+                    host_fd(state, guest_fd).unwrap(),
+                    libc::SOL_SOCKET,
+                    libc::SO_INCOMING_CPU,
+                    std::ptr::from_mut(&mut value).cast(),
+                    &mut length,
+                )
+            },
+            0
+        );
+        (value, length)
+    }
+
+    /// The 64-bit SOL_SOCKET `option` of the host socket behind `guest_fd`,
+    /// read directly from the host kernel.
+    fn host_socket_u64(state: &LoadedStaticElf, guest_fd: libc::c_int, option: libc::c_int) -> u64 {
+        let mut value = 0_u64;
+        let mut length = std::mem::size_of::<u64>() as libc::socklen_t;
+        // SAFETY: both pointers name writable host storage, and the host
+        // descriptor stays open in the guest descriptor table.
+        assert_eq!(
+            unsafe {
+                libc::getsockopt(
+                    host_fd(state, guest_fd).unwrap(),
+                    libc::SOL_SOCKET,
+                    option,
+                    std::ptr::from_mut(&mut value).cast(),
+                    &mut length,
+                )
+            },
+            0
+        );
+        assert_eq!(length as usize, std::mem::size_of::<u64>());
+        value
     }
 
     #[test]
-    fn getsockopt_so_cookie_uses_open_file_identity() {
+    fn getsockopt_so_cookie_returns_the_host_socket_cookie() {
         const RESULT: u64 = 0x100;
         const RESULT_LENGTH: u64 = 0x200;
 
@@ -16652,12 +16760,21 @@ mod tests {
             [first as u64, 0, 0, 0, 0, 0],
         ) as libc::c_int;
 
+        // Each socket has its own host cookie, which a duplicate shares.
         let first_cookie = cookie(&mut memory, &mut state, first);
         let second_cookie = cookie(&mut memory, &mut state, second);
         let alias_cookie = cookie(&mut memory, &mut state, alias);
         assert_ne!(first_cookie, 0);
         assert_ne!(first_cookie, second_cookie);
         assert_eq!(first_cookie, alias_cookie);
+        assert_eq!(
+            first_cookie,
+            host_socket_u64(&state, first, libc::SO_COOKIE)
+        );
+        assert_eq!(
+            second_cookie,
+            host_socket_u64(&state, second, libc::SO_COOKIE)
+        );
     }
 
     #[test]
@@ -16710,11 +16827,12 @@ mod tests {
             [libc::AF_INET as u64, libc::SOCK_DGRAM as u64, 0, 0, 0, 0],
         ) as libc::c_int;
 
-        assert_eq!(cookie(&mut memory, &mut state, stream), GUEST_NETNS_COOKIE);
-        assert_eq!(
-            cookie(&mut memory, &mut state, datagram),
-            GUEST_NETNS_COOKIE
-        );
+        // Both sockets are in the host network namespace and report its
+        // cookie.
+        let host_cookie = host_socket_u64(&state, stream, libc::SO_NETNS_COOKIE);
+        assert_ne!(host_cookie, 0);
+        assert_eq!(cookie(&mut memory, &mut state, stream), host_cookie);
+        assert_eq!(cookie(&mut memory, &mut state, datagram), host_cookie);
     }
 
     #[test]
