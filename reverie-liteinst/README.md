@@ -578,6 +578,12 @@ identity, matched against independently compiled bytes by
 authority. `VerifiedCompiledSources::with_consumer_build` joins the policy to
 the actual successful command, complete Cargo events and selected output.
 
+The standalone producer may also name its artifact crate as a test dependency
+to exercise real publication-close controls. The Cargo adapter first accepts
+the existing single build dependency, then exactly one build and one test entry
+bound to the same independent full pin without aliases or paths. The runtime
+leaf still requires exactly one ordinary preload dependency.
+
 The consumer retains that enriched source context through qualification,
 staging and receipt publication. Receipt verification receives the independently
 resolved current policy through `ConsumerExpectation::expected_current_policy`

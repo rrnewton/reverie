@@ -2057,12 +2057,32 @@ fn content_manifest_and_lock_pin(metadata: &Value, root: &Path, source: &str) ->
             .filter(|d| d["name"] == dependency)
             .collect();
         require(
-            dependencies.len() == 1
+            (dependencies.len() == 1
                 && dependencies[0]["source"].as_str() == source.rsplit_once('#').map(|s| s.0)
                 && dependencies[0]["kind"].as_str() == kind
                 && (kind.is_some() || dependencies[0]["kind"].is_null())
                 && dependencies[0]["rename"].is_null()
-                && dependencies[0]["path"].is_null(),
+                && dependencies[0]["path"].is_null())
+                // Running the producer's real close controls also requires the
+                // same artifact crate as a dev-dependency. Bind both entries;
+                // filtering by kind would leave the second one unchecked.
+                || (kind == Some("build")
+                    && dependencies.len() == 2
+                    && dependencies.iter().all(|dependency| {
+                        dependency["source"].as_str() == source.rsplit_once('#').map(|s| s.0)
+                            && dependency["rename"].is_null()
+                            && dependency["path"].is_null()
+                    })
+                    && dependencies
+                        .iter()
+                        .filter(|dependency| dependency["kind"] == "build")
+                        .count()
+                        == 1
+                    && dependencies
+                        .iter()
+                        .filter(|dependency| dependency["kind"] == "dev")
+                        .count()
+                        == 1),
             "content manifest dependency differs from independent full pin",
         )?;
     }
@@ -33952,6 +33972,81 @@ mod tests {
             ));
             assert!(content_manifest_and_lock_pin(&bad, &root, &source).is_err());
         }
+        let mut tested_producer = pin_metadata.clone();
+        let mut dev_dependency = tested_producer["packages"][0]["dependencies"][0].clone();
+        dev_dependency["kind"] = serde_json::json!("dev");
+        tested_producer["packages"][0]["dependencies"]
+            .as_array_mut()
+            .unwrap()
+            .push(dev_dependency);
+        for reverse in [false, true] {
+            let mut ordered = tested_producer.clone();
+            if reverse {
+                ordered["packages"][0]["dependencies"]
+                    .as_array_mut()
+                    .unwrap()
+                    .reverse();
+            }
+            content_manifest_and_lock_pin(&ordered, &root, &source).unwrap();
+        }
+        for kinds in [
+            vec![],
+            vec!["dev"],
+            vec!["build", "build"],
+            vec!["dev", "dev"],
+            vec!["build", "normal"],
+            vec!["build", "dev", "dev"],
+        ] {
+            let mut bad = tested_producer.clone();
+            bad["packages"][0]["dependencies"] = serde_json::Value::Array(
+                kinds
+                    .iter()
+                    .map(|kind| {
+                        let mut dependency = pin_metadata["packages"][0]["dependencies"][0].clone();
+                        dependency["kind"] = serde_json::json!(kind);
+                        dependency
+                    })
+                    .collect(),
+            );
+            assert!(
+                content_manifest_and_lock_pin(&bad, &root, &source).is_err(),
+                "producer dependency kinds {kinds:?}"
+            );
+        }
+        for index in 0..2 {
+            for (field, value) in [
+                (
+                    "source",
+                    serde_json::json!("git+https://example.invalid/reverie.git?rev=wrong"),
+                ),
+                (
+                    "source",
+                    serde_json::json!("git+https://github.com/rrnewton/reverie.git?rev=wrong"),
+                ),
+                ("kind", serde_json::json!("normal")),
+                ("kind", serde_json::Value::Null),
+                ("rename", serde_json::json!("alias")),
+                ("path", serde_json::json!(rv_one)),
+            ] {
+                let mut bad = tested_producer.clone();
+                bad["packages"][0]["dependencies"][index][field] = value;
+                assert!(
+                    content_manifest_and_lock_pin(&bad, &root, &source).is_err(),
+                    "tested producer dependency {index}/{field}"
+                );
+            }
+        }
+        let mut extra_leaf_dependency = tested_producer.clone();
+        let mut leaf_dev = pin_metadata["packages"][1]["dependencies"][0].clone();
+        leaf_dev["kind"] = serde_json::json!("dev");
+        extra_leaf_dependency["packages"][1]["dependencies"]
+            .as_array_mut()
+            .unwrap()
+            .push(leaf_dev);
+        assert!(content_manifest_and_lock_pin(&extra_leaf_dependency, &root, &source).is_err());
+        extra_leaf_dependency["packages"][1]["dependencies"][0]["kind"] =
+            serde_json::json!("build");
+        assert!(content_manifest_and_lock_pin(&extra_leaf_dependency, &root, &source).is_err());
         for wrong in [
             lock_bytes.replacen(pin, "047e802e861094bbf827c4fc1bb067c18de7d8dd", 1),
             lock_bytes.replacen(
