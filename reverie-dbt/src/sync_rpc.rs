@@ -405,6 +405,9 @@ pub fn send_rpc_from_guest<G: GlobalTool>(
         .expect("reverie-dbt: guest coordinator response decode failed")
 }
 
+#[cfg(feature = "caller-runtime")]
+pub(crate) mod caller;
+
 struct GuestConnection {
     pid: u32,
     path: PathBuf,
@@ -412,6 +415,8 @@ struct GuestConnection {
     // A capture framing failure leaves the reserved numeric slot occupied,
     // but this image may never reconnect or reuse that stream for another RPC.
     usable: bool,
+    #[cfg(feature = "caller-runtime")]
+    identity: std::sync::Arc<()>,
 }
 
 pub(crate) struct MappingCapturePrimary {
@@ -609,6 +614,15 @@ fn connect_guest(
     path: &Path,
     pid: u32,
 ) -> std::io::Result<GuestConnection> {
+    connect_guest_with_config(context, invoke_syscall, path, pid).map(|(connection, _)| connection)
+}
+
+fn connect_guest_with_config(
+    context: usize,
+    invoke_syscall: SyscallInvoker,
+    path: &Path,
+    pid: u32,
+) -> io::Result<(GuestConnection, Vec<u8>)> {
     let mut fd = invoke(
         context,
         invoke_syscall,
@@ -656,13 +670,18 @@ fn connect_guest(
             invoke_syscall,
             fd,
         };
-        let _config = read_config_frame(&mut stream).map_err(io::Error::other)?;
-        Ok(GuestConnection {
-            pid,
-            path: path.to_path_buf(),
-            fd,
-            usable: true,
-        })
+        let config = read_config_frame(&mut stream).map_err(io::Error::other)?;
+        Ok((
+            GuestConnection {
+                pid,
+                path: path.to_path_buf(),
+                fd,
+                usable: true,
+                #[cfg(feature = "caller-runtime")]
+                identity: std::sync::Arc::new(()),
+            },
+            config,
+        ))
     })();
     if result.is_err() {
         close_guest(context, invoke_syscall, fd);

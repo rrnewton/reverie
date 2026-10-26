@@ -30,6 +30,7 @@ members = [
     "reverie-ptrace",
     "reverie-rpc-transport",
     "reverie-syscalls",
+    "reverie-test-support",
     "reverie-util",
     "safeptrace",
 ]

@@ -8,6 +8,9 @@
 
 //! Basic tests that don't fall into some other category.
 
+#[path = "tool_fixtures/basics.rs"]
+mod tools;
+
 #[allow(unused_imports)]
 use std::ffi::CString;
 #[allow(unused_imports)]
@@ -27,96 +30,17 @@ use nix::sys::wait::WaitStatus;
 use nix::unistd;
 #[allow(unused_imports)]
 use nix::unistd::ForkResult;
-use reverie::Error;
 use reverie::ExitStatus;
-use reverie::GlobalTool;
-use reverie::Guest;
-use reverie::Pid;
-use reverie::Tool;
-use reverie::syscalls::Syscall;
-use reverie::syscalls::SyscallInfo;
-use reverie::syscalls::Sysno;
 #[allow(unused_imports)]
 use reverie_ptrace::testing::check_fn;
 #[allow(unused_imports)]
-use reverie_ptrace::testing::test_cmd;
-#[allow(unused_imports)]
 use reverie_ptrace::testing::test_fn;
-use serde::Deserialize;
-use serde::Serialize;
+#[allow(unused_imports)]
+use reverie_test_support::test_cmd;
+use tools::CounterLocal;
+use tools::NoopTool;
 
-#[derive(Debug, Default)]
-struct NoopTool;
-impl Tool for NoopTool {
-    type GlobalState = ();
-    type ThreadState = ();
-}
-
-#[test]
-fn noop_tool_test() {
-    let (output, _) = test_cmd::<NoopTool>("/bin/pwd", &[]).unwrap();
-    // pwd should succeed & print some characters:
-    assert_eq!(output.status, ExitStatus::Exited(0));
-    assert!(!output.stdout.is_empty());
-    assert!(output.stderr.is_empty());
-}
-
-#[derive(Debug, Default)]
-struct CounterGlobal {
-    num_syscalls: AtomicU64,
-}
-
-#[derive(Debug, Default, Clone)]
-struct CounterLocal {}
-
-/// The message sent to the global state method.
-/// This contains the syscall number.
-#[derive(PartialEq, Debug, Eq, Clone, Copy, Serialize, Deserialize)]
-pub struct IncrMsg(Sysno);
-
-#[reverie::global_tool]
-impl GlobalTool for CounterGlobal {
-    type Request = IncrMsg;
-    type Response = ();
-    type Config = ();
-
-    async fn receive_rpc(&self, _from: Pid, _: IncrMsg) -> Self::Response {
-        AtomicU64::fetch_add(&self.num_syscalls, 1, Ordering::SeqCst);
-    }
-}
-
-#[reverie::tool]
-impl Tool for CounterLocal {
-    type GlobalState = CounterGlobal;
-    type ThreadState = ();
-
-    async fn handle_syscall_event<T: Guest<Self>>(
-        &self,
-        guest: &mut T,
-        syscall: Syscall,
-    ) -> Result<i64, Error> {
-        let sysno = syscall.number();
-        let _ = guest.send_rpc(IncrMsg(sysno)).await;
-        guest.tail_inject(syscall).await
-    }
-}
-
-#[test]
-fn counter_tool_test() {
-    let (output, state) = test_cmd::<CounterLocal>("ls", &[]).unwrap();
-    assert_eq!(output.status, ExitStatus::Exited(0));
-    // ls should print some characters and perform some syscalls:
-    assert!(!output.stdout.is_empty());
-    assert!(AtomicU64::load(&state.num_syscalls, Ordering::SeqCst) > 30);
-}
-
-#[test]
-fn error_exit_test() {
-    let (output, state) = test_cmd::<CounterLocal>("/bin/bash", &["-c", "exit 42"]).unwrap();
-    assert_eq!(output.status, ExitStatus::Exited(42));
-    assert_eq!(output.stdout.len(), 0);
-    assert!(AtomicU64::load(&state.num_syscalls, Ordering::SeqCst) > 0);
-}
+include!("tool_fixtures/basics_commands.rs");
 
 #[allow(dead_code)]
 fn fn_test() {
@@ -144,23 +68,6 @@ fn fn_test() {
 #[test]
 fn run_fn_test() {
     fn_test();
-}
-
-#[cfg(not(sanitized))]
-#[test]
-fn run_guest_command_test() {
-    let (output, _state) = test_cmd::<CounterLocal>("/bin/echo", &["-n", "abcd"]).unwrap();
-    assert_eq!(output.status, ExitStatus::Exited(0));
-    assert_eq!(output.stdout.as_slice(), b"abcd");
-}
-
-#[cfg(not(sanitized))]
-#[test]
-fn run_guest_command_test_closure() {
-    let msg = "abcd";
-    let (output, _state) = test_cmd::<CounterLocal>("/bin/echo", &["-n", msg]).unwrap();
-    assert_eq!(output.status, ExitStatus::Exited(0));
-    assert_eq!(output.stdout.as_slice(), msg.as_bytes());
 }
 
 #[cfg(not(sanitized))]

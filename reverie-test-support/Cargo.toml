@@ -1,0 +1,93 @@
+# Hand-maintained alongside :reverie-test-support and :generic-basics in BUCK.
+# Keep the dependencies and basics integration registration synchronized.
+
+[package]
+name = "reverie-test-support"
+description = "Command helpers for generic Reverie conformance tests."
+version = "0.5.1"
+authors = ["Meta Platforms"]
+edition = "2024"
+license = "BSD-2-Clause"
+publish = false
+
+[features]
+dbt = ["dep:reverie-dbt", "dep:tokio", "dep:libc"]
+
+[dependencies]
+libc = { version = "0.2.186", optional = true }
+reverie = { version = "0.5.1", path = "../reverie", package = "reverie-core" }
+reverie-ptrace = { version = "0.5.1", path = "../reverie-ptrace" }
+
+reverie-dbt = { version = "0.5.1", path = "../reverie-dbt", default-features = false, features = ["caller-runtime"], optional = true }
+tokio = { version = "1", features = ["rt", "net", "time"], optional = true }
+
+[dev-dependencies]
+close-err = "1.0.2"
+libc = "0.2.186"
+nix = { version = "0.30.1", features = ["fs", "process", "signal"] }
+# Inherited function guests must clear libtest's thread-local output capture.
+# The workspace already pins nightly; ordinary library users need no feature.
+reverie-ptrace = { version = "0.5.1", path = "../reverie-ptrace", features = ["nightly"] }
+serde = { version = "1.0.219", features = ["derive"] }
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(sanitized)"] }
+
+[[test]]
+name = "basics"
+path = "../tests/basics.rs"
+
+[[test]]
+name = "dbt-basics"
+path = "../tests/dbt_basics.rs"
+required-features = ["dbt"]
+
+[[example]]
+name = "dbt_noop_runtime"
+path = "../tests/tool_fixtures/dbt_noop_runtime.rs"
+crate-type = ["cdylib"]
+required-features = ["dbt"]
+
+[[example]]
+name = "dbt_counter_runtime"
+path = "../tests/tool_fixtures/dbt_counter_runtime.rs"
+crate-type = ["cdylib"]
+required-features = ["dbt"]
+
+[[test]]
+name = "dbt-admission"
+path = "../tests/dbt_admission.rs"
+required-features = ["dbt"]
+
+[[bin]]
+name = "dbt-admission-guest"
+path = "../tests/tool_fixtures/dbt_admission_guest.rs"
+required-features = ["dbt"]
+
+[[example]]
+name = "dbt_admission_runtime"
+path = "../tests/tool_fixtures/dbt_admission_runtime.rs"
+crate-type = ["cdylib"]
+required-features = ["dbt"]
+
+[[test]]
+name = "dbt-native-controls"
+path = "../tests/dbt_native_controls.rs"
+required-features = ["dbt"]
+
+[[bin]]
+name = "dbt-native-control-guest"
+path = "../tests/fixtures/dbt_native_control_guest.rs"
+required-features = ["dbt"]
+
+[[example]]
+name = "dbt_control_subscribed_runtime"
+path = "../tests/tool_fixtures/dbt_control_subscribed_runtime.rs"
+crate-type = ["cdylib"]
+required-features = ["dbt"]
+
+[[example]]
+name = "dbt_control_unsubscribed_runtime"
+path = "../tests/tool_fixtures/dbt_control_unsubscribed_runtime.rs"
+crate-type = ["cdylib"]
+required-features = ["dbt"]

@@ -14,6 +14,8 @@ crate-type = ["cdylib", "rlib"]
 [features]
 default = ["prototype-runtime"]
 prototype-runtime = []
+# Constructor-free common Tool owner for caller-exported native runtimes.
+caller-runtime = []
 
 [dependencies]
 bincode = { version = "2", features = ["serde"] }

@@ -41,6 +41,22 @@ pub fn digest() -> [u8; 32] {
         ),
         ("rv/guest/host.rs", include_bytes!("guest/host.rs")),
         (
+            "rv/core/tool_host.rs",
+            include_bytes!("../../reverie/src/tool_host.rs"),
+        ),
+        (
+            "rv/core/tool_host/owner.rs",
+            include_bytes!("../../reverie/src/tool_host/owner.rs"),
+        ),
+        (
+            "rv/core/tool_host/driver.rs",
+            include_bytes!("../../reverie/src/tool_host/driver.rs"),
+        ),
+        (
+            "rv/core/tool_host/sync.rs",
+            include_bytes!("../../reverie/src/tool_host/sync.rs"),
+        ),
+        (
             "rv/guest/host_linux.rs",
             include_bytes!("guest/host_linux.rs"),
         ),

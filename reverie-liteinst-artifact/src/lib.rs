@@ -739,7 +739,7 @@ fn content_manifest_relative(image_kind: FixedImageKind) -> &'static str {
 }
 // Reviewed literal expectations, not hashes generated from the current checkout
 // or bytes embedded after a runtime edit. The qualifier self-hash is separate.
-const CONTENT_REVERIE_CATALOG: [(&str, u64, &str); 57] = [
+const CONTENT_REVERIE_CATALOG: [(&str, u64, &str); 61] = [
     (
         "reverie-liteinst-artifact/src/private_static/selected_initializers/bootstrap_env_aux.rs",
         20525,
@@ -772,8 +772,8 @@ const CONTENT_REVERIE_CATALOG: [(&str, u64, &str); 57] = [
     ),
     (
         "Cargo.toml",
-        943,
-        "c0e3309ed54b9c67762e2535163f450ebf5e47e12fb501ba823e0cf3369ec78a",
+        971,
+        "484f5411a5cddc3b8338b2a71393b0de43ef8caf21c4fb31eca61e7d155ea783",
     ),
     (
         "reverie-liteinst-artifact/Cargo.toml",
@@ -862,8 +862,8 @@ const CONTENT_REVERIE_CATALOG: [(&str, u64, &str); 57] = [
     ),
     (
         "reverie-inguest/Cargo.toml",
-        5569,
-        "71e2a295a5f59e3c129247c91b9beb84d19a07b0148153c884449af37d082aa7",
+        5524,
+        "86c363f81e77b94a43f4d31d8954a3c9c81504bc97aa86ea1c63f2b3533b4115",
     ),
     (
         "reverie-inguest/src/lib.rs",
@@ -957,8 +957,8 @@ const CONTENT_REVERIE_CATALOG: [(&str, u64, &str); 57] = [
     ),
     (
         "reverie-inguest/src/guest/host.rs",
-        182692,
-        "20815363b93be9335dacc28c9ae7b15a6be07b766b50200d13c1aa1557e24f00",
+        176030,
+        "e4d615681af6567ce8ee9b51be169a502d09d8cd6f362e6bfd180ed8ad2b19da",
     ),
     (
         "reverie-inguest/src/guest/host_linux.rs",
@@ -977,8 +977,8 @@ const CONTENT_REVERIE_CATALOG: [(&str, u64, &str); 57] = [
     ),
     (
         "reverie/src/lib.rs",
-        6769,
-        "591b38ad107be5f9104079598cb07bfa3fc82e2dfddfc9cabfa6b245f64945dd",
+        6788,
+        "174d615aaaf348e587fdbbc6c9a9a33546df3936b89823b7c86d5661ef8213e3",
     ),
     (
         "reverie/src/perf.rs",
@@ -1024,6 +1024,26 @@ const CONTENT_REVERIE_CATALOG: [(&str, u64, &str); 57] = [
         "reverie/src/pidfd_self.rs",
         21903,
         "dd5e46c1ae38714c99dc146a95099787b6f9b92f1dfeac0d5f1c8e385a76b764",
+    ),
+    (
+        "reverie/src/tool_host.rs",
+        529,
+        "0b94bd7316fdd2546c9d1a97558f62c1a01785abd63214d52da0673347c05bdc",
+    ),
+    (
+        "reverie/src/tool_host/owner.rs",
+        26496,
+        "d0663932e4731e565d04f26bc5292b5383af56cefb76789f380ddbc2e33ded76",
+    ),
+    (
+        "reverie/src/tool_host/driver.rs",
+        27691,
+        "1b19307fc34dc2e86bf1fdc870a86b6f1d094901595c57f30e480f2e3de12f06",
+    ),
+    (
+        "reverie/src/tool_host/sync.rs",
+        3742,
+        "21b290dd82a8931977dd56d8b01b985508e68bd74ddc172fb2441f2281e9972c",
     ),
 ];
 // Native Detcore's fixed-gate publication ordering is a separately declared
@@ -28370,7 +28390,23 @@ mod tests {
         let rv_two = cargo_two.join(suffix);
         // Current compiled bytes are inputs only. Each must independently match
         // the fixed reviewed length/digest catalog before any positive is earned.
-        let compiled_files: [(&str, &[u8]); 59] = [
+        let compiled_files: [(&str, &[u8]); 63] = [
+            (
+                "reverie/src/tool_host.rs",
+                include_bytes!("../../reverie/src/tool_host.rs"),
+            ),
+            (
+                "reverie/src/tool_host/owner.rs",
+                include_bytes!("../../reverie/src/tool_host/owner.rs"),
+            ),
+            (
+                "reverie/src/tool_host/driver.rs",
+                include_bytes!("../../reverie/src/tool_host/driver.rs"),
+            ),
+            (
+                "reverie/src/tool_host/sync.rs",
+                include_bytes!("../../reverie/src/tool_host/sync.rs"),
+            ),
             (
                 "reverie-inguest/src/lifecycle.rs",
                 include_bytes!("../../reverie-inguest/src/lifecycle.rs"),
@@ -28612,11 +28648,11 @@ mod tests {
             }
         }
         let (rv_inventory, _) = content_reverie_inventory(&rv_one).unwrap();
-        // 57 reviewed sources plus the independently checked qualifier.
-        assert_eq!(rv_inventory.len(), 58);
+        // 61 reviewed sources plus the independently checked qualifier.
+        assert_eq!(rv_inventory.len(), 62);
         let (detcore_inventory, _) =
             content_reverie_inventory_for_image(&rv_one, FixedImageKind::Detcore).unwrap();
-        assert_eq!(detcore_inventory.len(), 59);
+        assert_eq!(detcore_inventory.len(), 63);
         assert_eq!(
             content_reverie_inventory_for_image(&rv_two, FixedImageKind::Detcore)
                 .unwrap()

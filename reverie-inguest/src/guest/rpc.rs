@@ -88,6 +88,53 @@ pub struct CoordinatorRpc<G: GlobalTool> {
     native_failed: AtomicBool,
 }
 
+/// Callback-scoped access to the existing process connection.
+///
+/// This wrapper owns neither a stream nor a second identity. The concrete
+/// `CoordinatorRpc` remains available to the installer and fork reconnect path.
+pub struct BorrowedCoordinator<'a, G: GlobalTool>(&'a CoordinatorRpc<G>);
+
+impl<G: GlobalTool> BorrowedCoordinator<'_, G> {
+    /// The concrete connection from which this callback port was borrowed.
+    pub fn connection(&self) -> &CoordinatorRpc<G> {
+        self.0
+    }
+}
+
+#[reverie::tool]
+impl<G: GlobalTool> GlobalRPC<G> for BorrowedCoordinator<'_, G> {
+    async fn send_rpc(&self, message: G::Request) -> G::Response {
+        self.0.send_rpc(message).await
+    }
+
+    fn try_send_rpc_sync(&self, message: G::Request) -> Result<G::Response, G::Request> {
+        self.0.try_send_rpc_sync(message)
+    }
+
+    fn config(&self) -> &G::Config {
+        self.0.config()
+    }
+}
+
+impl<G: GlobalTool> reverie::tool_host::CallbackPorts<G> for CoordinatorRpc<G> {
+    type Context<'call>
+        = ()
+    where
+        Self: 'call;
+    type Port<'call>
+        = BorrowedCoordinator<'call, G>
+    where
+        Self: 'call;
+
+    fn config(&self) -> &G::Config {
+        <Self as GlobalRPC<G>>::config(self)
+    }
+
+    fn borrow<'call>(&'call self, (): ()) -> Result<Self::Port<'call>, reverie::Error> {
+        Ok(BorrowedCoordinator(self))
+    }
+}
+
 /// Called when a forked child replaces its inherited connection with its own,
 /// with the inherited descriptor and the new one, so the runtime can move the
 /// protection it keeps on the coordinator descriptor. An error ends the child,

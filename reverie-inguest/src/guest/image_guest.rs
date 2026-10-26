@@ -558,7 +558,10 @@ mod tests {
                 );
                 assert_eq!(*memory, [0x5a; 16]);
                 assert_eq!(
-                    host.states.lock().get(&raw_pid(libc::SYS_gettid).as_raw()),
+                    host.owner
+                        .borrow(())
+                        .unwrap()
+                        .state(raw_pid(libc::SYS_gettid)),
                     Some(&2)
                 );
                 assert!(host.initialize_initial_image_lifecycle(&owner).is_err());
@@ -593,7 +596,7 @@ mod tests {
                     } else {
                         assert!(calls.lock().unwrap().is_empty());
                     }
-                    assert!(host.states.lock().is_empty());
+                    assert!(host.owner.borrow(()).unwrap().is_empty());
                     assert_eq!(*memory, [0; 16]);
                     assert!(owner.finish().is_err());
                     assert!(host.initialize_initial_image_lifecycle(&owner).is_err());
@@ -620,7 +623,10 @@ mod tests {
                 assert_eq!(*memory, [0x5a; 16]);
                 assert_eq!(*calls.lock().unwrap(), ["init", "start", "post-exec"]);
                 assert_eq!(
-                    host.states.lock().get(&raw_pid(libc::SYS_gettid).as_raw()),
+                    host.owner
+                        .borrow(())
+                        .unwrap()
+                        .state(raw_pid(libc::SYS_gettid)),
                     Some(&2)
                 );
                 // Component dispatch of a controlled Getpid event. This is not
@@ -641,7 +647,10 @@ mod tests {
                     ["init", "start", "post-exec", "syscall"]
                 );
                 assert_eq!(
-                    host.states.lock().get(&raw_pid(libc::SYS_gettid).as_raw()),
+                    host.owner
+                        .borrow(())
+                        .unwrap()
+                        .state(raw_pid(libc::SYS_gettid)),
                     Some(&3)
                 );
                 drop(host);
@@ -672,7 +681,7 @@ mod tests {
                         _ => unreachable!(),
                     };
                     assert!(error.to_string().contains(operation));
-                    assert!(host.states.lock().is_empty());
+                    assert!(host.owner.borrow(()).unwrap().is_empty());
                     assert_eq!(*memory, [0; 16]);
                     assert!(
                         owner
@@ -722,7 +731,7 @@ mod tests {
                     mark_lifecycle_test_frontend_installed(&owner);
                     let error = host.initialize_initial_image_lifecycle(&owner).unwrap_err();
                     assert_eq!(error.raw_os_error(), Some(libc::EIO));
-                    assert!(host.states.lock().is_empty());
+                    assert!(host.owner.borrow(()).unwrap().is_empty());
                     assert_eq!(*memory, [0; 16]);
                     assert!(
                         owner
@@ -750,13 +759,18 @@ mod tests {
                 let (host, worker) = host(0, memory.as_mut_ptr() as usize, calls.clone());
                 unsafe { host.bind_initial_image_control(&owner) }.unwrap();
                 mark_lifecycle_test_frontend_installed(&owner);
-                host.states
-                    .lock()
-                    .insert(raw_pid(libc::SYS_gettid).as_raw(), 41);
+                host.owner
+                    .borrow(())
+                    .unwrap()
+                    .restore_started(raw_pid(libc::SYS_gettid), 41)
+                    .unwrap();
                 let error = host.initialize_initial_image_lifecycle(&owner).unwrap_err();
                 assert_eq!(error.kind(), io::ErrorKind::AlreadyExists);
                 assert_eq!(
-                    host.states.lock().get(&raw_pid(libc::SYS_gettid).as_raw()),
+                    host.owner
+                        .borrow(())
+                        .unwrap()
+                        .state(raw_pid(libc::SYS_gettid)),
                     Some(&41)
                 );
                 assert!(calls.lock().unwrap().is_empty());

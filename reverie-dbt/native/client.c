@@ -520,6 +520,9 @@ extern void reverie_dbt_runtime_totals(
 
 static _Atomic uint64_t branch_count __attribute__((aligned(64)));
 static _Atomic uint64_t stdin_read_count;
+// 0: unstarted, 1: starting, 2: running, 3: finished successfully.
+// A failed helper never publishes runtime readiness or successful completion.
+#define RUNTIME_BACKGROUND_FAILED 4
 static _Atomic int32_t runtime_background_state;
 static _Atomic uint64_t image_generation;
 static _Atomic bool runtime_backend_failure;
@@ -2871,6 +2874,29 @@ static int32_t write_registers(
     const struct user_regs_struct* in);
 
 static void ensure_runtime_background(void);
+
+// The helper must not enter DR process cleanup while the application waits for
+// it: cleanup can wait on that same application. Observe its terminal failure
+// here and let the application take the existing fatal path. FAILED is never
+// a substitute for runtime_ready, including when a runtime had become ready
+// before its background callback subsequently failed.
+static bool wait_for_runtime_ready(bool require_background_finished) {
+  for (;;) {
+    int32_t state =
+        atomic_load_explicit(&runtime_background_state, memory_order_acquire);
+    if (state == RUNTIME_BACKGROUND_FAILED) {
+      dr_fprintf(diagnostic_file, "reverie-dbt: runtime background initialization failed\n");
+      exit_runtime_tree(CLIENT_THREAD_START_FAILURE_EXIT_CODE);
+      return false;
+    }
+    if (require_background_finished ? state == 3 :
+        reverie_dbt_runtime_ready(
+            atomic_load_explicit(&image_generation, memory_order_acquire)))
+      return true;
+    dr_sleep(1);
+  }
+}
+
 // The TSC an rdtsc or rdtscp returns. A runtime whose tool answers it is asked
 // first: under Detcore that is Detcore's virtual clock, charged and logged as
 // under ptrace, so the guest's TSC names the same instant as its
@@ -2891,9 +2917,8 @@ static uint64_t guest_tsc(void* drcontext, bool with_aux, uint32_t* aux) {
     // fallback for paths whose runtime has not been started there.
     if (!has_copied_runtime())
       ensure_runtime_background();
-    while (!reverie_dbt_runtime_ready(
-        atomic_load_explicit(&image_generation, memory_order_acquire)))
-      dr_sleep(1);
+    if (!wait_for_runtime_ready(false))
+      return 0;
     evidence_callback_enter();
     answered = reverie_dbt_runtime_rdtsc(
         drcontext,
@@ -2939,9 +2964,8 @@ static void emulate_cpuid(void) {
     DR_ASSERT(counters != NULL);
     if (!has_copied_runtime())
       ensure_runtime_background();
-    while (!reverie_dbt_runtime_ready(
-        atomic_load_explicit(&image_generation, memory_order_acquire)))
-      dr_sleep(1);
+    if (!wait_for_runtime_ready(false))
+      return;
     evidence_callback_enter();
     answered = reverie_dbt_runtime_cpuid(
         drcontext,
@@ -3274,9 +3298,8 @@ static void start_pending_thread(app_pc pc) {
   // readiness policy.
   if (!has_copied_runtime()) {
     ensure_runtime_background();
-    while (!reverie_dbt_runtime_ready(
-        atomic_load_explicit(&image_generation, memory_order_acquire)))
-      dr_sleep(1);
+    if (!wait_for_runtime_ready(false))
+      return;
   }
   app_pc previous = counters->admission_pc;
   counters->admission_pc = pc;
@@ -6053,11 +6076,9 @@ static bool pre_syscall(void* drcontext, int sysnum) {
   // TODO-HUMAN-REVIEW(PR-134): Review post-application runtime bootstrap.
   if (!has_copied_runtime())
     ensure_runtime_background();
-  if (test_wait_for_background && !has_copied_runtime()) {
-    while (atomic_load_explicit(
-               &runtime_background_state, memory_order_acquire) != 3)
-      dr_sleep(1);
-  }
+  if (test_wait_for_background && !has_copied_runtime() &&
+      !wait_for_runtime_ready(true))
+    return false;
 
   /* A delayed entry-block flush is not synchronous.  If a native child reaches
    * a syscall through an inherited fragment, start it here after the
@@ -6191,9 +6212,8 @@ static bool pre_syscall(void* drcontext, int sysnum) {
     }
     return execute;
   }
-  while (!reverie_dbt_runtime_ready(
-      atomic_load_explicit(&image_generation, memory_order_acquire)))
-    dr_sleep(1);
+  if (!wait_for_runtime_ready(false))
+    return false;
   if (test_backend_failure) {
     dr_fprintf(
         diagnostic_file,
@@ -7262,6 +7282,31 @@ static void runtime_idle(void) {
   dr_sleep(1);
 }
 
+// Complete only this helper's sender before publishing its terminal state.
+// A failed FINAL remains a failure: do not acknowledge finished_helper_epoch.
+// In particular, never call exit_runtime_tree here, which would reenter DR
+// cleanup from the helper while the application is waiting for initialization.
+static void finish_runtime_background(bool failed) {
+  if (failed)
+    mark_backend_failure();
+  bool finalized = evidence_flush(EVIDENCE_FRAME_FINAL);
+  if (!finalized) {
+    mark_backend_failure();
+    dr_fprintf(diagnostic_file, "reverie-dbt: protected evidence transport failed\n");
+    failed = true;
+  }
+  if (finalized)
+    atomic_store_explicit(
+        &runtime_process_control->finished_helper_epoch,
+        runtime_process_epoch,
+        memory_order_release);
+  // Release orders the diagnostic, sticky failure and completed FINAL attempt
+  // before any application's acquire observes failure and starts root cleanup.
+  atomic_store_explicit(
+      &runtime_background_state, failed ? RUNTIME_BACKGROUND_FAILED : 3,
+      memory_order_release);
+}
+
 static void runtime_background_init(void* argument) {
   (void)argument;
   mapping_capture_helper_enter();
@@ -7272,7 +7317,7 @@ static void runtime_background_init(void* argument) {
           &runtime_process_control->helper_start_time)) {
     dr_fprintf(
         diagnostic_file, "reverie-dbt: could not identify runtime helper\n");
-    exit_runtime_tree(101);
+    finish_runtime_background(true);
     return;
   }
   atomic_store_explicit(&runtime_background_state, 2, memory_order_release);
@@ -7284,7 +7329,7 @@ static void runtime_background_init(void* argument) {
       task_state->magic != TASK_STATE_MAGIC) {
     evidence_callback_leave();
     dr_fprintf(diagnostic_file, "reverie-dbt: native startup mode is uninitialized\n");
-    exit_runtime_tree(CLIENT_THREAD_START_FAILURE_EXIT_CODE);
+    finish_runtime_background(true);
     return;
   }
   uint32_t native_mode = runtime_uses_external_global()
@@ -7295,7 +7340,7 @@ static void runtime_background_init(void* argument) {
   evidence_callback_leave();
   if (startup_status != 0) {
     dr_fprintf(diagnostic_file, "reverie-dbt: runtime startup was refused\n");
-    exit_runtime_tree(CLIENT_THREAD_START_FAILURE_EXIT_CODE);
+    finish_runtime_background(true);
     return;
   }
   // DynamoRIO implements a client thread as a distinct process sharing the
@@ -7304,12 +7349,10 @@ static void runtime_background_init(void* argument) {
   // not the application process identity. No application thread-exit or
   // process-exit callback runs when this entry point returns, so complete this
   // sender explicitly before the client process exits.
-  require_evidence_flush(EVIDENCE_FRAME_FINAL);
-  atomic_store_explicit(&runtime_background_state, 3, memory_order_release);
-  atomic_store_explicit(
-      &runtime_process_control->finished_helper_epoch,
-      runtime_process_epoch,
-      memory_order_release);
+  finish_runtime_background(false);
+  if (atomic_load_explicit(&runtime_background_state, memory_order_acquire) ==
+      RUNTIME_BACKGROUND_FAILED)
+    return;
   if (test_delay_exec_helper_exit && runtime_process_epoch == 1) {
     // This fixture must exec once. Hold its first helper (and shared FDs)
     // until the successor claims its image, then expose the window between

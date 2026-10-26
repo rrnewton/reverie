@@ -18,6 +18,8 @@
 
 pub mod backend_stats;
 mod branch_facts;
+#[cfg(feature = "caller-runtime")]
+pub mod caller_runtime;
 pub mod counter;
 mod counter2_global;
 mod evidence;
@@ -608,9 +610,9 @@ impl std::fmt::Display for UnsupportedSignalTransformation {
 impl std::error::Error for UnsupportedSignalTransformation {}
 
 /// In-process guest state passed to a Reverie tool handler.
-pub struct DbtGuest<'a, T>
+pub struct DbtGuest<'a, T: Tool, R = DbtGlobal<'a, T>>
 where
-    T: Tool,
+    R: GlobalRPC<T::GlobalState>,
 {
     context: usize,
     tid: Pid,
@@ -618,7 +620,8 @@ where
     ppid: Option<Pid>,
     branch_count: u64,
     thread_state: &'a mut T::ThreadState,
-    global_state: &'a T::GlobalState,
+    rpc: R,
+    common_tail: Option<&'a reverie::tool_host::TailResult>,
     config: &'a <T::GlobalState as GlobalTool>::Config,
     invoke_syscall: SyscallInvoker,
     read_registers: RegisterReader,
@@ -656,7 +659,13 @@ where
             ppid,
             branch_count,
             thread_state,
-            global_state,
+            rpc: DbtGlobal {
+                tid,
+                global_state,
+                config,
+                guest_rpc: Some((context, invoke_syscall)),
+            },
+            common_tail: None,
             config,
             invoke_syscall,
             read_registers,
@@ -668,7 +677,9 @@ where
             signal_info_replacement: None,
         }
     }
+}
 
+impl<'a, T: Tool, R: GlobalRPC<T::GlobalState>> DbtGuest<'a, T, R> {
     fn inject_for_purpose<S: SyscallInfo>(
         &mut self,
         syscall: S,
@@ -722,7 +733,9 @@ where
     }
 }
 
-struct DbtGlobal<'a, T>
+/// Legacy standalone/coordinated RPC routing for existing DBT consumers.
+/// Caller-owned runtimes use a different borrowed port type without local state.
+pub struct DbtGlobal<'a, T>
 where
     T: Tool,
 {
@@ -764,37 +777,6 @@ where
         }
     }
 
-    fn config(&self) -> &<T::GlobalState as GlobalTool>::Config {
-        self.config
-    }
-}
-
-#[reverie::tool]
-impl<T> GlobalRPC<T::GlobalState> for DbtGuest<'_, T>
-where
-    T: Tool,
-{
-    async fn send_rpc(
-        &self,
-        message: <T::GlobalState as GlobalTool>::Request,
-    ) -> <T::GlobalState as GlobalTool>::Response {
-        // AUTONOMOUS-BOT-IMPLEMENTED
-        // TODO-HUMAN-REVIEW(#121): Review cross-process GlobalState RPC routing.
-        // See `DbtGlobal::send_rpc`: prefer the cross-process coordinator when
-        // one is configured, so fork/exec children share one GlobalState.
-        if crate::sync_rpc::is_active() {
-            crate::sync_rpc::send_rpc_from_guest::<T::GlobalState>(
-                self.context,
-                self.invoke_syscall,
-                self.tid,
-                self.config,
-                message,
-            )
-        } else {
-            self.global_state.receive_rpc(self.tid, message).await
-        }
-    }
-
     fn try_send_rpc_sync(
         &self,
         message: <T::GlobalState as GlobalTool>::Request,
@@ -803,9 +785,12 @@ where
         if !crate::sync_rpc::is_active() {
             return Err(message);
         }
+        let Some((context, invoke)) = self.guest_rpc else {
+            return Err(message);
+        };
         Ok(crate::sync_rpc::send_rpc_from_guest::<T::GlobalState>(
-            self.context,
-            self.invoke_syscall,
+            context,
+            invoke,
             self.tid,
             self.config,
             message,
@@ -818,10 +803,29 @@ where
 }
 
 #[reverie::tool]
-impl<T> Guest<T> for DbtGuest<'_, T>
-where
-    T: Tool,
-{
+impl<T: Tool, R: GlobalRPC<T::GlobalState>> GlobalRPC<T::GlobalState> for DbtGuest<'_, T, R> {
+    async fn send_rpc(
+        &self,
+        message: <T::GlobalState as GlobalTool>::Request,
+    ) -> <T::GlobalState as GlobalTool>::Response {
+        self.rpc.send_rpc(message).await
+    }
+
+    fn try_send_rpc_sync(
+        &self,
+        message: <T::GlobalState as GlobalTool>::Request,
+    ) -> Result<<T::GlobalState as GlobalTool>::Response, <T::GlobalState as GlobalTool>::Request>
+    {
+        self.rpc.try_send_rpc_sync(message)
+    }
+
+    fn config(&self) -> &<T::GlobalState as GlobalTool>::Config {
+        self.rpc.config()
+    }
+}
+
+#[reverie::tool]
+impl<T: Tool, R: GlobalRPC<T::GlobalState> + Send> Guest<T> for DbtGuest<'_, T, R> {
     type Memory = DbtMemory;
     type Stack = DbtStack;
 
@@ -1006,7 +1010,12 @@ where
     async fn daemonize(&mut self) {}
 
     async fn inject<S: SyscallInfo>(&mut self, syscall: S) -> Result<i64, Errno> {
-        self.inject_for_purpose(syscall, InjectionPurpose::Application)
+        self.inject_with_purpose(syscall, InjectionPurpose::Application)
+            .await
+            .map_err(|error| match error {
+                Error::Errno(errno) => errno,
+                _ => Errno::EIO,
+            })
     }
 
     async fn inject_with_purpose<S: SyscallInfo>(
@@ -1014,6 +1023,37 @@ where
         syscall: S,
         purpose: InjectionPurpose,
     ) -> Result<i64, Error> {
+        let (number, args) = syscall.into_parts();
+        let syscall = Syscall::from_raw(number, args);
+        if let Some(tail) = self.common_tail {
+            if tail.ending() {
+                return std::future::pending().await;
+            }
+            let raw = [
+                args.arg0 as u64,
+                args.arg1 as u64,
+                args.arg2 as u64,
+                args.arg3 as u64,
+                args.arg4 as u64,
+                args.arg5 as u64,
+            ];
+            if matches!(
+                reverie::tool_host::physical_operation(
+                    reverie::tool_host::AdmissionDomain::InitialRootOnly,
+                    number.id() as i64,
+                    raw,
+                    None
+                ),
+                reverie::tool_host::PhysicalOperation::Refused { .. }
+            ) {
+                tail.refuse_initial_root_operation(number.id() as i64);
+                return std::future::pending().await;
+            }
+            if matches!(number.id() as i64, libc::SYS_exit | libc::SYS_exit_group) {
+                tail.set_exit(number.id() as i64, raw);
+                return std::future::pending().await;
+            }
+        }
         self.inject_for_purpose(syscall, purpose)
             .map_err(Error::from)
     }
@@ -1026,8 +1066,37 @@ where
         // preserving DynamoRIO lifecycle bookkeeping, this keeps blocking calls
         // such as futex out of `dr_invoke_syscall_as_app`.
         let (number, args) = syscall.into_parts();
-        self.tail_inject_result
-            .set_execute_original(Syscall::from_raw(number, args));
+        let syscall = Syscall::from_raw(number, args);
+        if let Some(tail) = self.common_tail {
+            if tail.ending() {
+                return std::future::pending().await;
+            }
+            let raw = [
+                args.arg0 as u64,
+                args.arg1 as u64,
+                args.arg2 as u64,
+                args.arg3 as u64,
+                args.arg4 as u64,
+                args.arg5 as u64,
+            ];
+            if matches!(
+                reverie::tool_host::physical_operation(
+                    reverie::tool_host::AdmissionDomain::InitialRootOnly,
+                    number.id() as i64,
+                    raw,
+                    None
+                ),
+                reverie::tool_host::PhysicalOperation::Refused { .. }
+            ) {
+                tail.refuse_initial_root_operation(number.id() as i64);
+            } else if matches!(number.id() as i64, libc::SYS_exit | libc::SYS_exit_group) {
+                tail.set_exit(number.id() as i64, raw);
+            } else {
+                tail.set_execute_original(syscall);
+            }
+        } else {
+            self.tail_inject_result.set_execute_original(syscall);
+        }
         std::future::pending().await
     }
 
@@ -1770,16 +1839,24 @@ fn run_tool_syscall_inner<T: Tool>(
     }
     #[cfg(feature = "prototype-runtime")]
     branch_facts::observe_test_bridge(&guest, "tool-syscall", syscall.number().id() as i64);
+    drive_tool_syscall_guest(tool, &mut guest, syscall)
+}
+
+fn drive_tool_syscall_guest<T: Tool>(
+    tool: &T,
+    guest: &mut DbtGuest<'_, T>,
+    syscall: Syscall,
+) -> Result<DbtSyscallOutcome, Error> {
     let tail_result = Arc::clone(&guest.tail_inject_result);
     tail_result.clear();
-    match run_ready(tool.handle_syscall_event(&mut guest, syscall), &tail_result) {
+    match run_ready(tool.handle_syscall_event(guest, syscall), &tail_result) {
         Some(result) => result.map(DbtSyscallOutcome::Suppress),
         None => match tail_result
             .take()
             .expect("tool handler suspended without a tail-inject result")
         {
             TailInjectAction::ExecuteOriginal(syscall) => Ok(
-                match protect_tool_syscall(context, invoke_syscall, syscall, false) {
+                match protect_tool_syscall(guest.context, guest.invoke_syscall, syscall, false) {
                     Some(result) => DbtSyscallOutcome::Suppress(result),
                     None => DbtSyscallOutcome::ExecuteOriginal(syscall),
                 },

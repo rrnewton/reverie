@@ -97,6 +97,7 @@ mod subscription;
 pub mod task_ids;
 mod timer;
 mod tool;
+pub mod tool_host;
 mod unsupported;
 mod user_address;
 pub mod vdso;

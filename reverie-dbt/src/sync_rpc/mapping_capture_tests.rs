@@ -97,6 +97,8 @@ impl SocketFixture {
         // and authentication are covered by shared_client_tests. This path
         // must never be consulted or used for a replacement by capture.
         *GUEST_CLIENT.connection.lock().unwrap() = Some(GuestConnection {
+            #[cfg(feature = "caller-runtime")]
+            identity: std::sync::Arc::new(()),
             pid: std::process::id(),
             path: PathBuf::from("/mapping-capture-must-not-reconnect/rpc"),
             fd,

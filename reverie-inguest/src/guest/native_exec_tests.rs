@@ -179,8 +179,8 @@ fn assert_host_guards(host: &AtomicUsize) {
     // a concrete driver. Failed try_lock cannot release the existing owner.
     let host =
         unsafe { &*(host.load(Ordering::Acquire) as *const ToolHost<ModelTool, ModelRuntime>) };
-    assert!(host.tool.try_lock().is_none());
-    assert!(host.states.try_lock().is_none());
+    // The common owner tests separately verify both locks are retained.
+    assert!(host.owner.try_borrow(()).is_err());
 }
 fn named(text: &'static str) -> reverie::UnsupportedRefusal {
     reverie::UnsupportedRefusal::new(
@@ -472,7 +472,10 @@ fn run_model(mode: usize, original_execve: bool, installed: bool, source: Syscal
     let (errno, refusal) = results[0];
     assert_eq!(event.result, -i64::from(errno.into_raw()));
     assert_eq!(
-        host.states.lock().get(&raw_pid(libc::SYS_gettid).as_raw()),
+        host.owner
+            .borrow(())
+            .unwrap()
+            .state(raw_pid(libc::SYS_gettid)),
         Some(&(3, 1))
     );
     if !installed {

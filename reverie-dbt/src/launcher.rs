@@ -93,6 +93,8 @@ pub struct DbtRunner {
     terminate_process_group_on_exit: bool,
     defer_evidence_finish: bool,
     tool_answers_brk: bool,
+    require_initial_root_ready: bool,
+    application_request_observer: Option<Arc<AtomicBool>>,
 }
 
 // A blocking socket-to-pipe splice can hold the child's stdin pipe mutex
@@ -159,6 +161,8 @@ impl DbtRunner {
             terminate_process_group_on_exit: false,
             defer_evidence_finish: false,
             tool_answers_brk: false,
+            require_initial_root_ready: false,
+            application_request_observer: None,
         })
     }
 
@@ -204,6 +208,29 @@ impl DbtRunner {
     /// Adds an argument passed to the native client in every instrumented process image.
     pub fn client_argument(mut self, argument: impl Into<OsString>) -> Self {
         self.client_arguments.push(argument.into());
+        self
+    }
+
+    /// Requires the caller runtime's initial-root declaration independently of
+    /// application RPC. Configuration receipt or a successful guest exit is
+    /// insufficient, including for a Tool that sends no application requests.
+    ///
+    /// Pair this with a runtime that declares on its actual admitted root
+    /// connection after constructing its Tool and completing startup callbacks.
+    /// This builder itself does not establish Tool installation. Legacy runners
+    /// retain their existing application-request requirement.
+    pub fn require_initial_root_ready(mut self) -> Self {
+        self.require_initial_root_ready = true;
+        self
+    }
+
+    /// Copy the actual application-request fact after this run's child wait.
+    ///
+    /// Use a fresh observer for each run. Config and control messages never set
+    /// this fact. The observer is an output only: changing it cannot satisfy
+    /// either the server's private request guard or initial-root admission.
+    pub fn observe_application_requests(mut self, observer: Arc<AtomicBool>) -> Self {
+        self.application_request_observer = Some(observer);
         self
     }
 
@@ -739,6 +766,26 @@ impl DbtRunner {
             runner.terminate_and_reap(&mut child);
             return Err(error);
         }
+        let root_ready = if self.require_initial_root_ready {
+            let monitor =
+                match reverie_rpc_transport::InitialRootReadyMonitor::for_child(&mut child) {
+                    Ok(monitor) => monitor,
+                    Err(error) => {
+                        runner.terminate_and_reap(&mut child);
+                        return Err(io::Error::other(error));
+                    }
+                };
+            server = match server.require_initial_root_ready(monitor.clone()) {
+                Ok(server) => server,
+                Err(error) => {
+                    runner.terminate_and_reap(&mut child);
+                    return Err(io::Error::other(error));
+                }
+            };
+            Some(monitor)
+        } else {
+            None
+        };
         // A reusable Command retains a caller-supplied Stdio owner after spawn.
         // Keep no parent reader beyond the Tool's temporary initial-image lease.
         drop(command);
@@ -778,7 +825,12 @@ impl DbtRunner {
         // The wait owns real child/tree cleanup. Only then may a complete
         // capture become an ordinary guest status, including verify-allow.
         mapping_capture_owner.finish()?;
-        if missing_coordinator_request_is_error(requested.load(Ordering::Acquire), &wait) {
+        if let Some(observer) = &self.application_request_observer {
+            observer.store(requested.load(Ordering::Acquire), Ordering::Release);
+        }
+        if root_ready.is_none()
+            && missing_coordinator_request_is_error(requested.load(Ordering::Acquire), &wait)
+        {
             return Err(io::Error::new(
                 io::ErrorKind::ConnectionAborted,
                 "DBT guest exited successfully without sending a request to the global-state coordinator",
@@ -805,6 +857,14 @@ impl DbtRunner {
                 }
             }
         };
+        if let Some(monitor) = root_ready {
+            if wait.status().code().is_none() {
+                return Err(io::Error::other(
+                    "caller Tool root not retired: root ended without an intercepted exit",
+                ));
+            }
+            monitor.check_declared().map_err(io::Error::other)?;
+        }
         // The whole followed process tree has been reaped, so every image that
         // reached `event_exit` has already appended its record. Draining now is
         // race-free.
@@ -1963,6 +2023,53 @@ mod tests {
     const TEST_DRRUN_DIAGNOSTIC: &str = "REVERIE_DBT_TEST_DRRUN_DIAGNOSTIC";
 
     #[test]
+    fn config_only_child() {
+        let Ok(code) = std::env::var("REVERIE_DBT_CONFIG_ONLY_TEST_EXIT") else {
+            return;
+        };
+        let path = std::env::var_os(crate::sync_rpc::RPC_SOCKET_ENV).unwrap();
+        crate::sync_rpc::read_initial_config::<()>(Path::new(&path)).unwrap();
+        std::process::exit(code.parse().unwrap());
+    }
+
+    #[tokio::test]
+    async fn required_owner_refuses_config_only_zero_and_nonzero_exit() {
+        // This executable deliberately has no runtime or Tool. It exercises
+        // the real launcher/config/child-wait negative, not native DBT success.
+        let directory = tempfile::tempdir().unwrap();
+        let executable = directory.path().join("config-only-launcher");
+        std::fs::write(
+            &executable,
+            concat!(
+                "#!/bin/sh\n",
+                "exec \"$REVERIE_DBT_CONFIG_ONLY_TEST_EXE\" --exact ",
+                "launcher::tests::config_only_child --nocapture\n",
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let runner = DbtRunner::new(&executable, &executable)
+            .unwrap()
+            .require_initial_root_ready();
+        for code in [0, 42] {
+            let mut guest = Command::new("/bin/true");
+            guest.env(
+                "REVERIE_DBT_CONFIG_ONLY_TEST_EXE",
+                std::env::current_exe().unwrap(),
+            );
+            guest.env("REVERIE_DBT_CONFIG_ONLY_TEST_EXIT", code.to_string());
+            let error = runner
+                .output_with_global::<()>(&guest, ())
+                .await
+                .unwrap_err();
+            assert!(
+                error.to_string().contains("initial-root"),
+                "status {code}: {error}"
+            );
+        }
+    }
+
+    #[test]
     fn failed_guest_status_is_preserved_before_coordinator_request() {
         let bootstrap_failure = ChildWait::Status(ExitStatus::from_raw(125 << 8));
         let other_failure = ChildWait::Status(ExitStatus::from_raw(1 << 8));
@@ -2041,6 +2148,8 @@ mod tests {
             terminate_process_group_on_exit: false,
             defer_evidence_finish: false,
             tool_answers_brk: false,
+            require_initial_root_ready: false,
+            application_request_observer: None,
         }
     }
 

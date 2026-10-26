@@ -13,7 +13,6 @@
 //! trap and hook paths implements [`HostRuntime`] for the services the host
 //! calls back into.
 
-use std::collections::HashMap;
 use std::collections::HashSet;
 use std::io;
 
@@ -48,11 +47,32 @@ use super::signal::self_directed_fatal_signal;
 use super::signal::signal_ends_process_now;
 use super::support::tool_callback_active;
 use crate::sync::SpinMutex;
+use crate::tool_host::AdmissionDomain;
+use crate::tool_host::CallbackLease;
 use crate::tool_host::CallbackOutcome;
 use crate::tool_host::DrivenSyscall;
+use crate::tool_host::GuestParts;
+use crate::tool_host::PhysicalOperation;
+use crate::tool_host::SpinDriver;
+use crate::tool_host::StartupFailure;
 use crate::tool_host::TailResult;
+use crate::tool_host::TaskGuestFactory;
+use crate::tool_host::TaskIdentity;
+use crate::tool_host::TerminalEvent;
+use crate::tool_host::ToolOwner;
+use crate::tool_host::clone_args_are_plain_fork;
+use crate::tool_host::physical_operation;
+
+type HostLease<'a, T> = CallbackLease<'a, T, CoordinatorRpc<<T as Tool>::GlobalState>>;
+
+fn owner_io(error: Error) -> io::Error {
+    match error {
+        Error::Io(error) => error,
+        Error::Errno(error) => io::Error::from_raw_os_error(error.into_raw()),
+        other => io::Error::other(describe_reverie_error(&other)),
+    }
+}
 use crate::tool_host::drive_callback;
-use crate::tool_host::drive_ready;
 use crate::tool_host::drive_tool_syscall;
 use crate::trap::raw_syscall6;
 
@@ -168,18 +188,75 @@ impl Drop for DispatchScratchScope {
     }
 }
 
+// Interception facts only: Tool/state/RPC references are supplied by the
+// common owner's callback lease each time it constructs an InGuest.
+struct TrapGuestFactory<'a, T: Tool, R: HostRuntime> {
+    event: &'a mut SyscallEvent,
+    ppid: Option<Pid>,
+    cpuid_interception: bool,
+    runtime: &'a R,
+    #[cfg(feature = "exec-native-injection")]
+    mapping_driver: Option<&'a dyn super::native_exec::NativeExecDriver<T>>,
+    tool: core::marker::PhantomData<T>,
+}
+
+impl<'port, T: Tool, R: HostRuntime>
+    TaskGuestFactory<T, super::rpc::BorrowedCoordinator<'port, T::GlobalState>>
+    for TrapGuestFactory<'_, T, R>
+{
+    type Guest<'lease>
+        = InGuest<'lease, T, R>
+    where
+        Self: 'lease,
+        super::rpc::BorrowedCoordinator<'port, T::GlobalState>: 'lease;
+    type Ending = Ending;
+
+    fn guest<'lease>(
+        &'lease mut self,
+        parts: GuestParts<'lease, T, super::rpc::BorrowedCoordinator<'port, T::GlobalState>>,
+        tail: &'lease TailResult,
+    ) -> Self::Guest<'lease> {
+        InGuest {
+            event: self.event,
+            tid: parts.identity.tid,
+            pid: parts.identity.pid,
+            ppid: self.ppid,
+            state: parts.state,
+            rpc: parts.rpc.connection(),
+            tail,
+            cpuid_interception: self.cpuid_interception,
+            fork_parent_state: None,
+            runtime: self.runtime,
+            staged_signals: Vec::new(),
+            staged_signal_delivery: false,
+            in_syscall_handler: false,
+            #[cfg(feature = "exec-native-injection")]
+            exec: None,
+            #[cfg(feature = "exec-native-injection")]
+            mapping_driver: self.mapping_driver,
+            unsupported_refusal: None,
+        }
+    }
+
+    fn after_callback<'lease>(tool: &T, guest: &mut Self::Guest<'lease>) -> Option<Ending>
+    where
+        Self: 'lease,
+        super::rpc::BorrowedCoordinator<'port, T::GlobalState>: 'lease,
+    {
+        deliver_staged_signals(tool, guest)
+    }
+}
+
 /// Hosts one Reverie Tool inside the guest process: owns the Tool, its
 /// per-thread state and its coordinator connection, and runs each guest
 /// syscall or instruction event through the Tool's handlers. The backend that
 /// owns the trap and hook paths supplies `R`, the runtime services the host
 /// calls back into.
 pub struct ToolHost<T: Tool, R: HostRuntime> {
-    tool: SpinMutex<Option<T>>,
-    rpc: CoordinatorRpc<T::GlobalState>,
+    owner: ToolOwner<T, CoordinatorRpc<T::GlobalState>>,
     root_pid: Pid,
     subscriptions: HashSet<Sysno>,
     cpuid_interception: bool,
-    states: SpinMutex<HashMap<i32, T::ThreadState>>,
     runtime: R,
     #[cfg(feature = "exec-private-successor")]
     prepared_exec: SpinMutex<Option<PreparedExecState<T>>>,
@@ -203,7 +280,7 @@ struct PreparedExecState<T: Tool> {
 impl<T: Tool, R: HostRuntime> ToolHost<T, R> {
     /// This process's coordinator connection.
     pub fn rpc(&self) -> &CoordinatorRpc<T::GlobalState> {
-        &self.rpc
+        self.owner.connection()
     }
 
     /// Install an already-admitted continuation's Tool state for this thread.
@@ -226,19 +303,12 @@ impl<T: Tool, R: HostRuntime> ToolHost<T, R> {
             ));
         }
         let _allocation_scope = super::alloc::enter_dispatch();
-        let tid = raw_pid(libc::SYS_gettid).as_raw();
-        let mut states = self.states.try_lock().ok_or_else(|| {
-            io::Error::new(io::ErrorKind::WouldBlock, "Tool state dispatch is active")
-        })?;
-        if let std::collections::hash_map::Entry::Vacant(entry) = states.entry(tid) {
-            entry.insert(state);
-            Ok(())
-        } else {
-            Err(io::Error::new(
-                io::ErrorKind::AlreadyExists,
-                "Tool state already exists for this thread",
-            ))
-        }
+        let tid = raw_pid(libc::SYS_gettid);
+        self.owner
+            .try_borrow(())
+            .map_err(owner_io)?
+            .restore_started(tid, state)
+            .map_err(owner_io)
     }
 }
 
@@ -260,12 +330,18 @@ where
     ) -> Self {
         COMMITTED_STACKS.lock().clear();
         Self {
-            tool: SpinMutex::new(Some(tool)),
-            rpc,
+            owner: ToolOwner::new(
+                tool,
+                rpc,
+                TaskIdentity {
+                    tid: root_pid,
+                    pid: root_pid,
+                },
+                AdmissionDomain::ExistingProcess,
+            ),
             root_pid,
             subscriptions,
             cpuid_interception,
-            states: SpinMutex::new(HashMap::new()),
             runtime,
             #[cfg(feature = "exec-private-successor")]
             prepared_exec: SpinMutex::new(None),
@@ -293,15 +369,13 @@ where
                 "native exec driver already installed",
             ));
         }
-        let states = self.states.try_lock().ok_or_else(|| {
-            io::Error::new(io::ErrorKind::WouldBlock, "Tool state dispatch is active")
-        })?;
-        if !states.is_empty() {
+        let lease = self.owner.try_borrow(()).map_err(owner_io)?;
+        if !lease.is_empty() {
             return Err(io::Error::other(
                 "native exec driver installation follows dispatch",
             ));
         }
-        drop(states);
+        drop(lease);
         self.native_exec_driver = Some(driver);
         Ok(())
     }
@@ -341,16 +415,11 @@ where
             {
                 return Err(io::Error::other("successor host root identity differs"));
             }
-            let states = self.states.try_lock().ok_or_else(|| {
-                io::Error::new(
-                    io::ErrorKind::WouldBlock,
-                    "successor state dispatch is active",
-                )
-            })?;
+            let lease = self.owner.try_borrow(()).map_err(owner_io)?;
             let mut pending = self.prepared_exec.try_lock().ok_or_else(|| {
                 io::Error::new(io::ErrorKind::WouldBlock, "successor restoration is active")
             })?;
-            if !states.is_empty() || pending.is_some() {
+            if !lease.is_empty() || pending.is_some() {
                 return Err(io::Error::new(
                     io::ErrorKind::AlreadyExists,
                     "successor thread state already exists",
@@ -384,28 +453,15 @@ where
         if tid != self.root_pid {
             return Err(io::Error::other("successor host root identity differs"));
         }
-        let tool_slot = self.tool.try_lock().ok_or_else(|| {
-            io::Error::new(
-                io::ErrorKind::WouldBlock,
-                "successor Tool callback is active",
-            )
-        })?;
-        let tool = tool_slot
-            .as_ref()
-            .ok_or_else(|| io::Error::other("successor Tool is absent"))?;
-        let mut states = self.states.try_lock().ok_or_else(|| {
-            io::Error::new(
-                io::ErrorKind::WouldBlock,
-                "successor state dispatch is active",
-            )
-        })?;
+        let mut lease = self.owner.try_borrow(()).map_err(owner_io)?;
+        let tool = lease.tool();
         let mut pending = self.prepared_exec.try_lock().ok_or_else(|| {
             io::Error::new(io::ErrorKind::WouldBlock, "successor post-exec is active")
         })?;
         let restored = pending
             .as_mut()
             .ok_or_else(|| io::Error::other("successor state is absent"))?;
-        if !states.is_empty()
+        if !lease.is_empty()
             || !matches!(restored.phase, PreparedExecPhase::Pending)
             || restored.binding != control.binding()
         {
@@ -445,7 +501,9 @@ where
         // ExecComplete publication uses the same restored state. Dispatch now
         // observes an existing state and cannot repeat either startup hook.
         let completed = pending.take().expect("owned successor state");
-        states.insert(tid.as_raw(), completed.state);
+        lease
+            .restore_started(tid, completed.state)
+            .map_err(owner_io)?;
         Ok(())
     }
 
@@ -481,22 +539,9 @@ where
         if tid != self.root_pid {
             return Err(io::Error::other("InitialImage host root identity differs"));
         }
-        let tool_slot = self.tool.try_lock().ok_or_else(|| {
-            io::Error::new(
-                io::ErrorKind::WouldBlock,
-                "InitialImage Tool callback is active",
-            )
-        })?;
-        let tool = tool_slot
-            .as_ref()
-            .ok_or_else(|| io::Error::other("InitialImage Tool is absent"))?;
-        let mut states = self.states.try_lock().ok_or_else(|| {
-            io::Error::new(
-                io::ErrorKind::WouldBlock,
-                "InitialImage state dispatch is active",
-            )
-        })?;
-        if states.contains_key(&tid.as_raw()) {
+        let mut lease = self.owner.try_borrow(()).map_err(owner_io)?;
+        let tool = lease.tool();
+        if lease.contains(tid) {
             return Err(io::Error::new(
                 io::ErrorKind::AlreadyExists,
                 "InitialImage thread state already exists",
@@ -520,7 +565,7 @@ where
             let mut guest = image_guest::ImageGuest::<T, R>::new(
                 tid,
                 &mut state,
-                &self.rpc,
+                self.rpc(),
                 &self.runtime,
                 self.cpuid_interception,
                 &tail,
@@ -562,9 +607,9 @@ where
         }
         // Publish completed state before the owner records completion. A failed
         // revalidation removes it and permanently poisons the affine attempt.
-        states.insert(tid.as_raw(), state);
+        lease.restore_started(tid, state).map_err(owner_io)?;
         if let Err(error) = permit.complete() {
-            states.remove(&tid.as_raw());
+            lease.remove_restored(tid).map_err(owner_io)?;
             return Err(error);
         }
         Ok(())
@@ -607,66 +652,23 @@ where
         // fail-closed. A scheduler RPC may block until a sibling runs, so MT
         // support requires per-thread RPC/state ownership before relaxing the
         // clone guard below.
-        let mut tool_slot = self.tool.lock();
-        let tool = tool_slot.as_ref().unwrap_or_else(|| fatal(126));
-        let mut states = self.states.lock();
-        let is_new = !states.contains_key(&tid.as_raw());
-        let state = states
-            .entry(tid.as_raw())
-            .or_insert_with(|| tool.init_thread_state(tid, None));
+        let mut lease = self
+            .owner
+            .borrow(())
+            .unwrap_or_else(|error| tool_fatal(126, &error));
+        lease
+            .admit(TaskIdentity { tid, pid })
+            .unwrap_or_else(|error| tool_fatal(126, &error));
         let tail = TailResult::default();
-        let mut guest = InGuest::<T, R> {
+        let mut factory = TrapGuestFactory::<T, R> {
             event,
-            tid,
-            pid,
             ppid,
-            state,
-            rpc: &self.rpc,
-            tail: &tail,
             cpuid_interception: self.cpuid_interception,
-            fork_parent_state: None,
             runtime: &self.runtime,
-            staged_signals: Vec::new(),
-            staged_signal_delivery: false,
-            in_syscall_handler: false,
-            #[cfg(feature = "exec-native-injection")]
-            exec: None,
             #[cfg(feature = "exec-native-injection")]
             mapping_driver: self.native_exec_driver.as_deref(),
-            unsupported_refusal: None,
+            tool: core::marker::PhantomData,
         };
-
-        if is_new {
-            match callback_result(drive_callback(tool.handle_thread_start(&mut guest), &tail)) {
-                Ok(Ok(())) => {}
-                Ok(Err(error)) => tool_fatal(124, &error),
-                Err(ending) => {
-                    drop(guest);
-                    finish_ending(
-                        &mut tool_slot,
-                        &mut states,
-                        &self.rpc,
-                        &self.runtime,
-                        (tid, pid),
-                        ending,
-                    )
-                }
-            }
-            // A signal the thread-start callback sent is delivered before the
-            // next callback runs, as a tracer delivers it when the thread
-            // resumes.
-            if let Some(ending) = deliver_staged_signals(tool, &mut guest) {
-                drop(guest);
-                finish_ending(
-                    &mut tool_slot,
-                    &mut states,
-                    &self.rpc,
-                    &self.runtime,
-                    (tid, pid),
-                    ending,
-                );
-            }
-        }
 
         // AUTONOMOUS-BOT-IMPLEMENTED
         // TODO-HUMAN-REVIEW(PR-liteinst-post-exec): The kernel exec'd the guest
@@ -680,36 +682,12 @@ where
         // once for the root process's main thread restores contract parity. It
         // is intentionally not emitted for child threads (there is none in the
         // current single-process/thread tool mode) nor re-emitted per dispatch.
-        if is_new && tid.as_raw() == self.root_pid.as_raw() {
-            match callback_result(drive_callback(tool.handle_post_exec(&mut guest), &tail)) {
-                Ok(Ok(())) => {}
-                // handle_post_exec returns Errno; tool_fatal expects reverie::Error.
-                Ok(Err(error)) => tool_fatal(124, &Error::from(error)),
-                Err(ending) => {
-                    drop(guest);
-                    finish_ending(
-                        &mut tool_slot,
-                        &mut states,
-                        &self.rpc,
-                        &self.runtime,
-                        (tid, pid),
-                        ending,
-                    )
-                }
-            }
+        if let Err(failure) = lease.startup(&mut factory, &tail, &SpinDriver) {
+            finish_startup_failure(&mut lease, &self.runtime, (tid, pid), failure);
         }
-        // A signal the post-exec callback sent.
-        if let Some(ending) = deliver_staged_signals(tool, &mut guest) {
-            drop(guest);
-            finish_ending(
-                &mut tool_slot,
-                &mut states,
-                &self.rpc,
-                &self.runtime,
-                (tid, pid),
-                ending,
-            );
-        }
+        let (tool, mut guest) = lease
+            .guest(&mut factory, &tail)
+            .unwrap_or_else(|error| tool_fatal(126, &error));
 
         let Some(number) = usize::try_from(guest.event.number)
             .ok()
@@ -727,16 +705,14 @@ where
                 guest.event.result = -i64::from(error.into_raw());
                 return;
             }
-            if is_plain_fork(number, args) {
+            if physical_task_operation(number, args) == PhysicalOperation::PlainFork {
                 guest.prepare_fork_parent_state();
                 let result = forward_plain_fork(number, args, Some(&mut guest.event.guest_pkru));
                 if result == 0 {
                     let parent_state = guest.take_fork_parent_state();
                     drop(guest);
                     finish_fork_child(
-                        &mut tool_slot,
-                        &mut states,
-                        &self.rpc,
+                        &mut lease,
                         &self.runtime,
                         event,
                         parent_state,
@@ -754,9 +730,7 @@ where
             } else if is_exit_syscall(number) {
                 drop(guest);
                 finish_tool_exit(
-                    &mut tool_slot,
-                    &mut states,
-                    &self.rpc,
+                    &mut lease,
                     &self.runtime,
                     ToolExitContext::exit_syscall(tid, pid, number, args),
                 );
@@ -784,14 +758,7 @@ where
                 });
                 if let Some(ending) = deliver_staged_signals(tool, &mut guest) {
                     drop(guest);
-                    finish_ending(
-                        &mut tool_slot,
-                        &mut states,
-                        &self.rpc,
-                        &self.runtime,
-                        (tid, pid),
-                        ending,
-                    );
+                    finish_ending(&mut lease, &self.runtime, (tid, pid), ending);
                 }
                 return;
             } else if let Some(error) = injected_syscall_guard(&self.runtime, number, args) {
@@ -861,7 +828,7 @@ where
                 (&original_event, guest.event),
                 &site,
                 &*guest.state,
-                &self.rpc,
+                self.rpc(),
             ));
         }
         guest.in_syscall_handler = true;
@@ -876,14 +843,7 @@ where
                 // signal held during an injection when the handler returns.
                 if let Some(ending) = deliver_staged_signals(tool, &mut guest) {
                     drop(guest);
-                    finish_ending(
-                        &mut tool_slot,
-                        &mut states,
-                        &self.rpc,
-                        &self.runtime,
-                        (tid, pid),
-                        ending,
-                    );
+                    finish_ending(&mut lease, &self.runtime, (tid, pid), ending);
                 }
             }
             DrivenSyscall::Exit { number, .. } if !is_exit_syscall(number) => {
@@ -893,9 +853,7 @@ where
                 // held before are never delivered.
                 drop(guest);
                 finish_ending(
-                    &mut tool_slot,
-                    &mut states,
-                    &self.rpc,
+                    &mut lease,
                     &self.runtime,
                     (tid, pid),
                     Ending::Death(SignalDeath::KILL),
@@ -906,9 +864,7 @@ where
                 // the exit ends the process first.
                 drop(guest);
                 finish_tool_exit(
-                    &mut tool_slot,
-                    &mut states,
-                    &self.rpc,
+                    &mut lease,
                     &self.runtime,
                     ToolExitContext::exit_syscall(tid, pid, number, args),
                 );
@@ -923,9 +879,7 @@ where
                 let parent_state = guest.take_fork_parent_state();
                 drop(guest);
                 finish_fork_child(
-                    &mut tool_slot,
-                    &mut states,
-                    &self.rpc,
+                    &mut lease,
                     &self.runtime,
                     event,
                     parent_state,
@@ -972,13 +926,13 @@ where
         let tid = raw_pid(libc::SYS_gettid);
         let pid = raw_pid(libc::SYS_getpid);
         let ppid = (pid != self.root_pid).then(|| raw_pid(libc::SYS_getppid));
-        let mut tool_slot = self.tool.lock();
-        let tool = tool_slot.as_ref().unwrap_or_else(|| fatal(126));
-        let mut states = self.states.lock();
-        let is_new = !states.contains_key(&tid.as_raw());
-        let state = states
-            .entry(tid.as_raw())
-            .or_insert_with(|| tool.init_thread_state(tid, None));
+        let mut lease = self
+            .owner
+            .borrow(())
+            .unwrap_or_else(|error| tool_fatal(126, &error));
+        lease
+            .admit(TaskIdentity { tid, pid })
+            .unwrap_or_else(|error| tool_fatal(126, &error));
         let tail = TailResult::default();
         let mut event = SyscallEvent {
             number: -1,
@@ -989,82 +943,21 @@ where
             dispatch: SyscallDispatch::InstalledHook,
             guest_pkru: None,
         };
-        let mut guest = InGuest::<T, R> {
+        let mut factory = TrapGuestFactory::<T, R> {
             event: &mut event,
-            tid,
-            pid,
             ppid,
-            state,
-            rpc: &self.rpc,
-            tail: &tail,
             cpuid_interception: self.cpuid_interception,
-            fork_parent_state: None,
             runtime: &self.runtime,
-            staged_signals: Vec::new(),
-            staged_signal_delivery: false,
-            in_syscall_handler: false,
-            #[cfg(feature = "exec-native-injection")]
-            exec: None,
             #[cfg(feature = "exec-native-injection")]
             mapping_driver: self.native_exec_driver.as_deref(),
-            unsupported_refusal: None,
+            tool: core::marker::PhantomData,
         };
-        if is_new {
-            match callback_result(drive_callback(tool.handle_thread_start(&mut guest), &tail)) {
-                Ok(Ok(())) => {}
-                Ok(Err(error)) => tool_fatal(124, &error),
-                Err(ending) => {
-                    drop(guest);
-                    finish_ending(
-                        &mut tool_slot,
-                        &mut states,
-                        &self.rpc,
-                        &self.runtime,
-                        (tid, pid),
-                        ending,
-                    )
-                }
-            }
-            if let Some(ending) = deliver_staged_signals(tool, &mut guest) {
-                drop(guest);
-                finish_ending(
-                    &mut tool_slot,
-                    &mut states,
-                    &self.rpc,
-                    &self.runtime,
-                    (tid, pid),
-                    ending,
-                );
-            }
+        if let Err(failure) = lease.startup(&mut factory, &tail, &SpinDriver) {
+            finish_startup_failure(&mut lease, &self.runtime, (tid, pid), failure);
         }
-        if is_new && tid.as_raw() == self.root_pid.as_raw() {
-            match callback_result(drive_callback(tool.handle_post_exec(&mut guest), &tail)) {
-                Ok(Ok(())) => {}
-                Ok(Err(error)) => tool_fatal(124, &Error::from(error)),
-                Err(ending) => {
-                    drop(guest);
-                    finish_ending(
-                        &mut tool_slot,
-                        &mut states,
-                        &self.rpc,
-                        &self.runtime,
-                        (tid, pid),
-                        ending,
-                    )
-                }
-            }
-        }
-        if let Some(ending) = deliver_staged_signals(tool, &mut guest) {
-            drop(guest);
-            finish_ending(
-                &mut tool_slot,
-                &mut states,
-                &self.rpc,
-                &self.runtime,
-                (tid, pid),
-                ending,
-            );
-        }
+        let (tool, mut guest) = lease
+            .guest(&mut factory, &tail)
+            .unwrap_or_else(|error| tool_fatal(126, &error));
 
         match kind {
             InstructionEventKind::Cpuid => {
@@ -1078,14 +971,7 @@ where
                     }
                     Err(ending) => {
                         drop(guest);
-                        finish_ending(
-                            &mut tool_slot,
-                            &mut states,
-                            &self.rpc,
-                            &self.runtime,
-                            (tid, pid),
-                            ending,
-                        )
+                        finish_ending(&mut lease, &self.runtime, (tid, pid), ending)
                     }
                 };
                 context.rax = u64::from(result.eax);
@@ -1106,14 +992,7 @@ where
                     }
                     Err(ending) => {
                         drop(guest);
-                        finish_ending(
-                            &mut tool_slot,
-                            &mut states,
-                            &self.rpc,
-                            &self.runtime,
-                            (tid, pid),
-                            ending,
-                        )
+                        finish_ending(&mut lease, &self.runtime, (tid, pid), ending)
                     }
                 };
                 context.rax = result.tsc as u32 as u64;
@@ -1127,22 +1006,13 @@ where
         // it then ends before the instruction completes.
         if let Some(ending) = deliver_staged_signals(tool, &mut guest) {
             drop(guest);
-            finish_ending(
-                &mut tool_slot,
-                &mut states,
-                &self.rpc,
-                &self.runtime,
-                (tid, pid),
-                ending,
-            );
+            finish_ending(&mut lease, &self.runtime, (tid, pid), ending);
         }
     }
 }
 
 fn finish_fork_child<T: Tool, R: HostRuntime>(
-    tool_slot: &mut Option<T>,
-    states: &mut HashMap<i32, T::ThreadState>,
-    rpc: &CoordinatorRpc<T::GlobalState>,
+    lease: &mut HostLease<'_, T>,
     runtime: &R,
     event: &mut SyscallEvent,
     parent_snapshot: T::ThreadState,
@@ -1163,75 +1033,33 @@ fn finish_fork_child<T: Tool, R: HostRuntime>(
     // hook also covers forks that never enter libc, such as a raw `SYS_fork` or
     // a raw plain `SYS_clone`.
     super::rpc::note_fork_in_child();
-    let inherited_parent_state = states
-        .remove(&parent_tid.as_raw())
-        .unwrap_or_else(|| fatal(126));
-    drop(inherited_parent_state);
-    let child_tool = T::new(child_pid, rpc.config());
-    let child_state = child_tool.init_thread_state(child_tid, Some((parent_tid, &parent_snapshot)));
-    states.clear();
-    states.insert(child_tid.as_raw(), child_state);
-    *tool_slot = Some(child_tool);
-    // Both installed hooks and deferred fallback carry a register context.
-    // Attribute the child's first event to the path that actually entered it.
+    lease
+        .reseed_fork_child(
+            parent_tid,
+            TaskIdentity {
+                tid: child_tid,
+                pid: child_pid,
+            },
+            &parent_snapshot,
+        )
+        .unwrap_or_else(|error| tool_fatal(126, &error));
+    // Retain the physical rebind/reset before the child callback.
     runtime.fork_child_reset(event);
-
-    let tool = tool_slot.as_ref().unwrap_or_else(|| fatal(126));
-    let state = states
-        .get_mut(&child_tid.as_raw())
-        .unwrap_or_else(|| fatal(126));
     let child_tail = TailResult::default();
-    let mut child_guest = InGuest::<T, R> {
+    let mut factory = TrapGuestFactory::<T, R> {
         event,
-        tid: child_tid,
-        pid: child_pid,
         ppid: Some(parent_pid),
-        state,
-        rpc,
-        tail: &child_tail,
         cpuid_interception: runtime.cpuid_interception_enabled(),
-        fork_parent_state: None,
         runtime,
-        staged_signals: Vec::new(),
-        staged_signal_delivery: false,
-        in_syscall_handler: false,
-        #[cfg(feature = "exec-native-injection")]
-        exec: None,
         #[cfg(feature = "exec-native-injection")]
         mapping_driver: None,
-        unsupported_refusal: None,
+        tool: core::marker::PhantomData,
     };
-    match callback_result(drive_callback(
-        tool.handle_thread_start(&mut child_guest),
-        &child_tail,
-    )) {
-        Ok(Ok(())) => {}
-        Ok(Err(error)) => tool_fatal(124, &error),
-        Err(ending) => {
-            drop(child_guest);
-            finish_ending(
-                tool_slot,
-                states,
-                rpc,
-                runtime,
-                (child_tid, child_pid),
-                ending,
-            )
-        }
-    }
-    if let Some(ending) = deliver_staged_signals(tool, &mut child_guest) {
-        drop(child_guest);
-        finish_ending(
-            tool_slot,
-            states,
-            rpc,
-            runtime,
-            (child_tid, child_pid),
-            ending,
-        );
+    if let Err(failure) = lease.startup(&mut factory, &child_tail, &SpinDriver) {
+        finish_startup_failure(lease, runtime, (child_tid, child_pid), failure);
     }
     runtime.emit_stage(b"fork-child-thread-start-complete");
-    child_guest.event.result = 0;
+    factory.event.result = 0;
 }
 
 struct ForkChildContext {
@@ -1243,68 +1071,53 @@ struct ForkChildContext {
 
 // TODO-HUMAN-REVIEW(PR-143): Review single-process Tool exit lifecycle.
 fn finish_tool_exit<T: Tool, R: HostRuntime>(
-    tool_slot: &mut Option<T>,
-    states: &mut HashMap<i32, T::ThreadState>,
-    rpc: &CoordinatorRpc<T::GlobalState>,
+    lease: &mut HostLease<'_, T>,
     runtime: &R,
     context: ToolExitContext,
 ) {
-    let ToolExitContext {
-        tid,
-        pid,
-        status,
-        process_exit,
-    } = context;
-    // The exit callbacks run from here: an ending a callback staged has
-    // reached the host, and these callbacks may reach the coordinator.
-    ENDING_STAGED.store(false, core::sync::atomic::Ordering::Release);
-    let state = states
-        .remove(&tid.as_raw())
-        .expect("LiteInst thread state disappeared before exit");
-    let tool = tool_slot.as_ref().unwrap_or_else(|| fatal(126));
-    if let Err(error) = drive_ready(tool.on_exit_thread(tid, rpc, state, status)) {
-        tool_fatal(125, &error);
+    if lease.identity() != Some(context.identity) {
+        tool_fatal(
+            125,
+            &Error::Io(io::Error::other(
+                "Tool exit identity differs from its callback lease",
+            )),
+        );
     }
-    if process_exit {
-        let tool = tool_slot.take().unwrap_or_else(|| fatal(126));
-        if let Err(error) = drive_ready(tool.on_exit_process(pid, rpc, status)) {
-            tool_fatal(125, &error);
-        }
-        if let Err(error) = runtime.exit_process_stats(tid) {
-            tool_fatal(125, &Error::from(error));
-        }
+    ENDING_STAGED.store(false, core::sync::atomic::Ordering::Release);
+    let process_exit = lease
+        .finish_exit(context.terminal, &SpinDriver)
+        .unwrap_or_else(|error| tool_fatal(125, &error));
+    if process_exit && let Err(error) = runtime.exit_process_stats(context.identity.tid) {
+        tool_fatal(125, &Error::from(error));
     }
 }
 
 struct ToolExitContext {
-    tid: Pid,
-    pid: Pid,
-    /// The status the exit callbacks report.
-    status: reverie::ExitStatus,
-    /// Whether the whole process ends, so `on_exit_process` runs too.
-    process_exit: bool,
+    identity: TaskIdentity,
+    terminal: TerminalEvent,
 }
 
 impl ToolExitContext {
-    /// The exit of `tid` (of process `pid`) by its `exit` or `exit_group`
-    /// call `number(args)`.
     fn exit_syscall(tid: Pid, pid: Pid, number: i64, args: [u64; 6]) -> Self {
         Self {
-            tid,
-            pid,
-            status: reverie::ExitStatus::Exited((args[0] & 0xff) as i32),
-            process_exit: is_process_exit(number, tid, pid),
+            identity: TaskIdentity { tid, pid },
+            terminal: TerminalEvent::Syscall { number, args },
         }
     }
 
-    /// The end of `tid`'s process `pid` by a signal it sent itself. A fatal
-    /// signal ends every thread of the process.
     fn signal_death(tid: Pid, pid: Pid, status: reverie::ExitStatus) -> Self {
+        let reverie::ExitStatus::Signaled(signal, core_dumped) = status else {
+            tool_fatal(
+                125,
+                &Error::Io(io::Error::other("signal ending has no signal status")),
+            )
+        };
         Self {
-            tid,
-            pid,
-            status,
-            process_exit: true,
+            identity: TaskIdentity { tid, pid },
+            terminal: TerminalEvent::SignalDeath {
+                signal,
+                core_dumped,
+            },
         }
     }
 }
@@ -1362,13 +1175,26 @@ fn callback_result<V>(outcome: CallbackOutcome<V>) -> Result<V, Ending> {
     }
 }
 
+fn finish_startup_failure<T: Tool, R: HostRuntime>(
+    lease: &mut HostLease<'_, T>,
+    runtime: &R,
+    identity: (Pid, Pid),
+    failure: StartupFailure<Ending>,
+) -> ! {
+    let ending = match failure {
+        StartupFailure::Tool(error) => tool_fatal(124, &error),
+        StartupFailure::Exit { number, args } => Ending::Call { number, args },
+        StartupFailure::Unsupported(what) => tool_fatal(125, &Error::Io(io::Error::other(what))),
+        StartupFailure::Physical(ending) => ending,
+    };
+    finish_ending(lease, runtime, identity, ending)
+}
+
 /// Runs the exit callbacks of thread `tid` of process `pid` for `ending`,
 /// and ends the process: by its signal ([`die_by_pending_signal`]), or by
 /// the exit a callback injected.
 fn finish_ending<T: Tool, R: HostRuntime>(
-    tool_slot: &mut Option<T>,
-    states: &mut HashMap<i32, T::ThreadState>,
-    rpc: &CoordinatorRpc<T::GlobalState>,
+    lease: &mut HostLease<'_, T>,
     runtime: &R,
     (tid, pid): (Pid, Pid),
     ending: Ending,
@@ -1377,9 +1203,7 @@ fn finish_ending<T: Tool, R: HostRuntime>(
         Ending::Death(death) => death,
         Ending::Call { number, args } if is_exit_syscall(number) => {
             finish_tool_exit(
-                tool_slot,
-                states,
-                rpc,
+                lease,
                 runtime,
                 ToolExitContext::exit_syscall(tid, pid, number, args),
             );
@@ -1391,9 +1215,7 @@ fn finish_ending<T: Tool, R: HostRuntime>(
         Ending::Call { .. } => SignalDeath::KILL,
     };
     finish_tool_exit(
-        tool_slot,
-        states,
-        rpc,
+        lease,
         runtime,
         ToolExitContext::signal_death(tid, pid, death.status),
     );
@@ -1657,12 +1479,6 @@ fn is_exit_syscall(number: i64) -> bool {
     matches!(number, libc::SYS_exit | libc::SYS_exit_group)
 }
 
-// TODO-HUMAN-REVIEW(PR-143): Review single-process exit classification.
-fn is_process_exit(number: i64, tid: Pid, pid: Pid) -> bool {
-    // AUTONOMOUS-BOT-IMPLEMENTED
-    number == libc::SYS_exit_group || tid == pid
-}
-
 fn raw_pid(number: i64) -> Pid {
     let value = unsafe { raw_syscall6(number, [0; 6]) };
     if value <= 0 {
@@ -1845,10 +1661,7 @@ fn guest_filter_admitted() -> bool {
 /// handler's creation can complete in the child.
 fn refuse_creation_outside_handler(number: i64, in_syscall_handler: bool) {
     if !in_syscall_handler
-        && matches!(
-            number,
-            libc::SYS_fork | libc::SYS_vfork | libc::SYS_clone | libc::SYS_clone3
-        )
+        && physical_operation(AdmissionDomain::ExistingProcess, number, [0; 6], None).is_creation()
     {
         tool_fatal(
             125,
@@ -1897,32 +1710,25 @@ impl<T: Tool, R: HostRuntime> InGuest<'_, T, R> {
 
 // AUTONOMOUS-BOT-IMPLEMENTED
 // TODO-HUMAN-REVIEW(PR-326): Review the plain-fork injection boundary.
-fn is_plain_fork(number: i64, args: [u64; 6]) -> bool {
-    if number == libc::SYS_fork {
-        return true;
-    }
-    if number == libc::SYS_vfork {
-        return true;
-    }
-    if number == libc::SYS_clone3 {
-        return clone3_is_plain_fork(args[0], args[1]);
-    }
-    if number != libc::SYS_clone {
-        return false;
-    }
-    const SIGNAL_MASK: u64 = 0xff;
-    let allowed_flags =
-        (libc::CLONE_CHILD_CLEARTID | libc::CLONE_CHILD_SETTID | libc::CLONE_PARENT_SETTID) as u64;
-    args[1] == 0
-        && args[0] & SIGNAL_MASK == libc::SIGCHLD as u64
-        && args[0] & !(SIGNAL_MASK | allowed_flags) == 0
+fn physical_task_operation(number: i64, args: [u64; 6]) -> PhysicalOperation {
+    // The adapter supplies only safely copied physical clone3 facts. Admission
+    // and the supported plain-fork subset are owned by the common classifier.
+    let fields = (number == libc::SYS_clone3)
+        .then(|| read_clone3_fields(args[0], args[1]))
+        .flatten();
+    physical_operation(
+        AdmissionDomain::ExistingProcess,
+        number,
+        args,
+        fields.as_ref(),
+    )
 }
 
-fn clone3_is_plain_fork(address: u64, size: u64) -> bool {
+fn read_clone3_fields(address: u64, size: u64) -> Option<[u64; 11]> {
     const CLONE_ARGS_SIZE_VER0: usize = 64;
     const CLONE_ARGS_SIZE_VER2: usize = 88;
     if address == 0 || size < CLONE_ARGS_SIZE_VER0 as u64 {
-        return false;
+        return None;
     }
     let mut fields = [0_u64; CLONE_ARGS_SIZE_VER2 / core::mem::size_of::<u64>()];
     let read_len = usize::try_from(size)
@@ -1951,25 +1757,10 @@ fn clone3_is_plain_fork(address: u64, size: u64) -> bool {
         )
     };
     if read != read_len as i64 {
-        return false;
+        return None;
     }
 
-    clone_args_are_plain_fork(&fields)
-}
-
-/// Whether `struct clone_args` fields (at least its first 88 bytes, as
-/// eleven words) describe the plain-fork subset the runtime accepts: only
-/// the TID-output flags, exit signal SIGCHLD, no stack, and nothing in the
-/// later fields (set_tid, set_tid_size, cgroup).
-fn clone_args_are_plain_fork(fields: &[u64]) -> bool {
-    let allowed_flags =
-        (libc::CLONE_CHILD_CLEARTID | libc::CLONE_CHILD_SETTID | libc::CLONE_PARENT_SETTID) as u64;
-    let flags = fields[0];
-    flags & !allowed_flags == 0
-        && fields[4] == libc::SIGCHLD as u64
-        && fields[5] == 0
-        && fields[6] == 0
-        && fields[8..11].iter().all(|field| *field == 0)
+    Some(fields)
 }
 
 /// One process creation the guest asked for, as the runtime performed or
@@ -2322,7 +2113,7 @@ fn guest_keys_deny_runtime_memory(permissions: Option<u32>) -> bool {
 /// Fills `record` with the `clone3` arguments that perform the plain-fork
 /// creation `number`/`args` with a `CLONE_PIDFD` output at `pidfd`, and
 /// returns their size. Callers have already accepted the call with
-/// [`is_plain_fork`].
+/// the common [`physical_operation`] classifier.
 fn clone3_record_for(
     number: i64,
     args: [u64; 6],
@@ -2373,14 +2164,15 @@ fn clone3_record_for(
             // The copy is what runs, and the guest's memory may have changed
             // since the call was classified (a peer sharing it): check the
             // copy itself before adding the runtime's output.
-            if !clone_args_are_plain_fork(&record[..]) {
+            if !clone_args_are_plain_fork(record[..11].try_into().expect("eleven clone_args words"))
+            {
                 return Err(Unperformed::Refused(CreationRefusal::ArgumentsChanged));
             }
             record[0] |= PIDFD;
             record[1] = pidfd;
             return Ok(size);
         }
-        _ => unreachable!("is_plain_fork accepts only fork, vfork, clone and clone3"),
+        _ => unreachable!("the common PlainFork classification admits only creation syscalls"),
     };
     record[..fields.len()].copy_from_slice(&fields);
     Ok(SIZE_VER0)
@@ -2749,12 +2541,12 @@ fn injected_syscall_guard(
     // Mapping protection is result-bearing and checked separately at each
     // physical forwarding site: raw brk refusals return the current break,
     // not an errno that would corrupt libc's saved break.
-    let unsupported_process =
-        // AUTONOMOUS-BOT-IMPLEMENTED
-        (matches!(number, libc::SYS_clone | libc::SYS_clone3 | libc::SYS_vfork)
-            && !is_plain_fork(number, args))
-        // AUTONOMOUS-BOT-IMPLEMENTED
-        || matches!(number, libc::SYS_execve | libc::SYS_execveat);
+    // AUTONOMOUS-BOT-IMPLEMENTED
+    // The shared domain classifier preserves the existing physical corridor.
+    // This legacy trap errno conversion remains an explicit fidelity residual.
+    // Tracked fidelity residual: https://github.com/rrnewton/hermit/issues/4485.
+    let unsupported_process = physical_task_operation(number, args).refusal().is_some();
+    // AUTONOMOUS-BOT-IMPLEMENTED
     let protected_signal =
         // AUTONOMOUS-BOT-IMPLEMENTED
         // TODO-HUMAN-REVIEW(PR-133): Review fail-closed guest signal-handler policy.
@@ -3129,7 +2921,8 @@ impl<'a, T: Tool, R: HostRuntime> Guest<T> for InGuest<'a, T, R> {
         ];
 
         refuse_creation_outside_handler(number, self.in_syscall_handler);
-        if is_plain_fork(number, raw_args) {
+        let operation = physical_task_operation(number, raw_args);
+        if operation == PhysicalOperation::PlainFork {
             let parent_tid = self.tid;
             let parent_pid = self.pid;
             self.prepare_fork_parent_state();
@@ -3145,7 +2938,7 @@ impl<'a, T: Tool, R: HostRuntime> Guest<T> for InGuest<'a, T, R> {
         }
 
         // AUTONOMOUS-BOT-IMPLEMENTED
-        if matches!(number, libc::SYS_clone | libc::SYS_clone3 | libc::SYS_vfork) {
+        if operation.is_creation() {
             // A typed refusal, so the Tool can tell this from a clone that
             // Linux failed: the in-guest runtime runs one thread of the guest
             // and has no thread or vfork-child creation to forward.
@@ -3356,7 +3149,7 @@ impl<'a, T: Tool, R: HostRuntime> Guest<T> for InGuest<'a, T, R> {
         // callback's counted output cut. Result guards below are syscall errno
         // outcomes, not a second tail operation.
         reverie::observe_tail_start(self.tid, tail_number);
-        if is_plain_fork(number, args) {
+        if physical_task_operation(number, args) == PhysicalOperation::PlainFork {
             let parent_tid = self.tid;
             let parent_pid = self.pid;
             self.prepare_fork_parent_state();
