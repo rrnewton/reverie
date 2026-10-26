@@ -42,7 +42,7 @@ impl Tool for ProbeTool {
     ) -> Result<i64, Error> {
         assert_eq!(syscall.number(), Sysno::getpid);
         CALLS.fetch_add(1, Ordering::Relaxed);
-        guest.inject(syscall).await
+        Ok(guest.inject(syscall).await?)
     }
 }
 
