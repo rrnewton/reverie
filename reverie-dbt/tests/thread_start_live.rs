@@ -78,9 +78,21 @@ fn run_fixture_under(
     let mut guest = Command::new(fixture);
     guest.env("REVERIE_DBT_TEST_DRRUN", reverie_dbt::bundled_drrun_path());
     guest.envs(env.iter().copied());
-    DbtRunner::new(launcher, client)
+    let mut runner = DbtRunner::new(launcher, client)
         .expect("create bounded native runner")
-        .client_argument(client_argument)
+        .client_argument(client_argument);
+    for key in [
+        "HERMIT_DBT_NOOP",
+        "HERMIT_DBT_TEST_SET_REG",
+        "HERMIT_DBT_TEST_COMPARE_EXCHANGE",
+    ] {
+        if env.iter().any(|(name, _)| *name == key) {
+            runner = runner
+                .private_environment_key(key)
+                .expect("valid Tool environment key");
+        }
+    }
+    runner
         .output(&guest)
         .unwrap_or_else(|error| panic!("run {name}: {error}"))
 }

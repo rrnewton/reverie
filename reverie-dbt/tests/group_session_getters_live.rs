@@ -605,7 +605,7 @@ fn compare_with_linux(mode: &str) {
     let native_robust = robust_fixture_observation(&native, i64::from(pid), absent, &robust_values);
     assert_eq!(&native_robust.context[4..], held_namespaces);
 
-    let runner = DbtRunner::from_env()
+    let mut runner = DbtRunner::from_env()
         .expect("DYNAMORIO_HOME and REVERIE_DBT_CLIENT must be set")
         .client_argument("-test-wait-for-background");
     let mut guest = Command::new(&fixture);
@@ -638,9 +638,15 @@ fn compare_with_linux(mode: &str) {
     match mode {
         "tail" => {
             guest.env("HERMIT_DBT_NOOP", "1");
+            runner = runner
+                .private_environment_key("HERMIT_DBT_NOOP")
+                .expect("valid Tool environment key");
         }
         "returning" => {
             guest.env("HERMIT_DBT_TEST_SET_REG", "1");
+            runner = runner
+                .private_environment_key("HERMIT_DBT_TEST_SET_REG")
+                .expect("valid Tool environment key");
         }
         "original" => {}
         _ => unreachable!(),

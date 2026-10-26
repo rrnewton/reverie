@@ -29,7 +29,7 @@ fn main() -> io::Result<()> {
     };
     let guest_arguments: Vec<OsString> = arguments.into_iter().skip(1).collect();
 
-    let runner = DbtRunner::from_env()?;
+    let runner = DbtRunner::from_env()?.private_environment_key("HERMIT_DBT_COUNTER2_EXACT")?;
     let mut guest = Command::new(program);
     guest
         .args(guest_arguments)

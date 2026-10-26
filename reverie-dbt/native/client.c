@@ -7319,11 +7319,11 @@ static void ensure_runtime_background(void) {
 
 extern char** environ;
 
-// DynamoRIO removes its own variables and the launcher's HERMIT_DBT_* ones from
+// DynamoRIO removes its own variables and the caller-selected private ones from
 // the application's initial environment once this client is initialized, so a
 // guest sees the environment it was given (its private libc's `environ` was the
-// application's array). The runtime reads some of them later (the coordinator
-// socket, Detcore's configuration), also in fork children, so it keeps a copy.
+// application's array). The runtime reads some of them later (including its
+// coordinator socket), also in fork children, so it keeps a copy.
 static void keep_private_environment(void) {
   size_t count = 0;
   while (environ[count] != NULL)

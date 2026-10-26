@@ -12,10 +12,11 @@
 //! DynamoRIO's early injection runs the guest on the stack the kernel built for
 //! drrun's exec, so the guest's initial environment used to carry DynamoRIO's
 //! variables (`DYNAMORIO_CONFIGDIR`, `DYNAMORIO_EXE_PATH`, ...) and the
-//! launcher's `HERMIT_DBT_*` ones, including a coordinator socket path that is
-//! random per run. The bundled DynamoRIO now removes them before the guest's
-//! first instruction, and passes them on to the children it follows, which
-//! remove them again. The client keeps its own copy for the runtime.
+//! caller's private ones, including a coordinator socket path that is random
+//! per run. The bundled DynamoRIO removes the selected variables before the
+//! guest's first instruction, and passes them on to the children it follows,
+//! which remove them again. The client keeps its own copy for the runtime.
+//! Arbitrary `HERMIT_DBT_*` application variables remain guest-visible.
 //!
 //! This runs [`tests/fixtures/guest_environment.c`] natively with an exact
 //! environment, and under the client with the same environment plus
@@ -99,10 +100,36 @@ fn stdout_of(label: &str, output: &Output) -> String {
 /// Runs `fixture` natively and under the client; returns both stdouts after
 /// checking the native control and the coordinator's process count.
 async fn native_and_dbt(fixture: &Path) -> (String, String) {
-    let given = BTreeMap::from([
+    native_and_dbt_with_privacy(fixture, &[], &[], |runner| runner).await
+}
+
+async fn native_and_dbt_with_privacy(
+    fixture: &Path,
+    extra_public: &[(&str, &str)],
+    extra_private: &[(&str, &str)],
+    configure: impl FnOnce(DbtRunner) -> DbtRunner,
+) -> (String, String) {
+    let mut given = BTreeMap::from([
         (OsString::from("GUEST_A"), OsString::from("1")),
         (OsString::from("GUEST_B"), OsString::from("two words")),
+        (
+            OsString::from("HERMIT_APP_VISIBLE"),
+            OsString::from("public"),
+        ),
+        (
+            OsString::from("HERMIT_DBT_APP_VISIBLE"),
+            OsString::from("public"),
+        ),
+        (
+            OsString::from("HERMIT_DBT_RPC_SOCKET_USER"),
+            OsString::from("public"),
+        ),
     ]);
+    given.extend(
+        extra_public
+            .iter()
+            .map(|(key, value)| (OsString::from(key), OsString::from(value))),
+    );
 
     let native = Command::new(fixture)
         .env_clear()
@@ -122,17 +149,21 @@ async fn native_and_dbt(fixture: &Path) -> (String, String) {
     }
 
     let mut private = given.clone();
-    private.insert(
-        OsString::from(format!("{}COUNTER2", reverie_dbt::PRIVATE_ENV_PREFIX)),
-        OsString::from("1"),
+    private.insert(OsString::from("HERMIT_DBT_COUNTER2"), OsString::from("1"));
+    private.extend(
+        extra_private
+            .iter()
+            .map(|(key, value)| (OsString::from(key), OsString::from(value))),
     );
     // The exec leaves the pre-exec image's background thread behind (it
     // predates this test); terminating the process group keeps it from holding
     // stdout open.
     let runner = DbtRunner::from_env()
         .expect("DYNAMORIO_HOME (or DynamoRIO_DIR) and REVERIE_DBT_CLIENT must be set")
+        .private_environment_key("HERMIT_DBT_COUNTER2")
+        .expect("valid Tool environment key")
         .terminate_process_group_on_exit(true);
-    let (dbt, global) = runner
+    let (dbt, global) = configure(runner)
         .output_with_environment_and_global::<Counter2Global>(&Command::new(fixture), &private, ())
         .await
         .unwrap_or_else(|error| panic!("the DBT run failed: {error}"));
@@ -144,6 +175,33 @@ async fn native_and_dbt(fixture: &Path) -> (String, String) {
          coordinator through their private variables\n{dbt}"
     );
     (native, dbt)
+}
+
+#[tokio::test(flavor = "current_thread")]
+#[ignore = "requires a built DynamoRIO and the reverie-dbt native client; run with --ignored"]
+async fn selected_private_keys_and_prefixes_preserve_public_neighbors_across_exec() {
+    let fixture = compile_fixture();
+    let (native, dbt) = native_and_dbt_with_privacy(
+        &fixture,
+        &[("TOOL_SECRET_SUFFIX", "public"), ("TOOL_PUBLIC", "public")],
+        &[
+            ("TOOL_SECRET", "private key"),
+            ("TOOL_PRIVATE_ONE", "private prefix one"),
+            ("TOOL_PRIVATE_TWO", "private prefix two"),
+        ],
+        |runner| {
+            runner
+                .private_environment_key("TOOL_SECRET")
+                .unwrap()
+                .private_environment_prefix("TOOL_PRIVATE_")
+                .unwrap()
+        },
+    )
+    .await;
+    assert_eq!(
+        dbt, native,
+        "the DBT guest's environment differs from the native one"
+    );
 }
 
 #[tokio::test(flavor = "current_thread")]

@@ -165,6 +165,8 @@ sys.exit(result)
         .env("REVERIE_DBT_TEST_GROUP", group_mode);
     let output = DbtRunner::new(launcher, client)
         .expect("create bounded native runner")
+        .private_environment_key("HERMIT_DBT_NOOP")
+        .expect("configure private Noop control")
         .client_argument("-test-wait-for-background")
         .output(&guest)
         .expect("run DBT fcntl owner fixture");

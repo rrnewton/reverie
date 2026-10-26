@@ -55,6 +55,8 @@ fn pidfd_open_targets_virtual_self_and_foreign_child_identities() {
         .expect("REVERIE_DBT_CLIENT must point to the built native client");
     let runner = DbtRunner::new(launcher, client)
         .expect("create bounded native runner")
+        .private_environment_key("HERMIT_DBT_NOOP")
+        .expect("configure private Noop control")
         .client_argument("-test-wait-for-background");
     let mut guest = Command::new(fixture);
     guest.env("REVERIE_DBT_TEST_DRRUN", reverie_dbt::bundled_drrun_path());

@@ -71,7 +71,6 @@ pub use launcher::CLIENT_THREAD_START_FAILURE_EXIT_CODE;
 pub use launcher::DbtFailedRunOutput;
 pub use launcher::DbtRunner;
 pub use launcher::DbtStatsSink;
-pub use launcher::PRIVATE_ENV_PREFIX;
 pub use launcher::failed_run_output;
 pub use mapping_capture::MappingCapture;
 pub use mapping_capture::NativeMappingCapture;

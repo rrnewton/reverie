@@ -35,7 +35,9 @@ use reverie_dbt::DbtRunner;
 #[ignore = "requires a built DynamoRIO and the reverie-dbt native client; run with --ignored"]
 async fn dbt_backend_stats_provider_reports_live_translation_metrics() {
     let runner = DbtRunner::from_env()
-        .expect("DYNAMORIO_HOME (or DynamoRIO_DIR) and REVERIE_DBT_CLIENT must be set");
+        .expect("DYNAMORIO_HOME (or DynamoRIO_DIR) and REVERIE_DBT_CLIENT must be set")
+        .private_environment_key("HERMIT_DBT_COUNTER2")
+        .expect("configure private Counter2 control");
 
     // A short-lived tree: the shell image plus several followed `/bin/true`
     // execs. Every real runtime image should append exactly one wire record.

@@ -22,6 +22,30 @@ native DynamoRIO client:
   guest environment; and
 - optionally reports process totals when the application exits.
 
+## Caller-owned environment privacy
+
+`DbtRunner` leaves ordinary guest variables visible, including application
+variables named `HERMIT_DBT_*`. A caller can select its private inputs with
+`private_environment_key("TOOL_SECRET")` or
+`private_environment_prefix("TOOL_PRIVATE_")`. These fallible builders reject
+empty selectors and NUL, `:` or `=` bytes; non-UTF8 names are supported. An exact
+key does not hide a longer key such as `TOOL_SECRET_SUFFIX`.
+
+The runner always selects its exact coordinator endpoint and native preemption
+control (`HERMIT_DBT_RPC_SOCKET` and `HERMIT_DBT_PREEMPT_ANYPC`); DynamoRIO also
+hides its own controls. The encoded selection overrides an inherited or
+guest-supplied `DYNAMORIO_HIDE_ENV_PREFIXES`. The runtime receives a private copy
+before the guest environment is filtered, and DynamoRIO preserves selected
+values across followed fork/exec paths. Runner clones preserve the selection.
+
+Other runtime/Tool flags are visible unless their caller selects them. They
+follow ordinary environment inheritance and are not privately reintroduced
+after an exec that supplies a replacement environment. The prototype Counter2
+bins and tests explicitly select their own keys. Generic example/recorder
+runners use the default without an implicit caller prefix. Raw `drrun` scripts
+remain responsible for their own environment; scripts and benchmarks invoking
+the Counter2 bins inherit those bins' selection.
+
 ## Build
 
 DynamoRIO's build-required source is vendored in this crate at the pinned

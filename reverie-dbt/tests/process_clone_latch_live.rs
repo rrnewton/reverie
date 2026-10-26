@@ -44,6 +44,8 @@ fn injected_invalid_clone_does_not_arm_an_original_syscall_result_latch() {
         .env("HERMIT_DBT_TEST_INJECT_INVALID_CLONE", "1")
         .env("REVERIE_DBT_TEST_PROCESS_CLONE_RESULTS", "1");
     let output = runner()
+        .private_environment_key("HERMIT_DBT_TEST_INJECT_INVALID_CLONE")
+        .expect("valid Tool environment key")
         .output(&guest)
         .expect("injected clone probe must run");
     assert!(output.status.success(), "guest failed: {output:?}");
@@ -76,6 +78,8 @@ fn assert_stale_refused_before_tool(
         .env(tool_env, "1")
         .env("REVERIE_DBT_TEST_PROCESS_CLONE_RESULTS", "1");
     let output = runner()
+        .private_environment_key(tool_env)
+        .expect("valid Tool environment key")
         .client_argument("-test-leave-process-clone-result-pending")
         .output(&guest)
         .expect("stale clone-result probe must run");

@@ -54,11 +54,8 @@ const HIDE_ENV_PREFIXES_ENV: &str = "DYNAMORIO_HIDE_ENV_PREFIXES";
 /// itself ([`DbtRunner::tool_answers_brk`]). A `DYNAMORIO_*` variable, so the
 /// guest never sees it.
 const TOOL_ANSWERS_BRK_ENV: &str = "DYNAMORIO_TOOL_ANSWERS_BRK";
-/// The prefix of the runtime's private environment variables, such as
-/// [`crate::sync_rpc::RPC_SOCKET_ENV`] and Hermit's Detcore configuration. The
-/// launcher has DynamoRIO hide every variable with this prefix from the guest,
-/// so a guest sees only the environment it was given.
-pub const PRIVATE_ENV_PREFIX: &str = "HERMIT_DBT_";
+/// Existing native preemption control; its value is private runtime input.
+const PREEMPT_ANYPC_ENV: &str = "HERMIT_DBT_PREEMPT_ANYPC";
 const BINPRM_BUF_SIZE: usize = 256;
 // AUTONOMOUS-BOT-IMPLEMENTED
 // TODO-HUMAN-REVIEW(#90): Confirm the reserved descriptor across followed execs.
@@ -85,6 +82,7 @@ pub struct DbtRunner {
     drrun: PathBuf,
     client: PathBuf,
     client_arguments: Vec<OsString>,
+    private_environment: Vec<OsString>,
     diagnostic_file: Option<Arc<File>>,
     evidence: Option<Arc<EvidenceSession>>,
     evidence_log_level: DbtEvidenceLogLevel,
@@ -112,6 +110,21 @@ fn copy_streaming_input<R: Read, W: io::Write>(reader: &mut R, writer: &mut W) -
         writer.write_all(&buffer[..count])?;
         copied += count as u64;
     }
+}
+
+fn validate_private_environment_selector(name: &OsStr) -> io::Result<()> {
+    if name.is_empty()
+        || name
+            .as_bytes()
+            .iter()
+            .any(|byte| matches!(byte, 0 | b':' | b'='))
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "private environment selectors must be nonempty and contain no NUL, ':' or '='",
+        ));
+    }
+    Ok(())
 }
 
 impl DbtRunner {
@@ -151,6 +164,7 @@ impl DbtRunner {
             drrun,
             client,
             client_arguments: Vec::new(),
+            private_environment: Vec::new(),
             diagnostic_file: None,
             evidence: None,
             evidence_log_level: DbtEvidenceLogLevel::Info,
@@ -166,6 +180,68 @@ impl DbtRunner {
     pub fn summary(mut self, enabled: bool) -> Self {
         self.summary = enabled;
         self
+    }
+
+    /// Hides exactly `name` from the guest and preserves it privately across
+    /// instrumented execs. Values whose names merely start with `name` stay visible.
+    ///
+    /// The backend always hides its RPC endpoint and native preemption control;
+    /// DynamoRIO also hides its own controls. Other runtime or Tool variables are
+    /// visible unless the caller selects them. Unselected values follow ordinary
+    /// environment inheritance and do not survive an exec with a replaced
+    /// environment through private reinjection.
+    ///
+    /// Names must be nonempty and contain no NUL, `:` or `=`. This restriction
+    /// applies only to the selector, not to unrelated guest environment entries.
+    /// Non-UTF8 names are supported. Selection is preserved by runner clones.
+    pub fn private_environment_key(mut self, name: impl Into<OsString>) -> io::Result<Self> {
+        let mut name = name.into();
+        validate_private_environment_selector(&name)?;
+        name.push("=");
+        self.private_environment.push(name);
+        Ok(self)
+    }
+
+    /// Hides every variable whose name starts with `prefix`, preserving those
+    /// values privately across instrumented execs.
+    ///
+    /// The validation, inheritance and clone rules of
+    /// [`Self::private_environment_key`] also apply. The default does not select
+    /// any caller namespace. Select a prefix only when the caller owns its
+    /// privacy policy; arbitrary guest variables otherwise remain visible.
+    pub fn private_environment_prefix(mut self, prefix: impl Into<OsString>) -> io::Result<Self> {
+        let prefix = prefix.into();
+        validate_private_environment_selector(&prefix)?;
+        self.private_environment.push(prefix);
+        Ok(self)
+    }
+
+    fn encoded_private_environment(&self) -> OsString {
+        let mut selectors = self.private_environment.clone();
+        for key in [crate::sync_rpc::RPC_SOCKET_ENV, PREEMPT_ANYPC_ENV] {
+            let mut selector = OsString::from(key);
+            selector.push("=");
+            selectors.push(selector);
+        }
+        selectors.sort();
+        selectors.dedup();
+        let mut selected: Vec<OsString> = Vec::new();
+        for selector in selectors {
+            if !selected
+                .iter()
+                .any(|prefix| selector.as_bytes().starts_with(prefix.as_bytes()))
+            {
+                selected.push(selector);
+            }
+        }
+        let mut encoded = OsString::new();
+        for selector in selected {
+            if !encoded.is_empty() {
+                encoded.push(":");
+            }
+            encoded.push(selector);
+        }
+        encoded
     }
 
     /// Declares that the tool answers the guest's `brk(2)` itself, without
@@ -1184,7 +1260,7 @@ impl DbtRunner {
                 }
             }
         }
-        command.env(HIDE_ENV_PREFIXES_ENV, PRIVATE_ENV_PREFIX);
+        command.env(HIDE_ENV_PREFIXES_ENV, self.encoded_private_environment());
         // DynamoRIO acts on the variable's presence, whatever its value, so
         // without the option it is removed from whichever environment the
         // launch would otherwise pass on: inherited, the guest's, or explicit.
@@ -2058,6 +2134,7 @@ mod tests {
             drrun: PathBuf::from("/opt/dynamorio/bin64/drrun"),
             client: PathBuf::from("/opt/reverie/libreverie_dbt_client.so"),
             client_arguments: Vec::new(),
+            private_environment: Vec::new(),
             diagnostic_file: None,
             evidence: None,
             evidence_log_level: DbtEvidenceLogLevel::Info,
@@ -2115,6 +2192,8 @@ mod tests {
         let evidence = tempfile::tempfile().unwrap();
         let runner = DbtRunner::from_env()
             .expect("DYNAMORIO_HOME and REVERIE_DBT_CLIENT must select the live native client")
+            .private_environment_key("HERMIT_DBT_COUNTER2")
+            .expect("valid Tool environment key")
             .evidence_file(&evidence)
             .unwrap()
             .defer_evidence_finish()
@@ -2505,11 +2584,132 @@ mod tests {
             [
                 (
                     OsStr::new(HIDE_ENV_PREFIXES_ENV),
-                    Some(OsStr::new(PRIVATE_ENV_PREFIX))
+                    Some(OsStr::new(
+                        "HERMIT_DBT_PREEMPT_ANYPC=:HERMIT_DBT_RPC_SOCKET="
+                    ))
                 ),
                 (OsStr::new("ONLY"), Some(OsStr::new("guest")))
             ]
         );
+    }
+
+    #[test]
+    fn private_environment_selection_is_canonical_and_survives_cloning() {
+        let selected = runner()
+            .private_environment_key("TOOL_SECRET")
+            .unwrap()
+            .private_environment_prefix("TOOL_PRIVATE_")
+            .unwrap()
+            .private_environment_key("TOOL_PRIVATE_ONE")
+            .unwrap()
+            .private_environment_key("TOOL_SECRET")
+            .unwrap();
+        let reordered = runner()
+            .private_environment_prefix("TOOL_PRIVATE_")
+            .unwrap()
+            .private_environment_key("TOOL_SECRET")
+            .unwrap();
+        let expected = OsStr::new(
+            "HERMIT_DBT_PREEMPT_ANYPC=:HERMIT_DBT_RPC_SOCKET=:TOOL_PRIVATE_:TOOL_SECRET=",
+        );
+        for configured in [selected.clone(), selected, reordered] {
+            assert_eq!(configured.encoded_private_environment(), expected);
+        }
+        assert_eq!(
+            runner()
+                .private_environment_key("TOOL_SECRET")
+                .unwrap()
+                .private_environment_prefix("TOOL_")
+                .unwrap()
+                .encoded_private_environment(),
+            "HERMIT_DBT_PREEMPT_ANYPC=:HERMIT_DBT_RPC_SOCKET=:TOOL_"
+        );
+    }
+
+    #[test]
+    fn private_environment_selectors_reject_ambiguous_bytes_and_preserve_non_utf8() {
+        for invalid in [b"".as_slice(), b"NUL\0KEY", b"TWO:KEYS", b"KEY=VALUE"] {
+            let invalid = OsStr::from_bytes(invalid).to_os_string();
+            for result in [
+                runner().private_environment_key(invalid.clone()),
+                runner().private_environment_prefix(invalid.clone()),
+            ] {
+                assert_eq!(result.unwrap_err().kind(), io::ErrorKind::InvalidInput);
+            }
+        }
+        let configured = runner()
+            .private_environment_key(OsStr::from_bytes(b"KEY_\xff"))
+            .unwrap()
+            .private_environment_prefix(OsStr::from_bytes(b"PREFIX_\xfe"))
+            .unwrap();
+        assert_eq!(
+            configured.encoded_private_environment().as_bytes(),
+            b"HERMIT_DBT_PREEMPT_ANYPC=:HERMIT_DBT_RPC_SOCKET=:KEY_\xff=:PREFIX_\xfe"
+        );
+    }
+
+    #[test]
+    fn guest_environment_cannot_replace_the_launchers_private_selection() {
+        let selected = runner().private_environment_key("TOOL_SECRET").unwrap();
+        for value in ["", "FORGED_"] {
+            let environment =
+                BTreeMap::from([(OsString::from(HIDE_ENV_PREFIXES_ENV), OsString::from(value))]);
+            let plain = Command::new("/usr/bin/true");
+            let mut guest = Command::new("/usr/bin/true");
+            guest.env(HIDE_ENV_PREFIXES_ENV, value);
+            for (guest, environment) in [(&plain, Some(&environment)), (&guest, None)] {
+                assert_eq!(
+                    selected
+                        .command(guest, environment)
+                        .get_envs()
+                        .find(|(key, _)| *key == HIDE_ENV_PREFIXES_ENV)
+                        .unwrap()
+                        .1,
+                    Some(selected.encoded_private_environment().as_os_str()),
+                );
+            }
+        }
+    }
+
+    #[test]
+    #[ignore = "subprocess probe for inherited selector override"]
+    fn inherited_private_environment_selection_probe() {
+        assert_eq!(std::env::var("REVERIE_DBT_PRIVATE_ENV_PROBE").unwrap(), "1");
+        let selected = runner().private_environment_key("TOOL_SECRET").unwrap();
+        let expected = format!(
+            "{HIDE_ENV_PREFIXES_ENV}={}",
+            selected.encoded_private_environment().to_str().unwrap()
+        );
+        let environment = drrun_environment(selected, &Command::new("/usr/bin/true"), None);
+        assert!(
+            environment.lines().any(|line| line == expected),
+            "{environment}"
+        );
+        println!("inherited-private-selection-overridden");
+    }
+
+    #[test]
+    fn inherited_environment_cannot_replace_the_launchers_private_selection() {
+        for value in ["", "FORGED_"] {
+            let output = Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "launcher::tests::inherited_private_environment_selection_probe",
+                    "--ignored",
+                    "--nocapture",
+                    "--test-threads=1",
+                ])
+                .env("REVERIE_DBT_PRIVATE_ENV_PROBE", "1")
+                .env(HIDE_ENV_PREFIXES_ENV, value)
+                .output()
+                .unwrap();
+            assert!(output.status.success(), "probe failed: {output:?}");
+            assert!(
+                String::from_utf8_lossy(&output.stdout)
+                    .contains("inherited-private-selection-overridden"),
+                "probe did not run: {output:?}"
+            );
+        }
     }
 
     /// The environment a launch through `runner` gives drrun, as a stand-in

@@ -161,6 +161,8 @@ async fn protected_evidence_survives_fork_pthread_lifecycle() {
     let mut evidence_file = tempfile::tempfile().expect("evidence tempfile");
     let runner = DbtRunner::from_env()
         .expect("DYNAMORIO_HOME (or DynamoRIO_DIR) and REVERIE_DBT_CLIENT must be set")
+        .private_environment_key("HERMIT_DBT_COUNTER2")
+        .expect("configure private Counter2 control")
         .evidence_file(&evidence_file)
         .expect("configure protected evidence")
         .client_argument("-test-wait-for-background");

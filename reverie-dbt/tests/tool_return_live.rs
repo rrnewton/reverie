@@ -31,6 +31,8 @@ fn completed_tool_results_and_register_edits_reach_the_guest() {
 
     let runner = DbtRunner::from_env()
         .expect("DYNAMORIO_HOME (or DynamoRIO_DIR) and REVERIE_DBT_CLIENT must be set")
+        .private_environment_key("HERMIT_DBT_TEST_SET_REG")
+        .expect("valid Tool environment key")
         .client_argument("-test-wait-for-background");
     let mut guest = Command::new(&fixture);
     guest.env("HERMIT_DBT_TEST_SET_REG", "1");
@@ -63,6 +65,8 @@ fn returning_identity_injections_match_application_kernel_ids() {
 
     let runner = DbtRunner::from_env()
         .expect("DYNAMORIO_HOME (or DynamoRIO_DIR) and REVERIE_DBT_CLIENT must be set")
+        .private_environment_key("HERMIT_DBT_TEST_SET_REG")
+        .expect("valid Tool environment key")
         .client_argument("-test-wait-for-background");
     let mut guest = Command::new(&fixture);
     guest.env("HERMIT_DBT_TEST_SET_REG", "1");

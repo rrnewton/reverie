@@ -468,6 +468,10 @@ fn all_original_images_keep_prefix_and_helper_work() {
         let mut runner =
             reverie_dbt::DbtRunner::new(reverie_dbt::bundled_drrun_path(), selected_client)
                 .unwrap()
+                .private_environment_key("HERMIT_DBT_TEST_BRANCH_FACTS")
+                .unwrap()
+                .private_environment_key("HERMIT_DBT_COUNTER1_EXACT")
+                .unwrap()
                 .diagnostic_file(&diagnostics)
                 .unwrap();
         if enabled {
