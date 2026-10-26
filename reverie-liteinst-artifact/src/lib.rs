@@ -952,13 +952,13 @@ const CONTENT_REVERIE_CATALOG: [(&str, u64, &str); 57] = [
     ),
     (
         "reverie-inguest/src/guest/mod.rs",
-        1995,
-        "d6ef2c796a4a74404ddec530c322b3107f0760fc50111512a2404cecce37fb99",
+        2017,
+        "12ec042f6a78f8ffdd1e2450320561ffcdfeadc7c46e3938cada9ef71efebf0b",
     ),
     (
         "reverie-inguest/src/guest/host.rs",
-        182692,
-        "20815363b93be9335dacc28c9ae7b15a6be07b766b50200d13c1aa1557e24f00",
+        187126,
+        "95f49f79bc516271292e8f55f81baaf03de8b1717c678d3fd70458117b14a232",
     ),
     (
         "reverie-inguest/src/guest/host_linux.rs",

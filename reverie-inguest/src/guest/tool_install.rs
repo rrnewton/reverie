@@ -189,6 +189,7 @@ where
     // The raw syscall, not libc's interposable getpid.
     let pid = Pid::from_raw(unsafe { raw_syscall6(libc::SYS_getpid, [0; 6]) } as i32);
     let subscriptions = T::subscriptions(rpc.config());
+    let delivers = T::in_guest_signal_delivery(rpc.config());
     let instruction_subscriptions = InstructionSubscriptions {
         cpuid: subscriptions.has_cpuid(),
         rdtsc: subscriptions.has_rdtsc(),
@@ -217,9 +218,31 @@ where
         instruction_subscriptions.cpuid,
         host.runtime(stats),
     );
+    if delivers && site_patching {
+        // A patched site reaches the Tool without the fallback continuation,
+        // which keeps the guest's mask apart from the runtime's.
+        return Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "in-guest signal delivery refuses a runtime with site patching on",
+        ));
+    }
     // SAFETY: the one installing thread publishes the one host, before any
     // dispatch or controller activation.
     unsafe { installed_tool::publish_tool(tool_host)? };
+    // The Tool's signal-delivery predicate, read once for this process image,
+    // before any runtime signal action exists: with it the runtime runs under
+    // its own mask and keeps the guest's apart (`runtime_mask`). A fork child
+    // inherits the decision with the rest of the process's memory.
+    // SAFETY: once, on the installing thread, before the actions below.
+    unsafe {
+        crate::guest::runtime_mask::enable(
+            delivers,
+            crate::guest::runtime_mask::reserved_for(
+                instruction_subscriptions.cpuid || instruction_subscriptions.rdtsc,
+                crate::guest::signal::routed_signal(),
+            ),
+        )
+    };
     let result = activate_runtime(
         &host,
         stats,
@@ -227,6 +250,18 @@ where
         site_patching,
         &vdso_sites,
     );
+    // A guard router reserves its signal from the guest, which the runtime
+    // mask does not leave out, so the gate refuses it.
+    let result = result.and_then(|()| {
+        if delivers && crate::guest::signal::routed_signal() != 0 {
+            Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "in-guest signal delivery refuses a runtime with a signal routing handler",
+            ))
+        } else {
+            Ok(())
+        }
+    });
     #[cfg(feature = "fixed-syscall-gates")]
     {
         fixed_install.complete = result.is_ok();

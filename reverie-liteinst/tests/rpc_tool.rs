@@ -1372,6 +1372,354 @@ fn patched_declined_and_unpatched_sites_give_one_tool_the_same_results() {
     }
 }
 
+fn signal_gate_output(mode: &str, extra: &[&str], on_alt_stack: bool) -> Output {
+    let extra: Vec<&std::ffi::OsStr> = extra.iter().map(std::ffi::OsStr::new).collect();
+    late_code_guest(mode, &extra, on_alt_stack, |_| {})
+}
+
+// A Tool that takes the in-guest signal delivery: the runtime runs under its
+// own mask and keeps the guest's apart. Every call on the blocked set (through
+// the Tool's injection and unsubscribed alike), the mask the kernel installs
+// at each return, the pending set within it, a fork child's first mask and
+// identity, and the discard of ignored signals that arrive while the runtime
+// runs, all match the same scenario run natively. Mutations each case catches:
+// "the completion does not install the saved mask" (kernel= shows the runtime
+// mask), "the calls act on the kernel mask" (mask= rows), "rebind clears the
+// saved mask" and "no identity rebind in a fork child" (fork row), "no
+// discard before a change" (discard rows), and "SIGSYS in the runtime mask"
+// (the process dies at its first completion).
+#[test]
+fn signal_gate_mask_calls_returns_and_fork_match_native() {
+    let native = signal_gate_output("signal-gate", &["native"], false);
+    assert!(native.status.success(), "{native:?}");
+    let expected = String::from_utf8_lossy(&native.stdout).into_owned();
+    for line in [
+        "setmask-usr1 result=0 mask=0x200 kernel=0x200",
+        "invalid-how-with-set result=-22 mask=0x4800 kernel=0x4800",
+        "unwritable-old result=-14 mask=0x4801 kernel=0x4801",
+        "pending-8 result=0 set=0x200",
+        "pending-0-unwritable result=0",
+        "pending-9 result=-22",
+        "sigtimedwait-zero taken=10 again=-11 pending=0x0",
+        "signalfd read=128 signo=12 pending=0x0",
+        "discard sigurg-default pending=0x0",
+        "keep sigurg-default pending=0x400000 taken=23",
+        "discard sigusr2-ignored pending=0x0",
+        "discard sigurg-before-sigtimedwait taken=-11",
+        "fork child-kernel=0x200 child-mask=0x200 child-getpid=child",
+    ] {
+        assert!(
+            expected.lines().any(|observed| observed == line),
+            "native: {line:?} missing from\n{expected}"
+        );
+    }
+    for on_alt_stack in [true, false] {
+        for tool in ["gated", "unsubscribed", "ungated"] {
+            let label = format!("{tool} alt_stack={on_alt_stack}");
+            let output = signal_gate_output("signal-gate", &[tool], on_alt_stack);
+            assert!(output.status.success(), "{label}: {output:?}");
+            assert!(output.stderr.is_empty(), "{label}: {output:?}");
+            assert_eq!(
+                String::from_utf8_lossy(&output.stdout),
+                expected,
+                "{label}: {output:?}"
+            );
+        }
+    }
+}
+
+// The mask the guest resumes under, as the Tool reads it: under the gate, the
+// saved mask (with signal phase 1's physical SIGALRM bit), and once a SIGALRM
+// delivery is prepared for this return, the mask its handler runs under,
+// which the handler's own call then carries. With the gate off, none.
+// Mutations: "the prepared window is ignored" (after-prepare), "the saved mask
+// is not the trap frame's" (plain, in-handler).
+#[test]
+fn signal_gate_resume_mask_is_the_saved_mask_or_the_prepared_handlers() {
+    for on_alt_stack in [true, false] {
+        for (tool, expected) in [
+            (
+                "gated",
+                "resume plain=0x2200 before-prepare=0x2200 after-prepare=0x2a00 in-handler=0x2a00 prepared=0 handler-ran=true after=0x200\n",
+            ),
+            (
+                "ungated",
+                "resume plain=none before-prepare=none after-prepare=none in-handler=none prepared=0 handler-ran=true after=0x200\n",
+            ),
+        ] {
+            let label = format!("{tool} alt_stack={on_alt_stack}");
+            let output = signal_gate_output("signal-gate-resume", &[tool], on_alt_stack);
+            assert!(output.status.success(), "{label}: {output:?}");
+            assert_eq!(
+                String::from_utf8_lossy(&output.stdout),
+                expected,
+                "{label}: {output:?}"
+            );
+        }
+    }
+}
+
+// A Tool's rt_sigsuspend on its own buffer, through Guest::inject and
+// Guest::tail_inject, is refused under the gate even while the guest's
+// protection keys deny key 0: the forward runs with the runtime's rights, so
+// the refusal reads the buffer with them too. Mutation: "the injected
+// arguments read with the guest's rights" (the call is forwarded and the guest
+// sleeps in rt_sigsuspend until the bounded run is killed).
+#[test]
+fn signal_gate_refuses_a_tools_masked_call_whatever_the_guests_keys() {
+    for tool in ["gated", "unsubscribed"] {
+        for row in ["pkru-inject", "pkru-tail"] {
+            let label = format!("{tool} {row}");
+            let output = signal_gate_output("signal-gate-forward", &[tool, row], false);
+            if output.stdout == format!("forward {row} OSPKE unavailable\n").as_bytes() {
+                eprintln!("{label}: protection keys unavailable on this host; unmeasured");
+                continue;
+            }
+            assert_eq!(output.status.code(), Some(125), "{label}: {output:?}");
+            assert!(
+                String::from_utf8_lossy(&output.stderr)
+                    .contains("which would install a signal mask in the kernel"),
+                "{label}: {output:?}"
+            );
+        }
+    }
+}
+
+// The per-event identity reads, counted by tracing the guest's syscalls
+// between two marker calls (ptrace, no strace; its entry stops include the
+// calls seccomp traps): with the gate off every event reads gettid and getpid
+// once more than under the gate, where both are cached, so the gate-off count
+// is the one before this change. Mutation: "the cache always on" (the ungated
+// counts equal the gated ones).
+#[test]
+fn signal_gate_caches_the_event_identity_only_under_the_gate() {
+    const CALLS: u64 = 40;
+    let (gated_tid, gated_pid) = traced_identity_reads("gated", CALLS);
+    let (ungated_tid, ungated_pid) = traced_identity_reads("ungated", CALLS);
+    eprintln!(
+        "gettid gated {gated_tid} ungated {ungated_tid}; getpid gated {gated_pid} ungated {ungated_pid}"
+    );
+    // The counted window holds the start marker's event and the calls: one
+    // completion marker (a trapped getpid) each, plus, with the gate off,
+    // one identity read of each kind.
+    let events = CALLS + 1;
+    assert_eq!(
+        gated_pid, events,
+        "gated getpid: the completion markers alone"
+    );
+    assert_eq!(ungated_pid, 2 * events, "ungated getpid");
+    assert_eq!(
+        ungated_tid - gated_tid,
+        events,
+        "gettid: {ungated_tid} - {gated_tid}"
+    );
+}
+
+/// Runs `signal-gate-count` under ptrace and counts the guest's gettid and
+/// getpid between the start marker's entry and the end marker's entry.
+fn traced_identity_reads(tool: &str, calls: u64) -> (u64, u64) {
+    use std::io::Read;
+    use std::os::unix::process::CommandExt;
+    const START: u64 = 0x5162;
+    const END: u64 = 0x5163;
+    const GET_SYSCALL_INFO: libc::c_uint = 0x420e;
+    let binary = env!("CARGO_BIN_EXE_reverie-liteinst-rpc-tool-guest");
+    let directory = tempfile::tempdir().unwrap();
+    let socket = directory.path().join("coordinator.sock");
+    let _coordinator = KillOnDropChild::new(
+        Command::new(binary)
+            .arg("coordinator")
+            .arg(&socket)
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap(),
+    );
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !socket.exists() && Instant::now() < deadline {
+        thread::sleep(Duration::from_millis(10));
+    }
+    assert!(socket.exists(), "coordinator socket was not created");
+    let mut command = Command::new(binary);
+    command
+        .arg("signal-gate-count")
+        .arg(&socket)
+        .arg(tool)
+        .arg(calls.to_string())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    // SAFETY: async-signal-safe; the child asks to be traced before exec.
+    unsafe {
+        command.pre_exec(|| {
+            if libc::ptrace(libc::PTRACE_TRACEME, 0, 0, 0) != 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+    let mut child = command.spawn().unwrap();
+    let pid = child.id() as libc::pid_t;
+    let started = Instant::now();
+    let mut status = 0;
+    assert_eq!(unsafe { libc::waitpid(pid, &mut status, 0) }, pid);
+    assert!(libc::WIFSTOPPED(status), "stopped at exec: {status:#x}");
+    let options = libc::PTRACE_O_TRACESYSGOOD | libc::PTRACE_O_EXITKILL;
+    assert_eq!(
+        unsafe { libc::ptrace(libc::PTRACE_SETOPTIONS, pid, 0, options) },
+        0
+    );
+    let (mut counting, mut done) = (false, false);
+    let (mut gettid, mut getpid) = (0_u64, 0_u64);
+    let mut inject = 0;
+    loop {
+        assert!(
+            started.elapsed() < Duration::from_secs(60),
+            "{tool}: the traced guest did not finish"
+        );
+        assert_eq!(
+            unsafe { libc::ptrace(libc::PTRACE_SYSCALL, pid, 0, inject) },
+            0
+        );
+        inject = 0;
+        assert_eq!(
+            unsafe { libc::waitpid(pid, &mut status, libc::__WALL) },
+            pid
+        );
+        if libc::WIFEXITED(status) || libc::WIFSIGNALED(status) {
+            break;
+        }
+        let signal = libc::WSTOPSIG(status);
+        if signal != (libc::SIGTRAP | 0x80) {
+            // A signal-delivery stop: deliver the signal unchanged.
+            inject = signal;
+            continue;
+        }
+        let mut info = [0_u64; 12];
+        let size = unsafe {
+            libc::ptrace(
+                GET_SYSCALL_INFO,
+                pid,
+                core::mem::size_of_val(&info),
+                info.as_mut_ptr(),
+            )
+        };
+        assert!(
+            size > 0,
+            "PTRACE_GET_SYSCALL_INFO: {}",
+            std::io::Error::last_os_error()
+        );
+        // struct ptrace_syscall_info: op (u8) ... entry.nr at byte 24, args at 32.
+        if info[0] & 0xff != 1 || done {
+            continue;
+        }
+        let (number, first) = (info[3] as i64, info[4]);
+        if number == libc::SYS_getppid && first == END && counting {
+            counting = false;
+            done = true;
+        } else if counting {
+            if number == libc::SYS_gettid {
+                gettid += 1;
+            } else if number == libc::SYS_getpid {
+                getpid += 1;
+            }
+        } else if number == libc::SYS_getppid && first == START {
+            counting = true;
+        }
+    }
+    // The traced child is reaped above; its output is read from the pipes.
+    // `wait` finds it already reaped (ECHILD); it releases the handle.
+    let _ = child.wait();
+    let mut stdout = String::new();
+    let mut stderr = String::new();
+    child
+        .stdout
+        .take()
+        .unwrap()
+        .read_to_string(&mut stdout)
+        .unwrap();
+    child
+        .stderr
+        .take()
+        .unwrap()
+        .read_to_string(&mut stderr)
+        .unwrap();
+    assert!(
+        libc::WIFEXITED(status) && libc::WEXITSTATUS(status) == 0,
+        "{tool}: status {status:#x}, stderr {stderr}"
+    );
+    assert_eq!(
+        stdout,
+        format!("count {tool} calls={calls}\n"),
+        "{tool}: {stderr}"
+    );
+    assert!(done, "{tool}: no end marker was traced");
+    (gettid, getpid)
+}
+
+// The SIGSYS action's mask is the runtime mask under the gate (every signal
+// but SIGSYS, SIGKILL and SIGSTOP), so the kernel blocks guest signals from
+// the trap's own frame on, and none otherwise, as before. Mutation: "the
+// action keeps an empty mask under the gate".
+#[test]
+fn signal_gate_sigsys_action_carries_the_runtime_mask() {
+    for (tool, expected) in [
+        ("gated", "sigsys-action-mask=0xffffffffbffbfeff\n"),
+        ("ungated", "sigsys-action-mask=0x0\n"),
+    ] {
+        let output = signal_gate_output("signal-gate-actions", &[tool], false);
+        assert!(output.status.success(), "{tool}: {output:?}");
+        assert_eq!(
+            String::from_utf8_lossy(&output.stdout),
+            expected,
+            "{tool}: {output:?}"
+        );
+    }
+}
+
+// Under the gate, a raw forward of a call that would install a signal mask in
+// the kernel is refused by name, through the Tool's injection and unsubscribed
+// alike; one that installs nothing still runs with Linux's result: a
+// zero-timeout rt_sigtimedwait, signalfd, and a masked ppoll whose timeout
+// Linux rejects first. Mutation "every rt_sigtimedwait and signalfd refused"
+// fails the running rows.
+#[test]
+fn signal_gate_refuses_only_forwards_that_install_a_mask() {
+    for tool in ["gated", "unsubscribed"] {
+        for row in [
+            "sigsuspend",
+            "sigtimedwait-null",
+            "ppoll-masked",
+            "pselect6-masked",
+        ] {
+            let label = format!("{tool} {row}");
+            let output = signal_gate_output("signal-gate-forward", &[tool, row], false);
+            assert_eq!(output.status.code(), Some(125), "{label}: {output:?}");
+            assert!(output.stdout.is_empty(), "{label}: {output:?}");
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            assert!(
+                stderr.contains("which would install a signal mask in the kernel while the runtime runs, under in-guest signal delivery is refused"),
+                "{label}: {output:?}"
+            );
+        }
+        for (row, result) in [
+            ("sigtimedwait-zero", -libc::EAGAIN),
+            ("sigtimedwait-pending-1s", libc::SIGUSR1),
+            ("sigtimedwait-pending-null", libc::SIGUSR1),
+            ("signalfd", 0),
+            ("ppoll-invalid-timeout", -libc::EINVAL),
+        ] {
+            let label = format!("{tool} {row}");
+            let output = signal_gate_output("signal-gate-forward", &[tool, row], false);
+            assert!(output.status.success(), "{label}: {output:?}");
+            assert_eq!(
+                String::from_utf8_lossy(&output.stdout),
+                format!("forward {row} result={result}\n"),
+                "{label}: {output:?}"
+            );
+        }
+    }
+}
+
 // With site patching off (the trap-only mode in-guest-trap needs), CPUID,
 // RDTSC and RDTSCP inside an arena are emulated through the continuation like
 // late code: no site is patched, and each reaches the Tool once with the same

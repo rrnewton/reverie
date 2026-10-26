@@ -57,6 +57,8 @@ mod late_code_guest;
 mod fixed_gates_guest;
 #[path = "rpc_tool_guest/same_tool.rs"]
 mod same_tool_guest;
+#[path = "rpc_tool_guest/signal_gate.rs"]
+mod signal_gate_guest;
 
 const CALLS: u64 = 32;
 const TOOL_CPUID_EAX: u32 = 0x1111_1111;
@@ -3451,6 +3453,33 @@ fn main() {
                 .expect("installer")
                 .to_str()
                 .expect("UTF-8 installer"),
+        ),
+        Some("signal-gate") => signal_gate_guest::run(
+            Path::new(&path),
+            args.next().expect("Tool").to_str().expect("UTF-8 Tool"),
+        ),
+        Some("signal-gate-actions") => signal_gate_guest::run_actions(
+            Path::new(&path),
+            args.next().expect("Tool").to_str().expect("UTF-8 Tool"),
+        ),
+        Some("signal-gate-count") => signal_gate_guest::run_count(
+            Path::new(&path),
+            args.next().expect("Tool").to_str().expect("UTF-8 Tool"),
+            args.next()
+                .expect("calls")
+                .to_str()
+                .expect("UTF-8 calls")
+                .parse()
+                .expect("a call count"),
+        ),
+        Some("signal-gate-resume") => signal_gate_guest::run_resume(
+            Path::new(&path),
+            args.next().expect("Tool").to_str().expect("UTF-8 Tool"),
+        ),
+        Some("signal-gate-forward") => signal_gate_guest::run_forward(
+            Path::new(&path),
+            args.next().expect("Tool").to_str().expect("UTF-8 Tool"),
+            args.next().expect("row").to_str().expect("UTF-8 row"),
         ),
         Some("syscall-fallback") => syscall_fallback_guest::run(Path::new(&path)),
         Some("syscall-fallback-xstate") => syscall_fallback_guest::run_xstate(Path::new(&path)),

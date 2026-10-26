@@ -322,6 +322,12 @@ pub fn guest_action(signal: i32, kernel_handler: u64) -> u64 {
     )
 }
 
+/// The signal a routing handler is registered for
+/// ([`register_routing_handler`]), or 0 for none.
+pub fn routed_signal() -> i32 {
+    ROUTED_SIGNAL.load(Ordering::Acquire)
+}
+
 /// [`guest_action`] for the registration `(signal, router, guest action)`.
 fn guest_action_with(routing: Option<(i32, u64, u64)>, signal: i32, kernel_handler: u64) -> u64 {
     match routing {
@@ -373,8 +379,13 @@ pub unsafe fn signal_ends_process_now(signal: i32) -> bool {
     result == 0 && self_signal_ends_process(signal, blocked, guest_action(signal, action.handler))
 }
 
-/// The calling thread's blocked set, through the trusted gate.
+/// The calling thread's blocked set, through the trusted gate; while the
+/// runtime delivers signals itself, the guest mask its running continuation
+/// saved (`guest::runtime_mask`), since the kernel's is then the runtime's.
 unsafe fn current_blocked_set() -> Option<u64> {
+    if crate::guest::runtime_mask::delivers_signals() {
+        return crate::guest::continuation::saved_guest_mask();
+    }
     let mut blocked = 0_u64;
     let result = unsafe {
         raw_syscall6(
