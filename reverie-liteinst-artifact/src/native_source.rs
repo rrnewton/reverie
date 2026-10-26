@@ -1472,4 +1472,52 @@ mod tests {
             );
         }
     }
+
+    #[test]
+    fn checked_native_entry_population_route_refuses_cargo130_and_selects_native198() {
+        let fixture = AdmissionFixture::new();
+        for case in 0..2 {
+            let bytes = crate::tests::complete_tls_population_bytes_for_source_controls(case);
+            let product = fixture
+                .root
+                .join(format!("population-source-control-{case}"));
+            fs::write(&product, &bytes).unwrap();
+            let mut binding = fixture.binding(NoScopeCohort::DetcoreNative101);
+            binding.artifact = FileIdentity::read(&product).unwrap();
+            let sources = VerifiedNativeSources::from_checked_action(&binding).unwrap();
+            assert_eq!(sources.cohort(), NoScopeCohort::DetcoreNative101);
+            sources.require_artifact_bytes(&bytes).unwrap();
+            let elf = Elf::parse(&bytes).unwrap();
+            let selected = selected_no_scope_census_in_source_context(
+                &elf,
+                &bytes,
+                NoScopeCohort::DetcoreNative101,
+                SourceContextRef::Native(&sources),
+            );
+            if case == 0 {
+                assert_eq!(
+                    selected
+                        .err()
+                        .expect("native source accepted Cargo130 population"),
+                    "complete native TLS population belongs to another source authority route",
+                );
+            } else {
+                let selected = selected.expect("native source refused its complete198 population");
+                assert_eq!(selected.version, COMPLETE_NATIVE_POPULATION_VERSION);
+                assert_eq!(selected.policy, NATIVE198_CELLS28_POLICY);
+                assert!(selected.native_tls_layout100.is_none());
+                let Some(CompleteNativeTlsPopulation::Dispatch198Cells28(payload)) =
+                    selected.complete_tls_population
+                else {
+                    panic!("native selection lost its distinct complete198 payload");
+                };
+                assert_eq!(payload.cells.len(), 28);
+                assert_eq!(payload.tls_file_size, 0x100);
+                assert_eq!(payload.tls_memory_size, 0x1b1);
+                assert_eq!(selected.census.other_tls_getters.len(), 4);
+            }
+            sources.require_artifact_bytes(&bytes).unwrap();
+            sources.verify_unchanged().unwrap();
+        }
+    }
 }
