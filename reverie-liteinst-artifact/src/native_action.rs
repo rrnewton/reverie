@@ -3291,9 +3291,9 @@ mod context_tests {
         for ids in [true, false] {
             let context = observation(ids);
             let resolved = environment_arguments(&wanted, &BTreeMap::new(), &context).unwrap();
-            assert_eq!(resolved.get("EXECUTION_ID").is_some(), ids);
-            assert_eq!(resolved.get("SESSION_ID").is_some(), ids);
-            assert_eq!(resolved.get("ACTION_DIGEST").is_some(), ids);
+            assert_eq!(resolved.contains_key("EXECUTION_ID"), ids);
+            assert_eq!(resolved.contains_key("SESSION_ID"), ids);
+            assert_eq!(resolved.contains_key("ACTION_DIGEST"), ids);
             assert_eq!(resolved["PWD"], b"/distinct/logical-pwd");
             assert_ne!(resolved["PWD"], context.cwd);
             assert_eq!(resolved["PATH"], b"/independent/toolchain");
@@ -3324,7 +3324,7 @@ mod context_tests {
     fn context_references_cannot_authorize_arguments_cwd_or_semantic_environment_keys() {
         let part = context_part(ContextSlot::Tmpdir);
         assert!(argument(&part, &BTreeMap::new()).is_err());
-        assert!(arguments(&[part.clone()], &BTreeMap::new()).is_err());
+        assert!(arguments(std::slice::from_ref(&part), &BTreeMap::new()).is_err());
         let paths = BTreeMap::from([("source".into(), b"/independent/source.rs".to_vec())]);
         let misplaced = BTreeMap::from([("PATH".into(), part.clone())]);
         assert!(environment_arguments(&misplaced, &paths, &observation(true)).is_err());

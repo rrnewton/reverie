@@ -7,6 +7,7 @@ fn native_authority_physical_boundary_controls(
     backing: &AllocatorBackingEvidence,
     proof: &NoInstallationScopeEvidence,
 ) {
+    complete_native_tls_evidence_boundary_controls(backing, proof);
     let cohort = validate_cargo_no_scope_binding(proof).unwrap();
     assert_eq!(cohort, NoScopeCohort::DetcoreNative101);
     let physical = proof.physical();
@@ -18,7 +19,8 @@ fn native_authority_physical_boundary_controls(
         proof.compiled_sources_sha256.clone(),
         proof.reverie_pin.clone(),
         proof.current_build.clone(),
-    );
+    )
+    .expect("historical physical payload remains representable as Cargo evidence");
     assert_eq!(&packed, proof, "physical packing lost a historical field");
     assert_eq!(
         serde_json::to_vec(&packed).unwrap(),
@@ -129,7 +131,8 @@ fn native_authority_physical_boundary_controls(
             proof.compiled_sources_sha256.clone(),
             proof.reverie_pin.clone(),
             proof.current_build.clone(),
-        );
+        )
+        .expect("historical physical mutation is still Cargo-shaped data");
         assert_eq!(validate_cargo_no_scope_binding(&repacked).unwrap(), cohort);
         assert!(
             validate_no_installation_scope_evidence(backing, &repacked, FixedImageKind::Detcore)
@@ -277,5 +280,114 @@ fn native_authority_exact_cohort_controls() {
             select(&wrong_profile).is_err(),
             "{expected:?}: dependency test profile"
         );
+    }
+}
+
+// Structural retained-data controls. Fresh physical helper output does not
+// create a source authority or a qualified runtime; the existing base record
+// supplies independently fixed allocator/source fields for this validator.
+fn complete_native_tls_evidence_boundary_controls(
+    backing: &AllocatorBackingEvidence,
+    base: &NoInstallationScopeEvidence,
+) {
+    let allocator = AllocatorBackingPhysical::from_cargo(backing);
+    for case in 0..2 {
+        let (fixture, _) = tls_population_positive(case);
+        let elf = Elf::parse(&fixture.bytes).unwrap();
+        let (census, population) = native_no_scope_population_census(
+            &elf,
+            &fixture.bytes,
+            tls_population_test_policy(case),
+        )
+        .unwrap();
+        let mut physical = base.physical();
+        physical.version = COMPLETE_NATIVE_POPULATION_VERSION;
+        physical.policy = if case == 0 {
+            NATIVE130_CELLS29_POLICY
+        } else {
+            NATIVE198_CELLS28_POLICY
+        }
+        .into();
+        physical.elf_sha256 = sha256(&fixture.bytes);
+        physical.mappings = census.mappings;
+        physical.static_symbol_count = elf.syms.len();
+        physical.dynamic_symbol_count = elf.dynsyms.len();
+        physical.raw_names_sha256 = census.raw_names_sha256;
+        physical.loader_writer_count = census.loader_writer_count;
+        physical.loader_writers_sha256 = census.loader_writers_sha256;
+        physical.other_tls_getters = census.other_tls_getters;
+        physical.other_getter_pointer_slots = census.other_getter_pointer_slots;
+        physical.native_tls_layout100 = None;
+        physical.complete_tls_population = Some(if case == 0 {
+            CompleteNativeTlsPopulation::Dispatch130Cells29(Dispatch130Cells29Evidence(population))
+        } else {
+            CompleteNativeTlsPopulation::Dispatch198Cells28(population)
+        });
+        let check = |candidate: &NoScopePhysical| {
+            validate_no_scope_physical(
+                &allocator,
+                candidate,
+                NoScopeCohort::DetcoreNative101,
+                FixedImageKind::Detcore,
+            )
+        };
+        check(&physical).expect("complete retained population passes the active common validator");
+        for mutation in 0..3 {
+            let mut changed = physical.clone();
+            match mutation {
+                0 => changed.source.sha256 = "0".repeat(64),
+                1 => changed.mappings[0].flags |= program_header::PF_W,
+                2 => changed.other_tls_unisolated = false,
+                _ => unreachable!(),
+            }
+            assert_eq!(
+                check(&changed).unwrap_err(),
+                "no-installation-scope source/build/body/census evidence incomplete or inconsistent"
+            );
+        }
+        assert_eq!(
+            validate_no_scope_physical(
+                &allocator,
+                &physical,
+                NoScopeCohort::DetcoreOrdinary101,
+                FixedImageKind::Detcore,
+            )
+            .unwrap_err(),
+            "complete TLS population is outside its exact source/name cohort"
+        );
+        let mut missing = physical.clone();
+        missing.complete_tls_population = None;
+        assert_eq!(
+            check(&missing).unwrap_err(),
+            "complete TLS population payload absent"
+        );
+        let mut build = base.current_build.clone();
+        build.artifact.sha256 = physical.elf_sha256.clone();
+        let packed = NoInstallationScopeEvidence::from_physical(
+            physical.clone(),
+            base.compiled_sources_sha256.clone(),
+            base.reverie_pin.clone(),
+            build,
+        );
+        if case == 0 {
+            let packed = packed.expect("Cargo-shaped population remains losslessly representable");
+            assert_eq!(packed.physical(), physical);
+            validate_no_installation_scope_evidence(backing, &packed, FixedImageKind::Detcore)
+                .expect("active Cargo structural binding and full retained physical guards pass");
+            let bytes = serde_json::to_vec(&AllocatorInstallationEvidence::NoInstallationScope(
+                Box::new(packed.clone()),
+            ))
+            .unwrap();
+            let decoded: AllocatorInstallationEvidence = serde_json::from_slice(&bytes).unwrap();
+            assert_eq!(
+                decoded,
+                AllocatorInstallationEvidence::NoInstallationScope(Box::new(packed))
+            );
+        } else {
+            assert_eq!(
+                packed.unwrap_err(),
+                "TLS population198 cannot enter Cargo no-scope evidence"
+            );
+        }
     }
 }
