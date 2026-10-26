@@ -3532,6 +3532,9 @@ impl NoInstallationScopeEvidence {
             Some(CompleteNativeTlsPopulation::Dispatch198Cells28(_)) => {
                 return Err("TLS population198 cannot enter Cargo no-scope evidence".into());
             }
+            Some(CompleteNativeTlsPopulation::Dispatch1a8Cells28(_)) => {
+                return Err("TLS population1a8 cannot enter Cargo no-scope evidence".into());
+            }
         };
         Ok(Self {
             compiled_sources_sha256,
@@ -3566,6 +3569,8 @@ const NATIVE130_CELLS29_POLICY: &str =
     "detcore_native_off_alloc101_tls130_cells29_rx_loader_census_v4";
 const NATIVE198_CELLS28_POLICY: &str =
     "detcore_native_off_alloc101_tls198_cells28_rx_loader_census_v4";
+const NATIVE1A8_CELLS28_POLICY: &str =
+    "detcore_native_off_alloc101_tls1a8_cells28_rx_loader_census_v4";
 const COMPLETE_NATIVE_POPULATION_VERSION: u32 = 4;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -3606,6 +3611,7 @@ struct Dispatch130Cells29Evidence(CompleteNativeTlsPopulationEvidence);
 enum CompleteNativeTlsPopulation {
     Dispatch130Cells29(Dispatch130Cells29Evidence),
     Dispatch198Cells28(CompleteNativeTlsPopulationEvidence),
+    Dispatch1a8Cells28(CompleteNativeTlsPopulationEvidence),
 }
 
 // An absent field defaults to None; an explicitly present null is not absence.
@@ -3655,11 +3661,18 @@ fn complete_no_scope_population(
             )?;
             Some((NativeNoScopeTlsPopulationPolicy::Dispatch198Cells28, value))
         }
+        Some(CompleteNativeTlsPopulation::Dispatch1a8Cells28(value)) => {
+            require(
+                proof.policy == NATIVE1A8_CELLS28_POLICY,
+                "complete TLS population1a8 policy differs",
+            )?;
+            Some((NativeNoScopeTlsPopulationPolicy::Dispatch1a8Cells28, value))
+        }
         None => {
             require(
                 !matches!(
                     proof.policy.as_str(),
-                    NATIVE130_CELLS29_POLICY | NATIVE198_CELLS28_POLICY
+                    NATIVE130_CELLS29_POLICY | NATIVE198_CELLS28_POLICY | NATIVE1A8_CELLS28_POLICY
                 ),
                 "complete TLS population payload absent",
             )?;
@@ -19759,6 +19772,7 @@ fn validate_native_no_scope_layout100(
 enum NativeNoScopeTlsPopulationPolicy {
     Dispatch130Cells29,
     Dispatch198Cells28,
+    Dispatch1a8Cells28,
 }
 // Exact canonical identity, offset, size, visibility, section kind.
 // STT_TLS and STB_LOCAL are fixed and checked for every row.
@@ -19769,24 +19783,28 @@ impl NativeNoScopeTlsPopulationPolicy {
         match self {
             Self::Dispatch130Cells29 => &DISPATCH130_CELLS29,
             Self::Dispatch198Cells28 => &DISPATCH198_CELLS28,
+            Self::Dispatch1a8Cells28 => &DISPATCH1A8_CELLS28,
         }
     }
     fn geometry(self) -> (u64, u64) {
         match self {
             Self::Dispatch130Cells29 => (0xe8, 0x1c0),
             Self::Dispatch198Cells28 => (0x100, 0x1b1),
+            Self::Dispatch1a8Cells28 => (0x100, 0x1b0),
         }
     }
     fn initialized(self) -> &'static [u8] {
         match self {
             Self::Dispatch130Cells29 => &DISPATCH130_INITIALIZED,
             Self::Dispatch198Cells28 => &DISPATCH198_INITIALIZED,
+            Self::Dispatch1a8Cells28 => &DISPATCH198_INITIALIZED,
         }
     }
     fn getter_offsets(self) -> [(&'static str, u64); 4] {
         let offsets = match self {
             Self::Dispatch130Cells29 => [0xe8, 0x138, 0, 0x130],
             Self::Dispatch198Cells28 => [0x190, 0x1a8, 0xf0, 0x198],
+            Self::Dispatch1a8Cells28 => [0x190, 0x198, 0xf0, 0x1a8],
         };
         std::array::from_fn(|i| (NO_SCOPE_OTHER_GETTERS[i].0, offsets[i]))
     }
@@ -20567,6 +20585,208 @@ const DISPATCH130_INITIALIZED: [u8; 232] = [
     0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
 ];
 
+// Independently captured current native population. The initialized bytes are
+// byte-identical to DISPATCH198_INITIALIZED; all cell rows and geometry remain
+// independently exact. Existing populations are not changed by this selection.
+const DISPATCH1A8_CELLS28: [NativeNoScopePopulationCell; 28] = [
+    (
+        "_RNvNCNKNvNtNtCs_3std2io5stdio14OUTPUT_CAPTURE0023___RUST_STD_INTERNAL_VAL",
+        0x0,
+        16,
+        2,
+        section_header::SHT_PROGBITS,
+    ),
+    (
+        "_RNvNtNtNtNtCs_3std3sys12thread_local11destructors4list5DTORS",
+        0x10,
+        32,
+        2,
+        section_header::SHT_PROGBITS,
+    ),
+    (
+        "_RNvNCNKNvNtCs_12tracing_core10dispatcher13CURRENT_STATE0023___RUST_STD_INTERNAL_VAL",
+        0x30,
+        48,
+        0,
+        section_header::SHT_PROGBITS,
+    ),
+    (
+        "_RNvNCNKNvNtNtCs_5tokio7runtime7context7CONTEXT0023___RUST_STD_INTERNAL_VAL",
+        0x60,
+        104,
+        0,
+        section_header::SHT_PROGBITS,
+    ),
+    (
+        "_RNvNCNKNvNtCs_15reverie_process13launch_window12AFTER_GUARDS0023___RUST_STD_INTERNAL_VAL",
+        0xc8,
+        40,
+        0,
+        section_header::SHT_PROGBITS,
+    ),
+    (
+        "_RNvNCNKNvNtNtCs_15reverie_inguest5guest12continuation7PENDING0s_023___RUST_STD_INTERNAL_VAL",
+        0xf0,
+        16,
+        0,
+        section_header::SHT_PROGBITS,
+    ),
+    (
+        "_RNvNCNKNvNtNtCs_3std9panicking11panic_count17LOCAL_PANIC_COUNT0s_023___RUST_STD_INTERNAL_VAL",
+        0x100,
+        16,
+        0,
+        section_header::SHT_NOBITS,
+    ),
+    (
+        "_RNvNtNtCs_3std6thread7current7CURRENT",
+        0x110,
+        8,
+        0,
+        section_header::SHT_NOBITS,
+    ),
+    (
+        "_RNvNtNtNtCs_3std6thread7current2id2ID",
+        0x118,
+        8,
+        0,
+        section_header::SHT_NOBITS,
+    ),
+    (
+        "_RNvNCNKNvNvMNtNtCs_3std4hash6randomNtBa_11RandomState3new4KEYS0s_023___RUST_STD_INTERNAL_VAL",
+        0x120,
+        24,
+        0,
+        section_header::SHT_NOBITS,
+    ),
+    (
+        "_RNvNCNKNvNtCs_15reverie_process13launch_window10OPENS_HELD0s_023___RUST_STD_INTERNAL_VAL",
+        0x138,
+        4,
+        2,
+        section_header::SHT_NOBITS,
+    ),
+    (
+        "_RNvNCNKNvNtCs_15reverie_process13launch_window12LAUNCH_DEPTH0s_023___RUST_STD_INTERNAL_VAL",
+        0x13c,
+        4,
+        2,
+        section_header::SHT_NOBITS,
+    ),
+    (
+        "_RNvNCNKNvNtCs_15reverie_process13launch_window15OPENS_IN_LAUNCH0s_023___RUST_STD_INTERNAL_VAL",
+        0x140,
+        4,
+        2,
+        section_header::SHT_NOBITS,
+    ),
+    (
+        "_RNvNCNKNvNtCs_15reverie_process13launch_window8DEFERRED0s_023___RUST_STD_INTERNAL_VAL",
+        0x144,
+        1,
+        0,
+        section_header::SHT_NOBITS,
+    ),
+    (
+        "_RNvNCNKNvNtNtCs_15reverie_inguest5guest5clock15RCB_CLOCK_OWNER0s_023___RUST_STD_INTERNAL_VAL",
+        0x148,
+        4,
+        0,
+        section_header::SHT_NOBITS,
+    ),
+    (
+        "_RNvNCNKNvNtNtCs_15reverie_inguest5guest5clock16RCB_CLOCK_OFFSET0s_023___RUST_STD_INTERNAL_VAL",
+        0x150,
+        8,
+        0,
+        section_header::SHT_NOBITS,
+    ),
+    (
+        "_RNvNCNKNvNtNtCs_15reverie_inguest5guest5clock17RCB_HANDLER_DEPTH0s_023___RUST_STD_INTERNAL_VAL",
+        0x158,
+        4,
+        0,
+        section_header::SHT_NOBITS,
+    ),
+    (
+        "_RNvNCNKNvNtNtCs_15reverie_inguest5guest5clock17RCB_HANDLER_ENTRY0s_023___RUST_STD_INTERNAL_VAL",
+        0x160,
+        8,
+        0,
+        section_header::SHT_NOBITS,
+    ),
+    (
+        "_RNvNCNKNvNtNtCs_15reverie_inguest5guest5clock18RCB_CLOCK_RESTORED0s_023___RUST_STD_INTERNAL_VAL",
+        0x168,
+        1,
+        0,
+        section_header::SHT_NOBITS,
+    ),
+    (
+        "_RNvNCNKNvNtNtCs_15reverie_inguest5guest5clock18RCB_COUNTER_ORIGIN0s_023___RUST_STD_INTERNAL_VAL",
+        0x170,
+        8,
+        0,
+        section_header::SHT_NOBITS,
+    ),
+    (
+        "_RNvNCNKNvNtNtCs_15reverie_inguest5guest5clock21RCB_HANDLER_DEDUCTION0s_023___RUST_STD_INTERNAL_VAL",
+        0x178,
+        8,
+        0,
+        section_header::SHT_NOBITS,
+    ),
+    (
+        "_RNvNCNKNvNtNtCs_15reverie_inguest5guest5clock22RCB_CLOCK_AVAILABILITY0s_023___RUST_STD_INTERNAL_VAL",
+        0x180,
+        1,
+        0,
+        section_header::SHT_NOBITS,
+    ),
+    (
+        "_RNvNCNKNvNtNtCs_15reverie_inguest5guest5clock9RCB_CLOCK0s_023___RUST_STD_INTERNAL_VAL",
+        0x188,
+        8,
+        0,
+        section_header::SHT_NOBITS,
+    ),
+    (
+        "_RNvNCNKNvNtNtCs_15reverie_inguest5guest7support20TOOL_CALLBACK_ACTIVE0s_023___RUST_STD_INTERNAL_VAL",
+        0x190,
+        1,
+        0,
+        section_header::SHT_NOBITS,
+    ),
+    (
+        "_RNvNCNKNvNtCs_15reverie_inguest4trap10IN_HANDLER0s_023___RUST_STD_INTERNAL_VAL",
+        0x191,
+        1,
+        0,
+        section_header::SHT_NOBITS,
+    ),
+    (
+        "_RNvNCNKNvNtNtCs_15reverie_inguest5guest12continuation5OWNER0s_023___RUST_STD_INTERNAL_VAL",
+        0x198,
+        8,
+        0,
+        section_header::SHT_NOBITS,
+    ),
+    (
+        "_RNvNCNKNvNtNtCs_15reverie_inguest5guest12continuation5READY0s_023___RUST_STD_INTERNAL_VAL",
+        0x1a0,
+        1,
+        2,
+        section_header::SHT_NOBITS,
+    ),
+    (
+        "_RNvNCNKNvNtNtCs_15reverie_inguest5guest5alloc14DISPATCH_DEPTH0s_023___RUST_STD_INTERNAL_VAL",
+        0x1a8,
+        8,
+        0,
+        section_header::SHT_NOBITS,
+    ),
+];
+
 // 256 bytes; SHA256 a71068f85f428a68289bc073b9b32cbad3dcb69fffb8f3611e6fa8d466c62742.
 const DISPATCH198_INITIALIZED: [u8; 256] = [
     0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
@@ -20629,6 +20849,7 @@ fn selected_no_scope_census_in_source_context(
     let population = match offsets.as_slice() {
         [0xe8, 0x138, 0, 0x130] => NativeNoScopeTlsPopulationPolicy::Dispatch130Cells29,
         [0x190, 0x1a8, 0xf0, 0x198] => NativeNoScopeTlsPopulationPolicy::Dispatch198Cells28,
+        [0x190, 0x198, 0xf0, 0x1a8] => NativeNoScopeTlsPopulationPolicy::Dispatch1a8Cells28,
         _ => return selected_no_scope_census(elf, bytes, cohort),
     };
     sources.require_image(cohort.image_kind().initializer())?;
@@ -20642,6 +20863,7 @@ fn selected_no_scope_census_in_source_context(
             ) | (
                 SourceContextRef::Native(_),
                 NativeNoScopeTlsPopulationPolicy::Dispatch198Cells28
+                    | NativeNoScopeTlsPopulationPolicy::Dispatch1a8Cells28
             )
         ),
         "complete native TLS population belongs to another source authority route",
@@ -20655,6 +20877,10 @@ fn selected_no_scope_census_in_source_context(
         NativeNoScopeTlsPopulationPolicy::Dispatch198Cells28 => (
             NATIVE198_CELLS28_POLICY,
             CompleteNativeTlsPopulation::Dispatch198Cells28(physical),
+        ),
+        NativeNoScopeTlsPopulationPolicy::Dispatch1a8Cells28 => (
+            NATIVE1A8_CELLS28_POLICY,
+            CompleteNativeTlsPopulation::Dispatch1a8Cells28(physical),
         ),
     };
     Ok(SelectedNoScopeCensus {
@@ -20945,6 +21171,7 @@ fn validate_no_scope_physical(
             match population {
                 NativeNoScopeTlsPopulationPolicy::Dispatch130Cells29 => NATIVE130_CELLS29_POLICY,
                 NativeNoScopeTlsPopulationPolicy::Dispatch198Cells28 => NATIVE198_CELLS28_POLICY,
+                NativeNoScopeTlsPopulationPolicy::Dispatch1a8Cells28 => NATIVE1A8_CELLS28_POLICY,
             },
         )
     } else {
@@ -33985,14 +34212,15 @@ mod tests {
         let root: serde_json::Value =
             serde_json::from_str(include_str!("testdata/native-tls-populations.json")).unwrap();
         assert_eq!(root["format"], 1);
-        assert_eq!(root["populations"].as_array().unwrap().len(), 2);
+        assert_eq!(root["populations"].as_array().unwrap().len(), 3);
         serde_json::from_value(root["populations"][case].clone()).unwrap()
     }
     fn tls_population_test_policy(case: usize) -> NativeNoScopeTlsPopulationPolicy {
         match case {
             0 => NativeNoScopeTlsPopulationPolicy::Dispatch130Cells29,
             1 => NativeNoScopeTlsPopulationPolicy::Dispatch198Cells28,
-            _ => panic!("only two independently frozen test populations"),
+            2 => NativeNoScopeTlsPopulationPolicy::Dispatch1a8Cells28,
+            _ => panic!("only three independently frozen test populations"),
         }
     }
 
@@ -34136,10 +34364,14 @@ mod tests {
         .expect("independent complete population must pass before mutations");
         assert_eq!(
             observation.name,
-            ["Dispatch130Cells29", "Dispatch198Cells28"][case]
+            [
+                "Dispatch130Cells29",
+                "Dispatch198Cells28",
+                "Dispatch1a8Cells28"
+            ][case]
         );
         assert_eq!(observation.observed_elf_sha256.len(), 64); // provenance, not source authority
-        assert_eq!(proof.cells.len(), [29, 28][case]);
+        assert_eq!(proof.cells.len(), [29, 28, 28][case]);
         assert_eq!(proof.tls_file_size, observation.file_size);
         assert_eq!(proof.tls_memory_size, observation.memory_size);
         assert_eq!(proof.tls_alignment, observation.alignment);
@@ -34205,7 +34437,7 @@ mod tests {
 
     #[test]
     fn complete_native_tls_populations_positive_and_foreign_row_controls() {
-        for case in 0..2 {
+        for case in 0..3 {
             let (fixture, observation) = tls_population_positive(case);
             let index = observation.rows.iter().position(|row| row.canonical_name ==
                 "_RNvNCNKNvNtNtCs_5tokio7runtime7context7CONTEXT0023___RUST_STD_INTERNAL_VAL").unwrap();
@@ -34300,7 +34532,7 @@ mod tests {
 
     #[test]
     fn complete_native_tls_populations_reject_extra_zero_undefined_and_alias_rows() {
-        for case in 0..2 {
+        for case in 0..3 {
             let (fixture, observation) = tls_population_positive(case);
             let count = 5 + observation.rows.len();
             let extra = 0x4000 + count * 24;
@@ -34366,7 +34598,7 @@ mod tests {
 
     #[test]
     fn complete_native_tls_populations_check_every_initialized_byte_and_loader_writer() {
-        for case in 0..2 {
+        for case in 0..3 {
             let (fixture, observation) = tls_population_positive(case);
             for index in 0..observation.initialized_bytes.len() {
                 let mut bad = fixture.bytes.clone();
@@ -34399,7 +34631,7 @@ mod tests {
 
     #[test]
     fn complete_native_tls_populations_preserve_geometry_provider_and_pointer_guards() {
-        for case in 0..2 {
+        for case in 0..3 {
             let (fixture, observation) = tls_population_positive(case);
             for (at, width, value, expected) in [
                 (
@@ -34523,7 +34755,7 @@ mod tests {
 
     #[test]
     fn complete_native_tls_retained_population_validates_real_census_payload() {
-        for case in 0..2 {
+        for case in 0..3 {
             let (fixture, observation) = tls_population_positive(case);
             let elf = Elf::parse(&fixture.bytes).unwrap();
             let (census, layout) = native_no_scope_population_census(
@@ -34625,6 +34857,55 @@ mod tests {
                 "retained complete TLS exact OWNER/PENDING pointer bindings differ"
             );
         }
+    }
+
+    #[test]
+    fn complete_native_tls_population1a8_rejects_mixed_historical_tail() {
+        let (fixture, observation) = tls_population_positive(2);
+        let historical = frozen_tls_population(1);
+        let changed: Vec<_> = observation
+            .rows
+            .iter()
+            .enumerate()
+            .filter_map(|(index, row)| {
+                let old = historical
+                    .rows
+                    .iter()
+                    .find(|old| old.canonical_name == row.canonical_name)
+                    .unwrap();
+                (row.offset != old.offset).then_some((index, old.offset))
+            })
+            .collect();
+        assert_eq!(changed.len(), 4);
+        for (index, old_offset) in changed {
+            let mut bad = fixture.bytes.clone();
+            native_no_scope_test_put(&mut bad, 0x4000 + (index + 5) * 24 + 8, 8, old_offset);
+            tls_population_require_refusal(
+                &bad,
+                2,
+                "population TLS identity/type/binding/visibility/offset/size/section differs",
+                "new getter tuple with a historical cell placement",
+            );
+        }
+        let mut old_geometry = fixture.bytes.clone();
+        native_no_scope_test_put(
+            &mut old_geometry,
+            64 + 6 * 56 + 40,
+            8,
+            historical.memory_size,
+        );
+        native_no_scope_test_put(
+            &mut old_geometry,
+            0x8000 + 13 * 64 + 32,
+            8,
+            historical.memory_size - historical.file_size,
+        );
+        tls_population_require_refusal(
+            &old_geometry,
+            2,
+            "population exact PT_TLS flags/sizes/alignment differs",
+            "new cells with the old complete TLS extent",
+        );
     }
 
     pub(super) fn complete_tls_population_bytes_for_source_controls(case: usize) -> Vec<u8> {
@@ -47823,6 +48104,20 @@ mod tests {
                 "mutation {mutation}",
             );
         }
+        let mut foreign1a8 = current.physical();
+        foreign1a8.complete_tls_population = Some(CompleteNativeTlsPopulation::Dispatch1a8Cells28(
+            payload.clone(),
+        ));
+        assert_eq!(
+            NoInstallationScopeEvidence::from_physical(
+                foreign1a8,
+                current.compiled_sources_sha256.clone(),
+                current.reverie_pin.clone(),
+                current.current_build.clone(),
+            )
+            .unwrap_err(),
+            "TLS population1a8 cannot enter Cargo no-scope evidence",
+        );
         let mut foreign = current.physical();
         foreign.complete_tls_population =
             Some(CompleteNativeTlsPopulation::Dispatch198Cells28(payload));

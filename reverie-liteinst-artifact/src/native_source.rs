@@ -1520,4 +1520,98 @@ mod tests {
             sources.verify_unchanged().unwrap();
         }
     }
+
+    #[test]
+    fn checked_native_entry_population_route_selects_native1a8_and_closes_sources() {
+        // Synthetic complete ELF/provider fixture, with independently retained
+        // population bytes. This exercises checked source selection and close,
+        // not an owned compiler action or a whole-image qualification positive.
+        let fixture = AdmissionFixture::new();
+        let bytes = crate::tests::complete_tls_population_bytes_for_source_controls(2);
+        let product = fixture.root.join("population-source-control-1a8");
+        fs::write(&product, &bytes).unwrap();
+        let mut binding = fixture.binding(NoScopeCohort::DetcoreNative101);
+        binding.artifact = FileIdentity::read(&product).unwrap();
+        let sources = VerifiedNativeSources::from_checked_action(&binding).unwrap();
+        assert_eq!(sources.cohort(), NoScopeCohort::DetcoreNative101);
+        sources.require_artifact_bytes(&bytes).unwrap();
+        let elf = Elf::parse(&bytes).unwrap();
+        let selected = selected_no_scope_census_in_source_context(
+            &elf,
+            &bytes,
+            NoScopeCohort::DetcoreNative101,
+            SourceContextRef::Native(&sources),
+        );
+        let selected = close_sources(selected, &sources)
+            .expect("checked native source refused its complete1a8 population or close");
+        assert_eq!(selected.version, COMPLETE_NATIVE_POPULATION_VERSION);
+        assert_eq!(selected.policy, NATIVE1A8_CELLS28_POLICY);
+        assert_ne!(selected.policy, NATIVE198_CELLS28_POLICY);
+        assert!(selected.native_tls_layout100.is_none());
+        let Some(CompleteNativeTlsPopulation::Dispatch1a8Cells28(payload)) =
+            selected.complete_tls_population
+        else {
+            panic!("native selection lost its distinct complete1a8 payload");
+        };
+        assert_eq!(payload.cells.len(), 28);
+        assert_eq!(payload.tls_file_size, 0x100);
+        assert_eq!(payload.tls_memory_size, 0x1b0);
+        assert_eq!(selected.census.other_tls_getters.len(), 4);
+
+        // Establish the complete positive first; each association refusal then
+        // uses the same valid physical bytes with just that association wrong.
+        let mut ordinary = fixture.binding(NoScopeCohort::DetcoreOrdinary101);
+        ordinary.artifact = binding.artifact.clone();
+        let ordinary_sources = VerifiedNativeSources::from_checked_action(&ordinary).unwrap();
+        assert_eq!(
+            selected_no_scope_census_in_source_context(
+                &elf,
+                &bytes,
+                NoScopeCohort::DetcoreNative101,
+                SourceContextRef::Native(&ordinary_sources),
+            )
+            .err()
+            .expect("ordinary source cohort selected explicit-entry1a8 population"),
+            "native source cohort does not match the physical qualification route",
+        );
+        close_sources(Ok(()), &ordinary_sources).unwrap();
+
+        let source_role = "rv:reverie-inguest/src/guest/alloc.rs";
+        let mut missing = binding.clone();
+        missing.files.remove(source_role).unwrap();
+        assert_eq!(
+            admission_error(&missing),
+            "native source mapping differs from the complete exact source catalog",
+        );
+        let other_product = crate::tests::complete_tls_population_bytes_for_source_controls(1);
+        assert_eq!(
+            sources.require_artifact_bytes(&other_product).unwrap_err(),
+            "native physical proof uses a different selected product",
+        );
+        sources.require_artifact_bytes(&bytes).unwrap();
+        close_sources(Ok(()), &sources).unwrap();
+
+        // A completed physical selection cannot suppress later source/product
+        // changes or turn a primary failure into a successful scope close.
+        fs::write(
+            &binding.files[source_role].path,
+            b"changed owned source copy",
+        )
+        .unwrap();
+        fs::write(&product, b"changed selected product").unwrap();
+        let error = close_sources::<()>(
+            Err("independent complete1a8 primary failure".into()),
+            &sources,
+        )
+        .unwrap_err();
+        assert!(
+            error.starts_with(
+                "independent complete1a8 primary failure; native source close failed:"
+            ),
+            "{error}"
+        );
+        for label in [source_role, "native selected product"] {
+            assert_eq!(error.matches(label).count(), 1, "lost {label}: {error}");
+        }
+    }
 }

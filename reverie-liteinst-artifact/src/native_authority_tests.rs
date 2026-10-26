@@ -291,7 +291,7 @@ fn complete_native_tls_evidence_boundary_controls(
     base: &NoInstallationScopeEvidence,
 ) {
     let allocator = AllocatorBackingPhysical::from_cargo(backing);
-    for case in 0..2 {
+    for case in 0..3 {
         let (fixture, _) = tls_population_positive(case);
         let elf = Elf::parse(&fixture.bytes).unwrap();
         let (census, population) = native_no_scope_population_census(
@@ -302,10 +302,11 @@ fn complete_native_tls_evidence_boundary_controls(
         .unwrap();
         let mut physical = base.physical();
         physical.version = COMPLETE_NATIVE_POPULATION_VERSION;
-        physical.policy = if case == 0 {
-            NATIVE130_CELLS29_POLICY
-        } else {
-            NATIVE198_CELLS28_POLICY
+        physical.policy = match case {
+            0 => NATIVE130_CELLS29_POLICY,
+            1 => NATIVE198_CELLS28_POLICY,
+            2 => NATIVE1A8_CELLS28_POLICY,
+            _ => unreachable!(),
         }
         .into();
         physical.elf_sha256 = sha256(&fixture.bytes);
@@ -318,10 +319,13 @@ fn complete_native_tls_evidence_boundary_controls(
         physical.other_tls_getters = census.other_tls_getters;
         physical.other_getter_pointer_slots = census.other_getter_pointer_slots;
         physical.native_tls_layout100 = None;
-        physical.complete_tls_population = Some(if case == 0 {
-            CompleteNativeTlsPopulation::Dispatch130Cells29(Dispatch130Cells29Evidence(population))
-        } else {
-            CompleteNativeTlsPopulation::Dispatch198Cells28(population)
+        physical.complete_tls_population = Some(match case {
+            0 => CompleteNativeTlsPopulation::Dispatch130Cells29(Dispatch130Cells29Evidence(
+                population,
+            )),
+            1 => CompleteNativeTlsPopulation::Dispatch198Cells28(population),
+            2 => CompleteNativeTlsPopulation::Dispatch1a8Cells28(population),
+            _ => unreachable!(),
         });
         let check = |candidate: &NoScopePhysical| {
             validate_no_scope_physical(
@@ -361,6 +365,24 @@ fn complete_native_tls_evidence_boundary_controls(
             check(&missing).unwrap_err(),
             "complete TLS population payload absent"
         );
+        if case == 2 {
+            let mut wrong_policy = physical.clone();
+            wrong_policy.policy = NATIVE198_CELLS28_POLICY.into();
+            assert_eq!(
+                check(&wrong_policy).unwrap_err(),
+                "complete TLS population1a8 policy differs"
+            );
+            let legacy = native_no_scope_test_fixture(0x100);
+            let legacy_elf = Elf::parse(&legacy.bytes).unwrap();
+            let (_, legacy_layout) =
+                native_no_scope_layout100_census(&legacy_elf, &legacy.bytes).unwrap();
+            let mut mixed = physical.clone();
+            mixed.native_tls_layout100 = Some(legacy_layout);
+            assert_eq!(
+                check(&mixed).unwrap_err(),
+                "complete TLS population has a wrong version or mixed historical payload"
+            );
+        }
         let mut build = base.current_build.clone();
         build.artifact.sha256 = physical.elf_sha256.clone();
         let packed = NoInstallationScopeEvidence::from_physical(
@@ -383,10 +405,15 @@ fn complete_native_tls_evidence_boundary_controls(
                 decoded,
                 AllocatorInstallationEvidence::NoInstallationScope(Box::new(packed))
             );
-        } else {
+        } else if case == 1 {
             assert_eq!(
                 packed.unwrap_err(),
                 "TLS population198 cannot enter Cargo no-scope evidence"
+            );
+        } else {
+            assert_eq!(
+                packed.unwrap_err(),
+                "TLS population1a8 cannot enter Cargo no-scope evidence"
             );
         }
     }
