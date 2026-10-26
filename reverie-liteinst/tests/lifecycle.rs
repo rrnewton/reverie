@@ -694,16 +694,19 @@ async fn pkey_alloc_boundary_in_guest(mode: &str, patching: bool) {
     assert_tool_callbacks_were_delivered(&global, &stats);
 }
 
+#[cfg(feature = "liteinst")]
 #[tokio::test(flavor = "current_thread")]
 async fn pkey_alloc_installed_pre_effect_refusal_forward() {
     pkey_alloc_boundary_in_guest("pkey-refusal-forward", true).await;
 }
 
+#[cfg(feature = "liteinst")]
 #[tokio::test(flavor = "current_thread")]
 async fn pkey_alloc_installed_pre_effect_refusal_inject() {
     pkey_alloc_boundary_in_guest("pkey-refusal-inject", true).await;
 }
 
+#[cfg(feature = "liteinst")]
 #[tokio::test(flavor = "current_thread")]
 async fn pkey_alloc_installed_pre_effect_refusal_tail() {
     pkey_alloc_boundary_in_guest("pkey-refusal-tail", true).await;
@@ -818,7 +821,7 @@ async fn supervisor_keeps_patchable_syscalls_in_guest() {
     .unwrap();
 
     assert_eq!(output.status.code(), Some(0), "{output:?}");
-    assert_eq!(output.stdout, b"calls=8 traps=1 hooks=8\n", "{output:?}");
+    assert_fast_path_output(&output.stdout);
     assert_eq!(global.getpid.load(Ordering::Relaxed), 8);
 }
 
@@ -838,7 +841,7 @@ async fn in_guest_run_reports_typed_instrumentation_stats() {
     .unwrap();
 
     assert_eq!(output.status.code(), Some(0), "{output:?}");
-    assert_eq!(output.stdout, b"calls=8 traps=1 hooks=8\n", "{output:?}");
+    assert_fast_path_output(&output.stdout);
     assert_eq!(global.getpid.load(Ordering::Relaxed), 8);
     assert_fast_path_stats(&global, &stats);
 }
@@ -1746,23 +1749,51 @@ async fn synchronous_tool_code_inside_a_callback_reaches_the_global_state() {
     assert_eq!(global.blocking.load(Ordering::Relaxed), 1);
 }
 
+/// Both configurations make the same eight calls through the real Tool.
+/// Only the default build claims sites and publishes hooks.
+fn expected_fast_path_output() -> &'static [u8] {
+    if cfg!(feature = "liteinst") {
+        b"calls=8 traps=1 hooks=8\n"
+    } else {
+        b"calls=8 traps=0 hooks=0\n"
+    }
+}
+
+fn assert_fast_path_output(stdout: &[u8]) {
+    assert_eq!(stdout, expected_fast_path_output());
+}
+
 /// Asserts the statistics of one `fast-path` guest run.
 fn assert_fast_path_stats(
     global: &LifecycleGlobal,
     stats: &reverie_liteinst::LiteinstBackendStatsSource,
 ) {
     assert_eq!(stats.snapshot().process_reports(), 1, "{stats}");
-    assert!(stats.distinct_rips() >= 1, "{stats}");
-    assert!(stats.patch_candidates() >= 1, "{stats}");
     let paths = stats.dispatch_path_counts();
-    assert!(
-        paths.count(&LiteinstDispatchPath::InGuestSigsys) >= 1,
-        "expected an in-guest SIGSYS: {stats}"
-    );
-    assert!(
-        paths.count(&LiteinstDispatchPath::DirectHook) >= 8,
-        "expected installed-hook dispatches: {stats}"
-    );
+    if cfg!(feature = "liteinst") {
+        assert!(stats.distinct_rips() >= 1, "{stats}");
+        assert!(stats.patch_candidates() >= 1, "{stats}");
+        assert!(
+            paths.count(&LiteinstDispatchPath::InGuestSigsys) >= 1,
+            "expected an in-guest SIGSYS: {stats}"
+        );
+        assert!(
+            paths.count(&LiteinstDispatchPath::DirectHook) >= 8,
+            "expected installed-hook dispatches: {stats}"
+        );
+    } else {
+        assert_eq!(stats.distinct_rips(), 0, "{stats}");
+        assert_eq!(stats.patch_candidates(), 0, "{stats}");
+        assert_eq!(paths.count(&LiteinstDispatchPath::DirectHook), 0, "{stats}");
+        assert!(
+            paths.count(&LiteinstDispatchPath::InGuestSigsys) >= 8,
+            "{stats}"
+        );
+        assert!(
+            paths.count(&LiteinstDispatchPath::PatchingDisabledFallback) >= 8,
+            "{stats}"
+        );
+    }
     let record = stats
         .snapshot()
         .dispatch_stats()
@@ -1777,7 +1808,12 @@ fn assert_fast_path_stats(
     );
     // A site is patched only after its first call trapped, so there is at
     // least one SIGSYS per patched site.
-    assert!(record.sites.patched >= Some(1), "{record}");
+    if cfg!(feature = "liteinst") {
+        assert!(record.sites.patched >= Some(1), "{record}");
+    } else {
+        assert_eq!(record.sites.patched, Some(0), "{record}");
+        assert_eq!(record.counters.patched_direct_calls, Some(0), "{record}");
+    }
     assert!(
         record.counters.signal_traps >= record.sites.patched,
         "{record}"
@@ -1785,10 +1821,12 @@ fn assert_fast_path_stats(
     assert_physical_signals_agree(stats, &record);
     // The getpid site's first call trapped once and then entered through the
     // hook it installed; every call after that was a hook entry.
-    assert!(
-        record.counters.patched_direct_calls >= Some(8),
-        "{record}\n{stats}"
-    );
+    if cfg!(feature = "liteinst") {
+        assert!(
+            record.counters.patched_direct_calls >= Some(8),
+            "{record}\n{stats}"
+        );
+    }
     assert_tool_callbacks_were_delivered(global, stats);
 }
 
@@ -1863,6 +1901,30 @@ async fn in_guest_tool_refuses_an_unsupported_site_patching_value() {
     assert_eq!(global.getpid.load(Ordering::Relaxed), 0);
 }
 
+#[cfg(not(feature = "liteinst"))]
+#[tokio::test(flavor = "current_thread")]
+async fn a_build_without_liteinst_refuses_an_explicit_patching_request() {
+    let (_preload_directory, preload) = compile_noop_preload();
+    let mut command = guest_command("patching-off");
+    command.env(SITE_PATCHING_ENV, "1");
+    let (output, global) = tokio::time::timeout(
+        Duration::from_secs(10),
+        LiteinstBackend::run_with_output_and_preload::<CoordinatorOnlyTool>(command, (), preload),
+    )
+    .await
+    .expect("in-guest installation without LiteInst hung")
+    .unwrap();
+    assert_eq!(output.status.code(), Some(101), "{output:?}");
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains(
+            "built without LiteInst; enable the `liteinst` Cargo feature to use site patching"
+        ),
+        "{output:?}"
+    );
+    assert!(output.stdout.is_empty(), "{output:?}");
+    assert_eq!(global.getpid.load(Ordering::Relaxed), 0);
+}
+
 #[tokio::test(flavor = "current_thread")]
 async fn bootstrap_run_with_output_reports_typed_instrumentation_stats() {
     let (_preload_directory, preload) = compile_noop_preload();
@@ -1880,7 +1942,7 @@ async fn bootstrap_run_with_output_reports_typed_instrumentation_stats() {
     .unwrap();
 
     assert_eq!(output.status.code(), Some(0), "{output:?}");
-    assert_eq!(output.stdout, b"calls=8 traps=1 hooks=8\n", "{output:?}");
+    assert_fast_path_output(&output.stdout);
     assert_eq!(global.getpid.load(Ordering::Relaxed), 8);
     assert_fast_path_stats(&global, &stats);
 }
@@ -1932,7 +1994,7 @@ async fn bootstrap_status_run_keeps_caller_stdio_and_reports_stats() {
     assert_eq!(status, ExitStatus::Exited(0));
     assert_eq!(
         std::fs::read(stdout_file.path()).unwrap(),
-        b"calls=8 traps=1 hooks=8\n"
+        expected_fast_path_output()
     );
     assert_eq!(global.getpid.load(Ordering::Relaxed), 8);
     assert_fast_path_stats(&global, &stats);
@@ -1956,7 +2018,7 @@ async fn bootstrap_status_run_keeps_caller_stdio_and_reports_stats() {
     assert_eq!(status, ExitStatus::Exited(0));
     assert_eq!(
         std::fs::read(stdout_file.path()).unwrap(),
-        b"calls=8 traps=1 hooks=8\n"
+        expected_fast_path_output()
     );
     assert_eq!(global.getpid.load(Ordering::Relaxed), 8);
 }
@@ -2077,13 +2139,33 @@ async fn fallback_fork_reports_both_process_dispatch_paths() {
     assert!(output.stderr.is_empty(), "{output:?}");
     assert_eq!(global.fork.load(Ordering::Relaxed), 1);
     assert_eq!(stats.snapshot().process_reports(), 2, "{stats}");
-    assert_eq!(
-        stats
-            .dispatch_path_counts()
-            .count(&LiteinstDispatchPath::UnpatchableOrOtherFallback),
-        2,
-        "{stats}"
-    );
+    if cfg!(feature = "liteinst") {
+        assert_eq!(
+            stats
+                .dispatch_path_counts()
+                .count(&LiteinstDispatchPath::UnpatchableOrOtherFallback),
+            2,
+            "{stats}"
+        );
+    } else {
+        // Without a patcher every physical top-level entry is a disabled
+        // fallback, including libc output and both processes' exit calls.
+        // Compare the two independent classifications of those entries;
+        // only the fork-specific RPC and inherited entry have a literal 1.
+        let paths = stats.dispatch_path_counts();
+        assert_eq!(
+            paths.count(&LiteinstDispatchPath::PatchingDisabledFallback),
+            paths.count(&LiteinstDispatchPath::InGuestSigsys),
+            "{stats}"
+        );
+        for path in [
+            LiteinstDispatchPath::UnpatchableOrOtherFallback,
+            LiteinstDispatchPath::DirectHook,
+            LiteinstDispatchPath::InGuestNestedHook,
+        ] {
+            assert_eq!(paths.count(&path), 0, "{path:?}: {stats}");
+        }
+    }
     assert_eq!(
         stats
             .dispatch_path_counts()
@@ -2125,6 +2207,7 @@ async fn fallback_fork_reports_both_process_dispatch_paths() {
     println!("{stats}");
 }
 
+#[cfg(feature = "liteinst")]
 #[tokio::test(flavor = "current_thread")]
 async fn tool_syscall_through_a_patched_site_is_a_nested_hook_entry() {
     let (_preload_directory, preload) = compile_noop_preload();
@@ -2168,6 +2251,7 @@ async fn tool_syscall_through_a_patched_site_is_a_nested_hook_entry() {
     assert_tool_callbacks_were_delivered(&global, &stats);
 }
 
+#[cfg(feature = "liteinst")]
 #[tokio::test(flavor = "current_thread")]
 async fn hooked_fork_counts_the_inherited_hook_entry_once() {
     let (_preload_directory, preload) = compile_noop_preload();
@@ -2247,12 +2331,23 @@ async fn backend_trait_output_capture_reports_bytes_status_and_stats() {
     .unwrap();
 
     assert_eq!(output.status, ExitStatus::Exited(0), "{output:?}");
-    assert_eq!(output.stdout, b"calls=8 traps=1 hooks=8\n", "{output:?}");
+    assert_fast_path_output(&output.stdout);
     assert!(output.stderr.is_empty(), "{output:?}");
     assert_eq!(global.getpid.load(Ordering::Relaxed), 8);
     assert_eq!(stats.process_reports(), 1, "{stats}");
-    assert!(stats.patch_shapes().patched_rips() >= 1, "{stats}");
-    assert!(stats.patch_shapes().candidate_rips() >= 1, "{stats}");
+    if cfg!(feature = "liteinst") {
+        assert!(stats.patch_shapes().patched_rips() >= 1, "{stats}");
+        assert!(stats.patch_shapes().candidate_rips() >= 1, "{stats}");
+    } else {
+        assert_eq!(stats.patch_shapes().patched_rips(), 0, "{stats}");
+        assert_eq!(stats.patch_shapes().candidate_rips(), 0, "{stats}");
+        let record = stats
+            .dispatch_stats()
+            .expect("trap-only run reports dispatch stats");
+        assert_eq!(record.inconsistencies(), Vec::<String>::new(), "{record}");
+        assert_eq!(record.counters.patched_direct_calls, Some(0), "{record}");
+        assert!(record.counters.signal_traps >= Some(8), "{record}");
+    }
 }
 
 #[tokio::test(flavor = "current_thread")]

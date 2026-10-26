@@ -345,10 +345,13 @@ impl BootstrapDescriptorLeafObservation {
     pub fn required_caller_indices(&self) -> std::ops::Range<usize> {
         0..7
     }
-    fn require_owner(&self, source: &VerifiedStaticSource, archive: &StaticArchive) -> Result<()> {
+    fn require_owner(
+        &self,
+        source: &StaticSourceRef<'_>,
+        archive: StaticArchiveRef<'_>,
+    ) -> Result<()> {
         require(
-            Arc::ptr_eq(&self.owner.0, &source.archive_owner)
-                && self.runtime_archive == archive.file,
+            Arc::ptr_eq(&self.owner.0, source.owner()) && self.runtime_archive == *archive.file(),
             "Bootstrap::descriptor belongs to another source/archive",
         )
     }
@@ -372,6 +375,56 @@ impl VerifiedStaticSource {
         runner: &mut Runner,
         callback: impl FnOnce(&BootstrapDescriptorLeafObservation, &mut Runner) -> Result<T>,
     ) -> Result<T> {
+        StaticSourceRef::Cargo(self).with_bootstrap_descriptor_leaf(
+            StaticArchiveRef::Cargo(archive),
+            definitions,
+            artifact,
+            link_map,
+            runner,
+            callback,
+        )
+    }
+}
+impl NativeStaticSource<'_> {
+    /// Observe the exact descriptor171/two-table form in the same actual source,
+    /// archive and selected-definition transaction. All Result/callback errors
+    /// close actual source/build-output/archive/ELF/map identities. The actual
+    /// caller MUST establish index0..6 and every documented memory/ABI premise;
+    /// no project, async, panic/unwind or startup qualification follows.
+    pub fn with_bootstrap_descriptor_leaf<T>(
+        &self,
+        archive: &NativeStaticArchive,
+        definitions: &SelectedInitializerDefinitions,
+        artifact: &FileIdentity,
+        link_map: &FileIdentity,
+        runner: &mut Runner,
+        callback: impl FnOnce(&BootstrapDescriptorLeafObservation, &mut Runner) -> Result<T>,
+    ) -> Result<T> {
+        StaticSourceRef::Native(self).with_bootstrap_descriptor_leaf(
+            StaticArchiveRef::Native(archive),
+            definitions,
+            artifact,
+            link_map,
+            runner,
+            callback,
+        )
+    }
+}
+impl StaticSourceRef<'_> {
+    /// Observe the exact descriptor171/two-table form in the same actual source,
+    /// archive and selected-definition transaction. All Result/callback errors
+    /// close actual source/build-output/archive/ELF/map identities. The actual
+    /// caller MUST establish index0..6 and every documented memory/ABI premise;
+    /// no project, async, panic/unwind or startup qualification follows.
+    pub fn with_bootstrap_descriptor_leaf<T>(
+        &self,
+        archive: StaticArchiveRef<'_>,
+        definitions: &SelectedInitializerDefinitions,
+        artifact: &FileIdentity,
+        link_map: &FileIdentity,
+        runner: &mut Runner,
+        callback: impl FnOnce(&BootstrapDescriptorLeafObservation, &mut Runner) -> Result<T>,
+    ) -> Result<T> {
         self.with_leaf_objects(
             archive,
             definitions,
@@ -387,8 +440,8 @@ impl VerifiedStaticSource {
     }
 }
 fn observe(
-    source: &VerifiedStaticSource,
-    archive: &StaticArchive,
+    source: &StaticSourceRef<'_>,
+    archive: StaticArchiveRef<'_>,
     artifact: &FileIdentity,
     link_map: &FileIdentity,
     leaves: LeafObjects<'_, '_>,
@@ -498,8 +551,8 @@ fn observe(
         &actual_fields,
     )?;
     Ok(BootstrapDescriptorLeafObservation {
-        owner: DefinitionSourceOwner(source.archive_owner.clone()),
-        runtime_archive: archive.file.clone(),
+        owner: DefinitionSourceOwner(Arc::clone(source.owner())),
+        runtime_archive: archive.file().clone(),
         artifact: artifact.clone(),
         link_map: link_map.clone(),
         source: leaves.source.clone(),

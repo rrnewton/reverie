@@ -1775,6 +1775,45 @@ impl VerifiedStaticSource {
         input: &InitializerLinkInputs<'_>,
         runner: &mut Runner,
     ) -> Result<SelectedInitializerDefinitions> {
+        StaticSourceRef::Cargo(self).link_and_join_initializer_definitions(
+            StaticArchiveRef::Cargo(archive),
+            input,
+            runner,
+        )
+    }
+}
+impl NativeStaticSource<'_> {
+    /// Perform one fresh real static link of this maintained archive, then join
+    /// actual strong TLS/SSP definitions. Does not execute the resulting image.
+    /// Whole pre-FS semantics, optional weak guards, source-to-machine qualification
+    /// and entry admission remain separate; this return type cannot mint them.
+    pub fn link_and_join_initializer_definitions(
+        &self,
+        archive: &NativeStaticArchive,
+        input: &InitializerLinkInputs<'_>,
+        runner: &mut Runner,
+    ) -> Result<SelectedInitializerDefinitions> {
+        StaticSourceRef::Native(self).link_and_join_initializer_definitions(
+            StaticArchiveRef::Native(archive),
+            input,
+            runner,
+        )
+    }
+}
+impl StaticSourceRef<'_> {
+    /// Perform one fresh real static link of this maintained archive, then join
+    /// actual strong TLS/SSP definitions. Does not execute the resulting image.
+    /// Whole pre-FS semantics, optional weak guards, source-to-machine qualification
+    /// and entry admission remain separate; this return type cannot mint them.
+    pub fn link_and_join_initializer_definitions(
+        &self,
+        archive: StaticArchiveRef<'_>,
+        input: &InitializerLinkInputs<'_>,
+        runner: &mut Runner,
+    ) -> Result<SelectedInitializerDefinitions> {
+        if let Err(error) = self.require_archive_owner(archive) {
+            return close_result(Err(error), self.close(runner));
+        }
         let mut files = Vec::new();
         let mut bind = |path: &Path| -> Result<FileIdentity> {
             let file = FileIdentity::read(path)?;
@@ -1787,11 +1826,7 @@ impl VerifiedStaticSource {
             // creation/linking; metadata equality is not source provenance.
             self.require_archive_owner(archive)?;
             archive.verify()?;
-            require(
-                archive.metadata_sha256 == self.metadata_sha256,
-                "initializer archive is not this actual source transaction",
-            )?;
-            self.guard.close(runner)?;
+            self.close(runner)?;
             let lld = bind(input.lld)?;
             require(
                 lld.sha256 == "eb9b9bc681e57f7ff4166f8fb57fad7336d29a51c85e8c70ba1ca203600e392b",
@@ -1861,36 +1896,16 @@ impl VerifiedStaticSource {
                         == "eb16569e611a5d6cdda2e7604fd6402a3ad810817dd8d63ed50baa2ce8070aaa",
                 "initializer supporting inputs differ from existing V12 private libunwind",
             )?;
-            // Bind actual Cargo-selected Rust TLS source/ABI from its guarded
-            // resolved Cargo root, rather than a caller-provided source path/hash.
-            let roots = self
-                .guard
-                .roots
-                .iter()
-                .filter(|(_, kind)| matches!(kind, RootBinding::Cargo(_)))
-                .map(|(path, _)| path)
-                .collect::<Vec<_>>();
-            require(
-                roots.len() == 1,
-                "initializer resolved runtime source root ambiguous",
-            )?;
+            // The closed source view supplies the same complete TLS tuple.
             let mut tls_files = Vec::new();
-            let tls_variant = super::tls_sources::bind(roots[0], &mut tls_files);
+            let tls_variant = super::tls_sources::bind_source(*self, &mut tls_files);
             for file in tls_files {
                 // Reuse this transaction's ordinary complete file ledger.
                 bind(&file.path)?;
             }
             tls_variant?;
             let output = input.output_directory;
-            require(
-                output.is_absolute()
-                    && output.starts_with(&self.target_dir)
-                    && output
-                        .parent()
-                        .is_some_and(|p| fs::canonicalize(p).ok().as_deref() == Some(p)),
-                "initializer link output must have canonical sole-target parent",
-            )?;
-            fs::create_dir(output).map_err(|e| e.to_string())?;
+            self.create_link_output(output)?;
             let elf_path = output.join("initializer-definitions.not-qualified.elf");
             let map_path = output.join("initializer-definitions.map");
             let args = {
@@ -1951,7 +1966,7 @@ impl VerifiedStaticSource {
                     "-o".into(),
                     elf_path.to_str().ok_or("link output UTF8")?.into(),
                     archive
-                        .file
+                        .file()
                         .path
                         .to_str()
                         .ok_or("runtime archive UTF8")?
@@ -1970,6 +1985,7 @@ impl VerifiedStaticSource {
             runner.deadline = runner
                 .deadline
                 .min(Instant::now() + Duration::from_secs(600));
+            self.register_runner(runner)?;
             let link = runner.run(program, &args, output);
             runner.deadline = enclosing_deadline;
             let produced_elf = if elf_path.exists() {
@@ -2006,30 +2022,21 @@ impl VerifiedStaticSource {
             };
             // Reuse the existing pinned 47-file native recipe/patch/source guard,
             // exact libc/member/map/full memcpy role, and every native close.
-            super::super::private_machine_diagnostic::with_native_memcpy(
-                &native,
-                &artifact,
-                |memcpy| {
-                    let proof = join_from_files(
-                        &self.archive_owner,
-                        &archive.file,
-                        &libc,
-                        &artifact,
-                        &map,
-                    )?;
-                    require(
-                        proof.ssp.memcpy_target == Some(memcpy.definition_address()),
-                        "SSP memcpy edge is not the source/member/final verified native role",
-                    )?;
-                    Ok(proof)
-                },
-            )
+            self.with_native_memcpy(&native, &artifact, |memcpy| {
+                let proof = join_from_files(self.owner(), archive.file(), &libc, &artifact, &map)?;
+                require(
+                    proof.ssp.memcpy_target == Some(memcpy.definition_address()),
+                    "SSP memcpy edge is not the source/member/final verified native role",
+                )?;
+                Ok(proof)
+            })
         })();
+        self.retain_files(&files);
         let mut errors = Vec::new();
         if let Err(e) = archive.verify() {
             errors.push(e);
         }
-        if let Err(e) = self.guard.close(runner) {
+        if let Err(e) = self.close(runner) {
             errors.push(e);
         }
         for file in &files {
@@ -4559,24 +4566,66 @@ mod optional_zero {
             input: &OptionalSourceInputs<'_>,
             runner: &mut Runner,
         ) -> Result<OptionalZeroObservation> {
+            StaticSourceRef::Cargo(self).observe_optional_zero_references(
+                StaticArchiveRef::Cargo(archive),
+                definitions,
+                input,
+                runner,
+            )
+        }
+    }
+    impl NativeStaticSource<'_> {
+        /// Observe finite optional zero uses in a previously linked definition
+        /// result from THIS live source transaction. Does not relax undefined
+        /// rejection, prove whole-owner equivalence, or authorize execution.
+        /// Ordinary valid ABI call/return is assumed for trusted compiled code;
+        /// compiler/native source-machine and pre-FS proofs remain separate.
+        pub fn observe_optional_zero_references(
+            &self,
+            archive: &NativeStaticArchive,
+            definitions: &SelectedInitializerDefinitions,
+            input: &OptionalSourceInputs<'_>,
+            runner: &mut Runner,
+        ) -> Result<OptionalZeroObservation> {
+            StaticSourceRef::Native(self).observe_optional_zero_references(
+                StaticArchiveRef::Native(archive),
+                definitions,
+                input,
+                runner,
+            )
+        }
+    }
+    impl StaticSourceRef<'_> {
+        /// Observe finite optional zero uses in a previously linked definition
+        /// result from THIS live source transaction. Does not relax undefined
+        /// rejection, prove whole-owner equivalence, or authorize execution.
+        /// Ordinary valid ABI call/return is assumed for trusted compiled code;
+        /// compiler/native source-machine and pre-FS proofs remain separate.
+        pub fn observe_optional_zero_references(
+            &self,
+            archive: StaticArchiveRef<'_>,
+            definitions: &SelectedInitializerDefinitions,
+            input: &OptionalSourceInputs<'_>,
+            runner: &mut Runner,
+        ) -> Result<OptionalZeroObservation> {
             // Wrong-owner refusal precedes even reads of the supplied files.
             let admission = self.require_archive_owner(archive).and_then(|_| {
                 require(
-                    Arc::ptr_eq(&self.archive_owner, &definitions.source_owner.0),
+                    Arc::ptr_eq(self.owner(), &definitions.source_owner.0),
                     "optional definitions belong to another source transaction",
                 )
             });
             if let Err(error) = admission {
-                return combine(Err(error), self.guard.close(runner));
+                return combine(Err(error), self.close(runner));
             }
             let mut files = definitions.files.clone();
             let result = (|| {
                 archive.verify()?;
                 definitions.verify()?;
-                self.guard.close(runner)?;
+                self.close(runner)?;
                 definitions.core.require_ledger(&definitions.files)?;
                 require(
-                    definitions.core.runtime == archive.file,
+                    definitions.core.runtime == *archive.file(),
                     "optional runtime archive differs",
                 )?;
                 let objdump = bind_expected(
@@ -4600,6 +4649,7 @@ mod optional_zero {
                 ] {
                     bind_expected(&mut files, path, expected)?;
                 }
+                self.register_runner(runner)?;
                 inspect(
                     &definitions.core.runtime,
                     &definitions.core.libc,
@@ -4611,7 +4661,8 @@ mod optional_zero {
                 )
             })();
             // Attempt every actual close even when source/earlier closes fail.
-            let source_close = self.guard.close(runner);
+            self.retain_files(&files);
+            let source_close = self.close(runner);
             let archive_close = archive.verify();
             let definitions_close = definitions.verify();
             let file_close = close_files(&files);
@@ -4621,7 +4672,7 @@ mod optional_zero {
             );
             let (guards, selected_uses, unselected_input_uses) = combine(result, closed)?;
             let observation = OptionalZeroObservation {
-                source_owner: DefinitionSourceOwner(Arc::clone(&self.archive_owner)),
+                source_owner: DefinitionSourceOwner(Arc::clone(self.owner())),
                 core: DefinitionCore::new(
                     &definitions.core.runtime,
                     &definitions.core.libc,
@@ -5811,11 +5862,11 @@ pub use optional_zero::OptionalZeroObservation;
 // Parent-only reuse of the existing private observation. These functions do not
 // create observations and are not available to callers of the artifact library.
 pub(super) fn optional_final_owner(
-    source: &VerifiedStaticSource,
-    archive: &StaticArchive,
+    source: &StaticSourceRef<'_>,
+    archive: StaticArchiveRef<'_>,
     observation: &OptionalZeroObservation,
 ) -> Result<()> {
-    observation.require_owner(&source.archive_owner, &archive.file)
+    observation.require_owner(source.owner(), archive.file())
 }
 pub(super) fn optional_final_artifact(
     observation: &OptionalZeroObservation,
@@ -5849,13 +5900,13 @@ fn selected_owner_identity(
     )
 }
 pub(super) fn selected_final_owner(
-    source: &VerifiedStaticSource,
-    archive: &StaticArchive,
+    source: &StaticSourceRef<'_>,
+    archive: StaticArchiveRef<'_>,
     definitions: &SelectedInitializerDefinitions,
 ) -> Result<()> {
     selected_owner_identity(
-        &source.archive_owner,
-        &archive.file,
+        source.owner(),
+        archive.file(),
         &definitions.source_owner,
         &definitions.core,
     )

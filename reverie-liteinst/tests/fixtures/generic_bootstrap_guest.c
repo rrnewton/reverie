@@ -14,13 +14,14 @@ extern char **environ;
 uint64_t *generic_fixture_state;
 static int getter_armed;
 static int getter_active;
+static const char *getter_selector = "strace";
 __attribute__((noinline)) char *getenv(const char *name) {
   if (!strcmp(name, "REVERIE_LITEINST_TOOL") && getter_armed) {
     uintptr_t rsp;
     __asm__ volatile("mov %%rsp,%0" : "=r"(rsp));
     ++generic_fixture_state[4];
     generic_fixture_state[5] = rsp;
-    return getter_active ? (char *)"strace" : NULL;
+    return getter_active ? (char *)getter_selector : NULL;
   }
   size_t n = strlen(name);
   for (char **p = environ; p && *p; ++p)
@@ -107,7 +108,7 @@ int main(int argc, char **argv) {
     return error("child CASE RUNTIME STATE");
   if (strcmp(argv[2], "strace") && strcmp(argv[2], "none") &&
       strcmp(argv[2], "repeat") && strcmp(argv[2], "collision") &&
-      strcmp(argv[2], "ordinary"))
+      strcmp(argv[2], "ordinary") && strcmp(argv[2], "passthrough"))
     return error("finite case");
   int fd = open(argv[4], O_RDWR | O_CLOEXEC);
   if (fd < 0)
@@ -164,7 +165,9 @@ int main(int argc, char **argv) {
   if (kernel(s + 96, 81 * 8))
     return error("actual pre-call kernel query");
   getter_active = !strcmp(argv[2], "strace") || !strcmp(argv[2], "collision") ||
-                  !strcmp(argv[2], "ordinary");
+                  !strcmp(argv[2], "ordinary") || !strcmp(argv[2], "passthrough");
+  if (!strcmp(argv[2], "passthrough"))
+    getter_selector = "passthrough";
   s[12] = getter_active;
   getter_armed = 1;
   s[1] = 1;

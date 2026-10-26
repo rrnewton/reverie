@@ -91,6 +91,56 @@ impl VerifiedStaticSource {
         runner: &mut Runner,
         body: impl FnOnce(&BootstrapRoleLeafObservation, &mut Runner) -> Result<T>,
     ) -> Result<T> {
+        StaticSourceRef::Cargo(self).with_bootstrap_role_leaf(
+            StaticArchiveRef::Cargo(archive),
+            definitions,
+            artifact,
+            link_map,
+            runner,
+            body,
+        )
+    }
+}
+impl NativeStaticSource<'_> {
+    /// Observe this exact role leaf in the SAME live source/archive/definitions
+    /// transaction. Existing full source/build-output/archive/ELF/map closures
+    /// run on success and errors, including callback errors. No public supplied
+    /// code, source name or policy can create this observation. Its caller and
+    /// memory premises remain unproved, and it provides no entry or Ready API.
+    pub fn with_bootstrap_role_leaf<T>(
+        &self,
+        archive: &NativeStaticArchive,
+        definitions: &SelectedInitializerDefinitions,
+        artifact: &FileIdentity,
+        link_map: &FileIdentity,
+        runner: &mut Runner,
+        body: impl FnOnce(&BootstrapRoleLeafObservation, &mut Runner) -> Result<T>,
+    ) -> Result<T> {
+        StaticSourceRef::Native(self).with_bootstrap_role_leaf(
+            StaticArchiveRef::Native(archive),
+            definitions,
+            artifact,
+            link_map,
+            runner,
+            body,
+        )
+    }
+}
+impl StaticSourceRef<'_> {
+    /// Observe this exact role leaf in the SAME live source/archive/definitions
+    /// transaction. Existing full source/build-output/archive/ELF/map closures
+    /// run on success and errors, including callback errors. No public supplied
+    /// code, source name or policy can create this observation. Its caller and
+    /// memory premises remain unproved, and it provides no entry or Ready API.
+    pub fn with_bootstrap_role_leaf<T>(
+        &self,
+        archive: StaticArchiveRef<'_>,
+        definitions: &SelectedInitializerDefinitions,
+        artifact: &FileIdentity,
+        link_map: &FileIdentity,
+        runner: &mut Runner,
+        body: impl FnOnce(&BootstrapRoleLeafObservation, &mut Runner) -> Result<T>,
+    ) -> Result<T> {
         self.with_plain_leaf(
             PlainLeafKind::BootstrapRole,
             archive,

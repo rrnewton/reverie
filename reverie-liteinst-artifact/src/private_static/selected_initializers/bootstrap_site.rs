@@ -113,6 +113,54 @@ impl VerifiedStaticSource {
         runner: &mut Runner,
         body: impl FnOnce(&BootstrapSiteLeafObservation, &mut Runner) -> Result<T>,
     ) -> Result<T> {
+        StaticSourceRef::Cargo(self).with_bootstrap_site_leaf(
+            StaticArchiveRef::Cargo(archive),
+            definitions,
+            artifact,
+            link_map,
+            runner,
+            body,
+        )
+    }
+}
+impl NativeStaticSource<'_> {
+    /// Observe only the separate finite Bootstrap leaf in the SAME live source,
+    /// archive, selected-definition and final ELF/map transaction. All error and
+    /// callback paths close archive/build-script outputs, definitions and files.
+    /// This does not authorize a call, prove the installer or validate a View.
+    pub fn with_bootstrap_site_leaf<T>(
+        &self,
+        archive: &NativeStaticArchive,
+        definitions: &SelectedInitializerDefinitions,
+        artifact: &FileIdentity,
+        link_map: &FileIdentity,
+        runner: &mut Runner,
+        body: impl FnOnce(&BootstrapSiteLeafObservation, &mut Runner) -> Result<T>,
+    ) -> Result<T> {
+        StaticSourceRef::Native(self).with_bootstrap_site_leaf(
+            StaticArchiveRef::Native(archive),
+            definitions,
+            artifact,
+            link_map,
+            runner,
+            body,
+        )
+    }
+}
+impl StaticSourceRef<'_> {
+    /// Observe only the separate finite Bootstrap leaf in the SAME live source,
+    /// archive, selected-definition and final ELF/map transaction. All error and
+    /// callback paths close archive/build-script outputs, definitions and files.
+    /// This does not authorize a call, prove the installer or validate a View.
+    pub fn with_bootstrap_site_leaf<T>(
+        &self,
+        archive: StaticArchiveRef<'_>,
+        definitions: &SelectedInitializerDefinitions,
+        artifact: &FileIdentity,
+        link_map: &FileIdentity,
+        runner: &mut Runner,
+        body: impl FnOnce(&BootstrapSiteLeafObservation, &mut Runner) -> Result<T>,
+    ) -> Result<T> {
         self.with_site_leaf(
             SiteLeafKind::Bootstrap,
             archive,
@@ -121,8 +169,8 @@ impl VerifiedStaticSource {
             runner,
             |identity, runner| {
                 require(
-                    Arc::ptr_eq(&identity.owner.0, &self.archive_owner)
-                        && identity.runtime_archive == archive.file,
+                    Arc::ptr_eq(&identity.owner.0, self.owner())
+                        && identity.runtime_archive == *archive.file(),
                     "Bootstrap::site belongs to another source/archive",
                 )?;
                 body(&BootstrapSiteLeafObservation { identity }, runner)
