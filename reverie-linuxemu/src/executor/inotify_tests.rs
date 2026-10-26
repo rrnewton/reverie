@@ -126,18 +126,6 @@ mod inotify_tests {
         result
     }
 
-    fn without_cookies(records: &[u8]) -> Vec<u8> {
-        let mut bytes = records.to_vec();
-        let mut offset = 0;
-        while offset < bytes.len() {
-            let length =
-                u32::from_ne_bytes(bytes[offset + 12..offset + 16].try_into().unwrap()) as usize;
-            bytes[offset + 8..offset + 12].fill(0);
-            offset += 16 + length;
-        }
-        bytes
-    }
-
     #[test]
     fn inotify_descriptor_detection_names_only_inotify() {
         let root = TestDir::new();
@@ -633,7 +621,7 @@ mod inotify_tests {
     }
 
     #[test]
-    fn inotify_rename_cookies_are_virtual_and_paired() {
+    fn inotify_rename_cookies_are_the_host_s_and_paired() {
         let root = TestDir::new();
         let mut state = test_state(&root.0);
         let mut memory = GuestMemory::new(0, 4 * PAGE_SIZE as usize).unwrap();
@@ -664,28 +652,18 @@ mod inotify_tests {
         let (native_result, native_records) = drain(native.as_raw_fd());
         let (guest_result, guest_records) = guest_read(&mut state, &mut memory, fd, 4096);
         assert_eq!(guest_result, native_result);
-        // Apart from cookies, the records are the native records.
-        assert_eq!(
-            without_cookies(&guest_records),
-            without_cookies(&native_records)
-        );
+        // The records, cookies included, are the native records: a rename's
+        // cookie is the host's, shared by every instance that sees it.
+        assert_eq!(guest_records, native_records);
         let native_cookies = cookies(&native_records);
         assert_eq!(native_cookies.len(), 4);
         assert_eq!(native_cookies[0].1, 0, "IN_CREATE has no cookie");
         assert_ne!(native_cookies[1].1, 0);
         assert_eq!(native_cookies[1].1, native_cookies[2].1);
-        // The guest sees cookies numbered by first observation.
-        assert_eq!(
-            cookies(&guest_records),
-            [
-                (libc::IN_CREATE, 0),
-                (libc::IN_MOVED_FROM, 1),
-                (libc::IN_MOVED_TO, 1),
-                (libc::IN_MOVED_FROM, 2),
-            ]
-        );
+        assert_ne!(native_cookies[3].1, 0);
+        assert_ne!(native_cookies[3].1, native_cookies[1].1);
         // The destination half, read through another instance and readv,
-        // pairs with the source half's virtual cookie.
+        // pairs with the source half's cookie.
         let iovec = libc::iovec {
             iov_base: BUFFER as *mut libc::c_void,
             iov_len: 4096,
@@ -700,35 +678,6 @@ mod inotify_tests {
         assert_eq!(count, 32);
         let mut records = vec![0_u8; count as usize];
         memory.read(BUFFER, &mut records).unwrap();
-        assert_eq!(cookies(&records), [(libc::IN_MOVED_TO, 2)]);
-    }
-
-    #[test]
-    fn inotify_cookie_table_is_stable_and_bounded() {
-        let mut table = InotifyCookieTable::default();
-        assert_eq!(table.virtualize(0), 0);
-        assert_eq!(table.virtualize(0xdead_beef), 1);
-        assert_eq!(table.virtualize(7), 2);
-        assert_eq!(table.virtualize(0xdead_beef), 1);
-        for host in 0..INOTIFY_COOKIE_CAPACITY as u32 {
-            table.virtualize(0x1000_0000 + host);
-        }
-        assert_eq!(table.host_by_age.len(), INOTIFY_COOKIE_CAPACITY);
-        assert_eq!(table.virtual_by_host.len(), INOTIFY_COOKIE_CAPACITY);
-        // The two oldest entries were evicted in first-observation order.
-        assert!(!table.virtual_by_host.contains_key(&0xdead_beef));
-        assert!(!table.virtual_by_host.contains_key(&7));
-
-        // A partial trailing record restores any partly written cookie bytes.
-        let mut table = InotifyCookieTable::default();
-        let mut record = [0_u8; 32];
-        record[8..12].copy_from_slice(&0x1234_5678_u32.to_ne_bytes());
-        record[12..16].copy_from_slice(&16_u32.to_ne_bytes());
-        let mut bytes = record.to_vec();
-        bytes.extend_from_slice(&record[..10]);
-        let original = vec![0xa5_u8; bytes.len()];
-        virtualize_inotify_cookies(&mut bytes, Some(&original), &mut table);
-        assert_eq!(u32::from_ne_bytes(bytes[8..12].try_into().unwrap()), 1);
-        assert_eq!(&bytes[32 + 8..], &[0xa5, 0xa5]);
+        assert_eq!(cookies(&records), [(libc::IN_MOVED_TO, native_cookies[3].1)]);
     }
 }
