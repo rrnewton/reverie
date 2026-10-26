@@ -89,7 +89,6 @@ const STATIC_BRK_HEADROOM: u64 = 1024 * 1024;
 /// off (x86-64 ELF_ET_DYN_BASE), before rounding to the image's alignment.
 const PIE_BASE: u64 = 0x5555_5555_4000;
 const INTERPRETED_BRK_HEADROOM: u64 = 4 * 1024 * 1024;
-pub(crate) const GUEST_CAPABILITY_MASK: u64 = (1_u64 << 41) - 1;
 const PROC_SUPER_MAGIC: libc::c_long = 0x9fa0;
 const POLICY_OPEN_EINTR_ATTEMPTS: usize = 16;
 
@@ -1028,6 +1027,10 @@ pub struct LoadedStaticElf {
     pub capability_inheritable: u64,
     pub capability_bounding: u64,
     pub capability_ambient: u64,
+    /// Whether the guest's effective and real uids are root in its user
+    /// namespace. They are its launcher's, since LinuxEmu changes no uid, and
+    /// decide the capability change at each exec.
+    pub credential_root: crate::credentials::RootIds,
     // TODO-HUMAN-REVIEW(PR-235): Review virtual dumpability lifecycle semantics.
     pub dumpable: bool,
     /// Dispositions and process-pending signals shared by a thread group.
@@ -1230,6 +1233,7 @@ impl LoadedStaticElf {
             capability_inheritable: self.capability_inheritable,
             capability_bounding: self.capability_bounding,
             capability_ambient: self.capability_ambient,
+            credential_root: self.credential_root,
             dumpable: self.dumpable,
             process_signals: std::sync::Arc::new(std::sync::Mutex::new(process_signals)),
             signal_transaction: Default::default(),
@@ -1390,6 +1394,16 @@ impl LoadedStaticElf {
             }
         }
 
+        // Linux's capability change at this exec, from the caller's sets.
+        let capabilities = crate::credentials::CapabilitySets {
+            effective: previous.capability_effective,
+            permitted: previous.capability_permitted,
+            inheritable: previous.capability_inheritable,
+            bounding: previous.capability_bounding,
+            ambient: previous.capability_ambient,
+        }
+        .after_exec(previous.credential_root);
+
         // All fallible executable preparation and sibling teardown happen
         // before this transition. Serialize the pending-state snapshot and
         // endpoint replacement with senders: an accepted event cannot land in
@@ -1413,7 +1427,7 @@ impl LoadedStaticElf {
                 .retain(|fd, _| files.contains_key(fd));
             lifecycle.reset_parent_death_after_exec(
                 previous.tid,
-                previous.capability_bounding & !previous.capability_permitted != 0,
+                capabilities.permitted & !previous.capability_permitted != 0,
             );
             lifecycle.reset_after_exec_with_signals(
                 previous.tid,
@@ -1443,12 +1457,12 @@ impl LoadedStaticElf {
         // `thread_name` intentionally remains the replacement image's name.
         self.thp_disabled = thp_disabled;
         self.keep_capabilities = false;
-        self.capability_bounding = previous.capability_bounding;
-        self.capability_effective = previous.capability_bounding;
-        self.capability_permitted = previous.capability_bounding;
-        self.capability_inheritable = previous.capability_inheritable;
-        self.capability_ambient =
-            previous.capability_ambient & self.capability_permitted & self.capability_inheritable;
+        self.capability_effective = capabilities.effective;
+        self.capability_permitted = capabilities.permitted;
+        self.capability_inheritable = capabilities.inheritable;
+        self.capability_bounding = capabilities.bounding;
+        self.capability_ambient = capabilities.ambient;
+        self.credential_root = previous.credential_root;
         self.dumpable = true;
         self.process_signals = std::sync::Arc::new(std::sync::Mutex::new(process_signals));
         self.signal_transaction = previous.signal_transaction;
@@ -1934,6 +1948,12 @@ fn load_executable(
     let thread_name = initial_thread_name(&executable_path);
     let argv0 = argv0.as_bytes().to_vec();
 
+    // The guest starts with what a child of this process has after exec. An
+    // in-guest exec replaces these with its caller's, put through the same
+    // rule, in `inherit_process_state_locked`.
+    let launcher = crate::credentials::LauncherCredentials::get()?;
+    let capabilities = launcher.guest_capabilities();
+
     memory.set_allocation_cursors(AllocationCursors {
         program_break,
         mmap_base: mmap_next,
@@ -1971,7 +1991,7 @@ fn load_executable(
         // `KvmBackend::set_root_pid` may later renumber `pid`/`tid`/`ppid`; it
         // must not change this.
         is_traced_tree_root: true,
-        umask: 0o022,
+        umask: launcher.umask,
         linux_personality: LINUX_FIXED_PERSONALITY,
         ids_per_task: reverie::task_ids::LINUX_IDS_PER_TASK,
         host_metadata_timestamps: false,
@@ -1979,11 +1999,12 @@ fn load_executable(
         thread_group_leader_name: std::sync::Arc::new(std::sync::Mutex::new(thread_name)),
         thp_disabled: std::sync::Arc::new(AtomicU8::new(0)),
         keep_capabilities: false,
-        capability_effective: GUEST_CAPABILITY_MASK,
-        capability_permitted: GUEST_CAPABILITY_MASK,
-        capability_inheritable: 0,
-        capability_bounding: GUEST_CAPABILITY_MASK,
-        capability_ambient: 0,
+        capability_effective: capabilities.effective,
+        capability_permitted: capabilities.permitted,
+        capability_inheritable: capabilities.inheritable,
+        capability_bounding: capabilities.bounding,
+        capability_ambient: capabilities.ambient,
+        credential_root: launcher.root,
         dumpable: true,
         process_signals: std::sync::Arc::new(std::sync::Mutex::new(ProcessSignalState::default())),
         signal_transaction: Default::default(),
@@ -2951,6 +2972,43 @@ mod tests {
         assert_eq!(value(8), 0);
         assert_eq!(value(15), 0x3fffef10);
         assert_eq!(value(11), 0);
+    }
+
+    /// A loaded image starts with what a child of this process has after exec:
+    /// its capability sets put through Linux's exec rule, its root ids and its
+    /// umask.
+    #[test]
+    fn loaded_image_starts_with_the_launcher_s_credentials() {
+        let mut memory = GuestMemory::new(0, TEST_MEMORY_SIZE).unwrap();
+        let image = test_static_elf(&[0x0f, 0x0b]);
+        let loaded = load_static_elf(
+            &mut memory,
+            &image,
+            &["/prog"],
+            &[],
+            &std::env::current_dir().unwrap(),
+        )
+        .unwrap();
+        let launcher = crate::credentials::LauncherCredentials::get().unwrap();
+        let expected = launcher.guest_capabilities();
+        assert_eq!(
+            [
+                loaded.capability_effective,
+                loaded.capability_permitted,
+                loaded.capability_inheritable,
+                loaded.capability_bounding,
+                loaded.capability_ambient,
+            ],
+            [
+                expected.effective,
+                expected.permitted,
+                expected.inheritable,
+                expected.bounding,
+                expected.ambient,
+            ]
+        );
+        assert_eq!(loaded.credential_root, launcher.root);
+        assert_eq!(loaded.umask, launcher.umask);
     }
 
     /// The initial stack follows Linux's exec layout at Linux's addresses, so

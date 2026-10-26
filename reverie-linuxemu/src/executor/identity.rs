@@ -10,29 +10,31 @@
 
 use super::*;
 
-// AUTONOMOUS-BOT-IMPLEMENTED
-// TODO-HUMAN-REVIEW(#54): Confirm the fixed root-plus-overflow-group KVM persona.
+/// The guest has its launcher's supplementary groups, as a process the
+/// launcher spawned would, so the host kernel answers: EINVAL for a negative
+/// size or one smaller than the group count, the count for size 0.
 pub(super) fn getgroups<M: GuestMemoryAccess<Error = crate::Error>>(
     memory: &mut M,
     args: &[u64; 6],
 ) -> i64 {
+    const NGROUPS_MAX: usize = 65_536;
     let size = args[0] as libc::c_int;
     if size < 0 {
         return negative_errno(libc::EINVAL);
     }
-
-    let count = GUEST_SUPPLEMENTARY_GROUPS.len() as libc::c_int;
+    let mut groups: Vec<libc::gid_t> = vec![0; (size as usize).min(NGROUPS_MAX)];
+    // SAFETY: groups is writable for its length, which bounds the count.
+    let count = unsafe { libc::getgroups(groups.len() as libc::c_int, groups.as_mut_ptr()) };
+    if count < 0 {
+        return io_error(std::io::Error::last_os_error());
+    }
     if size == 0 {
         return i64::from(count);
     }
-    if size < count {
-        return negative_errno(libc::EINVAL);
-    }
-
-    let mut bytes = Vec::with_capacity(count as usize * std::mem::size_of::<libc::gid_t>());
-    for group in GUEST_SUPPLEMENTARY_GROUPS {
-        bytes.extend_from_slice(&group.to_ne_bytes());
-    }
+    let bytes: Vec<u8> = groups[..count as usize]
+        .iter()
+        .flat_map(|group| group.to_ne_bytes())
+        .collect();
     match memory.write_exact(args[1], &bytes) {
         Ok(()) => i64::from(count),
         Err(_) => negative_errno(libc::EFAULT),
@@ -229,14 +231,14 @@ pub(super) fn prctl<M: GuestMemoryAccess<Error = crate::Error>>(
             }
         }
         PR_CAPBSET_READ => {
-            if args[1] <= GUEST_CAP_LAST_CAP {
+            if args[1] <= crate::credentials::last_capability() {
                 i64::from(state.capability_bounding & (1_u64 << args[1]) != 0)
             } else {
                 negative_errno(libc::EINVAL)
             }
         }
         PR_CAPBSET_DROP => {
-            if args[1] <= GUEST_CAP_LAST_CAP {
+            if args[1] <= crate::credentials::last_capability() {
                 state.capability_bounding &= !(1_u64 << args[1]);
                 0
             } else {
@@ -328,7 +330,7 @@ pub(super) fn prctl_cap_ambient(
         state.capability_ambient = 0;
         return 0;
     }
-    if capability > GUEST_CAP_LAST_CAP {
+    if capability > crate::credentials::last_capability() {
         return negative_errno(libc::EINVAL);
     }
     let bit = 1_u64 << capability;
@@ -421,9 +423,10 @@ pub(super) fn capset<M: GuestMemoryAccess<Error = crate::Error>>(
     {
         return negative_errno(libc::EPERM);
     }
-    state.capability_effective = effective & GUEST_CAPABILITY_MASK;
-    state.capability_permitted = permitted & GUEST_CAPABILITY_MASK;
-    state.capability_inheritable = inheritable & GUEST_CAPABILITY_MASK;
+    let mask = crate::credentials::capability_mask();
+    state.capability_effective = effective & mask;
+    state.capability_permitted = permitted & mask;
+    state.capability_inheritable = inheritable & mask;
     state.capability_ambient &= state.capability_permitted & state.capability_inheritable;
     0
 }
