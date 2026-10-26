@@ -448,10 +448,11 @@ pub(super) fn run(path: &Path) {
     );
     assert_eq!(
         reverie_liteinst::reverie_liteinst_site_trap_count(site as u64),
-        4
+        super::expected_site_count(4)
     );
     println!(
-        "owned frame: rseq=unregistered native=4 Tool=4 registers=equal xstate-bytes={bytes} callback-stack=owned guest-stack-revoked=preserved negative-pkru=preserved hooks=0 traps=4"
+        "owned frame: rseq=unregistered native=4 Tool=4 registers=equal xstate-bytes={bytes} callback-stack=owned guest-stack-revoked=preserved negative-pkru=preserved hooks=0 traps={}",
+        super::expected_site_count(4)
     );
     if let Some(area) = rseq {
         assert_eq!(

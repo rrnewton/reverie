@@ -5,11 +5,13 @@
 use std::io;
 use std::path::Path;
 
+#[cfg(feature = "liteinst")]
 use liteinst2::trampoline::HookContext;
 #[cfg(feature = "exec-private-init")]
 use reverie::GlobalRPC;
 use reverie::Pid;
 use reverie::Tool;
+#[cfg(feature = "liteinst")]
 use reverie_inguest::guest::context::RegisterContext;
 use reverie_inguest::guest::host::HostRuntime;
 #[cfg(feature = "exec-private-init")]
@@ -27,6 +29,7 @@ use crate::runtime::SyscallEvent;
 
 // Patched trampolines save HookContext; the shared entry reads RegisterContext.
 // The shared fallback continuation already owns RegisterContext.
+#[cfg(feature = "liteinst")]
 const _: () = {
     use core::mem::align_of;
     use core::mem::offset_of;
@@ -925,6 +928,25 @@ where
     let _private_allocations = reverie_inguest::guest::alloc::enter_dispatch();
     install_try!(crate::patch_alloc::preflight_allocator());
 
+    // The private image contract fixes trap-only mode. Other callers retain
+    // authenticated bootstrap precedence over the environment. Only the
+    // feature-disabled build captures before fixed-gate publication; enabled
+    // builds retain late selection and the fatal published-install boundary.
+    let selected_site_patching = || -> io::Result<bool> {
+        let selected = if private_initial {
+            false
+        } else if let Some(selected) = reverie_inguest::bootstrap::bootstrap_site_patching() {
+            selected
+        } else {
+            runtime::site_patching_from_env_value(
+                std::env::var_os(runtime::SITE_PATCHING_ENV).as_deref(),
+            )?
+        };
+        runtime::validate_site_patching(selected)
+    };
+    #[cfg(all(feature = "fixed-syscall-gates", not(feature = "liteinst")))]
+    let site_patching = install_try!(selected_site_patching());
+
     #[cfg(feature = "fixed-syscall-gates")]
     let mut fixed_install = FixedGateInstallation { complete: false };
     #[cfg(feature = "fixed-syscall-gates")]
@@ -1050,18 +1072,8 @@ where
     install_try!(runtime::preflight_instruction_faulting(
         instruction_subscriptions
     ));
-    // A launcher that sends tool data puts the selection in the bootstrap,
-    // which guest code cannot change; the environment is the selector for
-    // launchers that do not.
-    let site_patching = if private_initial {
-        false
-    } else if let Some(site_patching) = reverie_inguest::bootstrap::bootstrap_site_patching() {
-        site_patching
-    } else {
-        install_try!(runtime::site_patching_from_env_value(
-            std::env::var_os(runtime::SITE_PATCHING_ENV).as_deref(),
-        ))
-    };
+    #[cfg(any(not(feature = "fixed-syscall-gates"), feature = "liteinst"))]
+    let site_patching = install_try!(selected_site_patching());
     // With site patching off, the vDSO gets ptrace's full trapping stubs and no
     // hooks, so its fast paths reach the Tool through the SIGSYS fallback too.
     #[cfg(feature = "exec-private-init")]

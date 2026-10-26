@@ -170,6 +170,13 @@ where
     T::GlobalState: 'static,
     <T::GlobalState as GlobalTool>::Config: 'static,
 {
+    #[cfg(not(feature = "liteinst"))]
+    if backend == BackendKind::Liteinst {
+        return Err(RunError::Refused(
+            "the liteinst backend was built without LiteInst; enable the `liteinst` Cargo feature"
+                .to_owned(),
+        ));
+    }
     match backend {
         BackendKind::Ptrace => run_ptrace::<T>(args, config).await,
         BackendKind::Kvm => run_kvm::<T>(args, config).await,

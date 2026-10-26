@@ -167,7 +167,7 @@ pub(super) fn run(path: &Path) {
     );
     assert_eq!(
         reverie_liteinst::reverie_liteinst_site_trap_count(site as u64),
-        1
+        super::super::expected_site_count(1)
     );
     assert_eq!(super::super::LAST_TOTAL.load(Ordering::Relaxed), 1);
     assert_eq!(super::super::LAST_SENDERS.load(Ordering::Relaxed), 1);
@@ -300,7 +300,7 @@ pub(super) fn run_pkey(path: &Path) {
     );
     assert_eq!(
         reverie_liteinst::reverie_liteinst_site_trap_count(site as u64),
-        2
+        super::super::expected_site_count(2)
     );
     assert_eq!(super::super::LAST_TOTAL.load(Ordering::Relaxed), 2);
     assert_eq!(super::super::LAST_SENDERS.load(Ordering::Relaxed), 1);

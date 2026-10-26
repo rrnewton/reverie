@@ -125,6 +125,48 @@ fn launcher_exposes_the_complete_ptrace_example_surface() {
 }
 
 #[test]
+fn common_launcher_runs_the_counter_tool_on_in_guest_trap() {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_counter1"));
+    command
+        .args(["--backend=in-guest-trap", "--preload"])
+        .arg(preload())
+        .args(["--", "/bin/echo", "hello"]);
+    let output = output_with_timeout(&mut command);
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(output.stdout, b"hello\n");
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    let calls = stderr
+        .lines()
+        .find_map(|line| line.strip_prefix("counter1-global syscalls="))
+        .expect("the in-guest Tool did not report to its coordinator")
+        .parse::<u64>()
+        .unwrap();
+    assert!(calls > 0, "{stderr}");
+}
+
+#[cfg(not(feature = "liteinst"))]
+#[test]
+fn common_launcher_refuses_liteinst_before_loading_a_preload() {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_counter1"));
+    command.args([
+        "--backend=liteinst",
+        "--preload=/does-not-exist/reverie-examples.so",
+        "--",
+        "/bin/echo",
+        "unexpected-guest-execution",
+    ]);
+    let output = output_with_timeout(&mut command);
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    assert!(output.stdout.is_empty(), "{output:?}");
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains(
+            "the liteinst backend was built without LiteInst; enable the `liteinst` Cargo feature"
+        ),
+        "{output:?}"
+    );
+}
+
+#[test]
 fn exact_noop_tool_preserves_output_and_hides_control_environment() {
     let output = run(
         "noop",
