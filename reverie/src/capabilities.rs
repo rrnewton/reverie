@@ -352,6 +352,21 @@ pub struct BackendCapabilities {
     /// still fail closed when the kernel's state disagrees with what the
     /// reports predict.
     pub reports_sigreturns: bool,
+    /// How the backend counts the RCB clock whose coordinates a tool records
+    /// and replays, or `None` where that counter is not a qualified contract.
+    /// Absent from an older serialized value, which reads as `None`.
+    #[serde(default)]
+    pub rcb_clock_contract: Option<RcbClockContract>,
+}
+
+/// A qualified way of counting the RCB clock.
+#[non_exhaustive]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum RcbClockContract {
+    /// A perf counter on the guest thread's own host task, counting its user
+    /// mode only (kernel, hypervisor and guest-mode execution excluded), read
+    /// as the raw count with no offsets: the ptrace backend's timer and clock.
+    PerfCounterOnTargetThreadUserOnly,
 }
 
 impl BackendCapabilities {
@@ -384,6 +399,7 @@ impl BackendCapabilities {
         promotes_open_files_before_native_lifecycle: false,
         // The report reads an x86-64 signal frame.
         reports_sigreturns: cfg!(target_arch = "x86_64"),
+        rcb_clock_contract: Some(RcbClockContract::PerfCounterOnTargetThreadUserOnly),
     };
 
     /// `reverie-e9patch`: the guest is rewritten ahead of time and then run
@@ -393,6 +409,8 @@ impl BackendCapabilities {
     /// execution), so it does not report sigreturns.
     pub const E9PATCH: Self = Self {
         reports_sigreturns: false,
+        // Not qualified for recorded RCB coordinates.
+        rcb_clock_contract: None,
         ..Self::PTRACE
     };
 
@@ -416,6 +434,8 @@ impl BackendCapabilities {
         runs_guest_code_between_injections: true,
         promotes_open_files_before_native_lifecycle: true,
         reports_sigreturns: false,
+        // Not qualified for recorded RCB coordinates.
+        rcb_clock_contract: None,
         ..Self::PTRACE
     };
 
@@ -439,6 +459,8 @@ impl BackendCapabilities {
         delivers_preemption_timer_events: false,
         runs_guest_code_between_injections: true,
         reports_sigreturns: false,
+        // Not qualified for recorded RCB coordinates.
+        rcb_clock_contract: None,
         ..Self::PTRACE
     };
 
@@ -464,6 +486,8 @@ impl BackendCapabilities {
         delivers_preemption_timer_events: false,
         promotes_open_files_before_native_lifecycle: true,
         reports_sigreturns: false,
+        // Not qualified for recorded RCB coordinates.
+        rcb_clock_contract: None,
         ..Self::PTRACE
     };
 
@@ -484,6 +508,8 @@ impl BackendCapabilities {
         host_timed_signals_are_physical: false,
         delivers_preemption_timer_events: false,
         reports_sigreturns: false,
+        // Not qualified for recorded RCB coordinates.
+        rcb_clock_contract: None,
         ..Self::PTRACE
     };
 }
@@ -527,6 +553,7 @@ mod tests {
             "runs_guest_code_between_injections": false,
             "promotes_open_files_before_native_lifecycle": false,
             "reports_sigreturns": cfg!(target_arch = "x86_64"),
+            "rcb_clock_contract": "PerfCounterOnTargetThreadUserOnly",
         })
     }
 
@@ -564,6 +591,7 @@ mod tests {
             table(BackendCapabilities::E9PATCH),
             ptrace_with(serde_json::json!({
                 "reports_sigreturns": false,
+                "rcb_clock_contract": null,
             }))
         );
     }
@@ -589,6 +617,7 @@ mod tests {
                 "runs_guest_code_between_injections": true,
                 "promotes_open_files_before_native_lifecycle": true,
                 "reports_sigreturns": false,
+                "rcb_clock_contract": null,
             }))
         );
     }
@@ -615,6 +644,7 @@ mod tests {
                 "delivers_preemption_timer_events": false,
                 "runs_guest_code_between_injections": true,
                 "reports_sigreturns": false,
+                "rcb_clock_contract": null,
             }))
         );
     }
@@ -641,6 +671,7 @@ mod tests {
                 "delivers_preemption_timer_events": false,
                 "promotes_open_files_before_native_lifecycle": true,
                 "reports_sigreturns": false,
+                "rcb_clock_contract": null,
             }))
         );
     }
@@ -663,7 +694,25 @@ mod tests {
                 "host_timed_signals_are_physical": false,
                 "delivers_preemption_timer_events": false,
                 "reports_sigreturns": false,
+                "rcb_clock_contract": null,
             }))
+        );
+    }
+
+    /// A value serialized before `rcb_clock_contract` existed reads as no
+    /// qualified RCB clock, never as ptrace's.
+    #[test]
+    fn an_older_serialized_value_has_no_rcb_clock_contract() {
+        let mut older = table(BackendCapabilities::PTRACE);
+        older.as_object_mut().unwrap().remove("rcb_clock_contract");
+        let caps: BackendCapabilities = serde_json::from_value(older).unwrap();
+        assert_eq!(caps.rcb_clock_contract, None);
+        assert_eq!(
+            BackendCapabilities {
+                rcb_clock_contract: BackendCapabilities::PTRACE.rcb_clock_contract,
+                ..caps
+            },
+            BackendCapabilities::PTRACE
         );
     }
 
