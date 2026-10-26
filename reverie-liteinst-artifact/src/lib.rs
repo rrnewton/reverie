@@ -10,6 +10,7 @@ use std::fs::{self};
 use std::io::Read;
 use std::io::Write;
 use std::os::fd::AsRawFd;
+use std::os::unix::fs::PermissionsExt;
 use std::os::unix::process::CommandExt;
 use std::os::unix::process::ExitStatusExt;
 use std::path::Path;
@@ -162,7 +163,7 @@ impl FileIdentity {
     }
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct CommandEvidence {
     pub program: String,
@@ -691,10 +692,426 @@ struct CompilerRootBinding {
     canonical_root: PathBuf,
     cargo_home: Option<(PathBuf, PathBuf)>,
 }
+mod consumer_policy {
+    //! Consumer expectations for the Cargo current-build adapter only.
+    //! The opaque token joins independently compiled policy bytes to fresh source
+    //! authority. Serialized records are evidence, never authority constructors.
+
+    use super::*;
+
+    #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+    pub enum ConsumerPackageRole {
+        Runtime,
+        Instrumentation,
+        InGuest,
+        Wrapper,
+    }
+
+    #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+    pub enum ConsumerSourceRoot {
+        Consumer,
+        Reverie,
+    }
+
+    #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+    #[serde(deny_unknown_fields)]
+    pub struct ConsumerPackageSpec {
+        pub source_root: ConsumerSourceRoot,
+        pub name: String,
+        pub version: String,
+        pub manifest: String,
+        pub target: String,
+        pub target_source: String,
+        pub kind: Vec<String>,
+        pub crate_types: Vec<String>,
+    }
+
+    #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+    pub enum ConsumerWorkspaceFileRole {
+        RootManifest,
+        RootLock,
+        WrapperManifest,
+        WrapperSource,
+        BuildScript,
+        ProofModule,
+    }
+
+    #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+    #[serde(deny_unknown_fields)]
+    pub struct ConsumerWrapperSpec {
+        pub workspace: String,
+        pub files: BTreeMap<ConsumerWorkspaceFileRole, String>,
+        pub package: ConsumerPackageSpec,
+    }
+
+    #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+    pub enum ConsumerCargoForm {
+        SingleLibrary,
+        NestedLibraryPair,
+    }
+
+    #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+    #[serde(deny_unknown_fields)]
+    pub struct ConsumerBuildVariant {
+        pub recipe: ConsumerRecipe,
+        pub command_form: ConsumerCargoForm,
+        pub requested_features: Vec<String>,
+        pub resolved_features: BTreeMap<ConsumerPackageRole, Vec<String>>,
+        pub profile_name: String,
+        pub profile: Value,
+        /// Keys are the closed RV proof identifiers; values are consumer evidence
+        /// labels. Neither a key nor a label supplies bytes or selects a fallback.
+        pub evidence_labels: BTreeMap<String, String>,
+    }
+
+    pub struct ConsumerPolicySpec {
+        pub definition_relative: String,
+        pub definition_compiled_bytes: &'static [u8],
+        pub runtime: ConsumerPackageSpec,
+        pub wrapper: Option<ConsumerWrapperSpec>,
+        pub variants: Vec<ConsumerBuildVariant>,
+    }
+
+    #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+    #[serde(deny_unknown_fields)]
+    pub(super) struct ConsumerPolicyRecord {
+        pub(super) definition: FileIdentity,
+        pub(super) definition_size: u64,
+        pub(super) definition_compiled_sha256: String,
+        pub(super) compiled_sources_sha256: String,
+        pub(super) workspace_root: PathBuf,
+        pub(super) runtime: PackageIdentity,
+        pub(super) wrapper_spec: Option<ConsumerWrapperSpec>,
+        pub(super) standalone_sources: Option<StandaloneCurrentBuildSources>,
+        pub(super) role_packages: BTreeMap<ConsumerPackageRole, PackageIdentity>,
+        pub(super) variants: Vec<ConsumerBuildVariant>,
+    }
+
+    /// Not Deserialize and no public unchecked constructor. Only resolve creates it.
+    pub struct VerifiedConsumerPolicy {
+        pub(super) record: ConsumerPolicyRecord,
+    }
+
+    fn relative_path(raw: &str) -> Result<&str> {
+        require(
+            !raw.is_empty()
+                && !raw.contains('\0')
+                && !raw.contains('\\')
+                && raw.split('/').all(|part| !part.is_empty() && part != "." && part != "..")
+                && !Path::new(raw).is_absolute()
+                && Path::new(raw).components().all(|part| matches!(part, std::path::Component::Normal(_))),
+            "consumer source path is not an exact relative spelling",
+        )?;
+        Ok(raw)
+    }
+
+    #[cfg(test)]
+    pub(super) fn test_relative_path(raw: &str) -> Result<&str> { relative_path(raw) }
+
+    fn exact_features(features: &[String]) -> bool {
+        let mut sorted = features.to_vec();
+        sorted.sort();
+        sorted.dedup();
+        sorted == features
+    }
+
+    fn package_matches(
+        sources: &VerifiedCompiledSources,
+        metadata: &Value,
+        package: &PackageIdentity,
+        spec: &ConsumerPackageSpec,
+    ) -> Result<()> {
+        let root = match spec.source_root {
+            ConsumerSourceRoot::Consumer => &sources.record.workspace_root,
+            ConsumerSourceRoot::Reverie => &sources.record.reverie_root,
+        };
+        let manifest = exact_source_file(root, relative_path(&spec.manifest)?)?;
+        let target_source = exact_source_file(root, relative_path(&spec.target_source)?)?;
+        require(
+            package.name == spec.name
+                && package.target == spec.target
+                && package.manifest == manifest.path
+                && package.target_source == target_source.path
+                && package.kind == spec.kind
+                && package.crate_types == spec.crate_types
+                && match spec.source_root {
+                    ConsumerSourceRoot::Consumer => package.source.is_none(),
+                    ConsumerSourceRoot::Reverie => package.source.is_some(),
+                },
+            "consumer package differs from independently resolved source/target/origin",
+        )?;
+        let rows: Vec<_> = metadata["packages"].as_array()
+            .ok_or("fresh consumer metadata packages absent")?.iter()
+            .filter(|row| row["id"] == package.id).collect();
+        require(
+            rows.len() == 1 && rows[0]["name"] == spec.name && rows[0]["version"] == spec.version,
+            "consumer package ID/name/version differs from fresh metadata",
+        )
+    }
+
+    fn workspace_roles() -> BTreeSet<ConsumerWorkspaceFileRole> {
+        use ConsumerWorkspaceFileRole::*;
+        BTreeSet::from([RootManifest, RootLock, WrapperManifest, WrapperSource, BuildScript, ProofModule])
+    }
+
+    pub(super) fn consumer_wrapper_sources(
+        sources: &CompiledSources,
+        metadata: &Value,
+        spec: &ConsumerWrapperSpec,
+        runner: &mut Runner,
+    ) -> Result<StandaloneCurrentBuildSources> {
+        use ConsumerWorkspaceFileRole::*;
+        let workspace = sources.workspace_root.join(relative_path(&spec.workspace)?);
+        require(
+            sources.image_kind == FixedImageKind::Standalone
+                && sources.manifest.path == workspace.join("Cargo.toml")
+                && metadata["workspace_root"].as_str() == workspace.to_str()
+                && spec.files.keys().copied().collect::<BTreeSet<_>>() == workspace_roles()
+                && spec.files.values().collect::<BTreeSet<_>>().len() == 6,
+            "consumer wrapper workspace/complete six source roles differ",
+        )?;
+        let mut workspace_files = BTreeMap::new();
+        for relative in spec.files.values() {
+            relative_path(relative)?;
+            let file = match &sources.authority {
+                CompiledSourceAuthority::Git { workspace_head, .. } =>
+                    compiled_blob_file(&sources.workspace_root, workspace_head, relative, runner)?,
+                CompiledSourceAuthority::DeclaredContent { workspace_inventory, .. } => {
+                    let row = workspace_inventory.iter().find(|row| row.relative == *relative)
+                        .ok_or("consumer wrapper source absent from declared authority")?;
+                    let bound = sources.files.get(&format!("workspace:{relative}"))
+                        .ok_or("consumer wrapper source lacks its resolved file binding")?;
+                    let file = exact_source_file(&sources.workspace_root, relative)?;
+                    bound.verify()?;
+                    require(file == *bound && file.sha256 == row.sha256
+                        && fs::metadata(&file.path).map_err(|e| e.to_string())?.len() == row.size,
+                        "consumer wrapper source differs from declared authority/binding")?;
+                    file
+                }
+            };
+            workspace_files.insert(relative.clone(), file);
+        }
+        require(
+            workspace_files[&spec.files[&RootManifest]] == sources.manifest
+                && Path::new(&spec.files[&RootLock]).parent() == Path::new(&spec.files[&RootManifest]).parent()
+                && spec.files[&WrapperManifest] == spec.package.manifest
+                && spec.files[&WrapperSource] == spec.package.target_source
+                && spec.package.source_root == ConsumerSourceRoot::Consumer,
+            "consumer wrapper source roles do not match its explicit manifests/source",
+        )?;
+        let packages: Vec<_> = metadata["packages"].as_array()
+            .ok_or("fresh wrapper metadata packages absent")?.iter()
+            .filter(|package| package["name"] == spec.package.name).collect();
+        require(packages.len() == 1, "consumer wrapper package absent or duplicated")?;
+        let package = packages[0];
+        let manifest = &workspace_files[&spec.files[&WrapperManifest]];
+        let source = &workspace_files[&spec.files[&WrapperSource]];
+        let id = format!("path+file://{}#{}@{}",
+            manifest.path.parent().ok_or("wrapper manifest parent absent")?.display(),
+            spec.package.name, spec.package.version);
+        require(package["id"] == id && package["version"] == spec.package.version
+            && package.get("source") == Some(&Value::Null)
+            && package["manifest_path"].as_str() == manifest.path.to_str()
+            && strings(&metadata["workspace_members"])? .iter().filter(|member| *member == &id).count() == 1,
+            "consumer wrapper identity/member/source differs")?;
+        let targets: Vec<_> = package["targets"].as_array().ok_or("wrapper targets absent")?
+            .iter().filter(|target| target["name"] == spec.package.target).collect();
+        require(targets.len() == 1, "consumer wrapper target absent or duplicated")?;
+        require(targets[0]["src_path"].as_str() == source.path.to_str()
+            && strings(&targets[0]["kind"])? == spec.package.kind
+            && strings(&targets[0]["crate_types"])? == spec.package.crate_types
+            && spec.package.kind == ["lib"] && spec.package.crate_types == ["lib"],
+            "consumer wrapper differs from its exact lib/lib source")?;
+        Ok(StandaloneCurrentBuildSources { wrapper: PackageIdentity {
+            id, name: spec.package.name.clone(), manifest: manifest.path.clone(), source: None,
+            target: spec.package.target.clone(), kind: spec.package.kind.clone(),
+            crate_types: spec.package.crate_types.clone(), target_source: source.path.clone(),
+        }, workspace_files })
+    }
+
+    impl VerifiedConsumerPolicy {
+        pub fn resolve(
+            sources: &VerifiedCompiledSources,
+            spec: ConsumerPolicySpec,
+            runner: &mut Runner,
+        ) -> Result<Self> {
+            let initial_definition = relative_path(&spec.definition_relative)
+                .and_then(|relative| exact_source_file(&sources.record.workspace_root, relative));
+            let result = match &initial_definition {
+                Ok(_) => Self::resolve_candidate(sources, spec, runner),
+                Err(error) => Err(error.clone()),
+            };
+            let source_close = sources.verify_unchanged(runner);
+            let definition_close = match &initial_definition { Ok(file) => file.verify(), Err(_) => Ok(()) };
+            let closed = combine_consumer_closes(source_close, definition_close);
+            match (result, closed) {
+                (Ok(value), Ok(())) => Ok(value),
+                (Err(error), Ok(())) | (Ok(_), Err(error)) => Err(error),
+                (Err(error), Err(close)) => Err(format!("{error}; consumer source close failed: {close}")),
+            }
+        }
+
+        fn resolve_candidate(
+            sources: &VerifiedCompiledSources,
+            spec: ConsumerPolicySpec,
+            runner: &mut Runner,
+        ) -> Result<Self> {
+            sources.verify_unchanged(runner)?;
+            let relative = relative_path(&spec.definition_relative)?;
+            let definition = match &sources.record.authority {
+                CompiledSourceAuthority::Git { workspace_head, .. } =>
+                    compiled_blob_file(&sources.record.workspace_root, workspace_head, relative, runner)?,
+                // Added independent compiled/source identity, separate from the
+                // original closed legacy workspace inventory. Never replace a row
+                // or downgrade a failed Git factory to this explicit authority.
+                CompiledSourceAuthority::DeclaredContent { .. } =>
+                    exact_source_file(&sources.record.workspace_root, relative)?,
+            };
+            let definition_size = fs::metadata(&definition.path).map_err(|e| e.to_string())?.len();
+            let compiled_sha256 = sha256(spec.definition_compiled_bytes);
+            require(definition.sha256 == compiled_sha256
+                && definition_size == spec.definition_compiled_bytes.len() as u64,
+                "consumer policy differs from independently compiled definition bytes")?;
+            let metadata = sources.adapter_metadata.as_ref().ok_or("fresh adapter metadata absent")?;
+            package_matches(sources, metadata, sources.package(), &spec.runtime)?;
+            let standalone_sources = spec.wrapper.as_ref().map(|wrapper|
+                consumer_wrapper_sources(&sources.record, metadata, wrapper, runner)).transpose()?;
+            require(definition_size != 0 && definition.path != sources.package().manifest
+                && definition.path != sources.package().target_source
+                && standalone_sources.as_ref().is_none_or(|binding|
+                    binding.workspace_files.values().all(|file| file.path != definition.path)),
+                "consumer policy definition must be an added distinct source identity")?;
+            let mut role_packages = BTreeMap::from([
+                (ConsumerPackageRole::Runtime, sources.package().clone()),
+                (ConsumerPackageRole::Instrumentation, sources.record.packages.get("reverie-liteinst")
+                    .ok_or("verified instrumentation source absent")?.clone()),
+                (ConsumerPackageRole::InGuest, sources.record.packages.get("reverie-inguest")
+                    .ok_or("verified in-guest source absent")?.clone()),
+            ]);
+            if let Some(binding) = &standalone_sources {
+                role_packages.insert(ConsumerPackageRole::Wrapper, binding.wrapper.clone());
+            }
+            require(role_packages.values().map(|package| &package.name).collect::<BTreeSet<_>>().len()
+                == role_packages.len(), "consumer package roles alias one package")?;
+            let record = ConsumerPolicyRecord {
+                definition, definition_size, definition_compiled_sha256: compiled_sha256,
+                compiled_sources_sha256: sha256(&serde_json::to_vec(sources.record()).map_err(|e| e.to_string())?),
+                workspace_root: sources.record.workspace_root.clone(), runtime: sources.package().clone(),
+                wrapper_spec: spec.wrapper, standalone_sources, role_packages, variants: spec.variants,
+            };
+            record.validate_shape()?;
+            record.verify_files()?;
+            Ok(Self { record })
+        }
+    }
+
+    impl ConsumerPolicyRecord {
+        pub(super) fn validate_shape(&self) -> Result<()> {
+            require(!self.variants.is_empty() && self.variants.len() <= 3,
+                "consumer policy has no finite build variants")?;
+            let expected_roles = if self.wrapper_spec.is_some() {
+                BTreeSet::from([ConsumerPackageRole::Runtime, ConsumerPackageRole::Instrumentation,
+                    ConsumerPackageRole::InGuest, ConsumerPackageRole::Wrapper])
+            } else {
+                BTreeSet::from([ConsumerPackageRole::Runtime, ConsumerPackageRole::Instrumentation,
+                    ConsumerPackageRole::InGuest])
+            };
+            require(self.role_packages.keys().copied().collect::<BTreeSet<_>>() == expected_roles
+                && self.role_packages.values().map(|package| &package.name).collect::<BTreeSet<_>>().len() == expected_roles.len()
+                && self.role_packages.values().map(|package| &package.id).collect::<BTreeSet<_>>().len() == expected_roles.len()
+                && self.role_packages[&ConsumerPackageRole::Runtime] == self.runtime
+                && self.wrapper_spec.is_some() == self.standalone_sources.is_some(),
+                "consumer policy package roles/wrapper binding differ")?;
+            let mut recipes = BTreeSet::new();
+            for variant in &self.variants {
+                require(recipes.insert(variant.recipe)
+                    && variant.resolved_features.keys().copied().collect::<BTreeSet<_>>() == expected_roles
+                    && variant.resolved_features.values().all(|features| exact_features(features))
+                    && exact_features(&variant.requested_features)
+                    && variant.profile == variant.recipe.profile()
+                    && !variant.profile_name.is_empty()
+                    && variant.recipe.image_kind() == if self.wrapper_spec.is_some() {
+                        FixedImageKind::Standalone
+                    } else { FixedImageKind::Detcore }
+                    && (variant.command_form == ConsumerCargoForm::NestedLibraryPair)
+                        == self.wrapper_spec.is_some(),
+                    "consumer policy recipe/complete roles/features/profile/command form differ")?;
+                require(variant.resolved_features.values().all(|features|
+                    !features.iter().any(|feature| matches!(feature.as_str(), "liteinst" | "default" | "allocator-fixture"))),
+                    "no-scope policy requests patching/default/fixture features")?;
+                if variant.recipe == ConsumerRecipe::Allocation101LayoutA {
+                    for (role, required) in [
+                        (ConsumerPackageRole::Runtime, &["exec-native-injection", "exec-private-init"][..]),
+                        (ConsumerPackageRole::Instrumentation, &["exec-native-injection", "exec-private-init",
+                            "exec-private-successor", "fixed-syscall-gates", "native-exec-state"][..]),
+                        (ConsumerPackageRole::InGuest, &["exec-native-injection", "exec-private-init",
+                            "exec-private-successor", "fixed-syscall-gates", "native-exec-state"][..]),
+                    ] {
+                        require(required.iter().all(|feature| variant.resolved_features[&role]
+                            .iter().any(|actual| actual.as_str() == *feature)),
+                            "allocation101 layout-A lacks required native gate/state features")?;
+                    }
+                }
+
+                let keys = variant.recipe.policy_keys();
+                require(variant.evidence_labels.keys().map(String::as_str).collect::<BTreeSet<_>>()
+                    == keys.iter().copied().collect()
+                    && variant.evidence_labels.values().all(|label| !label.is_empty()
+                        && label.len() <= 256 && label.is_ascii()
+                        && !label.bytes().any(|b| b.is_ascii_control()))
+                    && variant.evidence_labels.values().collect::<BTreeSet<_>>().len() == keys.len(),
+                    "consumer evidence labels are incomplete, ambiguous or malformed")?;
+            }
+            Ok(())
+        }
+
+        pub(super) fn verify_files(&self) -> Result<()> {
+            self.definition.verify()?;
+            require(self.definition.sha256 == self.definition_compiled_sha256
+                && fs::metadata(&self.definition.path).map_err(|e| e.to_string())?.len() == self.definition_size,
+                "consumer compiled/source definition changed")?;
+            if let Some(binding) = &self.standalone_sources {
+                for file in binding.workspace_files.values() { file.verify()?; }
+            }
+            Ok(())
+        }
+
+        pub(super) fn label(&self, recipe: ConsumerRecipe, key: &str) -> Result<&str> {
+            self.variants.iter().find(|variant| variant.recipe == recipe)
+                .and_then(|variant| variant.evidence_labels.get(key)).map(String::as_str)
+                .ok_or_else(|| "consumer evidence label absent for exact recipe".into())
+        }
+
+        pub(super) fn variant_for_build<'a>(&'a self, build: &CurrentBuildEvidence) -> Result<&'a ConsumerBuildVariant> {
+            self.validate_shape()?;
+            let candidates: Vec<_> = self.variants.iter().filter(|variant| {
+                build.packages.len() == variant.resolved_features.len()
+                    && variant.resolved_features.iter().all(|(role, features)| {
+                        let package = &self.role_packages[role];
+                        build.packages.get(&package.name).is_some_and(|actual|
+                            actual.package == *package && actual.features == *features
+                                && actual.profile == variant.profile)
+                    })
+            }).collect();
+            require(candidates.len() == 1, "no-scope build has an unreviewed or ambiguous consumer policy")?;
+            Ok(candidates[0])
+        }
+    }
+}
+
+pub use consumer_policy::{ConsumerBuildVariant, ConsumerCargoForm, ConsumerPackageRole,
+    ConsumerPackageSpec, ConsumerPolicySpec, ConsumerSourceRoot, ConsumerWorkspaceFileRole,
+    ConsumerWrapperSpec, VerifiedConsumerPolicy};
+use consumer_policy::ConsumerPolicyRecord;
+
 /// Only the fresh Git/content factories can construct this type. Deserializing evidence does not
 /// authorize compiler filenames or establish the current Cargo source graph.
 pub struct VerifiedCompiledSources {
     record: CompiledSources,
+    current_build: Option<CurrentBuildEvidence>,
+    // Fresh factory metadata only. Wrapper validation activates exclusively in
+    // the OFF standalone build factory; historical ON records/gates do not change.
+    adapter_metadata: Option<Value>,
 }
 const COMPILED_RV_LOCATION_FILES: [&str; 7] = [
     "reverie-liteinst/src/patch_alloc.rs",
@@ -2095,7 +2512,11 @@ impl VerifiedCompiledSources {
             files,
             leaf,
         };
-        Ok(Self { record })
+        Ok(Self {
+            record,
+            current_build: None,
+            adapter_metadata: Some(metadata.clone()),
+        })
     }
     /// Explicit closed-profile Hermit source-copy authority. It never catches a Git error
     /// or accepts caller-supplied metadata, inventories or compiler mappings.
@@ -2278,6 +2699,8 @@ impl VerifiedCompiledSources {
                 files,
                 leaf,
             },
+            current_build: None,
+            adapter_metadata: Some(metadata.clone()),
         };
         verified.verify_unchanged(runner)?;
         Ok(verified)
@@ -2287,6 +2710,67 @@ impl VerifiedCompiledSources {
     }
     pub fn package(&self) -> &PackageIdentity {
         &self.record.leaf
+    }
+    /// Bind the actual retained successful Cargo build, independently of the
+    /// default-feature metadata used to resolve package/source identities.
+    /// Consumers must call this again with their retained hashed command output;
+    /// a deserialized absence record cannot construct this opaque context.
+    /// `selected_elf` is the original current Cargo output. A staged copy is
+    /// joined separately by its entire ELF digest during qualification.
+    pub fn with_consumer_build(
+        &self,
+        policy: &VerifiedConsumerPolicy,
+        command: &CommandEvidence,
+        selected_elf: &Path,
+        target_directory: &Path,
+        runner: &mut Runner,
+    ) -> Result<Self> {
+        let result = (|| {
+            self.verify_unchanged(runner)?;
+            policy.record.verify_files()?;
+            require(policy.record.compiled_sources_sha256
+                == sha256(&serde_json::to_vec(&self.record).map_err(|e| e.to_string())?),
+                "consumer policy belongs to different compiled source authority")?;
+            consumer_current_build_evidence(
+                &self.record, command, selected_elf, target_directory,
+                policy.record.standalone_sources.as_ref(), &policy.record,
+            )
+        })();
+        let source_close = self.verify_unchanged(runner);
+        let policy_close = policy.record.verify_files();
+        let closed = combine_consumer_closes(source_close, policy_close);
+        let current_build = match (result, closed) {
+            (Ok(value), Ok(())) => value,
+            (Err(error), Ok(())) | (Ok(_), Err(error)) => return Err(error),
+            (Err(error), Err(close)) => return Err(format!("{error}; consumer source close failed: {close}")),
+        };
+        Ok(Self { record: self.record.clone(), current_build: Some(current_build),
+            adapter_metadata: self.adapter_metadata.clone() })
+    }
+    // Receipt rebind preserves the existing file-only inner transaction. The
+    // caller supplies freshly resolved opaque sources/policy and closes its
+    // outer source transaction; this is not a serialized-authority constructor.
+    fn rebind_consumer_build(&self, policy: &VerifiedConsumerPolicy,
+        command: &CommandEvidence, selected_elf: &Path, target: &Path) -> Result<Self> {
+        let result = (|| {
+            self.verify_files()?;
+            policy.record.verify_files()?;
+            require(policy.record.compiled_sources_sha256
+                == sha256(&serde_json::to_vec(&self.record).map_err(|e| e.to_string())?),
+                "receipt consumer policy belongs to different compiled sources")?;
+            consumer_current_build_evidence(&self.record, command, selected_elf, target,
+                policy.record.standalone_sources.as_ref(), &policy.record)
+        })();
+        let source_close = self.verify_files();
+        let policy_close = policy.record.verify_files();
+        let closed = combine_consumer_closes(source_close, policy_close);
+        let build = match (result, closed) {
+            (Ok(value), Ok(())) => value,
+            (Err(error), Ok(())) | (Ok(_), Err(error)) => return Err(error),
+            (Err(error), Err(close)) => return Err(format!("{error}; receipt source close failed: {close}")),
+        };
+        Ok(Self { record: self.record.clone(), current_build: Some(build),
+            adapter_metadata: self.adapter_metadata.clone() })
     }
     /// Exact retained Cargo compiler spelling; canonical PackageIdentity remains
     /// unchanged for artifact selection. Consumers compare this raw path exactly.
@@ -2304,7 +2788,18 @@ impl VerifiedCompiledSources {
             }
         }
     }
+    fn with_qualification_sources<T>(&self, runner: &mut Runner,
+        operation: impl FnOnce(&mut Runner) -> Result<T>) -> Result<T> {
+        let result = (|| {
+            self.verify_unchanged(runner)?;
+            operation(runner)
+        })();
+        let closed = self.verify_unchanged(runner);
+        close_qualification_result(result, closed)
+    }
+
     pub fn verify_unchanged(&self, runner: &mut Runner) -> Result<()> {
+        let source_close = (|| {
         let r = &self.record;
         if let CompiledSourceAuthority::Git {
             workspace_head,
@@ -2323,10 +2818,17 @@ impl VerifiedCompiledSources {
                 "compiled Reverie checkout changed during use",
             )?;
         }
-        r.manifest.verify()?;
-        self.verify_files()
+        r.manifest.verify()
+        })();
+        // Supplemental policy/build files close independently of a failed Git
+        // identity query; neither failure may hide the other.
+        let files_close = self.verify_files();
+        combine_consumer_closes(source_close, files_close)
     }
     fn verify_files(&self) -> Result<()> {
+        if let Some(build) = &self.current_build {
+            verify_current_build_files(build)?;
+        }
         if let CompiledSourceAuthority::DeclaredContent {
             workspace_inventory,
             workspace_sha256,
@@ -2570,6 +3072,461 @@ pub fn select_artifact(
     Ok(candidates.remove(0))
 }
 
+#[cfg(test)]
+const TEST_WRAPPER_WORKSPACE_FILES: [&str; 6] = [
+    "consumer-build/Cargo.toml", "consumer-build/Cargo.lock",
+    "consumer-build/runtime/Cargo.toml", "consumer-build/runtime/src/lib.rs",
+    "consumer-build/build.rs", "consumer-build/artifact.rs",
+];
+
+fn current_cargo_executable(program: &str) -> Result<Option<FileIdentity>> {
+    if program == "cargo" {
+        return Ok(None);
+    }
+    let path = Path::new(program);
+    require(
+        path.is_absolute() && path.file_name().is_some_and(|name| name == "cargo"),
+        "current build program is neither cargo nor an absolute cargo executable",
+    )?;
+    let file = FileIdentity::read(path)?;
+    require(
+        file.path == path
+            && fs::metadata(path)
+                .map_err(|e| e.to_string())?
+                .permissions()
+                .mode()
+                & 0o111
+                != 0,
+        "current Cargo executable is not canonical or executable",
+    )?;
+    Ok(Some(file))
+}
+
+fn verify_current_build_files(build: &CurrentBuildEvidence) -> Result<()> {
+    build.consumer_policy.verify_files()?;
+    build.command.stdout.verify()?;
+    build.command.stderr.verify()?;
+    build.artifact.verify()?;
+    if let Some(sources) = &build.standalone_sources {
+        for file in sources.workspace_files.values() {
+            file.verify()?;
+        }
+    }
+    require(
+        current_cargo_executable(&build.command.program)? == build.cargo_executable,
+        "current Cargo executable identity changed after binding",
+    )
+}
+
+fn current_build_command(
+    command: &CommandEvidence,
+    sources: &CompiledSources,
+    target: &Path,
+    variant: &ConsumerBuildVariant,
+) -> Result<Option<FileIdentity>> {
+    let cargo_executable = current_cargo_executable(&command.program)?;
+    require(command.status == 0 && command.cwd == sources.workspace_root
+        && command.arguments.first().is_some_and(|a| a == "build"),
+        "current build lacks its successful Cargo command/source root")?;
+    let mut switches = BTreeSet::new();
+    let mut options = BTreeMap::new();
+    let mut arguments = command.arguments.iter().skip(1);
+    while let Some(argument) = arguments.next() {
+        match argument.as_str() {
+            "--locked" | "--offline" | "--lib" | "--no-default-features"
+            | "--message-format=json-render-diagnostics" => require(
+                switches.insert(argument.as_str()), "current build repeats a Cargo switch")?,
+            "--manifest-path" | "-p" | "--profile" | "--target-dir" | "--features" => {
+                let value = arguments.next().ok_or("current build option lacks value")?;
+                require(options.insert(argument.as_str(), value.as_str()).is_none(),
+                    "current build repeats a Cargo option")?;
+            }
+            _ => return Err("current build has an unsupported Cargo argument".into()),
+        }
+    }
+    require(switches == BTreeSet::from(["--locked", "--offline", "--lib",
+        "--no-default-features", "--message-format=json-render-diagnostics"])
+        && options.get("--manifest-path").copied() == sources.manifest.path.to_str()
+        && options.get("-p").copied() == Some(sources.leaf.name.as_str())
+        && options.get("--profile").copied() == Some(variant.profile_name.as_str())
+        && options.get("--target-dir").copied() == target.to_str(),
+        "current build command differs from the explicit consumer profile/target/source")?;
+    require_explicit_cargo_features(&command.arguments, &variant.requested_features)?;
+    Ok(cargo_executable)
+}
+
+#[cfg(test)]
+fn current_build_evidence(
+    sources: &CompiledSources,
+    command: &CommandEvidence,
+    selected_elf: &Path,
+    target_directory: &Path,
+) -> Result<CurrentBuildEvidence> {
+    require(
+        sources.image_kind == FixedImageKind::Detcore,
+        "current build witness requires a Detcore source identity",
+    )?;
+    current_build_evidence_in_scope(sources, command, selected_elf, target_directory, None)
+}
+
+fn standalone_current_build_command(
+    command: &CommandEvidence,
+    sources: &CompiledSources,
+    target: &Path,
+    policy: &ConsumerPolicyRecord,
+    variant: &ConsumerBuildVariant,
+) -> Result<Option<FileIdentity>> {
+    let cargo_executable = current_cargo_executable(&command.program)?;
+    let wrapper = policy.wrapper_spec.as_ref().ok_or("nested build policy lacks wrapper")?;
+    let package = policy.role_packages.get(&ConsumerPackageRole::Wrapper)
+        .ok_or("nested build policy lacks wrapper package")?;
+    let expected = consumer_pair_arguments(target, package, &policy.runtime, variant)?;
+    require(command.status == 0 && sources.image_kind == FixedImageKind::Standalone
+        && sources.manifest.path == sources.workspace_root.join(&wrapper.workspace).join("Cargo.toml")
+        && Some(command.cwd.as_path()) == sources.manifest.path.parent()
+        && command.arguments == expected,
+        "nested current build differs from the exact multipackage command")?;
+    Ok(cargo_executable)
+}
+
+#[cfg(test)]
+fn standalone_current_build_arguments(target: &Path) -> Result<Vec<String>> {
+    Ok(vec![
+        "build",
+        "--locked",
+        "--no-default-features",
+        "--manifest-path",
+        "Cargo.toml",
+        "-p",
+        "consumer-wrapper",
+        "-p",
+        "reverie-liteinst-preload",
+        "--lib",
+        "--profile",
+        "release",
+        "--target-dir",
+        target.to_str().ok_or("standalone target is not UTF-8")?,
+        "--message-format=json-render-diagnostics",
+    ]
+    .into_iter()
+    .map(str::to_owned)
+    .collect())
+}
+
+fn consumer_current_build_evidence(
+    sources: &CompiledSources,
+    command: &CommandEvidence,
+    selected_elf: &Path,
+    target_directory: &Path,
+    standalone: Option<&StandaloneCurrentBuildSources>,
+    policy: &ConsumerPolicyRecord,
+) -> Result<CurrentBuildEvidence> {
+    // Data only. Public factories require fresh opaque sources; the standalone
+    // factory additionally binds all owned workspace files to that authority.
+    require(
+        if standalone.is_some() {
+            sources.layout == CompiledSourceLayout::HermitGit
+                && sources.image_kind == FixedImageKind::Standalone
+                && sources.leaf == policy.runtime
+        } else {
+            sources.image_kind == FixedImageKind::Detcore
+        },
+        "current build source image differs from its explicit witness scope",
+    )?;
+    command.stdout.verify()?;
+    command.stderr.verify()?;
+    require(
+        fs::metadata(&command.stdout.path)
+            .map_err(|e| e.to_string())?
+            .len()
+            <= 64 * 1024 * 1024,
+        "current Cargo compiler stream exceeds its retained byte cap",
+    )?;
+    let messages = fs::read_to_string(&command.stdout.path).map_err(|e| e.to_string())?;
+    let canonical_target = fs::canonicalize(target_directory).map_err(|e| e.to_string())?;
+    require(
+        canonical_target.as_os_str() == target_directory.as_os_str()
+            && canonical_target != sources.workspace_root,
+        "current build target must be an explicit separate directory",
+    )?;
+    if let Some(binding) = standalone {
+        require(
+            binding
+                .workspace_files
+                .values()
+                .all(|file| !file.path.starts_with(&canonical_target)),
+            "standalone current build target overlaps authorized source paths",
+        )?;
+    }
+    let target_directory = canonical_target;
+    policy.validate_shape()?;
+    require(policy.runtime == sources.leaf && policy.compiled_sources_sha256
+        == sha256(&serde_json::to_vec(sources).map_err(|e| e.to_string())?),
+        "current consumer policy/source identity differs")?;
+    let expected_profile = policy.variants.first().ok_or("consumer variants absent")?.profile.clone();
+    require(policy.variants.iter().all(|variant| variant.profile == expected_profile),
+        "current build policy has ambiguous compiler profiles")?;
+    let required_names: Vec<&str> = policy.role_packages.values()
+        .map(|package| package.name.as_str()).collect();
+    let mut packages = BTreeMap::new();
+    for line in messages.lines().filter(|line| !line.is_empty()) {
+        let event: Value = serde_json::from_str(line)
+            .map_err(|e| format!("current Cargo compiler stream: {e}"))?;
+        if event["reason"] != "compiler-artifact" {
+            continue;
+        }
+        let candidates: Vec<_> = sources
+            .packages
+            .values()
+            .chain(standalone.map(|binding| &binding.wrapper))
+            .filter(|package| {
+                required_names.contains(&package.name.as_str())
+                    && event["package_id"] == package.id
+                    && event["target"]["name"] == package.target
+            })
+            .collect();
+        if candidates.is_empty() {
+            continue;
+        }
+        require(candidates.len() == 1, "ambiguous current compiled package")?;
+        let package = candidates[0];
+        require(
+            real_file(Path::new(
+                event["manifest_path"]
+                    .as_str()
+                    .ok_or("current manifest absent")?,
+            ))? == package.manifest
+                && real_file(Path::new(
+                    event["target"]["src_path"]
+                        .as_str()
+                        .ok_or("current source absent")?,
+                ))? == package.target_source
+                && strings(&event["target"]["kind"])? == package.kind
+                && strings(&event["target"]["crate_types"])? == package.crate_types
+                && event["profile"] == expected_profile,
+            "current compiler event differs from verified source/target/profile",
+        )?;
+        let features = strings(&event["features"])?;
+        let mut normalized = features.clone();
+        normalized.sort();
+        normalized.dedup();
+        require(
+            features == normalized,
+            "current compiler features are not a unique sorted set",
+        )?;
+        let outputs = strings(&event["filenames"])?
+            .iter()
+            .map(|path| real_file(Path::new(path)))
+            .collect::<Result<Vec<_>>>()?;
+        require(
+            !outputs.is_empty()
+                && outputs
+                    .iter()
+                    .all(|path| path.starts_with(&target_directory))
+                && outputs.iter().collect::<BTreeSet<_>>().len() == outputs.len(),
+            "current dependency output is absent, duplicated or outside the isolated target",
+        )?;
+        require(
+            packages
+                .insert(
+                    package.name.clone(),
+                    CurrentBuildPackage {
+                        package: package.clone(),
+                        features,
+                        profile: event["profile"].clone(),
+                        outputs,
+                    },
+                )
+                .is_none(),
+            "duplicate current compiler artifact for a required source package",
+        )?;
+    }
+    require(
+        packages.keys().map(String::as_str).collect::<BTreeSet<_>>()
+            == required_names.iter().copied().collect(),
+        "current build lacks the actual leaf/core/inguest compiler events",
+    )?;
+    let leaf = &packages[&sources.leaf.name];
+    let selected = select_artifact(
+        &messages,
+        &leaf.package,
+        &leaf.features,
+        &expected_profile,
+        &target_directory,
+    )?;
+    let artifact = FileIdentity::read(selected_elf)?;
+    require(
+        artifact.path == selected.reported_path,
+        "current build witness selects a different actual Cargo ELF",
+    )?;
+    let mut evidence = CurrentBuildEvidence {
+        consumer_policy: policy.clone(),
+        command: command.clone(),
+        cargo_executable: None,
+        target_directory,
+        artifact,
+        compiled_sources_sha256: sha256(&serde_json::to_vec(sources).map_err(|e| e.to_string())?),
+        packages,
+        standalone_sources: standalone.cloned(),
+    };
+    let variant = policy.variant_for_build(&evidence)?;
+    evidence.cargo_executable = match variant.command_form {
+        ConsumerCargoForm::NestedLibraryPair => standalone_current_build_command(
+            command, sources, &evidence.target_directory, policy, variant)?,
+        ConsumerCargoForm::SingleLibrary => current_build_command(
+            command, sources, &evidence.target_directory, variant)?,
+    };
+    no_scope_build_features(&evidence)?;
+    Ok(evidence)
+}
+
+
+fn combine_consumer_closes(source: Result<()>, policy: Result<()>) -> Result<()> {
+    match (source, policy) {
+        (Ok(()), Ok(())) => Ok(()),
+        (Err(error), Ok(())) | (Ok(()), Err(error)) => Err(error),
+        (Err(error), Err(close)) => Err(format!("{error}; consumer definition close failed: {close}")),
+    }
+}
+
+fn consumer_pair_arguments(target: &Path, wrapper: &PackageIdentity,
+    runtime: &PackageIdentity, variant: &ConsumerBuildVariant) -> Result<Vec<String>> {
+    require(variant.requested_features.is_empty(), "nested nonfixture build requests extra features")?;
+    Ok(vec!["build", "--locked", "--no-default-features", "--manifest-path", "Cargo.toml",
+        "-p", wrapper.name.as_str(), "-p", runtime.name.as_str(), "--lib", "--profile",
+        variant.profile_name.as_str(), "--target-dir", target.to_str().ok_or("target is not UTF-8")?,
+        "--message-format=json-render-diagnostics"].into_iter().map(str::to_owned).collect())
+}
+
+
+#[cfg(test)]
+fn test_policy_for_packages(packages: &BTreeMap<String, CurrentBuildPackage>,
+    standalone: Option<&StandaloneCurrentBuildSources>, root: &Path, sources_hash: &str) -> ConsumerPolicyRecord {
+    let runtime = if standalone.is_some() { "reverie-liteinst-preload" } else { "consumer-runtime" };
+    let identities: BTreeMap<String, PackageIdentity> = packages.iter()
+        .map(|(name, package)| (name.clone(), package.package.clone())).collect();
+    test_policy_from_identities(&identities, &identities[runtime], standalone, root, sources_hash)
+}
+
+#[cfg(test)]
+fn test_consumer_policy(sources: &CompiledSources,
+    standalone: Option<&StandaloneCurrentBuildSources>) -> ConsumerPolicyRecord {
+    test_policy_from_identities(&sources.packages, &sources.leaf, standalone,
+        &sources.workspace_root, &sha256(&serde_json::to_vec(sources).unwrap()))
+}
+
+#[cfg(test)]
+fn test_wrapper_spec() -> ConsumerWrapperSpec {
+    use ConsumerWorkspaceFileRole as FileRole;
+    ConsumerWrapperSpec {
+        workspace: "consumer-build".into(), files: BTreeMap::from([
+            (FileRole::RootManifest, TEST_WRAPPER_WORKSPACE_FILES[0].into()),
+            (FileRole::RootLock, TEST_WRAPPER_WORKSPACE_FILES[1].into()),
+            (FileRole::WrapperManifest, TEST_WRAPPER_WORKSPACE_FILES[2].into()),
+            (FileRole::WrapperSource, TEST_WRAPPER_WORKSPACE_FILES[3].into()),
+            (FileRole::BuildScript, TEST_WRAPPER_WORKSPACE_FILES[4].into()),
+            (FileRole::ProofModule, TEST_WRAPPER_WORKSPACE_FILES[5].into())]),
+        package: ConsumerPackageSpec { source_root: ConsumerSourceRoot::Consumer,
+            name: "consumer-wrapper".into(), version: "0.5.1".into(),
+            manifest: TEST_WRAPPER_WORKSPACE_FILES[2].into(), target: "consumer_wrapper".into(),
+            target_source: TEST_WRAPPER_WORKSPACE_FILES[3].into(), kind: vec!["lib".into()],
+            crate_types: vec!["lib".into()] },
+    }
+}
+
+#[cfg(test)]
+fn test_policy_from_identities(packages: &BTreeMap<String, PackageIdentity>, runtime: &PackageIdentity,
+    standalone: Option<&StandaloneCurrentBuildSources>, root: &Path, sources_hash: &str) -> ConsumerPolicyRecord {
+    use ConsumerPackageRole as Role;
+    let mut roles = BTreeMap::from([(Role::Runtime, runtime.clone()),
+        (Role::Instrumentation, packages["reverie-liteinst"].clone()),
+        (Role::InGuest, packages["reverie-inguest"].clone())]);
+    if let Some(binding) = standalone { roles.insert(Role::Wrapper, binding.wrapper.clone()); }
+    let recipes: &[ConsumerRecipe] = if standalone.is_some() { &[ConsumerRecipe::Allocation62] }
+        else { &[ConsumerRecipe::Allocation101LayoutA, ConsumerRecipe::Allocation101LayoutB] };
+    let variants = recipes.iter().map(|recipe| {
+        let features = recipe.features();
+        ConsumerBuildVariant { recipe: *recipe,
+            command_form: if standalone.is_some() { ConsumerCargoForm::NestedLibraryPair } else { ConsumerCargoForm::SingleLibrary },
+            requested_features: if *recipe == ConsumerRecipe::Allocation101LayoutA {
+                vec!["exec-native-injection".into()] } else { vec![] },
+            resolved_features: roles.iter().map(|(role, package)| (*role,
+                features.iter().find(|(name, _)| *name == package.name.as_str()).unwrap().1
+                    .iter().map(|feature| (*feature).into()).collect())).collect(),
+            profile_name: if standalone.is_some() { "release".into() } else { "fixture-runtime-profile".into() },
+            profile: recipe.profile(), evidence_labels: recipe.policy_keys().iter()
+                .map(|key| ((*key).into(), (*key).into())).collect(),
+        }
+    }).collect();
+    let wrapper_spec = standalone.map(|_| test_wrapper_spec());
+    // Parser-only test data is not an opaque authority token. Reuse its existing
+    // owned manifest; structural controls with synthetic paths perform no I/O.
+    let definition = if runtime.manifest.is_file() {
+        FileIdentity::read(&runtime.manifest).unwrap()
+    } else { FileIdentity { path: root.join("consumer-policy-control.txt"), sha256: "0".repeat(64) } };
+    let size = fs::metadata(&definition.path).map(|meta| meta.len()).unwrap_or(0);
+    ConsumerPolicyRecord { definition_compiled_sha256: definition.sha256.clone(), definition,
+        definition_size: size, compiled_sources_sha256: sources_hash.into(), workspace_root: root.into(),
+        runtime: runtime.clone(), wrapper_spec, standalone_sources: standalone.cloned(), role_packages: roles, variants }
+}
+
+#[cfg(test)]
+#[test]
+fn consumer_policy_shape_refusal_controls() {
+    let packages: BTreeMap<_, _> = ConsumerRecipe::Allocation101LayoutA.features().iter()
+        .map(|(name, features)| ((*name).into(), CurrentBuildPackage {
+            package: PackageIdentity { id: format!("test:{name}"), name: (*name).into(),
+                manifest: format!("/schema/{name}/Cargo.toml").into(), source: None,
+                target: name.replace('-', "_"), kind: vec!["lib".into()], crate_types: vec!["lib".into()],
+                target_source: format!("/schema/{name}/src/lib.rs").into() },
+            features: features.iter().map(|feature| (*feature).into()).collect(),
+            profile: ConsumerRecipe::Allocation101LayoutA.profile(), outputs: vec![],
+        })).collect();
+    let original = test_policy_for_packages(&packages, None, Path::new("/schema"), &"0".repeat(64));
+    original.validate_shape().unwrap();
+    for alteration in 0..12 {
+        let mut bad = original.clone();
+        match alteration {
+            0 => bad.variants.clear(),
+            1 => bad.variants.push(bad.variants[0].clone()),
+            2 => { bad.role_packages.remove(&ConsumerPackageRole::InGuest); },
+            3 => { let runtime = bad.role_packages[&ConsumerPackageRole::Runtime].clone();
+                bad.role_packages.insert(ConsumerPackageRole::InGuest, runtime); },
+            4 => bad.variants[0].resolved_features.get_mut(&ConsumerPackageRole::Instrumentation)
+                .unwrap().push("liteinst".into()),
+            5 => bad.variants[0].profile["test"] = Value::Bool(true),
+            6 => bad.variants[0].profile["extra"] = Value::Bool(false),
+            7 => bad.variants[0].requested_features.push("exec-native-injection".into()),
+            8 => { bad.variants[0].evidence_labels.pop_first(); },
+            9 => { let first = bad.variants[0].evidence_labels.values().next().unwrap().clone();
+                for value in bad.variants[0].evidence_labels.values_mut() { *value = first.clone(); } },
+            10 => bad.variants[0].resolved_features.get_mut(&ConsumerPackageRole::Instrumentation)
+                .unwrap().retain(|feature| feature != "fixed-syscall-gates"),
+            11 => bad.variants[0].profile_name.clear(),
+            _ => unreachable!(),
+        }
+        assert!(bad.validate_shape().is_err(), "invalid consumer policy {alteration}");
+    }
+}
+
+#[cfg(test)]
+#[test]
+fn consumer_relative_source_path_refuses_aliases() {
+    for invalid in ["", "/root/file", ".", "..", "a/../b", "a/./b", "a//b", "a/", "a\\b", "a\0b"] {
+        assert!(consumer_policy::test_relative_path(invalid).is_err(), "{invalid:?}");
+    }
+    for valid in ["package/Cargo.toml", "workspace/runtime/src/lib.rs"] {
+        assert!(consumer_policy::test_relative_path(valid).is_ok());
+    }
+}
+
+#[cfg(test)]
+fn current_build_evidence_in_scope(sources: &CompiledSources, command: &CommandEvidence,
+    selected_elf: &Path, target: &Path, standalone: Option<&StandaloneCurrentBuildSources>) -> Result<CurrentBuildEvidence> {
+    let policy = test_consumer_policy(sources, standalone);
+    consumer_current_build_evidence(sources, command, selected_elf, target, standalone, &policy)
+}
+
 const ALLOCATOR_BACKING_SYMBOL: &str = "reverie_liteinst_allocator_backing_v1";
 const FIXED_ARENA_VERSION: u32 = 1;
 
@@ -2642,6 +3599,660 @@ pub struct AllocatorTlsBoundary {
     pub direct_allocation: Option<DirectAllocationTlsEvidence>,
 }
 
+/// The historical boundary is serialized without a new tag or wrapper. The
+/// second arm is a distinct, source-and-build-qualified absence claim; it never
+/// invents a TLS cell or provider for a build whose allocator has no such edge.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(untagged)]
+pub enum AllocatorInstallationEvidence {
+    Existing(Box<AllocatorTlsBoundary>),
+    NoInstallationScope(Box<NoInstallationScopeEvidence>),
+}
+impl<'de> Deserialize<'de> for AllocatorInstallationEvidence {
+    fn deserialize<D: serde::Deserializer<'de>>(
+        deserializer: D,
+    ) -> std::result::Result<Self, D::Error> {
+        // Deserialize each complete arm directly. Serde's intermediate untagged
+        // content decoder cannot preserve CommandEvidence's existing u128 time
+        // field. Neither arm changes shape, and both retain deny_unknown_fields.
+        let value = Value::deserialize(deserializer)?;
+        if value.get("kind").is_some() {
+            serde_json::from_value(value)
+                .map(Self::NoInstallationScope)
+                .map_err(serde::de::Error::custom)
+        } else {
+            serde_json::from_value(value)
+                .map(Self::Existing)
+                .map_err(serde::de::Error::custom)
+        }
+    }
+}
+impl AllocatorInstallationEvidence {
+    fn existing(&self) -> Option<&AllocatorTlsBoundary> {
+        match self {
+            Self::Existing(boundary) => Some(boundary),
+            Self::NoInstallationScope(_) => None,
+        }
+    }
+    #[cfg(test)]
+    fn existing_mut(&mut self) -> &mut AllocatorTlsBoundary {
+        match self {
+            Self::Existing(boundary) => boundary,
+            Self::NoInstallationScope(_) => panic!("test requires historical TLS evidence"),
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CurrentBuildPackage {
+    package: PackageIdentity,
+    features: Vec<String>,
+    profile: Value,
+    outputs: Vec<PathBuf>,
+}
+/// Data retained inside the new absence arm. Only the explicit current-build
+/// factories can bind it to an opaque source context; deserializing it does not
+/// create authority.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CurrentBuildEvidence {
+    consumer_policy: ConsumerPolicyRecord,
+    command: CommandEvidence,
+    cargo_executable: Option<FileIdentity>,
+    target_directory: PathBuf,
+    artifact: FileIdentity,
+    compiled_sources_sha256: String,
+    packages: BTreeMap<String, CurrentBuildPackage>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    standalone_sources: Option<StandaloneCurrentBuildSources>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct StandaloneCurrentBuildSources {
+    wrapper: PackageIdentity,
+    workspace_files: BTreeMap<String, FileIdentity>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct UnisolatedTlsGetter {
+    getter: SymbolEvidence,
+    cell_offset: u64,
+    module_slot: u64,
+    plt_address: u64,
+    sha256: String,
+}
+/// Finite no-INSTALLATION_DEPTH evidence for the measured native OFF allocation
+/// route. Other guest TLS and its provider remain explicitly unisolated.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NoInstallationScopeEvidence {
+    kind: String,
+    version: u32,
+    policy: String,
+    elf_sha256: String,
+    compiled_sources_sha256: String,
+    reverie_pin: String,
+    source: FileIdentity,
+    current_build: CurrentBuildEvidence,
+    allocation: SymbolEvidence,
+    allocation_sha256: String,
+    mappings: Vec<TlsExecutableMapping>,
+    static_symbol_count: usize,
+    dynamic_symbol_count: usize,
+    raw_names_sha256: String,
+    loader_writer_count: usize,
+    loader_writers_sha256: String,
+    installation_symbols: Vec<String>,
+    installation_getters: Vec<u64>,
+    installation_writer_count: usize,
+    other_tls_getters: Vec<UnisolatedTlsGetter>,
+    other_getter_pointer_slots: Vec<u64>,
+    other_tls_unisolated: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    native_tls_layout100: Option<NativeNoScopeLayout100Evidence>,
+}
+
+// This distinct optional payload is emitted only for the complete new native
+// layout. Existing-installation JSON stays exact. Consumer-bound no-scope
+// records additionally require the independent policy identity; historical
+// no-scope receipts remain evidence at their original qualifier/source only.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct NativeNoScopeLayout100Evidence {
+    tls_program_header_index: usize,
+    tls_file_offset: u64,
+    tls_virtual_address: u64,
+    tls_file_size: u64,
+    tls_memory_size: u64,
+    tls_alignment: u64,
+    cells: Vec<NativeNoScopeCellEvidence>,
+    pending_initializer_sha256: String,
+    getter_pointer_targets: BTreeMap<u64, u64>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct NativeNoScopeCellEvidence {
+    symbol: SymbolEvidence,
+    symbol_type: u8,
+    section_index: usize,
+    section_name: String,
+    section_type: u32,
+    section_flags: u64,
+    section_file_offset: u64,
+    section_virtual_address: u64,
+    section_size: u64,
+}
+const NO_INSTALLATION_SCOPE_POLICY: &str =
+    "allocation101_layout_a_legacy_v1";
+const NO_INSTALLATION_SCOPE_SOURCE: (&str, u64, &str) = (
+    "reverie-liteinst/src/patch_alloc.rs",
+    24943,
+    "9336107f903561bb5297f9897fd4c222e9cd2f80715817a07e330498ab7c17f5",
+);
+// Complete22B getters physically retained by the measured native OFF image.
+// These are other TLS, never allocator-operation targets or isolation credit.
+const NO_SCOPE_OTHER_GETTERS: [(&str, u64); 4] = [
+    (
+        "_RNvYNCNKNvNtNtCs_15reverie_inguest5guest7support20TOOL_CALLBACK_ACTIVE0s_0INtNtNtCs_4core3ops8function6FnOnceTINtNtB1s_6option6OptionQIB27_INtNtNtB1s_4sync6atomic6AtomicbEEEEE9call_onceBc_",
+        0xe8,
+    ),
+    (
+        "_RNvYNCNKNvNtNtCs_15reverie_inguest5guest12continuation5OWNER0s_0INtNtNtCs_4core3ops8function6FnOnceTINtNtB1i_6option6OptionQIB1X_INtNtB1i_4cell4CellONtB8_12ContinuationEEEEE9call_onceBc_",
+        0xf0,
+    ),
+    (
+        "_RNvYNCNKNvNtNtCs_15reverie_inguest5guest12continuation7PENDING0s_0INtNtNtCs_4core3ops8function6FnOnceTINtNtB1k_6option6OptionQIB1Z_INtNtB1k_4cell4CellIB1Z_NtB8_7PendingEEEEEE9call_onceBc_",
+        0,
+    ),
+    (
+        "_RNvYNCNKNvNtNtCs_15reverie_inguest5guest5alloc14DISPATCH_DEPTH0s_0INtNtNtCs_4core3ops8function6FnOnceTINtNtB1k_6option6OptionQIB1Z_INtNtB1k_4cell4CelljEEEEE9call_onceBc_",
+        0x140,
+    ),
+];
+// Complete native OFF layout measured in the maintained pinned-root build.
+// The compiler version is provenance context, never a selector or permission
+// to ignore bytes. All four typed roles must select this vector together.
+const NATIVE100_NO_SCOPE_POLICY: &str =
+    "allocation101_layout_a_tls100_legacy_v2";
+const NATIVE100_NO_SCOPE_OTHER_GETTERS: [(&str, u64); 4] = [
+    (NO_SCOPE_OTHER_GETTERS[0].0, 0xe8),
+    (NO_SCOPE_OTHER_GETTERS[1].0, 0xf0),
+    (NO_SCOPE_OTHER_GETTERS[2].0, 0),
+    (NO_SCOPE_OTHER_GETTERS[3].0, 0x100),
+];
+// Getter order, exact actual LOCAL STT_TLS cell, size, and section kind. PENDING
+// is initialized data, not zero-fill; its complete 16 B payload is bound below.
+const NATIVE100_NO_SCOPE_CELLS: [(&str, u64, u64, u32); 4] = [
+    (
+        "_RNvNCNKNvNtNtCs_15reverie_inguest5guest7support20TOOL_CALLBACK_ACTIVE0s_023___RUST_STD_INTERNAL_VAL",
+        0xe8,
+        1,
+        section_header::SHT_NOBITS,
+    ),
+    (
+        "_RNvNCNKNvNtNtCs_15reverie_inguest5guest12continuation5OWNER0s_023___RUST_STD_INTERNAL_VAL",
+        0xf0,
+        8,
+        section_header::SHT_NOBITS,
+    ),
+    (
+        "_RNvNCNKNvNtNtCs_15reverie_inguest5guest12continuation7PENDING0s_023___RUST_STD_INTERNAL_VAL",
+        0,
+        16,
+        section_header::SHT_PROGBITS,
+    ),
+    (
+        "_RNvNCNKNvNtNtCs_15reverie_inguest5guest5alloc14DISPATCH_DEPTH0s_023___RUST_STD_INTERNAL_VAL",
+        0x100,
+        8,
+        section_header::SHT_NOBITS,
+    ),
+];
+const NATIVE100_PENDING_INITIALIZER_HEX: &str = "0000000000000000fe00000000000000";
+
+// The ordinary OFF image has the same101B allocation body, but its complete
+// typed getter population has different OWNER/DISPATCH offsets. These are
+// distinct measured cohorts, not interchangeable TLS layouts.
+const ORDINARY_NO_SCOPE_OTHER_GETTERS: [(&str, u64); 4] = [
+    (NO_SCOPE_OTHER_GETTERS[0].0, 0xe8),
+    (NO_SCOPE_OTHER_GETTERS[1].0, 0x100),
+    (NO_SCOPE_OTHER_GETTERS[2].0, 0),
+    (NO_SCOPE_OTHER_GETTERS[3].0, 0xf0),
+];
+const STANDALONE_RELEASE_NO_SCOPE_OTHER_GETTERS: [(&str, u64); 2] = [
+    (NO_SCOPE_OTHER_GETTERS[0].0, 0x40),
+    (NO_SCOPE_OTHER_GETTERS[2].0, 0),
+];
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub enum ConsumerRecipe {
+    Allocation101LayoutA,
+    Allocation101LayoutB,
+    Allocation62,
+}
+impl ConsumerRecipe {
+    fn policy_keys(self) -> &'static [&'static str] {
+        match self {
+            Self::Allocation101LayoutA => &[NO_INSTALLATION_SCOPE_POLICY, NATIVE100_NO_SCOPE_POLICY,
+                SEMANTIC_NATIVE140_NO_SCOPE_POLICY, SEMANTIC_NATIVE100_NO_SCOPE_POLICY],
+            Self::Allocation101LayoutB => &["allocation101_layout_b_legacy_v1", SEMANTIC_ORDINARY_NO_SCOPE_POLICY],
+            Self::Allocation62 => &["allocation62_legacy_v1", SEMANTIC_STANDALONE_NO_SCOPE_POLICY],
+        }
+    }
+
+    fn policy(self) -> &'static str {
+        match self {
+            Self::Allocation101LayoutA => NO_INSTALLATION_SCOPE_POLICY,
+            Self::Allocation101LayoutB => {
+                "allocation101_layout_b_legacy_v1"
+            }
+            Self::Allocation62 => {
+                "allocation62_legacy_v1"
+            }
+        }
+    }
+    fn image_kind(self) -> FixedImageKind {
+        match self {
+            Self::Allocation101LayoutA | Self::Allocation101LayoutB => FixedImageKind::Detcore,
+            Self::Allocation62 => FixedImageKind::Standalone,
+        }
+    }
+    fn allocation_size(self) -> u64 {
+        match self {
+            Self::Allocation101LayoutA | Self::Allocation101LayoutB => 101,
+            Self::Allocation62 => 62,
+        }
+    }
+    fn getters(self) -> &'static [(&'static str, u64)] {
+        match self {
+            Self::Allocation101LayoutA => &NO_SCOPE_OTHER_GETTERS,
+            Self::Allocation101LayoutB => &ORDINARY_NO_SCOPE_OTHER_GETTERS,
+            Self::Allocation62 => &STANDALONE_RELEASE_NO_SCOPE_OTHER_GETTERS,
+        }
+    }
+    fn profile(self) -> Value {
+        let debug = self != Self::Allocation62;
+        serde_json::json!({"opt_level":"3", "debuginfo":0,
+            "debug_assertions":debug,"overflow_checks":debug,"test":false})
+    }
+    #[cfg(test)]
+    fn features(self) -> &'static [(&'static str, &'static [&'static str])] {
+        match self {
+            Self::Allocation101LayoutA => &[
+                (
+                    "consumer-runtime",
+                    &["exec-native-injection", "exec-private-init"],
+                ),
+                (
+                    "reverie-liteinst",
+                    &[
+                        "exec-native-injection",
+                        "exec-private-init",
+                        "exec-private-successor",
+                        "fixed-syscall-gates",
+                        "native-exec-state",
+                    ],
+                ),
+                (
+                    "reverie-inguest",
+                    &[
+                        "coordinator-rpc",
+                        "exec-native-injection",
+                        "exec-private-init",
+                        "exec-private-successor",
+                        "fixed-syscall-gates",
+                        "launcher",
+                        "native-exec-state",
+                        "rcb-clock",
+                    ],
+                ),
+            ],
+            Self::Allocation101LayoutB => &[
+                ("consumer-runtime", &[]),
+                ("reverie-liteinst", &[]),
+                (
+                    "reverie-inguest",
+                    &["coordinator-rpc", "launcher", "rcb-clock"],
+                ),
+            ],
+            Self::Allocation62 => &[
+                ("consumer-wrapper", &[]),
+                ("reverie-liteinst-preload", &[]),
+                ("reverie-liteinst", &[]),
+                (
+                    "reverie-inguest",
+                    &["coordinator-rpc", "launcher", "rcb-clock"],
+                ),
+            ],
+        }
+    }
+}
+
+// These policies change only the bounded OFF getter-name encoding. The build
+// cohorts and every machine/data/loader check remain independently required.
+const SEMANTIC_ORDINARY_NO_SCOPE_POLICY: &str =
+    "allocation101_layout_b_semantic_v2";
+const SEMANTIC_NATIVE140_NO_SCOPE_POLICY: &str =
+    "allocation101_layout_a_semantic_v2";
+const SEMANTIC_NATIVE100_NO_SCOPE_POLICY: &str =
+    "allocation101_layout_a_tls100_semantic_v3";
+const SEMANTIC_STANDALONE_NO_SCOPE_POLICY: &str =
+    "allocation62_semantic_v2";
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum OffGetterRole {
+    Callback,
+    Owner,
+    Pending,
+    Dispatch,
+}
+impl OffGetterRole {
+    fn all() -> [Self; 4] {
+        [Self::Callback, Self::Owner, Self::Pending, Self::Dispatch]
+    }
+    fn in_cohort(cohort: ConsumerRecipe) -> &'static [Self] {
+        match cohort {
+            ConsumerRecipe::Allocation62 => &[Self::Callback, Self::Pending],
+            ConsumerRecipe::Allocation101LayoutA | ConsumerRecipe::Allocation101LayoutB => {
+                &[Self::Callback, Self::Owner, Self::Pending, Self::Dispatch]
+            }
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum NoScopeGetterEncoding {
+    LegacyExact,
+    SemanticV0,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct OffGetterCrates<'a> {
+    guest: &'a str,
+    core: &'a str,
+}
+// This cursor recognizes only the four literal templates below. It neither
+// parses arbitrary Rust types nor follows arbitrary backreferences.
+struct OffGetterCursor<'a> {
+    text: &'a str,
+    at: usize,
+}
+impl<'a> OffGetterCursor<'a> {
+    fn take(&mut self, literal: &str) -> Option<()> {
+        if !self.text.get(self.at..)?.starts_with(literal) {
+            return None;
+        }
+        self.at = self.at.checked_add(literal.len())?;
+        Some(())
+    }
+    fn integer62(&mut self) -> Option<u64> {
+        if self.text.as_bytes().get(self.at) == Some(&b'_') {
+            self.at = self.at.checked_add(1)?;
+            return Some(0);
+        }
+        let mut value = 0u64;
+        loop {
+            let digit = match *self.text.as_bytes().get(self.at)? {
+                b'_' => {
+                    self.at = self.at.checked_add(1)?;
+                    break;
+                }
+                byte @ b'0'..=b'9' => byte - b'0',
+                byte @ b'a'..=b'z' => byte - b'a' + 10,
+                byte @ b'A'..=b'Z' => byte - b'A' + 36,
+                _ => return None,
+            };
+            value = value.checked_mul(62)?.checked_add(u64::from(digit))?;
+            self.at = self.at.checked_add(1)?;
+        }
+        value.checked_add(1)
+    }
+    fn crate_disambiguator(&mut self) -> Option<&'a str> {
+        self.take("Cs")?;
+        let start = self.at;
+        // Keep the existing canonicalizer's nonempty Cs spelling requirement.
+        // The declared v0 disambiguator adds one to the checked base62 integer.
+        if self.text.as_bytes().get(start) == Some(&b'_') {
+            return None;
+        }
+        self.integer62()?.checked_add(1)?;
+        self.text.get(start..self.at)
+    }
+    fn reference(&mut self, expected_anchor: usize) -> Option<()> {
+        let reference_start = self.at;
+        self.take("B")?;
+        let actual = usize::try_from(self.integer62()?).ok()?;
+        if actual != expected_anchor || actual >= reference_start {
+            return None;
+        }
+        Some(())
+    }
+}
+
+fn off_getter_template(name: &str, role: OffGetterRole) -> Option<OffGetterCrates<'_>> {
+    let plain = if let Some((plain, suffix)) = name.split_once(".llvm.") {
+        if suffix.is_empty() || !suffix.bytes().all(|byte| byte.is_ascii_digit()) {
+            return None;
+        }
+        plain
+    } else {
+        name
+    };
+    if !plain.is_ascii() {
+        return None;
+    }
+    // Rust-v0 reference positions exclude exactly the `_R` prefix.
+    let mut cursor = OffGetterCursor {
+        text: plain.strip_prefix("_R")?,
+        at: 0,
+    };
+    cursor.take("NvYNCNKNv")?;
+    let guest_module = cursor.at;
+    cursor.take("NtNt")?;
+    let guest_crate = cursor.at;
+    let guest = cursor.crate_disambiguator()?;
+    cursor.take("15reverie_inguest5guest")?;
+    cursor.take(match role {
+        OffGetterRole::Callback => "7support20TOOL_CALLBACK_ACTIVE",
+        OffGetterRole::Owner => "12continuation5OWNER",
+        OffGetterRole::Pending => "12continuation7PENDING",
+        OffGetterRole::Dispatch => "5alloc14DISPATCH_DEPTH",
+    })?;
+    cursor.take("0s_0INtNtNt")?;
+    let core_crate = cursor.at;
+    let core = cursor.crate_disambiguator()?;
+    cursor.take("4core3ops8function6FnOnceTI")?;
+    let option_type = cursor.at;
+    cursor.take("NtNt")?;
+    cursor.reference(core_crate)?;
+    cursor.take("6option6OptionQI")?;
+    cursor.reference(option_type)?;
+    match role {
+        OffGetterRole::Callback => {
+            cursor.take("INtNtNt")?;
+            cursor.reference(core_crate)?;
+            cursor.take("4sync6atomic6AtomicbEEEEE")?;
+        }
+        OffGetterRole::Owner => {
+            cursor.take("INtNt")?;
+            cursor.reference(core_crate)?;
+            cursor.take("4cell4CellONt")?;
+            cursor.reference(guest_module)?;
+            cursor.take("12ContinuationEEEEE")?;
+        }
+        OffGetterRole::Pending => {
+            cursor.take("INtNt")?;
+            cursor.reference(core_crate)?;
+            cursor.take("4cell4CellI")?;
+            cursor.reference(option_type)?;
+            cursor.take("Nt")?;
+            cursor.reference(guest_module)?;
+            cursor.take("7PendingEEEEEE")?;
+        }
+        OffGetterRole::Dispatch => {
+            cursor.take("INtNt")?;
+            cursor.reference(core_crate)?;
+            cursor.take("4cell4CelljEEEEE")?;
+        }
+    }
+    cursor.take("9call_once")?;
+    cursor.reference(guest_crate)?;
+    (cursor.at == cursor.text.len()).then_some(OffGetterCrates { guest, core })
+}
+
+struct NoScopeGetterNames {
+    encoding: NoScopeGetterEncoding,
+    canonical_names: Vec<String>,
+    raw_names: BTreeSet<String>,
+}
+impl NoScopeGetterNames {
+    fn with_offsets(&self, offsets: &[(&str, u64)]) -> Result<Vec<(&str, u64)>> {
+        require(
+            self.canonical_names.len() == offsets.len(),
+            "OFF getter name/offset vector length differs",
+        )?;
+        Ok(self
+            .canonical_names
+            .iter()
+            .zip(offsets)
+            .map(|(name, (_, offset))| (name.as_str(), *offset))
+            .collect())
+    }
+    fn require_census(&self, census: &NoScopeCensus) -> Result<()> {
+        require(
+            census.other_tls_getters.len() == self.raw_names.len()
+                && census
+                    .other_tls_getters
+                    .iter()
+                    .map(|getter| getter.getter.name.clone())
+                    .collect::<BTreeSet<_>>()
+                    == self.raw_names,
+            "OFF physical census differs from its complete selected raw getter names",
+        )
+    }
+}
+
+fn select_no_scope_getter_names<'a>(
+    cohort: ConsumerRecipe,
+    static_names: impl IntoIterator<Item = &'a str>,
+    dynamic_names: impl IntoIterator<Item = &'a str>,
+) -> Result<NoScopeGetterNames> {
+    let static_names: Vec<_> = static_names.into_iter().collect();
+    let legacy: Vec<Vec<_>> = cohort
+        .getters()
+        .iter()
+        .map(|(canonical, _)| {
+            static_names
+                .iter()
+                .copied()
+                .filter(|name| canonical_rust_symbol(name).as_deref() == Some(*canonical))
+                .collect()
+        })
+        .collect();
+    // Historical complete-vector precedence is intentional. A subsequent
+    // physical failure never retries or falls back to the semantic arm.
+    if legacy.iter().all(|candidates| candidates.len() == 1) {
+        return Ok(NoScopeGetterNames {
+            encoding: NoScopeGetterEncoding::LegacyExact,
+            canonical_names: cohort
+                .getters()
+                .iter()
+                .map(|(name, _)| (*name).into())
+                .collect(),
+            raw_names: legacy
+                .iter()
+                .map(|candidates| candidates[0].into())
+                .collect(),
+        });
+    }
+    let recognized_role = |name: &str| -> Result<Option<OffGetterRole>> {
+        let canonical = canonical_rust_symbol(name);
+        let roles: Vec<_> = OffGetterRole::all()
+            .into_iter()
+            .filter(|role| {
+                canonical.as_deref() == Some(NO_SCOPE_OTHER_GETTERS[*role as usize].0)
+                    || off_getter_template(name, *role).is_some()
+            })
+            .collect();
+        require(roles.len() <= 1, "ambiguous OFF getter role")?;
+        Ok(roles.first().copied())
+    };
+    let mut candidates: [Vec<&str>; 4] = std::array::from_fn(|_| Vec::new());
+    let required = OffGetterRole::in_cohort(cohort);
+    for name in &static_names {
+        if let Some(role) = recognized_role(name)? {
+            require(
+                required.contains(&role),
+                "semantic OFF image retains a foreign getter role",
+            )?;
+            candidates[role as usize].push(name);
+        }
+    }
+    for name in dynamic_names {
+        require(
+            recognized_role(name)?.is_none(),
+            "semantic OFF image retains a dynamic getter role",
+        )?;
+    }
+    let mut crates = None;
+    let mut canonical_names = Vec::new();
+    let mut raw_names = BTreeSet::new();
+    for role in required {
+        let matches = &candidates[*role as usize];
+        require(
+            matches.len() == 1,
+            "semantic OFF getter role absent or duplicated",
+        )?;
+        let name = matches[0];
+        let actual = off_getter_template(name, *role)
+            .ok_or("semantic OFF getter has an invalid complete Rust-v0 template")?;
+        require(
+            crates.is_none_or(|expected| expected == actual),
+            "semantic OFF getter vector mixes compiled crate disambiguators",
+        )?;
+        crates = Some(actual);
+        canonical_names.push(
+            canonical_rust_symbol(name)
+                .ok_or("semantic OFF getter canonical spelling malformed")?,
+        );
+        raw_names.insert(name.into());
+    }
+    Ok(NoScopeGetterNames {
+        encoding: NoScopeGetterEncoding::SemanticV0,
+        canonical_names,
+        raw_names,
+    })
+}
+
+fn no_scope_getter_policy(
+    cohort: ConsumerRecipe,
+    encoding: NoScopeGetterEncoding,
+    native100: bool,
+) -> Result<(u32, &'static str)> {
+    require(
+        !native100 || cohort == ConsumerRecipe::Allocation101LayoutA,
+        "native100 getter policy used outside the native build cohort",
+    )?;
+    Ok(match encoding {
+        NoScopeGetterEncoding::LegacyExact => {
+            if native100 {
+                (2, NATIVE100_NO_SCOPE_POLICY)
+            } else {
+                (1, cohort.policy())
+            }
+        }
+        NoScopeGetterEncoding::SemanticV0 => match cohort {
+            ConsumerRecipe::Allocation101LayoutA if native100 => (3, SEMANTIC_NATIVE100_NO_SCOPE_POLICY),
+            ConsumerRecipe::Allocation101LayoutA => (2, SEMANTIC_NATIVE140_NO_SCOPE_POLICY),
+            ConsumerRecipe::Allocation101LayoutB => (2, SEMANTIC_ORDINARY_NO_SCOPE_POLICY),
+            ConsumerRecipe::Allocation62 => (2, SEMANTIC_STANDALONE_NO_SCOPE_POLICY),
+        },
+    })
+}
+
 /// Versioned finite absence evidence, not a TLS-isolation or source authority.
 /// Consumer admission always re-extracts this from its actual ELF and verified
 /// compiled sources and compares the entire qualification record.
@@ -2680,6 +4291,11 @@ const DIRECT_TLS_CENSUS_POLICY: &str =
 // Separate from the standalone v1 contract: one observed native Detcore cohort.
 const DETCORE_DIRECT_TLS_CENSUS_POLICY: &str =
     "detcore_e8_alloc241_named_getter_pt_load22_raw_loader_pointers_v2";
+// Separate Existing-TLS arm for the actual OFF allocator-fixture release image
+// 90dd9e38: full alloc186, cell d8, and no installation getter. This is not a
+// NoInstallationScope/semantic/current-build policy and does not change v1/v2.
+const STANDALONE_D8_DIRECT_TLS_CENSUS_POLICY: &str =
+    "standalone_d8_alloc186_named_getter_pt_load22_raw_loader_pointers_v3";
 
 /// Mandatory same-ELF Fixed selection, never a name/descriptor-only admission.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -2694,7 +4310,7 @@ pub struct AllocatorBackingEvidence {
     /// reaching these typed implementations, not an invented global object.
     pub compiler_global_type: String,
     pub fixed_backing_record: ImmutableAllocatorObject,
-    pub tls_boundary: AllocatorTlsBoundary,
+    pub tls_boundary: AllocatorInstallationEvidence,
     pub allocator_transfers: BTreeMap<String, Vec<ConstructorTransfer>>,
     pub readonly_objects: BTreeMap<String, FixedReadonlyEvidence>,
     pub selection_objects: BTreeMap<String, SymbolEvidence>,
@@ -2781,6 +4397,27 @@ const FIXED_EMITTED_ROLE_SYMBOLS: &[(&str, &str)] = &[
     (
         "fixed_patch_realloc",
         "_RNvXs3_NtCs_16reverie_liteinst11patch_allocNtB5_26FixedPrivatePatchAllocatorNtNtNtCs_4core5alloc6global11GlobalAlloc7realloc",
+    ),
+    // The genuine OFF native Detcore leaf at840 emits these four exact
+    // GlobalAlloc methods with impl ordinal Xs2: PatchAllocationScope's Drop
+    // impl is not compiled without liteinst or allocator-fixture. Its compiler
+    // shims select these LOCAL methods through RELATIVE/RELRO GOT slots. This
+    // finite spelling census grants no machine or TLS-boundary admission.
+    (
+        "fixed_patch_alloc",
+        "_RNvXs2_NtCs_16reverie_liteinst11patch_allocNtB5_26FixedPrivatePatchAllocatorNtNtNtCs_4core5alloc6global11GlobalAlloc5alloc",
+    ),
+    (
+        "fixed_patch_alloc_zeroed",
+        "_RNvXs2_NtCs_16reverie_liteinst11patch_allocNtB5_26FixedPrivatePatchAllocatorNtNtNtCs_4core5alloc6global11GlobalAlloc12alloc_zeroed",
+    ),
+    (
+        "fixed_patch_dealloc",
+        "_RNvXs2_NtCs_16reverie_liteinst11patch_allocNtB5_26FixedPrivatePatchAllocatorNtNtNtCs_4core5alloc6global11GlobalAlloc7dealloc",
+    ),
+    (
+        "fixed_patch_realloc",
+        "_RNvXs2_NtCs_16reverie_liteinst11patch_allocNtB5_26FixedPrivatePatchAllocatorNtNtNtCs_4core5alloc6global11GlobalAlloc7realloc",
     ),
     (
         "fixed_patch_require_owned",
@@ -9630,6 +11267,11 @@ const FIXED_SUPPORT_ROLE_SYMBOLS: &[(&str, &str)] = &[
         "fixed_heap_option_usize_branch",
         "_RNvXsJ_NtCs_4core6optionINtB5_6OptionjENtNtNtB7_3ops9try_trait3Try6branchCs_6goblin",
     ),
+    // Current ON/OFF complete668B layout_end callers bind this exact67B helper.
+    (
+        "fixed_heap_option_usize_branch",
+        "_RNvXsJ_NtCs_4core6optionINtB5_6OptionjENtNtNtB7_3ops9try_trait3Try6branchCs_6memchr",
+    ),
     (
         "fixed_heap_option_usize_equal",
         "_RNvXsf_NtCs_4core6optionINtB5_6OptionjENtNtB7_3cmp9PartialEq2eqCs_12regex_syntax",
@@ -9667,6 +11309,11 @@ const FIXED_SUPPORT_ROLE_SYMBOLS: &[(&str, &str)] = &[
     (
         "fixed_heap_usize_max",
         "_RNvYjNtNtCs_4core3cmp3Ord3maxCs_6goblin",
+    ),
+    // Current ON/OFF complete2384B/668B callers bind this exact95B helper.
+    (
+        "fixed_heap_usize_max",
+        "_RNvYjNtNtCs_4core3cmp3Ord3maxCs_10serde_core",
     ),
     (
         "fixed_metadata_atomic_load_bool",
@@ -9906,7 +11553,9 @@ const FIXED_READONLY_SPECS: &[FixedReadonlySpec] = &[
     FixedReadonlySpec {
         key: "publication_dev_data_369138",
         kind: "location",
-        hex: "00000000000000002e00000000000000de00000013000000",
+        // The current published_metadata dereference is tool_region_arena.rs:227:19.
+        // Retain the exact whole Location and independently bound filename.
+        hex: "00000000000000002e00000000000000e300000013000000",
         file_hex: "726576657269652d696e67756573742f7372632f67756573742f746f6f6c5f726567696f6e5f6172656e612e7273",
         owner: "",
         switch: &[],
@@ -10918,6 +12567,11 @@ const FIXED_OPERATION_ROLE_SYMBOLS: &[(&str, &str)] = &[
         "_RNvXsk_NtNtCs_4core3ops5rangeINtB5_5RangejEINtB5_11RangeBoundsjE11start_boundCs_6ruzstd",
         "_RNvXsk_NtNtCs_4core3ops5rangeINtB5_5RangejEINtB5_11RangeBoundsjE11start_boundCs_12regex_syntax",
     ),
+    // Current DEV ON/OFF callers select this exact complete 11B provider.
+    (
+        "_RNvXsk_NtNtCs_4core3ops5rangeINtB5_5RangejEINtB5_11RangeBoundsjE11start_boundCs_6ruzstd",
+        "_RNvXsk_NtNtCs_4core3ops5rangeINtB5_5RangejEINtB5_11RangeBoundsjE11start_boundCs_8tempfile",
+    ),
     (
         "_RNvXsk_NtNtCs_4core3ops5rangeINtB5_5RangejEINtB5_11RangeBoundsjE9end_boundCs_6ruzstd",
         "_RNvXsk_NtNtCs_4core3ops5rangeINtB5_5RangejEINtB5_11RangeBoundsjE9end_boundCs_6ruzstd",
@@ -10928,9 +12582,19 @@ const FIXED_OPERATION_ROLE_SYMBOLS: &[(&str, &str)] = &[
         "_RNvXsk_NtNtCs_4core3ops5rangeINtB5_5RangejEINtB5_11RangeBoundsjE9end_boundCs_6ruzstd",
         "_RNvXsk_NtNtCs_4core3ops5rangeINtB5_5RangejEINtB5_11RangeBoundsjE9end_boundCs_12regex_syntax",
     ),
+    // Current DEV ON/OFF callers select this exact complete 18B provider.
+    (
+        "_RNvXsk_NtNtCs_4core3ops5rangeINtB5_5RangejEINtB5_11RangeBoundsjE9end_boundCs_6ruzstd",
+        "_RNvXsk_NtNtCs_4core3ops5rangeINtB5_5RangejEINtB5_11RangeBoundsjE9end_boundCs_8tempfile",
+    ),
     (
         "_RNvYjNtNtCs_4core3cmp3Ord3minCs_6goblin",
         "_RNvYjNtNtCs_4core3cmp3Ord3minCs_6goblin",
+    ),
+    // Both origins coexist ON, so retain this exact provider as a distinct role.
+    (
+        "_RNvYjNtNtCs_4core3cmp3Ord3minCs_10serde_core",
+        "_RNvYjNtNtCs_4core3cmp3Ord3minCs_10serde_core",
     ),
     (
         "reverie_inguest_trusted_syscall",
@@ -13712,6 +15376,11 @@ const PUBLICATION_ROLE_SYMBOLS: &[(&str, &str)] = &[
         "_RINvNtNtCs_4core4sync6atomic23atomic_compare_exchangejECs_3log",
         "_RINvNtNtCs_4core4sync6atomic23atomic_compare_exchangejECs_3log",
     ),
+    // Same complete 1224B strong-CAS recipe, selected by the actual caller.
+    (
+        "_RINvNtNtCs_4core4sync6atomic23atomic_compare_exchangejECs_3log",
+        "_RINvNtNtCs_4core4sync6atomic23atomic_compare_exchangejECs_12futures_core",
+    ),
     (
         "_RINvYINtNtNtCs_4core3ops5range5RangejENtNtNtNtBa_4iter6traits8iterator8Iterator3allNCNvMs_NtNtNtCs_15reverie_inguest5guest11tool_region11constructorNtB1B_16NativeFreshOwner11from_natives_0EB1H_",
         "_RINvYINtNtNtCs_4core3ops5range5RangejENtNtNtNtBa_4iter6traits8iterator8Iterator3allNCNvMs_NtNtNtCs_15reverie_inguest5guest11tool_region11constructorNtB1B_16NativeFreshOwner11from_natives_0EB1H_",
@@ -13762,13 +15431,27 @@ const PUBLICATION_ROLE_SYMBOLS: &[(&str, &str)] = &[
         "_RNvXNtNtCs_4core3cmp5implsuNtB4_9PartialEq2eqCs_6goblin",
         "_RNvXNtNtCs_4core3cmp5implsuNtB4_9PartialEq2eqCs_6goblin",
     ),
+    // Current ON/OFF callers select this exact serde_core unit/ControlFlow
+    // cohort. Existing complete recipes and caller transfers remain mandatory.
+    (
+        "_RNvXNtNtCs_4core3cmp5implsuNtB4_9PartialEq2eqCs_6goblin",
+        "_RNvXNtNtCs_4core3cmp5implsuNtB4_9PartialEq2eqCs_10serde_core",
+    ),
     (
         "_RNvXNtNtCs_4core3ops12control_flowINtB2_11ControlFlowuENtNtB4_9try_trait3Try11from_outputCs_6goblin",
         "_RNvXNtNtCs_4core3ops12control_flowINtB2_11ControlFlowuENtNtB4_9try_trait3Try11from_outputCs_6goblin",
     ),
     (
+        "_RNvXNtNtCs_4core3ops12control_flowINtB2_11ControlFlowuENtNtB4_9try_trait3Try11from_outputCs_6goblin",
+        "_RNvXNtNtCs_4core3ops12control_flowINtB2_11ControlFlowuENtNtB4_9try_trait3Try11from_outputCs_10serde_core",
+    ),
+    (
         "_RNvXNtNtCs_4core3ops12control_flowINtB2_11ControlFlowuENtNtB4_9try_trait3Try6branchCs_6goblin",
         "_RNvXNtNtCs_4core3ops12control_flowINtB2_11ControlFlowuENtNtB4_9try_trait3Try6branchCs_6goblin",
+    ),
+    (
+        "_RNvXNtNtCs_4core3ops12control_flowINtB2_11ControlFlowuENtNtB4_9try_trait3Try6branchCs_6goblin",
+        "_RNvXNtNtCs_4core3ops12control_flowINtB2_11ControlFlowuENtNtB4_9try_trait3Try6branchCs_10serde_core",
     ),
     (
         "_RNvXs3_NtNtCs_4core4iter5rangeINtNtNtB9_3ops5range5RangejENtB5_17RangeIteratorImpl9spec_nextCs_6ruzstd",
@@ -13795,6 +15478,10 @@ const PUBLICATION_ROLE_SYMBOLS: &[(&str, &str)] = &[
         "_RNvXs9_NtNtCs_4core3ops12control_flowINtB5_11ControlFlowuENtNtB9_3cmp9PartialEq2eqCs_6goblin",
     ),
     (
+        "_RNvXs9_NtNtCs_4core3ops12control_flowINtB5_11ControlFlowuENtNtB9_3cmp9PartialEq2eqCs_6goblin",
+        "_RNvXs9_NtNtCs_4core3ops12control_flowINtB5_11ControlFlowuENtNtB9_3cmp9PartialEq2eqCs_10serde_core",
+    ),
+    (
         "_RNvXsL_NtNtCs_4core4iter5rangejNtB5_4Step17forward_uncheckedCs_6ruzstd",
         "_RNvXsL_NtNtCs_4core4iter5rangejNtB5_4Step17forward_uncheckedCs_6ruzstd",
     ),
@@ -13807,6 +15494,10 @@ const PUBLICATION_ROLE_SYMBOLS: &[(&str, &str)] = &[
     (
         "_RNvXs_NtNtCs_4core3ops12control_flowINtB4_11ControlFlowuEINtNtB6_9try_trait12FromResidualIBK_uNtNtB8_7convert10InfallibleEE13from_residualCs_6goblin",
         "_RNvXs_NtNtCs_4core3ops12control_flowINtB4_11ControlFlowuEINtNtB6_9try_trait12FromResidualIBK_uNtNtB8_7convert10InfallibleEE13from_residualCs_6goblin",
+    ),
+    (
+        "_RNvXs_NtNtCs_4core3ops12control_flowINtB4_11ControlFlowuEINtNtB6_9try_trait12FromResidualIBK_uNtNtB8_7convert10InfallibleEE13from_residualCs_6goblin",
+        "_RNvXs_NtNtCs_4core3ops12control_flowINtB4_11ControlFlowuEINtNtB6_9try_trait12FromResidualIBK_uNtNtB8_7convert10InfallibleEE13from_residualCs_10serde_core",
     ),
     (
         "_RNvXsp_NtCs_4core6resultINtB5_6ResultjlENtNtNtB7_3ops9try_trait3Try6branchCs_15reverie_inguest",
@@ -13897,6 +15588,415 @@ const PUBLICATION_ROLE_SYMBOLS: &[(&str, &str)] = &[
 const FIXED_NORMAL_FROM_NATIVE_291: &str = "5541574156534883ec1848bb001000000060000080f901b83000020041b8a00002004c0f44c04909d84939f00f85950000000fb605c73b090249b800f0efffff9fffff4c01c24881faffff7f00777884c0747489cd4989febfba0000004989f731f631d231c9e855daffff4885c07e7f4c89f94939474075764883795001756f488379380074688b0183e00f83f808755e488d3d703b0902e823ccffff4885c0754dba02000000b801000000f0490fb15748753b0fb60384c074144c89f741c7060b000000eb32c70716000000eb2a48c74424080001000048c744241002090000488d7c2408e8a5feffff84c0741b4c89f741c7061600000031ed40886f084883c4185b415e415f5dc34889dfe8aeccffff4c89f7a8017405418916ebdb4d893eebd8";
 
 const FIXED_WRAPPER_RECIPES: &[FixedWrapperRecipe] = &[
+    // Current OFF alloc_zeroed: complete89B and all four original bindings;
+    // the exact existing futures provider supplies only the null test.
+    FixedWrapperRecipe {
+        role: "fixed_patch_alloc_zeroed",
+        hex: "4883ec284889742408488954241048897c2418488b742408488b542410ff15e5f820004889c748893c2448897c2420ff15db0b2100a8017517488d7c2408e83d5a0000488b3c244889c6ff1588102100488b04244883c428c3",
+        operands: &[
+            FixedWrapperOperand {
+                displacement: 31,
+                next: 35,
+                target: "fixed_patch_alloc",
+                got: true,
+                target_offset: 0,
+            },
+            FixedWrapperOperand {
+                displacement: 49,
+                next: 53,
+                target: "_RNvMNtNtCs_4core3ptr7mut_ptrOh7is_nullCs_7futures",
+                got: true,
+                target_offset: 0,
+            },
+            FixedWrapperOperand {
+                displacement: 63,
+                next: 67,
+                target: "_RNvMNtNtCs_4core5alloc6layoutNtB2_6Layout4sizeCs_16reverie_liteinst",
+                got: false,
+                target_offset: 0,
+            },
+            FixedWrapperOperand {
+                displacement: 76,
+                next: 80,
+                target: "fixed_zero_bytes",
+                got: true,
+                target_offset: 0,
+            },
+        ],
+        transfers: &[
+            (29, 31, "fixed_patch_alloc", true),
+            (
+                47,
+                49,
+                "_RNvMNtNtCs_4core3ptr7mut_ptrOh7is_nullCs_7futures",
+                true,
+            ),
+            (
+                62,
+                63,
+                "_RNvMNtNtCs_4core5alloc6layoutNtB2_6Layout4sizeCs_16reverie_liteinst",
+                false,
+            ),
+            (74, 76, "fixed_zero_bytes", true),
+        ],
+    },
+    // Current ON patch realloc: complete378B, exact liteinst2 null and serde minimum.
+    FixedWrapperRecipe {
+        role: "fixed_patch_realloc",
+        hex: "4881ec980000004c894424184889742420488954242848894c243048897c24704c89442478488b7c2420ff15c00e2100e80bf2ffff4889c74889d6488d542420ff15d2f9200048894424404889542448488b542440b80100000031c94883fa00480f44c148a9010000007450488b4c2440488b44244848894c24504889442458488d7c2428e876580000488b7c24184889c6e8695700004889442460488954246831c0b90100000048837c246000480f44c148a901000000752beb344c8b442418488b742420488b542428488b4c2430bf01000000ff15850e21004889442438e98800000048c744243800000000eb7d488b742460488b5424684889b424800000004889942488000000488d7c2450e8dceeffff4889c748897c24104889bc2490000000ff1556092100a8017535488b4424204889442408488d7c2428e8ae570000488b7424184889c7ff15f8f52000488b7c2408488b7424104889c2ff15050e2100488b4424104889442438488b4424384881c498000000c3",
+        operands: &[
+            FixedWrapperOperand {
+                displacement: 44,
+                next: 48,
+                target: "fixed_patch_require_owned",
+                got: true,
+                target_offset: 0,
+            },
+            FixedWrapperOperand {
+                displacement: 49,
+                next: 53,
+                target: "fixed_patch_heap",
+                got: false,
+                target_offset: 0,
+            },
+            FixedWrapperOperand {
+                displacement: 66,
+                next: 70,
+                target: "fixed_patch_realloc_option_filter",
+                got: true,
+                target_offset: 0,
+            },
+            FixedWrapperOperand {
+                displacement: 134,
+                next: 138,
+                target: "_RNvMNtNtCs_4core5alloc6layoutNtB2_6Layout5alignCs_16reverie_liteinst",
+                got: false,
+                target_offset: 0,
+            },
+            FixedWrapperOperand {
+                displacement: 147,
+                next: 151,
+                target: "_RNvMNtNtCs_4core5alloc6layoutNtB2_6Layout15from_size_alignCs_16reverie_liteinst",
+                got: false,
+                target_offset: 0,
+            },
+            FixedWrapperOperand {
+                displacement: 215,
+                next: 219,
+                target: "fixed_tool_realloc",
+                got: true,
+                target_offset: 0,
+            },
+            FixedWrapperOperand {
+                displacement: 272,
+                next: 276,
+                target: "fixed_patch_allocate",
+                got: false,
+                target_offset: 0,
+            },
+            FixedWrapperOperand {
+                displacement: 294,
+                next: 298,
+                target: "_RNvMNtNtCs_4core3ptr7mut_ptrOh7is_nullCs_9liteinst2",
+                got: true,
+                target_offset: 0,
+            },
+            FixedWrapperOperand {
+                displacement: 318,
+                next: 322,
+                target: "_RNvMNtNtCs_4core5alloc6layoutNtB2_6Layout4sizeCs_16reverie_liteinst",
+                got: false,
+                target_offset: 0,
+            },
+            FixedWrapperOperand {
+                displacement: 332,
+                next: 336,
+                target: "_RNvYjNtNtCs_4core3cmp3Ord3minCs_10serde_core",
+                got: true,
+                target_offset: 0,
+            },
+            FixedWrapperOperand {
+                displacement: 351,
+                next: 355,
+                target: "fixed_copy_bytes",
+                got: true,
+                target_offset: 0,
+            },
+        ],
+        transfers: &[
+            (42, 44, "fixed_patch_require_owned", true),
+            (48, 49, "fixed_patch_heap", false),
+            (64, 66, "fixed_patch_realloc_option_filter", true),
+            (
+                133,
+                134,
+                "_RNvMNtNtCs_4core5alloc6layoutNtB2_6Layout5alignCs_16reverie_liteinst",
+                false,
+            ),
+            (
+                146,
+                147,
+                "_RNvMNtNtCs_4core5alloc6layoutNtB2_6Layout15from_size_alignCs_16reverie_liteinst",
+                false,
+            ),
+            (213, 215, "fixed_tool_realloc", true),
+            (271, 272, "fixed_patch_allocate", false),
+            (
+                292,
+                294,
+                "_RNvMNtNtCs_4core3ptr7mut_ptrOh7is_nullCs_9liteinst2",
+                true,
+            ),
+            (
+                317,
+                318,
+                "_RNvMNtNtCs_4core5alloc6layoutNtB2_6Layout4sizeCs_16reverie_liteinst",
+                false,
+            ),
+            (
+                330,
+                332,
+                "_RNvYjNtNtCs_4core3cmp3Ord3minCs_10serde_core",
+                true,
+            ),
+            (349, 351, "fixed_copy_bytes", true),
+        ],
+    },
+    // Current OFF patch realloc: complete378B, exact futures null and serde minimum.
+    FixedWrapperRecipe {
+        role: "fixed_patch_realloc",
+        hex: "4881ec980000004c894424184889742420488954242848894c243048897c24704c89442478488b7c2420ff15c00e2100e80bf2ffff4889c74889d6488d542420ff15d2f9200048894424404889542448488b542440b80100000031c94883fa00480f44c148a9010000007450488b4c2440488b44244848894c24504889442458488d7c2428e876580000488b7c24184889c6e8695700004889442460488954246831c0b90100000048837c246000480f44c148a901000000752beb344c8b442418488b742420488b542428488b4c2430bf01000000ff15850e21004889442438e98800000048c744243800000000eb7d488b742460488b5424684889b424800000004889942488000000488d7c2450e8dceeffff4889c748897c24104889bc2490000000ff1556092100a8017535488b4424204889442408488d7c2428e8ae570000488b7424184889c7ff15f8f52000488b7c2408488b7424104889c2ff15050e2100488b4424104889442438488b4424384881c498000000c3",
+        operands: &[
+            FixedWrapperOperand {
+                displacement: 44,
+                next: 48,
+                target: "fixed_patch_require_owned",
+                got: true,
+                target_offset: 0,
+            },
+            FixedWrapperOperand {
+                displacement: 49,
+                next: 53,
+                target: "fixed_patch_heap",
+                got: false,
+                target_offset: 0,
+            },
+            FixedWrapperOperand {
+                displacement: 66,
+                next: 70,
+                target: "fixed_patch_realloc_option_filter",
+                got: true,
+                target_offset: 0,
+            },
+            FixedWrapperOperand {
+                displacement: 134,
+                next: 138,
+                target: "_RNvMNtNtCs_4core5alloc6layoutNtB2_6Layout5alignCs_16reverie_liteinst",
+                got: false,
+                target_offset: 0,
+            },
+            FixedWrapperOperand {
+                displacement: 147,
+                next: 151,
+                target: "_RNvMNtNtCs_4core5alloc6layoutNtB2_6Layout15from_size_alignCs_16reverie_liteinst",
+                got: false,
+                target_offset: 0,
+            },
+            FixedWrapperOperand {
+                displacement: 215,
+                next: 219,
+                target: "fixed_tool_realloc",
+                got: true,
+                target_offset: 0,
+            },
+            FixedWrapperOperand {
+                displacement: 272,
+                next: 276,
+                target: "fixed_patch_allocate",
+                got: false,
+                target_offset: 0,
+            },
+            FixedWrapperOperand {
+                displacement: 294,
+                next: 298,
+                target: "_RNvMNtNtCs_4core3ptr7mut_ptrOh7is_nullCs_7futures",
+                got: true,
+                target_offset: 0,
+            },
+            FixedWrapperOperand {
+                displacement: 318,
+                next: 322,
+                target: "_RNvMNtNtCs_4core5alloc6layoutNtB2_6Layout4sizeCs_16reverie_liteinst",
+                got: false,
+                target_offset: 0,
+            },
+            FixedWrapperOperand {
+                displacement: 332,
+                next: 336,
+                target: "_RNvYjNtNtCs_4core3cmp3Ord3minCs_10serde_core",
+                got: true,
+                target_offset: 0,
+            },
+            FixedWrapperOperand {
+                displacement: 351,
+                next: 355,
+                target: "fixed_copy_bytes",
+                got: true,
+                target_offset: 0,
+            },
+        ],
+        transfers: &[
+            (42, 44, "fixed_patch_require_owned", true),
+            (48, 49, "fixed_patch_heap", false),
+            (64, 66, "fixed_patch_realloc_option_filter", true),
+            (
+                133,
+                134,
+                "_RNvMNtNtCs_4core5alloc6layoutNtB2_6Layout5alignCs_16reverie_liteinst",
+                false,
+            ),
+            (
+                146,
+                147,
+                "_RNvMNtNtCs_4core5alloc6layoutNtB2_6Layout15from_size_alignCs_16reverie_liteinst",
+                false,
+            ),
+            (213, 215, "fixed_tool_realloc", true),
+            (271, 272, "fixed_patch_allocate", false),
+            (
+                292,
+                294,
+                "_RNvMNtNtCs_4core3ptr7mut_ptrOh7is_nullCs_7futures",
+                true,
+            ),
+            (
+                317,
+                318,
+                "_RNvMNtNtCs_4core5alloc6layoutNtB2_6Layout4sizeCs_16reverie_liteinst",
+                false,
+            ),
+            (
+                330,
+                332,
+                "_RNvYjNtNtCs_4core3cmp3Ord3minCs_10serde_core",
+                true,
+            ),
+            (349, 351, "fixed_copy_bytes", true),
+        ],
+    },
+    // Current ON/OFF tool realloc: complete255B, exact futures null and serde minimum.
+    FixedWrapperRecipe {
+        role: "fixed_tool_realloc",
+        hex: "4881ec8800000048897424084c89442410488954241848894c242048897c245848897424604c89442468488d7c2430e83cf2ffff488d7c2418e8c2010000488b7c24104889c6e8b50000004889442448488954245031c0b90100000048837c244800480f44c148a901000000740b48c744242800000000eb79488b742448488b54245048897424704889542478488d7c2430e809e8ffff4889c748893c244889bc2480000000ff1504181b00a8017539488d7c2418e836010000488b7424104889c7ff1550d51a00488b3424488b7c24084889c2ff155eed1a00488b742408488d7c2430e8f7d9ffff488b04244889442428488b4424284881c488000000c3",
+        operands: &[
+            FixedWrapperOperand {
+                displacement: 48,
+                next: 52,
+                target: "fixed_tool_owned_heap",
+                got: false,
+                target_offset: 0,
+            },
+            FixedWrapperOperand {
+                displacement: 58,
+                next: 62,
+                target: "_RNvMNtNtCs_4core5alloc6layoutNtB2_6Layout5alignCs_15reverie_inguest",
+                got: false,
+                target_offset: 0,
+            },
+            FixedWrapperOperand {
+                displacement: 71,
+                next: 75,
+                target: "_RNvMNtNtCs_4core5alloc6layoutNtB2_6Layout15from_size_alignCs_15reverie_inguest",
+                got: false,
+                target_offset: 0,
+            },
+            FixedWrapperOperand {
+                displacement: 147,
+                next: 151,
+                target: "fixed_span_allocate",
+                got: false,
+                target_offset: 0,
+            },
+            FixedWrapperOperand {
+                displacement: 168,
+                next: 172,
+                target: "_RNvMNtNtCs_4core3ptr7mut_ptrOh7is_nullCs_7futures",
+                got: true,
+                target_offset: 0,
+            },
+            FixedWrapperOperand {
+                displacement: 182,
+                next: 186,
+                target: "_RNvMNtNtCs_4core5alloc6layoutNtB2_6Layout4sizeCs_15reverie_inguest",
+                got: false,
+                target_offset: 0,
+            },
+            FixedWrapperOperand {
+                displacement: 196,
+                next: 200,
+                target: "_RNvYjNtNtCs_4core3cmp3Ord3minCs_10serde_core",
+                got: true,
+                target_offset: 0,
+            },
+            FixedWrapperOperand {
+                displacement: 214,
+                next: 218,
+                target: "fixed_copy_bytes",
+                got: true,
+                target_offset: 0,
+            },
+            FixedWrapperOperand {
+                displacement: 229,
+                next: 233,
+                target: "fixed_span_deallocate",
+                got: false,
+                target_offset: 0,
+            },
+        ],
+        transfers: &[
+            (47, 48, "fixed_tool_owned_heap", false),
+            (
+                57,
+                58,
+                "_RNvMNtNtCs_4core5alloc6layoutNtB2_6Layout5alignCs_15reverie_inguest",
+                false,
+            ),
+            (
+                70,
+                71,
+                "_RNvMNtNtCs_4core5alloc6layoutNtB2_6Layout15from_size_alignCs_15reverie_inguest",
+                false,
+            ),
+            (146, 147, "fixed_span_allocate", false),
+            (
+                166,
+                168,
+                "_RNvMNtNtCs_4core3ptr7mut_ptrOh7is_nullCs_7futures",
+                true,
+            ),
+            (
+                181,
+                182,
+                "_RNvMNtNtCs_4core5alloc6layoutNtB2_6Layout4sizeCs_15reverie_inguest",
+                false,
+            ),
+            (
+                194,
+                196,
+                "_RNvYjNtNtCs_4core3cmp3Ord3minCs_10serde_core",
+                true,
+            ),
+            (212, 214, "fixed_copy_bytes", true),
+            (228, 229, "fixed_span_deallocate", false),
+        ],
+    },
+    // Complete95B provider remains distinct from the coexisting goblin minimum.
+    FixedWrapperRecipe {
+        role: "_RNvYjNtNtCs_4core3cmp3Ord3minCs_10serde_core",
+        hex: "48897c24d048897424d8c64424ef01488d4424d848894424f0488d4424d048894424f8488b4424d8483b4424d00f92c0884424cf8a4424cfa8017513eb00c64424ef00488b4424d048894424e0eb0a488b4424d848894424e0488b4424e0c3",
+        operands: &[],
+        transfers: &[],
+    },
     // Insert this exact new typed strong-CAS entry in FIXED_WRAPPER_RECIPES.
     FixedWrapperRecipe {
         role: "_RINvNtNtCs_4core4sync6atomic23atomic_compare_exchangejECs_3log",
@@ -16412,12 +18512,106 @@ const FIXED_DEV_TLS_CELL_GETTER_EVENT_ARGUMENT_HEX: &str =
     "4883ec1848897c24084889742410488d3ddb4a2200e8a6d11e00488d80400000004883c418c3";
 const FIXED_DEV_TLS_CELL_GETTER_DIAGNOSTIC_EVENT_ARGUMENT_HEX: &str =
     "4883ec1848897c24084889742410488d3d7bfc2200e8967f1f00488d80800000004883c418c3";
+// Actual signed ef5ea FullTool C fixture leaf: complete 38 B getter, cell 0xd8.
+// Only the existing module/PLT RIP fields are bound; cell displacement stays literal.
+const FIXED_DEV_TLS_CELL_GETTER_FULLTOOL_DIAGNOSTIC_HEX: &str =
+    "4883ec1848897c24084889742410488d3d2b4b2c00e8f6722800488d80d80000004883c418c3";
 const FIXED_OPTIMIZED_PATCH_ALLOC_EVENT_ARGUMENT_HEX: &str = "41574156415453504889d34989f6ff157c850a004885c074774c8b78204d85ff746e4989c4488d3dec7f0a00e80f190a004883b840000000007463498b542410498b0f498d76ff49f7de31c04889cf4801d7723e4801f772394c21f74989f84929d04901d8410f92c14981f801000002410f93c24508ca75194889c8f04d0fb1074889c1b80000000075c14889f8eb0231c04883c4085b415c415e415fc3bf010000004c89f64889da4883c4085b415c415e415fff25fe840a00";
 const FIXED_OPTIMIZED_TLS_THUNK_EVENT_ARGUMENT_HEX: &str =
     "50488d3d907d0a00e8b3160a00488d804000000059c3";
 const FIXED_OPTIMIZED_PATCH_ALLOC_DIAGNOSTIC_EVENT_ARGUMENT_HEX: &str = "41574156415453504889d34989f6ff1554a00a004885c074774c8b78204d85ff746e4989c4488d3dfc9a0a00e8ef330a004883b880000000007463498b542410498b0f498d76ff49f7de31c04889cf4801d7723e4801f772394c21f74989f84929d04901d8410f92c14981f801000002410f93c24508ca75194889c8f04d0fb1074889c1b80000000075c14889f8eb0231c04883c4085b415c415e415fc3bf010000004c89f64889da4883c4085b415c415e415fff2596a00a00";
 const FIXED_OPTIMIZED_TLS_THUNK_DIAGNOSTIC_EVENT_ARGUMENT_HEX: &str =
     "50488d3da0980a00e893310a00488d808000000059c3";
+// Actual clean bb79 OFF FullTool fixture: complete 38 B getter, cell 0x98.
+// Existing module/PLT operands are bound; the cell displacement remains literal.
+const FIXED_DEV_TLS_CELL_GETTER_FULLTOOL_OFF_DIAGNOSTIC_HEX: &str =
+    "4883ec1848897c24084889742410488d3dc3ea1700e8b6ea1600488d80980000004883c418c3";
+// Actual failed RV16a standalone release allocator-fixture ELF 90dd9e38.
+// The cell literal is fixed; only the four existing authenticated RIP operands
+// vary. Keep the old role/cell helper and its DEV d8 LocalKey route unchanged.
+const STANDALONE_OPTIMIZED_D8_PATCH_ALLOC_HEX: &str = "41574156415453504889d34989f6ff150c1f08004885c074774c8b78204d85ff746e4989c4488d3d941c0800e8ffaf07004883b8d8000000007463498b542410498b0f498d76ff49f7de31c04889cf4801d7723e4801f772394c21f74989f84929d04901d8410f92c14981f801000002410f93c24508ca75194889c8f04d0fb1074889c1b80000000075c14889f8eb0231c04883c4085b415c415e415fc3bf010000004c89f64889da4883c4085b415c415e415fff2506240800";
+
+fn standalone_optimized_d8_allocation_recipe(
+    image_kind: FixedImageKind,
+    address: u64,
+    bytes: &[u8],
+    cell: &SymbolEvidence,
+    operands: &[(usize, usize, u64)],
+) -> Result<()> {
+    require(
+        image_kind == FixedImageKind::Standalone
+            && cell.address == 0xd8
+            && cell.binding == sym::STB_LOCAL
+            && cell.size == 8
+            && canonical_rust_symbol(&cell.name).as_deref() == Some(FIXED_TLS_CELL_ROLE),
+        "standalone optimized d8 allocation lacks its exact image/TLS identity",
+    )?;
+    require(
+        operands
+            .iter()
+            .map(|&(offset, next, _)| (offset, next))
+            .eq([(0x10, 0x14), (0x28, 0x2c), (0x2d, 0x31), (0xb6, 0xba)]),
+        "standalone optimized d8 allocation adds/omits an operand or masks its cell",
+    )?;
+    fixed_whole_recipe(
+        address,
+        bytes,
+        STANDALONE_OPTIMIZED_D8_PATCH_ALLOC_HEX,
+        operands,
+    )
+}
+
+// Actual standalone release allocator-fixture image 5701c389 retains both
+// complete functions. This is a present-getter recipe, never an absence proof.
+const STANDALONE_OPTIMIZED_D8_TLS_THUNK_HEX: &str = "50488d3dc0460c00e893b20b00488d80d800000059c3";
+
+// Recipe-only primitive. The production caller separately requires verified
+// Standalone compiled sources and fixed_tls_cell's actual typed/zero-fill ELF
+// identity before selecting this finite pair. Neither argument data nor these
+// tests can construct that source authority.
+fn standalone_optimized_d8_tls_pair_recipe(
+    image_kind: FixedImageKind,
+    cell: &SymbolEvidence,
+    allocation: (u64, &[u8]),
+    getter: (u64, &[u8]),
+    allocation_operands: &[(usize, usize, u64)],
+    getter_operands: &[(usize, usize, u64)],
+) -> Result<()> {
+    standalone_optimized_d8_allocation_recipe(
+        image_kind,
+        allocation.0,
+        allocation.1,
+        cell,
+        allocation_operands,
+    )?;
+    require(
+        getter_operands
+            .iter()
+            .map(|&(offset, next, _)| (offset, next))
+            .eq([(4, 8), (9, 13)])
+            && getter_operands[0].2 == allocation_operands[1].2
+            && getter_operands[1].2 == allocation_operands[2].2,
+        "standalone d8 getter omits/adds a field or uses another module/PLT",
+    )?;
+    fixed_whole_recipe(
+        getter.0,
+        getter.1,
+        STANDALONE_OPTIMIZED_D8_TLS_THUNK_HEX,
+        getter_operands,
+    )?;
+    require(
+        allocation
+            .0
+            .checked_add(186)
+            .is_some_and(|end| end <= getter.0)
+            || getter
+                .0
+                .checked_add(22)
+                .is_some_and(|end| end <= allocation.0),
+        "standalone d8 allocation/getter whole extents overlap",
+    )
+}
+
 // Only the enumerated whole observed cell-access recipes are accepted. The caller must
 // authenticate STT_TLS/zero-fill/module identity with fixed_tls_cell and the
 // descriptor/provider joins; a synthetic SymbolEvidence is not ELF admission.
@@ -16461,6 +18655,16 @@ fn fixed_tls_cell_access_recipe(
         ),
         ("fixed_tls_cell_getter", 0x80) => (
             FIXED_DEV_TLS_CELL_GETTER_DIAGNOSTIC_EVENT_ARGUMENT_HEX,
+            29,
+            &[(17, 21), (22, 26)],
+        ),
+        ("fixed_tls_cell_getter", 0x98) => (
+            FIXED_DEV_TLS_CELL_GETTER_FULLTOOL_OFF_DIAGNOSTIC_HEX,
+            29,
+            &[(17, 21), (22, 26)],
+        ),
+        ("fixed_tls_cell_getter", 0xd8) => (
+            FIXED_DEV_TLS_CELL_GETTER_FULLTOOL_DIAGNOSTIC_HEX,
             29,
             &[(17, 21), (22, 26)],
         ),
@@ -16722,6 +18926,1030 @@ fn direct_tls_getter_census(
     })
 }
 
+fn no_scope_build_features(build: &CurrentBuildEvidence) -> Result<ConsumerRecipe> {
+    let policy = &build.consumer_policy;
+    let variant = policy.variant_for_build(build)?;
+    require(policy.compiled_sources_sha256 == build.compiled_sources_sha256,
+        "no-scope policy/source binding differs")?;
+    if variant.recipe == ConsumerRecipe::Allocation62 {
+        let binding = build.standalone_sources.as_ref()
+            .ok_or("nested no-scope build lacks its authorized workspace binding")?;
+        let spec = policy.wrapper_spec.as_ref().ok_or("nested wrapper policy absent")?;
+        require(policy.standalone_sources.as_ref() == Some(binding)
+            && build.command.cwd == policy.workspace_root.join(&spec.workspace)
+            && build.command.arguments == consumer_pair_arguments(&build.target_directory,
+                &binding.wrapper, &policy.runtime, variant)?
+            && build.target_directory.is_absolute()
+            && binding.workspace_files.keys().collect::<BTreeSet<_>>()
+                == spec.files.values().collect::<BTreeSet<_>>()
+            && binding.workspace_files.len() == 6
+            && binding.workspace_files.iter().all(|(relative, file)|
+                file.path == policy.workspace_root.join(relative)
+                && file.sha256.len() == 64 && file.sha256.bytes().all(|byte| byte.is_ascii_hexdigit()))
+            && policy.role_packages.get(&ConsumerPackageRole::Wrapper) == Some(&binding.wrapper),
+            "nested no-scope wrapper/source inventory binding is inconsistent")?;
+    } else {
+        require(build.standalone_sources.is_none() && policy.standalone_sources.is_none(),
+            "single-library no-scope build has a foreign wrapper binding")?;
+    }
+    Ok(variant.recipe)
+}
+
+fn installation_scope_raw_name(name: &str) -> bool {
+    name.contains("INSTALLATION_DEPTH")
+        || name.contains("PatchAllocationScope")
+        || name.contains("fixture_installation_depth")
+        || canonical_rust_symbol(name).as_deref()
+            == Some("_RNvNtCs_16reverie_liteinst11patch_alloc5enter")
+}
+
+struct NoScopeCensus {
+    mappings: Vec<TlsExecutableMapping>,
+    raw_names_sha256: String,
+    loader_writer_count: usize,
+    loader_writers_sha256: String,
+    other_tls_getters: Vec<UnisolatedTlsGetter>,
+    other_getter_pointer_slots: Vec<u64>,
+}
+#[cfg(test)]
+fn no_installation_scope_census(elf: &Elf<'_>, bytes: &[u8]) -> Result<NoScopeCensus> {
+    no_installation_scope_census_in_cohort(elf, bytes, ConsumerRecipe::Allocation101LayoutA)
+}
+// Physical census only. The production caller separately requires actual
+// verified sources, actual compiler feature events and the whole cohort recipe.
+fn no_installation_scope_census_in_cohort(
+    elf: &Elf<'_>,
+    bytes: &[u8],
+    cohort: ConsumerRecipe,
+) -> Result<NoScopeCensus> {
+    no_installation_scope_census_with_getters(elf, bytes, cohort, cohort.getters())
+}
+
+fn no_installation_scope_census_with_getters(
+    elf: &Elf<'_>,
+    bytes: &[u8],
+    cohort: ConsumerRecipe,
+    expected_getters: &[(&str, u64)],
+) -> Result<NoScopeCensus> {
+    let mut raw_names = Vec::new();
+    for (dynamic, symbols, strings) in [
+        (false, &elf.syms, &elf.strtab),
+        (true, &elf.dynsyms, &elf.dynstrtab),
+    ] {
+        for symbol in symbols.iter() {
+            let name = strings
+                .get_at(symbol.st_name)
+                .ok_or("no-scope raw symbol name malformed")?;
+            raw_names.push((
+                dynamic,
+                name,
+                symbol.st_info,
+                symbol.st_other,
+                symbol.st_shndx,
+                symbol.st_value,
+                symbol.st_size,
+            ));
+            require(
+                !installation_scope_raw_name(name),
+                "no-scope image retains an installation cell/getter/writer identity",
+            )?;
+            if let Some(canonical) = canonical_rust_symbol(name) {
+                require(
+                    !NO_SCOPE_OTHER_GETTERS
+                        .iter()
+                        .any(|(known, _)| *known == canonical)
+                        || cohort
+                            .getters()
+                            .iter()
+                            .any(|(known, _)| *known == canonical),
+                    "no-scope image retains a typed getter from a different measured cohort",
+                )?;
+            }
+        }
+    }
+    let mut other_tls_getters = Vec::new();
+    for &(canonical, cell_offset) in expected_getters {
+        let candidates: Vec<_> = elf
+            .syms
+            .iter()
+            .filter(|symbol| {
+                elf.strtab
+                    .get_at(symbol.st_name)
+                    .and_then(canonical_rust_symbol)
+                    .as_deref()
+                    == Some(canonical)
+            })
+            .collect();
+        require(
+            candidates.len() == 1,
+            "other TLS getter absent or duplicated in no-scope image",
+        )?;
+        let symbol = candidates[0];
+        require(
+            symbol.st_type() == sym::STT_FUNC
+                && symbol.st_bind() == sym::STB_LOCAL
+                && symbol.st_size == 22
+                && symbol.st_value != 0
+                && !elf.dynsyms.iter().any(|dynamic| {
+                    elf.dynstrtab
+                        .get_at(dynamic.st_name)
+                        .and_then(canonical_rust_symbol)
+                        .as_deref()
+                        == Some(canonical)
+                }),
+            "other TLS getter is malformed/dynamic/nonlocal in no-scope image",
+        )?;
+        let (segment, at) = unique_file_mapping(elf, bytes, symbol.st_value, 22)?;
+        require(
+            segment.p_flags == program_header::PF_R | program_header::PF_X,
+            "other TLS getter is not complete file-backed RX",
+        )?;
+        let code = &bytes[at..at + 22];
+        let module_slot = fixed_rip_target(symbol.st_value, code, 4, 8)?;
+        let plt_address = fixed_rip_target(symbol.st_value, code, 9, 13)?;
+        let mut expected = fixed_hex("50488d3d00000000e800000000488d800000000059c3");
+        expected[16..20].copy_from_slice(
+            &u32::try_from(cell_offset)
+                .map_err(|e| e.to_string())?
+                .to_le_bytes(),
+        );
+        let expected = expected
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        fixed_whole_recipe(
+            symbol.st_value,
+            code,
+            &expected,
+            &[(4, 8, module_slot), (9, 13, plt_address)],
+        )?;
+        fixed_tls_descriptor(elf, bytes, module_slot)?;
+        fixed_tls_import(elf, bytes, plt_address)?;
+        other_tls_getters.push(UnisolatedTlsGetter {
+            getter: symbol_evidence(elf.strtab.get_at(symbol.st_name).unwrap(), &symbol),
+            cell_offset,
+            module_slot,
+            plt_address,
+            sha256: sha256(code),
+        });
+    }
+    other_tls_getters.sort_by_key(|getter| getter.getter.address);
+    let writers = loader_writers(elf)?;
+    let mut mappings = Vec::new();
+    let mut physical_getters = BTreeSet::new();
+    for (index, segment) in elf.program_headers.iter().enumerate() {
+        if segment.p_type != program_header::PT_LOAD || segment.p_flags & program_header::PF_X == 0
+        {
+            continue;
+        }
+        let at = loader_meta_usize(segment.p_offset)?;
+        let length = loader_meta_usize(segment.p_filesz)?;
+        let code = loader_meta_slice(bytes, at, length)?;
+        let end = segment
+            .p_vaddr
+            .checked_add(segment.p_filesz)
+            .ok_or("no-scope RX span overflow")?;
+        require(
+            segment.p_flags == program_header::PF_R | program_header::PF_X
+                && segment.p_filesz != 0
+                && segment.p_memsz >= segment.p_filesz
+                && writers.iter().all(|writer| {
+                    writer.relocation.r_offset >= end || writer.end <= segment.p_vaddr
+                }),
+            "no-scope RX mapping is malformed, writable or loader-modified",
+        )?;
+        mappings.push(TlsExecutableMapping {
+            program_header_index: index,
+            file_offset: segment.p_offset,
+            virtual_address: segment.p_vaddr,
+            file_size: segment.p_filesz,
+            memory_size: segment.p_memsz,
+            flags: segment.p_flags,
+            sha256: sha256(code),
+        });
+        // Every physical byte start, including unnamed code outside sections.
+        for (offset, candidate) in code.windows(22).enumerate() {
+            if candidate[..4] != [0x50, 0x48, 0x8d, 0x3d]
+                || candidate[8] != 0xe8
+                || candidate[13..16] != [0x48, 0x8d, 0x80]
+                || candidate[20..] != [0x59, 0xc3]
+            {
+                continue;
+            }
+            let address = segment
+                .p_vaddr
+                .checked_add(offset as u64)
+                .ok_or("getter census overflow")?;
+            let getter = other_tls_getters
+                .iter()
+                .find(|getter| getter.getter.address == address)
+                .ok_or("unknown or unnamed whole TLS getter in no-scope image")?;
+            require(
+                sha256(candidate) == getter.sha256 && physical_getters.insert(address),
+                "other TLS getter physical identity duplicated or differs",
+            )?;
+        }
+    }
+    require(
+        !mappings.is_empty()
+            && physical_getters
+                == other_tls_getters
+                    .iter()
+                    .map(|getter| getter.getter.address)
+                    .collect(),
+        "no-scope complete RX getter census differs from exact typed getter population",
+    )?;
+    let mut pointer_slots = BTreeSet::new();
+    let mut raw_writers = Vec::new();
+    for writer in &writers {
+        let relocation = &writer.relocation;
+        let width = loader_meta_usize(writer.end - relocation.r_offset)?;
+        let (_, at) = unique_file_mapping(elf, bytes, relocation.r_offset, width)?;
+        let raw = loader_meta_slice(bytes, at, width)?;
+        let mut targets = raw
+            .as_chunks::<8>()
+            .0
+            .iter()
+            .map(|word| u64::from_le_bytes(*word))
+            .collect::<Vec<_>>();
+        if let Some(target) = relocation
+            .r_addend
+            .and_then(|addend| u64::try_from(addend).ok())
+        {
+            targets.push(target);
+        }
+        if relocation.r_sym != 0 {
+            let symbol = elf
+                .dynsyms
+                .get(relocation.r_sym)
+                .ok_or("no-scope writer symbol absent")?;
+            if symbol.st_shndx != section_header::SHN_UNDEF as usize {
+                let addend = relocation
+                    .r_addend
+                    .unwrap_or_else(|| targets.first().copied().unwrap_or(0) as i64);
+                targets.push(
+                    symbol
+                        .st_value
+                        .checked_add_signed(addend)
+                        .ok_or("no-scope writer target overflow")?,
+                );
+            }
+        }
+        if targets.iter().any(|target| {
+            other_tls_getters.iter().any(|getter| {
+                getter.getter.address <= *target
+                    && *target < getter.getter.address.saturating_add(22)
+            })
+        }) {
+            pointer_slots.insert(relocation.r_offset);
+        }
+        raw_writers.push((
+            relocation.r_offset,
+            writer.end,
+            relocation.r_type,
+            relocation.r_sym,
+            relocation.r_addend,
+            sha256(raw),
+            targets,
+        ));
+    }
+    Ok(NoScopeCensus {
+        mappings,
+        raw_names_sha256: sha256(&serde_json::to_vec(&raw_names).map_err(|e| e.to_string())?),
+        loader_writer_count: writers.len(),
+        loader_writers_sha256: sha256(
+            &serde_json::to_vec(&raw_writers).map_err(|e| e.to_string())?,
+        ),
+        other_tls_getters,
+        other_getter_pointer_slots: pointer_slots.into_iter().collect(),
+    })
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum NativeNoScopeTlsLayout {
+    Dispatch140,
+    Dispatch100,
+}
+
+// Select the joint complete typed getter/cell vector. No individual getter
+// retries, compiler-version inference, or swallowed whole-census error.
+fn native_no_scope_tls_layout(elf: &Elf<'_>, bytes: &[u8]) -> Result<NativeNoScopeTlsLayout> {
+    native_no_scope_tls_layout_with_getters(elf, bytes, &NO_SCOPE_OTHER_GETTERS)
+}
+
+fn native_no_scope_tls_layout_with_getters(
+    elf: &Elf<'_>,
+    bytes: &[u8],
+    expected_getters: &[(&str, u64)],
+) -> Result<NativeNoScopeTlsLayout> {
+    require(
+        expected_getters.len() == 4,
+        "native TLS getter vector length differs",
+    )?;
+    let mut observed = Vec::new();
+    let mut actual_cells = Vec::new();
+    for (&(canonical, _), &(cell_name, _, cell_size, _)) in
+        expected_getters.iter().zip(&NATIVE100_NO_SCOPE_CELLS)
+    {
+        let matches: Vec<_> = elf
+            .syms
+            .iter()
+            .filter(|symbol| {
+                elf.strtab
+                    .get_at(symbol.st_name)
+                    .and_then(canonical_rust_symbol)
+                    .as_deref()
+                    == Some(canonical)
+            })
+            .collect();
+        require(
+            matches.len() == 1,
+            "native TLS layout has a missing/duplicate typed getter",
+        )?;
+        let symbol = matches[0];
+        require(
+            symbol.st_type() == sym::STT_FUNC
+                && symbol.st_bind() == sym::STB_LOCAL
+                && symbol.st_size == 22,
+            "native TLS layout getter type/locality/size differs",
+        )?;
+        let (_, at) = unique_file_mapping(elf, bytes, symbol.st_value, 22)?;
+        let code = loader_meta_slice(bytes, at, 22)?;
+        observed.push(u64::from(u32::from_le_bytes(
+            code[16..20].try_into().unwrap(),
+        )));
+        let cells: Vec<_> = elf
+            .syms
+            .iter()
+            .filter(|cell| {
+                elf.strtab
+                    .get_at(cell.st_name)
+                    .and_then(canonical_rust_symbol)
+                    .as_deref()
+                    == Some(cell_name)
+            })
+            .collect();
+        require(
+            cells.len() == 1,
+            "native TLS vector has a missing/duplicate actual typed cell",
+        )?;
+        let cell = cells[0];
+        require(
+            cell.st_type() == sym::STT_TLS
+                && cell.st_bind() == sym::STB_LOCAL
+                && cell.st_size == cell_size
+                && !elf.dynsyms.iter().any(|dynamic| {
+                    elf.dynstrtab
+                        .get_at(dynamic.st_name)
+                        .and_then(canonical_rust_symbol)
+                        .as_deref()
+                        == Some(cell_name)
+                }),
+            "native TLS vector cell loses exact type/locality/size/identity",
+        )?;
+        actual_cells.push(cell.st_value);
+    }
+    let old: Vec<_> = NO_SCOPE_OTHER_GETTERS
+        .iter()
+        .map(|(_, offset)| *offset)
+        .collect();
+    let new: Vec<_> = NATIVE100_NO_SCOPE_OTHER_GETTERS
+        .iter()
+        .map(|(_, offset)| *offset)
+        .collect();
+    require(
+        observed == actual_cells,
+        "native TLS getter literals and actual typed cells form a mixed layout",
+    )?;
+    if observed == old {
+        Ok(NativeNoScopeTlsLayout::Dispatch140)
+    } else if observed == new {
+        Ok(NativeNoScopeTlsLayout::Dispatch100)
+    } else {
+        Err("native TLS population has no exact complete measured vector".into())
+    }
+}
+
+fn native_no_scope_layout100_census(
+    elf: &Elf<'_>,
+    bytes: &[u8],
+) -> Result<(NoScopeCensus, NativeNoScopeLayout100Evidence)> {
+    native_no_scope_layout100_census_with_getters(elf, bytes, &NATIVE100_NO_SCOPE_OTHER_GETTERS)
+}
+
+fn native_no_scope_layout100_census_with_getters(
+    elf: &Elf<'_>,
+    bytes: &[u8],
+    expected_getters: &[(&str, u64)],
+) -> Result<(NoScopeCensus, NativeNoScopeLayout100Evidence)> {
+    let census = no_installation_scope_census_with_getters(
+        elf,
+        bytes,
+        ConsumerRecipe::Allocation101LayoutA,
+        expected_getters,
+    )?;
+    let segments: Vec<_> = elf
+        .program_headers
+        .iter()
+        .enumerate()
+        .filter(|(_, segment)| segment.p_type == program_header::PT_TLS)
+        .collect();
+    require(segments.len() == 1, "native100 requires one exact PT_TLS")?;
+    let (tls_index, tls) = segments[0];
+    require(
+        tls.p_flags == program_header::PF_R
+            && tls.p_filesz == 0xe8
+            && tls.p_memsz == 0x1c8
+            && tls.p_align == 8,
+        "native100 complete initialized/zero-fill TLS layout differs",
+    )?;
+    let initialized_end = tls
+        .p_vaddr
+        .checked_add(tls.p_filesz)
+        .ok_or("native100 initialized TLS template span overflow")?;
+    let writers = loader_writers(elf)?;
+    require(
+        writers.iter().all(|writer| {
+            writer.end <= tls.p_vaddr || writer.relocation.r_offset >= initialized_end
+        }),
+        "native100 initialized TLS template has a loader writer",
+    )?;
+    let mut cells = Vec::new();
+    for &(canonical, offset, size, kind) in &NATIVE100_NO_SCOPE_CELLS {
+        let candidates: Vec<_> = elf
+            .syms
+            .iter()
+            .enumerate()
+            .filter(|(_, symbol)| {
+                elf.strtab
+                    .get_at(symbol.st_name)
+                    .and_then(canonical_rust_symbol)
+                    .as_deref()
+                    == Some(canonical)
+            })
+            .collect();
+        require(
+            candidates.len() == 1,
+            "native100 exact TLS cell absent/duplicated",
+        )?;
+        let (selected_index, symbol) = &candidates[0];
+        require(
+            symbol.st_type() == sym::STT_TLS
+                && symbol.st_bind() == sym::STB_LOCAL
+                && symbol.st_visibility() == sym::STV_DEFAULT
+                && symbol.st_value == offset
+                && symbol.st_size == size
+                && !elf.dynsyms.iter().any(|other| {
+                    elf.dynstrtab
+                        .get_at(other.st_name)
+                        .and_then(canonical_rust_symbol)
+                        .as_deref()
+                        == Some(canonical)
+                }),
+            "native100 typed cell identity/type/locality/size/offset differs",
+        )?;
+        let section = elf
+            .section_headers
+            .get(symbol.st_shndx)
+            .ok_or("native100 TLS cell section absent")?;
+        let name = elf
+            .shdr_strtab
+            .get_at(section.sh_name)
+            .ok_or("native100 TLS section name absent")?;
+        let flags = u64::from(
+            section_header::SHF_ALLOC | section_header::SHF_WRITE | section_header::SHF_TLS,
+        );
+        let initialized = kind == section_header::SHT_PROGBITS;
+        let section_start = if initialized { 0 } else { 0xe8 };
+        let section_size = if initialized { 0xe8 } else { 0xe0 };
+        require(
+            section.sh_type == kind
+                && section.sh_flags == flags
+                && name == if initialized { ".tdata" } else { ".tbss" }
+                && tls.p_vaddr.checked_add(section_start) == Some(section.sh_addr)
+                && tls.p_offset.checked_add(section_start) == Some(section.sh_offset)
+                && section.sh_size == section_size
+                && offset >= section_start
+                && offset
+                    .checked_add(size)
+                    .is_some_and(|end| end <= section_start + section_size),
+            "native100 typed cell does not join its exact actual TLS section/span",
+        )?;
+        for (index, other) in elf.syms.iter().enumerate() {
+            require(
+                index == *selected_index
+                    || other.st_type() != sym::STT_TLS
+                    || other.st_shndx == section_header::SHN_UNDEF as usize
+                    || other.st_size == 0
+                    || other.st_value >= offset + size
+                    || other
+                        .st_value
+                        .checked_add(other.st_size)
+                        .is_some_and(|end| end <= offset),
+                "native100 actual cell overlaps another static TLS identity",
+            )?;
+        }
+        require(
+            elf.dynsyms.iter().all(|other| {
+                other.st_type() != sym::STT_TLS
+                    || other.st_shndx == section_header::SHN_UNDEF as usize
+                    || other.st_size == 0
+                    || other.st_value >= offset + size
+                    || other
+                        .st_value
+                        .checked_add(other.st_size)
+                        .is_some_and(|end| end <= offset)
+            }),
+            "native100 actual cell overlaps a dynamic TLS identity",
+        )?;
+        cells.push(NativeNoScopeCellEvidence {
+            symbol: symbol_evidence(elf.strtab.get_at(symbol.st_name).unwrap(), symbol),
+            symbol_type: symbol.st_type(),
+            section_index: symbol.st_shndx,
+            section_name: name.into(),
+            section_type: section.sh_type,
+            section_flags: section.sh_flags,
+            section_file_offset: section.sh_offset,
+            section_virtual_address: section.sh_addr,
+            section_size: section.sh_size,
+        });
+    }
+    let pending = loader_meta_slice(bytes, loader_meta_usize(tls.p_offset)?, 16)?;
+    require(
+        pending == fixed_hex(NATIVE100_PENDING_INITIALIZER_HEX),
+        "native100 complete initialized PENDING payload differs",
+    )?;
+    let (mapping, mapped_at) =
+        unique_file_mapping(elf, bytes, tls.p_vaddr, loader_meta_usize(tls.p_filesz)?)?;
+    require(
+        mapping.p_flags == program_header::PF_R | program_header::PF_W
+            && mapped_at == loader_meta_usize(tls.p_offset)?,
+        "native100 initialized TLS has no unique exact RW template mapping",
+    )?;
+    let first = &census.other_tls_getters[0];
+    require(
+        census.other_tls_getters.iter().all(|getter| {
+            getter.module_slot == first.module_slot && getter.plt_address == first.plt_address
+        }),
+        "native100 complete getter population uses different modules/providers",
+    )?;
+    let expected_pointer_targets: BTreeSet<_> = [1usize, 2]
+        .into_iter()
+        .map(|index| {
+            census
+                .other_tls_getters
+                .iter()
+                .find(|getter| {
+                    canonical_rust_symbol(&getter.getter.name).as_deref()
+                        == Some(expected_getters[index].0)
+                })
+                .unwrap()
+                .getter
+                .address
+        })
+        .collect();
+    let mut getter_pointer_targets = BTreeMap::new();
+    for &slot in &census.other_getter_pointer_slots {
+        let records: Vec<_> = writers
+            .iter()
+            .filter(|writer| writer.relocation.r_offset == slot)
+            .collect();
+        require(
+            records.len() == 1,
+            "native100 other-getter pointer writer missing/duplicated",
+        )?;
+        let writer = records[0];
+        let r = &writer.relocation;
+        let target = r
+            .r_addend
+            .and_then(|value| u64::try_from(value).ok())
+            .ok_or("native100 other-getter pointer has no actual target")?;
+        require(
+            r.r_type == reloc::R_X86_64_RELATIVE
+                && r.r_sym == 0
+                && writer.end
+                    == slot
+                        .checked_add(8)
+                        .ok_or("native100 pointer slot overflow")?
+                && expected_pointer_targets.contains(&target)
+                && fixed_readonly_range(elf, bytes, slot, 8)? == [0; 8],
+            "native100 other-getter pointer loses exact RELATIVE/RELRO/entry binding",
+        )?;
+        getter_pointer_targets.insert(slot, target);
+    }
+    require(
+        getter_pointer_targets.len() == 2
+            && getter_pointer_targets
+                .values()
+                .copied()
+                .collect::<BTreeSet<_>>()
+                == expected_pointer_targets,
+        "native100 exact OWNER/PENDING pointer pair absent/duplicated/foreign",
+    )?;
+    let proof = NativeNoScopeLayout100Evidence {
+        tls_program_header_index: tls_index,
+        tls_file_offset: tls.p_offset,
+        tls_virtual_address: tls.p_vaddr,
+        tls_file_size: tls.p_filesz,
+        tls_memory_size: tls.p_memsz,
+        tls_alignment: tls.p_align,
+        cells,
+        pending_initializer_sha256: sha256(pending),
+        getter_pointer_targets,
+    };
+    Ok((census, proof))
+}
+
+fn validate_native_no_scope_layout100(
+    proof: &NoInstallationScopeEvidence,
+    layout: &NativeNoScopeLayout100Evidence,
+    expected_getters: &[(&str, u64)],
+) -> Result<()> {
+    require(
+        layout.tls_file_size == 0xe8
+            && layout.tls_memory_size == 0x1c8
+            && layout.tls_alignment == 8
+            && layout.cells.len() == 4
+            && layout.pending_initializer_sha256
+                == sha256(&fixed_hex(NATIVE100_PENDING_INITIALIZER_HEX))
+            && layout
+                .tls_file_offset
+                .checked_add(layout.tls_file_size)
+                .is_some()
+            && layout
+                .tls_virtual_address
+                .checked_add(layout.tls_memory_size)
+                .is_some(),
+        "native100 retained full TLS layout/initializer differs",
+    )?;
+    for (cell, &(canonical, offset, size, kind)) in
+        layout.cells.iter().zip(&NATIVE100_NO_SCOPE_CELLS)
+    {
+        let initialized = kind == section_header::SHT_PROGBITS;
+        let start = if initialized { 0 } else { 0xe8 };
+        require(
+            canonical_rust_symbol(&cell.symbol.name).as_deref() == Some(canonical)
+                && cell.symbol.address == offset
+                && cell.symbol.size == size
+                && cell.symbol.binding == sym::STB_LOCAL
+                && cell.symbol.visibility == sym::STV_DEFAULT
+                && cell.symbol_type == sym::STT_TLS
+                && cell.section_index != 0
+                && cell.section_type == kind
+                && cell.section_name == if initialized { ".tdata" } else { ".tbss" }
+                && cell.section_flags
+                    == u64::from(
+                        section_header::SHF_ALLOC
+                            | section_header::SHF_WRITE
+                            | section_header::SHF_TLS,
+                    )
+                && layout.tls_file_offset.checked_add(start) == Some(cell.section_file_offset)
+                && layout.tls_virtual_address.checked_add(start)
+                    == Some(cell.section_virtual_address)
+                && cell.section_size == if initialized { 0xe8 } else { 0xe0 },
+            "native100 retained typed TLS cell differs from complete cohort",
+        )?;
+    }
+    let first = &proof.other_tls_getters[0];
+    require(
+        proof.other_tls_getters.iter().all(|getter| {
+            getter.module_slot == first.module_slot && getter.plt_address == first.plt_address
+        }),
+        "native100 retained module/provider population differs",
+    )?;
+    let targets: BTreeSet<_> = [1usize, 2]
+        .into_iter()
+        .map(|index| {
+            proof
+                .other_tls_getters
+                .iter()
+                .find(|getter| {
+                    canonical_rust_symbol(&getter.getter.name).as_deref()
+                        == Some(expected_getters[index].0)
+                })
+                .map(|getter| getter.getter.address)
+        })
+        .collect::<Option<_>>()
+        .ok_or("native100 retained OWNER/PENDING getter absent")?;
+    require(
+        layout.getter_pointer_targets.len() == 2
+            && layout
+                .getter_pointer_targets
+                .keys()
+                .copied()
+                .collect::<Vec<_>>()
+                == proof.other_getter_pointer_slots
+            && layout
+                .getter_pointer_targets
+                .values()
+                .copied()
+                .collect::<BTreeSet<_>>()
+                == targets,
+        "native100 retained exact other-getter pointer bindings differ",
+    )?;
+    Ok(())
+}
+
+struct SelectedNoScopeCensus {
+    census: NoScopeCensus,
+    native_tls_layout100: Option<NativeNoScopeLayout100Evidence>,
+    version: u32,
+    policy: &'static str,
+}
+
+// Physical selection only: callers still need the opaque actual source/build
+// authority. Name selection is complete before physical checks and never retried.
+fn selected_no_scope_census(
+    elf: &Elf<'_>,
+    bytes: &[u8],
+    cohort: ConsumerRecipe,
+) -> Result<SelectedNoScopeCensus> {
+    let static_names = elf
+        .syms
+        .iter()
+        .map(|symbol| {
+            elf.strtab
+                .get_at(symbol.st_name)
+                .ok_or_else(|| "OFF static name malformed".to_owned())
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let dynamic_names = elf
+        .dynsyms
+        .iter()
+        .map(|symbol| {
+            elf.dynstrtab
+                .get_at(symbol.st_name)
+                .ok_or_else(|| "OFF dynamic name malformed".to_owned())
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let names = select_no_scope_getter_names(cohort, static_names, dynamic_names)?;
+    let legacy = names.encoding == NoScopeGetterEncoding::LegacyExact;
+    let cohort_getters = names.with_offsets(cohort.getters())?;
+    let native100 = cohort == ConsumerRecipe::Allocation101LayoutA
+        && (if legacy {
+            native_no_scope_tls_layout(elf, bytes)?
+        } else {
+            native_no_scope_tls_layout_with_getters(elf, bytes, &cohort_getters)?
+        }) == NativeNoScopeTlsLayout::Dispatch100;
+    let (census, native_tls_layout100) = if native100 {
+        let (census, layout) = if legacy {
+            native_no_scope_layout100_census(elf, bytes)?
+        } else {
+            native_no_scope_layout100_census_with_getters(
+                elf,
+                bytes,
+                &names.with_offsets(&NATIVE100_NO_SCOPE_OTHER_GETTERS)?,
+            )?
+        };
+        (census, Some(layout))
+    } else {
+        (
+            if legacy {
+                no_installation_scope_census_in_cohort(elf, bytes, cohort)?
+            } else {
+                no_installation_scope_census_with_getters(elf, bytes, cohort, &cohort_getters)?
+            },
+            None,
+        )
+    };
+    names.require_census(&census)?;
+    let (version, policy) = no_scope_getter_policy(cohort, names.encoding, native100)?;
+    Ok(SelectedNoScopeCensus {
+        census,
+        native_tls_layout100,
+        version,
+        policy,
+    })
+}
+
+fn derive_no_installation_scope_evidence(
+    elf: &Elf<'_>,
+    bytes: &[u8],
+    code: &BTreeMap<u64, Vec<u8>>,
+    roles: &BTreeMap<String, sym::Sym>,
+    sources: Option<&VerifiedCompiledSources>,
+) -> Result<NoInstallationScopeEvidence> {
+    let sources = sources.ok_or("no-scope allocation needs verified compiled sources")?;
+    sources.verify_files()?;
+    let build = sources
+        .current_build
+        .as_ref()
+        .ok_or("no-scope allocation needs actual current-build witness")?;
+    let cohort = no_scope_build_features(build)?;
+    sources.require_image(cohort.image_kind().initializer())?;
+    let compiled_sources_sha256 =
+        sha256(&serde_json::to_vec(sources.record()).map_err(|e| e.to_string())?);
+    require(
+        build.compiled_sources_sha256 == compiled_sources_sha256
+            && build.artifact.sha256 == sha256(bytes),
+        "no-scope current build is for different sources/ELF",
+    )?;
+    let source = sources
+        .record
+        .files
+        .get(&format!("rv:{}", NO_INSTALLATION_SCOPE_SOURCE.0))
+        .ok_or("reviewed no-scope source identity absent")?;
+    source.verify()?;
+    require(
+        source.sha256 == NO_INSTALLATION_SCOPE_SOURCE.2
+            && fs::metadata(&source.path).map_err(|e| e.to_string())?.len()
+                == NO_INSTALLATION_SCOPE_SOURCE.1,
+        "no-scope source differs from the exact reviewed private-cell/writer cfg proof",
+    )?;
+    let allocation = roles
+        .get("fixed_patch_alloc")
+        .ok_or("no-scope allocation role absent")?;
+    let allocation_bytes = code
+        .get(&allocation.st_value)
+        .ok_or("no-scope allocation full bytes absent")?;
+    require(
+        match cohort {
+            ConsumerRecipe::Allocation101LayoutA | ConsumerRecipe::Allocation101LayoutB => {
+                allocation101_shape(allocation_bytes)
+            }
+            ConsumerRecipe::Allocation62 => {
+                standalone_no_scope_allocation_shape(allocation_bytes)
+            }
+        },
+        "no-scope allocation differs from its exact measured cohort body",
+    )?;
+    for role in &FIXED_REQUIRED_ROLES[..4] {
+        let symbol = &roles[*role];
+        require(
+            elf.strtab
+                .get_at(symbol.st_name)
+                .and_then(canonical_rust_symbol)
+                .is_some_and(|name| {
+                    name.starts_with("_RNvXs2_NtCs_16reverie_liteinst11patch_alloc")
+                }),
+            "no-scope operation is outside the measured exact OFF impl cohort",
+        )?;
+    }
+    authenticate_loader_metadata(elf, bytes)?;
+    let SelectedNoScopeCensus {
+        census,
+        native_tls_layout100,
+        version,
+        policy,
+    } = selected_no_scope_census(elf, bytes, cohort)?;
+    Ok(NoInstallationScopeEvidence {
+        kind: "no_installation_scope".into(),
+        version,
+        policy: build.consumer_policy.label(cohort, policy)?.into(),
+        elf_sha256: sha256(bytes),
+        compiled_sources_sha256,
+        reverie_pin: sources.record.reverie_pin.clone(),
+        source: source.clone(),
+        current_build: build.clone(),
+        allocation: symbol_evidence(elf.strtab.get_at(allocation.st_name).unwrap(), allocation),
+        allocation_sha256: sha256(allocation_bytes),
+        mappings: census.mappings,
+        static_symbol_count: elf.syms.len(),
+        dynamic_symbol_count: elf.dynsyms.len(),
+        raw_names_sha256: census.raw_names_sha256,
+        loader_writer_count: census.loader_writer_count,
+        loader_writers_sha256: census.loader_writers_sha256,
+        installation_symbols: Vec::new(),
+        installation_getters: Vec::new(),
+        installation_writer_count: 0,
+        other_tls_getters: census.other_tls_getters,
+        other_getter_pointer_slots: census.other_getter_pointer_slots,
+        other_tls_unisolated: true,
+        native_tls_layout100,
+    })
+}
+
+fn validate_no_installation_scope_evidence(
+    backing: &AllocatorBackingEvidence,
+    proof: &NoInstallationScopeEvidence,
+    image_kind: FixedImageKind,
+) -> Result<()> {
+    let hash = |value: &str, n: usize| {
+        value.len() == n && value.bytes().all(|byte| byte.is_ascii_hexdigit())
+    };
+    let cohort = no_scope_build_features(&proof.current_build)?;
+    let names = select_no_scope_getter_names(
+        cohort,
+        proof
+            .other_tls_getters
+            .iter()
+            .map(|getter| getter.getter.name.as_str()),
+        std::iter::empty(),
+    )?;
+    let native100 = cohort == ConsumerRecipe::Allocation101LayoutA
+        && [NATIVE100_NO_SCOPE_POLICY, SEMANTIC_NATIVE100_NO_SCOPE_POLICY].into_iter()
+            .any(|key| proof.current_build.consumer_policy.label(cohort, key)
+                .is_ok_and(|label| label == proof.policy));
+    let (version, policy) = no_scope_getter_policy(cohort, names.encoding, native100)?;
+    let expected_getters = names.with_offsets(if native100 {
+        &NATIVE100_NO_SCOPE_OTHER_GETTERS[..]
+    } else {
+        cohort.getters()
+    })?;
+    require(
+        image_kind == cohort.image_kind()
+            && proof.kind == "no_installation_scope"
+            && proof.version == version
+            && proof.policy == proof.current_build.consumer_policy.label(cohort, policy)?
+            && proof.native_tls_layout100.is_some() == native100
+            && proof.other_tls_unisolated
+            && hash(&proof.reverie_pin, 40)
+            && proof.source.sha256 == NO_INSTALLATION_SCOPE_SOURCE.2
+            && proof.current_build.artifact.sha256 == proof.elf_sha256
+            && proof.current_build.compiled_sources_sha256 == proof.compiled_sources_sha256
+            && proof.current_build.command.status == 0
+            && match &proof.current_build.cargo_executable {
+                None => proof.current_build.command.program == "cargo",
+                Some(executable) => {
+                    executable.path.is_absolute()
+                        && executable
+                            .path
+                            .file_name()
+                            .is_some_and(|name| name == "cargo")
+                        && executable.path.to_str()
+                            == Some(proof.current_build.command.program.as_str())
+                        && hash(&executable.sha256, 64)
+                }
+            }
+            && [
+                &proof.elf_sha256,
+                &proof.compiled_sources_sha256,
+                &proof.raw_names_sha256,
+                &proof.loader_writers_sha256,
+                &proof.allocation_sha256,
+            ]
+            .iter()
+            .all(|value| hash(value, 64))
+            && proof.static_symbol_count != 0
+            && proof.dynamic_symbol_count != 0
+            && proof.loader_writer_count != 0
+            && proof.installation_symbols.is_empty()
+            && proof.installation_getters.is_empty()
+            && proof.installation_writer_count == 0
+            && !proof.mappings.is_empty()
+            && proof.mappings.iter().all(|mapping| {
+                mapping.flags == program_header::PF_R | program_header::PF_X
+                    && mapping.file_size != 0
+                    && mapping.memory_size >= mapping.file_size
+                    && hash(&mapping.sha256, 64)
+                    && mapping.file_offset.checked_add(mapping.file_size).is_some()
+                    && mapping
+                        .virtual_address
+                        .checked_add(mapping.memory_size)
+                        .is_some()
+            })
+            && proof
+                .mappings
+                .windows(2)
+                .all(|pair| pair[0].program_header_index < pair[1].program_header_index)
+            && backing.functions.get("fixed_patch_alloc") == Some(&proof.allocation)
+            && backing.function_sha256.get("fixed_patch_alloc") == Some(&proof.allocation_sha256)
+            && proof.allocation.size == cohort.allocation_size()
+            && proof.allocation.binding == sym::STB_LOCAL
+            && fixed_emitted_role(&proof.allocation.name) == Some("fixed_patch_alloc")
+            && FIXED_REQUIRED_ROLES[..4].iter().all(|role| {
+                backing
+                    .functions
+                    .get(*role)
+                    .and_then(|symbol| canonical_rust_symbol(&symbol.name))
+                    .is_some_and(|name| {
+                        name.starts_with("_RNvXs2_NtCs_16reverie_liteinst11patch_alloc")
+                    })
+            })
+            && proof.other_tls_getters.len() == expected_getters.len()
+            && proof
+                .other_tls_getters
+                .windows(2)
+                .all(|pair| pair[0].getter.address < pair[1].getter.address)
+            && proof
+                .other_getter_pointer_slots
+                .windows(2)
+                .all(|pair| pair[0] < pair[1]),
+        "no-installation-scope source/build/body/census evidence incomplete or inconsistent",
+    )?;
+    let mut retained = BTreeSet::new();
+    for getter in &proof.other_tls_getters {
+        let canonical = canonical_rust_symbol(&getter.getter.name)
+            .ok_or("other TLS getter type name malformed")?;
+        require(
+            expected_getters.contains(&(canonical.as_str(), getter.cell_offset))
+                && retained.insert(canonical)
+                && getter.getter.binding == sym::STB_LOCAL
+                && getter.getter.size == 22
+                && getter.getter.address != 0
+                && hash(&getter.sha256, 64)
+                && getter.module_slot != 0
+                && getter.module_slot.is_multiple_of(8)
+                && getter.plt_address != 0,
+            "no-scope other TLS getter loses its exact unisolated population",
+        )?;
+    }
+    if let Some(layout) = &proof.native_tls_layout100 {
+        validate_native_no_scope_layout100(proof, layout, &expected_getters)?;
+    }
+    Ok(())
+}
+
 fn direct_tls_source_context(
     sources: Option<&VerifiedCompiledSources>,
 ) -> Result<&VerifiedCompiledSources> {
@@ -16768,6 +19996,37 @@ fn derive_direct_allocation_tls_evidence(
         recipe_getters: census.recipe_getters,
         getter_pointer_slots: census.getter_pointer_slots,
     })
+}
+
+// The old derivation remains byte-identical. It performs the same complete
+// verified-source/raw-name/RX/loader-pointer census; only this separately gated
+// allocation proof publishes a different version/policy. No old receipt is
+// reclassified and no installation thunk is added to the old matcher.
+fn derive_standalone_d8_direct_allocation_tls_evidence(
+    elf: &Elf<'_>,
+    bytes: &[u8],
+    cell: &SymbolEvidence,
+    module: u64,
+    plt: u64,
+    allocation_bytes: &[u8],
+    sources: Option<&VerifiedCompiledSources>,
+) -> Result<DirectAllocationTlsEvidence> {
+    require(
+        cell.address == 0xd8 && allocation_bytes.len() == 186,
+        "standalone d8 direct allocation has another cell or whole extent",
+    )?;
+    let mut proof = derive_direct_allocation_tls_evidence(
+        elf,
+        bytes,
+        cell,
+        module,
+        plt,
+        allocation_bytes,
+        sources,
+    )?;
+    proof.version = 3;
+    proof.policy = STANDALONE_D8_DIRECT_TLS_CENSUS_POLICY.into();
+    Ok(proof)
 }
 
 fn detcore_direct_tls_source_context(
@@ -16851,6 +20110,16 @@ fn validate_direct_allocation_tls_evidence_in_image(
     image_kind: FixedImageKind,
 ) -> Result<()> {
     let (version, policy, cell_matches, extent, call_offset) = match image_kind {
+        FixedImageKind::Standalone if tls.tls_cell.address == 0xd8 => (
+            3,
+            STANDALONE_D8_DIRECT_TLS_CENSUS_POLICY,
+            tls.tls_cell.size == 8
+                && tls.tls_cell.binding == sym::STB_LOCAL
+                && canonical_rust_symbol(&tls.tls_cell.name).as_deref()
+                    == Some(FIXED_TLS_CELL_ROLE),
+            186,
+            0x2c,
+        ),
         FixedImageKind::Standalone => (
             1,
             DIRECT_TLS_CENSUS_POLICY,
@@ -16941,7 +20210,7 @@ fn qualify_allocator_tls_boundary_in_source_context(
     image_kind: FixedImageKind,
     sources: Option<&VerifiedCompiledSources>,
 ) -> Result<AllocatorTlsBoundary> {
-    let roles = fixed_role_symbols(elf)?;
+    let roles = fixed_role_symbols_in_file(elf, bytes)?;
     let cell = fixed_tls_cell(elf)?;
     let mut chain = BTreeMap::new();
     let mut hashes = BTreeMap::new();
@@ -17048,18 +20317,58 @@ fn qualify_allocator_tls_boundary_in_source_context(
             roles["fixed_tool_alloc"].st_value,
             got,
         )?;
-        fixed_tls_cell_access_recipe(
-            "fixed_patch_alloc",
-            allocation,
-            allocation_bytes,
-            &cell,
-            &[
-                (0x10, 0x14, backing),
-                (0x28, 0x2c, module),
-                (0x2d, 0x31, plt),
-                (0xb6, 0xba, reusable),
-            ],
-        )?;
+        let present_d8_pair = image_kind == FixedImageKind::Standalone
+            && cell.address == 0xd8
+            && roles.contains_key("fixed_tls_fn_once");
+        if image_kind == FixedImageKind::Standalone
+            && cell.address == 0xd8
+            && !roles.contains_key("fixed_tls_fn_once")
+        {
+            // Select once from authenticated image/cell/role/source identities;
+            // a failed special proof must not retry through a legacy recipe.
+            direct_tls_source_context(sources)?;
+            standalone_optimized_d8_allocation_recipe(
+                image_kind,
+                allocation,
+                allocation_bytes,
+                &cell,
+                &[
+                    (0x10, 0x14, backing),
+                    (0x28, 0x2c, module),
+                    (0x2d, 0x31, plt),
+                    (0xb6, 0xba, reusable),
+                ],
+            )?;
+        } else if present_d8_pair {
+            direct_tls_source_context(sources)?;
+            let getter = bind("fixed_tls_fn_once")?;
+            standalone_optimized_d8_tls_pair_recipe(
+                image_kind,
+                &cell,
+                (allocation, allocation_bytes),
+                getter,
+                &[
+                    (0x10, 0x14, backing),
+                    (0x28, 0x2c, module),
+                    (0x2d, 0x31, plt),
+                    (0xb6, 0xba, reusable),
+                ],
+                &[(4, 8, module), (9, 13, plt)],
+            )?;
+        } else {
+            fixed_tls_cell_access_recipe(
+                "fixed_patch_alloc",
+                allocation,
+                allocation_bytes,
+                &cell,
+                &[
+                    (0x10, 0x14, backing),
+                    (0x28, 0x2c, module),
+                    (0x2d, 0x31, plt),
+                    (0xb6, 0xba, reusable),
+                ],
+            )?;
+        }
         callsites.push(ConstructorTransfer {
             instruction: allocation + 0x2c,
             target: plt,
@@ -17069,13 +20378,15 @@ fn qualify_allocator_tls_boundary_in_source_context(
         // its complete function observes the same module and actual offset.
         if roles.contains_key("fixed_tls_fn_once") {
             let (address, instructions) = bind("fixed_tls_fn_once")?;
-            fixed_tls_cell_access_recipe(
-                "fixed_tls_fn_once",
-                address,
-                instructions,
-                &cell,
-                &[(4, 8, module), (9, 13, plt)],
-            )?;
+            if !present_d8_pair {
+                fixed_tls_cell_access_recipe(
+                    "fixed_tls_fn_once",
+                    address,
+                    instructions,
+                    &cell,
+                    &[(4, 8, module), (9, 13, plt)],
+                )?;
+            }
             callsites.push(ConstructorTransfer {
                 instruction: address + 8,
                 target: plt,
@@ -17218,6 +20529,20 @@ fn qualify_allocator_tls_boundary_in_source_context(
     fixed_tls_descriptor(elf, bytes, module)?;
     let (dynamic_symbol_index, got_slot, plt_sha256) = fixed_tls_import(elf, bytes, plt)?;
     let direct_allocation = if image_kind == FixedImageKind::Standalone
+        && cell.address == 0xd8
+        && allocation_bytes.len() == 186
+        && !roles.contains_key("fixed_tls_fn_once")
+    {
+        Some(derive_standalone_d8_direct_allocation_tls_evidence(
+            elf,
+            bytes,
+            &cell,
+            module,
+            plt,
+            allocation_bytes,
+            sources,
+        )?)
+    } else if image_kind == FixedImageKind::Standalone
         && matches!(cell.address, 0x40 | 0x80)
         && allocation_bytes.len() == 186
         && !roles.contains_key("fixed_tls_fn_once")
@@ -17287,7 +20612,9 @@ fn fixed_emitted_role(name: &str) -> Option<&'static str> {
         .find_map(|&(role, observed)| (canonical == observed).then_some(role))
 }
 
-fn fixed_role_symbols(elf: &Elf<'_>) -> Result<BTreeMap<String, sym::Sym>> {
+type FixedRoleSymbolCandidates = (BTreeMap<String, sym::Sym>, BTreeMap<&'static str, sym::Sym>);
+
+fn fixed_role_symbol_candidates(elf: &Elf<'_>) -> Result<FixedRoleSymbolCandidates> {
     require(
         !FIXED_EMITTED_ROLE_SYMBOLS.is_empty(),
         "fixed allocator/setup emitted-role census is pending actual release/dev ELF evidence",
@@ -17324,6 +20651,13 @@ fn fixed_role_symbols(elf: &Elf<'_>) -> Result<BTreeMap<String, sym::Sym>> {
             format!("Fixed emitted function {name} is dynamically visible/preemptible"),
         )?;
         for role in aliases {
+            if role == "fixed_heap_usize_max" {
+                require(
+                    FIXED_HEAP_MAX_PROVIDERS.contains(&canonical.as_str()),
+                    "unlisted Fixed usize max provider",
+                )?;
+                continue;
+            }
             require(
                 result.insert(role.to_owned(), symbol).is_none(),
                 format!("ambiguous Fixed emitted role {role}"),
@@ -17336,12 +20670,255 @@ fn fixed_role_symbols(elf: &Elf<'_>) -> Result<BTreeMap<String, sym::Sym>> {
             format!("required actual Fixed emitted role {role} absent"),
         )?;
     }
-    Ok(result)
+    Ok((result, fixed_heap_max_candidates(elf)?))
 }
 
-// Both observed equality cohorts can coexist in one DSO. This finite census
+// These two exact source/type identities were already admitted individually.
+// Coexistence is byte scope only until the complete dev callers select an owner.
+const FIXED_HEAP_MAX_PROVIDERS: [&str; 2] = [
+    "_RNvYjNtNtCs_4core3cmp3Ord3maxCs_6goblin",
+    "_RNvYjNtNtCs_4core3cmp3Ord3maxCs_10serde_core",
+];
+
+fn fixed_heap_max_candidates(elf: &Elf<'_>) -> Result<BTreeMap<&'static str, sym::Sym>> {
+    let mut candidates = BTreeMap::new();
+    for spelling in FIXED_HEAP_MAX_PROVIDERS {
+        let symbols: Vec<_> = elf
+            .syms
+            .iter()
+            .filter(|symbol| {
+                elf.strtab
+                    .get_at(symbol.st_name)
+                    .and_then(canonical_rust_symbol)
+                    .as_deref()
+                    == Some(spelling)
+            })
+            .collect();
+        let dynamic = elf.dynsyms.iter().any(|symbol| {
+            elf.dynstrtab
+                .get_at(symbol.st_name)
+                .and_then(canonical_rust_symbol)
+                .as_deref()
+                == Some(spelling)
+        });
+        if symbols.is_empty() && !dynamic {
+            continue;
+        }
+        require(
+            symbols.len() == 1 && !dynamic,
+            "ambiguous/dynamic exact Fixed usize max provider",
+        )?;
+        let symbol = symbols[0];
+        require(
+            executable_symbol(elf, &symbol) && symbol.st_bind() == sym::STB_LOCAL,
+            "Fixed usize max provider is not executable LOCAL/non-dynamic",
+        )?;
+        candidates.insert(spelling, symbol);
+    }
+    Ok(candidates)
+}
+
+// Symbol-only callers cannot resolve two providers. In particular, the existing
+// dual-alias negative controls still exercise this exact strict entry point.
+fn fixed_role_symbols(elf: &Elf<'_>) -> Result<BTreeMap<String, sym::Sym>> {
+    let (mut roles, candidates) = fixed_role_symbol_candidates(elf)?;
+    require(
+        candidates.len() <= 1,
+        "ambiguous Fixed emitted role fixed_heap_usize_max",
+    )?;
+    if let Some(symbol) = candidates.values().next() {
+        require(
+            roles
+                .insert("fixed_heap_usize_max".to_owned(), *symbol)
+                .is_none(),
+            "Fixed usize max role collision",
+        )?;
+    }
+    Ok(roles)
+}
+
+fn fixed_role_symbols_in_file(elf: &Elf<'_>, bytes: &[u8]) -> Result<BTreeMap<String, sym::Sym>> {
+    let (mut roles, candidates) = fixed_role_symbol_candidates(elf)?;
+    if candidates.len() <= 1 {
+        return fixed_role_symbols(elf);
+    }
+    let selected = fixed_heap_max_owner(elf, bytes, &roles, &candidates)?;
+    require(
+        roles
+            .insert("fixed_heap_usize_max".to_owned(), selected)
+            .is_none(),
+        "Fixed usize max owner collides with a census role",
+    )?;
+    Ok(roles)
+}
+
+// This binds only the owner address. It grants no allocator admission: the
+// unchanged machine context and operation closure must still bind every other
+// removed data/call operand and cover the complete caller instruction census.
+fn fixed_heap_max_owner(
+    elf: &Elf<'_>,
+    bytes: &[u8],
+    roles: &BTreeMap<String, sym::Sym>,
+    candidates: &BTreeMap<&'static str, sym::Sym>,
+) -> Result<sym::Sym> {
+    require(
+        candidates.len() == 2
+            && FIXED_HEAP_MAX_PROVIDERS
+                .iter()
+                .all(|name| candidates.contains_key(name)),
+        "Fixed usize max ownership needs the exact measured two-provider cohort",
+    )?;
+    let mut provider_ranges = Vec::new();
+    for symbol in candidates.values() {
+        require(
+            symbol.st_size == 95,
+            "Fixed usize max provider is not complete95B",
+        )?;
+        let (mapping, _) = unique_file_mapping(elf, bytes, symbol.st_value, 95)?;
+        require(
+            mapping.p_flags & (program_header::PF_R | program_header::PF_W | program_header::PF_X)
+                == program_header::PF_R | program_header::PF_X,
+            "Fixed usize max provider is not uniquely mapped RX",
+        )?;
+        require(
+            extent_writers(elf, symbol.st_value, 95)?.is_empty(),
+            "Fixed usize max provider has a runtime relocation writer",
+        )?;
+        fixed_whole_recipe(
+            symbol.st_value,
+            loaded_bytes(elf, bytes, symbol.st_value, 95)?,
+            DEV_FIXED_HEAP_HEX_27,
+            &[],
+        )?;
+        provider_ranges.push((
+            symbol.st_value,
+            symbol
+                .st_value
+                .checked_add(95)
+                .ok_or("Fixed usize max provider range overflow")?,
+        ));
+    }
+    provider_ranges.sort_unstable();
+    require(
+        provider_ranges
+            .windows(2)
+            .all(|pair| pair[0].1 <= pair[1].0),
+        "Fixed usize max providers alias/overlap",
+    )?;
+
+    let got = local_got_targets(elf, bytes)?;
+    let mut owner = None;
+    for (role, hex, operands, max_operands) in [
+        (
+            "fixed_heap_allocate",
+            DEV_FIXED_HEAP_HEX_0,
+            DEV_FIXED_HEAP_OPERANDS_0,
+            &[(409, 413, 418)][..],
+        ),
+        (
+            "fixed_heap_layout_end",
+            DEV_FIXED_HEAP_HEX_2,
+            DEV_FIXED_HEAP_OPERANDS_2,
+            &[(309, 313, 307), (419, 423, 417)][..],
+        ),
+    ] {
+        let caller = roles
+            .get(role)
+            .ok_or("Fixed usize max owner lacks a complete caller role")?;
+        let length = fixed_hex(hex).len();
+        require(
+            caller.st_size == length as u64,
+            "Fixed usize max ownership requires the exact dev caller extent",
+        )?;
+        let (mapping, _) = unique_file_mapping(elf, bytes, caller.st_value, length)?;
+        require(
+            mapping.p_flags & (program_header::PF_R | program_header::PF_W | program_header::PF_X)
+                == program_header::PF_R | program_header::PF_X,
+            "Fixed usize max caller is not uniquely mapped RX",
+        )?;
+        require(
+            extent_writers(elf, caller.st_value, length)?.is_empty(),
+            "Fixed usize max caller has a runtime relocation writer",
+        )?;
+        let body = loaded_bytes(elf, bytes, caller.st_value, length)?;
+        require(
+            fixed_template_shape(
+                body,
+                &fixed_hex(hex),
+                operands.iter().map(|operand| operand.displacement),
+            ),
+            "Fixed usize max ownership requires the whole2384B/668B dev caller shape",
+        )?;
+        let actual_operands: Vec<_> = operands
+            .iter()
+            .filter(|operand| operand.key == "fixed_heap_usize_max")
+            .map(|operand| (operand.displacement, operand.next, operand.instruction))
+            .collect();
+        require(
+            actual_operands == max_operands
+                && operands
+                    .iter()
+                    .filter(|operand| operand.key == "fixed_heap_usize_max")
+                    .all(|operand| operand.kind == 2 && operand.addend == 0),
+            "Fixed usize max caller operand census differs",
+        )?;
+        for &(displacement, next, _) in max_operands {
+            let slot = fixed_rip_target(caller.st_value, body, displacement, next)?;
+            require(
+                fixed_readonly_range(elf, bytes, slot, 8)? == [0; 8],
+                "Fixed usize max GOT lacks its exact file-zero word",
+            )?;
+            let relros: Vec<_> = elf
+                .program_headers
+                .iter()
+                .filter(|header| header.p_type == program_header::PT_GNU_RELRO)
+                .collect();
+            require(
+                relros.len() == 1
+                    && slot >= relros[0].p_vaddr
+                    && slot.checked_add(8).is_some_and(|end| {
+                        relros[0]
+                            .p_vaddr
+                            .checked_add(relros[0].p_memsz)
+                            .is_some_and(|limit| end <= (limit & !4095))
+                    }),
+                "Fixed usize max GOT is not wholly in unique protected RELRO",
+            )?;
+            let target = *got
+                .get(&slot)
+                .ok_or("Fixed usize max GOT is unauthenticated")?;
+            let writers = extent_writers(elf, slot, 8)?;
+            require(
+                writers.len() == 1
+                    && writers[0].r_offset == slot
+                    && writers[0].r_type == reloc::R_X86_64_RELATIVE
+                    && writers[0].r_sym == 0
+                    && writers[0].r_addend
+                        == Some(i64::try_from(target).map_err(|e| e.to_string())?),
+                "Fixed usize max GOT lacks its sole exact local RELATIVE writer",
+            )?;
+            require(
+                owner.is_none_or(|prior| prior == target),
+                "Fixed usize max callers select different providers",
+            )?;
+            owner = Some(target);
+        }
+    }
+    let target = owner.ok_or("Fixed usize max caller operand is absent")?;
+    let selected: Vec<_> = candidates
+        .values()
+        .filter(|symbol| symbol.st_value == target)
+        .collect();
+    require(
+        selected.len() == 1,
+        "Fixed usize max callers do not select one exact measured provider",
+    )?;
+    Ok(*selected[0])
+}
+
+// The observed equality cohorts can coexist in one DSO. This finite census
 // grants byte coverage only; admission chooses one pair from complete callers.
-const FIXED_HEAP_EQUAL_COHORTS: [(&str, &str); 2] = [
+const FIXED_HEAP_EQUAL_COHORTS: [(&str, &str); 3] = [
     (
         "_RNvXsf_NtCs_4core6optionINtB5_6OptionjENtNtB7_3cmp9PartialEq2eqCs_12regex_syntax",
         "_RNvXsj_NtNtCs_4core3cmp5implsjNtB7_9PartialEq2eqCs_12regex_syntax",
@@ -17349,6 +20926,10 @@ const FIXED_HEAP_EQUAL_COHORTS: [(&str, &str); 2] = [
     (
         "_RNvXsf_NtCs_4core6optionINtB5_6OptionjENtNtB7_3cmp9PartialEq2eqCs_10safeptrace",
         "_RNvXsj_NtNtCs_4core3cmp5implsjNtB7_9PartialEq2eqCs_10safeptrace",
+    ),
+    (
+        "_RNvXsf_NtCs_4core6optionINtB5_6OptionjENtNtB7_3cmp9PartialEq2eqCs_15reverie_inguest",
+        "_RNvXsj_NtNtCs_4core3cmp5implsjNtB7_9PartialEq2eqCs_15reverie_inguest",
     ),
 ];
 
@@ -17775,157 +21356,13 @@ fn validate_fixed_backing_evidence_in_source_context(
             && record.payload_sha256 == sha256(&expected),
         "Fixed backing lacks its immutable exact span/cursor record",
     )?;
-    let tls = &backing.tls_boundary;
-    require(
-        tls.dependency == "existing_installation_depth_tls"
-            && tls.provider_symbol == "__tls_get_addr"
-            && tls.provider_version == "GLIBC_2.3"
-            && tls.provider_library == "ld-linux-x86-64.so.2"
-            && tls.unisolated
-            && tls.tls_cell.binding == sym::STB_LOCAL
-            && canonical_rust_symbol(&tls.tls_cell.name).as_deref() == Some(FIXED_TLS_CELL_ROLE)
-            && match image_kind {
-                FixedImageKind::Standalone => {
-                    matches!(tls.tls_cell.address, 0x40 | 0x48 | 0x80 | 0x88)
-                }
-                FixedImageKind::Detcore => {
-                    matches!(
-                        tls.tls_cell.address,
-                        0x98 | 0xa0 | 0xd8 | 0xe0 | 0xe8 | 0x128
-                    )
-                }
-            }
-            && tls.tls_cell.size == 8
-            && tls.tls_offset_slot
-                == tls
-                    .tls_module_slot
-                    .checked_add(8)
-                    .ok_or("TLS offset overflows")?
-            && !tls.callsites.is_empty()
-            && tls
-                .callsites
-                .iter()
-                .all(|edge| edge.target == tls.plt_address && edge.local_got_slot.is_none())
-            && tls.local_chain.keys().eq(tls.function_sha256.keys())
-            && tls.local_chain.contains_key("fixed_patch_alloc")
-            && tls
-                .local_chain
-                .values()
-                .all(|symbol| symbol.binding == sym::STB_LOCAL && symbol.size != 0)
-            && tls
-                .function_sha256
-                .values()
-                .chain([&tls.plt_sha256])
-                .all(|hash| hash.len() == 64 && hash.bytes().all(|byte| byte.is_ascii_hexdigit())),
-        "Fixed backing lacks the exact named unisolated TLS boundary",
-    )?;
-    require(
-        tls.direct_allocation.is_none()
-            || (tls.local_key_object.is_none()
-                && tls.local_key_transfer.is_none()
-                && tls.local_key_resolution.is_none()),
-        "direct TLS provenance cannot relabel a LocalKey chain",
-    )?;
-    match (
-        &tls.local_key_object,
-        &tls.local_key_transfer,
-        &tls.local_key_resolution,
-    ) {
-        (Some(_), Some(edge), Some(resolution)) => require(
-            resolution == "local_relative_readonly_function_pointer"
-                && (tls.tls_cell.address == 0x48
-                    || (image_kind == FixedImageKind::Standalone
-                        && matches!(tls.tls_cell.address, 0x40 | 0x80)))
-                && edge.local_got_slot.is_none()
-                && tls
-                    .local_chain
-                    .get("fixed_tls_fn_once")
-                    .is_some_and(|symbol| symbol.address == edge.target)
-                && [
-                    "fixed_tls_get",
-                    "fixed_tls_with",
-                    "fixed_tls_try_with",
-                    "fixed_tls_cell_getter",
-                    "fixed_tls_cell_callback",
-                    "fixed_tls_cell_read",
-                ]
-                .iter()
-                .all(|role| tls.local_chain.contains_key(*role)),
-            "Fixed TLS local function-pointer chain is incomplete or mislabeled as GOT",
-        )?,
-        (None, None, None) if tls.direct_allocation.is_some() => {
-            let proof = tls.direct_allocation.as_ref().unwrap();
-            match image_kind {
-                FixedImageKind::Standalone => validate_direct_allocation_tls_evidence(tls, proof)?,
-                FixedImageKind::Detcore => validate_direct_allocation_tls_evidence_in_image(
-                    tls,
-                    proof,
-                    FixedImageKind::Detcore,
-                )?,
-            }
+    match &backing.tls_boundary {
+        AllocatorInstallationEvidence::Existing(tls) => {
+            validate_existing_allocator_tls_boundary(tls, image_kind)?
         }
-        (None, None, None) => {
-            let extent = match (image_kind, tls.tls_cell.address) {
-                (FixedImageKind::Standalone, 0x40 | 0x80) => Some(186),
-                (FixedImageKind::Detcore, 0x98 | 0xd8 | 0xe8 | 0x128) => Some(241),
-                _ => None,
-            };
-            if let Some(extent) = extent {
-                require(
-                    tls.local_chain
-                        .get("fixed_patch_alloc")
-                        .is_some_and(|s| s.size == extent)
-                        && tls
-                            .local_chain
-                            .get("fixed_tls_fn_once")
-                            .is_some_and(|s| s.size == 22)
-                        && tls
-                            .local_chain
-                            .keys()
-                            .map(String::as_str)
-                            .collect::<BTreeSet<_>>()
-                            == BTreeSet::from(["fixed_patch_alloc", "fixed_tls_fn_once"]),
-                    "new optimized TLS offset lacks its exact None-LocalKey whole chain",
-                )?;
-            }
+        AllocatorInstallationEvidence::NoInstallationScope(proof) => {
+            validate_no_installation_scope_evidence(backing, proof, image_kind)?
         }
-        _ => return Err("Fixed TLS local function-pointer evidence is inconsistent".into()),
-    }
-    if image_kind == FixedImageKind::Standalone
-        && matches!(tls.tls_cell.address, 0x40 | 0x80)
-        && tls.local_key_object.is_some()
-    {
-        let try_with = tls.local_chain.get("fixed_tls_try_with");
-        require(
-            tls.local_chain
-                .get("fixed_patch_alloc")
-                .is_some_and(|s| s.size == 177)
-                && tls
-                    .local_key_object
-                    .is_some_and(|key| key != 0 && key.is_multiple_of(8))
-                && tls.local_key_transfer.as_ref().is_some_and(|edge| {
-                    try_with.is_some_and(|caller| {
-                        caller.address.checked_add(0x15) == Some(edge.instruction)
-                    })
-                })
-                && tls
-                    .local_chain
-                    .keys()
-                    .map(String::as_str)
-                    .collect::<BTreeSet<_>>()
-                    == BTreeSet::from([
-                        "fixed_patch_alloc",
-                        "fixed_installation_active",
-                        "fixed_tls_fn_once",
-                        "fixed_tls_get",
-                        "fixed_tls_with",
-                        "fixed_tls_try_with",
-                        "fixed_tls_cell_getter",
-                        "fixed_tls_cell_callback",
-                        "fixed_tls_cell_read",
-                    ]),
-            "new DEV TLS offset lacks its complete Some-LocalKey whole chain",
-        )?;
     }
     require(
         backing
@@ -17979,6 +21416,265 @@ fn validate_fixed_backing_evidence_in_source_context(
                 .all(|role| backing.functions.contains_key(role)),
         "Fixed backing lacks whole required function/setup evidence",
     )
+}
+
+// Serialized shape only; consumers still requalify the entire physical ELF
+// against independently verified compiled sources and compare the full receipt.
+fn validate_standalone_optimized_d8_tls_pair(tls: &AllocatorTlsBoundary) -> Result<()> {
+    let allocation = tls
+        .local_chain
+        .get("fixed_patch_alloc")
+        .ok_or("standalone d8 pair lacks its allocation role")?;
+    let getter = tls
+        .local_chain
+        .get("fixed_tls_fn_once")
+        .ok_or("standalone d8 pair lacks its getter role")?;
+    let allocation_end = allocation
+        .address
+        .checked_add(186)
+        .ok_or("standalone d8 allocation extent overflows")?;
+    let getter_end = getter
+        .address
+        .checked_add(22)
+        .ok_or("standalone d8 getter extent overflows")?;
+    let roles = BTreeSet::from(["fixed_patch_alloc", "fixed_tls_fn_once"]);
+    require(
+        tls.tls_cell.address == 0xd8
+            && tls.tls_cell.size == 8
+            && tls.tls_cell.binding == sym::STB_LOCAL
+            && canonical_rust_symbol(&tls.tls_cell.name).as_deref() == Some(FIXED_TLS_CELL_ROLE)
+            && tls.local_key_object.is_none()
+            && tls.local_key_transfer.is_none()
+            && tls.local_key_resolution.is_none()
+            && tls.direct_allocation.is_none()
+            && tls
+                .local_chain
+                .keys()
+                .map(String::as_str)
+                .collect::<BTreeSet<_>>()
+                == roles
+            && tls
+                .function_sha256
+                .keys()
+                .map(String::as_str)
+                .collect::<BTreeSet<_>>()
+                == roles
+            && allocation.size == 186
+            && getter.size == 22
+            && allocation.binding == sym::STB_LOCAL
+            && getter.binding == sym::STB_LOCAL
+            && fixed_emitted_role(&allocation.name) == Some("fixed_patch_alloc")
+            && fixed_emitted_role(&getter.name) == Some("fixed_tls_fn_once")
+            && allocation.address != 0
+            && getter.address != 0
+            && (allocation_end <= getter.address || getter_end <= allocation.address)
+            && tls.tls_module_slot != 0
+            && tls.tls_module_slot.is_multiple_of(8)
+            && tls.plt_address != 0
+            && tls.callsites
+                == [
+                    ConstructorTransfer {
+                        instruction: allocation
+                            .address
+                            .checked_add(0x2c)
+                            .ok_or("standalone d8 allocation call overflows")?,
+                        target: tls.plt_address,
+                        local_got_slot: None,
+                    },
+                    ConstructorTransfer {
+                        instruction: getter
+                            .address
+                            .checked_add(8)
+                            .ok_or("standalone d8 getter call overflows")?,
+                        target: tls.plt_address,
+                        local_got_slot: None,
+                    },
+                ],
+        "standalone d8 present-getter boundary lacks its exact None-LocalKey two-role/two-edge shape",
+    )
+}
+
+fn validate_existing_allocator_tls_boundary(
+    tls: &AllocatorTlsBoundary,
+    image_kind: FixedImageKind,
+) -> Result<()> {
+    require(
+        tls.dependency == "existing_installation_depth_tls"
+            && tls.provider_symbol == "__tls_get_addr"
+            && tls.provider_version == "GLIBC_2.3"
+            && tls.provider_library == "ld-linux-x86-64.so.2"
+            && tls.unisolated
+            && tls.tls_cell.binding == sym::STB_LOCAL
+            && canonical_rust_symbol(&tls.tls_cell.name).as_deref() == Some(FIXED_TLS_CELL_ROLE)
+            && match image_kind {
+                FixedImageKind::Standalone => {
+                    matches!(tls.tls_cell.address, 0x40 | 0x48 | 0x80 | 0x88)
+                        // The measured 0x98/d8 DEV getters are admitted only through
+                        // its retained LocalKey route, never a direct or
+                        // optimized absence claim. The complete 177 B chain
+                        // of nine roles and actual indirect edge are required below.
+                        || (matches!(tls.tls_cell.address, 0x98 | 0xd8)
+                            && tls.direct_allocation.is_none()
+                            && tls.local_key_object.is_some()
+                            && tls.local_key_transfer.is_some()
+                            && tls.local_key_resolution.as_deref()
+                                == Some("local_relative_readonly_function_pointer"))
+                        // Optimized d8 is a separate Existing proof. It cannot
+                        // use the DEV LocalKey or default no-evidence arm.
+                        || (tls.tls_cell.address == 0xd8
+                            && tls.direct_allocation.as_ref().is_some_and(|proof| {
+                                proof.version == 3
+                                    && proof.policy == STANDALONE_D8_DIRECT_TLS_CENSUS_POLICY
+                            }))
+                        // The separate measured present-getter pair has no
+                        // LocalKey object or direct-allocation absence claim.
+                        || validate_standalone_optimized_d8_tls_pair(tls).is_ok()
+                }
+                FixedImageKind::Detcore => {
+                    matches!(
+                        tls.tls_cell.address,
+                        0x98 | 0xa0 | 0xd8 | 0xe0 | 0xe8 | 0x128
+                    )
+                }
+            }
+            && tls.tls_cell.size == 8
+            && tls.tls_offset_slot
+                == tls
+                    .tls_module_slot
+                    .checked_add(8)
+                    .ok_or("TLS offset overflows")?
+            && !tls.callsites.is_empty()
+            && tls
+                .callsites
+                .iter()
+                .all(|edge| edge.target == tls.plt_address && edge.local_got_slot.is_none())
+            && tls.local_chain.keys().eq(tls.function_sha256.keys())
+            && tls.local_chain.contains_key("fixed_patch_alloc")
+            && tls
+                .local_chain
+                .values()
+                .all(|symbol| symbol.binding == sym::STB_LOCAL && symbol.size != 0)
+            && tls
+                .function_sha256
+                .values()
+                .chain([&tls.plt_sha256])
+                .all(|hash| hash.len() == 64 && hash.bytes().all(|byte| byte.is_ascii_hexdigit())),
+        "Fixed backing lacks the exact named unisolated TLS boundary",
+    )?;
+    require(
+        tls.direct_allocation.is_none()
+            || (tls.local_key_object.is_none()
+                && tls.local_key_transfer.is_none()
+                && tls.local_key_resolution.is_none()),
+        "direct TLS provenance cannot relabel a LocalKey chain",
+    )?;
+    match (
+        &tls.local_key_object,
+        &tls.local_key_transfer,
+        &tls.local_key_resolution,
+    ) {
+        (Some(_), Some(edge), Some(resolution)) => require(
+            resolution == "local_relative_readonly_function_pointer"
+                && (tls.tls_cell.address == 0x48
+                    || (image_kind == FixedImageKind::Standalone
+                        && matches!(tls.tls_cell.address, 0x40 | 0x80 | 0x98 | 0xd8)))
+                && edge.local_got_slot.is_none()
+                && tls
+                    .local_chain
+                    .get("fixed_tls_fn_once")
+                    .is_some_and(|symbol| symbol.address == edge.target)
+                && [
+                    "fixed_tls_get",
+                    "fixed_tls_with",
+                    "fixed_tls_try_with",
+                    "fixed_tls_cell_getter",
+                    "fixed_tls_cell_callback",
+                    "fixed_tls_cell_read",
+                ]
+                .iter()
+                .all(|role| tls.local_chain.contains_key(*role)),
+            "Fixed TLS local function-pointer chain is incomplete or mislabeled as GOT",
+        )?,
+        (None, None, None) if tls.direct_allocation.is_some() => {
+            let proof = tls.direct_allocation.as_ref().unwrap();
+            match image_kind {
+                FixedImageKind::Standalone => validate_direct_allocation_tls_evidence(tls, proof)?,
+                FixedImageKind::Detcore => validate_direct_allocation_tls_evidence_in_image(
+                    tls,
+                    proof,
+                    FixedImageKind::Detcore,
+                )?,
+            }
+        }
+        (None, None, None)
+            if image_kind == FixedImageKind::Standalone && tls.tls_cell.address == 0xd8 =>
+        {
+            validate_standalone_optimized_d8_tls_pair(tls)?;
+        }
+        (None, None, None) => {
+            let extent = match (image_kind, tls.tls_cell.address) {
+                (FixedImageKind::Standalone, 0x40 | 0x80) => Some(186),
+                (FixedImageKind::Detcore, 0x98 | 0xd8 | 0xe8 | 0x128) => Some(241),
+                _ => None,
+            };
+            if let Some(extent) = extent {
+                require(
+                    tls.local_chain
+                        .get("fixed_patch_alloc")
+                        .is_some_and(|s| s.size == extent)
+                        && tls
+                            .local_chain
+                            .get("fixed_tls_fn_once")
+                            .is_some_and(|s| s.size == 22)
+                        && tls
+                            .local_chain
+                            .keys()
+                            .map(String::as_str)
+                            .collect::<BTreeSet<_>>()
+                            == BTreeSet::from(["fixed_patch_alloc", "fixed_tls_fn_once"]),
+                    "new optimized TLS offset lacks its exact None-LocalKey whole chain",
+                )?;
+            }
+        }
+        _ => return Err("Fixed TLS local function-pointer evidence is inconsistent".into()),
+    }
+    if image_kind == FixedImageKind::Standalone
+        && matches!(tls.tls_cell.address, 0x40 | 0x80 | 0x98 | 0xd8)
+        && tls.local_key_object.is_some()
+    {
+        let try_with = tls.local_chain.get("fixed_tls_try_with");
+        require(
+            tls.local_chain
+                .get("fixed_patch_alloc")
+                .is_some_and(|s| s.size == 177)
+                && tls
+                    .local_key_object
+                    .is_some_and(|key| key != 0 && key.is_multiple_of(8))
+                && tls.local_key_transfer.as_ref().is_some_and(|edge| {
+                    try_with.is_some_and(|caller| {
+                        caller.address.checked_add(0x15) == Some(edge.instruction)
+                    })
+                })
+                && tls
+                    .local_chain
+                    .keys()
+                    .map(String::as_str)
+                    .collect::<BTreeSet<_>>()
+                    == BTreeSet::from([
+                        "fixed_patch_alloc",
+                        "fixed_installation_active",
+                        "fixed_tls_fn_once",
+                        "fixed_tls_get",
+                        "fixed_tls_with",
+                        "fixed_tls_try_with",
+                        "fixed_tls_cell_getter",
+                        "fixed_tls_cell_callback",
+                        "fixed_tls_cell_read",
+                    ]),
+            "new DEV TLS offset lacks its complete Some-LocalKey whole chain",
+        )?;
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -18038,7 +21734,7 @@ fn qualify_fixed_allocator_in_source_context(
         ]),
     )?;
     let disassembly = gate_view.as_str();
-    let mut roles = fixed_role_symbols(elf)?;
+    let mut roles = fixed_role_symbols_in_file(elf, bytes)?;
     if image_kind == FixedImageKind::Detcore {
         add_fixed_native_owner(elf, &mut roles)?;
     }
@@ -18054,15 +21750,30 @@ fn qualify_fixed_allocator_in_source_context(
             )?;
         }
     }
-    let tls = qualify_allocator_tls_boundary_in_source_context(
-        elf,
-        bytes,
-        code,
-        disassembly,
-        got,
-        image_kind,
-        sources,
-    )?;
+    let no_scope_extent = match image_kind {
+        FixedImageKind::Detcore => 101,
+        FixedImageKind::Standalone => 62,
+    };
+    let tls = if code
+        .get(&roles["fixed_patch_alloc"].st_value)
+        .is_some_and(|body| body.len() == no_scope_extent)
+    {
+        AllocatorInstallationEvidence::NoInstallationScope(Box::new(
+            derive_no_installation_scope_evidence(elf, bytes, code, &roles, sources)?,
+        ))
+    } else {
+        AllocatorInstallationEvidence::Existing(Box::new(
+            qualify_allocator_tls_boundary_in_source_context(
+                elf,
+                bytes,
+                code,
+                disassembly,
+                got,
+                image_kind,
+                sources,
+            )?,
+        ))
+    };
     let context = fixed_machine_context(
         (elf, bytes),
         code,
@@ -18105,20 +21816,33 @@ fn qualify_fixed_allocator_in_source_context(
             .ok_or("Fixed compiler shim lacks full bytes")?;
         let dev = shim_code.len() > 22;
         let edges = if image_kind == FixedImageKind::Detcore {
-            fixed_detcore_compiler_shim_recipe(
-                DETCORE_ROOT,
-                shim,
-                shim_symbol.st_value,
-                shim_code,
-                implementation.st_value,
-                DetcoreRecipeBindings {
-                    targets: &context.targets,
-                    got,
-                    readonly: &context.readonly,
-                    context: &context.compiled_filenames,
-                },
-                tls.tls_cell.address,
-            )?
+            let bindings = DetcoreRecipeBindings {
+                targets: &context.targets,
+                got,
+                readonly: &context.readonly,
+                context: &context.compiled_filenames,
+            };
+            if let Some(tls) = tls.existing() {
+                fixed_detcore_compiler_shim_recipe(
+                    DETCORE_ROOT,
+                    shim,
+                    shim_symbol.st_value,
+                    shim_code,
+                    implementation.st_value,
+                    bindings,
+                    tls.tls_cell.address,
+                )?
+            } else {
+                fixed_compiler_shim_recipe_in_scope(
+                    DETCORE_ROOT,
+                    shim,
+                    shim_symbol.st_value,
+                    shim_code,
+                    implementation.st_value,
+                    bindings,
+                    None,
+                )?
+            }
         } else {
             fixed_compiler_shim_recipe(
                 shim,
@@ -18180,7 +21904,7 @@ fn qualify_fixed_allocator_in_source_context(
             },
         );
     }
-    let preparation = preparation_symbols(elf)?;
+    let preparation = preparation_symbols(elf, bytes)?;
     let allowed = preparation.values().map(|symbol| symbol.st_value).collect();
     let mut owned_setup_transfers = BTreeMap::new();
     let mut owned_setup_got_edges = Vec::new();
@@ -21395,6 +25119,163 @@ const DETCORE_VALIDATE_TEMPLATES: &[DetcoreValidateTemplate] = &[
         transfers: &[(110, 1), (173, 3), (265, 4), (289, 5), (324, 7)],
     },
 ];
+// Distinct from every historical TLS-bearing241B recipe. Measured in the true
+// Git840 native OFF DSO c4157195: full101B, b62a329a... before address binding.
+// The only masked fields are the six bound RIP operands below.
+const ALLOCATION101_BYTES: DetcoreValidateTemplate = DetcoreValidateTemplate {
+    role: "fixed_patch_alloc",
+    hex: "415653504889d34989f6ff1530293b004885c07427488b702040f6c60775274885f67434bf010000004c89f64889da4883c4085b415eff2594293b0031c04883c4085b415ec3488d1553fa3700bf08000000ff1598073b00488d3d41fa3700ff15231a3b00",
+    operands: &[
+        DetcoreValidateOperand {
+            displacement: 12,
+            next: 16,
+            key: "fixed_arena_backing",
+            got: true,
+        },
+        DetcoreValidateOperand {
+            displacement: 56,
+            next: 60,
+            key: "fixed_tool_alloc",
+            got: true,
+        },
+        DetcoreValidateOperand {
+            displacement: 73,
+            next: 77,
+            key: "fixed_detcore_validate_fixed_patch_alloc_207_data",
+            got: false,
+        },
+        DetcoreValidateOperand {
+            displacement: 84,
+            next: 88,
+            key: "fixed_heap_panic_misaligned",
+            got: true,
+        },
+        DetcoreValidateOperand {
+            displacement: 91,
+            next: 95,
+            key: "fixed_detcore_validate_fixed_patch_alloc_228_data",
+            got: false,
+        },
+        DetcoreValidateOperand {
+            displacement: 97,
+            next: 101,
+            key: "fixed_panic_null_reference",
+            got: true,
+        },
+    ],
+    transfers: &[(10, 0), (54, 1), (82, 3), (95, 5)],
+};
+fn allocation101_shape(bytes: &[u8]) -> bool {
+    fixed_template_shape(
+        bytes,
+        &fixed_hex(ALLOCATION101_BYTES.hex),
+        ALLOCATION101_BYTES
+            .operands
+            .iter()
+            .map(|operand| operand.displacement),
+    )
+}
+// Actual nonfixture standalone OFF release image fb366892 retains this entire
+//62B/22-instruction body. Only its two RIP operands vary; both must bind the
+// existing exact local Fixed backing/tool allocator roles through protected GOT.
+const STANDALONE_NO_SCOPE_ALLOC62: &str = "415653504889d34989f6ff15000000004885c0741f48837820007418bf010000004c89f64889da4883c4085b415eff250000000031c04883c4085b415ec3";
+fn standalone_no_scope_allocation_shape(bytes: &[u8]) -> bool {
+    fixed_template_shape(
+        bytes,
+        &fixed_hex(STANDALONE_NO_SCOPE_ALLOC62),
+        [12, 48].into_iter(),
+    )
+}
+fn fixed_standalone_no_scope_allocation_recipe(
+    address: u64,
+    bytes: &[u8],
+    targets: &BTreeMap<String, u64>,
+    got: &BTreeMap<u64, u64>,
+) -> Result<Vec<ConstructorTransfer>> {
+    let mut fields = Vec::new();
+    let mut transfers = Vec::new();
+    for (displacement, next, pc, role) in [
+        (12, 16, 10, "fixed_arena_backing"),
+        (48, 52, 46, "fixed_tool_alloc"),
+    ] {
+        let target = *targets
+            .get(role)
+            .ok_or("standalone62 typed target absent")?;
+        require(target != 0, "standalone62 typed target is null")?;
+        let slot = fixed_rip_target(address, bytes, displacement, next)?;
+        require(
+            got.get(&slot) == Some(&target),
+            "standalone62 operand loses its exact LOCAL RELATIVE/RELRO target",
+        )?;
+        fields.push((displacement, next, slot));
+        transfers.push(ConstructorTransfer {
+            instruction: address
+                .checked_add(pc)
+                .ok_or("standalone62 transfer overflows")?,
+            target,
+            local_got_slot: Some(slot),
+        });
+    }
+    fixed_whole_recipe(address, bytes, STANDALONE_NO_SCOPE_ALLOC62, &fields)?;
+    Ok(transfers)
+}
+fn fixed_allocation101_recipe(
+    address: u64,
+    bytes: &[u8],
+    DetcoreRecipeBindings {
+        targets,
+        got,
+        readonly,
+        context,
+    }: DetcoreRecipeBindings<'_>,
+) -> Result<Vec<ConstructorTransfer>> {
+    require(
+        allocation101_shape(bytes),
+        "unknown whole no-scope allocation recipe",
+    )?;
+    let mut fields = Vec::new();
+    let mut resolved = Vec::new();
+    for operand in ALLOCATION101_BYTES.operands {
+        let expected = *targets
+            .get(operand.key)
+            .ok_or_else(|| format!("unbound no-scope allocation operand {}", operand.key))?;
+        require(expected != 0, "null no-scope allocation typed operand")?;
+        let actual = fixed_rip_target(address, bytes, operand.displacement, operand.next)?;
+        if operand.got {
+            require(
+                got.get(&actual) == Some(&expected),
+                "no-scope allocation loses exact local RELATIVE/RELRO callee",
+            )?;
+            fields.push((operand.displacement, operand.next, actual));
+        } else {
+            let spec = DETCORE_VALIDATE_DATA
+                .iter()
+                .find(|spec| spec.key == operand.key)
+                .ok_or("no-scope allocation readonly specification absent")?;
+            detcore_validate_readonly_recipe(spec, expected, targets, readonly, context)?;
+            fields.push((operand.displacement, operand.next, expected));
+        }
+        resolved.push((expected, operand.got.then_some(actual)));
+    }
+    fixed_whole_recipe(address, bytes, ALLOCATION101_BYTES.hex, &fields)?;
+    ALLOCATION101_BYTES
+        .transfers
+        .iter()
+        .map(|&(pc, index)| {
+            let &(target, local_got_slot) = resolved
+                .get(index)
+                .ok_or("no-scope transfer lacks operand")?;
+            Ok(ConstructorTransfer {
+                instruction: address
+                    .checked_add(pc as u64)
+                    .ok_or("no-scope transfer overflow")?,
+                target,
+                local_got_slot,
+            })
+        })
+        .collect()
+}
+
 struct DetcoreRecipeBindings<'a> {
     targets: &'a BTreeMap<String, u64>,
     got: &'a BTreeMap<u64, u64>,
@@ -21432,6 +25313,31 @@ fn fixed_detcore_validate_recipe_identity(
     }: DetcoreRecipeBindings<'_>,
     tls_cell_offset: u64,
 ) -> Result<DetcoreRecipeIdentity> {
+    fixed_validate_recipe_in_scope(
+        role,
+        address,
+        bytes,
+        DetcoreRecipeBindings {
+            targets,
+            got,
+            readonly,
+            context,
+        },
+        Some(tls_cell_offset),
+    )
+}
+fn fixed_validate_recipe_in_scope(
+    role: &str,
+    address: u64,
+    bytes: &[u8],
+    DetcoreRecipeBindings {
+        targets,
+        got,
+        readonly,
+        context,
+    }: DetcoreRecipeBindings<'_>,
+    tls_cell_offset: Option<u64>,
+) -> Result<DetcoreRecipeIdentity> {
     let candidates: Vec<_> = DETCORE_VALIDATE_TEMPLATES
         .iter()
         .enumerate()
@@ -21461,7 +25367,8 @@ fn fixed_detcore_validate_recipe_identity(
                 .unwrap(),
         );
         require(
-            u64::from(encoded) == tls_cell_offset,
+            u64::from(encoded)
+                == tls_cell_offset.ok_or("TLS recipe cannot use no-scope evidence")?,
             "validate TLS read differs from authenticated exact LOCAL8 cell",
         )?;
     }
@@ -21542,6 +25449,35 @@ fn fixed_detcore_compiler_shim_recipe(
     }: DetcoreRecipeBindings<'_>,
     tls_cell_offset: u64,
 ) -> Result<Vec<ConstructorTransfer>> {
+    fixed_compiler_shim_recipe_in_scope(
+        expected_root,
+        shim,
+        address,
+        bytes,
+        implementation,
+        DetcoreRecipeBindings {
+            targets,
+            got,
+            readonly,
+            context,
+        },
+        Some(tls_cell_offset),
+    )
+}
+fn fixed_compiler_shim_recipe_in_scope(
+    expected_root: &str,
+    shim: &str,
+    address: u64,
+    bytes: &[u8],
+    implementation: u64,
+    DetcoreRecipeBindings {
+        targets,
+        got,
+        readonly,
+        context,
+    }: DetcoreRecipeBindings<'_>,
+    tls_cell_offset: Option<u64>,
+) -> Result<Vec<ConstructorTransfer>> {
     require(
         expected_root == DETCORE_ROOT,
         "Detcore shim recipe requested by wrong constructor contract",
@@ -21557,7 +25493,7 @@ fn fixed_detcore_compiler_shim_recipe(
         implementation != 0 && targets.get(method) == Some(&implementation),
         "Detcore shim lacks the selected exact typed implementation",
     )?;
-    let edges = fixed_detcore_validate_recipe(
+    let edges = fixed_validate_recipe_in_scope(
         shim,
         address,
         bytes,
@@ -21568,7 +25504,8 @@ fn fixed_detcore_compiler_shim_recipe(
             context,
         },
         tls_cell_offset,
-    )?;
+    )?
+    .edges;
     require(
         edges.len() == 2
             && edges[0].target == implementation
@@ -21925,7 +25862,7 @@ fn fixed_machine_context(
     got: &BTreeMap<u64, u64>,
     shims: &BTreeMap<String, sym::Sym>,
     record: &ImmutableAllocatorObject,
-    tls: &AllocatorTlsBoundary,
+    tls: &AllocatorInstallationEvidence,
     (image_kind, sources, roles): (
         FixedImageKind,
         Option<&VerifiedCompiledSources>,
@@ -21942,11 +25879,13 @@ fn fixed_machine_context(
         .iter()
         .map(|(role, s)| (role.clone(), s.st_value))
         .collect();
-    targets.insert("fixed_tls_get_addr_plt".into(), tls.plt_address);
-    targets.insert(
-        "fixed_publication_tls_descriptor".into(),
-        tls.tls_module_slot,
-    );
+    if let Some(tls) = tls.existing() {
+        targets.insert("fixed_tls_get_addr_plt".into(), tls.plt_address);
+        targets.insert(
+            "fixed_publication_tls_descriptor".into(),
+            tls.tls_module_slot,
+        );
+    }
     let mut readonly = BTreeMap::new();
     let mut readonly_evidence = BTreeMap::new();
     let mut selection_objects = BTreeMap::new();
@@ -22016,6 +25955,7 @@ fn fixed_machine_context(
             }
             let templates: Vec<_> = DETCORE_VALIDATE_TEMPLATES
                 .iter()
+                .chain(tls.existing().is_none().then_some(&ALLOCATION101_BYTES))
                 .filter(|t| {
                     t.role == role
                         && fixed_template_shape(
@@ -22346,6 +26286,7 @@ pub struct FixedGuardedTerminal {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum AuthenticatedDetcoreOperationKind {
     ValidateTemplate(usize),
+    NoInstallationScopeAlloc101,
     NativeFixedSyscall3,
     NativeFixedSyscall6,
 }
@@ -22354,6 +26295,34 @@ struct AuthenticatedDetcoreOperation {
     address: u64,
     kind: AuthenticatedDetcoreOperationKind,
     edges: Vec<ConstructorTransfer>,
+}
+fn fixed_no_scope_qualified_operation(
+    role: &str,
+    address: u64,
+    (bytes, instructions): (&[u8], &[EncodedConstructorInstruction]),
+    bindings: DetcoreRecipeBindings<'_>,
+    internal_switch: bool,
+) -> Result<AuthenticatedDetcoreOperation> {
+    let got = bindings.got;
+    let (kind, edges) = if role == "fixed_patch_alloc" {
+        (
+            AuthenticatedDetcoreOperationKind::NoInstallationScopeAlloc101,
+            fixed_allocation101_recipe(address, bytes, bindings)?,
+        )
+    } else {
+        let recipe = fixed_validate_recipe_in_scope(role, address, bytes, bindings, None)?;
+        (
+            AuthenticatedDetcoreOperationKind::ValidateTemplate(recipe.template_index),
+            recipe.edges,
+        )
+    };
+    fixed_census_transfers(instructions, address, bytes, &edges, got, internal_switch)?;
+    Ok(AuthenticatedDetcoreOperation {
+        role: role.into(),
+        address,
+        kind,
+        edges,
+    })
 }
 
 fn fixed_detcore_qualified_operation(
@@ -22713,9 +26682,10 @@ fn qualify_fixed_operation_closure(
     got: &BTreeMap<u64, u64>,
     roles: &BTreeMap<String, sym::Sym>,
     context: &FixedMachineContext,
-    tls: &AllocatorTlsBoundary,
+    tls: &AllocatorInstallationEvidence,
     (image_kind, _sources): (FixedImageKind, Option<&VerifiedCompiledSources>),
 ) -> Result<FixedOperationClosure> {
+    let existing_tls = tls.existing();
     let mut pending = FIXED_REQUIRED_ROLES
         .iter()
         .map(|role| roles[*role].st_value)
@@ -22829,19 +26799,31 @@ fn qualify_fixed_operation_closure(
                 }
             }
             if image_kind == FixedImageKind::Detcore && address != trusted.st_value {
-                match fixed_detcore_qualified_operation(
-                    role,
-                    address,
-                    (actual, &instructions),
-                    DetcoreRecipeBindings {
-                        targets: &context.targets,
-                        got,
-                        readonly: &context.readonly,
-                        context: &context.compiled_filenames,
-                    },
-                    tls.tls_cell.address,
-                    internal_switch,
-                ) {
+                let bindings = DetcoreRecipeBindings {
+                    targets: &context.targets,
+                    got,
+                    readonly: &context.readonly,
+                    context: &context.compiled_filenames,
+                };
+                let qualified = if let Some(tls) = existing_tls {
+                    fixed_detcore_qualified_operation(
+                        role,
+                        address,
+                        (actual, &instructions),
+                        bindings,
+                        tls.tls_cell.address,
+                        internal_switch,
+                    )
+                } else {
+                    fixed_no_scope_qualified_operation(
+                        role,
+                        address,
+                        (actual, &instructions),
+                        bindings,
+                        internal_switch,
+                    )
+                };
+                match qualified {
                     Ok(witness) => {
                         chosen = Some((role.clone(), witness.edges.clone()));
                         require(
@@ -22854,19 +26836,25 @@ fn qualify_fixed_operation_closure(
                 }
                 continue;
             }
-            let attempts = if image_kind == FixedImageKind::Detcore {
-                vec![fixed_detcore_validate_recipe(
-                    role,
-                    address,
-                    actual,
-                    DetcoreRecipeBindings {
-                        targets: &context.targets,
-                        got,
-                        readonly: &context.readonly,
-                        context: &context.compiled_filenames,
-                    },
-                    tls.tls_cell.address,
-                )]
+            let mut attempts = if image_kind == FixedImageKind::Detcore {
+                let bindings = DetcoreRecipeBindings {
+                    targets: &context.targets,
+                    got,
+                    readonly: &context.readonly,
+                    context: &context.compiled_filenames,
+                };
+                vec![if let Some(tls) = existing_tls {
+                    fixed_detcore_validate_recipe(
+                        role,
+                        address,
+                        actual,
+                        bindings,
+                        tls.tls_cell.address,
+                    )
+                } else {
+                    fixed_validate_recipe_in_scope(role, address, actual, bindings, None)
+                        .map(|identity| identity.edges)
+                }]
             } else {
                 vec![
                     fixed_wrapper_recipe(
@@ -22897,6 +26885,23 @@ fn qualify_fixed_operation_closure(
                     fixed_scalar_helper_recipe(role, address, actual, got, trusted.st_value),
                 ]
             };
+            if image_kind == FixedImageKind::Standalone
+                && role == "fixed_patch_alloc"
+                && matches!(tls, AllocatorInstallationEvidence::NoInstallationScope(proof)
+                    if (proof.version == 1 && proof.current_build.consumer_policy
+                        .label(ConsumerRecipe::Allocation62, ConsumerRecipe::Allocation62.policy())
+                        .is_ok_and(|label| label == proof.policy))
+                        || (proof.version == 2 && proof.current_build.consumer_policy
+                        .label(ConsumerRecipe::Allocation62, SEMANTIC_STANDALONE_NO_SCOPE_POLICY)
+                        .is_ok_and(|label| label == proof.policy)))
+            {
+                attempts.push(fixed_standalone_no_scope_allocation_recipe(
+                    address,
+                    actual,
+                    &context.targets,
+                    got,
+                ));
+            }
             let mut valid = None;
             for attempt in attempts {
                 match attempt {
@@ -22912,12 +26917,13 @@ fn qualify_fixed_operation_closure(
                 break;
             }
             if image_kind == FixedImageKind::Standalone
-                && tls
-                    .local_chain
-                    .get(role)
-                    .is_some_and(|s| s.address == address && s.size == symbol.st_size)
+                && existing_tls.is_some_and(|tls| {
+                    tls.local_chain
+                        .get(role)
+                        .is_some_and(|s| s.address == address && s.size == symbol.st_size)
+                })
             {
-                match fixed_tls_transfers(role, symbol, &instructions, tls, got) {
+                match fixed_tls_transfers(role, symbol, &instructions, existing_tls.unwrap(), got) {
                     Ok(edges) => {
                         chosen = Some((role.clone(), edges));
                         break;
@@ -22974,7 +26980,7 @@ fn qualify_fixed_operation_closure(
                 )?;
                 continue;
             }
-            if edge.target == tls.plt_address {
+            if let Some(tls) = existing_tls.filter(|tls| edge.target == tls.plt_address) {
                 require(
                     tls.callsites.iter().any(|actual| actual == edge),
                     "Fixed allocator adds an unproved external TLS call",
@@ -23032,6 +27038,17 @@ fn qualify_fixed_operation_closure(
         "Fixed closure omits a compiler operation or fresh setup",
     )?;
     if image_kind == FixedImageKind::Detcore {
+        if existing_tls.is_none() {
+            require(
+                detcore_witnesses
+                    .get("fixed_patch_alloc")
+                    .is_some_and(|witness| {
+                        witness.kind
+                            == AuthenticatedDetcoreOperationKind::NoInstallationScopeAlloc101
+                    }),
+                "no-scope closure lacks its complete authenticated101B allocation",
+            )?;
+        }
         let selected = roles
             .iter()
             .map(|(role, symbol)| (role.clone(), symbol.st_value))
@@ -23125,6 +27142,7 @@ fn called_shim_path(
 fn qualify_inline_route(
     key: &str,
     elf: &Elf<'_>,
+    bytes: &[u8],
     entry: &SymbolEvidence,
     shim: &SymbolEvidence,
     graph: &CallGraph,
@@ -23135,7 +27153,7 @@ fn qualify_inline_route(
         "m1_alloc->__rust_alloc_zeroed" => "fixed_patch_alloc_zeroed",
         _ => return Err("unsupported optimized allocation route".to_owned()),
     };
-    let roles = fixed_role_symbols(elf)?;
+    let roles = fixed_role_symbols_in_file(elf, bytes)?;
     let endpoint = &roles[endpoint_role];
     let wrappers = elf
         .syms
@@ -24334,7 +28352,7 @@ fn unique_standalone_slot(root_slots: &[u64], generic_slots: &[u64]) -> Result<u
     Ok(root_slots[0])
 }
 
-fn standalone_symbols(elf: &Elf<'_>) -> Result<BTreeMap<String, sym::Sym>> {
+fn standalone_symbols(elf: &Elf<'_>, bytes: &[u8]) -> Result<BTreeMap<String, sym::Sym>> {
     require_legacy_standalone_gate(elf)?;
     let mut symbols = BTreeMap::new();
     for name in [
@@ -24350,7 +28368,7 @@ fn standalone_symbols(elf: &Elf<'_>) -> Result<BTreeMap<String, sym::Sym>> {
     }
     // Whole private typed owner helpers remain source-bound preparation roles.
     // They confer no supplied-body target or compiler-frame dispatch proof.
-    symbols.extend(preparation_symbols(elf)?);
+    symbols.extend(preparation_symbols(elf, bytes)?);
     add_fixed_native_selector(elf, &mut symbols)?;
     add_fixed_native_owner(elf, &mut symbols)?;
     // This cannot be inferred from an rlib/no_mangle declaration. Require the
@@ -24429,7 +28447,7 @@ fn detcore_public_initializer(elf: &Elf<'_>) -> Result<sym::Sym> {
     Ok(root)
 }
 
-fn detcore_symbols(elf: &Elf<'_>) -> Result<BTreeMap<String, sym::Sym>> {
+fn detcore_symbols(elf: &Elf<'_>, bytes: &[u8]) -> Result<BTreeMap<String, sym::Sym>> {
     let mut symbols = BTreeMap::from([(DETCORE_ROOT.to_owned(), detcore_public_initializer(elf)?)]);
     for name in [
         DETCORE_BODY,
@@ -24444,7 +28462,7 @@ fn detcore_symbols(elf: &Elf<'_>) -> Result<BTreeMap<String, sym::Sym>> {
         )?;
         symbols.insert(name.to_owned(), function);
     }
-    symbols.extend(preparation_symbols(elf)?);
+    symbols.extend(preparation_symbols(elf, bytes)?);
     add_fixed_native_selector(elf, &mut symbols)?;
     add_fixed_native_owner(elf, &mut symbols)?;
     require_disjoint_bootstrap_roles(&symbols)?;
@@ -24473,7 +28491,7 @@ fn detcore_init_slot(
                 .ok_or("Detcore native role extent overflow")?,
         ));
     }
-    let generic = generic_symbols(elf)?;
+    let generic = generic_symbols(elf, bytes)?;
     for name in [
         GENERIC_INITIALIZER,
         GENERIC_BODY,
@@ -24678,7 +28696,7 @@ fn generic_public_initializer(elf: &Elf<'_>) -> Result<sym::Sym> {
     Ok(initializer)
 }
 
-fn generic_symbols(elf: &Elf<'_>) -> Result<BTreeMap<String, sym::Sym>> {
+fn generic_symbols(elf: &Elf<'_>, bytes: &[u8]) -> Result<BTreeMap<String, sym::Sym>> {
     let mut symbols = BTreeMap::from([(
         GENERIC_INITIALIZER.to_owned(),
         generic_public_initializer(elf)?,
@@ -24704,7 +28722,7 @@ fn generic_symbols(elf: &Elf<'_>) -> Result<BTreeMap<String, sym::Sym>> {
         CONSTRUCTOR_GATE_OWNER.to_owned(),
         private_function(elf, CONSTRUCTOR_GATE_OWNER)?,
     );
-    symbols.extend(preparation_symbols(elf)?);
+    symbols.extend(preparation_symbols(elf, bytes)?);
     add_fixed_native_selector(elf, &mut symbols)?;
     add_fixed_native_owner(elf, &mut symbols)?;
     // Roles must own distinct complete functions. Alias names or overlapping
@@ -24738,9 +28756,9 @@ fn require_disjoint_bootstrap_roles(symbols: &BTreeMap<String, sym::Sym>) -> Res
     Ok(())
 }
 
-fn combined_bootstrap_symbols(elf: &Elf<'_>) -> Result<BTreeMap<String, sym::Sym>> {
-    let mut symbols = standalone_symbols(elf)?;
-    for (name, function) in generic_symbols(elf)? {
+fn combined_bootstrap_symbols(elf: &Elf<'_>, bytes: &[u8]) -> Result<BTreeMap<String, sym::Sym>> {
+    let mut symbols = standalone_symbols(elf, bytes)?;
+    for (name, function) in generic_symbols(elf, bytes)? {
         if let Some(shared) = symbols.get(&name) {
             require(
                 shared.st_value == function.st_value
@@ -24913,7 +28931,7 @@ fn preparation_role(name: &str) -> Option<&'static str> {
     }
 }
 
-fn preparation_symbols(elf: &Elf<'_>) -> Result<BTreeMap<String, sym::Sym>> {
+fn preparation_symbols(elf: &Elf<'_>, bytes: &[u8]) -> Result<BTreeMap<String, sym::Sym>> {
     let mut result = BTreeMap::new();
     let mut roles = BTreeSet::new();
     for symbol in elf.syms.iter().filter(|s| executable_symbol(elf, s)) {
@@ -24950,7 +28968,7 @@ fn preparation_symbols(elf: &Elf<'_>) -> Result<BTreeMap<String, sym::Sym>> {
             result.insert(name.to_owned(), symbol);
         }
     }
-    for (role, symbol) in fixed_role_symbols(elf)? {
+    for (role, symbol) in fixed_role_symbols_in_file(elf, bytes)? {
         if owned_fixed_setup_role(&role)
             || role == "fixed_panic_nounwind_fmt"
             || PUBLICATION_PREPARATION_ROLES.contains(&role.as_str())
@@ -25377,7 +29395,11 @@ const MAX_OBJDUMP_BYTES: usize = 64 * 1024 * 1024;
 /// The complete node union admitted by the existing required-route and named
 /// allocator graphs. Scope is derived from the ELF, not a receipt or a successful
 /// path: unchosen alternatives remain part of the required byte evidence.
-fn proof_functions(elf: &Elf<'_>, initializer_name: &str) -> Result<BTreeMap<u64, u64>> {
+fn proof_functions(
+    elf: &Elf<'_>,
+    bytes: &[u8],
+    initializer_name: &str,
+) -> Result<BTreeMap<u64, u64>> {
     if initializer_name == STANDALONE_ROOT {
         require_legacy_standalone_gate(elf)?;
     }
@@ -25399,7 +29421,12 @@ fn proof_functions(elf: &Elf<'_>, initializer_name: &str) -> Result<BTreeMap<u64
         })
         .collect();
     addresses.extend(
-        fixed_role_symbols(elf)?
+        fixed_role_symbols_in_file(elf, bytes)?
+            .values()
+            .map(|symbol| symbol.st_value),
+    );
+    addresses.extend(
+        fixed_heap_max_candidates(elf)?
             .values()
             .map(|symbol| symbol.st_value),
     );
@@ -25408,13 +29435,13 @@ fn proof_functions(elf: &Elf<'_>, initializer_name: &str) -> Result<BTreeMap<u64
         addresses.insert(export(elf, name)?.1.st_value);
     }
     if initializer_name == STANDALONE_ROOT {
-        addresses.extend(constructor_proof_functions(elf)?.keys().copied());
+        addresses.extend(constructor_proof_functions(elf, bytes)?.keys().copied());
     } else if initializer_name == DETCORE_ROOT {
-        addresses.extend(detcore_proof_functions(elf)?.keys().copied());
+        addresses.extend(detcore_proof_functions(elf, bytes)?.keys().copied());
     } else {
         addresses.insert(export(elf, initializer_name)?.1.st_value);
     }
-    addresses.extend(generic_symbols(elf)?.values().map(|s| s.st_value));
+    addresses.extend(generic_symbols(elf, bytes)?.values().map(|s| s.st_value));
     for shim in SHIMS {
         let candidates: Vec<_> = elf
             .syms
@@ -25437,12 +29464,17 @@ fn proof_functions(elf: &Elf<'_>, initializer_name: &str) -> Result<BTreeMap<u64
 
 /// The standalone constructor scope is independent of diagnostic M1 exports,
 /// but retains every private constructor and generic bootstrap role.
-fn constructor_proof_functions(elf: &Elf<'_>) -> Result<BTreeMap<u64, u64>> {
+fn constructor_proof_functions(elf: &Elf<'_>, bytes: &[u8]) -> Result<BTreeMap<u64, u64>> {
     require_legacy_standalone_gate(elf)?;
-    let addresses = combined_bootstrap_symbols(elf)?
+    let addresses = combined_bootstrap_symbols(elf, bytes)?
         .values()
         .map(|s| s.st_value)
-        .chain(fixed_role_symbols(elf)?.values().map(|s| s.st_value))
+        .chain(
+            fixed_role_symbols_in_file(elf, bytes)?
+                .values()
+                .map(|s| s.st_value),
+        )
+        .chain(fixed_heap_max_candidates(elf)?.values().map(|s| s.st_value))
         .chain(
             fixed_heap_equal_candidates(elf)?
                 .values()
@@ -25453,9 +29485,9 @@ fn constructor_proof_functions(elf: &Elf<'_>) -> Result<BTreeMap<u64, u64>> {
     selected_function_ranges(elf, addresses)
 }
 
-fn detcore_proof_functions(elf: &Elf<'_>) -> Result<BTreeMap<u64, u64>> {
-    let mut symbols = detcore_symbols(elf)?;
-    for (name, function) in generic_symbols(elf)? {
+fn detcore_proof_functions(elf: &Elf<'_>, bytes: &[u8]) -> Result<BTreeMap<u64, u64>> {
+    let mut symbols = detcore_symbols(elf, bytes)?;
+    for (name, function) in generic_symbols(elf, bytes)? {
         if let Some(shared) = symbols.get(&name) {
             require(
                 *shared == function,
@@ -25469,7 +29501,12 @@ fn detcore_proof_functions(elf: &Elf<'_>) -> Result<BTreeMap<u64, u64>> {
     let addresses = symbols
         .values()
         .map(|s| s.st_value)
-        .chain(fixed_role_symbols(elf)?.values().map(|s| s.st_value))
+        .chain(
+            fixed_role_symbols_in_file(elf, bytes)?
+                .values()
+                .map(|s| s.st_value),
+        )
+        .chain(fixed_heap_max_candidates(elf)?.values().map(|s| s.st_value))
         .chain(compiler_shim_symbols(elf)?.values().map(|s| s.st_value))
         .collect();
     selected_function_ranges(elf, addresses)
@@ -26443,7 +30480,7 @@ fn qualify_standalone_constructor(
     disassembly: &str,
     got: &BTreeMap<u64, u64>,
 ) -> Result<StandaloneConstructorEvidence> {
-    let symbols = standalone_symbols(elf)?;
+    let symbols = standalone_symbols(elf, bytes)?;
     let symbol = |name| symbol_evidence(name, &symbols[name]);
     let address = |name| symbols[name].st_value;
     let prefix = standalone_prefix(
@@ -26474,7 +30511,7 @@ fn qualify_standalone_constructor(
         fixed_native_gate.as_ref(),
         &symbol_evidence(CONSTRUCTOR_GATE, &gate_label),
     )?;
-    let preparation_helpers = preparation_symbols(elf)?;
+    let preparation_helpers = preparation_symbols(elf, bytes)?;
     let initializing: Vec<_> = elf
         .syms
         .iter()
@@ -26563,7 +30600,7 @@ fn qualify_detcore_constructor_route(
     disassembly: &str,
     got: &BTreeMap<u64, u64>,
 ) -> Result<DetcoreConstructorEvidence> {
-    let symbols = detcore_symbols(elf)?;
+    let symbols = detcore_symbols(elf, bytes)?;
     let symbol = |name| symbol_evidence(name, &symbols[name]);
     let address = |name| symbols[name].st_value;
     let (body_materialization, entry_bridge_transfer) = generic_entry_prefix(
@@ -26585,7 +30622,7 @@ fn qualify_detcore_constructor_route(
         fixed_native_gate.as_ref(),
         &symbol_evidence(CONSTRUCTOR_GATE, &gate_label),
     )?;
-    let preparation_helpers = preparation_symbols(elf)?;
+    let preparation_helpers = preparation_symbols(elf, bytes)?;
     // The native election must use the same actual single-byte local guard;
     // an invented data address or a guard for a different region earns no proof.
     let initializing: Vec<_> = elf
@@ -26693,7 +30730,7 @@ fn qualify_generic_bootstrap(
     disassembly: &str,
     got: &BTreeMap<u64, u64>,
 ) -> Result<GenericBootstrapEvidence> {
-    let symbols = generic_symbols(elf)?;
+    let symbols = generic_symbols(elf, bytes)?;
     let symbol = |name| symbol_evidence(name, &symbols[name]);
     let address = |name| symbols[name].st_value;
     let mut registration_roles: BTreeSet<_> = [
@@ -26748,7 +30785,7 @@ fn qualify_generic_bootstrap(
         fixed_native_gate.as_ref(),
         &symbol_evidence(CONSTRUCTOR_GATE, &gate_label),
     )?;
-    let preparation_helpers = preparation_symbols(elf)?;
+    let preparation_helpers = preparation_symbols(elf, bytes)?;
     // The native election must use the same actual single-byte local guard;
     // an invented data address or a guard for a different region earns no proof.
     let initializing: Vec<_> = elf
@@ -27036,6 +31073,14 @@ fn collect_proof_evidence(
     })
 }
 
+fn close_qualification_result<T>(result: Result<T>, closed: Result<()>) -> Result<T> {
+    match (result, closed) {
+        (Ok(value), Ok(())) => Ok(value),
+        (Err(error), Ok(())) | (Ok(_), Err(error)) => Err(error),
+        (Err(error), Err(close)) => Err(format!("{error}; qualification source close failed: {close}")),
+    }
+}
+
 pub fn qualify_elf(
     path: &Path,
     initializer_name: &str,
@@ -27049,10 +31094,9 @@ pub fn qualify_elf_with_sources(
     runner: &mut Runner,
     sources: &VerifiedCompiledSources,
 ) -> Result<ElfQualification> {
-    sources.verify_unchanged(runner)?;
-    let result = qualify_elf_in_source_context(path, initializer_name, runner, Some(sources))?;
-    sources.verify_unchanged(runner)?;
-    Ok(result)
+    sources.with_qualification_sources(runner, |runner| {
+        qualify_elf_in_source_context(path, initializer_name, runner, Some(sources))
+    })
 }
 fn qualify_elf_in_source_context(
     path: &Path,
@@ -27068,7 +31112,7 @@ fn qualify_elf_in_source_context(
     let bytes = fs::read(&artifact.path).map_err(|e| e.to_string())?;
     let elf = Elf::parse(&bytes).map_err(|e| format!("parse actual runtime ELF: {e}"))?;
     authenticate_loader_metadata(&elf, &bytes)?;
-    let scope = proof_functions(&elf, initializer_name)?;
+    let scope = proof_functions(&elf, &bytes, initializer_name)?;
     let evidence =
         collect_proof_evidence(&artifact, &elf, &bytes, initializer_name, &scope, runner)?;
     qualify_elf_from_evidence_in_source_context(
@@ -27092,10 +31136,9 @@ pub fn qualify_constructor_with_sources(
     runner: &mut Runner,
     sources: &VerifiedCompiledSources,
 ) -> Result<ConstructorQualification> {
-    sources.verify_unchanged(runner)?;
-    let result = qualify_constructor_in_source_context(path, runner, Some(sources))?;
-    sources.verify_unchanged(runner)?;
-    Ok(result)
+    sources.with_qualification_sources(runner, |runner| {
+        qualify_constructor_in_source_context(path, runner, Some(sources))
+    })
 }
 fn qualify_constructor_in_source_context(
     path: &Path,
@@ -27111,7 +31154,7 @@ fn qualify_constructor_in_source_context(
     let elf = Elf::parse(&bytes).map_err(|e| format!("parse actual runtime ELF: {e}"))?;
     require_legacy_standalone_gate(&elf)?;
     authenticate_loader_metadata(&elf, &bytes)?;
-    let scope = constructor_proof_functions(&elf)?;
+    let scope = constructor_proof_functions(&elf, &bytes)?;
     let evidence =
         collect_proof_evidence(&artifact, &elf, &bytes, STANDALONE_ROOT, &scope, runner)?;
     qualify_constructor_from_evidence_in_source_context(
@@ -27134,10 +31177,9 @@ pub fn qualify_detcore_constructor_with_sources(
     runner: &mut Runner,
     sources: &VerifiedCompiledSources,
 ) -> Result<DetcoreConstructorQualification> {
-    sources.verify_unchanged(runner)?;
-    let result = qualify_detcore_constructor_in_source_context(path, runner, Some(sources))?;
-    sources.verify_unchanged(runner)?;
-    Ok(result)
+    sources.with_qualification_sources(runner, |runner| {
+        qualify_detcore_constructor_in_source_context(path, runner, Some(sources))
+    })
 }
 fn qualify_detcore_constructor_in_source_context(
     path: &Path,
@@ -27152,7 +31194,7 @@ fn qualify_detcore_constructor_in_source_context(
     let bytes = fs::read(&artifact.path).map_err(|e| e.to_string())?;
     let elf = Elf::parse(&bytes).map_err(|e| format!("parse actual runtime ELF: {e}"))?;
     authenticate_loader_metadata(&elf, &bytes)?;
-    let scope = detcore_proof_functions(&elf)?;
+    let scope = detcore_proof_functions(&elf, &bytes)?;
     let evidence = collect_proof_evidence(&artifact, &elf, &bytes, DETCORE_ROOT, &scope, runner)?;
     qualify_detcore_constructor_from_evidence_in_source_context(
         path,
@@ -27184,14 +31226,18 @@ pub fn qualify_detcore_constructor_from_evidence_with_sources(
     objdump_disassembly: FileIdentity,
     sources: &VerifiedCompiledSources,
 ) -> Result<DetcoreConstructorQualification> {
-    let result = qualify_detcore_constructor_from_evidence_in_source_context(
+    let result = (|| {
+        sources.verify_files()?;
+        qualify_detcore_constructor_from_evidence_in_source_context(
         path,
         readelf_versions,
         readelf_symbols_relocations,
         objdump_disassembly,
         Some(sources),
-    )?;
-    Ok(result)
+    )
+    })();
+    let closed = sources.verify_files();
+    close_qualification_result(result, closed)
 }
 fn qualify_detcore_constructor_from_evidence_in_source_context(
     path: &Path,
@@ -27216,8 +31262,8 @@ fn qualify_detcore_constructor_from_evidence_in_source_context(
     let required_versions = qualify_portability(&elf, &version_text)?;
     let initializer = detcore_public_initializer(&elf)?;
     let (init_array_slot, init_array_resolution) =
-        detcore_init_slot(&elf, &bytes, &detcore_symbols(&elf)?)?;
-    let scope = detcore_proof_functions(&elf)?;
+        detcore_init_slot(&elf, &bytes, &detcore_symbols(&elf, &bytes)?)?;
+    let scope = detcore_proof_functions(&elf, &bytes)?;
     let expected_bytes = proof_function_bytes(&elf, &bytes, &scope)?;
     verify_constructor_complete_bytes(&elf, DETCORE_ROOT, &disassembly, &expected_bytes)?;
     let got_targets = local_got_targets(&elf, &bytes)?;
@@ -27444,6 +31490,7 @@ pub fn qualify_detcore_native_entry_with_sources(
     runner: &mut Runner,
     sources: &VerifiedCompiledSources,
 ) -> Result<DetcoreNativeEntryQualification> {
+    sources.with_qualification_sources(runner, |runner| {
     sources.require_image(DETCORE_ROOT)?;
     sources.verify_unchanged(runner)?;
     let artifact = FileIdentity::read(path)?;
@@ -27451,7 +31498,7 @@ pub fn qualify_detcore_native_entry_with_sources(
     let elf = Elf::parse(&bytes).map_err(|e| format!("parse native Detcore ELF: {e}"))?;
     authenticate_loader_metadata(&elf, &bytes)?;
     let native_entry = detcore_native_entry(&elf)?;
-    let mut scope = detcore_proof_functions(&elf)?;
+    let mut scope = detcore_proof_functions(&elf, &bytes)?;
     require(
         scope
             .insert(native_entry.st_value, native_entry.st_size)
@@ -27511,6 +31558,7 @@ pub fn qualify_detcore_native_entry_with_sources(
         readelf_symbols_relocations: evidence.readelf_symbols_relocations,
         objdump_disassembly: evidence.objdump_disassembly,
         observation: "Actual protected explicit native entry, static/dynamic identity, complete file-backed RX bytes with no runtime relocation writer, absent direct/interior loader registration, unchanged fixed allocator/TLS/layout/readonly/generic bootstrap checks. The compiled native Rust body and imported callees remain source premises; bootstrap control ownership, original arguments, actual tracked resume frame, final counters/masks/FDs and physical transition are consumer/runtime obligations. No ordinary constructor, runtime receipt, readiness or executed transition credit.".to_owned(),
+    })
     })
 }
 
@@ -27594,14 +31642,18 @@ pub fn qualify_constructor_from_evidence_with_sources(
     objdump_disassembly: FileIdentity,
     sources: &VerifiedCompiledSources,
 ) -> Result<ConstructorQualification> {
-    let result = qualify_constructor_from_evidence_in_source_context(
+    let result = (|| {
+        sources.verify_files()?;
+        qualify_constructor_from_evidence_in_source_context(
         path,
         readelf_versions,
         readelf_symbols_relocations,
         objdump_disassembly,
         Some(sources),
-    )?;
-    Ok(result)
+    )
+    })();
+    let closed = sources.verify_files();
+    close_qualification_result(result, closed)
 }
 fn qualify_constructor_from_evidence_in_source_context(
     path: &Path,
@@ -27628,7 +31680,7 @@ fn qualify_constructor_from_evidence_in_source_context(
     let initializer = private_function(&elf, STANDALONE_ROOT)?;
     let (init_array_slot, init_array_resolution) =
         standalone_init_slot(&elf, &bytes, &initializer)?;
-    let scope = constructor_proof_functions(&elf)?;
+    let scope = constructor_proof_functions(&elf, &bytes)?;
     let expected_bytes = proof_function_bytes(&elf, &bytes, &scope)?;
     verify_constructor_complete_bytes(&elf, STANDALONE_ROOT, &disassembly, &expected_bytes)?;
     let got_targets = local_got_targets(&elf, &bytes)?;
@@ -27692,15 +31744,19 @@ pub fn qualify_elf_from_evidence_with_sources(
     objdump_disassembly: FileIdentity,
     sources: &VerifiedCompiledSources,
 ) -> Result<ElfQualification> {
-    let result = qualify_elf_from_evidence_in_source_context(
+    let result = (|| {
+        sources.verify_files()?;
+        qualify_elf_from_evidence_in_source_context(
         path,
         initializer_name,
         readelf_versions,
         readelf_symbols_relocations,
         objdump_disassembly,
         Some(sources),
-    )?;
-    Ok(result)
+    )
+    })();
+    let closed = sources.verify_files();
+    close_qualification_result(result, closed)
 }
 fn qualify_elf_from_evidence_in_source_context(
     path: &Path,
@@ -27718,20 +31774,21 @@ fn qualify_elf_from_evidence_in_source_context(
     let bytes = fs::read(&artifact.path).map_err(|e| e.to_string())?;
     let elf = Elf::parse(&bytes).map_err(|e| format!("parse actual runtime ELF: {e}"))?;
     authenticate_loader_metadata(&elf, &bytes)?;
-    let (initializer, init_array_slot, init_array_resolution) =
-        if initializer_name == STANDALONE_ROOT {
-            let initializer = private_function(&elf, STANDALONE_ROOT)?;
-            let (slot, resolution) = standalone_init_slot(&elf, &bytes, &initializer)?;
-            (initializer, slot, resolution)
-        } else if initializer_name == DETCORE_ROOT {
-            let initializer = detcore_public_initializer(&elf)?;
-            let (slot, resolution) = detcore_init_slot(&elf, &bytes, &detcore_symbols(&elf)?)?;
-            (initializer, slot, resolution)
-        } else {
-            let (index, initializer) = export(&elf, initializer_name)?;
-            let (slot, resolution) = init_array_slot(&elf, &bytes, index, &initializer)?;
-            (initializer, slot, resolution)
-        };
+    let (initializer, init_array_slot, init_array_resolution) = if initializer_name
+        == STANDALONE_ROOT
+    {
+        let initializer = private_function(&elf, STANDALONE_ROOT)?;
+        let (slot, resolution) = standalone_init_slot(&elf, &bytes, &initializer)?;
+        (initializer, slot, resolution)
+    } else if initializer_name == DETCORE_ROOT {
+        let initializer = detcore_public_initializer(&elf)?;
+        let (slot, resolution) = detcore_init_slot(&elf, &bytes, &detcore_symbols(&elf, &bytes)?)?;
+        (initializer, slot, resolution)
+    } else {
+        let (index, initializer) = export(&elf, initializer_name)?;
+        let (slot, resolution) = init_array_slot(&elf, &bytes, index, &initializer)?;
+        (initializer, slot, resolution)
+    };
     let exports = EXPORTS
         .iter()
         .map(|name| export(&elf, name).map(|(_, s)| symbol_evidence(name, &s)))
@@ -27787,7 +31844,7 @@ fn qualify_elf_from_evidence_in_source_context(
         &objdump_disassembly,
     )?;
     let required_versions = qualify_portability(&elf, &version_text)?;
-    let scope = proof_functions(&elf, initializer_name)?;
+    let scope = proof_functions(&elf, &bytes, initializer_name)?;
     let expected_bytes = proof_function_bytes(&elf, &bytes, &scope)?;
     verify_constructor_complete_bytes(&elf, initializer_name, &disassembly, &expected_bytes)?;
     let functions = elf
@@ -27838,8 +31895,15 @@ fn qualify_elf_from_evidence_in_source_context(
                 call_paths.insert(key, path);
             }
             Err(_) => {
-                let route =
-                    qualify_inline_route(&key, &elf, entry, shim, &graph, &local_got_edges)?;
+                let route = qualify_inline_route(
+                    &key,
+                    &elf,
+                    &bytes,
+                    entry,
+                    shim,
+                    &graph,
+                    &local_got_edges,
+                )?;
                 inline_routes.insert(key, route);
             }
         }
@@ -27958,6 +32022,7 @@ pub struct RuntimeReceipt {
 }
 
 pub struct ConsumerExpectation<'a> {
+    pub expected_current_policy: Option<&'a VerifiedConsumerPolicy>,
     pub compiled_sources: Option<&'a VerifiedCompiledSources>,
     pub package: &'a PackageIdentity,
     pub features: &'a [String],
@@ -27970,6 +32035,46 @@ pub struct ConsumerExpectation<'a> {
     pub oracle_sha256: &'a BTreeMap<String, String>,
 }
 
+fn require_explicit_cargo_features(arguments: &[String], features: &[String]) -> Result<()> {
+    require(
+        arguments
+            .iter()
+            .filter(|argument| argument.as_str() == "--no-default-features")
+            .count()
+            == 1,
+        "producer command requires explicit --no-default-features",
+    )?;
+    require(
+        !arguments.iter().any(|argument| {
+            argument.starts_with("--all-features")
+                || argument.starts_with("--features=")
+                || argument.starts_with("-F")
+        }),
+        "producer command has a noncanonical Cargo feature selector",
+    )?;
+    let mut requested = Vec::new();
+    for (index, argument) in arguments.iter().enumerate() {
+        if argument == "--features" {
+            requested.push(
+                arguments
+                    .get(index + 1)
+                    .ok_or("producer command has --features without a value")?
+                    .as_str(),
+            );
+        }
+    }
+    let joined = features.join(",");
+    let expected = if features.is_empty() {
+        Vec::new()
+    } else {
+        vec![joined.as_str()]
+    };
+    require(
+        requested == expected,
+        "producer command's explicit feature selection differs from the independent expectation",
+    )
+}
+
 /// Requires caller-provided identities independent of this receipt. Does not
 /// dlopen, invoke Cargo or silently return on absence. The test must separately
 /// validate dladdr owner/base/hash and the genuine configured guest bootstrap.
@@ -27978,6 +32083,8 @@ pub fn verify_runtime_receipt(
     selected_path: &Path,
     expected: &ConsumerExpectation<'_>,
 ) -> Result<RuntimeReceipt> {
+    let mut rebound_sources = None;
+    let result = (|| {
     real_file(receipt_path)?;
     let bytes =
         fs::read(receipt_path).map_err(|e| format!("read required runtime receipt: {e}"))?;
@@ -28070,6 +32177,7 @@ pub fn verify_runtime_receipt(
         "runtime receipt requires one explicit successful Cargo leaf build",
     )?;
     let arguments = &builds[0].arguments;
+    require_explicit_cargo_features(arguments, &features)?;
     for flag in [
         "--locked",
         "--offline",
@@ -28083,7 +32191,6 @@ pub fn verify_runtime_receipt(
     }
     for (option, value) in [
         ("-p", expected.package.name.as_str()),
-        ("--features", "allocator-fixture"),
         ("--profile", expected.profile_name),
     ] {
         require(
@@ -28111,6 +32218,24 @@ pub fn verify_runtime_receipt(
         selected_again == receipt.cargo_artifact,
         "producer current-Cargo artifact selection does not match receipt",
     )?;
+    rebound_sources = if matches!(
+        receipt.qualification.allocator_backing.tls_boundary,
+        AllocatorInstallationEvidence::NoInstallationScope(_)
+    ) {
+        Some(
+            expected
+                .compiled_sources
+                .ok_or("no-scope consumer lacks fresh compiled sources")?
+                .rebind_consumer_build(
+                    expected.expected_current_policy.ok_or("no-scope consumer lacks independent current policy")?,
+                    builds[0],
+                    &receipt.cargo_artifact.reported_path,
+                    &receipt.target_directory,
+                )?,
+        )
+    } else {
+        None
+    };
     require(
         real_file(selected_path)? == receipt.artifact.path,
         "selected runtime path differs from qualified loaded-artifact path",
@@ -28248,7 +32373,7 @@ pub fn verify_runtime_receipt(
         receipt.qualification.readelf_versions.clone(),
         receipt.qualification.readelf_symbols_relocations.clone(),
         receipt.qualification.objdump_disassembly.clone(),
-        expected.compiled_sources,
+        rebound_sources.as_ref().or(expected.compiled_sources),
     )?;
     require(
         independent == receipt.qualification,
@@ -28259,11 +32384,61 @@ pub fn verify_runtime_receipt(
         "artifact receipt mislabels build evidence as M1 runtime execution",
     )?;
     Ok(receipt)
+    })();
+    // File-only consumption preserves the caller-owned outer Git transaction.
+    // Close both the enriched rebind and independently supplied expectation,
+    // even if any receipt/requalification Result returned Err.
+    let source_close = match rebound_sources.as_ref().or(expected.compiled_sources) {
+        Some(sources) => sources.verify_files(), None => Ok(()),
+    };
+    let policy_close = match expected.expected_current_policy {
+        Some(policy) => policy.record.verify_files(), None => Ok(()),
+    };
+    close_qualification_result(result, combine_consumer_closes(source_close, policy_close))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn runtime_receipt_cargo_features_require_an_explicit_matching_configuration() {
+        for selection in [
+            Vec::<String>::new(),
+            vec!["liteinst".to_owned()],
+            vec!["allocator-fixture".to_owned()],
+            vec!["allocator-fixture".to_owned(), "liteinst".to_owned()],
+        ] {
+            let mut arguments = vec!["build".to_owned(), "--no-default-features".to_owned()];
+            if !selection.is_empty() {
+                arguments.extend(["--features".to_owned(), selection.join(",")]);
+            }
+            require_explicit_cargo_features(&arguments, &selection).unwrap();
+            let mut defaults = arguments.clone();
+            defaults.remove(1);
+            assert!(require_explicit_cargo_features(&defaults, &selection).is_err());
+            for extra in [
+                vec!["--all-features".to_owned()],
+                vec!["--features=liteinst".to_owned()],
+                vec!["-F".to_owned(), "liteinst".to_owned()],
+                vec!["-Fliteinst".to_owned()],
+                vec!["--features".to_owned(), "liteinst".to_owned()],
+                vec!["--features".to_owned()],
+            ] {
+                let mut changed = arguments.clone();
+                changed.extend(extra);
+                assert!(require_explicit_cargo_features(&changed, &selection).is_err());
+            }
+        }
+        let enabled = vec![
+            "build".to_owned(),
+            "--no-default-features".to_owned(),
+            "--features".to_owned(),
+            "liteinst".to_owned(),
+        ];
+        assert!(require_explicit_cargo_features(&enabled, &[]).is_err());
+        assert!(require_explicit_cargo_features(&enabled[..2], &["liteinst".to_owned()]).is_err());
+    }
 
     /// A child stream scripted read by read. `on_read` runs before the
     /// scripted result is returned, standing in for the child process and the
@@ -28340,6 +32515,902 @@ mod tests {
         assert_eq!(kept, b"tail");
         assert_eq!(stream.reads, 2);
         assert!(!overflow.load(Ordering::Acquire));
+    }
+
+    // Parser/data controls only. The data CompiledSources below is never put in
+    // VerifiedCompiledSources; no synthetic compiler JSON grants source authority.
+    #[test]
+    fn no_installation_scope_current_build_controls() {
+        static NEXT: AtomicUsize = AtomicUsize::new(0);
+        struct OwnedScratch(PathBuf);
+        impl Drop for OwnedScratch {
+            fn drop(&mut self) {
+                fs::remove_dir_all(&self.0).unwrap();
+            }
+        }
+        let root = fs::canonicalize(std::env::temp_dir())
+            .unwrap()
+            .join(format!(
+                "no-installation-build-controls-{}-{}",
+                std::process::id(),
+                NEXT.fetch_add(1, Ordering::Relaxed)
+            ));
+        fs::create_dir(&root).unwrap();
+        let _owned = OwnedScratch(root.clone());
+        let target = root.join("isolated-target");
+        fs::create_dir(&target).unwrap();
+        fs::write(root.join("Cargo.toml"), b"data-only root manifest").unwrap();
+        let profile = serde_json::json!({"opt_level":"3","debuginfo":0,
+            "debug_assertions":true,"overflow_checks":true,"test":false});
+        let features = [
+            vec!["exec-native-injection", "exec-private-init"],
+            vec![
+                "exec-native-injection",
+                "exec-private-init",
+                "exec-private-successor",
+                "fixed-syscall-gates",
+                "native-exec-state",
+            ],
+            vec![
+                "coordinator-rpc",
+                "exec-native-injection",
+                "exec-private-init",
+                "exec-private-successor",
+                "fixed-syscall-gates",
+                "launcher",
+                "native-exec-state",
+                "rcb-clock",
+            ],
+        ];
+        let mut packages = BTreeMap::new();
+        let mut events = Vec::new();
+        for (index, name) in ["consumer-runtime", "reverie-liteinst", "reverie-inguest"]
+            .into_iter()
+            .enumerate()
+        {
+            fs::create_dir(root.join(name)).unwrap();
+            let manifest = root.join(name).join("Cargo.toml");
+            let source = root.join(name).join("lib.rs");
+            fs::write(&manifest, b"data-only package manifest").unwrap();
+            fs::write(&source, b"data-only source").unwrap();
+            let output = target.join(if index == 0 {
+                "libconsumer_runtime.so".into()
+            } else {
+                format!("lib{name}.rlib")
+            });
+            fs::write(
+                &output,
+                b"data-only compiler output, not an ELF qualification",
+            )
+            .unwrap();
+            let package = PackageIdentity {
+                id: format!("path+file:///{name}#0.1.0"),
+                name: name.into(),
+                manifest,
+                source: None,
+                target: name.replace('-', "_"),
+                kind: vec![if index == 0 { "cdylib" } else { "lib" }.into()],
+                crate_types: vec![if index == 0 { "cdylib" } else { "lib" }.into()],
+                target_source: source,
+            };
+            events.push(serde_json::json!({"reason":"compiler-artifact","package_id":package.id,
+                "manifest_path":package.manifest,"target":{"name":package.target,"kind":package.kind,
+                    "crate_types":package.crate_types,"src_path":package.target_source},
+                "profile":profile,"features":features[index],"filenames":[output],"fresh":false}));
+            packages.insert(name.into(), package);
+        }
+        events.push(serde_json::json!({"reason":"build-finished","success":true}));
+        let sources = CompiledSources {
+            layout: CompiledSourceLayout::HermitGit,
+            image_kind: FixedImageKind::Detcore,
+            workspace_root: root.clone(),
+            authority: CompiledSourceAuthority::Git {
+                workspace_head: "1".repeat(40),
+                workspace_tree: "2".repeat(40),
+                reverie_tree: "3".repeat(40),
+            },
+            manifest: FileIdentity::read(&root.join("Cargo.toml")).unwrap(),
+            reverie_pin: "4".repeat(40),
+            reverie_root: root.clone(),
+            leaf: packages["consumer-runtime"].clone(),
+            packages,
+            files: BTreeMap::new(),
+        };
+        let stdout = root.join("stdout");
+        let stderr = root.join("stderr");
+        fs::write(&stdout, b"").unwrap();
+        fs::write(&stderr, b"").unwrap();
+        let command = CommandEvidence {
+            program: "cargo".into(),
+            cwd: root.clone(),
+            status: 0,
+            elapsed_millis: 0,
+            arguments: vec![
+                "build".into(),
+                "--locked".into(),
+                "--offline".into(),
+                "--manifest-path".into(),
+                root.join("Cargo.toml").to_str().unwrap().into(),
+                "-p".into(),
+                "consumer-runtime".into(),
+                "--no-default-features".into(),
+                "--features".into(),
+                "exec-native-injection".into(),
+                "--profile".into(),
+                "fixture-runtime-profile".into(),
+                "--target-dir".into(),
+                target.to_str().unwrap().into(),
+                "--lib".into(),
+                "--message-format=json-render-diagnostics".into(),
+            ],
+            stdout: FileIdentity::read(&stdout).unwrap(),
+            stderr: FileIdentity::read(&stderr).unwrap(),
+        };
+        let selected = target.join("libconsumer_runtime.so");
+        let check = |messages: &[Value], template: &CommandEvidence| {
+            fs::write(
+                &stdout,
+                messages
+                    .iter()
+                    .map(|event| serde_json::to_string(event).unwrap())
+                    .collect::<Vec<_>>()
+                    .join("\n"),
+            )
+            .unwrap();
+            let mut command = template.clone();
+            command.stdout = FileIdentity::read(&stdout).unwrap();
+            current_build_evidence(&sources, &command, &selected, &target)
+        };
+        let good = check(&events, &command).unwrap();
+        no_scope_build_features(&good).unwrap();
+        assert_eq!(good.artifact.path, selected);
+        assert_eq!(good.packages.len(), 3);
+        let mut ordinary_events = events.clone();
+        for (index, name) in ["consumer-runtime", "reverie-liteinst", "reverie-inguest"]
+            .into_iter()
+            .enumerate()
+        {
+            let features = ConsumerRecipe::Allocation101LayoutB
+                .features()
+                .iter()
+                .find(|(candidate, _)| *candidate == name)
+                .unwrap()
+                .1;
+            ordinary_events[index]["features"] = serde_json::json!(features);
+        }
+        let mut ordinary_command = command.clone();
+        let at = ordinary_command
+            .arguments
+            .iter()
+            .position(|arg| arg == "--features")
+            .unwrap();
+        ordinary_command.arguments.drain(at..at + 2);
+        let ordinary = check(&ordinary_events, &ordinary_command).unwrap();
+        assert_eq!(
+            no_scope_build_features(&ordinary).unwrap(),
+            ConsumerRecipe::Allocation101LayoutB
+        );
+        assert_eq!(
+            no_scope_build_features(&good).unwrap(),
+            ConsumerRecipe::Allocation101LayoutA
+        );
+        assert!(
+            check(&ordinary_events, &command).is_err(),
+            "ordinary stream cannot earn native argv"
+        );
+        assert!(
+            check(&events, &ordinary_command).is_err(),
+            "native stream cannot earn ordinary argv"
+        );
+        for name in ["consumer-runtime", "reverie-liteinst", "reverie-inguest"] {
+            let mut partial = ordinary.clone();
+            partial.packages.get_mut(name).unwrap().features = good.packages[name].features.clone();
+            assert!(
+                no_scope_build_features(&partial).is_err(),
+                "mixed native/ordinary {name}"
+            );
+            for feature in ["allocator-fixture", "default", "liteinst"] {
+                let mut bad = ordinary.clone();
+                bad.packages
+                    .get_mut(name)
+                    .unwrap()
+                    .features
+                    .push(feature.into());
+                assert!(
+                    no_scope_build_features(&bad).is_err(),
+                    "ordinary forbidden {name}/{feature}"
+                );
+            }
+            for field in ["debug_assertions", "overflow_checks", "test"] {
+                let mut bad = ordinary.clone();
+                bad.packages.get_mut(name).unwrap().profile[field] =
+                    serde_json::json!(field == "test");
+                assert!(
+                    no_scope_build_features(&bad).is_err(),
+                    "ordinary profile {name}/{field}"
+                );
+            }
+        }
+        let mut absolute = command.clone();
+        absolute.program = fs::canonicalize(env!("CARGO"))
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .into();
+        let actual = check(&events, &absolute)
+            .expect("the actual Cargo toolchain executable is a valid retained program");
+        assert_eq!(
+            actual.cargo_executable,
+            Some(FileIdentity::read(Path::new(&absolute.program)).unwrap())
+        );
+        verify_current_build_files(&actual).unwrap();
+        let toolchain = root.join("toolchain");
+        fs::create_dir(&toolchain).unwrap();
+        let scratch_cargo = toolchain.join("cargo");
+        fs::write(&scratch_cargo, b"data-only executable witness").unwrap();
+        let mut absolute = command.clone();
+        absolute.program = scratch_cargo.to_str().unwrap().into();
+        assert!(
+            check(&events, &absolute).is_err(),
+            "nonexecutable canonical cargo file"
+        );
+        fs::set_permissions(&scratch_cargo, fs::Permissions::from_mode(0o755)).unwrap();
+        let retained = check(&events, &absolute).unwrap();
+        verify_current_build_files(&retained).unwrap();
+        fs::write(&scratch_cargo, b"changed executable bytes").unwrap();
+        assert!(
+            verify_current_build_files(&retained).is_err(),
+            "retained absolute executable digest cannot drift"
+        );
+        for wrong in [
+            "toolchain/cargo".to_owned(),
+            root.join("absent/cargo").to_str().unwrap().into(),
+            toolchain.join("renamed").to_str().unwrap().into(),
+        ] {
+            let mut bad = command.clone();
+            bad.program = wrong;
+            assert!(
+                check(&events, &bad).is_err(),
+                "relative/nonexistent/renamed Cargo program"
+            );
+        }
+        for index in 0..3 {
+            let mut bad = events.clone();
+            bad.remove(index);
+            assert!(
+                check(&bad, &command).is_err(),
+                "missing actual compiled package{index}"
+            );
+            let mut bad = events.clone();
+            bad.insert(index, bad[index].clone());
+            assert!(
+                check(&bad, &command).is_err(),
+                "duplicate actual compiled package{index}"
+            );
+            for (field, replacement) in [
+                ("package_id", serde_json::json!("foreign package")),
+                ("manifest_path", serde_json::json!(root.join("Cargo.toml"))),
+                ("filenames", serde_json::json!([root.join("Cargo.toml")])),
+                (
+                    "filenames",
+                    serde_json::json!([selected.clone(), selected.clone()]),
+                ),
+                ("features", serde_json::json!(["unsorted", "first"])),
+                ("features", serde_json::json!(["liteinst", "liteinst"])),
+                (
+                    "profile",
+                    serde_json::json!({"opt_level":"3","debuginfo":0,"debug_assertions":true,"overflow_checks":true,"test":true}),
+                ),
+            ] {
+                let mut bad = events.clone();
+                bad[index][field] = replacement;
+                assert!(
+                    check(&bad, &command).is_err(),
+                    "package{index} wrong{field}"
+                );
+            }
+            for field in ["src_path", "kind", "crate_types"] {
+                let mut bad = events.clone();
+                bad[index]["target"][field] = if field == "src_path" {
+                    serde_json::json!(root.join("Cargo.toml"))
+                } else {
+                    serde_json::json!(["bin"])
+                };
+                assert!(
+                    check(&bad, &command).is_err(),
+                    "package{index} wrong typed target{field}"
+                );
+            }
+            // A current core/inguest stream is independently required even if
+            // the leaf feature set itself stayed unchanged.
+            for feature in ["allocator-fixture", "default", "liteinst"] {
+                let mut build = good.clone();
+                let name = ["consumer-runtime", "reverie-liteinst", "reverie-inguest"][index];
+                build
+                    .packages
+                    .get_mut(name)
+                    .unwrap()
+                    .features
+                    .push(feature.into());
+                assert!(
+                    no_scope_build_features(&build).is_err(),
+                    "unreviewed{feature} in{name}"
+                );
+            }
+        }
+        for alteration in 0..4 {
+            let mut bad = events.clone();
+            match alteration {
+                0 => {
+                    bad.pop();
+                }
+                1 => bad[3]["success"] = Value::Bool(false),
+                2 => bad.push(bad[3].clone()),
+                3 => {
+                    bad[3]["success"] = Value::Null;
+                }
+                _ => unreachable!(),
+            }
+            assert!(
+                check(&bad, &command).is_err(),
+                "noncurrent/failed completion{alteration}"
+            );
+        }
+        for alteration in 0..8 {
+            let mut bad = command.clone();
+            match alteration {
+                0 => bad.status = 1,
+                1 => bad.program = "rustc".into(),
+                2 => bad.cwd = target.clone(),
+                3 => {
+                    bad.arguments.retain(|arg| arg != "--no-default-features");
+                }
+                4 => bad.arguments.push("--no-default-features".into()),
+                5 => bad
+                    .arguments
+                    .extend(["--features".into(), "liteinst".into()]),
+                6 => bad.arguments.push("--all-features".into()),
+                7 => {
+                    let at = bad
+                        .arguments
+                        .iter()
+                        .position(|arg| arg == "exec-native-injection")
+                        .unwrap();
+                    bad.arguments[at] = "exec-native-injection,liteinst".into();
+                }
+                _ => unreachable!(),
+            }
+            assert!(
+                check(&events, &bad).is_err(),
+                "unsupported/failed explicit command{alteration}"
+            );
+        }
+        let current = check(&events, &command).unwrap();
+        fs::write(&stdout, b"changed after retaining command identity").unwrap();
+        assert!(current_build_evidence(&sources, &current.command, &selected, &target).is_err());
+        let current = check(&events, &command).unwrap();
+        let copy = target.join("copied.so");
+        fs::copy(&selected, &copy).unwrap();
+        assert!(
+            current_build_evidence(&sources, &current.command, &copy, &target).is_err(),
+            "same-byte staged copy cannot replace original selected Cargo output"
+        );
+        fs::write(&stderr, b"changed retained stderr").unwrap();
+        assert!(current_build_evidence(&sources, &current.command, &selected, &target).is_err());
+    }
+
+    // Source/parser controls only: the resolver subcontrol establishes private
+    // unit premises; neither synthetic Cargo JSON nor output grants ELF/runtime credit.
+    #[test]
+    fn standalone_no_installation_scope_current_build_controls() {
+        static NEXT: AtomicUsize = AtomicUsize::new(0);
+        struct Scratch(PathBuf);
+        impl Drop for Scratch {
+            fn drop(&mut self) {
+                fs::remove_dir_all(&self.0).unwrap();
+            }
+        }
+        let root = fs::canonicalize(std::env::temp_dir())
+            .unwrap()
+            .join(format!(
+                "standalone-build-controls-{}-{}",
+                std::process::id(),
+                NEXT.fetch_add(1, Ordering::Relaxed)
+            ));
+        fs::create_dir(&root).unwrap();
+        let _scratch = Scratch(root.clone());
+        for relative in TEST_WRAPPER_WORKSPACE_FILES {
+            let path = root.join(relative);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(path, format!("owned source control: {relative}\n")).unwrap();
+        }
+        let mut runner = Runner::new(
+            root.join("proof-logs"),
+            Duration::from_secs(30),
+            1024 * 1024,
+        )
+        .unwrap();
+        runner.text("git", &["init", "--quiet"], &root).unwrap();
+        let mut add = vec!["add".to_owned(), "--".to_owned()];
+        add.extend(TEST_WRAPPER_WORKSPACE_FILES.into_iter().map(str::to_owned));
+        runner.run("git", &add, &root).unwrap();
+        runner
+            .text(
+                "git",
+                &[
+                    "-c",
+                    "user.name=artifact-controls",
+                    "-c",
+                    "user.email=artifact-controls@example.invalid",
+                    "-c",
+                    "commit.gpgsign=false",
+                    "commit",
+                    "--quiet",
+                    "-m",
+                    "source controls",
+                ],
+                &root,
+            )
+            .unwrap();
+        let head = runner
+            .text("git", &["rev-parse", "HEAD"], &root)
+            .unwrap()
+            .trim()
+            .to_owned();
+        let tree = runner
+            .text("git", &["rev-parse", "HEAD^{tree}"], &root)
+            .unwrap()
+            .trim()
+            .to_owned();
+        let target = root.join("isolated-target");
+        fs::create_dir(&target).unwrap();
+        let nested = root.join("consumer-build");
+        let profile = ConsumerRecipe::Allocation62.profile();
+        let mut packages = BTreeMap::new();
+        let mut events = Vec::new();
+        for (name, kind) in [
+            ("reverie-liteinst-preload", vec!["cdylib"]),
+            ("reverie-liteinst", vec!["rlib"]),
+            ("reverie-inguest", vec!["cdylib", "rlib"]),
+        ] {
+            let dir = root.join("rv").join(name);
+            fs::create_dir_all(dir.join("src")).unwrap();
+            fs::write(dir.join("Cargo.toml"), "package source control").unwrap();
+            fs::write(dir.join("src/lib.rs"), "source control").unwrap();
+            let package = PackageIdentity {
+                id: format!("git+source#{name}@0.5.1"),
+                name: name.into(),
+                manifest: dir.join("Cargo.toml"),
+                source: Some("git+source".into()),
+                target: name.replace('-', "_"),
+                kind: kind.iter().map(|s| (*s).into()).collect(),
+                crate_types: kind.iter().map(|s| (*s).into()).collect(),
+                target_source: dir.join("src/lib.rs"),
+            };
+            let output = target.join(format!(
+                "lib{}.{}",
+                package.target,
+                if name == "reverie-liteinst-preload" {
+                    "so"
+                } else {
+                    "rlib"
+                }
+            ));
+            fs::write(&output, "data-only Cargo output, not ELF qualification").unwrap();
+            let features = ConsumerRecipe::Allocation62
+                .features()
+                .iter()
+                .find(|(candidate, _)| *candidate == name)
+                .unwrap()
+                .1;
+            events.push(serde_json::json!({"reason":"compiler-artifact","package_id":package.id,
+                "manifest_path":package.manifest,"target":{"name":package.target,"kind":package.kind,
+                    "crate_types":package.crate_types,"src_path":package.target_source},
+                "profile":profile,"features":features,"filenames":[output],"fresh":false}));
+            packages.insert(name.into(), package);
+        }
+        let sources = CompiledSources {
+            layout: CompiledSourceLayout::HermitGit,
+            image_kind: FixedImageKind::Standalone,
+            workspace_root: root.clone(),
+            authority: CompiledSourceAuthority::Git {
+                workspace_head: head,
+                workspace_tree: tree,
+                reverie_tree: "1".repeat(40),
+            },
+            manifest: FileIdentity::read(&nested.join("Cargo.toml")).unwrap(),
+            reverie_pin: "2".repeat(40),
+            reverie_root: root.join("rv"),
+            files: BTreeMap::new(),
+            leaf: packages["reverie-liteinst-preload"].clone(),
+            packages,
+        };
+        let wrapper_id = format!(
+            "path+file://{}#consumer-wrapper@0.5.1",
+            nested.join("runtime").display()
+        );
+        let metadata = serde_json::json!({"workspace_root":nested,"workspace_members":[wrapper_id],"packages":[{
+            "name":"consumer-wrapper","version":"0.5.1","source":null,"id":wrapper_id,
+            "manifest_path":nested.join("runtime/Cargo.toml"),"targets":[{"name":"consumer_wrapper",
+            "src_path":nested.join("runtime/src/lib.rs"),"kind":["lib"],"crate_types":["lib"]}]}]});
+        let wrapper_spec = test_wrapper_spec();
+        let binding = consumer_policy::consumer_wrapper_sources(&sources, &metadata, &wrapper_spec, &mut runner).unwrap();
+        assert_eq!(binding.workspace_files.len(), 6);
+        assert_eq!(binding.wrapper.kind, ["lib"]);
+        for relative in TEST_WRAPPER_WORKSPACE_FILES {
+            let path = root.join(relative);
+            let bytes = fs::read(&path).unwrap();
+            fs::write(&path, "uncommitted replacement source").unwrap();
+            assert!(
+                consumer_policy::consumer_wrapper_sources(&sources, &metadata, &wrapper_spec, &mut runner).is_err(),
+                "Git blob source identity cannot be replaced by a fresh file hash {relative}"
+            );
+            fs::write(path, bytes).unwrap();
+        }
+        let (workspace_inventory, workspace_files) =
+            declared_inventory(&root, &TEST_WRAPPER_WORKSPACE_FILES).unwrap();
+        let mut declared = sources.clone();
+        declared.authority = CompiledSourceAuthority::DeclaredContent {
+            workspace_sha256: declared_inventory_sha256(&workspace_inventory).unwrap(),
+            workspace_inventory: workspace_inventory.clone(),
+            reverie_inventory: vec![],
+            reverie_sha256: "3".repeat(64),
+            compiler_root: CompilerRootBinding {
+                logical_root: root.join("rv"),
+                canonical_root: root.join("rv"),
+                cargo_home: None,
+            },
+        };
+        declared.files = workspace_files
+            .into_iter()
+            .map(|(name, file)| (format!("workspace:{name}"), file))
+            .collect();
+        assert_eq!(
+            consumer_policy::consumer_wrapper_sources(&declared, &metadata, &wrapper_spec, &mut runner).unwrap(),
+            binding
+        );
+        for relative in TEST_WRAPPER_WORKSPACE_FILES {
+            let mut bad = declared.clone();
+            bad.files.remove(&format!("workspace:{relative}"));
+            assert!(
+                consumer_policy::consumer_wrapper_sources(&bad, &metadata, &wrapper_spec, &mut runner).is_err(),
+                "missing declared binding {relative}"
+            );
+            let mut bad = declared.clone();
+            bad.files
+                .get_mut(&format!("workspace:{relative}"))
+                .unwrap()
+                .sha256 = "0".repeat(64);
+            assert!(
+                consumer_policy::consumer_wrapper_sources(&bad, &metadata, &wrapper_spec, &mut runner).is_err(),
+                "wrong declared binding {relative}"
+            );
+        }
+        for mutation in 0..13 {
+            let mut bad = metadata.clone();
+            match mutation {
+                0 => bad["workspace_root"] = serde_json::json!(root),
+                1 => bad["workspace_members"] = serde_json::json!([]),
+                2 => bad["workspace_members"] = serde_json::json!([wrapper_id, wrapper_id]),
+                3 => bad["packages"][0]["id"] = serde_json::json!("foreign wrapper"),
+                4 => bad["packages"][0]["version"] = serde_json::json!("0.5.2"),
+                5 => bad["packages"][0]["source"] = serde_json::json!("git+foreign"),
+                6 => {
+                    bad["packages"][0]["manifest_path"] =
+                        serde_json::json!(nested.join("Cargo.toml"))
+                }
+                7 => {
+                    bad["packages"][0]["targets"][0]["src_path"] =
+                        serde_json::json!(nested.join("build.rs"))
+                }
+                8 => bad["packages"][0]["targets"][0]["kind"] = serde_json::json!(["rlib"]),
+                9 => bad["packages"][0]["targets"][0]["crate_types"] = serde_json::json!(["rlib"]),
+                10 => {
+                    let duplicate = bad["packages"][0].clone();
+                    bad["packages"].as_array_mut().unwrap().push(duplicate);
+                }
+                11 => {
+                    let duplicate = bad["packages"][0]["targets"][0].clone();
+                    bad["packages"][0]["targets"]
+                        .as_array_mut()
+                        .unwrap()
+                        .push(duplicate);
+                }
+                12 => bad["packages"][0]["name"] = serde_json::json!("lookalike-wrapper"),
+                _ => unreachable!(),
+            }
+            assert!(
+                consumer_policy::consumer_wrapper_sources(&sources, &bad, &wrapper_spec, &mut runner).is_err(),
+                "wrapper metadata mutation {mutation}"
+            );
+        }
+        let wrapper_output = target.join("libconsumer_wrapper.rlib");
+        fs::write(&wrapper_output, "data-only wrapper compiler output").unwrap();
+        let wrapper = &binding.wrapper;
+        events.push(serde_json::json!({"reason":"compiler-artifact","package_id":wrapper.id,"manifest_path":wrapper.manifest,
+            "target":{"name":wrapper.target,"kind":wrapper.kind,"crate_types":wrapper.crate_types,"src_path":wrapper.target_source},
+            "profile":profile,"features":[],"filenames":[wrapper_output],"fresh":false}));
+        events.push(serde_json::json!({"reason":"build-finished","success":true}));
+        let stdout = root.join("cargo.stdout");
+        let stderr = root.join("cargo.stderr");
+        fs::write(&stdout, "").unwrap();
+        fs::write(&stderr, "").unwrap();
+        let command = CommandEvidence {
+            program: "cargo".into(),
+            arguments: standalone_current_build_arguments(&target).unwrap(),
+            cwd: nested.clone(),
+            status: 0,
+            elapsed_millis: 0,
+            stdout: FileIdentity::read(&stdout).unwrap(),
+            stderr: FileIdentity::read(&stderr).unwrap(),
+        };
+        let selected = target.join("libreverie_liteinst_preload.so");
+        let check = |messages: &[Value], template: &CommandEvidence| {
+            fs::write(
+                &stdout,
+                messages
+                    .iter()
+                    .map(|event| serde_json::to_string(event).unwrap())
+                    .collect::<Vec<_>>()
+                    .join("\n"),
+            )
+            .unwrap();
+            let mut command = template.clone();
+            command.stdout = FileIdentity::read(&stdout).unwrap();
+            current_build_evidence_in_scope(&sources, &command, &selected, &target, Some(&binding))
+        };
+        let good = check(&events, &command).unwrap();
+        assert_eq!(
+            no_scope_build_features(&good).unwrap(),
+            ConsumerRecipe::Allocation62
+        );
+        assert_eq!(good.packages.len(), 4);
+        verify_current_build_files(&good).unwrap();
+        assert!(
+            current_build_evidence(&sources, &good.command, &selected, &target).is_err(),
+            "Detcore factory never falls back to standalone"
+        );
+        let mut absolute = command.clone();
+        absolute.program = fs::canonicalize(env!("CARGO"))
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .into();
+        let actual = check(&events, &absolute)
+            .expect("the actual Cargo toolchain executable also binds the standalone command");
+        assert_eq!(
+            actual.cargo_executable,
+            Some(FileIdentity::read(Path::new(&absolute.program)).unwrap())
+        );
+        verify_current_build_files(&actual).unwrap();
+        for source_target in [
+            nested.clone(),
+            nested.join("runtime"),
+            nested.join("runtime/src"),
+        ] {
+            let mut bad = good.command.clone();
+            bad.arguments = standalone_current_build_arguments(&source_target).unwrap();
+            let error = current_build_evidence_in_scope(
+                &sources,
+                &bad,
+                &selected,
+                &source_target,
+                Some(&binding),
+            )
+            .unwrap_err();
+            assert!(
+                error.contains("standalone current build target overlaps authorized source paths"),
+                "authorized source directories are not isolated targets: {error}"
+            );
+        }
+        for index in 0..4 {
+            let mut bad = events.clone();
+            bad.remove(index);
+            assert!(
+                check(&bad, &command).is_err(),
+                "missing actual event {index}"
+            );
+            let mut bad = events.clone();
+            bad.insert(index, bad[index].clone());
+            assert!(
+                check(&bad, &command).is_err(),
+                "duplicate actual event {index}"
+            );
+            for (field, value) in [
+                ("package_id", serde_json::json!("foreign package")),
+                ("manifest_path", serde_json::json!(sources.manifest.path)),
+                ("features", serde_json::json!(["default"])),
+                ("features", serde_json::json!(["liteinst"])),
+                ("features", serde_json::json!(["allocator-fixture"])),
+                ("profile", ConsumerRecipe::Allocation101LayoutB.profile()),
+                (
+                    "filenames",
+                    serde_json::json!([root.join("consumer-build/Cargo.toml")]),
+                ),
+            ] {
+                let mut bad = events.clone();
+                bad[index][field] = value;
+                assert!(check(&bad, &command).is_err(), "event {index}/{field}");
+            }
+            for field in ["name", "src_path", "kind", "crate_types"] {
+                let mut bad = events.clone();
+                bad[index]["target"][field] = if ["kind", "crate_types"].contains(&field) {
+                    serde_json::json!(["bin"])
+                } else {
+                    serde_json::json!("foreign target")
+                };
+                assert!(
+                    check(&bad, &command).is_err(),
+                    "typed target {index}/{field}"
+                );
+            }
+        }
+        for index in 0..command.arguments.len() {
+            let mut bad = command.clone();
+            bad.arguments.remove(index);
+            assert!(check(&events, &bad).is_err(), "missing exact argv {index}");
+            let mut bad = command.clone();
+            bad.arguments.insert(index, bad.arguments[index].clone());
+            assert!(
+                check(&events, &bad).is_err(),
+                "duplicate exact argv {index}"
+            );
+        }
+        for mutation in 0..7 {
+            let mut bad = command.clone();
+            match mutation {
+                0 => bad.arguments.push("--offline".into()),
+                1 => bad.cwd = root.clone(),
+                2 => bad.arguments[4] = sources.manifest.path.to_str().unwrap().into(),
+                3 => bad.arguments[11] = "dev".into(),
+                4 => bad.arguments.swap(6, 8),
+                5 => bad.arguments[13] = "isolated-target".into(),
+                6 => bad.status = 1,
+                _ => unreachable!(),
+            }
+            assert!(
+                check(&events, &bad).is_err(),
+                "unreviewed standalone argv/source {mutation}"
+            );
+        }
+        for alteration in 0..3 {
+            let mut bad = events.clone();
+            match alteration {
+                0 => {
+                    bad.pop();
+                }
+                1 => bad[4]["success"] = Value::Bool(false),
+                2 => bad.push(bad[4].clone()),
+                _ => unreachable!(),
+            };
+            assert!(
+                check(&bad, &command).is_err(),
+                "noncurrent build finish {alteration}"
+            );
+        }
+        let retained = check(&events, &command).unwrap();
+        for relative in TEST_WRAPPER_WORKSPACE_FILES {
+            let path = root.join(relative);
+            let bytes = fs::read(&path).unwrap();
+            fs::write(&path, "changed retained source").unwrap();
+            assert!(
+                verify_current_build_files(&retained).is_err(),
+                "all authorized source files remain bound {relative}"
+            );
+            fs::write(path, bytes).unwrap();
+        }
+        let copy = target.join("staged-copy.so");
+        fs::copy(&selected, &copy).unwrap();
+        assert!(
+            current_build_evidence_in_scope(
+                &sources,
+                &retained.command,
+                &copy,
+                &target,
+                Some(&binding)
+            )
+            .is_err(),
+            "staged copy is not actual current output"
+        );
+        consumer_policy_definition_resolution_controls(&sources, &metadata, &retained, &mut runner);
+    }
+
+    // Unit fixture establishes source premises explicitly; this is not a
+    // replacement implementation of either public source factory or resolver.
+    // All admission/refusal calls below use the actual production resolver.
+    fn consumer_policy_definition_resolution_controls(
+        template: &CompiledSources, wrapper_metadata: &Value,
+        build: &CurrentBuildEvidence, runner: &mut Runner,
+    ) {
+        const DEFINITION: &[u8] = b"independently compiled consumer policy control\n";
+        let root = &template.workspace_root;
+        let definition = root.join("consumer-policy-control.rs");
+        fs::write(&definition, DEFINITION).unwrap();
+        runner.text("git", &["add", "--", "consumer-policy-control.rs"], root).unwrap();
+        let commit = ["-c", "user.name=artifact-controls", "-c",
+            "user.email=artifact-controls@example.invalid", "-c", "commit.gpgsign=false",
+            "commit", "--quiet", "-m", "independent policy control"];
+        runner.text("git", &commit, root).unwrap();
+        let rv = &template.reverie_root;
+        runner.text("git", &["init", "--quiet"], rv).unwrap();
+        let mut add = vec!["add".into(), "--".into()];
+        for package in template.packages.values() {
+            add.push(package.manifest.strip_prefix(rv).unwrap().to_str().unwrap().into());
+            add.push(package.target_source.strip_prefix(rv).unwrap().to_str().unwrap().into());
+        }
+        runner.run("git", &add, rv).unwrap();
+        runner.text("git", &commit, rv).unwrap();
+        let (workspace_head, workspace_tree) = compiled_git_identity(root, runner).unwrap();
+        let (reverie_pin, reverie_tree) = compiled_git_identity(rv, runner).unwrap();
+        let mut record = template.clone();
+        record.authority = CompiledSourceAuthority::Git { workspace_head, workspace_tree, reverie_tree };
+        record.reverie_pin = reverie_pin;
+        let mut metadata = wrapper_metadata.clone();
+        for package in record.packages.values() {
+            metadata["packages"].as_array_mut().unwrap().push(serde_json::json!({
+                "id":package.id,"name":package.name,"version":"0.5.1",
+                "source":package.source,"manifest_path":package.manifest,
+                "targets":[{"name":package.target,"kind":package.kind,
+                    "crate_types":package.crate_types,"src_path":package.target_source}]}));
+            record.files.insert(format!("control:{}:manifest", package.name),
+                FileIdentity::read(&package.manifest).unwrap());
+            record.files.insert(format!("control:{}:source", package.name),
+                FileIdentity::read(&package.target_source).unwrap());
+        }
+        let sources = VerifiedCompiledSources { record, current_build: None,
+            adapter_metadata: Some(metadata) };
+        sources.verify_unchanged(runner).unwrap();
+        let binding = consumer_policy::consumer_wrapper_sources(&sources.record,
+            sources.adapter_metadata.as_ref().unwrap(), &test_wrapper_spec(), runner).unwrap();
+        let variants = test_consumer_policy(&sources.record, Some(&binding)).variants;
+        let spec = || ConsumerPolicySpec {
+            definition_relative: "consumer-policy-control.rs".into(),
+            definition_compiled_bytes: DEFINITION,
+            runtime: ConsumerPackageSpec { source_root: ConsumerSourceRoot::Reverie,
+                name: "reverie-liteinst-preload".into(), version: "0.5.1".into(),
+                manifest: "reverie-liteinst-preload/Cargo.toml".into(),
+                target: "reverie_liteinst_preload".into(),
+                target_source: "reverie-liteinst-preload/src/lib.rs".into(),
+                kind: vec!["cdylib".into()], crate_types: vec!["cdylib".into()] },
+            wrapper: Some(test_wrapper_spec()), variants: variants.clone(),
+        };
+        let policy = VerifiedConsumerPolicy::resolve(&sources, spec(), runner).unwrap();
+        policy.record.verify_files().unwrap();
+        let enriched = sources.with_consumer_build(&policy, &build.command,
+            &build.artifact.path, &build.target_directory, runner).unwrap();
+        assert_eq!(policy.record.definition.sha256, sha256(DEFINITION));
+        assert_eq!(policy.record.definition_size, DEFINITION.len() as u64);
+        let mut wrong_compiled = spec();
+        wrong_compiled.definition_compiled_bytes = b"different compiled policy";
+        assert!(VerifiedConsumerPolicy::resolve(&sources, wrong_compiled, runner).is_err());
+        let mut wrong_path = spec(); wrong_path.definition_relative = "../consumer-policy-control.rs".into();
+        assert!(VerifiedConsumerPolicy::resolve(&sources, wrong_path, runner).is_err());
+        let mut wrong_package = spec(); wrong_package.runtime.version = "0.5.2".into();
+        assert!(VerifiedConsumerPolicy::resolve(&sources, wrong_package, runner).is_err());
+        // A deterministic mutation inside the exact production transaction:
+        // successful operation must become Err at its supplemental close.
+        let success = enriched.with_qualification_sources(runner, |_| {
+            fs::write(&definition, b"changed source policy definition").map_err(|e| e.to_string())?;
+            Ok(())
+        });
+        let success_error = success.unwrap_err();
+        assert!(success_error.contains("consumer-policy-control.rs"));
+        assert!(policy.record.verify_files().is_err());
+        assert!(VerifiedConsumerPolicy::resolve(&sources, spec(), runner).is_err());
+        fs::write(&definition, DEFINITION).unwrap();
+        enriched.verify_unchanged(runner).unwrap();
+        // Failed operation retains both the original refusal and closing error.
+        let refused = enriched.with_qualification_sources::<()>(runner, |_| {
+            fs::write(&definition, b"changed again during refused qualification").map_err(|e| e.to_string())?;
+            Err("qualification refused".into())
+        });
+        let error = refused.unwrap_err();
+        assert!(error.contains("qualification refused"));
+        assert!(error.contains("qualification source close failed"));
+        assert!(error.contains("consumer-policy-control.rs"));
+        fs::write(&definition, DEFINITION).unwrap();
+        policy.record.verify_files().unwrap();
+        enriched.verify_unchanged(runner).unwrap();
     }
 
     // Additional controls in the existing current-artifact test. These exercise
@@ -35887,9 +40958,724 @@ mod tests {
         assert!(fixed_emitted_role("_RNvGuestAllocatorGlobalAlloc5alloc").is_none());
     }
 
+    // Retained real standalone release pair. These controls prove only the
+    // finite recipe; no synthetic VerifiedCompiledSources or ELF PASS is made.
+    #[test]
+    fn standalone_optimized_d8_present_getter_pair_is_exact() {
+        let allocation = fixed_hex(
+            "41574156415453504889d34989f6ff1554520c004885c074774c8b78204d85ff746e4989c4488d3d1c490c00e8efb40b004883b8d8000000007463498b542410498b0f498d76ff49f7de31c04889cf4801d7723e4801f772394c21f74989f84929d04901d8410f92c14981f801000002410f93c24508ca75194889c8f04d0fb1074889c1b80000000075c14889f8eb0231c04883c4085b415c415e415fc3bf010000004c89f64889da4883c4085b415c415e415fff25fe510c00",
+        );
+        let getter = fixed_hex("50488d3dc0460c00e893b20b00488d80d800000059c3");
+        let cell = SymbolEvidence {
+            name: FIXED_TLS_CELL_ROLE.replace("Cs_", "CsTest_"),
+            address: 0xd8,
+            size: 8,
+            binding: sym::STB_LOCAL,
+            visibility: sym::STV_HIDDEN,
+        };
+        let a = [
+            (16, 20, 0x1737a8),
+            (40, 44, 0x172e88),
+            (45, 49, 0x169a60),
+            (182, 186, 0x1737f8),
+        ];
+        let g = [(4, 8, 0x172e88), (9, 13, 0x169a60)];
+        let check = |a_bytes: &[u8],
+                     g_bytes: &[u8],
+                     a_fields: &[(usize, usize, u64)],
+                     g_fields: &[(usize, usize, u64)]| {
+            standalone_optimized_d8_tls_pair_recipe(
+                FixedImageKind::Standalone,
+                &cell,
+                (0xae540, a_bytes),
+                (0xae7c0, g_bytes),
+                a_fields,
+                g_fields,
+            )
+        };
+        assert_eq!((allocation.len(), getter.len()), (186, 22));
+        check(&allocation, &getter, &a, &g).unwrap();
+        for which in 0..2 {
+            let body = if which == 0 { &allocation } else { &getter };
+            for at in 0..body.len() {
+                for bit in 0..8 {
+                    let mut changed = body.to_vec();
+                    changed[at] ^= 1 << bit;
+                    let result = if which == 0 {
+                        check(&changed, &getter, &a, &g)
+                    } else {
+                        check(&allocation, &changed, &a, &g)
+                    };
+                    assert!(result.is_err(), "pair byte {which}/{at}/{bit}");
+                }
+            }
+            for end in 0..body.len() {
+                let result = if which == 0 {
+                    check(&body[..end], &getter, &a, &g)
+                } else {
+                    check(&allocation, &body[..end], &a, &g)
+                };
+                assert!(result.is_err(), "pair truncation {which}/{end}");
+            }
+            for suffix in [&[0x90][..], &[0xff, 0xd0], &[0x0f, 0x05], &[0xc3]] {
+                let mut changed = body.to_vec();
+                changed.extend_from_slice(suffix);
+                let result = if which == 0 {
+                    check(&changed, &getter, &a, &g)
+                } else {
+                    check(&allocation, &changed, &a, &g)
+                };
+                assert!(result.is_err(), "pair extra bytes {which}");
+            }
+        }
+        for at in 0..a.len() {
+            let mut changed = a;
+            changed[at].2 += 1;
+            assert!(check(&allocation, &getter, &changed, &g).is_err());
+            assert!(check(&allocation, &getter, &a[..at], &g).is_err());
+        }
+        for at in 0..g.len() {
+            let mut changed = g;
+            changed[at].2 += 1;
+            assert!(check(&allocation, &getter, &a, &changed).is_err());
+            assert!(check(&allocation, &getter, &a, &g[..at]).is_err());
+        }
+        let mut extra_a = a.to_vec();
+        extra_a.push((52, 56, 0xd8));
+        assert!(check(&allocation, &getter, &extra_a, &g).is_err());
+        let mut extra_g = g.to_vec();
+        extra_g.push((16, 20, 0xd8));
+        assert!(check(&allocation, &getter, &a, &extra_g).is_err());
+        let mut duplicate_g = g;
+        duplicate_g[1] = duplicate_g[0];
+        assert!(check(&allocation, &getter, &a, &duplicate_g).is_err());
+        // A self-consistent but different getter module must not earn the pair.
+        let mut other_module = getter.clone();
+        let displacement = i32::from_le_bytes(other_module[4..8].try_into().unwrap());
+        other_module[4..8].copy_from_slice(&(displacement + 8).to_le_bytes());
+        let mut other_g = g;
+        other_g[0].2 += 8;
+        assert!(check(&allocation, &other_module, &a, &other_g).is_err());
+        for which in 0..4 {
+            let mut wrong = cell.clone();
+            match which {
+                0 => wrong.address = 0x98,
+                1 => wrong.size = 16,
+                2 => wrong.binding = sym::STB_GLOBAL,
+                _ => wrong.name.push('x'),
+            }
+            assert!(
+                standalone_optimized_d8_tls_pair_recipe(
+                    FixedImageKind::Standalone,
+                    &wrong,
+                    (0xae540, &allocation),
+                    (0xae7c0, &getter),
+                    &a,
+                    &g,
+                )
+                .is_err()
+            );
+        }
+        assert!(
+            standalone_optimized_d8_tls_pair_recipe(
+                FixedImageKind::Detcore,
+                &cell,
+                (0xae540, &allocation),
+                (0xae7c0, &getter),
+                &a,
+                &g,
+            )
+            .is_err()
+        );
+        assert!(
+            standalone_optimized_d8_tls_pair_recipe(
+                FixedImageKind::Standalone,
+                &cell,
+                (u64::MAX, &allocation),
+                (0xae7c0, &getter),
+                &a,
+                &g,
+            )
+            .is_err()
+        );
+        // The production selection cannot substitute a missing source context.
+        assert!(direct_tls_source_context(None).is_err());
+        // This positive pair does not open either old generic d8 role.
+        assert!(
+            fixed_tls_cell_access_recipe("fixed_patch_alloc", 0xae540, &allocation, &cell, &a)
+                .is_err()
+        );
+        assert!(
+            fixed_tls_cell_access_recipe("fixed_tls_fn_once", 0xae7c0, &getter, &cell, &g).is_err()
+        );
+    }
+
+    #[test]
+    fn standalone_optimized_d8_present_getter_requires_typed_tls_cell() {
+        // A physical mini-ELF checks the unchanged gate used before pair selection.
+        // Recipe SymbolEvidence alone cannot assert an STT_TLS/zero-fill identity.
+        fn put(bytes: &mut [u8], at: usize, width: usize, value: u64) {
+            bytes[at..at + width].copy_from_slice(&value.to_le_bytes()[..width]);
+        }
+        let name = FIXED_TLS_CELL_ROLE.replace("Cs_", "CsTest_");
+        let mut bytes = vec![0_u8; 0x1000];
+        bytes[..7].copy_from_slice(b"\x7fELF\x02\x01\x01");
+        for (at, width, value) in [
+            (16, 2, 3),
+            (18, 2, 62),
+            (20, 4, 1),
+            (32, 8, 64),
+            (40, 8, 0x800),
+            (52, 2, 64),
+            (54, 2, 56),
+            (56, 2, 1),
+            (58, 2, 64),
+            (60, 2, 5),
+            (62, 2, 4),
+        ] {
+            put(&mut bytes, at, width, value);
+        }
+        for (offset, width, value) in [
+            (0, 4, 7),
+            (4, 4, 4),
+            (32, 8, 0xd8),
+            (40, 8, 0xe0),
+            (48, 8, 8),
+        ] {
+            put(&mut bytes, 64 + offset, width, value);
+        }
+        bytes[0x201..0x201 + name.len()].copy_from_slice(name.as_bytes());
+        let section_names = b"\0.tbss\0.symtab\0.strtab\0.shstrtab\0";
+        bytes[0x700..0x700 + section_names.len()].copy_from_slice(section_names);
+        for (index, fields) in [
+            (
+                1,
+                vec![(0, 4, 1), (4, 4, 8), (8, 8, 0x403), (32, 8, 8), (48, 8, 8)],
+            ),
+            (
+                2,
+                vec![
+                    (0, 4, 7),
+                    (4, 4, 2),
+                    (24, 8, 0x600),
+                    (32, 8, 48),
+                    (40, 4, 3),
+                    (44, 4, 2),
+                    (48, 8, 8),
+                    (56, 8, 24),
+                ],
+            ),
+            (
+                3,
+                vec![
+                    (0, 4, 15),
+                    (4, 4, 3),
+                    (24, 8, 0x200),
+                    (32, 8, name.len() as u64 + 2),
+                    (48, 8, 1),
+                ],
+            ),
+            (
+                4,
+                vec![
+                    (0, 4, 23),
+                    (4, 4, 3),
+                    (24, 8, 0x700),
+                    (32, 8, section_names.len() as u64),
+                    (48, 8, 1),
+                ],
+            ),
+        ] {
+            for (offset, width, value) in fields {
+                put(&mut bytes, 0x800 + index * 64 + offset, width, value);
+            }
+        }
+        for (offset, width, value) in [
+            (0, 4, 1),
+            (4, 1, u64::from(sym::STT_TLS)),
+            (6, 2, 1),
+            (8, 8, 0xd8),
+            (16, 8, 8),
+        ] {
+            put(&mut bytes, 0x618 + offset, width, value);
+        }
+        let observed = fixed_tls_cell(&Elf::parse(&bytes).unwrap()).unwrap();
+        assert_eq!(
+            (observed.address, observed.size, observed.binding),
+            (0xd8, 8, sym::STB_LOCAL)
+        );
+        for kind in [sym::STT_NOTYPE, sym::STT_OBJECT, sym::STT_FUNC] {
+            let mut wrong = bytes.clone();
+            wrong[0x61c] = kind;
+            assert!(
+                fixed_tls_cell(&Elf::parse(&wrong).unwrap()).is_err(),
+                "non-TLS type{kind}"
+            );
+        }
+        let mut initialized = bytes.clone();
+        put(&mut initialized, 64 + 32, 8, 0xe0);
+        assert!(fixed_tls_cell(&Elf::parse(&initialized).unwrap()).is_err());
+        let mut global = bytes.clone();
+        global[0x61c] |= sym::STB_GLOBAL << 4;
+        assert!(fixed_tls_cell(&Elf::parse(&global).unwrap()).is_err());
+    }
+
+    #[test]
+    fn standalone_optimized_d8_present_getter_boundary_is_exact() {
+        // Serialized data only; the real consumer still requalifies the ELF.
+        let allocation = SymbolEvidence {
+            name: "_RNvXs3_NtCs5QitJCYIb96_16reverie_liteinst11patch_allocNtB5_26FixedPrivatePatchAllocatorNtNtNtCsayI02cGi06u_4core5alloc6global11GlobalAlloc5alloc".into(),
+            address: 0xae540, size: 186, binding: sym::STB_LOCAL, visibility: sym::STV_DEFAULT,
+        };
+        let getter = SymbolEvidence {
+            name: "_RNvYNCNKNvNtCs5QitJCYIb96_16reverie_liteinst11patch_alloc18INSTALLATION_DEPTH0s_0INtNtNtCsayI02cGi06u_4core3ops8function6FnOnceTINtNtB1o_6option6OptionQIB23_INtNtB1o_4cell4CelljEEEEE9call_onceBa_.llvm.15893960162956852577".into(),
+            address: 0xae7c0, size: 22, binding: sym::STB_LOCAL, visibility: sym::STV_DEFAULT,
+        };
+        let tls = AllocatorTlsBoundary {
+            dependency: "existing_installation_depth_tls".into(),
+            provider_symbol: "__tls_get_addr".into(),
+            provider_version: "GLIBC_2.3".into(),
+            provider_library: "ld-linux-x86-64.so.2".into(),
+            plt_address: 0x169a60,
+            got_slot: 0x174000,
+            dynamic_symbol_index: 18,
+            tls_cell: SymbolEvidence {
+                name: FIXED_TLS_CELL_ROLE.replace("Cs_", "CsTest_"),
+                address: 0xd8,
+                size: 8,
+                binding: sym::STB_LOCAL,
+                visibility: sym::STV_HIDDEN,
+            },
+            tls_module_slot: 0x172e88,
+            tls_offset_slot: 0x172e90,
+            callsites: vec![
+                ConstructorTransfer {
+                    instruction: 0xae56c,
+                    target: 0x169a60,
+                    local_got_slot: None,
+                },
+                ConstructorTransfer {
+                    instruction: 0xae7c8,
+                    target: 0x169a60,
+                    local_got_slot: None,
+                },
+            ],
+            local_key_object: None,
+            local_key_transfer: None,
+            local_key_resolution: None,
+            unisolated: true,
+            plt_sha256: "1".repeat(64),
+            function_sha256: BTreeMap::from([
+                (
+                    "fixed_patch_alloc".into(),
+                    "50ba599e1fd40b2440a10dfb765378008391379ccc6d1f29d1523fd2f76da91f".into(),
+                ),
+                (
+                    "fixed_tls_fn_once".into(),
+                    "121c419b712207535989da7a5c00239cfb84d3969f842beff6eac9872491a677".into(),
+                ),
+            ]),
+            local_chain: BTreeMap::from([
+                ("fixed_patch_alloc".into(), allocation),
+                ("fixed_tls_fn_once".into(), getter),
+            ]),
+            direct_allocation: None,
+        };
+        let check = |sample: &AllocatorTlsBoundary| {
+            validate_existing_allocator_tls_boundary(sample, FixedImageKind::Standalone)
+        };
+        check(&tls).unwrap();
+        let encoded = serde_json::to_vec(&tls).unwrap();
+        let decoded: AllocatorTlsBoundary = serde_json::from_slice(&encoded).unwrap();
+        check(&decoded).unwrap();
+        assert_eq!(
+            serde_json::to_value(&tls).unwrap(),
+            serde_json::to_value(&decoded).unwrap()
+        );
+        assert!(validate_existing_allocator_tls_boundary(&tls, FixedImageKind::Detcore).is_err());
+        for which in 0..33 {
+            let mut bad = tls.clone();
+            match which {
+                0 => {
+                    bad.local_chain.remove("fixed_tls_fn_once");
+                }
+                1 => {
+                    bad.function_sha256.remove("fixed_tls_fn_once");
+                }
+                2 => {
+                    bad.local_chain
+                        .insert("extra".into(), bad.local_chain["fixed_tls_fn_once"].clone());
+                }
+                3 => {
+                    bad.function_sha256.insert("extra".into(), "2".repeat(64));
+                }
+                4 => bad.local_chain.get_mut("fixed_patch_alloc").unwrap().size = 177,
+                5 => bad.local_chain.get_mut("fixed_tls_fn_once").unwrap().size = 37,
+                6 => bad
+                    .local_chain
+                    .get_mut("fixed_patch_alloc")
+                    .unwrap()
+                    .name
+                    .push('x'),
+                7 => bad
+                    .local_chain
+                    .get_mut("fixed_tls_fn_once")
+                    .unwrap()
+                    .name
+                    .push('x'),
+                8 => {
+                    bad.local_chain
+                        .get_mut("fixed_tls_fn_once")
+                        .unwrap()
+                        .binding = sym::STB_GLOBAL
+                }
+                9 => {
+                    bad.local_chain
+                        .get_mut("fixed_patch_alloc")
+                        .unwrap()
+                        .binding = sym::STB_GLOBAL
+                }
+                10 => bad.callsites.clear(),
+                11 => {
+                    bad.callsites.pop();
+                }
+                12 => bad.callsites.push(bad.callsites[0].clone()),
+                13 => bad.callsites.swap(0, 1),
+                14 => bad.callsites[1] = bad.callsites[0].clone(),
+                15 => bad.callsites[0].instruction += 1,
+                16 => bad.callsites[1].instruction += 1,
+                17 => bad.callsites[0].target += 1,
+                18 => bad.callsites[1].target += 1,
+                19 => bad.callsites[1].local_got_slot = Some(bad.got_slot),
+                20 => bad.local_key_object = Some(0x172f00),
+                21 => bad.local_key_transfer = Some(bad.callsites[1].clone()),
+                22 => {
+                    bad.local_key_resolution =
+                        Some("local_relative_readonly_function_pointer".into())
+                }
+                23 => bad.unisolated = false,
+                24 => bad.provider_version.push('x'),
+                25 => bad.tls_cell.address = 0x98,
+                26 => bad.tls_offset_slot += 8,
+                27 => bad.tls_cell.size = 16,
+                28 => {
+                    bad.function_sha256
+                        .insert("fixed_tls_fn_once".into(), String::new());
+                }
+                29 => {
+                    bad.local_chain
+                        .get_mut("fixed_patch_alloc")
+                        .unwrap()
+                        .address = u64::MAX
+                }
+                31 => {
+                    // Getter after allocation: its call fits, but its whole end does not.
+                    let address = u64::MAX - 10;
+                    bad.local_chain
+                        .get_mut("fixed_tls_fn_once")
+                        .unwrap()
+                        .address = address;
+                    bad.callsites[1].instruction = address.checked_add(8).unwrap();
+                }
+                32 => {
+                    // Allocation after getter: its call fits, but its whole end does not.
+                    let address = u64::MAX - 100;
+                    bad.local_chain
+                        .get_mut("fixed_patch_alloc")
+                        .unwrap()
+                        .address = address;
+                    bad.callsites[0].instruction = address.checked_add(0x2c).unwrap();
+                }
+                _ => {
+                    bad.direct_allocation = Some(DirectAllocationTlsEvidence {
+                        version: 3,
+                        policy: STANDALONE_D8_DIRECT_TLS_CENSUS_POLICY.into(),
+                        elf_sha256: "1".repeat(64),
+                        compiled_sources_sha256: "2".repeat(64),
+                        reverie_pin: "3".repeat(40),
+                        allocation_sha256: "4".repeat(64),
+                        mappings: vec![],
+                        static_symbol_count: 1,
+                        dynamic_symbol_count: 1,
+                        raw_names_sha256: "5".repeat(64),
+                        loader_writer_count: 1,
+                        loader_writers_sha256: "6".repeat(64),
+                        named_getters: vec![],
+                        recipe_getters: vec![],
+                        getter_pointer_slots: vec![],
+                    })
+                }
+            }
+            assert!(check(&bad).is_err(), "serialized pair mutation{which}");
+        }
+    }
+
+    #[test]
+    fn standalone_optimized_d8_tls_recipe_is_a_complete_separate_body() {
+        let address = 0x72af0;
+        let body = fixed_hex(STANDALONE_OPTIMIZED_D8_PATCH_ALLOC_HEX);
+        let cell = SymbolEvidence {
+            name: "_RNvNCNKNvNtCsTest_16reverie_liteinst11patch_alloc18INSTALLATION_DEPTH0s_023___RUST_STD_INTERNAL_VAL".into(),
+            address: 0xd8,
+            size: 8,
+            binding: sym::STB_LOCAL,
+            visibility: sym::STV_HIDDEN,
+        };
+        let operands = [
+            (0x10, 0x14, 0xf4a10),
+            (0x28, 0x2c, 0xf47b0),
+            (0x2d, 0x31, 0xedb20),
+            (0xb6, 0xba, 0xf4fb0),
+        ];
+        let check = |bytes: &[u8], cell: &SymbolEvidence, fields: &[(usize, usize, u64)]| {
+            standalone_optimized_d8_allocation_recipe(
+                FixedImageKind::Standalone,
+                address,
+                bytes,
+                cell,
+                fields,
+            )
+        };
+        assert_eq!(body.len(), 186);
+        check(&body, &cell, &operands).unwrap();
+        for at in 0..body.len() {
+            for bit in 0..8 {
+                let mut changed = body.clone();
+                changed[at] ^= 1 << bit;
+                assert!(
+                    check(&changed, &cell, &operands).is_err(),
+                    "literal/operand {at}/{bit}"
+                );
+            }
+        }
+        for size in 0..body.len() {
+            assert!(check(&body[..size], &cell, &operands).is_err());
+        }
+        for suffix in [&[0x90][..], &[0xff, 0xd0], &[0x0f, 0x05], &[0xc3]] {
+            let mut changed = body.clone();
+            changed.extend_from_slice(suffix);
+            assert!(check(&changed, &cell, &operands).is_err());
+        }
+        for at in 0..operands.len() {
+            let mut changed = operands;
+            changed[at].2 += 1;
+            assert!(check(&body, &cell, &changed).is_err());
+            assert!(check(&body, &cell, &operands[..at]).is_err());
+        }
+        let mut fields = operands.to_vec();
+        fields.push((0x34, 0x38, 0xd8));
+        assert!(check(&body, &cell, &fields).is_err());
+        fields[0] = operands[1];
+        assert!(check(&body, &cell, &fields).is_err());
+        for offset in [0, 0x40, 0x48, 0x80, 0x88, 0x98, 0xd7, 0xd9, 0xe8, u64::MAX] {
+            let mut changed = cell.clone();
+            changed.address = offset;
+            assert!(check(&body, &changed, &operands).is_err());
+        }
+        for which in 0..3 {
+            let mut changed = cell.clone();
+            match which {
+                0 => changed.name.push('x'),
+                1 => changed.size = 16,
+                _ => changed.binding = sym::STB_GLOBAL,
+            }
+            assert!(check(&body, &changed, &operands).is_err());
+        }
+        assert!(
+            standalone_optimized_d8_allocation_recipe(
+                FixedImageKind::Detcore,
+                address,
+                &body,
+                &cell,
+                &operands,
+            )
+            .is_err()
+        );
+        assert!(
+            standalone_optimized_d8_allocation_recipe(
+                FixedImageKind::Standalone,
+                u64::MAX,
+                &body,
+                &cell,
+                &operands,
+            )
+            .is_err()
+        );
+        // The old generic matcher remains closed for all d8 optimized roles.
+        for role in [
+            "fixed_patch_alloc",
+            "fixed_tls_fn_once",
+            "fixed_tls_cell_getter",
+            "unknown",
+        ] {
+            assert!(fixed_tls_cell_access_recipe(role, address, &body, &cell, &operands).is_err());
+        }
+        assert!(direct_tls_source_context(None).is_err());
+    }
+
+    #[test]
+    fn standalone_optimized_d8_tls_boundary_has_a_distinct_direct_policy() {
+        // Structural sample only. Actual source/ELF/provider/census extraction
+        // and receipt equality remain mandatory for production admission.
+        let allocation = SymbolEvidence {
+            name: "_RNvXs3_NtCsTest_16reverie_liteinst11patch_allocNtB5_26FixedPrivatePatchAllocatorNtNtNtCsTest_4core5alloc6global11GlobalAlloc5alloc".into(),
+            address: 0x72af0, size: 186, binding: sym::STB_LOCAL, visibility: sym::STV_DEFAULT,
+        };
+        let allocation_hash = sha256(&fixed_hex(STANDALONE_OPTIMIZED_D8_PATCH_ALLOC_HEX));
+        let proof = DirectAllocationTlsEvidence {
+            version: 3,
+            policy: STANDALONE_D8_DIRECT_TLS_CENSUS_POLICY.into(),
+            elf_sha256: "1".repeat(64),
+            compiled_sources_sha256: "2".repeat(64),
+            reverie_pin: "3".repeat(40),
+            allocation_sha256: allocation_hash.clone(),
+            mappings: vec![TlsExecutableMapping {
+                program_header_index: 2,
+                file_offset: 0x1000,
+                virtual_address: 0x1000,
+                file_size: 0x100,
+                memory_size: 0x100,
+                flags: 5,
+                sha256: "4".repeat(64),
+            }],
+            static_symbol_count: 2,
+            dynamic_symbol_count: 1,
+            raw_names_sha256: "5".repeat(64),
+            loader_writer_count: 1,
+            loader_writers_sha256: "6".repeat(64),
+            named_getters: vec![],
+            recipe_getters: vec![],
+            getter_pointer_slots: vec![],
+        };
+        let tls = AllocatorTlsBoundary {
+            dependency: "existing_installation_depth_tls".into(), provider_symbol: "__tls_get_addr".into(),
+            provider_version: "GLIBC_2.3".into(), provider_library: "ld-linux-x86-64.so.2".into(),
+            plt_address: 0xedb20, got_slot: 0xf5dd8, dynamic_symbol_index: 18,
+            tls_cell: SymbolEvidence {
+                name: "_RNvNCNKNvNtCsTest_16reverie_liteinst11patch_alloc18INSTALLATION_DEPTH0s_023___RUST_STD_INTERNAL_VAL".into(),
+                address: 0xd8, size: 8, binding: sym::STB_LOCAL, visibility: sym::STV_HIDDEN,
+            },
+            tls_module_slot: 0xf47b0, tls_offset_slot: 0xf47b8,
+            callsites: vec![ConstructorTransfer {instruction: 0x72b1c, target: 0xedb20, local_got_slot: None}],
+            local_key_object: None, local_key_transfer: None, local_key_resolution: None,
+            unisolated: true, plt_sha256: "7".repeat(64),
+            function_sha256: BTreeMap::from([("fixed_patch_alloc".into(), allocation_hash)]),
+            local_chain: BTreeMap::from([("fixed_patch_alloc".into(), allocation)]),
+            direct_allocation: Some(proof),
+        };
+        validate_existing_allocator_tls_boundary(&tls, FixedImageKind::Standalone).unwrap();
+        assert!(validate_existing_allocator_tls_boundary(&tls, FixedImageKind::Detcore).is_err());
+        for which in 0..27 {
+            let mut bad = tls.clone();
+            match which {
+                0 => bad.direct_allocation = None,
+                1 => bad.direct_allocation.as_mut().unwrap().version = 1,
+                2 => {
+                    bad.direct_allocation.as_mut().unwrap().policy = DIRECT_TLS_CENSUS_POLICY.into()
+                }
+                3 => bad.direct_allocation.as_mut().unwrap().version = 2,
+                4 => {
+                    bad.direct_allocation.as_mut().unwrap().policy =
+                        DETCORE_DIRECT_TLS_CENSUS_POLICY.into()
+                }
+                5 => bad.tls_cell.address = 0x40,
+                6 => bad.tls_cell.address = 0x80,
+                7 => bad.tls_cell.address = 0x98,
+                8 => bad.tls_cell.address = 0xe8,
+                9 => bad.local_chain.get_mut("fixed_patch_alloc").unwrap().size = 177,
+                10 => bad
+                    .local_chain
+                    .get_mut("fixed_patch_alloc")
+                    .unwrap()
+                    .name
+                    .push('x'),
+                11 => {
+                    bad.function_sha256.insert("extra".into(), "8".repeat(64));
+                }
+                12 => bad.direct_allocation.as_mut().unwrap().allocation_sha256 = "9".repeat(64),
+                13 => bad
+                    .direct_allocation
+                    .as_mut()
+                    .unwrap()
+                    .named_getters
+                    .push(0x7000),
+                14 => bad
+                    .direct_allocation
+                    .as_mut()
+                    .unwrap()
+                    .recipe_getters
+                    .push(0x7000),
+                15 => bad
+                    .direct_allocation
+                    .as_mut()
+                    .unwrap()
+                    .getter_pointer_slots
+                    .push(0xf4000),
+                16 => bad.direct_allocation.as_mut().unwrap().mappings[0].flags = 7,
+                17 => bad.direct_allocation.as_mut().unwrap().mappings.clear(),
+                18 => bad.local_key_object = Some(0xf5000),
+                19 => bad.local_key_transfer = Some(bad.callsites[0].clone()),
+                20 => {
+                    bad.local_key_resolution =
+                        Some("local_relative_readonly_function_pointer".into())
+                }
+                21 => bad.callsites[0].instruction += 1,
+                22 => bad.callsites[0].target += 1,
+                23 => bad.tls_offset_slot += 8,
+                24 => bad.provider_version.push('x'),
+                25 => bad.provider_library.push('x'),
+                _ => bad
+                    .direct_allocation
+                    .as_mut()
+                    .unwrap()
+                    .compiled_sources_sha256
+                    .clear(),
+            }
+            assert!(
+                validate_existing_allocator_tls_boundary(&bad, FixedImageKind::Standalone).is_err(),
+                "d8 direct mutation {which}"
+            );
+        }
+        // A v3 record is never accepted as an old v1/v2 cell cohort. Conversely,
+        // old policy records cannot be relabeled as the d8 direct route.
+        for (offset, version, policy) in [
+            (0x40, 1, DIRECT_TLS_CENSUS_POLICY),
+            (0x80, 1, DIRECT_TLS_CENSUS_POLICY),
+            (0xe8, 2, DETCORE_DIRECT_TLS_CENSUS_POLICY),
+        ] {
+            let mut old = tls.clone();
+            old.tls_cell.address = offset;
+            old.direct_allocation.as_mut().unwrap().version = version;
+            old.direct_allocation.as_mut().unwrap().policy = policy.into();
+            if offset != 0xe8 {
+                validate_existing_allocator_tls_boundary(&old, FixedImageKind::Standalone).unwrap();
+            }
+            old.tls_cell.address = 0xd8;
+            assert!(
+                validate_existing_allocator_tls_boundary(&old, FixedImageKind::Standalone).is_err()
+            );
+        }
+    }
+
     fn fixed_tls_cell_access_mutation_controls() {
         type TlsAccessSample<'a> = (&'a str, u64, &'a str, u64, &'a [(usize, usize, u64)]);
         let samples: &[TlsAccessSample<'_>] = &[
+            // Actual clean bb79 OFF FullTool fixture: authenticated cell 0x98.
+            (
+                "fixed_tls_cell_getter",
+                0x11eb00,
+                "4883ec1848897c24084889742410488d3dc3ea1700e8b6ea1600488d80980000004883c418c3",
+                0x98,
+                &[(17, 21, 0x29d5d8), (22, 26, 0x28d5d0)],
+            ),
+            // Actual ef5ea dev FullTool fixture: full 38 B, authenticated cell 0xd8.
+            (
+                "fixed_tls_cell_getter",
+                0x1f24c0,
+                "4883ec1848897c24084889742410488d3d2b4b2c00e8f6722800488d80d80000004883c418c3",
+                0xd8,
+                &[(17, 21, 0x4b7000), (22, 26, 0x4797d0)],
+            ),
             // Actual DEV image a746cd77: INSTALLATION_DEPTH at TLS offset 0x80.
             (
                 "fixed_tls_cell_getter",
@@ -36025,7 +41811,24 @@ mod tests {
                 );
             }
             // Even another observed offset cannot substitute for this actual cell.
-            for wrong in [0, 0x40, 0x48, 0x50, 0x80, 0x88, 0x90, u64::MAX] {
+            for wrong in [
+                0,
+                0x40,
+                0x48,
+                0x50,
+                0x80,
+                0x88,
+                0x90,
+                0x97,
+                0x98,
+                0x99,
+                0xd0,
+                0xd7,
+                0xd8,
+                0xd9,
+                0xe0,
+                u64::MAX,
+            ] {
                 if wrong == offset {
                     continue;
                 }
@@ -36034,6 +41837,14 @@ mod tests {
                 assert!(
                     fixed_tls_cell_access_recipe(role, address, &bytes, &bad, operands).is_err()
                 );
+            }
+            if matches!(offset, 0x98 | 0xd8) {
+                for other_role in ["fixed_patch_alloc", "fixed_tls_fn_once"] {
+                    assert!(
+                        fixed_tls_cell_access_recipe(other_role, address, &bytes, &cell, operands)
+                            .is_err()
+                    );
+                }
             }
             let mut bad = cell.clone();
             bad.name.push_str("_foreign");
@@ -37102,7 +42913,7 @@ mod tests {
                     .into_iter().flat_map(u64::to_le_bytes).collect::<Vec<_>>()),
                 file_offset: 0x800, section_index: 1, load_segment_index: 0,
             },
-            tls_boundary: AllocatorTlsBoundary {
+            tls_boundary: AllocatorInstallationEvidence::Existing(Box::new(AllocatorTlsBoundary {
                 dependency: "existing_installation_depth_tls".to_owned(),
                 provider_symbol: "__tls_get_addr".to_owned(), provider_version: "GLIBC_2.3".to_owned(),
                 provider_library: "ld-linux-x86-64.so.2".to_owned(),
@@ -37116,7 +42927,7 @@ mod tests {
                 function_sha256: BTreeMap::from([("fixed_patch_alloc".to_owned(), "0".repeat(64))]),
                 local_chain: BTreeMap::from([("fixed_patch_alloc".to_owned(), functions["fixed_patch_alloc"].clone())]),
                 direct_allocation: None,
-            },
+            })),
             allocator_transfers: FIXED_REQUIRED_ROLES[..4]
                 .iter()
                 .chain(FIXED_PUBLICATION_REQUIRED_ROLES.iter())
@@ -37136,6 +42947,15 @@ mod tests {
         };
         // Structural schema controls only; synthetic hashes never qualify ELF.
         validate_fixed_backing_evidence(&backing).unwrap();
+        let historical_json = serde_json::to_vec(backing.tls_boundary.existing().unwrap()).unwrap();
+        assert_eq!(
+            serde_json::to_vec(&backing.tls_boundary).unwrap(),
+            historical_json
+        );
+        assert_eq!(
+            serde_json::from_slice::<AllocatorInstallationEvidence>(&historical_json).unwrap(),
+            backing.tls_boundary,
+        );
         // Each new mandatory publication root needs its own structural
         // function/hash and transfer-map evidence. Synthetic hashes remain
         // schema controls only and never qualify a physical ELF.
@@ -37307,11 +43127,12 @@ mod tests {
             assert!(validate_fixed_backing_evidence(&wrong_source).is_err());
         }
         let mut diagnostic_tls = backing.clone();
-        diagnostic_tls.tls_boundary.tls_cell.address = 0x88;
+        diagnostic_tls.tls_boundary.existing_mut().tls_cell.address = 0x88;
         validate_fixed_backing_evidence(&diagnostic_tls).unwrap();
         fixed_tls_offset_schema_controls(&backing);
         fixed_tls_direct_schema_controls(&backing);
         fixed_tls_direct_census_controls();
+        no_installation_scope_schema_controls(&backing);
         let value = serde_json::to_value(&backing).unwrap();
         assert!(value.get("fixed_native_syscalls").is_none());
         for field in [
@@ -37371,13 +43192,21 @@ mod tests {
             );
         }
         let mut wrong_tls_argument = backing.clone();
-        wrong_tls_argument.tls_boundary.tls_cell.address += 8;
+        wrong_tls_argument
+            .tls_boundary
+            .existing_mut()
+            .tls_cell
+            .address += 8;
         assert!(validate_fixed_backing_evidence(&wrong_tls_argument).is_err());
         let mut wrong_tls_call = backing.clone();
-        wrong_tls_call.tls_boundary.callsites[0].target += 1;
+        wrong_tls_call.tls_boundary.existing_mut().callsites[0].target += 1;
         assert!(validate_fixed_backing_evidence(&wrong_tls_call).is_err());
         let mut guessed_tls_pointer_origin = backing.clone();
-        guessed_tls_pointer_origin.tls_boundary.callsites[0].local_got_slot = Some(0x6000);
+        guessed_tls_pointer_origin
+            .tls_boundary
+            .existing_mut()
+            .callsites[0]
+            .local_got_slot = Some(0x6000);
         assert!(validate_fixed_backing_evidence(&guessed_tls_pointer_origin).is_err());
         for unproved_owner in ["7detcore", "16detcore_liteinst"] {
             let mut wrong_owner = backing.clone();
@@ -37410,6 +43239,2612 @@ mod tests {
         unknown["legacy_exemption"] = serde_json::json!(true);
         assert!(serde_json::from_value::<AllocatorBackingEvidence>(unknown).is_err());
         fixed_native_syscall_controls(&backing);
+    }
+
+    // Structural data controls only. No fabricated record is put in an opaque
+    // source context, used to qualify an ELF, or granted execution evidence.
+    fn no_installation_scope_schema_controls(baseline: &AllocatorBackingEvidence) {
+        let old = baseline.tls_boundary.existing().unwrap();
+        assert_eq!(
+            serde_json::to_value(old).unwrap(),
+            serde_json::to_value(&baseline.tls_boundary).unwrap(),
+            "historical v1/v2 evidence must keep its exact JSON shape"
+        );
+        let file = |path: &str, hash: &str| FileIdentity {
+            path: path.into(),
+            sha256: hash.into(),
+        };
+        let mut backing = baseline.clone();
+        for required in &FIXED_REQUIRED_ROLES[..4] {
+            backing.functions.get_mut(*required).unwrap().name = FIXED_EMITTED_ROLE_SYMBOLS
+                .iter()
+                .find(|&&(role, name)| role == *required && name.starts_with("_RNvXs2_"))
+                .unwrap()
+                .1
+                .replace("Cs_", "CsTest_");
+        }
+        let mut allocation = backing.functions["fixed_patch_alloc"].clone();
+        allocation.name = FIXED_EMITTED_ROLE_SYMBOLS
+            .iter()
+            .find(|&&(role, name)| role == "fixed_patch_alloc" && name.starts_with("_RNvXs2_"))
+            .unwrap()
+            .1
+            .replace("Cs_", "CsTest_");
+        allocation.size = 101;
+        backing
+            .functions
+            .insert("fixed_patch_alloc".into(), allocation.clone());
+        backing
+            .function_sha256
+            .insert("fixed_patch_alloc".into(), "5".repeat(64));
+        let mut packages = BTreeMap::new();
+        for (name, features) in [
+            (
+                "consumer-runtime",
+                vec!["exec-native-injection", "exec-private-init"],
+            ),
+            (
+                "reverie-liteinst",
+                vec![
+                    "exec-native-injection",
+                    "exec-private-init",
+                    "exec-private-successor",
+                    "fixed-syscall-gates",
+                    "native-exec-state",
+                ],
+            ),
+            (
+                "reverie-inguest",
+                vec![
+                    "coordinator-rpc",
+                    "exec-native-injection",
+                    "exec-private-init",
+                    "exec-private-successor",
+                    "fixed-syscall-gates",
+                    "launcher",
+                    "native-exec-state",
+                    "rcb-clock",
+                ],
+            ),
+        ] {
+            packages.insert(name.into(),CurrentBuildPackage {package:PackageIdentity {id:name.into(),name:name.into(),
+                manifest:format!("/schema/{name}/Cargo.toml").into(),source:None,target:name.replace('-',"_"),
+                kind:vec!["lib".into()],crate_types:vec!["lib".into()],target_source:format!("/schema/{name}/lib.rs").into()},
+                features:features.into_iter().map(str::to_owned).collect(),outputs:vec![format!("/schema/target/{name}").into()],
+                profile:serde_json::json!({"opt_level":"3","debuginfo":0,"debug_assertions":true,"overflow_checks":true,"test":false})});
+        }
+        let proof = NoInstallationScopeEvidence {
+            kind: "no_installation_scope".into(),
+            version: 1,
+            policy: NO_INSTALLATION_SCOPE_POLICY.into(),
+            elf_sha256: "1".repeat(64),
+            compiled_sources_sha256: "2".repeat(64),
+            reverie_pin: "3".repeat(40),
+            source: file(
+                "/schema/reverie-liteinst/src/patch_alloc.rs",
+                NO_INSTALLATION_SCOPE_SOURCE.2,
+            ),
+            current_build: CurrentBuildEvidence {
+                command: CommandEvidence {
+                    program: "cargo".into(),
+                    arguments: vec![],
+                    cwd: "/schema".into(),
+                    status: 0,
+                    elapsed_millis: 0,
+                    stdout: file("/schema/stdout", &"0".repeat(64)),
+                    stderr: file("/schema/stderr", &"0".repeat(64)),
+                },
+                cargo_executable: None,
+                target_directory: "/schema/target".into(),
+                artifact: file("/schema/target/lib.so", &"1".repeat(64)),
+                compiled_sources_sha256: "2".repeat(64),
+                consumer_policy: test_policy_for_packages(&packages, None, Path::new("/schema"), &"2".repeat(64)),
+                packages,
+                standalone_sources: None,
+            },
+            allocation,
+            allocation_sha256: "5".repeat(64),
+            mappings: vec![TlsExecutableMapping {
+                program_header_index: 1,
+                file_offset: 0x1000,
+                virtual_address: 0x1000,
+                file_size: 0x1000,
+                memory_size: 0x1000,
+                flags: 5,
+                sha256: "6".repeat(64),
+            }],
+            static_symbol_count: 10,
+            dynamic_symbol_count: 2,
+            raw_names_sha256: "7".repeat(64),
+            loader_writer_count: 2,
+            loader_writers_sha256: "8".repeat(64),
+            installation_symbols: vec![],
+            installation_getters: vec![],
+            installation_writer_count: 0,
+            other_tls_getters: NO_SCOPE_OTHER_GETTERS
+                .iter()
+                .enumerate()
+                .map(|(index, (name, offset))| UnisolatedTlsGetter {
+                    getter: SymbolEvidence {
+                        name: name.replace("Cs_", "CsTest_"),
+                        address: 0x1500 + index as u64 * 0x40,
+                        size: 22,
+                        binding: sym::STB_LOCAL,
+                        visibility: sym::STV_DEFAULT,
+                    },
+                    cell_offset: *offset,
+                    module_slot: 0x3300,
+                    plt_address: 0x1810,
+                    sha256: "9".repeat(64),
+                })
+                .collect(),
+            other_getter_pointer_slots: vec![],
+            other_tls_unisolated: true,
+            native_tls_layout100: None,
+        };
+        let check = |proof: &NoInstallationScopeEvidence| {
+            validate_no_installation_scope_evidence(&backing, proof, FixedImageKind::Detcore)
+        };
+        check(&proof).unwrap();
+        native_no_scope_layout100_wire_controls(&backing, &proof);
+        let value = serde_json::to_value(AllocatorInstallationEvidence::NoInstallationScope(
+            Box::new(proof.clone()),
+        ))
+        .unwrap();
+        assert_eq!(
+            serde_json::from_value::<AllocatorInstallationEvidence>(value.clone()).unwrap(),
+            AllocatorInstallationEvidence::NoInstallationScope(Box::new(proof.clone()))
+        );
+        let encoded = serde_json::to_vec(&AllocatorInstallationEvidence::NoInstallationScope(
+            Box::new(proof.clone()),
+        ))
+        .unwrap();
+        assert_eq!(
+            serde_json::from_slice::<AllocatorInstallationEvidence>(&encoded).unwrap(),
+            AllocatorInstallationEvidence::NoInstallationScope(Box::new(proof.clone()))
+        );
+        for field in value.as_object().unwrap().keys() {
+            let mut bad = value.clone();
+            bad.as_object_mut().unwrap().remove(field);
+            assert!(
+                serde_json::from_value::<AllocatorInstallationEvidence>(bad).is_err(),
+                "missing absence field{field}"
+            );
+        }
+        assert_eq!(value, serde_json::to_value(&proof).unwrap());
+        assert_eq!(encoded, serde_json::to_vec(&proof).unwrap());
+        let mut unknown = value;
+        unknown["tls_cell"] = serde_json::json!({});
+        assert!(
+            serde_json::from_value::<AllocatorInstallationEvidence>(unknown).is_err(),
+            "no mixed/fake TLS-cell schema"
+        );
+        for mutation in 0..22 {
+            let mut bad = proof.clone();
+            match mutation {
+                0 => bad.version = 2,
+                1 => bad.policy.push('x'),
+                2 => bad.other_tls_unisolated = false,
+                3 => bad.installation_symbols.push("INSTALLATION_DEPTH".into()),
+                4 => bad.installation_getters.push(0x1500),
+                5 => bad.installation_writer_count = 1,
+                6 => bad.source.sha256 = "0".repeat(64),
+                7 => bad.current_build.compiled_sources_sha256 = "0".repeat(64),
+                8 => bad.current_build.artifact.sha256 = "0".repeat(64),
+                9 => bad.current_build.command.status = 1,
+                10 => bad.allocation.size = 241,
+                11 => bad.allocation.binding = sym::STB_GLOBAL,
+                12 => bad.allocation_sha256 = "0".repeat(64),
+                13 => bad.mappings[0].flags = 7,
+                14 => bad.other_tls_getters.pop().map(|_| ()).unwrap(),
+                15 => bad.other_tls_getters[1] = bad.other_tls_getters[0].clone(),
+                16 => bad.other_tls_getters[0].cell_offset += 1,
+                17 => bad.other_tls_getters[0].getter.binding = sym::STB_GLOBAL,
+                18 => bad.other_tls_getters[0].getter.name.push('x'),
+                19 => bad.other_getter_pointer_slots = vec![8, 8],
+                20 => bad.current_build.command.program = "/toolchain/cargo".into(),
+                21 => {
+                    bad.current_build.cargo_executable =
+                        Some(file("/toolchain/cargo", &"0".repeat(64)))
+                }
+                _ => unreachable!(),
+            }
+            assert!(
+                check(&bad).is_err(),
+                "incomplete/wrong absence record{mutation}"
+            );
+        }
+        assert!(
+            validate_no_installation_scope_evidence(&backing, &proof, FixedImageKind::Standalone)
+                .is_err()
+        );
+        for required in &FIXED_REQUIRED_ROLES[..4] {
+            let mut wrong = backing.clone();
+            wrong.functions.get_mut(*required).unwrap().name =
+                wrong.functions[*required].name.replace("Xs2_", "Xs3_");
+            let mut same_record = proof.clone();
+            if *required == "fixed_patch_alloc" {
+                same_record.allocation = wrong.functions[*required].clone();
+            }
+            assert!(
+                validate_no_installation_scope_evidence(
+                    &wrong,
+                    &same_record,
+                    FixedImageKind::Detcore
+                )
+                .is_err(),
+                "historical ON method cannot be substituted in no-scope OFF cohort{required}"
+            );
+        }
+        assert!(
+            serde_json::to_value(&proof.current_build)
+                .unwrap()
+                .get("standalone_sources")
+                .is_none(),
+            "the existing native JSON gains no optional standalone field"
+        );
+        let mut ordinary = proof.clone();
+        ordinary.policy = ConsumerRecipe::Allocation101LayoutB.policy().into();
+        for (name, features) in ConsumerRecipe::Allocation101LayoutB.features() {
+            ordinary
+                .current_build
+                .packages
+                .get_mut(*name)
+                .unwrap()
+                .features = features
+                .iter()
+                .map(|feature| (*feature).to_owned())
+                .collect();
+        }
+        for getter in &mut ordinary.other_tls_getters {
+            let canonical = canonical_rust_symbol(&getter.getter.name).unwrap();
+            getter.cell_offset = ORDINARY_NO_SCOPE_OTHER_GETTERS
+                .iter()
+                .find(|(name, _)| *name == canonical)
+                .unwrap()
+                .1;
+        }
+        check(&ordinary).unwrap();
+        for mutation in 0..3 {
+            let mut bad = ordinary.clone();
+            match mutation {
+                0 => bad.policy = proof.policy.clone(),
+                1 => bad.other_tls_getters = proof.other_tls_getters.clone(),
+                2 => bad.current_build = proof.current_build.clone(),
+                _ => unreachable!(),
+            }
+            assert!(
+                check(&bad).is_err(),
+                "ordinary/native schema substitution {mutation}"
+            );
+        }
+        let mut standalone = ordinary.clone();
+        standalone.policy = ConsumerRecipe::Allocation62.policy().into();
+        standalone.allocation.size = 62;
+        standalone.current_build.command.cwd = "/schema/consumer-build".into();
+        standalone.current_build.command.arguments =
+            standalone_current_build_arguments(&standalone.current_build.target_directory).unwrap();
+        let mut leaf = standalone
+            .current_build
+            .packages
+            .remove("consumer-runtime")
+            .unwrap();
+        leaf.package.name = "reverie-liteinst-preload".into();
+        standalone
+            .current_build
+            .packages
+            .insert(leaf.package.name.clone(), leaf);
+        let workspace_files: BTreeMap<_, _> = TEST_WRAPPER_WORKSPACE_FILES
+            .into_iter()
+            .map(|relative| {
+                (
+                    relative.to_owned(),
+                    file(&format!("/schema/{relative}"), &"0".repeat(64)),
+                )
+            })
+            .collect();
+        let wrapper = PackageIdentity {
+            id: "path+file:///schema/consumer-build/runtime#consumer-wrapper@0.5.1".into(),
+            name: "consumer-wrapper".into(),
+            manifest: workspace_files["consumer-build/runtime/Cargo.toml"].path.clone(),
+            source: None,
+            target: "consumer_wrapper".into(),
+            kind: vec!["lib".into()],
+            crate_types: vec!["lib".into()],
+            target_source: workspace_files["consumer-build/runtime/src/lib.rs"].path.clone(),
+        };
+        standalone.current_build.packages.insert(
+            wrapper.name.clone(),
+            CurrentBuildPackage {
+                package: wrapper.clone(),
+                features: vec![],
+                profile: ConsumerRecipe::Allocation62.profile(),
+                outputs: vec!["/schema/target/wrapper.rlib".into()],
+            },
+        );
+        for package in standalone.current_build.packages.values_mut() {
+            package.profile = ConsumerRecipe::Allocation62.profile();
+        }
+        standalone.current_build.standalone_sources = Some(StandaloneCurrentBuildSources {
+            wrapper,
+            workspace_files,
+        });
+        standalone.current_build.consumer_policy = test_policy_for_packages(
+            &standalone.current_build.packages, standalone.current_build.standalone_sources.as_ref(),
+            Path::new("/schema"), &standalone.current_build.compiled_sources_sha256);
+        standalone.other_tls_getters = [(0, 0x40), (2, 0)]
+            .into_iter()
+            .map(|(index, offset)| {
+                let mut getter = proof.other_tls_getters[index].clone();
+                getter.cell_offset = offset;
+                getter
+            })
+            .collect();
+        let mut standalone_backing = backing.clone();
+        standalone_backing
+            .functions
+            .get_mut("fixed_patch_alloc")
+            .unwrap()
+            .size = 62;
+        let check_standalone = |value: &NoInstallationScopeEvidence| {
+            validate_no_installation_scope_evidence(
+                &standalone_backing,
+                value,
+                FixedImageKind::Standalone,
+            )
+        };
+        check_standalone(&standalone).unwrap();
+        let serialized = serde_json::to_vec(&AllocatorInstallationEvidence::NoInstallationScope(
+            Box::new(standalone.clone()),
+        ))
+        .unwrap();
+        assert_eq!(
+            serde_json::from_slice::<AllocatorInstallationEvidence>(&serialized).unwrap(),
+            AllocatorInstallationEvidence::NoInstallationScope(Box::new(standalone.clone()))
+        );
+        assert_eq!(serialized, serde_json::to_vec(&standalone).unwrap());
+        semantic_no_scope_wire_controls(
+            &backing,
+            &proof,
+            &ordinary,
+            &standalone_backing,
+            &standalone,
+        );
+        for relative in TEST_WRAPPER_WORKSPACE_FILES {
+            let mut bad = standalone.clone();
+            bad.current_build
+                .standalone_sources
+                .as_mut()
+                .unwrap()
+                .workspace_files
+                .remove(relative);
+            assert!(
+                check_standalone(&bad).is_err(),
+                "standalone missing authorized source {relative}"
+            );
+            let mut bad = standalone.clone();
+            bad.current_build
+                .standalone_sources
+                .as_mut()
+                .unwrap()
+                .workspace_files
+                .get_mut(relative)
+                .unwrap()
+                .path = "/schema/foreign".into();
+            assert!(
+                check_standalone(&bad).is_err(),
+                "standalone substituted source {relative}"
+            );
+        }
+        for mutation in 0..9 {
+            let mut bad = standalone.clone();
+            match mutation {
+                0 => bad.current_build.standalone_sources = None,
+                1 => bad.policy = proof.policy.clone(),
+                2 => bad.policy = ordinary.policy.clone(),
+                3 => bad.other_tls_getters = ordinary.other_tls_getters.clone(),
+                4 => bad.allocation.size = 101,
+                5 => bad.current_build.command.arguments.push("--offline".into()),
+                6 => bad.current_build.command.cwd = "/schema".into(),
+                7 => {
+                    bad.current_build
+                        .standalone_sources
+                        .as_mut()
+                        .unwrap()
+                        .wrapper
+                        .kind = vec!["rlib".into()]
+                }
+                8 => bad
+                    .current_build
+                    .standalone_sources
+                    .as_mut()
+                    .unwrap()
+                    .wrapper
+                    .id
+                    .push('x'),
+                _ => unreachable!(),
+            }
+            assert!(
+                check_standalone(&bad).is_err(),
+                "standalone cohort/source substitution {mutation}"
+            );
+        }
+        for (name, _) in ConsumerRecipe::Allocation62.features() {
+            for feature in ["allocator-fixture", "default", "liteinst"] {
+                let mut bad = standalone.clone();
+                bad.current_build
+                    .packages
+                    .get_mut(*name)
+                    .unwrap()
+                    .features
+                    .push(feature.into());
+                assert!(
+                    check_standalone(&bad).is_err(),
+                    "standalone forbidden package feature {name}/{feature}"
+                );
+            }
+        }
+    }
+
+    // Complete mini-ELF physical controls. Unlike a list of invented symbol
+    // records, this includes actual dynamic version/provider, descriptor,
+    // relocation, RELRO and PLT joins. It never constructs source authority.
+    #[test]
+    fn no_installation_scope_physical_census_controls() {
+        fn put(bytes: &mut [u8], at: usize, width: usize, value: u64) {
+            bytes[at..at + width].copy_from_slice(&value.to_le_bytes()[..width]);
+        }
+        fn rip(bytes: &mut [u8], address: u64, field: usize, next: usize, target: u64) {
+            let displacement =
+                i32::try_from(target as i64 - (address + next as u64) as i64).unwrap();
+            bytes[field..next].copy_from_slice(&displacement.to_le_bytes());
+        }
+        let mut base = vec![0u8; 0x9000];
+        base[..7].copy_from_slice(b"\x7fELF\x02\x01\x01");
+        for (at, width, value) in [
+            (16, 2, 3),
+            (18, 2, 62),
+            (20, 4, 1),
+            (32, 8, 64),
+            (40, 8, 0x8000),
+            (52, 2, 64),
+            (54, 2, 56),
+            (56, 2, 6),
+            (58, 2, 64),
+            (60, 2, 12),
+            (62, 2, 11),
+        ] {
+            put(&mut base, at, width, value);
+        }
+        for (index, kind, flags, address, size) in [
+            (0, 1, 4, 0, 0x1000),
+            (1, 1, 5, 0x1000, 0x1000),
+            (2, 1, 6, 0x3000, 0x1000),
+            (3, 1, 4, 0x4000, 0x5000),
+            (4, 2, 6, 0x3800, 0x200),
+            (5, program_header::PT_GNU_RELRO as u64, 4, 0x3000, 0x1000),
+        ] {
+            let at = 64 + index * 56;
+            for (offset, width, value) in [
+                (0, 4, kind),
+                (4, 4, flags),
+                (8, 8, address),
+                (16, 8, address),
+                (24, 8, address),
+                (32, 8, size),
+                (40, 8, size),
+                (48, 8, 4096),
+            ] {
+                put(&mut base, at + offset, width, value);
+            }
+        }
+        let mut static_names = vec![0u8];
+        let mut static_offsets = Vec::new();
+        for (index, (canonical, cell_offset)) in NO_SCOPE_OTHER_GETTERS.into_iter().enumerate() {
+            static_offsets.push(static_names.len());
+            static_names.extend_from_slice(canonical.replace("Cs_", "Cs1_").as_bytes());
+            static_names.push(0);
+            let row = 0x4000 + (index + 1) * 24;
+            let address = 0x1500 + index * 0x40;
+            for (offset, width, value) in [
+                (0, 4, static_offsets[index] as u64),
+                (4, 1, sym::STT_FUNC as u64),
+                (6, 2, 1),
+                (8, 8, address as u64),
+                (16, 8, 22),
+            ] {
+                put(&mut base, row + offset, width, value);
+            }
+            let mut getter = fixed_hex("50488d3d00000000e800000000488d800000000059c3");
+            getter[16..20].copy_from_slice(&(cell_offset as u32).to_le_bytes());
+            rip(&mut getter, address as u64, 4, 8, 0x3300);
+            rip(&mut getter, address as u64, 9, 13, 0x1810);
+            base[address..address + 22].copy_from_slice(&getter);
+        }
+        let forbidden_name_offset = static_names.len();
+        static_names.extend_from_slice(FIXED_TLS_CELL_ROLE.replace("Cs_", "Cs1_").as_bytes());
+        static_names.push(0);
+        assert!(static_names.len() < 0x1000);
+        base[0x6000..0x6000 + static_names.len()].copy_from_slice(&static_names);
+        let dynamic_names =
+            b"\0__tls_get_addr\0GLIBC_2.3\0ld-linux-x86-64.so.2\0INSTALLATION_DEPTH\0";
+        base[0x4600..0x4600 + dynamic_names.len()].copy_from_slice(dynamic_names);
+        for (offset, width, value) in [
+            (0, 4, 1),
+            (4, 1, ((sym::STB_GLOBAL << 4) | sym::STT_FUNC) as u64),
+        ] {
+            put(&mut base, 0x4418 + offset, width, value);
+        }
+        for (index, (tag, value)) in [
+            (goblin::elf::dynamic::DT_STRTAB, 0x4600),
+            (goblin::elf::dynamic::DT_STRSZ, dynamic_names.len() as u64),
+            (goblin::elf::dynamic::DT_SYMTAB, 0x4400),
+            (goblin::elf::dynamic::DT_SYMENT, 24),
+            (goblin::elf::dynamic::DT_HASH, 0x5400),
+            (goblin::elf::dynamic::DT_RELA, 0x4800),
+            (goblin::elf::dynamic::DT_RELASZ, 24),
+            (goblin::elf::dynamic::DT_RELAENT, 24),
+            (goblin::elf::dynamic::DT_JMPREL, 0x4900),
+            (goblin::elf::dynamic::DT_PLTRELSZ, 24),
+            (
+                goblin::elf::dynamic::DT_PLTREL,
+                goblin::elf::dynamic::DT_RELA,
+            ),
+            (goblin::elf::dynamic::DT_VERSYM, 0x5200),
+            (goblin::elf::dynamic::DT_VERNEED, 0x5300),
+            (goblin::elf::dynamic::DT_VERNEEDNUM, 1),
+            (goblin::elf::dynamic::DT_BIND_NOW, 0),
+            (goblin::elf::dynamic::DT_NULL, 0),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            put(&mut base, 0x3800 + index * 16, 8, tag);
+            put(&mut base, 0x3808 + index * 16, 8, value);
+        }
+        for (index, value) in [1, 2, 1, 0, 0].into_iter().enumerate() {
+            put(&mut base, 0x5400 + index * 4, 4, value);
+        }
+        put(&mut base, 0x5202, 2, 2);
+        let provider_library = dynamic_names
+            .windows(b"ld-linux-x86-64.so.2".len())
+            .position(|window| window == b"ld-linux-x86-64.so.2")
+            .unwrap();
+        let provider_version = dynamic_names
+            .windows(b"GLIBC_2.3".len())
+            .position(|window| window == b"GLIBC_2.3")
+            .unwrap();
+        for (offset, width, value) in [
+            (0, 2, 1),
+            (2, 2, 1),
+            (4, 4, provider_library as u64),
+            (8, 4, 16),
+            (16, 4, 0),
+            (20, 2, 0),
+            (22, 2, 2),
+            (24, 4, provider_version as u64),
+        ] {
+            put(&mut base, 0x5300 + offset, width, value);
+        }
+        for (at, slot, kind, index) in [
+            (0x4800, 0x3300, reloc::R_X86_64_DTPMOD64, 0),
+            (0x4900, 0x3380, reloc::R_X86_64_JUMP_SLOT, 1),
+        ] {
+            put(&mut base, at, 8, slot);
+            put(
+                &mut base,
+                at + 8,
+                8,
+                ((index as u64) << 32) | u64::from(kind),
+            );
+        }
+        let mut plt = fixed_hex("ff25000000006800000000e900000000");
+        rip(&mut plt, 0x1810, 2, 6, 0x3380);
+        rip(&mut plt, 0x1810, 12, 16, 0x1800);
+        base[0x1810..0x1820].copy_from_slice(&plt);
+        let section_names=b"\0.plt\0.symtab\0.strtab\0.dynsym\0.dynstr\0.rela.dyn\0.rela.plt\0.gnu.version\0.gnu.version_r\0.got\0.shstrtab\0";
+        base[0x5500..0x5500 + section_names.len()].copy_from_slice(section_names);
+        for (index, name, kind, flags, address, size, link, entry) in [
+            (1, ".plt", 1, 6, 0x1800, 32, 0, 16),
+            (2, ".symtab", 2, 0, 0x4000, 120, 3, 24),
+            (3, ".strtab", 3, 0, 0x6000, static_names.len() as u64, 0, 0),
+            (4, ".dynsym", 11, 2, 0x4400, 48, 5, 24),
+            (5, ".dynstr", 3, 2, 0x4600, dynamic_names.len() as u64, 0, 0),
+            (6, ".rela.dyn", 4, 2, 0x4800, 24, 4, 24),
+            (7, ".rela.plt", 4, 2, 0x4900, 24, 4, 24),
+            (8, ".gnu.version", 0x6fffffff, 2, 0x5200, 4, 4, 2),
+            (9, ".gnu.version_r", 0x6ffffffe, 2, 0x5300, 32, 5, 0),
+            (10, ".got", 1, 3, 0x3300, 0x100, 0, 0),
+            (
+                11,
+                ".shstrtab",
+                3,
+                0,
+                0x5500,
+                section_names.len() as u64,
+                0,
+                0,
+            ),
+        ] {
+            let name_offset = section_names
+                .windows(name.len() + 1)
+                .position(|window| {
+                    window[..name.len()] == *name.as_bytes() && window[name.len()] == 0
+                })
+                .unwrap();
+            let at = 0x8000 + index * 64;
+            for (offset, width, value) in [
+                (0, 4, name_offset as u64),
+                (4, 4, kind),
+                (8, 8, flags),
+                (16, 8, address),
+                (24, 8, address),
+                (32, 8, size),
+                (40, 4, link),
+                (48, 8, 8),
+                (56, 8, entry),
+            ] {
+                put(&mut base, at + offset, width, value);
+            }
+        }
+        put(&mut base, 0x8000 + 9 * 64 + 44, 4, 1);
+        let census =
+            |bytes: &[u8]| no_installation_scope_census(&Elf::parse(bytes).unwrap(), bytes);
+        let good = census(&base).expect("complete physical no-scope census positive");
+        assert_eq!(good.other_tls_getters.len(), 4);
+        assert_eq!(good.loader_writer_count, 2);
+        assert!(good.other_getter_pointer_slots.is_empty());
+        assert_eq!(good.mappings.len(), 1);
+        native_no_scope_layout100_physical_controls();
+        semantic_no_scope_physical_controls();
+        // Each additional measured population has its own complete physical
+        // positive. No old native negative is redirected to another cohort.
+        let mut ordinary = base.clone();
+        for (index, (_, offset)) in ORDINARY_NO_SCOPE_OTHER_GETTERS.iter().enumerate() {
+            put(&mut ordinary, 0x1500 + index * 0x40 + 16, 4, *offset);
+        }
+        let mut standalone = base.clone();
+        put(&mut standalone, 0x1510, 4, 0x40);
+        for index in [1, 3] {
+            standalone[0x4000 + (index + 1) * 24..0x4000 + (index + 2) * 24].fill(0);
+            standalone[0x1500 + index * 0x40..0x1500 + index * 0x40 + 22].fill(0x90);
+        }
+        for (cohort, fixture, selected) in [
+            (
+                ConsumerRecipe::Allocation101LayoutB,
+                ordinary,
+                vec![0, 1, 2, 3],
+            ),
+            (ConsumerRecipe::Allocation62, standalone, vec![0, 2]),
+        ] {
+            let in_cohort = |bytes: &[u8]| {
+                no_installation_scope_census_in_cohort(&Elf::parse(bytes).unwrap(), bytes, cohort)
+            };
+            assert_eq!(
+                in_cohort(&fixture).unwrap().other_tls_getters.len(),
+                cohort.getters().len()
+            );
+            for other in [
+                ConsumerRecipe::Allocation101LayoutA,
+                ConsumerRecipe::Allocation101LayoutB,
+                ConsumerRecipe::Allocation62,
+            ]
+            .into_iter()
+            .filter(|other| *other != cohort)
+            {
+                assert!(
+                    no_installation_scope_census_in_cohort(
+                        &Elf::parse(&fixture).unwrap(),
+                        &fixture,
+                        other
+                    )
+                    .is_err(),
+                    "cross-cohort getter vector {cohort:?}->{other:?}"
+                );
+            }
+            for index in selected {
+                let address = 0x1500 + index * 0x40;
+                let row = 0x4000 + (index + 1) * 24;
+                for byte in 0..22 {
+                    let mut bad = fixture.clone();
+                    bad[address + byte] ^= 1;
+                    assert!(
+                        in_cohort(&bad).is_err(),
+                        "{cohort:?} complete getter{index} byte{byte}"
+                    );
+                }
+                for alteration in 0..4 {
+                    let mut bad = fixture.clone();
+                    match alteration {
+                        0 => put(&mut bad, row, 4, 0),
+                        1 => put(
+                            &mut bad,
+                            row + 4,
+                            1,
+                            ((sym::STB_GLOBAL << 4) | sym::STT_FUNC) as u64,
+                        ),
+                        2 => put(&mut bad, row + 16, 8, 21),
+                        3 => {
+                            bad.copy_within(row..row + 24, 0x4000 + 5 * 24);
+                            put(&mut bad, 0x8000 + 2 * 64 + 32, 8, 144);
+                        }
+                        _ => unreachable!(),
+                    }
+                    assert!(
+                        in_cohort(&bad).is_err(),
+                        "{cohort:?} getter missing/nonlocal/partial/duplicate{index}:{alteration}"
+                    );
+                }
+            }
+            for alteration in 0..6 {
+                let mut bad = fixture.clone();
+                match alteration {
+                    0 => bad[0x4600 + provider_version] ^= 1,
+                    1 => bad[0x4600 + provider_library] ^= 1,
+                    2 => put(&mut bad, 0x4810, 8, 1),
+                    3 => bad[0x1810] ^= 1,
+                    4 => put(&mut bad, 64 + 5 * 56, 4, program_header::PT_NULL as u64),
+                    5 => {
+                        put(&mut bad, 0x4000 + 5 * 24, 4, forbidden_name_offset as u64);
+                        put(&mut bad, 0x8000 + 2 * 64 + 32, 8, 144);
+                    }
+                    _ => unreachable!(),
+                }
+                assert!(
+                    in_cohort(&bad).is_err(),
+                    "{cohort:?} provider/descriptor/PLT/RELRO/installation{alteration}"
+                );
+            }
+            let mut unknown = fixture.clone();
+            unknown.copy_within(0x1500..0x1516, 0x1e00);
+            rip(&mut unknown[0x1e00..0x1e16], 0x1e00, 4, 8, 0x3300);
+            rip(&mut unknown[0x1e00..0x1e16], 0x1e00, 9, 13, 0x1810);
+            assert!(
+                in_cohort(&unknown).is_err(),
+                "{cohort:?} unnamed complete getter"
+            );
+        }
+        assert!(
+            derive_no_installation_scope_evidence(
+                &Elf::parse(&base).unwrap(),
+                &base,
+                &BTreeMap::new(),
+                &BTreeMap::new(),
+                None
+            )
+            .is_err(),
+            "physical data alone never substitutes for source/build authority"
+        );
+        for binding in [sym::STB_LOCAL, sym::STB_GLOBAL, sym::STB_WEAK] {
+            for kind in [sym::STT_TLS, sym::STT_FUNC, sym::STT_NOTYPE] {
+                let mut bad = base.clone();
+                let row = 0x4000 + 5 * 24;
+                put(&mut bad, 0x8000 + 2 * 64 + 32, 8, 144);
+                put(&mut bad, row, 4, forbidden_name_offset as u64);
+                put(&mut bad, row + 4, 1, ((binding << 4) | kind) as u64);
+                assert!(
+                    census(&bad).is_err(),
+                    "installation identity must not be filtered by size/type/binding"
+                );
+            }
+        }
+        for index in 0..4 {
+            let row = 0x4000 + (index + 1) * 24;
+            let address = 0x1500 + index * 0x40;
+            for alteration in 0..5 {
+                let mut bad = base.clone();
+                match alteration {
+                    0 => put(
+                        &mut bad,
+                        row + 4,
+                        1,
+                        ((sym::STB_GLOBAL << 4) | sym::STT_FUNC) as u64,
+                    ),
+                    1 => put(&mut bad, row + 16, 8, 0),
+                    2 => put(&mut bad, row + 4, 1, sym::STT_OBJECT as u64),
+                    3 => put(&mut bad, row, 4, 0),
+                    4 => {
+                        bad[0x6000 + static_offsets[index] + 8] ^= 1;
+                    }
+                    _ => unreachable!(),
+                }
+                assert!(
+                    census(&bad).is_err(),
+                    "other getter{index} missing/nonlocal/wrong identity{alteration}"
+                );
+            }
+            let mut duplicate = base.clone();
+            let extra = 0x4000 + 5 * 24;
+            duplicate.copy_within(row..row + 24, extra);
+            put(&mut duplicate, 0x8000 + 2 * 64 + 32, 8, 144);
+            assert!(
+                census(&duplicate).is_err(),
+                "duplicate complete getter{index}"
+            );
+            for byte in 0..22 {
+                let mut bad = base.clone();
+                bad[address + byte] ^= 1;
+                assert!(census(&bad).is_err(), "complete getter{index} byte{byte}");
+            }
+        }
+        let mut unnamed = base.clone();
+        unnamed.copy_within(0x1500..0x1516, 0x1e00);
+        rip(&mut unnamed[0x1e00..0x1e16], 0x1e00, 4, 8, 0x3300);
+        rip(&mut unnamed[0x1e00..0x1e16], 0x1e00, 9, 13, 0x1810);
+        assert!(
+            census(&unnamed).is_err(),
+            "whole unknown getter outside executable sections"
+        );
+        for alteration in 0..5 {
+            let mut bad = base.clone();
+            match alteration {
+                0 => bad[0x4600 + provider_version] ^= 1,
+                1 => bad[0x4600 + provider_library] ^= 1,
+                2 => put(&mut bad, 0x4810, 8, 1),
+                3 => bad[0x1810] ^= 1,
+                4 => put(&mut bad, 64 + 5 * 56, 4, program_header::PT_NULL as u64),
+                _ => unreachable!(),
+            }
+            assert!(
+                census(&bad).is_err(),
+                "provider/descriptor/PLT/protection mutation{alteration}"
+            );
+        }
+        // Complete loader writers, including pointers to other unisolated TLS,
+        // are retained. They never become allocator-operation admission.
+        let mut pointer = base.clone();
+        put(&mut pointer, 0x3800 + 6 * 16 + 8, 8, 48);
+        put(&mut pointer, 0x8000 + 6 * 64 + 32, 8, 48);
+        put(&mut pointer, 0x4818, 8, 0x3400);
+        put(&mut pointer, 0x4820, 8, reloc::R_X86_64_RELATIVE as u64);
+        put(&mut pointer, 0x4828, 8, 0x1501);
+        assert_eq!(
+            census(&pointer).unwrap().other_getter_pointer_slots,
+            [0x3400]
+        );
+        put(&mut pointer, 0x4818, 8, 0x1f00);
+        assert!(
+            census(&pointer).is_err(),
+            "any loader writer overlapping physical RX refuses"
+        );
+        let mut writable = base.clone();
+        put(&mut writable, 64 + 56 + 4, 4, 7);
+        assert!(census(&writable).is_err());
+        let mut changed = base;
+        changed[0x1f00] = 0x90;
+        assert_ne!(
+            census(&changed).unwrap().mappings,
+            good.mappings,
+            "every physical RX byte contributes to evidence"
+        );
+    }
+
+    // Actual mini-ELF controls only. These helpers never construct verified
+    // compiled sources or claim constructor/allocator/runtime qualification.
+    struct NativeNoScopeTestFixture {
+        bytes: Vec<u8>,
+        getter_names: Vec<usize>,
+        cell_names: Vec<usize>,
+        provider_version: usize,
+        provider_library: usize,
+    }
+
+    fn native_no_scope_test_put(bytes: &mut [u8], at: usize, width: usize, value: u64) {
+        bytes[at..at + width].copy_from_slice(&value.to_le_bytes()[..width]);
+    }
+
+    fn native_no_scope_test_word(bytes: &[u8], at: usize) -> u64 {
+        u64::from_le_bytes(bytes[at..at + 8].try_into().unwrap())
+    }
+
+    fn native_no_scope_test_static_name(bytes: &mut [u8], name: &str) -> u64 {
+        let size_at = 0x8000 + 3 * 64 + 32;
+        let offset = native_no_scope_test_word(bytes, size_at) as usize;
+        assert!(offset + name.len() + 1 < 0x1000);
+        bytes[0x6000 + offset..0x6000 + offset + name.len()].copy_from_slice(name.as_bytes());
+        bytes[0x6000 + offset + name.len()] = 0;
+        native_no_scope_test_put(bytes, size_at, 8, (offset + name.len() + 1) as u64);
+        offset as u64
+    }
+
+    fn native_no_scope_test_dynamic_symbol(
+        bytes: &mut [u8],
+        name: &str,
+        kind: u8,
+        value: u64,
+        size: u64,
+        section: u64,
+    ) {
+        let string_size = native_no_scope_test_word(bytes, 0x8000 + 5 * 64 + 32) as usize;
+        assert!(string_size + name.len() + 1 < 0x200);
+        bytes[0x4600 + string_size..0x4600 + string_size + name.len()]
+            .copy_from_slice(name.as_bytes());
+        bytes[0x4600 + string_size + name.len()] = 0;
+        let new_size = (string_size + name.len() + 1) as u64;
+        native_no_scope_test_put(bytes, 0x3800 + 16 + 8, 8, new_size);
+        native_no_scope_test_put(bytes, 0x8000 + 5 * 64 + 32, 8, new_size);
+        for (offset, width, value) in [
+            (0, 4, string_size as u64),
+            (4, 1, ((sym::STB_GLOBAL << 4) | kind) as u64),
+            (6, 2, section),
+            (8, 8, value),
+            (16, 8, size),
+        ] {
+            native_no_scope_test_put(bytes, 0x4430 + offset, width, value);
+        }
+        native_no_scope_test_put(bytes, 0x8000 + 4 * 64 + 32, 8, 72);
+        native_no_scope_test_put(bytes, 0x5404, 4, 3);
+        native_no_scope_test_put(bytes, 0x8000 + 8 * 64 + 32, 8, 6);
+        native_no_scope_test_put(bytes, 0x5204, 2, 1);
+    }
+
+    fn native_no_scope_test_extra_writer(bytes: &mut [u8], slot: u64, target: u64) {
+        let size = native_no_scope_test_word(bytes, 0x3800 + 6 * 16 + 8);
+        assert!(size + 24 <= 0x100);
+        let at = 0x4800 + size as usize;
+        native_no_scope_test_put(bytes, at, 8, slot);
+        native_no_scope_test_put(bytes, at + 8, 8, reloc::R_X86_64_RELATIVE as u64);
+        native_no_scope_test_put(bytes, at + 16, 8, target);
+        native_no_scope_test_put(bytes, 0x3800 + 6 * 16 + 8, 8, size + 24);
+        native_no_scope_test_put(bytes, 0x8000 + 6 * 64 + 32, 8, size + 24);
+    }
+
+    fn native_no_scope_test_fixture(dispatch: u64) -> NativeNoScopeTestFixture {
+        fn put(bytes: &mut [u8], at: usize, width: usize, value: u64) {
+            bytes[at..at + width].copy_from_slice(&value.to_le_bytes()[..width]);
+        }
+        fn rip(bytes: &mut [u8], address: u64, field: usize, next: usize, target: u64) {
+            let displacement =
+                i32::try_from(target as i64 - (address + next as u64) as i64).unwrap();
+            bytes[field..next].copy_from_slice(&displacement.to_le_bytes());
+        }
+        let mut base = vec![0u8; 0x9000];
+        base[..7].copy_from_slice(b"\x7fELF\x02\x01\x01");
+        for (at, width, value) in [
+            (16, 2, 3),
+            (18, 2, 62),
+            (20, 4, 1),
+            (32, 8, 64),
+            (40, 8, 0x8000),
+            (52, 2, 64),
+            (54, 2, 56),
+            (56, 2, 6),
+            (58, 2, 64),
+            (60, 2, 12),
+            (62, 2, 11),
+        ] {
+            put(&mut base, at, width, value);
+        }
+        for (index, kind, flags, address, size) in [
+            (0, 1, 4, 0, 0x1000),
+            (1, 1, 5, 0x1000, 0x1000),
+            (2, 1, 6, 0x3000, 0x1000),
+            (3, 1, 4, 0x4000, 0x5000),
+            (4, 2, 6, 0x3800, 0x200),
+            (5, program_header::PT_GNU_RELRO as u64, 4, 0x3000, 0x1000),
+        ] {
+            let at = 64 + index * 56;
+            for (offset, width, value) in [
+                (0, 4, kind),
+                (4, 4, flags),
+                (8, 8, address),
+                (16, 8, address),
+                (24, 8, address),
+                (32, 8, size),
+                (40, 8, size),
+                (48, 8, 4096),
+            ] {
+                put(&mut base, at + offset, width, value);
+            }
+        }
+        let mut static_names = vec![0u8];
+        let mut static_offsets = Vec::new();
+        for (index, (canonical, cell_offset)) in NO_SCOPE_OTHER_GETTERS.into_iter().enumerate() {
+            static_offsets.push(static_names.len());
+            static_names.extend_from_slice(canonical.replace("Cs_", "Cs1_").as_bytes());
+            static_names.push(0);
+            let row = 0x4000 + (index + 1) * 24;
+            let address = 0x1500 + index * 0x40;
+            for (offset, width, value) in [
+                (0, 4, static_offsets[index] as u64),
+                (4, 1, sym::STT_FUNC as u64),
+                (6, 2, 1),
+                (8, 8, address as u64),
+                (16, 8, 22),
+            ] {
+                put(&mut base, row + offset, width, value);
+            }
+            let mut getter = fixed_hex("50488d3d00000000e800000000488d800000000059c3");
+            getter[16..20].copy_from_slice(&(cell_offset as u32).to_le_bytes());
+            rip(&mut getter, address as u64, 4, 8, 0x3300);
+            rip(&mut getter, address as u64, 9, 13, 0x1810);
+            base[address..address + 22].copy_from_slice(&getter);
+        }
+        let _forbidden_name_offset = static_names.len();
+        static_names.extend_from_slice(FIXED_TLS_CELL_ROLE.replace("Cs_", "Cs1_").as_bytes());
+        static_names.push(0);
+        assert!(static_names.len() < 0x1000);
+        base[0x6000..0x6000 + static_names.len()].copy_from_slice(&static_names);
+        let dynamic_names =
+            b"\0__tls_get_addr\0GLIBC_2.3\0ld-linux-x86-64.so.2\0INSTALLATION_DEPTH\0";
+        base[0x4600..0x4600 + dynamic_names.len()].copy_from_slice(dynamic_names);
+        for (offset, width, value) in [
+            (0, 4, 1),
+            (4, 1, ((sym::STB_GLOBAL << 4) | sym::STT_FUNC) as u64),
+        ] {
+            put(&mut base, 0x4418 + offset, width, value);
+        }
+        for (index, (tag, value)) in [
+            (goblin::elf::dynamic::DT_STRTAB, 0x4600),
+            (goblin::elf::dynamic::DT_STRSZ, dynamic_names.len() as u64),
+            (goblin::elf::dynamic::DT_SYMTAB, 0x4400),
+            (goblin::elf::dynamic::DT_SYMENT, 24),
+            (goblin::elf::dynamic::DT_HASH, 0x5400),
+            (goblin::elf::dynamic::DT_RELA, 0x4800),
+            (goblin::elf::dynamic::DT_RELASZ, 24),
+            (goblin::elf::dynamic::DT_RELAENT, 24),
+            (goblin::elf::dynamic::DT_JMPREL, 0x4900),
+            (goblin::elf::dynamic::DT_PLTRELSZ, 24),
+            (
+                goblin::elf::dynamic::DT_PLTREL,
+                goblin::elf::dynamic::DT_RELA,
+            ),
+            (goblin::elf::dynamic::DT_VERSYM, 0x5200),
+            (goblin::elf::dynamic::DT_VERNEED, 0x5300),
+            (goblin::elf::dynamic::DT_VERNEEDNUM, 1),
+            (goblin::elf::dynamic::DT_BIND_NOW, 0),
+            (goblin::elf::dynamic::DT_NULL, 0),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            put(&mut base, 0x3800 + index * 16, 8, tag);
+            put(&mut base, 0x3808 + index * 16, 8, value);
+        }
+        for (index, value) in [1, 2, 1, 0, 0].into_iter().enumerate() {
+            put(&mut base, 0x5400 + index * 4, 4, value);
+        }
+        put(&mut base, 0x5202, 2, 2);
+        let provider_library = dynamic_names
+            .windows(b"ld-linux-x86-64.so.2".len())
+            .position(|window| window == b"ld-linux-x86-64.so.2")
+            .unwrap();
+        let provider_version = dynamic_names
+            .windows(b"GLIBC_2.3".len())
+            .position(|window| window == b"GLIBC_2.3")
+            .unwrap();
+        for (offset, width, value) in [
+            (0, 2, 1),
+            (2, 2, 1),
+            (4, 4, provider_library as u64),
+            (8, 4, 16),
+            (16, 4, 0),
+            (20, 2, 0),
+            (22, 2, 2),
+            (24, 4, provider_version as u64),
+        ] {
+            put(&mut base, 0x5300 + offset, width, value);
+        }
+        for (at, slot, kind, index) in [
+            (0x4800, 0x3300, reloc::R_X86_64_DTPMOD64, 0),
+            (0x4900, 0x3380, reloc::R_X86_64_JUMP_SLOT, 1),
+        ] {
+            put(&mut base, at, 8, slot);
+            put(
+                &mut base,
+                at + 8,
+                8,
+                ((index as u64) << 32) | u64::from(kind),
+            );
+        }
+        let mut plt = fixed_hex("ff25000000006800000000e900000000");
+        rip(&mut plt, 0x1810, 2, 6, 0x3380);
+        rip(&mut plt, 0x1810, 12, 16, 0x1800);
+        base[0x1810..0x1820].copy_from_slice(&plt);
+        let section_names=b"\0.plt\0.symtab\0.strtab\0.dynsym\0.dynstr\0.rela.dyn\0.rela.plt\0.gnu.version\0.gnu.version_r\0.got\0.shstrtab\0";
+        base[0x5500..0x5500 + section_names.len()].copy_from_slice(section_names);
+        for (index, name, kind, flags, address, size, link, entry) in [
+            (1, ".plt", 1, 6, 0x1800, 32, 0, 16),
+            (2, ".symtab", 2, 0, 0x4000, 120, 3, 24),
+            (3, ".strtab", 3, 0, 0x6000, static_names.len() as u64, 0, 0),
+            (4, ".dynsym", 11, 2, 0x4400, 48, 5, 24),
+            (5, ".dynstr", 3, 2, 0x4600, dynamic_names.len() as u64, 0, 0),
+            (6, ".rela.dyn", 4, 2, 0x4800, 24, 4, 24),
+            (7, ".rela.plt", 4, 2, 0x4900, 24, 4, 24),
+            (8, ".gnu.version", 0x6fffffff, 2, 0x5200, 4, 4, 2),
+            (9, ".gnu.version_r", 0x6ffffffe, 2, 0x5300, 32, 5, 0),
+            (10, ".got", 1, 3, 0x3300, 0x110, 0, 0),
+            (
+                11,
+                ".shstrtab",
+                3,
+                0,
+                0x5500,
+                section_names.len() as u64,
+                0,
+                0,
+            ),
+        ] {
+            let name_offset = section_names
+                .windows(name.len() + 1)
+                .position(|window| {
+                    window[..name.len()] == *name.as_bytes() && window[name.len()] == 0
+                })
+                .unwrap();
+            let at = 0x8000 + index * 64;
+            for (offset, width, value) in [
+                (0, 4, name_offset as u64),
+                (4, 4, kind),
+                (8, 8, flags),
+                (16, 8, address),
+                (24, 8, address),
+                (32, 8, size),
+                (40, 4, link),
+                (48, 8, 8),
+                (56, 8, entry),
+            ] {
+                put(&mut base, at + offset, width, value);
+            }
+        }
+        put(&mut base, 0x8000 + 9 * 64 + 44, 4, 1);
+
+        assert!([0x140, 0x100].contains(&dispatch));
+        put(&mut base, 56, 2, 7);
+        put(&mut base, 60, 2, 14);
+        let tls_memory_size = if dispatch == 0x140 { 0x1c0 } else { 0x1c8 };
+        let tls_header = 64 + 6 * 56;
+        for (offset, width, value) in [
+            (0, 4, program_header::PT_TLS as u64),
+            (4, 4, program_header::PF_R as u64),
+            (8, 8, 0x3600),
+            (16, 8, 0x3600),
+            (24, 8, 0x3600),
+            (32, 8, 0xe8),
+            (40, 8, tls_memory_size),
+            (48, 8, 8),
+        ] {
+            put(&mut base, tls_header + offset, width, value);
+        }
+        let pending = fixed_hex(NATIVE100_PENDING_INITIALIZER_HEX);
+        base[0x3600..0x3610].copy_from_slice(&pending);
+        put(&mut base, 0x15c0 + 16, 4, dispatch);
+        let mut cell_names = Vec::new();
+        for (index, &(name, offset, size, _)) in NATIVE100_NO_SCOPE_CELLS.iter().enumerate() {
+            cell_names.push(static_names.len());
+            static_names.extend_from_slice(name.replace("Cs_", "Cs1_").as_bytes());
+            static_names.push(0);
+            for (field, width, value) in [
+                (0, 4, cell_names[index] as u64),
+                (4, 1, sym::STT_TLS as u64),
+                (6, 2, if index == 2 { 12 } else { 13 }),
+                (8, 8, if index == 3 { dispatch } else { offset }),
+                (16, 8, size),
+            ] {
+                put(&mut base, 0x4000 + (index + 5) * 24 + field, width, value);
+            }
+        }
+        assert!(static_names.len() < 0x1000);
+        base[0x6000..0x6000 + static_names.len()].copy_from_slice(&static_names);
+        put(&mut base, 0x8000 + 2 * 64 + 32, 8, 9 * 24);
+        put(
+            &mut base,
+            0x8000 + 3 * 64 + 32,
+            8,
+            static_names.len() as u64,
+        );
+        let mut names = section_names.to_vec();
+        let tdata_name = names.len();
+        names.extend_from_slice(b".tdata\0");
+        let tbss_name = names.len();
+        names.extend_from_slice(b".tbss\0");
+        base[0x5500..0x5500 + names.len()].copy_from_slice(&names);
+        put(&mut base, 0x8000 + 11 * 64 + 32, 8, names.len() as u64);
+        for (index, name, kind, address, size) in [
+            (12, tdata_name, section_header::SHT_PROGBITS, 0x3600, 0xe8),
+            (
+                13,
+                tbss_name,
+                section_header::SHT_NOBITS,
+                0x36e8,
+                tls_memory_size - 0xe8,
+            ),
+        ] {
+            for (field, width, value) in [
+                (0, 4, name as u64),
+                (4, 4, kind as u64),
+                (
+                    8,
+                    8,
+                    u64::from(
+                        section_header::SHF_ALLOC
+                            | section_header::SHF_WRITE
+                            | section_header::SHF_TLS,
+                    ),
+                ),
+                (16, 8, address),
+                (24, 8, address),
+                (32, 8, size),
+                (48, 8, 8),
+            ] {
+                put(&mut base, 0x8000 + index * 64 + field, width, value);
+            }
+        }
+        for (index, slot, target) in [(1, 0x3400, 0x1540), (2, 0x3408, 0x1580)] {
+            let at = 0x4800 + index * 24;
+            put(&mut base, at, 8, slot);
+            put(&mut base, at + 8, 8, reloc::R_X86_64_RELATIVE as u64);
+            put(&mut base, at + 16, 8, target);
+        }
+        put(&mut base, 0x3800 + 6 * 16 + 8, 8, 72);
+        put(&mut base, 0x8000 + 6 * 64 + 32, 8, 72);
+        // Complete canonical loader metadata is an actual precondition for
+        // the symbolic writer control; it is never bypassed by the fixture.
+        put(&mut base, 56, 2, 8);
+        put(&mut base, 60, 2, 16);
+        let phdr = 64 + 7 * 56;
+        for (field, width, value) in [
+            (0, 4, program_header::PT_PHDR as u64),
+            (4, 4, program_header::PF_R as u64),
+            (8, 8, 64),
+            (16, 8, 64),
+            (24, 8, 64),
+            (32, 8, 8 * 56),
+            (40, 8, 8 * 56),
+            (48, 8, 8),
+        ] {
+            put(&mut base, phdr + field, width, value);
+        }
+        put(
+            &mut base,
+            0x3800 + 15 * 16,
+            8,
+            goblin::elf::dynamic::DT_NEEDED,
+        );
+        put(&mut base, 0x3808 + 15 * 16, 8, provider_library as u64);
+        put(
+            &mut base,
+            0x3800 + 16 * 16,
+            8,
+            goblin::elf::dynamic::DT_NULL,
+        );
+        put(&mut base, 0x3808 + 16 * 16, 8, 0);
+        put(
+            &mut base,
+            0x5310,
+            4,
+            u64::from(loader_meta_elf_hash(b"GLIBC_2.3")),
+        );
+        let dynamic_section_name = names.len();
+        names.extend_from_slice(b".dynamic\0");
+        let hash_section_name = names.len();
+        names.extend_from_slice(b".hash\0");
+        base[0x5500..0x5500 + names.len()].copy_from_slice(&names);
+        put(&mut base, 0x8000 + 11 * 64 + 32, 8, names.len() as u64);
+        for (index, name, kind, flags, address, size, link, entry, alignment) in [
+            (
+                14,
+                dynamic_section_name,
+                section_header::SHT_DYNAMIC,
+                3,
+                0x3800,
+                0x200,
+                5,
+                16,
+                8,
+            ),
+            (
+                15,
+                hash_section_name,
+                section_header::SHT_HASH,
+                2,
+                0x5400,
+                20,
+                4,
+                4,
+                4,
+            ),
+        ] {
+            for (field, width, value) in [
+                (0, 4, name as u64),
+                (4, 4, u64::from(kind)),
+                (8, 8, flags),
+                (16, 8, address),
+                (24, 8, address),
+                (32, 8, size),
+                (40, 4, link),
+                (48, 8, alignment),
+                (56, 8, entry),
+            ] {
+                put(&mut base, 0x8000 + index * 64 + field, width, value);
+            }
+        }
+        NativeNoScopeTestFixture {
+            bytes: base,
+            getter_names: static_offsets,
+            cell_names,
+            provider_version,
+            provider_library,
+        }
+    }
+
+    // Callback/PENDING below are the actual retained standalone spellings.
+    // OWNER/DISPATCH are synthetic encodings with the same shorter guest crate
+    // and correctly rebased references, not claimed compiler observations.
+    const SEMANTIC_OFF_TEST_NAMES: [&str; 4] = [
+        "_RNvYNCNKNvNtNtCsw1z9YB4tbw_15reverie_inguest5guest7support20TOOL_CALLBACK_ACTIVE0s_0INtNtNtCsayI02cGi06u_4core3ops8function6FnOnceTINtNtB1r_6option6OptionQIB26_INtNtNtB1r_4sync6atomic6AtomicbEEEEE9call_onceBc_.llvm.3890720528343350346",
+        "_RNvYNCNKNvNtNtCsw1z9YB4tbw_15reverie_inguest5guest12continuation5OWNER0s_0INtNtNtCsayI02cGi06u_4core3ops8function6FnOnceTINtNtB1h_6option6OptionQIB1W_INtNtB1h_4cell4CellONtB8_12ContinuationEEEEE9call_onceBc_.llvm.7280412357748866837",
+        "_RNvYNCNKNvNtNtCsw1z9YB4tbw_15reverie_inguest5guest12continuation7PENDING0s_0INtNtNtCsayI02cGi06u_4core3ops8function6FnOnceTINtNtB1j_6option6OptionQIB1Y_INtNtB1j_4cell4CellIB1Y_NtB8_7PendingEEEEEE9call_onceBc_",
+        "_RNvYNCNKNvNtNtCsw1z9YB4tbw_15reverie_inguest5guest5alloc14DISPATCH_DEPTH0s_0INtNtNtCsayI02cGi06u_4core3ops8function6FnOnceTINtNtB1j_6option6OptionQIB1Y_INtNtB1j_4cell4CelljEEEEE9call_onceBc_.llvm.12221305897330294141",
+    ];
+    // These actual retained native names must keep the historical exact route.
+    const LEGACY_OBSERVED_OFF_TEST_NAMES: [&str; 4] = [
+        "_RNvYNCNKNvNtNtCsePRFLBl046y_15reverie_inguest5guest7support20TOOL_CALLBACK_ACTIVE0s_0INtNtNtCsayI02cGi06u_4core3ops8function6FnOnceTINtNtB1s_6option6OptionQIB27_INtNtNtB1s_4sync6atomic6AtomicbEEEEE9call_onceBc_.llvm.2957710172683700523",
+        "_RNvYNCNKNvNtNtCsePRFLBl046y_15reverie_inguest5guest12continuation5OWNER0s_0INtNtNtCsayI02cGi06u_4core3ops8function6FnOnceTINtNtB1i_6option6OptionQIB1X_INtNtB1i_4cell4CellONtB8_12ContinuationEEEEE9call_onceBc_.llvm.7280412357748866837",
+        "_RNvYNCNKNvNtNtCsePRFLBl046y_15reverie_inguest5guest12continuation7PENDING0s_0INtNtNtCsayI02cGi06u_4core3ops8function6FnOnceTINtNtB1k_6option6OptionQIB1Z_INtNtB1k_4cell4CellIB1Z_NtB8_7PendingEEEEEE9call_onceBc_",
+        "_RNvYNCNKNvNtNtCsePRFLBl046y_15reverie_inguest5guest5alloc14DISPATCH_DEPTH0s_0INtNtNtCsayI02cGi06u_4core3ops8function6FnOnceTINtNtB1k_6option6OptionQIB1Z_INtNtB1k_4cell4CelljEEEEE9call_onceBc_.llvm.12221305897330294141",
+    ];
+
+    fn semantic_off_test_name(bytes: &mut [u8], index: usize, name: &str) {
+        let offset = native_no_scope_test_static_name(bytes, name);
+        native_no_scope_test_put(bytes, 0x4000 + (index + 1) * 24, 4, offset);
+    }
+
+    fn semantic_off_test_fixture(cohort: ConsumerRecipe, dispatch: u64, semantic: bool) -> Vec<u8> {
+        let mut bytes = native_no_scope_test_fixture(dispatch).bytes;
+        if semantic {
+            for role in OffGetterRole::in_cohort(cohort) {
+                semantic_off_test_name(
+                    &mut bytes,
+                    *role as usize,
+                    SEMANTIC_OFF_TEST_NAMES[*role as usize],
+                );
+            }
+        }
+        match cohort {
+            ConsumerRecipe::Allocation101LayoutA => {}
+            ConsumerRecipe::Allocation101LayoutB => {
+                native_no_scope_test_put(&mut bytes, 0x1540 + 16, 4, 0x100);
+                native_no_scope_test_put(&mut bytes, 0x15c0 + 16, 4, 0xf0);
+            }
+            ConsumerRecipe::Allocation62 => {
+                native_no_scope_test_put(&mut bytes, 0x1500 + 16, 4, 0x40);
+                for index in [1usize, 3] {
+                    bytes[0x4000 + (index + 1) * 24..0x4000 + (index + 2) * 24].fill(0);
+                    bytes[0x1500 + index * 0x40..0x1516 + index * 0x40].fill(0x90);
+                    bytes[0x4000 + (index + 5) * 24..0x4000 + (index + 6) * 24].fill(0);
+                }
+                // Keep the synthetic TLS metadata internally consistent; it
+                // is not a new standalone typed-cell/initializer admission gate.
+                native_no_scope_test_put(&mut bytes, 0x4000 + 5 * 24 + 8, 8, 0x40);
+                native_no_scope_test_put(&mut bytes, 64 + 6 * 56 + 32, 8, 0x40);
+                native_no_scope_test_put(&mut bytes, 64 + 6 * 56 + 40, 8, 0x80);
+                native_no_scope_test_put(&mut bytes, 0x8000 + 12 * 64 + 32, 8, 0x40);
+                for field in [16, 24] {
+                    native_no_scope_test_put(&mut bytes, 0x8000 + 13 * 64 + field, 8, 0x3640);
+                }
+                native_no_scope_test_put(&mut bytes, 0x8000 + 13 * 64 + 32, 8, 0x40);
+                // The remaining pointer is the existing PENDING entry.
+                bytes.copy_within(0x4830..0x4848, 0x4818);
+                native_no_scope_test_put(&mut bytes, 0x3800 + 6 * 16 + 8, 8, 48);
+                native_no_scope_test_put(&mut bytes, 0x8000 + 6 * 64 + 32, 8, 48);
+            }
+        }
+        bytes
+    }
+
+    fn semantic_off_test_census(
+        bytes: &[u8],
+        cohort: ConsumerRecipe,
+    ) -> Result<SelectedNoScopeCensus> {
+        let elf = Elf::parse(bytes).map_err(|error| error.to_string())?;
+        authenticate_loader_metadata(&elf, bytes)?;
+        // This is the same full physical selection called by production derive,
+        // after its independent opaque source/current-build authority checks.
+        selected_no_scope_census(&elf, bytes, cohort)
+    }
+
+    fn semantic_off_test_base62(mut value: u64) -> String {
+        let alphabet = b"0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ";
+        let mut result = Vec::new();
+        loop {
+            result.push(alphabet[(value % 62) as usize]);
+            value /= 62;
+            if value == 0 {
+                break;
+            }
+        }
+        result.reverse();
+        String::from_utf8(result).unwrap()
+    }
+
+    fn semantic_no_scope_physical_controls() {
+        for (cohort, dispatch, version, policy) in [
+            (
+                ConsumerRecipe::Allocation101LayoutA,
+                0x140,
+                2,
+                SEMANTIC_NATIVE140_NO_SCOPE_POLICY,
+            ),
+            (
+                ConsumerRecipe::Allocation101LayoutA,
+                0x100,
+                3,
+                SEMANTIC_NATIVE100_NO_SCOPE_POLICY,
+            ),
+            (
+                ConsumerRecipe::Allocation101LayoutB,
+                0x140,
+                2,
+                SEMANTIC_ORDINARY_NO_SCOPE_POLICY,
+            ),
+            (
+                ConsumerRecipe::Allocation62,
+                0x140,
+                2,
+                SEMANTIC_STANDALONE_NO_SCOPE_POLICY,
+            ),
+        ] {
+            let good = semantic_off_test_fixture(cohort, dispatch, true);
+            let selected = semantic_off_test_census(&good, cohort).unwrap();
+            assert_eq!((selected.version, selected.policy), (version, policy));
+            assert_eq!(selected.native_tls_layout100.is_some(), dispatch == 0x100);
+            assert_eq!(
+                selected.census.other_tls_getters.len(),
+                cohort.getters().len()
+            );
+            let old = semantic_off_test_fixture(cohort, dispatch, false);
+            let legacy = semantic_off_test_census(&old, cohort).unwrap();
+            assert_eq!(legacy.version, if dispatch == 0x100 { 2 } else { 1 });
+            assert_eq!(
+                legacy.policy,
+                if dispatch == 0x100 {
+                    NATIVE100_NO_SCOPE_POLICY
+                } else {
+                    cohort.policy()
+                }
+            );
+            let reject = |bytes: &[u8], label: &str| {
+                assert!(
+                    semantic_off_test_census(bytes, cohort).is_err(),
+                    "{cohort:?}/{dispatch:x}: {label}"
+                );
+            };
+            for role in OffGetterRole::in_cohort(cohort) {
+                let index = *role as usize;
+                let name = SEMANTIC_OFF_TEST_NAMES[index];
+                for byte in 0..22 {
+                    let mut bad = good.clone();
+                    bad[0x1500 + index * 0x40 + byte] ^= 0x80;
+                    reject(&bad, &format!("complete getter byte {index}/{byte}"));
+                }
+                for (field, width, value) in [
+                    (0, 4, 0),
+                    (4, 1, ((sym::STB_GLOBAL << 4) | sym::STT_FUNC) as u64),
+                    (16, 8, 21),
+                ] {
+                    let mut bad = good.clone();
+                    native_no_scope_test_put(
+                        &mut bad,
+                        0x4000 + (index + 1) * 24 + field,
+                        width,
+                        value,
+                    );
+                    reject(&bad, "missing/nonlocal/partial getter");
+                }
+                // Every declared reference is mutated through the production
+                // physical selector, including self/forward/wrong-anchor and
+                // both checked numeric-overflow paths.
+                let refs_start = name.find("FnOnceTI").unwrap();
+                for (relative, _) in name[refs_start..].match_indices('B') {
+                    let start = refs_start + relative;
+                    let end = start + name[start..].find('_').unwrap() + 1;
+                    for replacement in [
+                        "B0_".to_owned(),
+                        "B-1_".to_owned(),
+                        "B1".to_owned(),
+                        format!("B{}_", semantic_off_test_base62((start - 2 - 1) as u64)),
+                        format!("B{}_", semantic_off_test_base62(name.len() as u64)),
+                        format!("B{}_", semantic_off_test_base62(u64::MAX)),
+                        "BZZZZZZZZZZZZZZZZZZZZZZ_".to_owned(),
+                    ] {
+                        let mut bad = good.clone();
+                        semantic_off_test_name(
+                            &mut bad,
+                            index,
+                            &format!("{}{}{}", &name[..start], replacement, &name[end..]),
+                        );
+                        reject(&bad, &format!("invalid reference {index}/{start}"));
+                    }
+                }
+                for bad_name in [
+                    name.replace("Csw1z9YB4tbw_", "Csw1z9YB4tbx_"),
+                    name.replace("CsayI02cGi06u_", "CsayI02cGi06v_"),
+                    name.replace("Csw1z9YB4tbw_", "Cs_"),
+                    name.replace("CsayI02cGi06u_", "Cs_"),
+                    name.replace("Csw1z9YB4tbw_", "Csbad-_"),
+                    name.replace(
+                        "CsayI02cGi06u_",
+                        &format!("Cs{}_", semantic_off_test_base62(u64::MAX - 1)),
+                    ),
+                    name.replace(
+                        "CsayI02cGi06u_",
+                        &format!("Cs{}_", semantic_off_test_base62(u64::MAX)),
+                    ),
+                    name.replace("15reverie_inguest", "15foreign_inguest"),
+                    name.replace("6FnOnce", "6FnMutx"),
+                    name.replace("6OptionQ", "6OptionR"),
+                    name.replace("9call_once", "9call_else"),
+                    format!("{name}.llvm."),
+                    format!("{name}.llvm.1x"),
+                    format!("{name}.llvm.1.llvm.2"),
+                    format!("{name}extra"),
+                ] {
+                    let mut bad = good.clone();
+                    semantic_off_test_name(&mut bad, index, &bad_name);
+                    reject(&bad, "crate coherence/overflow/literal/type/method/suffix");
+                }
+            }
+            for mutation in 0..12 {
+                let mut bad = good.clone();
+                match mutation {
+                    0 => bad[0x3300] = 1,
+                    1 => native_no_scope_test_put(&mut bad, 0x4810, 8, 1),
+                    2 => native_no_scope_test_put(
+                        &mut bad,
+                        0x4808,
+                        8,
+                        (1u64 << 32) | u64::from(reloc::R_X86_64_DTPMOD64),
+                    ),
+                    3 => bad[0x1810] ^= 1,
+                    4 => bad[0x181c] ^= 1,
+                    5 => native_no_scope_test_put(&mut bad, 0x5202, 2, 1),
+                    6 => native_no_scope_test_put(
+                        &mut bad,
+                        64 + 5 * 56,
+                        4,
+                        program_header::PT_NULL as u64,
+                    ),
+                    7 => native_no_scope_test_put(&mut bad, 64 + 56 + 4, 4, 7),
+                    8 => native_no_scope_test_extra_writer(&mut bad, 0x1f00, 1),
+                    9 => {
+                        let fixture = native_no_scope_test_fixture(dispatch);
+                        bad[0x4600 + fixture.provider_library] ^= 1;
+                    }
+                    10 => {
+                        let fixture = native_no_scope_test_fixture(dispatch);
+                        bad[0x4600 + fixture.provider_version] ^= 1;
+                    }
+                    11 => {
+                        let name = NO_SCOPE_OTHER_GETTERS[0].0.replace("Cs_", "Cs1_");
+                        let at = native_no_scope_test_static_name(&mut bad, &name);
+                        // Add an old-exact-only alias without removing the new
+                        // callback. The semantic selector must see both.
+                        native_no_scope_test_put(&mut bad, 0x4000 + 5 * 24, 4, at);
+                    }
+                    _ => unreachable!(),
+                }
+                reject(
+                    &bad,
+                    &format!("descriptor/provider/RELRO/RX/alias {mutation}"),
+                );
+            }
+            let mut dynamic = good.clone();
+            native_no_scope_test_dynamic_symbol(
+                &mut dynamic,
+                SEMANTIC_OFF_TEST_NAMES[0],
+                sym::STT_FUNC,
+                0x1500,
+                22,
+                1,
+            );
+            reject(&dynamic, "dynamic semantic role");
+            let mut dynamic = good.clone();
+            native_no_scope_test_dynamic_symbol(
+                &mut dynamic,
+                &NO_SCOPE_OTHER_GETTERS[0].0.replace("Cs_", "Cs1_"),
+                sym::STT_FUNC,
+                0x1500,
+                22,
+                1,
+            );
+            reject(&dynamic, "dynamic legacy role");
+            let mut unnamed = good.clone();
+            unnamed.copy_within(0x1500..0x1516, 0x1e00);
+            reject(&unnamed, "extra unnamed complete RX getter");
+            if cohort == ConsumerRecipe::Allocation62 {
+                let mut foreign = good.clone();
+                semantic_off_test_name(&mut foreign, 1, SEMANTIC_OFF_TEST_NAMES[1]);
+                reject(&foreign, "foreign standalone OWNER role");
+            }
+            if dispatch == 0x100 {
+                for (at, width, value) in [
+                    (0x4000 + 8 * 24 + 8, 8, 0x140),
+                    (0x15c0 + 16, 4, 0x140),
+                    (64 + 6 * 56 + 32, 8, 0xe7),
+                    (0x8000 + 13 * 64 + 4, 4, section_header::SHT_PROGBITS as u64),
+                    (0x4828, 8, 0x1541),
+                ] {
+                    let mut bad = good.clone();
+                    native_no_scope_test_put(&mut bad, at, width, value);
+                    reject(
+                        &bad,
+                        "semantic native100 still requires full joint layout/cells/pointers",
+                    );
+                }
+                let mut bad = good.clone();
+                bad[0x3608] ^= 1;
+                reject(&bad, "semantic native100 initializer");
+                let mut bad = good.clone();
+                native_no_scope_test_extra_writer(&mut bad, 0x3608, 1);
+                let error = semantic_off_test_census(&bad, cohort).err().unwrap();
+                assert!(error.contains("initialized TLS template"), "{error}");
+            }
+        }
+        // Actual long-name spellings still select old exact native100/v2.
+        let mut actual = native_no_scope_test_fixture(0x100).bytes;
+        for (index, name) in LEGACY_OBSERVED_OFF_TEST_NAMES.into_iter().enumerate() {
+            semantic_off_test_name(&mut actual, index, name);
+        }
+        let legacy = semantic_off_test_census(&actual, ConsumerRecipe::Allocation101LayoutA).unwrap();
+        assert_eq!(
+            (legacy.version, legacy.policy),
+            (2, NATIVE100_NO_SCOPE_POLICY)
+        );
+        assert!(legacy.native_tls_layout100.is_some());
+        actual[0x1500] ^= 1;
+        assert!(
+            semantic_off_test_census(&actual, ConsumerRecipe::Allocation101LayoutA).is_err(),
+            "legacy physical failure must not trigger semantic retry"
+        );
+        // Keeping some legacy B spellings is legitimate when those exact
+        // earlier anchors still match. Here only the core lexeme is shorter.
+        let mut partial = native_no_scope_test_fixture(0x140).bytes;
+        for (index, name) in LEGACY_OBSERVED_OFF_TEST_NAMES.into_iter().enumerate() {
+            let option = ["B27_", "B1X_", "B1Z_", "B1Z_"][index];
+            let shorter = ["B26_", "B1W_", "B1Y_", "B1Y_"][index];
+            let name = name
+                .replace("CsayI02cGi06u_", "CsayI02cGi06_")
+                .replace(option, shorter);
+            semantic_off_test_name(&mut partial, index, &name);
+        }
+        let partial = semantic_off_test_census(&partial, ConsumerRecipe::Allocation101LayoutA).unwrap();
+        assert_eq!(
+            (partial.version, partial.policy),
+            (2, SEMANTIC_NATIVE140_NO_SCOPE_POLICY)
+        );
+    }
+
+    fn semantic_no_scope_wire_controls(
+        backing: &AllocatorBackingEvidence,
+        native: &NoInstallationScopeEvidence,
+        ordinary: &NoInstallationScopeEvidence,
+        standalone_backing: &AllocatorBackingEvidence,
+        standalone: &NoInstallationScopeEvidence,
+    ) {
+        for (cohort, dispatch, backing, base) in [
+            (ConsumerRecipe::Allocation101LayoutA, 0x140, backing, native),
+            (ConsumerRecipe::Allocation101LayoutA, 0x100, backing, native),
+            (ConsumerRecipe::Allocation101LayoutB, 0x140, backing, ordinary),
+            (
+                ConsumerRecipe::Allocation62,
+                0x140,
+                standalone_backing,
+                standalone,
+            ),
+        ] {
+            let bytes = semantic_off_test_fixture(cohort, dispatch, true);
+            let elf = Elf::parse(&bytes).unwrap();
+            let SelectedNoScopeCensus {
+                census,
+                native_tls_layout100,
+                version,
+                policy,
+            } = semantic_off_test_census(&bytes, cohort).unwrap();
+            let mut proof = base.clone();
+            proof.version = version;
+            proof.policy = policy.into();
+            proof.elf_sha256 = sha256(&bytes);
+            proof.current_build.artifact.sha256 = proof.elf_sha256.clone();
+            proof.mappings = census.mappings;
+            proof.static_symbol_count = elf.syms.len();
+            proof.dynamic_symbol_count = elf.dynsyms.len();
+            proof.raw_names_sha256 = census.raw_names_sha256;
+            proof.loader_writer_count = census.loader_writer_count;
+            proof.loader_writers_sha256 = census.loader_writers_sha256;
+            proof.other_tls_getters = census.other_tls_getters;
+            proof.other_getter_pointer_slots = census.other_getter_pointer_slots;
+            proof.native_tls_layout100 = native_tls_layout100;
+            let check = |candidate: &NoInstallationScopeEvidence| {
+                validate_no_installation_scope_evidence(backing, candidate, cohort.image_kind())
+            };
+            check(&proof).unwrap();
+            let bytes = serde_json::to_vec(&proof).unwrap();
+            assert_eq!(
+                bytes,
+                serde_json::to_vec(&AllocatorInstallationEvidence::NoInstallationScope(
+                    Box::new(proof.clone())
+                ))
+                .unwrap()
+            );
+            let decoded: AllocatorInstallationEvidence = serde_json::from_slice(&bytes).unwrap();
+            assert_eq!(
+                decoded,
+                AllocatorInstallationEvidence::NoInstallationScope(Box::new(proof.clone()))
+            );
+            let decoded: NoInstallationScopeEvidence = serde_json::from_slice(&bytes).unwrap();
+            check(&decoded).unwrap();
+            for mutation in 0..23 {
+                let mut bad = proof.clone();
+                match mutation {
+                    0 => bad.version = 0,
+                    1 => bad.policy = base.policy.clone(),
+                    2 => {
+                        bad.policy = if cohort == ConsumerRecipe::Allocation62 {
+                            SEMANTIC_ORDINARY_NO_SCOPE_POLICY
+                        } else {
+                            SEMANTIC_STANDALONE_NO_SCOPE_POLICY
+                        }
+                        .into()
+                    }
+                    3 => {
+                        bad.other_tls_getters[0].getter.name =
+                            bad.other_tls_getters[0].getter.name.replace("B1r_", "B1s_")
+                    }
+                    4 => {
+                        bad.other_tls_getters[0].getter.name = bad.other_tls_getters[0]
+                            .getter
+                            .name
+                            .replace("CsayI02cGi06u_", "CsayI02cGi06v_")
+                    }
+                    5 => {
+                        bad.other_tls_getters[0].getter.name = bad.other_tls_getters[0]
+                            .getter
+                            .name
+                            .replace("Csw1z9YB4tbw_", "Csw1z9YB4tbx_")
+                    }
+                    6 => bad.other_tls_getters[0].cell_offset += 1,
+                    7 => bad.other_tls_getters.push(bad.other_tls_getters[0].clone()),
+                    8 => bad.other_tls_getters.swap(0, 1),
+                    9 => bad.other_tls_getters[0].getter.binding = sym::STB_GLOBAL,
+                    10 => bad.other_tls_getters[0].getter.size = 21,
+                    11 => bad.other_tls_getters[0].module_slot = 0,
+                    12 => bad.other_tls_getters[0].sha256 = "not-a-hash".into(),
+                    13 => bad
+                        .current_build
+                        .packages
+                        .get_mut("reverie-liteinst")
+                        .unwrap()
+                        .features
+                        .push("liteinst".into()),
+                    14 => {
+                        bad.current_build
+                            .packages
+                            .get_mut("reverie-liteinst")
+                            .unwrap()
+                            .profile["test"] = serde_json::json!(true)
+                    }
+                    15 => {
+                        bad.current_build
+                            .packages
+                            .get_mut("reverie-liteinst")
+                            .unwrap()
+                            .profile["debug_assertions"] =
+                            serde_json::json!(cohort == ConsumerRecipe::Allocation62)
+                    }
+                    16 => bad.source.sha256 = "0".repeat(64),
+                    17 => bad.current_build.artifact.sha256 = "0".repeat(64),
+                    18 => bad.current_build.compiled_sources_sha256 = "0".repeat(64),
+                    19 => bad.current_build.command.status = 1,
+                    20 => {
+                        bad.current_build.packages.remove("reverie-inguest");
+                    }
+                    21 => {
+                        if dispatch == 0x100 {
+                            bad.native_tls_layout100 = None;
+                        } else {
+                            let fixture = semantic_off_test_fixture(
+                                ConsumerRecipe::Allocation101LayoutA,
+                                0x100,
+                                true,
+                            );
+                            bad.native_tls_layout100 =
+                                semantic_off_test_census(&fixture, ConsumerRecipe::Allocation101LayoutA)
+                                    .unwrap()
+                                    .native_tls_layout100;
+                        }
+                    }
+                    22 => {
+                        bad.other_tls_getters[0].getter.name =
+                            NO_SCOPE_OTHER_GETTERS[0].0.replace("Cs_", "CsTest_")
+                    }
+                    _ => unreachable!(),
+                }
+                assert!(
+                    check(&bad).is_err(),
+                    "semantic wire {cohort:?}/{dispatch:x} mutation {mutation}"
+                );
+            }
+            if let Some(layout) = &proof.native_tls_layout100 {
+                for mutation in 0..8 {
+                    let mut bad = proof.clone();
+                    let payload = bad.native_tls_layout100.as_mut().unwrap();
+                    match mutation {
+                        0 => payload.cells[0].symbol.address += 1,
+                        1 => payload.cells[0].symbol_type = sym::STT_OBJECT,
+                        2 => payload.cells[2].section_type = section_header::SHT_NOBITS,
+                        3 => payload.pending_initializer_sha256 = "0".repeat(64),
+                        4 => payload.tls_memory_size = 0x1c0,
+                        5 => payload.getter_pointer_targets.clear(),
+                        6 => bad.other_tls_getters[1].module_slot += 8,
+                        7 => bad.other_tls_getters[3].cell_offset = 0x140,
+                        _ => unreachable!(),
+                    }
+                    assert!(
+                        check(&bad).is_err(),
+                        "semantic native100 payload {mutation}"
+                    );
+                }
+                assert_eq!(layout.cells.len(), 4);
+            }
+            let mut relabeled = base.clone();
+            relabeled.version = version;
+            relabeled.policy = policy.into();
+            assert!(
+                check(&relabeled).is_err(),
+                "complete legacy vector cannot be relabeled semantic"
+            );
+            let value = serde_json::to_value(&proof).unwrap();
+            for field in value.as_object().unwrap().keys() {
+                let mut bad = value.clone();
+                bad.as_object_mut().unwrap().remove(field);
+                match serde_json::from_value::<AllocatorInstallationEvidence>(bad) {
+                    Err(_) => {}
+                    Ok(AllocatorInstallationEvidence::NoInstallationScope(candidate)) => {
+                        assert!(check(&candidate).is_err(), "missing semantic field {field}")
+                    }
+                    Ok(_) => panic!("semantic absence cannot become an existing TLS boundary"),
+                }
+            }
+        }
+    }
+
+    fn native_no_scope_test_select_and_census(bytes: &[u8]) -> Result<NativeNoScopeTlsLayout> {
+        let elf = Elf::parse(bytes).map_err(|error| error.to_string())?;
+        let layout = native_no_scope_tls_layout(&elf, bytes)?;
+        match layout {
+            NativeNoScopeTlsLayout::Dispatch140 => {
+                no_installation_scope_census_in_cohort(
+                    &elf,
+                    bytes,
+                    ConsumerRecipe::Allocation101LayoutA,
+                )?;
+            }
+            NativeNoScopeTlsLayout::Dispatch100 => {
+                native_no_scope_layout100_census(&elf, bytes)?;
+            }
+        }
+        Ok(layout)
+    }
+
+    fn native_no_scope_layout100_physical_controls() {
+        let fixture = native_no_scope_test_fixture(0x100);
+        let good = &fixture.bytes;
+        let old = native_no_scope_test_fixture(0x140);
+        // These are real successful canonical metadata checks, not a
+        // synthetic label authorizing the later template-specific refusal.
+        for bytes in [good, &old.bytes] {
+            authenticate_loader_metadata(&Elf::parse(bytes).unwrap(), bytes).unwrap();
+        }
+        for (at, width, value) in [
+            (64 + 7 * 56, 4, program_header::PT_NULL as u64),
+            (64 + 7 * 56 + 32, 8, 7 * 56),
+            (0x8000 + 14 * 64 + 4, 4, section_header::SHT_NULL as u64),
+            (0x8000 + 15 * 64 + 4, 4, section_header::SHT_NULL as u64),
+            (0x3800 + 15 * 16, 8, goblin::elf::dynamic::DT_SONAME),
+            (0x5310, 4, 0),
+        ] {
+            let mut bad_metadata = good.clone();
+            native_no_scope_test_put(&mut bad_metadata, at, width, value);
+            assert!(
+                authenticate_loader_metadata(&Elf::parse(&bad_metadata).unwrap(), &bad_metadata)
+                    .is_err(),
+                "canonical fixture metadata cannot omit or corrupt a required header/table/provider"
+            );
+        }
+        assert_eq!(
+            native_no_scope_test_select_and_census(&old.bytes).unwrap(),
+            NativeNoScopeTlsLayout::Dispatch140
+        );
+        assert_eq!(
+            native_no_scope_test_select_and_census(good).unwrap(),
+            NativeNoScopeTlsLayout::Dispatch100
+        );
+        let elf = Elf::parse(good).unwrap();
+        assert!(
+            no_installation_scope_census_in_cohort(&elf, good, ConsumerRecipe::Allocation101LayoutA)
+                .is_err(),
+            "new100 is not an old140 census"
+        );
+        let (_, retained) = native_no_scope_layout100_census(&elf, good).unwrap();
+        assert_eq!(retained.cells.len(), 4);
+        assert_eq!(retained.getter_pointer_targets.len(), 2);
+        // Both complete protected pointer slots must join real non-TLS data.
+        // Retain the exact failure observed with the truncated fixture section.
+        for size in [0x100, 0x108] {
+            let mut truncated = good.clone();
+            native_no_scope_test_put(&mut truncated, 0x8000 + 10 * 64 + 32, 8, size);
+            let failure = native_no_scope_test_select_and_census(&truncated)
+                .err()
+                .expect("truncated pointer section must refuse");
+            assert!(
+                failure.contains("Fixed data section/load physical join differs"),
+                "section size {size:#x}: {failure}"
+            );
+        }
+        assert_eq!(
+            retained.pending_initializer_sha256,
+            sha256(&fixed_hex(NATIVE100_PENDING_INITIALIZER_HEX))
+        );
+        assert!(
+            derive_no_installation_scope_evidence(
+                &elf,
+                good,
+                &BTreeMap::new(),
+                &BTreeMap::new(),
+                None
+            )
+            .is_err(),
+            "new physical layout does not create source/current-build authority"
+        );
+        let rejected = |bytes: &[u8], label: &str| {
+            assert!(
+                native_no_scope_test_select_and_census(bytes).is_err(),
+                "{label}"
+            );
+        };
+        for index in 0..4 {
+            let address = 0x1500 + index * 0x40;
+            let getter_row = 0x4000 + (index + 1) * 24;
+            let cell_row = 0x4000 + (index + 5) * 24;
+            for byte in 0..22 {
+                let mut bad = good.clone();
+                bad[address + byte] ^= 1;
+                rejected(&bad, &format!("new100 whole getter {index} byte {byte}"));
+            }
+            for mutation in 0..8 {
+                let mut bad = good.clone();
+                match mutation {
+                    0 => native_no_scope_test_put(&mut bad, getter_row, 4, 0),
+                    1 => native_no_scope_test_put(
+                        &mut bad,
+                        getter_row + 4,
+                        1,
+                        sym::STT_OBJECT as u64,
+                    ),
+                    2 => native_no_scope_test_put(
+                        &mut bad,
+                        getter_row + 4,
+                        1,
+                        ((sym::STB_GLOBAL << 4) | sym::STT_FUNC) as u64,
+                    ),
+                    3 => native_no_scope_test_put(&mut bad, getter_row + 16, 8, 21),
+                    4 => {
+                        bad.copy_within(getter_row..getter_row + 24, 0x4000 + 9 * 24);
+                        native_no_scope_test_put(&mut bad, 0x8000 + 2 * 64 + 32, 8, 10 * 24);
+                    }
+                    5 => {
+                        let wrong = NO_SCOPE_OTHER_GETTERS[index]
+                            .0
+                            .replace("15reverie_inguest", "16reverie_liteinst");
+                        let offset = native_no_scope_test_static_name(&mut bad, &wrong);
+                        native_no_scope_test_put(&mut bad, getter_row, 4, offset);
+                    }
+                    6 => bad[0x6000 + fixture.getter_names[index]] = b'X',
+                    7 => {
+                        let name = NO_SCOPE_OTHER_GETTERS[index].0.replace("Cs_", "Cs1_");
+                        native_no_scope_test_dynamic_symbol(
+                            &mut bad,
+                            &name,
+                            sym::STT_FUNC,
+                            address as u64,
+                            22,
+                            1,
+                        );
+                    }
+                    _ => unreachable!(),
+                }
+                rejected(&bad, &format!("new100 getter identity {index}:{mutation}"));
+            }
+            for mutation in 0..14 {
+                let mut bad = good.clone();
+                match mutation {
+                    0 => native_no_scope_test_put(&mut bad, cell_row, 4, 0),
+                    1 => {
+                        native_no_scope_test_put(&mut bad, cell_row + 4, 1, sym::STT_OBJECT as u64)
+                    }
+                    2 => native_no_scope_test_put(
+                        &mut bad,
+                        cell_row + 4,
+                        1,
+                        ((sym::STB_GLOBAL << 4) | sym::STT_TLS) as u64,
+                    ),
+                    3 => {
+                        native_no_scope_test_put(&mut bad, cell_row + 5, 1, sym::STV_HIDDEN as u64)
+                    }
+                    4 => native_no_scope_test_put(&mut bad, cell_row + 16, 8, 0),
+                    5 => native_no_scope_test_put(
+                        &mut bad,
+                        cell_row + 16,
+                        8,
+                        NATIVE100_NO_SCOPE_CELLS[index].2 + 1,
+                    ),
+                    6 => native_no_scope_test_put(
+                        &mut bad,
+                        cell_row + 8,
+                        8,
+                        NATIVE100_NO_SCOPE_CELLS[index].1 + 1,
+                    ),
+                    7 => native_no_scope_test_put(&mut bad, cell_row + 6, 2, 0),
+                    8 => native_no_scope_test_put(
+                        &mut bad,
+                        cell_row + 6,
+                        2,
+                        if index == 2 { 13 } else { 12 },
+                    ),
+                    9 => {
+                        bad.copy_within(cell_row..cell_row + 24, 0x4000 + 9 * 24);
+                        native_no_scope_test_put(&mut bad, 0x8000 + 2 * 64 + 32, 8, 10 * 24);
+                    }
+                    10 => {
+                        let wrong = NATIVE100_NO_SCOPE_CELLS[index]
+                            .0
+                            .replace("15reverie_inguest", "16reverie_liteinst");
+                        let offset = native_no_scope_test_static_name(&mut bad, &wrong);
+                        native_no_scope_test_put(&mut bad, cell_row, 4, offset);
+                    }
+                    11 => bad[0x6000 + fixture.cell_names[index]] = b'X',
+                    12 => {
+                        let name = NATIVE100_NO_SCOPE_CELLS[index].0.replace("Cs_", "Cs1_");
+                        native_no_scope_test_dynamic_symbol(
+                            &mut bad,
+                            &name,
+                            sym::STT_TLS,
+                            NATIVE100_NO_SCOPE_CELLS[index].1,
+                            NATIVE100_NO_SCOPE_CELLS[index].2,
+                            if index == 2 { 12 } else { 13 },
+                        );
+                    }
+                    13 => {
+                        let overlap = 0x4000 + 9 * 24;
+                        native_no_scope_test_put(&mut bad, overlap + 4, 1, sym::STT_TLS as u64);
+                        native_no_scope_test_put(
+                            &mut bad,
+                            overlap + 6,
+                            2,
+                            if index == 2 { 12 } else { 13 },
+                        );
+                        native_no_scope_test_put(
+                            &mut bad,
+                            overlap + 8,
+                            8,
+                            NATIVE100_NO_SCOPE_CELLS[index].1,
+                        );
+                        native_no_scope_test_put(&mut bad, overlap + 16, 8, 1);
+                        native_no_scope_test_put(&mut bad, 0x8000 + 2 * 64 + 32, 8, 10 * 24);
+                    }
+                    _ => unreachable!(),
+                }
+                rejected(&bad, &format!("new100 typed cell {index}:{mutation}"));
+            }
+        }
+        // The distinguishing role cannot switch layouts without its real cell.
+        for (from, other) in [(good, 0x140), (&old.bytes, 0x100)] {
+            let mut bad = from.clone();
+            native_no_scope_test_put(&mut bad, 0x15c0 + 16, 4, other);
+            rejected(&bad, "mixed getter/cell dispatch vector");
+            let mut bad = from.clone();
+            native_no_scope_test_put(&mut bad, 0x4000 + 8 * 24 + 8, 8, other);
+            rejected(&bad, "mixed cell/getter dispatch vector");
+        }
+        for (index, offset) in [(0, 0xf0), (1, 0x100), (2, 8), (3, 0x148)] {
+            let mut bad = good.clone();
+            native_no_scope_test_put(&mut bad, 0x1500 + index * 0x40 + 16, 4, offset);
+            native_no_scope_test_put(&mut bad, 0x4000 + (index + 5) * 24 + 8, 8, offset);
+            rejected(&bad, "unobserved complete cross-role vector");
+        }
+        for mutation in 0..3 {
+            let mut bad = old.bytes.clone();
+            let row = 0x4000 + 5 * 24;
+            match mutation {
+                0 => native_no_scope_test_put(&mut bad, row, 4, 0),
+                1 => native_no_scope_test_put(&mut bad, row + 16, 8, 2),
+                2 => {
+                    bad.copy_within(row..row + 24, 0x4000 + 9 * 24);
+                    native_no_scope_test_put(&mut bad, 0x8000 + 2 * 64 + 32, 8, 10 * 24);
+                }
+                _ => unreachable!(),
+            }
+            rejected(
+                &bad,
+                "old140 joint selector requires its actual unique typed cells",
+            );
+        }
+        let mut forbidden = good.clone();
+        let name = native_no_scope_test_static_name(
+            &mut forbidden,
+            &FIXED_TLS_CELL_ROLE.replace("Cs_", "Cs1_"),
+        );
+        native_no_scope_test_put(&mut forbidden, 0x4000 + 9 * 24, 4, name);
+        native_no_scope_test_put(&mut forbidden, 0x8000 + 2 * 64 + 32, 8, 10 * 24);
+        rejected(
+            &forbidden,
+            "new layout still refuses every installation-scope identity",
+        );
+        for (index, old_name, new_name) in [(3, "Cellj", "Cellm"), (2, "9call_once", "5clone")] {
+            let mut bad = good.clone();
+            let name = NO_SCOPE_OTHER_GETTERS[index].0.replace(old_name, new_name);
+            assert_ne!(name, NO_SCOPE_OTHER_GETTERS[index].0);
+            let offset = native_no_scope_test_static_name(&mut bad, &name);
+            native_no_scope_test_put(&mut bad, 0x4000 + (index + 1) * 24, 4, offset);
+            rejected(&bad, "wrong primitive or exact FnOnce method");
+        }
+        for byte in 0..16 {
+            let mut bad = good.clone();
+            bad[0x3600 + byte] ^= 1;
+            rejected(&bad, "full initialized PENDING payload");
+        }
+        for (at, width, value) in [
+            (64 + 6 * 56, 4, program_header::PT_NULL as u64),
+            (64 + 6 * 56 + 4, 4, 6),
+            (64 + 6 * 56 + 32, 8, 0xe7),
+            (64 + 6 * 56 + 40, 8, 0x1c0),
+            (64 + 6 * 56 + 48, 8, 16),
+            (0x8000 + 12 * 64 + 4, 4, section_header::SHT_NOBITS as u64),
+            (0x8000 + 13 * 64 + 4, 4, section_header::SHT_PROGBITS as u64),
+            (0x8000 + 12 * 64 + 8, 8, 3),
+            (0x8000 + 13 * 64 + 8, 8, 0x401),
+            (0x8000 + 12 * 64 + 16, 8, 0x3608),
+            (0x8000 + 12 * 64 + 24, 8, 0x3608),
+            (0x8000 + 13 * 64 + 32, 8, 0xd8),
+            (64 + 2 * 56 + 4, 4, 4),
+        ] {
+            let mut bad = good.clone();
+            native_no_scope_test_put(&mut bad, at, width, value);
+            rejected(&bad, "exact PT_TLS/storage/mapping span");
+        }
+        let mut duplicate_tls = good.clone();
+        duplicate_tls.copy_within(64 + 6 * 56..64 + 7 * 56, 64 + 8 * 56);
+        native_no_scope_test_put(&mut duplicate_tls, 56, 2, 9);
+        native_no_scope_test_put(&mut duplicate_tls, 64 + 7 * 56 + 32, 8, 9 * 56);
+        native_no_scope_test_put(&mut duplicate_tls, 64 + 7 * 56 + 40, 8, 9 * 56);
+        rejected(&duplicate_tls, "duplicate PT_TLS header");
+        let mut aliased_template = good.clone();
+        aliased_template.copy_within(64 + 2 * 56..64 + 3 * 56, 64 + 8 * 56);
+        native_no_scope_test_put(&mut aliased_template, 56, 2, 9);
+        native_no_scope_test_put(&mut aliased_template, 64 + 7 * 56 + 32, 8, 9 * 56);
+        native_no_scope_test_put(&mut aliased_template, 64 + 7 * 56 + 40, 8, 9 * 56);
+        rejected(&aliased_template, "ambiguous RW template mapping");
+        let mut dynamic_overlap = good.clone();
+        native_no_scope_test_dynamic_symbol(
+            &mut dynamic_overlap,
+            "foreign_tls",
+            sym::STT_TLS,
+            0xf0,
+            1,
+            13,
+        );
+        rejected(&dynamic_overlap, "foreign dynamic TLS cell overlap");
+        for byte in 0..16 {
+            let mut bad = good.clone();
+            bad[0x3300 + byte] ^= 1;
+            rejected(&bad, "full local TLS module descriptor");
+        }
+        for (at, width, value) in [
+            (0x4810, 8, 1),
+            (
+                0x4808,
+                8,
+                (1u64 << 32) | u64::from(reloc::R_X86_64_DTPMOD64),
+            ),
+            (
+                0x4908,
+                8,
+                (1u64 << 32) | u64::from(reloc::R_X86_64_GLOB_DAT),
+            ),
+            (0x5202, 2, 1),
+            (0x1816, 4, 1),
+            (64 + 5 * 56, 4, program_header::PT_NULL as u64),
+        ] {
+            let mut bad = good.clone();
+            native_no_scope_test_put(&mut bad, at, width, value);
+            rejected(
+                &bad,
+                "exact descriptor/import/provider/version/PLT/RELRO binding",
+            );
+        }
+        for at in [
+            0x4600 + fixture.provider_version,
+            0x4600 + fixture.provider_library,
+            0x1810,
+            0x181c,
+        ] {
+            let mut bad = good.clone();
+            bad[at] ^= 1;
+            rejected(&bad, "exact provider or complete classic PLT");
+        }
+        for mutation in 0..10 {
+            let mut bad = good.clone();
+            match mutation {
+                0 => {
+                    native_no_scope_test_put(&mut bad, 0x3800 + 6 * 16 + 8, 8, 48);
+                    native_no_scope_test_put(&mut bad, 0x8000 + 6 * 64 + 32, 8, 48);
+                }
+                1 => {
+                    native_no_scope_test_extra_writer(&mut bad, 0x3400, 0x1540);
+                }
+                2 => native_no_scope_test_put(&mut bad, 0x4828, 8, 0x1541),
+                3 => native_no_scope_test_put(&mut bad, 0x4840, 8, 0x1540),
+                4 => native_no_scope_test_put(
+                    &mut bad,
+                    0x4820,
+                    8,
+                    (1u64 << 32) | u64::from(reloc::R_X86_64_RELATIVE),
+                ),
+                5 => native_no_scope_test_put(
+                    &mut bad,
+                    0x4820,
+                    8,
+                    (1u64 << 32) | u64::from(reloc::R_X86_64_GLOB_DAT),
+                ),
+                6 => bad[0x3400] = 1,
+                7 => {
+                    native_no_scope_test_put(&mut bad, 64 + 5 * 56 + 32, 8, 0x400);
+                    native_no_scope_test_put(&mut bad, 64 + 5 * 56 + 40, 8, 0x400);
+                }
+                8 => native_no_scope_test_extra_writer(&mut bad, 0x3410, 0x1500),
+                9 => native_no_scope_test_put(&mut bad, 0x4840, 8, 1),
+                _ => unreachable!(),
+            }
+            rejected(
+                &bad,
+                &format!("complete OWNER/PENDING pointer binding {mutation}"),
+            );
+        }
+        // A raw valid initializer must not hide a load-time mutation. Check
+        // half-open intervals, including straddling and genuinely adjacent writes.
+        for (slot, label) in [
+            (0x3600, "PENDING start"),
+            (0x3608, "PENDING interior"),
+            (0x360f, "PENDING last byte"),
+            (0x3618, "other initialized TLS interior"),
+            (0x35fc, "left overlap"),
+            (0x36e4, "right overlap"),
+            (0x36e7, "last initialized byte"),
+        ] {
+            let mut bad = good.clone();
+            native_no_scope_test_extra_writer(&mut bad, slot, 1);
+            assert_eq!(&bad[0x3600..0x3610], &good[0x3600..0x3610]);
+            let failure = native_no_scope_test_select_and_census(&bad)
+                .err()
+                .expect("overlapping template writer must refuse");
+            assert!(
+                failure.contains("initialized TLS template"),
+                "{label}: {failure}"
+            );
+        }
+        // A valid symbol-based loader write must reach the same template
+        // exclusion, even with the exact initializer left unchanged on disk.
+        let mut symbolic = good.clone();
+        let writer_at = 0x4800 + native_no_scope_test_word(&symbolic, 0x3800 + 6 * 16 + 8) as usize;
+        native_no_scope_test_extra_writer(&mut symbolic, 0x3608, 0);
+        native_no_scope_test_put(
+            &mut symbolic,
+            writer_at + 8,
+            8,
+            (1u64 << 32) | u64::from(reloc::R_X86_64_GLOB_DAT),
+        );
+        assert_eq!(&symbolic[0x3600..0x3610], &good[0x3600..0x3610]);
+        let parsed = Elf::parse(&symbolic).unwrap();
+        authenticate_loader_metadata(&parsed, &symbolic)
+            .expect("versioned __tls_get_addr GLOB_DAT writer has valid loader metadata");
+        let symbol = parsed.dynsyms.get(1).unwrap();
+        assert_eq!(
+            parsed.dynstrtab.get_at(symbol.st_name),
+            Some("__tls_get_addr")
+        );
+        assert_eq!(symbol.st_shndx, section_header::SHN_UNDEF as usize);
+        let failure = native_no_scope_test_select_and_census(&symbolic)
+            .err()
+            .expect("symbol-based initialized-template writer must refuse");
+        assert!(failure.contains("initialized TLS template"), "{failure}");
+        for slot in [0x35f8, 0x36e8, 0x3710] {
+            let mut adjacent = good.clone();
+            native_no_scope_test_extra_writer(&mut adjacent, slot, 1);
+            assert_eq!(
+                native_no_scope_test_select_and_census(&adjacent).unwrap(),
+                NativeNoScopeTlsLayout::Dispatch100,
+                "wholly adjacent/ordinary NOBITS-VA writer is not a template overlap"
+            );
+        }
+        let mut overflow = good.clone();
+        native_no_scope_test_extra_writer(&mut overflow, u64::MAX - 3, 1);
+        rejected(&overflow, "loader writer interval overflow");
+        let mut overflow = good.clone();
+        native_no_scope_test_put(&mut overflow, 64 + 6 * 56 + 16, 8, u64::MAX - 0xe0);
+        let failure = native_no_scope_test_select_and_census(&overflow)
+            .err()
+            .unwrap();
+        assert!(failure.contains("template span overflow"), "{failure}");
+        let mut unnamed = good.clone();
+        unnamed.copy_within(0x1500..0x1516, 0x1e00);
+        let rip = |code: &mut [u8], address: u64, field: usize, next: usize, target: u64| {
+            let displacement =
+                i32::try_from(target as i64 - (address + next as u64) as i64).unwrap();
+            code[field..next].copy_from_slice(&displacement.to_le_bytes());
+        };
+        rip(&mut unnamed[0x1e00..0x1e16], 0x1e00, 4, 8, 0x3300);
+        rip(&mut unnamed[0x1e00..0x1e16], 0x1e00, 9, 13, 0x1810);
+        rejected(&unnamed, "extra complete unnamed RX getter");
+        let mut rx_writer = good.clone();
+        native_no_scope_test_extra_writer(&mut rx_writer, 0x1f00, 1);
+        rejected(&rx_writer, "loader writer anywhere in RX");
+    }
+
+    fn native_no_scope_layout100_wire_controls(
+        backing: &AllocatorBackingEvidence,
+        old: &NoInstallationScopeEvidence,
+    ) {
+        let old_json = serde_json::to_value(old).unwrap();
+        assert!(
+            old_json.get("native_tls_layout100").is_none(),
+            "old v1 JSON omits the new optional payload entirely"
+        );
+        let fixture = native_no_scope_test_fixture(0x100);
+        let elf = Elf::parse(&fixture.bytes).unwrap();
+        assert_eq!(
+            native_no_scope_tls_layout(&elf, &fixture.bytes).unwrap(),
+            NativeNoScopeTlsLayout::Dispatch100
+        );
+        let (census, layout) = native_no_scope_layout100_census(&elf, &fixture.bytes).unwrap();
+        let mut proof = old.clone();
+        proof.version = 2;
+        proof.policy = NATIVE100_NO_SCOPE_POLICY.into();
+        proof.mappings = census.mappings;
+        proof.static_symbol_count = elf.syms.len();
+        proof.dynamic_symbol_count = elf.dynsyms.len();
+        proof.raw_names_sha256 = census.raw_names_sha256;
+        proof.loader_writer_count = census.loader_writer_count;
+        proof.loader_writers_sha256 = census.loader_writers_sha256;
+        proof.other_tls_getters = census.other_tls_getters;
+        proof.other_getter_pointer_slots = census.other_getter_pointer_slots;
+        proof.native_tls_layout100 = Some(layout);
+        let check = |value: &NoInstallationScopeEvidence| {
+            validate_no_installation_scope_evidence(backing, value, FixedImageKind::Detcore)
+        };
+        check(&proof).unwrap();
+        let encoded = serde_json::to_vec(&AllocatorInstallationEvidence::NoInstallationScope(
+            Box::new(proof.clone()),
+        ))
+        .unwrap();
+        assert_eq!(encoded, serde_json::to_vec(&proof).unwrap());
+        assert_eq!(
+            serde_json::from_slice::<AllocatorInstallationEvidence>(&encoded).unwrap(),
+            AllocatorInstallationEvidence::NoInstallationScope(Box::new(proof.clone()))
+        );
+        let value = serde_json::to_value(&proof).unwrap();
+        let reject_wire = |value: serde_json::Value| match serde_json::from_value::<
+            AllocatorInstallationEvidence,
+        >(value)
+        {
+            Err(_) => {}
+            Ok(AllocatorInstallationEvidence::NoInstallationScope(candidate)) => {
+                assert!(
+                    check(&candidate).is_err(),
+                    "decoded bad v2 record must still fail validation"
+                );
+            }
+            Ok(_) => panic!("absence wire must not become existing-installation evidence"),
+        };
+        for field in value.as_object().unwrap().keys() {
+            let mut bad = value.clone();
+            bad.as_object_mut().unwrap().remove(field);
+            reject_wire(bad);
+        }
+        for field in value["native_tls_layout100"].as_object().unwrap().keys() {
+            let mut bad = value.clone();
+            bad["native_tls_layout100"]
+                .as_object_mut()
+                .unwrap()
+                .remove(field);
+            reject_wire(bad);
+        }
+        for field in value["native_tls_layout100"]["cells"][0]
+            .as_object()
+            .unwrap()
+            .keys()
+        {
+            let mut bad = value.clone();
+            bad["native_tls_layout100"]["cells"][0]
+                .as_object_mut()
+                .unwrap()
+                .remove(field);
+            reject_wire(bad);
+        }
+        for scope in 0..3 {
+            let mut bad = value.clone();
+            match scope {
+                0 => bad["unreviewed"] = serde_json::json!(true),
+                1 => bad["native_tls_layout100"]["unreviewed"] = serde_json::json!(true),
+                _ => {
+                    bad["native_tls_layout100"]["cells"][0]["unreviewed"] = serde_json::json!(true)
+                }
+            }
+            reject_wire(bad);
+        }
+        for mutation in 0..43 {
+            let mut bad = proof.clone();
+            match mutation {
+                0 => bad.native_tls_layout100 = None,
+                1 => bad.version = 1,
+                2 => bad.policy = NO_INSTALLATION_SCOPE_POLICY.into(),
+                3 => bad.other_tls_getters[3].cell_offset = 0x140,
+                4 => {
+                    bad.native_tls_layout100.as_mut().unwrap().cells[3]
+                        .symbol
+                        .address = 0x140
+                }
+                5 => bad.native_tls_layout100.as_mut().unwrap().cells.swap(0, 1),
+                6 => {
+                    bad.native_tls_layout100.as_mut().unwrap().cells[0]
+                        .symbol
+                        .binding = sym::STB_GLOBAL
+                }
+                7 => {
+                    bad.native_tls_layout100.as_mut().unwrap().cells[0].symbol_type =
+                        sym::STT_OBJECT
+                }
+                8 => {
+                    bad.native_tls_layout100.as_mut().unwrap().cells[0]
+                        .symbol
+                        .size += 1
+                }
+                9 => {
+                    bad.native_tls_layout100.as_mut().unwrap().cells[0]
+                        .symbol
+                        .visibility = sym::STV_HIDDEN
+                }
+                10 => bad.native_tls_layout100.as_mut().unwrap().cells[0].section_index = 0,
+                11 => {
+                    bad.native_tls_layout100.as_mut().unwrap().cells[0].section_type =
+                        section_header::SHT_PROGBITS
+                }
+                12 => bad.native_tls_layout100.as_mut().unwrap().cells[0].section_flags = 3,
+                13 => {
+                    bad.native_tls_layout100.as_mut().unwrap().cells[0].section_name =
+                        ".tdata".into()
+                }
+                14 => bad.native_tls_layout100.as_mut().unwrap().cells[0].section_file_offset += 1,
+                15 => {
+                    bad.native_tls_layout100.as_mut().unwrap().cells[0].section_virtual_address += 1
+                }
+                16 => bad.native_tls_layout100.as_mut().unwrap().cells[0].section_size += 1,
+                17 => bad.native_tls_layout100.as_mut().unwrap().tls_file_size += 1,
+                18 => bad.native_tls_layout100.as_mut().unwrap().tls_memory_size += 1,
+                19 => bad.native_tls_layout100.as_mut().unwrap().tls_alignment = 16,
+                20 => {
+                    bad.native_tls_layout100
+                        .as_mut()
+                        .unwrap()
+                        .pending_initializer_sha256 = "0".repeat(64)
+                }
+                21 => bad
+                    .native_tls_layout100
+                    .as_mut()
+                    .unwrap()
+                    .getter_pointer_targets
+                    .clear(),
+                22 => {
+                    let map = &mut bad
+                        .native_tls_layout100
+                        .as_mut()
+                        .unwrap()
+                        .getter_pointer_targets;
+                    let (slot, target) = map.pop_first().unwrap();
+                    map.insert(slot + 1, target);
+                }
+                23 => {
+                    *bad.native_tls_layout100
+                        .as_mut()
+                        .unwrap()
+                        .getter_pointer_targets
+                        .values_mut()
+                        .next()
+                        .unwrap() += 1
+                }
+                24 => {
+                    bad.native_tls_layout100.as_mut().unwrap().cells.pop();
+                }
+                25 => {
+                    let cells = &mut bad.native_tls_layout100.as_mut().unwrap().cells;
+                    cells[1] = cells[0].clone();
+                }
+                26 => bad.other_tls_getters[1].module_slot += 8,
+                27 => bad.other_tls_getters[1].plt_address += 16,
+                28 => {
+                    bad.other_tls_getters.pop();
+                }
+                29 => {
+                    for (name, features) in ConsumerRecipe::Allocation101LayoutB.features() {
+                        bad.current_build.packages.get_mut(*name).unwrap().features = features
+                            .iter()
+                            .map(|feature| (*feature).to_owned())
+                            .collect();
+                    }
+                }
+                30 => bad.native_tls_layout100.as_mut().unwrap().tls_file_offset = u64::MAX,
+                31 => {
+                    bad.native_tls_layout100
+                        .as_mut()
+                        .unwrap()
+                        .tls_virtual_address = u64::MAX
+                }
+                32 => bad.source.sha256 = "0".repeat(64),
+                33 => bad
+                    .current_build
+                    .packages
+                    .get_mut("reverie-liteinst")
+                    .unwrap()
+                    .features
+                    .push("liteinst".into()),
+                34 => {
+                    bad.current_build
+                        .packages
+                        .get_mut("consumer-runtime")
+                        .unwrap()
+                        .profile["test"] = serde_json::json!(true)
+                }
+                35 => bad.current_build.command.status = 1,
+                36 => bad.current_build.artifact.sha256 = "0".repeat(64),
+                37 => bad.allocation.size = 241,
+                38 => bad.mappings[0].flags = 7,
+                39 => bad.other_tls_getters[1] = bad.other_tls_getters[0].clone(),
+                40 => bad.native_tls_layout100.as_mut().unwrap().cells[0]
+                    .symbol
+                    .name
+                    .push('x'),
+                41 => bad.version = 3,
+                42 => bad.policy.push('x'),
+                _ => unreachable!(),
+            }
+            assert!(
+                check(&bad).is_err(),
+                "new100 complete wire/schema mutation {mutation}"
+            );
+        }
+        let mut old_with_payload = old.clone();
+        old_with_payload.native_tls_layout100 = proof.native_tls_layout100.clone();
+        assert!(
+            check(&old_with_payload).is_err(),
+            "native100 payload cannot be attached to historical v1 policy"
+        );
+        let mut ordinary_with_payload = proof.clone();
+        ordinary_with_payload.version = 1;
+        ordinary_with_payload.policy = ConsumerRecipe::Allocation101LayoutB.policy().into();
+        for (name, features) in ConsumerRecipe::Allocation101LayoutB.features() {
+            ordinary_with_payload
+                .current_build
+                .packages
+                .get_mut(*name)
+                .unwrap()
+                .features = features
+                .iter()
+                .map(|feature| (*feature).to_owned())
+                .collect();
+        }
+        assert!(
+            check(&ordinary_with_payload).is_err(),
+            "ordinary build identity cannot carry native100 payload"
+        );
     }
 
     // Physical mini-ELF census controls only: no verified-source fabrication,
@@ -37733,13 +46168,86 @@ mod tests {
         let mut changed = base.clone();
         changed[0x1700] = 0x90;
         assert_ne!(good.mappings, census(&changed).unwrap().mappings);
+
+        // Actual optimized d8 has no thunk: even an unnamed complete d8 thunk
+        // outside .text must refuse. This does not add that unobserved recipe.
+        let mut d8 = base.clone();
+        put(&mut d8, 0x4020, 8, 0xd8);
+        let mut d8_cell = cell.clone();
+        d8_cell.address = 0xd8;
+        let d8_census = |bytes: &[u8]| {
+            direct_tls_getter_census(&Elf::parse(bytes).unwrap(), bytes, &d8_cell, 0x3300, 0x1800)
+        };
+        let d8_absent = d8_census(&d8).unwrap();
+        assert!(
+            d8_absent.named_getters.is_empty()
+                && d8_absent.recipe_getters.is_empty()
+                && d8_absent.getter_pointer_slots.is_empty()
+        );
+        assert!(
+            derive_standalone_d8_direct_allocation_tls_evidence(
+                &Elf::parse(&d8).unwrap(),
+                &d8,
+                &d8_cell,
+                0x3300,
+                0x1800,
+                &fixed_hex(STANDALONE_OPTIMIZED_D8_PATCH_ALLOC_HEX),
+                None,
+            )
+            .is_err()
+        );
+        let mut d8_thunk = getter();
+        d8_thunk[16..20].copy_from_slice(&0xd8_u32.to_le_bytes());
+        let mut d8_hidden = d8.clone();
+        d8_hidden[0x1500..0x1516].copy_from_slice(&d8_thunk);
+        assert!(d8_census(&d8_hidden).is_err());
+        for (field, next, target) in [(4, 8, 0x3308), (9, 13, 0x1801)] {
+            let mut bad = d8_hidden.clone();
+            rip(&mut bad[0x1500..0x1516], 0x1500, field, next, target);
+            assert!(d8_census(&bad).is_err());
+        }
+        let mut d8_named = d8_hidden.clone();
+        for (offset, width, value) in [
+            (0, 4, getter_name_offset as u64),
+            (4, 1, u64::from(sym::STT_FUNC)),
+            (6, 2, 1),
+            (8, 8, 0x1500),
+            (16, 8, 22),
+        ] {
+            put(&mut d8_named, 0x4030 + offset, width, value);
+        }
+        assert!(d8_census(&d8_named).is_err());
+        let mut d8_pointer = d8_hidden.clone();
+        for (offset, value) in [
+            (0, 0x3400),
+            (8, u64::from(reloc::R_X86_64_RELATIVE)),
+            (16, 0x1500),
+        ] {
+            put(&mut d8_pointer, 0x4800 + offset, 8, value);
+        }
+        assert!(d8_census(&d8_pointer).is_err());
+        let mut d8_rx_writer = d8.clone();
+        for (offset, value) in [
+            (0, 0x1500),
+            (8, u64::from(reloc::R_X86_64_RELATIVE)),
+            (16, 0),
+        ] {
+            put(&mut d8_rx_writer, 0x4800 + offset, 8, value);
+        }
+        assert!(d8_census(&d8_rx_writer).is_err());
+        let mut d8_writable = d8.clone();
+        put(&mut d8_writable, 64 + 56 + 4, 4, 7);
+        assert!(d8_census(&d8_writable).is_err());
+        let mut d8_changed = d8.clone();
+        d8_changed[0x1700] = 0x90;
+        assert_ne!(d8_absent.mappings, d8_census(&d8_changed).unwrap().mappings);
     }
 
     // Synthetic direct-schema positive. The old checker must refuse this
     // additive route before implementation; hashes here do not qualify an ELF.
     fn fixed_tls_direct_schema_controls(backing: &AllocatorBackingEvidence) {
         let mut direct = backing.clone();
-        let tls = &mut direct.tls_boundary;
+        let tls = direct.tls_boundary.existing_mut();
         tls.tls_cell.address = 0x40;
         let allocation = tls.local_chain.get_mut("fixed_patch_alloc").unwrap();
         allocation.size = 186;
@@ -37775,6 +46283,21 @@ mod tests {
         let decoded: AllocatorBackingEvidence = serde_json::from_value(value.clone()).unwrap();
         validate_fixed_backing_evidence(&decoded).unwrap();
         assert_eq!(serde_json::to_value(&decoded).unwrap(), value);
+        // Both measured DEV offsets require the retained177B LocalKey recipe.
+        // A valid old direct absence witness cannot substitute for that chain.
+        for offset in [0x98, 0xd8] {
+            let mut unsupported = decoded.clone();
+            unsupported.tls_boundary.existing_mut().tls_cell.address = offset;
+            assert!(validate_fixed_backing_evidence(&unsupported).is_err());
+            let unsupported = unsupported.tls_boundary.existing().unwrap();
+            assert!(
+                validate_direct_allocation_tls_evidence(
+                    unsupported,
+                    unsupported.direct_allocation.as_ref().unwrap(),
+                )
+                .is_err()
+            );
+        }
         for (field, replacement) in [
             ("version", serde_json::json!(2)),
             ("policy", serde_json::json!("empty_role_map")),
@@ -37813,7 +46336,7 @@ mod tests {
         }
         for mutation in 0..7 {
             let mut bad = decoded.clone();
-            let tls = &mut bad.tls_boundary;
+            let tls = bad.tls_boundary.existing_mut();
             match mutation {
                 0 => tls.callsites.clear(),
                 1 => tls.callsites.push(tls.callsites[0].clone()),
@@ -37855,7 +46378,7 @@ mod tests {
             validate_fixed_backing_evidence_in_source_context(b, FixedImageKind::Detcore)
         };
         let mut direct = retained.clone();
-        let tls = &mut direct.tls_boundary;
+        let tls = direct.tls_boundary.existing_mut();
         tls.local_chain.remove("fixed_tls_fn_once").unwrap();
         tls.function_sha256.remove("fixed_tls_fn_once").unwrap();
         tls.callsites.truncate(1);
@@ -37863,7 +46386,8 @@ mod tests {
             check(&direct).is_err(),
             "missing getter still requires direct provenance"
         );
-        let allocation_sha256 = direct.tls_boundary.function_sha256["fixed_patch_alloc"].clone();
+        let allocation_sha256 =
+            direct.tls_boundary.existing_mut().function_sha256["fixed_patch_alloc"].clone();
         let mut value = serde_json::to_value(&direct).unwrap();
         value["tls_boundary"]["direct_allocation"] = serde_json::json!({
             "version": 2, "policy": DETCORE_DIRECT_TLS_CENSUS_POLICY,
@@ -37886,8 +46410,14 @@ mod tests {
         );
         assert!(
             validate_direct_allocation_tls_evidence(
-                &decoded.tls_boundary,
-                decoded.tls_boundary.direct_allocation.as_ref().unwrap(),
+                decoded.tls_boundary.existing().unwrap(),
+                decoded
+                    .tls_boundary
+                    .existing()
+                    .unwrap()
+                    .direct_allocation
+                    .as_ref()
+                    .unwrap(),
             )
             .is_err(),
             "v2 cannot enter the standalone v1 validator"
@@ -37914,7 +46444,7 @@ mod tests {
         }
         for mutation in 0..11 {
             let mut bad = decoded.clone();
-            let tls = &mut bad.tls_boundary;
+            let tls = bad.tls_boundary.existing_mut();
             match mutation {
                 0 => tls.tls_cell.address = 0x128,
                 1 => tls.tls_cell.size = 9,
@@ -37932,7 +46462,8 @@ mod tests {
                 9 => {
                     let _ = tls.local_chain.insert(
                         "fixed_tls_fn_once".into(),
-                        retained.tls_boundary.local_chain["fixed_tls_fn_once"].clone(),
+                        retained.tls_boundary.existing().unwrap().local_chain["fixed_tls_fn_once"]
+                            .clone(),
                     );
                 }
                 10 => tls.callsites[0].target += 1,
@@ -37976,6 +46507,157 @@ mod tests {
             &'a [(u64, u64)],
         );
         let profiles: &[ProfileSample<'_>] = &[
+            // Actual clean bb79 OFF DEV chain, physical packet a37ca9e3.
+            // The exact schema sample does not itself qualify the retained ELF.
+            (
+                FixedImageKind::Standalone,
+                0x98,
+                &[
+                    (
+                        "fixed_patch_alloc",
+                        "_RNvXs3_NtCscaQKJQc56J2_16reverie_liteinst11patch_allocNtB5_26FixedPrivatePatchAllocatorNtNtNtCsayI02cGi06u_4core5alloc6global11GlobalAlloc5alloc",
+                        0xf8ef0,
+                        177,
+                        "617aee689417ec54becb1615e431ce7c3dc770a05edb9643f09cf8c3c706f160",
+                    ),
+                    (
+                        "fixed_installation_active",
+                        "_RNvNtCscaQKJQc56J2_16reverie_liteinst11patch_alloc19installation_active",
+                        0xf8330,
+                        25,
+                        "b52d94f6e19c77583fa02fbf6c2274c90845111cfb3521a7535500fbb8b83186",
+                    ),
+                    (
+                        "fixed_tls_fn_once",
+                        "_RNvYNCNKNvNtCscaQKJQc56J2_16reverie_liteinst11patch_alloc18INSTALLATION_DEPTH0s_0INtNtNtCsayI02cGi06u_4core3ops8function6FnOnceTINtNtB1o_6option6OptionQIB23_INtNtB1o_4cell4CelljEEEEE9call_onceBa_",
+                        0x1250e0,
+                        37,
+                        "e9ae01f627ef2d67783e28fbff382c3ec89c53e17473448bfac1807265f02829",
+                    ),
+                    (
+                        "fixed_tls_get",
+                        "_RNvMs3_NtNtCsa2m0ZrbF74z_3std6thread5localINtB5_8LocalKeyINtNtCsayI02cGi06u_4core4cell4CelljEE3getCsdvqdzgwEw5h_15reverie_inguest",
+                        0x1425b0,
+                        13,
+                        "9c7cae9a475fe232d16589e6c9ad71581d71d4ed47df68347d2cdb2335843602",
+                    ),
+                    (
+                        "fixed_tls_with",
+                        "_RINvMs2_NtNtCsa2m0ZrbF74z_3std6thread5localINtB6_8LocalKeyINtNtCsayI02cGi06u_4core4cell4CelljEE4withNvMs8_BX_BU_3getjECsdvqdzgwEw5h_15reverie_inguest",
+                        0x141ac0,
+                        62,
+                        "2dcf6bd6fa674db3c6fae4a4b825d5fa67baa56ec2d75e0d9e35e7cd2cad907d",
+                    ),
+                    (
+                        "fixed_tls_try_with",
+                        "_RINvMs2_NtNtCsa2m0ZrbF74z_3std6thread5localINtB6_8LocalKeyINtNtCsayI02cGi06u_4core4cell4CelljEE8try_withNvMs8_BX_BU_3getjECsdvqdzgwEw5h_15reverie_inguest",
+                        0x141b00,
+                        175,
+                        "52b04328ac7be45da5155ca99cd313e6c0ec6296338a794c65b8de8ce05489fa",
+                    ),
+                    (
+                        "fixed_tls_cell_getter",
+                        "_RNCNKNvNtCscaQKJQc56J2_16reverie_liteinst11patch_alloc18INSTALLATION_DEPTH0s_0B7_",
+                        0x11eb00,
+                        38,
+                        "ba711f14e8d95e2e91c717db2b849989374984ac1069c992e2a802d718612d47",
+                    ),
+                    (
+                        "fixed_tls_cell_callback",
+                        "_RNvYNvMs8_NtCsayI02cGi06u_4core4cellINtB8_4CelljE3getINtNtNtBa_3ops8function6FnOnceTRBy_EE9call_onceCsdvqdzgwEw5h_15reverie_inguest",
+                        0x12b690,
+                        25,
+                        "e17399523f79a0c2e189d9ece819ed6e6ea965db2723d5a6064fe6208cda80fd",
+                    ),
+                    (
+                        "fixed_tls_cell_read",
+                        "_RNvMs8_NtCsayI02cGi06u_4core4cellINtB5_4CelljE3getCsco5iqk9nC1o_11parking_lot",
+                        0x1bed60,
+                        9,
+                        "19c145446b1c59b56ba7b422314ffa92488b16a4819eeaff9f55e7130028c0d3",
+                    ),
+                ],
+                Some(0x28e840),
+                0x29d5d8,
+                0x28d5d0,
+                &[(0x11eb15, 0x28d5d0)],
+            ),
+            // Actual ef5ea/new FullTool bridge DEV chain, physical packet
+            // eb2f7bce: exact d8 cell, 177 B allocation and immutable LocalKey.
+            // This schema sample does not itself qualify the retained ELF.
+            (
+                FixedImageKind::Standalone,
+                0xd8,
+                &[
+                    (
+                        "fixed_patch_alloc",
+                        "_RNvXs3_NtCsikwTbW12jsg_16reverie_liteinst11patch_allocNtB5_26FixedPrivatePatchAllocatorNtNtNtCsayI02cGi06u_4core5alloc6global11GlobalAlloc5alloc",
+                        0x2042a0,
+                        177,
+                        "fa4e0ff50796bf1ffbcb66606cbd04899df313f3b5502560eb0695531c4b7d36",
+                    ),
+                    (
+                        "fixed_installation_active",
+                        "_RNvNtCsikwTbW12jsg_16reverie_liteinst11patch_alloc19installation_active",
+                        0x2036e0,
+                        25,
+                        "424004291d457397686badb2b6546858cdebbe6ffd06454c435349f0d25b3baf",
+                    ),
+                    (
+                        "fixed_tls_fn_once",
+                        "_RNvYNCNKNvNtCsikwTbW12jsg_16reverie_liteinst11patch_alloc18INSTALLATION_DEPTH0s_0INtNtNtCsayI02cGi06u_4core3ops8function6FnOnceTINtNtB1o_6option6OptionQIB23_INtNtB1o_4cell4CelljEEEEE9call_onceBa_",
+                        0x1c4120,
+                        37,
+                        "9281edfdbc10ee608a8ab7c39a7719b4a7e9cf421aa08a62d9f91fda498e2021",
+                    ),
+                    (
+                        "fixed_tls_get",
+                        "_RNvMs3_NtNtCsa2m0ZrbF74z_3std6thread5localINtB5_8LocalKeyINtNtCsayI02cGi06u_4core4cell4CelljEE3getCsdvqdzgwEw5h_15reverie_inguest",
+                        0x32a320,
+                        13,
+                        "0965e08d2883d3a6f42f78147ceb3fb662363b480aab82b123c58d42fbb20e58",
+                    ),
+                    (
+                        "fixed_tls_with",
+                        "_RINvMs2_NtNtCsa2m0ZrbF74z_3std6thread5localINtB6_8LocalKeyINtNtCsayI02cGi06u_4core4cell4CelljEE4withNvMs8_BX_BU_3getjECsdvqdzgwEw5h_15reverie_inguest",
+                        0x329830,
+                        62,
+                        "ceba86fe7670b98c210ad1f05f5f2aa9824517a09c588020f571f31f6bee3315",
+                    ),
+                    (
+                        "fixed_tls_try_with",
+                        "_RINvMs2_NtNtCsa2m0ZrbF74z_3std6thread5localINtB6_8LocalKeyINtNtCsayI02cGi06u_4core4cell4CelljEE8try_withNvMs8_BX_BU_3getjECsdvqdzgwEw5h_15reverie_inguest",
+                        0x329870,
+                        175,
+                        "26ba8aae36b7ffd9d7e088147201d0b60242ed4a51e52b7a88cc4a00b743dae7",
+                    ),
+                    (
+                        "fixed_tls_cell_getter",
+                        "_RNCNKNvNtCsikwTbW12jsg_16reverie_liteinst11patch_alloc18INSTALLATION_DEPTH0s_0B7_",
+                        0x1f24c0,
+                        38,
+                        "ecb021d066e095c1c9005436e5138db4f00cf5d7677454cce19a6fc9e0a932dd",
+                    ),
+                    (
+                        "fixed_tls_cell_callback",
+                        "_RNvYNvMs8_NtCsayI02cGi06u_4core4cellINtB8_4CelljE3getINtNtNtBa_3ops8function6FnOnceTRBy_EE9call_onceCsdvqdzgwEw5h_15reverie_inguest",
+                        0x312ea0,
+                        25,
+                        "ba8968c82da4a5d535ef484a7541860eb83eb948837daa0a65d3cfc3c91374fd",
+                    ),
+                    (
+                        "fixed_tls_cell_read",
+                        "_RNvMs8_NtCsayI02cGi06u_4core4cellINtB5_4CelljE3getCsco5iqk9nC1o_11parking_lot",
+                        0x3a9050,
+                        9,
+                        "19c145446b1c59b56ba7b422314ffa92488b16a4819eeaff9f55e7130028c0d3",
+                    ),
+                ],
+                Some(0x47de00),
+                0x4b7000,
+                0x4797d0,
+                &[(0x1f24d5, 0x4797d0)],
+            ),
             // Actual a746cd77 DEV chain. Schema controls below do not replace
             // the physical whole-body, ELF, provider and source qualification.
             (
@@ -38280,7 +46962,7 @@ mod tests {
                     .unwrap()
                     .name = "_RNvCsTest_16detcore_liteinst26REVERIE_LITEINST_ALLOCATOR".into();
             }
-            let tls = &mut sample.tls_boundary;
+            let tls = sample.tls_boundary.existing_mut();
             tls.tls_cell.address = offset;
             tls.tls_module_slot = module;
             tls.tls_offset_slot = module + 8;
@@ -38324,19 +47006,78 @@ mod tests {
                 validate_fixed_backing_evidence_in_source_context(b, kind)
             };
             check(&sample).unwrap();
+            if kind == FixedImageKind::Standalone && matches!(offset, 0x98 | 0xd8) {
+                // The new offset must execute the old complete Some-LocalKey
+                // checks; admitting a numeric offset alone must not pass.
+                assert!(
+                    validate_existing_allocator_tls_boundary(
+                        sample.tls_boundary.existing().unwrap(),
+                        FixedImageKind::Detcore,
+                    )
+                    .is_err(),
+                    "standalone DEV{offset:#x} cannot substitute for a Detcore TLS cohort"
+                );
+                for mutation in 0..6 {
+                    let mut bad = sample.clone();
+                    let tls = bad.tls_boundary.existing_mut();
+                    match mutation {
+                        0 => tls.callsites.clear(),
+                        1 => tls.callsites[0].local_got_slot = Some(tls.got_slot),
+                        2 => tls.unisolated = false,
+                        3 => tls.local_chain.get_mut("fixed_patch_alloc").unwrap().size = 186,
+                        4 => {
+                            tls.local_chain.insert(
+                                "unexpected_tls_role".into(),
+                                tls.local_chain["fixed_tls_cell_getter"].clone(),
+                            );
+                            tls.function_sha256.insert(
+                                "unexpected_tls_role".into(),
+                                tls.function_sha256["fixed_tls_cell_getter"].clone(),
+                            );
+                        }
+                        5 => {
+                            tls.local_key_object = None;
+                            tls.local_key_transfer = None;
+                            tls.local_key_resolution = None;
+                            tls.local_chain.retain(|role, _| {
+                                matches!(role.as_str(), "fixed_patch_alloc" | "fixed_tls_fn_once")
+                            });
+                            tls.function_sha256.retain(|role, _| {
+                                matches!(role.as_str(), "fixed_patch_alloc" | "fixed_tls_fn_once")
+                            });
+                            tls.local_chain.get_mut("fixed_patch_alloc").unwrap().size = 186;
+                            tls.local_chain.get_mut("fixed_tls_fn_once").unwrap().size = 22;
+                        }
+                        _ => unreachable!(),
+                    }
+                    assert!(
+                        check(&bad).is_err(),
+                        "DEV{offset:#x} incomplete/optimized boundary{mutation}"
+                    );
+                }
+                for wrong in [0, 0x90, 0x97, 0x99, 0xd0, 0xd7, 0xd9, 0xe0, u64::MAX] {
+                    let mut bad = sample.clone();
+                    bad.tls_boundary.existing_mut().tls_cell.address = wrong;
+                    assert!(check(&bad).is_err(), "unmeasured DEV TLS offset{wrong:#x}");
+                }
+            }
             if kind == FixedImageKind::Detcore && offset == 0xe8 {
                 fixed_detcore_tls_direct_schema_controls(&sample);
             }
             if kind == FixedImageKind::Detcore && matches!(offset, 0x128 | 0xe8) {
                 let mut extra = sample.clone();
-                let getter = extra.tls_boundary.local_chain["fixed_tls_fn_once"].clone();
-                let hash = extra.tls_boundary.function_sha256["fixed_tls_fn_once"].clone();
+                let getter =
+                    extra.tls_boundary.existing_mut().local_chain["fixed_tls_fn_once"].clone();
+                let hash =
+                    extra.tls_boundary.existing_mut().function_sha256["fixed_tls_fn_once"].clone();
                 extra
                     .tls_boundary
+                    .existing_mut()
                     .local_chain
                     .insert("fixed_tls_cell_getter".into(), getter);
                 extra
                     .tls_boundary
+                    .existing_mut()
                     .function_sha256
                     .insert("fixed_tls_cell_getter".into(), hash);
                 assert!(
@@ -38346,7 +47087,7 @@ mod tests {
             }
             for mutation in 0..10 {
                 let mut bad = sample.clone();
-                let tls = &mut bad.tls_boundary;
+                let tls = bad.tls_boundary.existing_mut();
                 match mutation {
                     0 => tls.tls_cell.address = 0x50,
                     1 => tls.tls_cell.size = 9,
@@ -38367,13 +47108,13 @@ mod tests {
             }
             for &(role, _, _, _, _) in chain {
                 let mut bad = sample.clone();
-                bad.tls_boundary.local_chain.remove(role);
+                bad.tls_boundary.existing_mut().local_chain.remove(role);
                 assert!(
                     check(&bad).is_err(),
                     "profile{offset:#x} missing chain{role}"
                 );
                 let mut bad = sample.clone();
-                bad.tls_boundary.function_sha256.remove(role);
+                bad.tls_boundary.existing_mut().function_sha256.remove(role);
                 assert!(
                     check(&bad).is_err(),
                     "profile{offset:#x} missing hash{role}"
@@ -38383,6 +47124,7 @@ mod tests {
                 let mut missing_fn_once_body = sample.clone();
                 missing_fn_once_body
                     .tls_boundary
+                    .existing_mut()
                     .local_chain
                     .get_mut("fixed_tls_fn_once")
                     .unwrap()
@@ -38391,7 +47133,7 @@ mod tests {
 
                 for mutation in 0..9 {
                     let mut bad = sample.clone();
-                    let tls = &mut bad.tls_boundary;
+                    let tls = bad.tls_boundary.existing_mut();
                     match mutation {
                         0 => tls.local_key_object = None,
                         1 => tls.local_key_transfer = None,
@@ -38410,12 +47152,13 @@ mod tests {
                     );
                 }
                 let mut bad = sample.clone();
-                let tls = &mut bad.tls_boundary;
+                let tls = bad.tls_boundary.existing_mut();
                 tls.local_key_object = None;
                 tls.local_key_transfer = None;
                 tls.local_key_resolution = None;
                 assert!(check(&bad).is_err(), "stripped DEV is not optimized");
                 bad.tls_boundary
+                    .existing_mut()
                     .local_chain
                     .get_mut("fixed_patch_alloc")
                     .unwrap()
@@ -38425,16 +47168,17 @@ mod tests {
                 for mutation in 0..3 {
                     let mut bad = sample.clone();
                     match mutation {
-                        0 => bad.tls_boundary.local_key_object = Some(0x8000),
+                        0 => bad.tls_boundary.existing_mut().local_key_object = Some(0x8000),
                         1 => {
-                            bad.tls_boundary.local_key_transfer = Some(ConstructorTransfer {
-                                instruction: 1,
-                                target: 2,
-                                local_got_slot: None,
-                            })
+                            bad.tls_boundary.existing_mut().local_key_transfer =
+                                Some(ConstructorTransfer {
+                                    instruction: 1,
+                                    target: 2,
+                                    local_got_slot: None,
+                                })
                         }
                         2 => {
-                            bad.tls_boundary.local_key_resolution =
+                            bad.tls_boundary.existing_mut().local_key_resolution =
                                 Some("local_relative_readonly_function_pointer".into())
                         }
                         _ => unreachable!(),
@@ -40007,9 +48751,9 @@ mod tests {
             .unwrap()
             .unwrap();
         assert!(require_legacy_standalone_gate(&elf).is_err());
-        assert!(standalone_symbols(&elf).is_err());
-        assert!(constructor_proof_functions(&elf).is_err());
-        assert!(proof_functions(&elf, STANDALONE_ROOT).is_err());
+        assert!(standalone_symbols(&elf, &bytes).is_err());
+        assert!(constructor_proof_functions(&elf, &bytes).is_err());
+        assert!(proof_functions(&elf, &bytes, STANDALONE_ROOT).is_err());
         // Selector absence restores the source-domain check, not native proof.
         let mut ordinary = bytes.clone();
         put(&mut ordinary, 0x3718, 4, 0);
@@ -41401,7 +50145,636 @@ mod tests {
 
     // These complete miniature ELFs exercise caller-bound selection, not whole
     // artifact admission. Original dev-heap body/data/census controls also run.
+    // Actual ELF bytes exercise the production coexistence binder and all three
+    // scope builders. Synthetic unrelated bootstrap functions grant scope only;
+    // this fixture never claims complete artifact/source/runtime qualification.
+    #[test]
+    fn fixed_heap_max_owner_physical_controls() {
+        const ALLOCATE: u64 = 0x1000;
+        const LAYOUT: u64 = 0x2000;
+        const PROVIDERS: [u64; 2] = [0x3000, 0x3100];
+        const SLOTS: [u64; 3] = [0x8000, 0x8008, 0x8010];
+        const OTHER_SLOT: u64 = 0x8050;
+        const STRINGS: usize = 0x9000;
+        const SYMBOLS: usize = 0xb000;
+        const RELOCATIONS: usize = 0xd000;
+        const DYNAMIC_SYMBOLS: usize = 0xe000;
+        const HASH: usize = 0xf000;
+        const SECTIONS: usize = 0x18000;
+        fn put(bytes: &mut [u8], offset: usize, width: usize, value: u64) {
+            bytes[offset..offset + width].copy_from_slice(&value.to_le_bytes()[..width]);
+        }
+        fn word(bytes: &[u8], offset: usize) -> u64 {
+            u64::from_le_bytes(bytes[offset..offset + 8].try_into().unwrap())
+        }
+        fn relative(bytes: &mut [u8], address: u64, displacement: usize, next: usize, target: u64) {
+            let delta = i32::try_from(target as i64 - (address + next as u64) as i64).unwrap();
+            bytes[displacement..displacement + 4].copy_from_slice(&delta.to_le_bytes());
+        }
+        fn spelling(role: &str) -> String {
+            FIXED_EMITTED_ROLE_SYMBOLS
+                .iter()
+                .chain(FIXED_OPERATION_ROLE_SYMBOLS)
+                .chain(FIXED_SUPPORT_ROLE_SYMBOLS)
+                .find(|(name, _)| *name == role)
+                .unwrap()
+                .1
+                .replace("Cs_", "Cs1_")
+        }
+        fn row(bytes: &[u8], canonical: &str) -> usize {
+            let elf = Elf::parse(bytes).unwrap();
+            let indices: Vec<_> = elf
+                .syms
+                .iter()
+                .enumerate()
+                .filter(|(_, s)| {
+                    elf.strtab.get_at(s.st_name).is_some_and(|name| {
+                        name == canonical
+                            || canonical_rust_symbol(name).as_deref() == Some(canonical)
+                    })
+                })
+                .map(|(index, _)| index)
+                .collect();
+            assert_eq!(indices.len(), 1, "one actual fixture symbol {canonical}");
+            SYMBOLS + indices[0] * 24
+        }
+        fn caller_row(bytes: &[u8], role: &str) -> usize {
+            row(bytes, &spelling(role))
+        }
+        fn context(
+            selected: usize,
+        ) -> (
+            BTreeMap<String, u64>,
+            BTreeMap<u64, u64>,
+            BTreeMap<u64, Vec<u8>>,
+        ) {
+            let mut targets = BTreeMap::new();
+            let mut readonly = BTreeMap::new();
+            for op in DEV_FIXED_HEAP_OPERANDS_0
+                .iter()
+                .chain(DEV_FIXED_HEAP_OPERANDS_2)
+            {
+                if targets.contains_key(op.key) {
+                    continue;
+                }
+                if op.kind == 0 {
+                    let spec = FIXED_READONLY_SPECS
+                        .iter()
+                        .find(|s| s.key == op.key)
+                        .unwrap();
+                    let address = 0x1_0000 + readonly.len() as u64 * 0x100;
+                    targets.insert(op.key.into(), address);
+                    readonly.insert(address, fixed_hex(spec.hex));
+                    if !spec.file_hex.is_empty() {
+                        targets.insert(format!("{}_file", op.key), address + 0x80);
+                        readonly.insert(address + 0x80, fixed_hex(spec.file_hex));
+                    }
+                } else {
+                    targets.insert(op.key.into(), 0x7000);
+                }
+            }
+            targets.insert("fixed_heap_usize_max".into(), PROVIDERS[selected]);
+            let got = SLOTS
+                .into_iter()
+                .map(|slot| (slot, PROVIDERS[selected]))
+                .chain([(OTHER_SLOT, 0x7000)])
+                .collect();
+            (targets, got, readonly)
+        }
+        fn fixture(selected: usize) -> Vec<u8> {
+            let mut bytes = vec![0_u8; 0x2_0000];
+            bytes[..7].copy_from_slice(b"\x7fELF\x02\x01\x01");
+            for (offset, width, value) in [
+                (16, 2, 3),
+                (18, 2, 62),
+                (20, 4, 1),
+                (32, 8, 64),
+                (40, 8, SECTIONS as u64),
+                (52, 2, 64),
+                (54, 2, 56),
+                (56, 2, 7),
+                (58, 2, 64),
+                (60, 2, 9),
+            ] {
+                put(&mut bytes, offset, width, value);
+            }
+            for (index, kind, flags, address, size) in [
+                (0, 1, 4, 0, 0x1000),
+                (1, 1, 5, 0x1000, 0x7000),
+                (2, 1, 6, 0x8000, 0x1000),
+                (3, 1, 4, 0x9000, 0x1_7000),
+                (4, 0x6474_e552, 4, 0x8000, 0x1000),
+                (5, 2, 6, 0x8200, 16 * 10),
+                (6, 6, 4, 64, 56 * 7),
+            ] {
+                let base = 64 + index * 56;
+                for (offset, width, value) in [
+                    (0, 4, kind),
+                    (4, 4, flags),
+                    (8, 8, address),
+                    (16, 8, address),
+                    (24, 8, address),
+                    (32, 8, size),
+                    (40, 8, size),
+                    (48, 8, 4096),
+                ] {
+                    put(&mut bytes, base + offset, width, value);
+                }
+            }
+            let (targets, _, _) = context(selected);
+            for (role, address, hex, operands) in [
+                (
+                    "fixed_heap_allocate",
+                    ALLOCATE,
+                    DEV_FIXED_HEAP_HEX_0,
+                    DEV_FIXED_HEAP_OPERANDS_0,
+                ),
+                (
+                    "fixed_heap_layout_end",
+                    LAYOUT,
+                    DEV_FIXED_HEAP_HEX_2,
+                    DEV_FIXED_HEAP_OPERANDS_2,
+                ),
+            ] {
+                let mut body = fixed_hex(hex);
+                let mut max_site = if role == "fixed_heap_allocate" { 0 } else { 1 };
+                for op in operands {
+                    let operand = if op.key == "fixed_heap_usize_max" {
+                        let slot = SLOTS[max_site];
+                        max_site += 1;
+                        slot
+                    } else if op.kind == 2 {
+                        OTHER_SLOT
+                    } else {
+                        targets[op.key] + op.addend
+                    };
+                    relative(&mut body, address, op.displacement, op.next, operand);
+                }
+                bytes[address as usize..address as usize + body.len()].copy_from_slice(&body);
+            }
+            for address in PROVIDERS {
+                let body = fixed_hex(DEV_FIXED_HEAP_HEX_27);
+                assert_eq!(body.len(), 95);
+                bytes[address as usize..address as usize + body.len()].copy_from_slice(&body);
+            }
+            let mut entries: Vec<(String, u64, u64, u8, u8)> = FIXED_REQUIRED_ROLES
+                .iter()
+                .enumerate()
+                .map(|(index, role)| (spelling(role), 0x4000 + index as u64 * 32, 16, 0, 2))
+                .collect();
+            entries.extend([
+                (spelling("fixed_heap_allocate"), ALLOCATE, 2384, 0, 2),
+                (spelling("fixed_heap_layout_end"), LAYOUT, 668, 0, 2),
+            ]);
+            entries.extend(
+                FIXED_HEAP_MAX_PROVIDERS
+                    .iter()
+                    .zip(PROVIDERS)
+                    .map(|(name, address)| (name.replace("Cs_", "Cs1_"), address, 95, 0, 0)),
+            );
+            entries.push(("fixture_other_local".into(), 0x7000, 16, 0, 2));
+            let private_names = [
+                STANDALONE_ROOT,
+                STANDALONE_BODY,
+                STANDALONE_INITIALIZER,
+                STANDALONE_RESOLVER,
+                CONSTRUCTOR_BRIDGE,
+                CONSTRUCTOR_ADOPTION,
+                CONSTRUCTOR_GATE_OWNER,
+                GENERIC_BODY,
+                GENERIC_BRIDGE,
+                GENERIC_ADOPTION,
+                DETCORE_BODY,
+            ];
+            for (index, name) in private_names.into_iter().chain(SHIMS).enumerate() {
+                entries.push((name.into(), 0x5000 + index as u64 * 32, 16, 0, 2));
+            }
+            for (index, name) in EXPORTS
+                .into_iter()
+                .chain([GENERIC_INITIALIZER, DETCORE_ROOT])
+                .enumerate()
+            {
+                entries.push((
+                    name.into(),
+                    0x6000 + index as u64 * 32,
+                    16,
+                    1,
+                    if name == DETCORE_ROOT { 3 } else { 0 },
+                ));
+            }
+            let mut strings = vec![0];
+            let mut dynamic_entries = Vec::new();
+            for (index, (name, address, size, binding, visibility)) in entries.iter().enumerate() {
+                let row = SYMBOLS + (index + 1) * 24;
+                for (offset, width, value) in [
+                    (0, 4, strings.len() as u64),
+                    (4, 1, u64::from(*binding << 4 | 2)),
+                    (5, 1, u64::from(*visibility)),
+                    (6, 2, 1),
+                    (8, 8, *address),
+                    (16, 8, *size),
+                ] {
+                    put(&mut bytes, row + offset, width, value);
+                }
+                strings.extend_from_slice(name.as_bytes());
+                strings.push(0);
+                if *binding == 1 {
+                    dynamic_entries.push(bytes[row..row + 24].to_vec());
+                }
+            }
+            assert!(strings.len() < SYMBOLS - STRINGS);
+            bytes[STRINGS..STRINGS + strings.len()].copy_from_slice(&strings);
+            for (index, entry) in dynamic_entries.iter().enumerate() {
+                bytes[DYNAMIC_SYMBOLS + (index + 1) * 24..DYNAMIC_SYMBOLS + (index + 2) * 24]
+                    .copy_from_slice(entry);
+            }
+            let dynamic_count = dynamic_entries.len() + 1;
+            put(&mut bytes, HASH, 4, 1);
+            put(&mut bytes, HASH + 4, 4, dynamic_count as u64);
+            put(&mut bytes, HASH + 8, 4, 1);
+            for index in 1..dynamic_count - 1 {
+                put(&mut bytes, HASH + 12 + index * 4, 4, (index + 1) as u64);
+            }
+            for (index, slot) in SLOTS.into_iter().chain([OTHER_SLOT]).enumerate() {
+                put(&mut bytes, RELOCATIONS + index * 24, 8, slot);
+                put(&mut bytes, RELOCATIONS + index * 24 + 8, 8, 8);
+                put(
+                    &mut bytes,
+                    RELOCATIONS + index * 24 + 16,
+                    8,
+                    if slot == OTHER_SLOT {
+                        0x7000
+                    } else {
+                        PROVIDERS[selected]
+                    },
+                );
+            }
+            for (index, (tag, value)) in [
+                (7, RELOCATIONS as u64),
+                (8, 96),
+                (9, 24),
+                (6, DYNAMIC_SYMBOLS as u64),
+                (11, 24),
+                (5, STRINGS as u64),
+                (10, strings.len() as u64),
+                (4, HASH as u64),
+                (24, 0),
+                (0, 0),
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                put(&mut bytes, 0x8200 + index * 16, 8, tag);
+                put(&mut bytes, 0x8208 + index * 16, 8, value);
+            }
+            for (index, kind, flags, address, size, link, entry) in [
+                (1, 1, 6, 0x1000, 0x7000, 0, 0),
+                (2, 1, 3, 0x8000, 0x1000, 0, 0),
+                (3, 3, 2, STRINGS as u64, strings.len() as u64, 0, 0),
+                (
+                    4,
+                    2,
+                    0,
+                    SYMBOLS as u64,
+                    (entries.len() as u64 + 1) * 24,
+                    3,
+                    24,
+                ),
+                (5, 4, 2, RELOCATIONS as u64, 96, 7, 24),
+                (6, 6, 3, 0x8200, 16 * 10, 3, 16),
+                (
+                    7,
+                    11,
+                    2,
+                    DYNAMIC_SYMBOLS as u64,
+                    dynamic_count as u64 * 24,
+                    3,
+                    24,
+                ),
+                (8, 5, 2, HASH as u64, (dynamic_count as u64 + 3) * 4, 7, 4),
+            ] {
+                let base = SECTIONS + index * 64;
+                for (offset, width, value) in [
+                    (4, 4, kind),
+                    (8, 8, flags),
+                    (16, 8, address),
+                    (24, 8, address),
+                    (32, 8, size),
+                    (40, 4, link),
+                    (48, 8, 8),
+                    (56, 8, entry),
+                ] {
+                    put(&mut bytes, base + offset, width, value);
+                }
+            }
+            bytes
+        }
+        fn select(bytes: &[u8]) -> Result<BTreeMap<String, sym::Sym>> {
+            let elf = Elf::parse(bytes).map_err(|error| error.to_string())?;
+            fixed_role_symbols_in_file(&elf, bytes)
+        }
+        fn extra_relocation(bytes: &mut [u8], slot: u64, kind: u64, target: u64) {
+            put(bytes, RELOCATIONS + 96, 8, slot);
+            put(bytes, RELOCATIONS + 104, 8, kind);
+            put(bytes, RELOCATIONS + 112, 8, target);
+            put(bytes, 0x8208 + 16, 8, 120);
+            put(bytes, SECTIONS + 5 * 64 + 32, 8, 120);
+        }
+        for selected in 0..2 {
+            let bytes = fixture(selected);
+            let elf = Elf::parse(&bytes).unwrap();
+            authenticate_loader_metadata(&elf, &bytes).unwrap();
+            assert!(
+                fixed_role_symbols(&elf).is_err(),
+                "symbol-only ambiguity stays strict"
+            );
+            let chosen = select(&bytes).expect("both exact providers, one caller-bound owner");
+            assert_eq!(chosen["fixed_heap_usize_max"].st_value, PROVIDERS[selected]);
+            for scope in [
+                proof_functions(&elf, &bytes, STANDALONE_ROOT).unwrap(),
+                constructor_proof_functions(&elf, &bytes).unwrap(),
+                detcore_proof_functions(&elf, &bytes).unwrap(),
+            ] {
+                let full = proof_function_bytes(&elf, &bytes, &scope).unwrap();
+                for address in PROVIDERS {
+                    assert_eq!(scope.get(&address), Some(&95));
+                    assert_eq!(full[&address], fixed_hex(DEV_FIXED_HEAP_HEX_27));
+                }
+            }
+            let (targets, got, readonly) = context(selected);
+            for (role, address, length) in [
+                ("fixed_heap_allocate", ALLOCATE, 2384),
+                ("fixed_heap_layout_end", LAYOUT, 668),
+            ] {
+                dev_fixed_heap_recipe(
+                    role,
+                    address,
+                    &bytes[address as usize..address as usize + length],
+                    &targets,
+                    &got,
+                    &readonly,
+                )
+                .expect("unchanged complete caller recipe positive");
+            }
+            for provider in 0..2 {
+                for index in 0..95 {
+                    let mut bad = bytes.clone();
+                    bad[PROVIDERS[provider] as usize + index] ^= 1;
+                    assert!(
+                        select(&bad).is_err(),
+                        "provider {provider} byte {index}, including unchosen"
+                    );
+                }
+                let symbol = row(&bytes, FIXED_HEAP_MAX_PROVIDERS[provider]);
+                for (offset, width, value) in [
+                    (4, 1, 0x12),
+                    (4, 1, 0x22),
+                    (4, 1, 0),
+                    (4, 1, 1),
+                    (6, 2, 0),
+                    (8, 8, 0x9000),
+                    (16, 8, 0),
+                    (16, 8, 94),
+                    (16, 8, 96),
+                ] {
+                    let mut bad = bytes.clone();
+                    put(&mut bad, symbol + offset, width, value);
+                    assert!(
+                        select(&bad).is_err(),
+                        "provider metadata {provider}:{offset}/{value}"
+                    );
+                }
+                let mut duplicate = bytes.clone();
+                let end = word(&bytes, SECTIONS + 4 * 64 + 32) as usize;
+                duplicate[SYMBOLS + end..SYMBOLS + end + 24]
+                    .copy_from_slice(&bytes[symbol..symbol + 24]);
+                put(&mut duplicate, SECTIONS + 4 * 64 + 32, 8, end as u64 + 24);
+                assert!(
+                    select(&duplicate).is_err(),
+                    "duplicate raw canonical provider"
+                );
+                let mut dynamic = bytes.clone();
+                dynamic[DYNAMIC_SYMBOLS + 24..DYNAMIC_SYMBOLS + 48]
+                    .copy_from_slice(&bytes[symbol..symbol + 24]);
+                assert!(
+                    select(&dynamic).is_err(),
+                    "canonical dynamic provider exposure"
+                );
+                let mut code_writer = bytes.clone();
+                extra_relocation(&mut code_writer, PROVIDERS[provider] - 7, 8, 0x7000);
+                assert!(
+                    select(&code_writer).is_err(),
+                    "partial writer overlaps provider"
+                );
+            }
+            let second = row(&bytes, FIXED_HEAP_MAX_PROVIDERS[1]);
+            for address in [PROVIDERS[0], PROVIDERS[0] + 1] {
+                let mut bad = bytes.clone();
+                put(&mut bad, second + 8, 8, address);
+                assert!(select(&bad).is_err(), "same-address/overlapping providers");
+            }
+            for (role, address, hex, operands) in [
+                (
+                    "fixed_heap_allocate",
+                    ALLOCATE,
+                    DEV_FIXED_HEAP_HEX_0,
+                    DEV_FIXED_HEAP_OPERANDS_0,
+                ),
+                (
+                    "fixed_heap_layout_end",
+                    LAYOUT,
+                    DEV_FIXED_HEAP_HEX_2,
+                    DEV_FIXED_HEAP_OPERANDS_2,
+                ),
+            ] {
+                let symbol = caller_row(&bytes, role);
+                let length = fixed_hex(hex).len();
+                for (offset, width, value) in [
+                    (4, 1, 0),
+                    (6, 2, 0),
+                    (16, 8, length as u64 - 1),
+                    (16, 8, length as u64 + 1),
+                ] {
+                    let mut bad = bytes.clone();
+                    put(&mut bad, symbol + offset, width, value);
+                    assert!(
+                        select(&bad).is_err(),
+                        "missing/truncated/extended caller {role}"
+                    );
+                }
+                let masked: BTreeSet<_> = operands
+                    .iter()
+                    .flat_map(|op| op.displacement..op.displacement + 4)
+                    .collect();
+                for index in (0..length).filter(|index| !masked.contains(index)) {
+                    let mut bad = bytes.clone();
+                    bad[address as usize + index] ^= 1;
+                    assert!(
+                        select(&bad).is_err(),
+                        "complete {role} literal byte {index}"
+                    );
+                }
+                let mut code_writer = bytes.clone();
+                extra_relocation(&mut code_writer, address - 7, 8, 0x7000);
+                assert!(
+                    select(&code_writer).is_err(),
+                    "writer overlaps caller first byte"
+                );
+                // Coexistence only chooses an owner. An unrelated removed
+                // displacement still requires its original complete operation
+                // proof; the unchanged recipe must reject every such mutation.
+                for op in operands
+                    .iter()
+                    .filter(|op| op.key != "fixed_heap_usize_max")
+                {
+                    let mut bad = bytes.clone();
+                    bad[address as usize + op.displacement] ^= 1;
+                    select(&bad).expect("owner binder does not authenticate unrelated operands");
+                    assert!(
+                        dev_fixed_heap_recipe(
+                            role,
+                            address,
+                            &bad[address as usize..address as usize + length],
+                            &targets,
+                            &got,
+                            &readonly
+                        )
+                        .is_err(),
+                        "unchanged full caller proof accepted unrelated operand {}",
+                        op.key
+                    );
+                }
+            }
+            for (site, (address, displacement, next)) in
+                [(ALLOCATE, 409, 413), (LAYOUT, 309, 313), (LAYOUT, 419, 423)]
+                    .into_iter()
+                    .enumerate()
+            {
+                for slot in [0x8070, 0x8001, 0x9000, 0x7ffc] {
+                    let mut bad = bytes.clone();
+                    relative(
+                        &mut bad[address as usize..],
+                        address,
+                        displacement,
+                        next,
+                        slot,
+                    );
+                    assert!(
+                        select(&bad).is_err(),
+                        "site {site} missing/partial/outside GOT"
+                    );
+                }
+                let relocation = RELOCATIONS + site * 24;
+                for (offset, width, value) in [
+                    (8, 8, 0),
+                    (8, 8, 6),
+                    (8, 8, (1 << 32) | 8),
+                    (8, 8, 10),
+                    (16, 8, 0),
+                    (16, 8, 0x7000),
+                    (16, 8, PROVIDERS[1 - selected]),
+                ] {
+                    let mut bad = bytes.clone();
+                    put(&mut bad, relocation + offset, width, value);
+                    assert!(
+                        select(&bad).is_err(),
+                        "site {site} missing/foreign/partial/wrong/split writer"
+                    );
+                }
+                let mut nonzero = bytes.clone();
+                put(&mut nonzero, SLOTS[site] as usize, 8, 1);
+                assert!(select(&nonzero).is_err(), "site {site} nonzero raw GOT");
+                for slot in [SLOTS[site], SLOTS[site] - 1, SLOTS[site] + 7] {
+                    let mut duplicate = bytes.clone();
+                    extra_relocation(&mut duplicate, slot, 8, PROVIDERS[selected]);
+                    assert!(
+                        select(&duplicate).is_err(),
+                        "site {site} duplicate/overlapping writer"
+                    );
+                }
+            }
+            for (offset, width, value) in [
+                (64 + 56 + 4, 4, 7),                 // writable code
+                (64 + 56 + 4, 4, 4),                 // nonexecutable code
+                (64 + 56 + 8, 8, 0x2000),            // wrong actual file/code join
+                (64 + 56 + 32, 8, 0x2000),           // provider is memory-only
+                (64 + 2 * 56 + 4, 4, 2),             // unreadable GOT mapping
+                (64 + 2 * 56 + 32, 8, 8),            // truncated GOT file backing
+                (64 + 4 * 56, 4, 0),                 // missing RELRO
+                (64 + 4 * 56 + 16, 8, 0x8008),       // partial first slot
+                (64 + 4 * 56 + 40, 8, 0xfff),        // unprotected final page
+                (SECTIONS + 2 * 64 + 4, 4, 8),       // NOBITS is not file proof
+                (SECTIONS + 2 * 64 + 8, 8, 0),       // no allocated section
+                (SECTIONS + 2 * 64 + 8, 8, 7),       // executable data section
+                (SECTIONS + 2 * 64 + 8, 8, 0x403),   // TLS section
+                (SECTIONS + 2 * 64 + 24, 8, 0x8008), // file/load mismatch
+                (SECTIONS + 2 * 64 + 32, 8, 7),      // partial data section
+            ] {
+                let mut bad = bytes.clone();
+                put(&mut bad, offset, width, value);
+                assert!(
+                    select(&bad).is_err(),
+                    "physical mapping/section/RELRO mutation {offset:#x}/{value:#x}"
+                );
+            }
+            for header in [1, 4] {
+                let mut duplicate = bytes.clone();
+                duplicate[64 + 7 * 56..64 + 8 * 56]
+                    .copy_from_slice(&bytes[64 + header * 56..64 + (header + 1) * 56]);
+                put(&mut duplicate, 56, 2, 8);
+                // Keep the loaded PHDR representation correct so this control
+                // tests duplicate load/RELRO refusal, not stale header length.
+                put(&mut duplicate, 64 + 6 * 56 + 32, 8, 56 * 8);
+                put(&mut duplicate, 64 + 6 * 56 + 40, 8, 56 * 8);
+                assert!(select(&duplicate).is_err(), "duplicate load/RELRO");
+            }
+            // A malformed selected spelling falls back only to the historical
+            // single-provider census. It still cannot satisfy the mandatory
+            // complete caller operand proof against the remaining owner.
+            let symbol = row(&bytes, FIXED_HEAP_MAX_PROVIDERS[selected]);
+            let string = STRINGS
+                + u32::from_le_bytes(bytes[symbol..symbol + 4].try_into().unwrap()) as usize;
+            let length = bytes[string..].iter().position(|b| *b == 0).unwrap();
+            let raw_name = std::str::from_utf8(&bytes[string..string + length]).unwrap();
+            for part in [
+                "Yj",
+                "3max",
+                if selected == 0 {
+                    "6goblin"
+                } else {
+                    "10serde_core"
+                },
+            ] {
+                let mut wrong = bytes.clone();
+                wrong[string + raw_name.find(part).unwrap() + part.len() - 1] = b'z';
+                let chosen = select(&wrong).expect("old single-provider census remains available");
+                assert_eq!(
+                    chosen["fixed_heap_usize_max"].st_value,
+                    PROVIDERS[1 - selected]
+                );
+                let mut expected_targets = targets.clone();
+                expected_targets.insert("fixed_heap_usize_max".into(), PROVIDERS[1 - selected]);
+                assert!(
+                    dev_fixed_heap_recipe(
+                        "fixed_heap_allocate",
+                        ALLOCATE,
+                        &wrong[ALLOCATE as usize..ALLOCATE as usize + 2384],
+                        &expected_targets,
+                        &got,
+                        &readonly
+                    )
+                    .is_err(),
+                    "wrong selected exact type/method/crate"
+                );
+            }
+        }
+    }
+
     fn fixed_heap_equal_cohort_controls() {
+        const OPTIONS: [u64; 3] = [0x2000, 0x2200, 0x2400];
+        const SCALARS: [u64; 3] = [0x2100, 0x2300, 0x2500];
+        const ORIGINS: [&str; 3] = ["regex_syntax", "safeptrace", "reverie_inguest"];
+        assert_eq!(FIXED_HEAP_EQUAL_COHORTS.len(), OPTIONS.len());
         fn put(bytes: &mut [u8], offset: usize, width: usize, value: u64) {
             bytes[offset..offset + width].copy_from_slice(&value.to_le_bytes()[..width]);
         }
@@ -41464,15 +50837,26 @@ mod tests {
                 relative(&mut caller, 0x1000, displacement, next, slot);
             }
             bytes[0x1000..0x1000 + caller.len()].copy_from_slice(&caller);
-            let names = [
-                "fixture_heap_deallocate".to_owned(),
-                FIXED_HEAP_EQUAL_COHORTS[0].0.replace("Cs_", "Cs1_"),
-                FIXED_HEAP_EQUAL_COHORTS[0].1.replace("Cs_", "Cs1_"),
-                FIXED_HEAP_EQUAL_COHORTS[1].0.replace("Cs_", "Cs1_"),
-                FIXED_HEAP_EQUAL_COHORTS[1].1.replace("Cs_", "Cs1_"),
-            ];
-            let addresses = [0x1000, 0x2000, 0x2100, 0x2200, 0x2300];
-            let sizes = [2690, 124, 22, 124, 22];
+            let names: Vec<_> = std::iter::once("fixture_heap_deallocate".to_owned())
+                .chain(
+                    FIXED_HEAP_EQUAL_COHORTS
+                        .iter()
+                        .flat_map(|(option, scalar)| {
+                            [option.replace("Cs_", "Cs1_"), scalar.replace("Cs_", "Cs1_")]
+                        }),
+                )
+                .collect();
+            let addresses: Vec<_> = std::iter::once(0x1000)
+                .chain(
+                    OPTIONS
+                        .into_iter()
+                        .zip(SCALARS)
+                        .flat_map(|(option, scalar)| [option, scalar]),
+                )
+                .collect();
+            let sizes: Vec<_> = std::iter::once(2690)
+                .chain(FIXED_HEAP_EQUAL_COHORTS.iter().flat_map(|_| [124, 22]))
+                .collect();
             let mut strings = vec![0];
             for (index, name) in names.iter().enumerate() {
                 let row = 0x6000 + (index + 1) * 24;
@@ -41485,7 +50869,7 @@ mod tests {
                 strings.push(0);
             }
             bytes[0x5000..0x5000 + strings.len()].copy_from_slice(&strings);
-            for (option, scalar) in [(0x2000, 0x2100), (0x2200, 0x2300)] {
+            for (option, scalar) in OPTIONS.into_iter().zip(SCALARS) {
                 let mut body = fixed_hex(DEV_FIXED_HEAP_HEX_23);
                 relative(&mut body, option, 105, 109, scalar);
                 bytes[option as usize..option as usize + body.len()].copy_from_slice(&body);
@@ -41496,7 +50880,7 @@ mod tests {
                 let row = 0x6500 + index * 24;
                 put(&mut bytes, row, 8, slot);
                 put(&mut bytes, row + 8, 8, 8);
-                put(&mut bytes, row + 16, 8, [0x2000, 0x2200][cohort]);
+                put(&mut bytes, row + 16, 8, OPTIONS[cohort]);
             }
             // One null dynamic symbol. Mutation controls expose a real provider.
             for (index, word) in [1, 1, 0, 0, 0].into_iter().enumerate() {
@@ -41523,7 +50907,15 @@ mod tests {
                 (1, 1, 6, 0x1000, 0x3000, 0, 0),
                 (2, 1, 3, 0x4000, 0x1000, 0, 0),
                 (3, 3, 0, 0x5000, strings.len() as u64, 0, 0),
-                (4, 2, 0, 0x6000, 24 * 6, 3, 24),
+                (
+                    4,
+                    2,
+                    0,
+                    0x6000,
+                    24 * (2 + FIXED_HEAP_EQUAL_COHORTS.len() as u64 * 2),
+                    3,
+                    24,
+                ),
                 (5, 4, 2, 0x6500, 48, 7, 24),
                 (6, 6, 3, 0x4200, 16 * 9, 3, 16),
                 (7, 11, 2, 0x6800, 48, 3, 24),
@@ -41555,9 +50947,13 @@ mod tests {
                 ),
                 ("fixed_heap_usize_equal".into(), elf.syms.get(3).unwrap()),
             ]);
-            let code = [0x1000, 0x2000, 0x2100, 0x2200, 0x2300]
-                .into_iter()
-                .zip([2690, 124, 22, 124, 22])
+            let code = std::iter::once((0x1000, 2690))
+                .chain(
+                    OPTIONS
+                        .into_iter()
+                        .zip(SCALARS)
+                        .flat_map(|(option, scalar)| [(option, 124), (scalar, 22)]),
+                )
                 .map(|(address, size)| {
                     (
                         address,
@@ -41575,21 +50971,17 @@ mod tests {
             fixed_select_heap_equal_cohort(&elf, bytes, &code, &got, &mut roles)?;
             Ok(roles)
         }
-        for cohort in [0, 1] {
+        for cohort in 0..FIXED_HEAP_EQUAL_COHORTS.len() {
             let bytes = fixture(cohort);
             let selected = select(&bytes, false).unwrap();
             assert_eq!(
                 selected["fixed_heap_option_usize_equal"].st_value,
-                [0x2000, 0x2200][cohort]
+                OPTIONS[cohort]
             );
-            assert_eq!(
-                selected["fixed_heap_usize_equal"].st_value,
-                [0x2100, 0x2300][cohort]
-            );
+            assert_eq!(selected["fixed_heap_usize_equal"].st_value, SCALARS[cohort]);
             assert!(select(&bytes, true).is_err());
             for (offset, width, value) in [
                 (0x4000, 8, 1),
-                (0x6528, 8, [0x2200, 0x2000][cohort]),
                 (0x6508, 8, 6),
                 (64 + 4 * 56 + 40, 8, 0x800),
                 (64 + 56 + 4, 4, 4),
@@ -41603,17 +50995,30 @@ mod tests {
                     "accepted cohort metadata mutation {offset:#x}"
                 );
             }
-            let option = [0x2000, 0x2200][cohort];
-            let scalar = [0x2100, 0x2300][cohort];
-            let mut cross = bytes.clone();
-            relative(
-                &mut cross[option as usize..option as usize + 124],
-                option,
-                105,
-                109,
-                [0x2300, 0x2100][cohort],
-            );
-            assert!(select(&cross, false).is_err());
+            let option = OPTIONS[cohort];
+            let scalar = SCALARS[cohort];
+            for other_cohort in 0..FIXED_HEAP_EQUAL_COHORTS.len() {
+                if other_cohort == cohort {
+                    continue;
+                }
+                let mut disagreeing_got = bytes.clone();
+                put(&mut disagreeing_got, 0x6528, 8, OPTIONS[other_cohort]);
+                assert!(select(&disagreeing_got, false).is_err());
+                let mut cross = bytes.clone();
+                relative(
+                    &mut cross[option as usize..option as usize + 124],
+                    option,
+                    105,
+                    109,
+                    SCALARS[other_cohort],
+                );
+                assert!(select(&cross, false).is_err());
+                let mut duplicate = bytes.clone();
+                let row = 0x6000 + (2 + cohort * 2) * 24;
+                let other = 0x6000 + (2 + other_cohort * 2) * 24;
+                duplicate[other..other + 4].copy_from_slice(&bytes[row..row + 4]);
+                assert!(select(&duplicate, false).is_err());
+            }
             for address in [option, scalar] {
                 let mut bad = bytes.clone();
                 bad[address as usize] ^= 1;
@@ -41633,11 +51038,7 @@ mod tests {
                         "implsj"
                     },
                     "2eq",
-                    if cohort == 0 {
-                        "regex_syntax"
-                    } else {
-                        "safeptrace"
-                    },
+                    ORIGINS[cohort],
                 ] {
                     let mut bad = bytes.clone();
                     let offset = name + spelling.find(pattern).unwrap() + pattern.len() - 1;
@@ -41653,10 +51054,6 @@ mod tests {
             exposed[0x6818..0x6830].copy_from_slice(&bytes[row..row + 24]);
             put(&mut exposed, 0x6a04, 4, 2);
             assert!(select(&exposed, false).is_err());
-            let mut duplicate = bytes.clone();
-            let other = 0x6000 + (4 - cohort * 2) * 24;
-            duplicate[other..other + 4].copy_from_slice(&bytes[row..row + 4]);
-            assert!(select(&duplicate, false).is_err());
             // An inactive selector does not admit a different caller body:
             // the unchanged complete production recipe must still refuse it.
             let mut bad = bytes.clone();
@@ -41766,29 +51163,117 @@ mod tests {
             }
             bytes
         }
+        // The OFF native methods are required compiler-selected identities,
+        // not optional helpers. Replace one required synthetic symbol so its
+        // absence, unknown ordinal and ON/OFF duplicates exercise the actual
+        // production cardinality check rather than only name selection.
+        fn replacing_required_patch_role(role: &str, extra: &[(&str, u8)]) -> Vec<u8> {
+            let mut bytes = elf_symbols(extra);
+            let index = FIXED_REQUIRED_ROLES
+                .iter()
+                .position(|name| *name == role)
+                .unwrap();
+            // The fixed fixture's first five entries are the required roles.
+            // Remove this one function before supplying the measured variant.
+            bytes[0x2000 + 24 * (index + 1) + 4] = sym::STT_NOTYPE;
+            bytes
+        }
+        for (role, method) in [
+            ("fixed_patch_alloc", "5alloc"),
+            ("fixed_patch_alloc_zeroed", "12alloc_zeroed"),
+            ("fixed_patch_dealloc", "7dealloc"),
+            ("fixed_patch_realloc", "7realloc"),
+        ] {
+            let old = FIXED_EMITTED_ROLE_SYMBOLS
+                .iter()
+                .find(|(name, _)| *name == role)
+                .unwrap()
+                .1
+                .replace("Cs_", "Cs1_");
+            assert!(old.contains("Xs3_") && old.ends_with(method));
+            let new = old.replacen("Xs3_", "Xs2_", 1);
+            for name in [&old, &new] {
+                let bytes = replacing_required_patch_role(role, &[(name, sym::STB_LOCAL)]);
+                let roles = fixed_role_symbols(&Elf::parse(&bytes).unwrap()).unwrap();
+                assert_eq!(fixed_emitted_role(name), Some(role));
+                assert_eq!(roles.len(), FIXED_REQUIRED_ROLES.len());
+                assert_eq!(roles[role].st_bind(), sym::STB_LOCAL);
+            }
+            for extras in [
+                vec![],
+                vec![(new.as_str(), sym::STB_GLOBAL)],
+                vec![(new.as_str(), sym::STB_WEAK)],
+                vec![
+                    (old.as_str(), sym::STB_LOCAL),
+                    (new.as_str(), sym::STB_LOCAL),
+                ],
+                vec![
+                    (new.as_str(), sym::STB_LOCAL),
+                    (old.as_str(), sym::STB_LOCAL),
+                ],
+                vec![
+                    (new.as_str(), sym::STB_LOCAL),
+                    (new.as_str(), sym::STB_LOCAL),
+                ],
+            ] {
+                let bytes = replacing_required_patch_role(role, &extras);
+                assert!(fixed_role_symbols(&Elf::parse(&bytes).unwrap()).is_err());
+            }
+            // No general impl-ordinal, allocator, trait, method, module or
+            // originating-crate pattern may authorize these required roles.
+            for wrong in [
+                new.replace("Xs2_", "Xs1_"),
+                new.replace("Xs2_", "Xs4_"),
+                new.replace("Xs2_", "Xs9_"),
+                new.replace("26FixedPrivatePatchAllocator", "21PrivatePatchAllocator"),
+                new.replace("11GlobalAlloc", "10GuestAlloc"),
+                new.strip_suffix(method).unwrap().to_owned() + "11not_allowed",
+                new.replace("11patch_alloc", "10tool_alloc"),
+                new.replace("16reverie_liteinst", "9untrusted"),
+            ] {
+                assert_ne!(new, wrong);
+                assert_ne!(fixed_emitted_role(&wrong), Some(role));
+                let bytes = replacing_required_patch_role(role, &[(&wrong, sym::STB_LOCAL)]);
+                assert!(fixed_role_symbols(&Elf::parse(&bytes).unwrap()).is_err());
+            }
+            // Keeping the original required ON symbol must not allow an OFF
+            // alias to coexist at another address and choose an arbitrary one.
+            let bytes = elf_symbols(&[(&new, sym::STB_LOCAL)]);
+            assert!(fixed_role_symbols(&Elf::parse(&bytes).unwrap()).is_err());
+        }
         // Exact observed atomic helper spellings feed the same production
         // role census. These controls qualify selection only; existing full
         // provider/switch/readonly/constant-order/GOT mutation tests stay.
-        for (role, old, new) in [
+        for (role, old, new, crate_name) in [
             (
                 "_RINvNtNtCs_4core4sync6atomic11atomic_loadhECs_9once_cell",
                 "_RINvNtNtCs_4core4sync6atomic11atomic_loadhECs_9once_cell",
                 "_RINvNtNtCs_4core4sync6atomic11atomic_loadhECs_11parking_lot",
+                "11parking_lot",
             ),
             (
                 "fixed_heap_atomic_compare_u8",
                 "_RINvNtNtCs_4core4sync6atomic28atomic_compare_exchange_weakhECs_12futures_util",
                 "_RINvNtNtCs_4core4sync6atomic28atomic_compare_exchange_weakhECs_11parking_lot",
+                "11parking_lot",
             ),
             (
                 "fixed_heap_atomic_store_u8",
                 "_RINvNtNtCs_4core4sync6atomic12atomic_storehECs_9once_cell",
                 "_RINvNtNtCs_4core4sync6atomic12atomic_storehECs_11parking_lot",
+                "11parking_lot",
             ),
             (
                 "_RINvNtNtCs_4core4sync6atomic12atomic_storejECs_3nix",
                 "_RINvNtNtCs_4core4sync6atomic12atomic_storejECs_3nix",
                 "_RINvNtNtCs_4core4sync6atomic12atomic_storejECs_11parking_lot",
+                "11parking_lot",
+            ),
+            (
+                "_RINvNtNtCs_4core4sync6atomic23atomic_compare_exchangejECs_3log",
+                "_RINvNtNtCs_4core4sync6atomic23atomic_compare_exchangejECs_3log",
+                "_RINvNtNtCs_4core4sync6atomic23atomic_compare_exchangejECs_12futures_core",
+                "12futures_core",
             ),
         ] {
             let old = old.replace("Cs_", "Cs1_");
@@ -41818,7 +51303,7 @@ mod tests {
             for wrong in [
                 wrong_primitive,
                 new.replace("atomic_", "changed_"),
-                new.replace("11parking_lot", "9untrusted"),
+                new.replace(crate_name, "9untrusted"),
             ] {
                 assert_ne!(fixed_emitted_role(&wrong), Some(role));
                 let bytes = elf_symbols(&[(&wrong, sym::STB_LOCAL)]);
@@ -41828,8 +51313,37 @@ mod tests {
             let bytes = elf_symbols(&[]);
             let roles = fixed_role_symbols(&Elf::parse(&bytes).unwrap()).unwrap();
             assert!(fixed_private_role_code(role, &roles, &BTreeMap::new()).is_err());
+            if crate_name == "12futures_core" {
+                let bytes = elf_symbols(&[(&new, sym::STB_LOCAL)]);
+                let roles = fixed_role_symbols(&Elf::parse(&bytes).unwrap()).unwrap();
+                let target = roles[role].st_value;
+                let wrapper = "_RNvMs16_NtNtCs_4core4sync6atomicINtB6_6AtomicjE16compare_exchangeCs_15reverie_inguest";
+                let recipe = PUBLICATION_WRAPPER_RECIPES
+                    .iter()
+                    .find(|r| r.role == wrapper)
+                    .unwrap();
+                let body = fixed_hex(recipe.hex);
+                let address = 0x1ed470;
+                let slot = fixed_rip_target(address, &body, 40, 44).unwrap();
+                let targets = BTreeMap::from([(role.to_owned(), target)]);
+                let got = BTreeMap::from([(slot, target)]);
+                fixed_wrapper_recipe(wrapper, address, &body, &targets, &got, &BTreeMap::new())
+                    .unwrap();
+                let wrong_got = BTreeMap::from([(slot, target + 1)]);
+                assert!(
+                    fixed_wrapper_recipe(
+                        wrapper,
+                        address,
+                        &body,
+                        &targets,
+                        &wrong_got,
+                        &BTreeMap::new()
+                    )
+                    .is_err()
+                );
+            }
         }
-        // Exact range helpers selected by retained production caller operands.
+        // Exact typed helpers selected by retained production caller operands.
         // These miniature ELFs qualify selection only; whole-body, readonly,
         // terminal and transfer qualification remains in the existing recipes.
         for (role, old, new, primitive, method, crate_name) in [
@@ -41848,6 +51362,38 @@ mod tests {
                 "5RangejE",
                 "9end_bound",
                 "12regex_syntax",
+            ),
+            (
+                "_RNvXsk_NtNtCs_4core3ops5rangeINtB5_5RangejEINtB5_11RangeBoundsjE11start_boundCs_6ruzstd",
+                "_RNvXsk_NtNtCs_4core3ops5rangeINtB5_5RangejEINtB5_11RangeBoundsjE11start_boundCs_6ruzstd",
+                "_RNvXsk_NtNtCs_4core3ops5rangeINtB5_5RangejEINtB5_11RangeBoundsjE11start_boundCs_8tempfile",
+                "5RangejE",
+                "11start_bound",
+                "8tempfile",
+            ),
+            (
+                "fixed_heap_usize_max",
+                "_RNvYjNtNtCs_4core3cmp3Ord3maxCs_6goblin",
+                "_RNvYjNtNtCs_4core3cmp3Ord3maxCs_10serde_core",
+                "Yj",
+                "3max",
+                "10serde_core",
+            ),
+            (
+                "fixed_heap_option_usize_branch",
+                "_RNvXsJ_NtCs_4core6optionINtB5_6OptionjENtNtNtB7_3ops9try_trait3Try6branchCs_6goblin",
+                "_RNvXsJ_NtCs_4core6optionINtB5_6OptionjENtNtNtB7_3ops9try_trait3Try6branchCs_6memchr",
+                "6OptionjE",
+                "6branch",
+                "6memchr",
+            ),
+            (
+                "_RNvXsk_NtNtCs_4core3ops5rangeINtB5_5RangejEINtB5_11RangeBoundsjE9end_boundCs_6ruzstd",
+                "_RNvXsk_NtNtCs_4core3ops5rangeINtB5_5RangejEINtB5_11RangeBoundsjE9end_boundCs_6ruzstd",
+                "_RNvXsk_NtNtCs_4core3ops5rangeINtB5_5RangejEINtB5_11RangeBoundsjE9end_boundCs_8tempfile",
+                "5RangejE",
+                "9end_bound",
+                "8tempfile",
             ),
             (
                 "_RNvNvMs9_NtCs_4core3numj13unchecked_add18precondition_checkCs_6ruzstd",
@@ -41900,14 +51446,319 @@ mod tests {
                 let bytes = elf_symbols(&extras);
                 assert!(fixed_role_symbols(&Elf::parse(&bytes).unwrap()).is_err());
             }
+            if crate_name == "8tempfile" {
+                let prior = new.replace("8tempfile", "12regex_syntax");
+                let bytes = elf_symbols(&[
+                    (prior.as_str(), sym::STB_LOCAL),
+                    (new.as_str(), sym::STB_LOCAL),
+                ]);
+                assert!(fixed_role_symbols(&Elf::parse(&bytes).unwrap()).is_err());
+                let bytes = elf_symbols(&[(new.as_str(), sym::STB_WEAK)]);
+                assert!(fixed_role_symbols(&Elf::parse(&bytes).unwrap()).is_err());
+            }
             assert!(new.contains(primitive) && new.contains(method) && new.contains(crate_name));
             for wrong in [
                 new.replace(primitive, &primitive.replace('j', "m")),
-                new.replace(method, &format!("{}x", &method[..method.len() - 1])),
+                new.replace(
+                    method,
+                    &if method == "3max" {
+                        "3min".to_owned()
+                    } else {
+                        format!("{}x", &method[..method.len() - 1])
+                    },
+                ),
                 new.replace(crate_name, "9untrusted"),
                 // Another physically present helper cohort must not become an
                 // alternative merely because it has the same Rust primitive.
                 new.replace(crate_name, "8iced_x86"),
+            ] {
+                assert_ne!(wrong, new);
+                assert_ne!(fixed_emitted_role(&wrong), Some(role));
+                let bytes = elf_symbols(&[(&wrong, sym::STB_LOCAL)]);
+                let roles = fixed_role_symbols(&Elf::parse(&bytes).unwrap()).unwrap();
+                assert!(fixed_private_role_code(role, &roles, &BTreeMap::new()).is_err());
+            }
+            let bytes = elf_symbols(&[]);
+            let roles = fixed_role_symbols(&Elf::parse(&bytes).unwrap()).unwrap();
+            assert!(fixed_private_role_code(role, &roles, &BTreeMap::new()).is_err());
+            if role == "fixed_heap_usize_max" {
+                for wrong in [
+                    new.replace("10serde_core", "11miniz_oxide"),
+                    new.replace("10serde_core", "12cpp_demangle"),
+                    new.replace("3max", "3min"),
+                ] {
+                    assert_ne!(fixed_emitted_role(&wrong), Some(role));
+                    let bytes = elf_symbols(&[(&wrong, sym::STB_LOCAL)]);
+                    let roles = fixed_role_symbols(&Elf::parse(&bytes).unwrap()).unwrap();
+                    assert!(fixed_private_role_code(role, &roles, &BTreeMap::new()).is_err());
+                }
+            }
+        }
+        // The exact serde minimum is a distinct role: its goblin counterpart
+        // physically coexists ON and cannot be selected by an arbitrary alias.
+        let minimum = "_RNvYjNtNtCs_4core3cmp3Ord3minCs_10serde_core";
+        let new_minimum = minimum.replace("Cs_", "Cs1_");
+        let old_minimum = new_minimum.replace("10serde_core", "6goblin");
+        let bytes = elf_symbols(&[
+            (&old_minimum, sym::STB_LOCAL),
+            (&new_minimum, sym::STB_LOCAL),
+        ]);
+        let roles = fixed_role_symbols(&Elf::parse(&bytes).unwrap()).unwrap();
+        assert!(roles.contains_key(minimum));
+        assert!(roles.contains_key("_RNvYjNtNtCs_4core3cmp3Ord3minCs_6goblin"));
+        assert_ne!(
+            roles[minimum].st_value,
+            roles["_RNvYjNtNtCs_4core3cmp3Ord3minCs_6goblin"].st_value
+        );
+        for extras in [
+            vec![
+                (new_minimum.as_str(), sym::STB_LOCAL),
+                (new_minimum.as_str(), sym::STB_LOCAL),
+            ],
+            vec![(new_minimum.as_str(), sym::STB_GLOBAL)],
+            vec![(new_minimum.as_str(), sym::STB_WEAK)],
+        ] {
+            let bytes = elf_symbols(&extras);
+            assert!(fixed_role_symbols(&Elf::parse(&bytes).unwrap()).is_err());
+        }
+        for names in [
+            vec![],
+            vec![new_minimum.replace("Yj", "Ym")],
+            vec![new_minimum.replace("3min", "3max")],
+            vec![new_minimum.replace("10serde_core", "9untrusted")],
+            vec![new_minimum.replace("10serde_core", "8iced_x86")],
+        ] {
+            let extra: Vec<_> = names
+                .iter()
+                .map(|name| (name.as_str(), sym::STB_LOCAL))
+                .collect();
+            let bytes = elf_symbols(&extra);
+            let roles = fixed_role_symbols(&Elf::parse(&bytes).unwrap()).unwrap();
+            assert!(!roles.contains_key(minimum));
+            assert!(fixed_private_role_code(minimum, &roles, &BTreeMap::new()).is_err());
+        }
+        let minimum_recipe = FIXED_WRAPPER_RECIPES
+            .iter()
+            .find(|recipe| recipe.role == minimum)
+            .unwrap();
+        let body = fixed_hex(minimum_recipe.hex);
+        assert_eq!(body.len(), 95);
+        fixed_wrapper_recipe(
+            minimum,
+            0x3000,
+            &body,
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+        )
+        .unwrap();
+        for offset in 0..body.len() {
+            let mut wrong = body.clone();
+            wrong[offset] ^= 1;
+            assert!(
+                fixed_wrapper_recipe(
+                    minimum,
+                    0x3000,
+                    &wrong,
+                    &BTreeMap::new(),
+                    &BTreeMap::new(),
+                    &BTreeMap::new()
+                )
+                .is_err()
+            );
+        }
+        let variants: Vec<_> = FIXED_WRAPPER_RECIPES
+            .iter()
+            .filter(|recipe| {
+                recipe.operands.iter().any(|op| op.target == minimum)
+                    || (recipe.role == "fixed_patch_alloc_zeroed"
+                        && recipe.operands.iter().any(|op| {
+                            op.target == "_RNvMNtNtCs_4core3ptr7mut_ptrOh7is_nullCs_7futures"
+                        }))
+            })
+            .collect();
+        assert_eq!(variants.len(), 4);
+        for recipe in variants {
+            let targets: BTreeMap<_, _> = recipe
+                .operands
+                .iter()
+                .enumerate()
+                .map(|(index, op)| (op.target.to_owned(), 0x100000 + index as u64 * 0x1000))
+                .collect();
+            let address = 0x1000;
+            let mut body = fixed_hex(recipe.hex);
+            let mut got = BTreeMap::new();
+            let mut masked = BTreeSet::new();
+            for (index, op) in recipe.operands.iter().enumerate() {
+                let expected = targets[op.target] + op.target_offset;
+                let resolved = if op.got {
+                    let slot = 0x400000 + index as u64 * 8;
+                    got.insert(slot, expected);
+                    slot
+                } else {
+                    expected
+                };
+                let displacement =
+                    i32::try_from(resolved as i64 - (address + op.next as u64) as i64).unwrap();
+                body[op.displacement..op.displacement + 4]
+                    .copy_from_slice(&displacement.to_le_bytes());
+                masked.extend(op.displacement..op.displacement + 4);
+            }
+            let edges = fixed_wrapper_recipe(
+                recipe.role,
+                address,
+                &body,
+                &targets,
+                &got,
+                &BTreeMap::new(),
+            )
+            .unwrap();
+            assert_eq!(edges.len(), recipe.transfers.len());
+            for op in recipe.operands {
+                let slot = fixed_rip_target(address, &body, op.displacement, op.next).unwrap();
+                let mut wrong = got.clone();
+                let mut wrong_body = body.clone();
+                if op.got {
+                    wrong.insert(slot, targets[op.target] + 1);
+                } else {
+                    let displacement = i32::from_le_bytes(
+                        body[op.displacement..op.displacement + 4]
+                            .try_into()
+                            .unwrap(),
+                    );
+                    wrong_body[op.displacement..op.displacement + 4]
+                        .copy_from_slice(&(displacement + 1).to_le_bytes());
+                }
+                assert!(
+                    fixed_wrapper_recipe(
+                        recipe.role,
+                        address,
+                        &wrong_body,
+                        &targets,
+                        &wrong,
+                        &BTreeMap::new()
+                    )
+                    .is_err()
+                );
+            }
+            let peer_op = recipe
+                .operands
+                .iter()
+                .find(|op| op.target == minimum || op.target == "fixed_zero_bytes")
+                .unwrap();
+            let null_op = recipe
+                .operands
+                .iter()
+                .find(|op| op.target.contains("7is_null"))
+                .unwrap();
+            let peer_slot =
+                fixed_rip_target(address, &body, peer_op.displacement, peer_op.next).unwrap();
+            let null_slot =
+                fixed_rip_target(address, &body, null_op.displacement, null_op.next).unwrap();
+            let mut swapped = got.clone();
+            swapped.insert(peer_slot, targets[null_op.target]);
+            swapped.insert(null_slot, targets[peer_op.target]);
+            assert!(
+                fixed_wrapper_recipe(
+                    recipe.role,
+                    address,
+                    &body,
+                    &targets,
+                    &swapped,
+                    &BTreeMap::new()
+                )
+                .is_err()
+            );
+            for missing in [peer_op.target, null_op.target] {
+                let mut wrong_targets = targets.clone();
+                wrong_targets.remove(missing);
+                assert!(
+                    fixed_wrapper_recipe(
+                        recipe.role,
+                        address,
+                        &body,
+                        &wrong_targets,
+                        &got,
+                        &BTreeMap::new()
+                    )
+                    .is_err()
+                );
+            }
+            for offset in (0..body.len()).filter(|offset| !masked.contains(offset)) {
+                let mut wrong = body.clone();
+                wrong[offset] ^= 1;
+                assert!(
+                    fixed_wrapper_recipe(
+                        recipe.role,
+                        address,
+                        &wrong,
+                        &targets,
+                        &got,
+                        &BTreeMap::new()
+                    )
+                    .is_err()
+                );
+            }
+        }
+        // These exact unit/ControlFlow providers are selected by the complete
+        // current callers. Symbol census grants no machine-code admission.
+        for (role, primitive, wrong_primitive, method) in [
+            (
+                "_RNvXNtNtCs_4core3cmp5implsuNtB4_9PartialEq2eqCs_6goblin",
+                "5implsu",
+                "5implsj",
+                "2eq",
+            ),
+            (
+                "_RNvXNtNtCs_4core3ops12control_flowINtB2_11ControlFlowuENtNtB4_9try_trait3Try11from_outputCs_6goblin",
+                "11ControlFlowuE",
+                "11ControlFlowjE",
+                "11from_output",
+            ),
+            (
+                "_RNvXNtNtCs_4core3ops12control_flowINtB2_11ControlFlowuENtNtB4_9try_trait3Try6branchCs_6goblin",
+                "11ControlFlowuE",
+                "11ControlFlowjE",
+                "6branch",
+            ),
+            (
+                "_RNvXs9_NtNtCs_4core3ops12control_flowINtB5_11ControlFlowuENtNtB9_3cmp9PartialEq2eqCs_6goblin",
+                "11ControlFlowuE",
+                "11ControlFlowjE",
+                "2eq",
+            ),
+            (
+                "_RNvXs_NtNtCs_4core3ops12control_flowINtB4_11ControlFlowuEINtNtB6_9try_trait12FromResidualIBK_uNtNtB8_7convert10InfallibleEE13from_residualCs_6goblin",
+                "11ControlFlowuE",
+                "11ControlFlowjE",
+                "13from_residual",
+            ),
+        ] {
+            let old = role.replace("Cs_", "Cs1_");
+            let new = old.replace("6goblin", "10serde_core");
+            for name in [&old, &new] {
+                let bytes = elf_symbols(&[(name, sym::STB_LOCAL)]);
+                let roles = fixed_role_symbols(&Elf::parse(&bytes).unwrap()).unwrap();
+                assert_eq!(fixed_emitted_role(name), Some(role));
+                assert!(roles.contains_key(role));
+            }
+            for extras in [
+                vec![
+                    (old.as_str(), sym::STB_LOCAL),
+                    (new.as_str(), sym::STB_LOCAL),
+                ],
+                vec![(new.as_str(), sym::STB_GLOBAL)],
+                vec![(new.as_str(), sym::STB_WEAK)],
+            ] {
+                let bytes = elf_symbols(&extras);
+                assert!(fixed_role_symbols(&Elf::parse(&bytes).unwrap()).is_err());
+            }
+            assert!(new.contains(primitive) && new.contains(method));
+            for wrong in [
+                new.replace(primitive, wrong_primitive),
+                new.replace(method, &format!("{}x", &method[..method.len() - 1])),
+                new.replace("10serde_core", "9untrusted"),
+                new.replace("10serde_core", "8iced_x86"),
             ] {
                 assert_ne!(wrong, new);
                 assert_ne!(fixed_emitted_role(&wrong), Some(role));
@@ -48112,6 +57963,412 @@ mod tests {
         detcore_keyed_normal_publication_controls();
     }
 
+    // Whole-body/operand controls from actual native OFF ELF c4157195. These
+    // data-only recipe controls neither manufacture source authority nor qualify
+    // the retained ELF; production also requires its current-build and census.
+    #[test]
+    fn observed_no_installation_scope_allocation101_whole_recipe() {
+        let address = 0xb38860;
+        let bytes = fixed_hex(
+            "415653504889d34989f6ff1530293b004885c07427488b702040f6c60775274885f67434bf010000004c89f64889da4883c4085b415eff2594293b0031c04883c4085b415ec3488d1553fa3700bf08000000ff1598073b00488d3d41fa3700ff15231a3b00",
+        );
+        assert_eq!(bytes.len(), 101);
+        assert_eq!(
+            sha256(&bytes),
+            "b62a329a92dc5b8197133bad3e35e45e1b828beeb3e9c055761b2a448d0191af"
+        );
+        let filename = b"/fixture/src/.cargo/git/checkouts/reverie-2fc770f7a9c80803/840aebe/reverie-liteinst/src/patch_alloc.rs".to_vec();
+        assert_eq!(filename.len(), 102);
+        let context = BTreeMap::from([(
+            "rv:reverie-liteinst/src/patch_alloc.rs".into(),
+            filename.clone(),
+        )]);
+        let readonly = BTreeMap::from([
+            (
+                0xeb8300,
+                fixed_hex("000000000000000066000000000000006c00000018000000"),
+            ),
+            (0x8892a, filename),
+        ]);
+        let targets = BTreeMap::from([
+            ("fixed_arena_backing".into(), 0xcd0310),
+            ("fixed_tool_alloc".into(), 0xceb420),
+            ("fixed_heap_panic_misaligned".into(), 0xe8cd00),
+            ("fixed_panic_null_reference".into(), 0xe8cce7),
+            (
+                "fixed_detcore_validate_fixed_patch_alloc_207_data".into(),
+                0xeb8300,
+            ),
+            (
+                "fixed_detcore_validate_fixed_patch_alloc_228_data".into(),
+                0xeb8300,
+            ),
+            (
+                "fixed_detcore_validate_fixed_patch_alloc_207_data_file".into(),
+                0x8892a,
+            ),
+            (
+                "fixed_detcore_validate_fixed_patch_alloc_228_data_file".into(),
+                0x8892a,
+            ),
+        ]);
+        let got = BTreeMap::from([
+            (0xeeb1a0, 0xcd0310),
+            (0xeeb230, 0xceb420),
+            (0xee9050, 0xe8cd00),
+            (0xeea2e8, 0xe8cce7),
+        ]);
+        let check = |body: &[u8],
+                     ts: &BTreeMap<String, u64>,
+                     gs: &BTreeMap<u64, u64>,
+                     ro: &BTreeMap<u64, Vec<u8>>,
+                     ctx: &BTreeMap<String, Vec<u8>>| {
+            fixed_allocation101_recipe(
+                address,
+                body,
+                DetcoreRecipeBindings {
+                    targets: ts,
+                    got: gs,
+                    readonly: ro,
+                    context: ctx,
+                },
+            )
+        };
+        let edges = check(&bytes, &targets, &got, &readonly, &context).unwrap();
+        assert_eq!(
+            edges,
+            [
+                ConstructorTransfer {
+                    instruction: address + 10,
+                    target: 0xcd0310,
+                    local_got_slot: Some(0xeeb1a0)
+                },
+                ConstructorTransfer {
+                    instruction: address + 54,
+                    target: 0xceb420,
+                    local_got_slot: Some(0xeeb230)
+                },
+                ConstructorTransfer {
+                    instruction: address + 82,
+                    target: 0xe8cd00,
+                    local_got_slot: Some(0xee9050)
+                },
+                ConstructorTransfer {
+                    instruction: address + 95,
+                    target: 0xe8cce7,
+                    local_got_slot: Some(0xeea2e8)
+                },
+            ]
+        );
+        let instructions: Vec<_> = [
+            (0, 2),
+            (2, 1),
+            (3, 1),
+            (4, 3),
+            (7, 3),
+            (10, 6),
+            (16, 3),
+            (19, 2),
+            (21, 4),
+            (25, 4),
+            (29, 2),
+            (31, 3),
+            (34, 2),
+            (36, 5),
+            (41, 3),
+            (44, 3),
+            (47, 4),
+            (51, 1),
+            (52, 2),
+            (54, 6),
+            (60, 2),
+            (62, 4),
+            (66, 1),
+            (67, 2),
+            (69, 1),
+            (70, 7),
+            (77, 5),
+            (82, 6),
+            (88, 7),
+            (95, 6),
+        ]
+        .into_iter()
+        .map(|(offset, size)| EncodedConstructorInstruction {
+            address: address + offset as u64,
+            bytes: bytes[offset..offset + size].to_vec(),
+        })
+        .collect();
+        let qualify = |code: &[EncodedConstructorInstruction]| {
+            fixed_no_scope_qualified_operation(
+                "fixed_patch_alloc",
+                address,
+                (&bytes, code),
+                DetcoreRecipeBindings {
+                    targets: &targets,
+                    got: &got,
+                    readonly: &readonly,
+                    context: &context,
+                },
+                false,
+            )
+        };
+        let witness = qualify(&instructions).unwrap();
+        assert_eq!(
+            witness.kind,
+            AuthenticatedDetcoreOperationKind::NoInstallationScopeAlloc101
+        );
+        for index in 0..instructions.len() {
+            let mut bad = instructions.clone();
+            bad.remove(index);
+            assert!(
+                qualify(&bad).is_err(),
+                "missing measured instruction{index}"
+            );
+        }
+        for index in 0..bytes.len() {
+            let mut bad = bytes.clone();
+            bad[index] ^= 1;
+            assert!(
+                check(&bad, &targets, &got, &readonly, &context).is_err(),
+                "changed whole-body byte{index}"
+            );
+        }
+        assert!(check(&bytes[..100], &targets, &got, &readonly, &context).is_err());
+        let mut extra = bytes.clone();
+        extra.push(0x90);
+        assert!(check(&extra, &targets, &got, &readonly, &context).is_err());
+        for key in targets.keys() {
+            let mut bad = targets.clone();
+            bad.remove(key);
+            assert!(
+                check(&bytes, &bad, &got, &readonly, &context).is_err(),
+                "missing typed binding{key}"
+            );
+            let mut bad = targets.clone();
+            *bad.get_mut(key).unwrap() ^= 1;
+            assert!(
+                check(&bytes, &bad, &got, &readonly, &context).is_err(),
+                "wrong typed binding{key}"
+            );
+        }
+        // A correctly encoded call cannot substitute the publication allocator
+        // or either panic provider for the fixed tool allocator destination.
+        for wrong in [0xcd0310, 0xe8cd00, 0xe8cce7] {
+            let mut bad = got.clone();
+            bad.insert(0xeeb230, wrong);
+            assert!(check(&bytes, &targets, &bad, &readonly, &context).is_err());
+        }
+        for slot in got.keys() {
+            let mut bad = got.clone();
+            bad.remove(slot);
+            assert!(check(&bytes, &targets, &bad, &readonly, &context).is_err());
+            let mut bad = got.clone();
+            *bad.get_mut(slot).unwrap() ^= 1;
+            assert!(check(&bytes, &targets, &bad, &readonly, &context).is_err());
+        }
+        for (location, payload) in &readonly {
+            for index in 0..payload.len() {
+                let mut bad = readonly.clone();
+                bad.get_mut(location).unwrap()[index] ^= 1;
+                assert!(
+                    check(&bytes, &targets, &got, &bad, &context).is_err(),
+                    "changed readonly byte{location:#x}/{index}"
+                );
+            }
+            let mut bad = readonly.clone();
+            bad.remove(location);
+            assert!(check(&bytes, &targets, &got, &bad, &context).is_err());
+        }
+        assert!(check(&bytes, &targets, &got, &readonly, &BTreeMap::new()).is_err());
+        let mut wrong_context = context.clone();
+        wrong_context.values_mut().next().unwrap()[0] ^= 1;
+        assert!(check(&bytes, &targets, &got, &readonly, &wrong_context).is_err());
+        let bindings = || DetcoreRecipeBindings {
+            targets: &targets,
+            got: &got,
+            readonly: &readonly,
+            context: &context,
+        };
+        assert!(
+            fixed_detcore_validate_recipe("fixed_patch_alloc", address, &bytes, bindings(), 0xe8)
+                .is_err(),
+            "new no-scope body must not enter a historical TLS-bearing recipe"
+        );
+        let historical = DETCORE_VALIDATE_TEMPLATES
+            .iter()
+            .find(|template| {
+                template.role == "fixed_patch_alloc" && fixed_hex(template.hex).len() == 241
+            })
+            .unwrap();
+        assert!(
+            fixed_validate_recipe_in_scope(
+                "fixed_patch_alloc",
+                address,
+                &fixed_hex(historical.hex),
+                bindings(),
+                None
+            )
+            .is_err(),
+            "no-scope selection must not remove the cell requirement from the old241B body"
+        );
+    }
+
+    // Entire body and both measured typed bindings from standalone OFF ELF
+    // fb366892. Recipe/census controls only; no invented verified-source context.
+    #[test]
+    fn observed_standalone_no_installation_scope_whole_recipe() {
+        let address = 0x430a0;
+        let bytes = fixed_hex(
+            "415653504889d34989f6ff1548cd04004885c0741f48837820007418bf010000004c89f64889da4883c4085b415eff2564cd040031c04883c4085b415ec3",
+        );
+        let targets = BTreeMap::from([
+            ("fixed_arena_backing".into(), 0x4b8a0),
+            ("fixed_tool_alloc".into(), 0x4df70),
+        ]);
+        let got = BTreeMap::from([(0x8fdf8, 0x4b8a0), (0x8fe38, 0x4df70)]);
+        let check = |body: &[u8], targets: &BTreeMap<String, u64>, got: &BTreeMap<u64, u64>| {
+            fixed_standalone_no_scope_allocation_recipe(address, body, targets, got)
+        };
+        let edges = check(&bytes, &targets, &got).unwrap();
+        assert_eq!(
+            edges,
+            [
+                ConstructorTransfer {
+                    instruction: address + 10,
+                    target: 0x4b8a0,
+                    local_got_slot: Some(0x8fdf8)
+                },
+                ConstructorTransfer {
+                    instruction: address + 46,
+                    target: 0x4df70,
+                    local_got_slot: Some(0x8fe38)
+                }
+            ]
+        );
+        assert!(standalone_no_scope_allocation_shape(&bytes));
+        assert!(!allocation101_shape(&bytes));
+        assert!(!standalone_no_scope_allocation_shape(&fixed_hex(
+            ALLOCATION101_BYTES.hex
+        )));
+        let instructions: Vec<_> = [
+            (0, 2),
+            (2, 1),
+            (3, 1),
+            (4, 3),
+            (7, 3),
+            (10, 6),
+            (16, 3),
+            (19, 2),
+            (21, 5),
+            (26, 2),
+            (28, 5),
+            (33, 3),
+            (36, 3),
+            (39, 4),
+            (43, 1),
+            (44, 2),
+            (46, 6),
+            (52, 2),
+            (54, 4),
+            (58, 1),
+            (59, 2),
+            (61, 1),
+        ]
+        .into_iter()
+        .map(|(offset, size)| EncodedConstructorInstruction {
+            address: address + offset as u64,
+            bytes: bytes[offset..offset + size].to_vec(),
+        })
+        .collect();
+        let census = |instructions: &[EncodedConstructorInstruction]| {
+            fixed_census_transfers(instructions, address, &bytes, &edges, &got, false)
+        };
+        census(&instructions).unwrap();
+        for index in 0..instructions.len() {
+            let mut bad = instructions.clone();
+            bad.remove(index);
+            assert!(census(&bad).is_err(), "missing instruction {index}");
+            let mut bad = instructions.clone();
+            bad.insert(index, bad[index].clone());
+            assert!(census(&bad).is_err(), "duplicate instruction {index}");
+            let mut bad = instructions.clone();
+            bad[index].bytes[0] ^= 1;
+            assert!(census(&bad).is_err(), "changed instruction {index}");
+        }
+        for index in 0..bytes.len() {
+            let mut bad = bytes.clone();
+            bad[index] ^= 1;
+            assert!(
+                check(&bad, &targets, &got).is_err(),
+                "complete standalone62 byte {index}"
+            );
+        }
+        assert!(check(&bytes[..61], &targets, &got).is_err());
+        let mut longer = bytes.clone();
+        longer.push(0x90);
+        assert!(check(&longer, &targets, &got).is_err());
+        for key in targets.keys() {
+            let mut bad = targets.clone();
+            bad.remove(key);
+            assert!(
+                check(&bytes, &bad, &got).is_err(),
+                "missing typed target {key}"
+            );
+            for replacement in [
+                0,
+                targets["fixed_arena_backing"],
+                targets["fixed_tool_alloc"],
+                0xfeed,
+            ] {
+                if replacement == targets[key] {
+                    continue;
+                }
+                let mut bad = targets.clone();
+                bad.insert(key.clone(), replacement);
+                assert!(
+                    check(&bytes, &bad, &got).is_err(),
+                    "wrong typed target {key}/{replacement:#x}"
+                );
+            }
+        }
+        for slot in got.keys() {
+            let mut bad = got.clone();
+            bad.remove(slot);
+            assert!(
+                check(&bytes, &targets, &bad).is_err(),
+                "missing protected GOT {slot:#x}"
+            );
+            for target in [
+                0,
+                targets["fixed_arena_backing"],
+                targets["fixed_tool_alloc"],
+                0xfeed,
+            ] {
+                if target == got[slot] {
+                    continue;
+                }
+                let mut bad = got.clone();
+                bad.insert(*slot, target);
+                assert!(
+                    check(&bytes, &targets, &bad).is_err(),
+                    "foreign/swapped GOT target {slot:#x}/{target:#x}"
+                );
+            }
+        }
+        assert!(
+            fixed_wrapper_recipe(
+                "fixed_patch_alloc",
+                address,
+                &bytes,
+                &targets,
+                &got,
+                &BTreeMap::new()
+            )
+            .is_err(),
+            "new no-scope body never weakens a historical TLS-bearing wrapper recipe"
+        );
+    }
+
     // Literal extents and independently retained bindings from gate40 ELF d86724af.
     // These recipe/schema controls do not claim physical qualification or execution.
     #[test]
@@ -49463,6 +59720,7 @@ pub mod private_static {
                         "metadata".into(),
                         "--locked".into(),
                         "--offline".into(),
+                        "--no-default-features".into(),
                         "--format-version=1".into(),
                         "--manifest-path".into(),
                         manifest.to_str().ok_or("non-UTF8 manifest")?.into(),
@@ -49602,6 +59860,7 @@ pub mod private_static {
                         "rustc".into(),
                         "--locked".into(),
                         "--offline".into(),
+                        "--no-default-features".into(),
                         "--manifest-path".into(),
                         self.package
                             .manifest
