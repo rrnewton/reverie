@@ -7,7 +7,7 @@
 // directories, pipes, sockets and nonreserved memfds use Linux syncfs, including
 // its exact writeback errno. Private synthetic storage and captured output stay
 // unsupported (ENOSYS); their host filesystem is not the guest filesystem.
-fn sync_filesystem(state: &LoadedStaticElf, raw_fd: u64, capture_output: bool) -> i64 {
+pub(super) fn sync_filesystem(state: &LoadedStaticElf, raw_fd: u64, capture_output: bool) -> i64 {
     // fs/sync.c's SYSCALL_DEFINE1(syncfs, int, fd) consumes the low int word;
     // fdget excludes O_PATH before performing any filesystem operation.
     let fd = raw_fd as libc::c_int;
@@ -76,7 +76,7 @@ fn sync_filesystem(state: &LoadedStaticElf, raw_fd: u64, capture_output: bool) -
     }
 }
 
-fn syncfs_private_memfd_name(path: &[u8]) -> bool {
+pub(super) fn syncfs_private_memfd_name(path: &[u8]) -> bool {
     let Some(name) = path
         .strip_prefix(b"/memfd:")
         .and_then(|name| name.strip_suffix(b" (deleted)"))
@@ -94,16 +94,16 @@ fn syncfs_private_memfd_name(path: &[u8]) -> bool {
 }
 
 #[cfg(any(test, feature = "test-support"))]
-type SyncfsTestHook = Box<dyn FnMut(RawFd) -> libc::c_int>;
+pub(super) type SyncfsTestHook = Box<dyn FnMut(RawFd) -> libc::c_int>;
 
 #[cfg(any(test, feature = "test-support"))]
 std::thread_local! {
-    static SYNCFS_TEST_HOOK: std::cell::RefCell<Option<SyncfsTestHook>> =
+    pub(super) static SYNCFS_TEST_HOOK: std::cell::RefCell<Option<SyncfsTestHook>> =
         std::cell::RefCell::new(None);
 }
 
 #[cfg(test)]
-struct SyncfsTestHookGuard;
+pub(super) struct SyncfsTestHookGuard;
 
 #[cfg(test)]
 impl Drop for SyncfsTestHookGuard {
@@ -115,7 +115,7 @@ impl Drop for SyncfsTestHookGuard {
 }
 
 #[cfg(test)]
-fn install_syncfs_test_hook(
+pub(super) fn install_syncfs_test_hook(
     hook: impl FnMut(RawFd) -> libc::c_int + 'static,
 ) -> SyncfsTestHookGuard {
     SYNCFS_TEST_HOOK.with(|slot| {
