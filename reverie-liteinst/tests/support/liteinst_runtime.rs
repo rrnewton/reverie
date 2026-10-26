@@ -321,6 +321,7 @@ fn qualify_runtime() -> Result<QualifiedRuntime, String> {
         ]);
         let expectation = artifact::ConsumerExpectation {
             compiled_sources: None,
+            expected_current_policy: None,
             package: &package,
             features: &features,
             profile_name: "dev",

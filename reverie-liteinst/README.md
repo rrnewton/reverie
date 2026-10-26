@@ -565,3 +565,24 @@ LiteInst-only defect; such a repeat comparison does not establish correct
 thread or process behavior. Current support is described above. The
 rejection itself is covered by `unsafe_clone_is_rejected_in_compatibility_and_strace_modes`
 and the compatibility-fork tests in `tests/strace.rs`.
+
+## Source-bound finite artifact policies
+
+The host-only `reverie-liteinst-artifact` crate validates retained ELF metadata,
+allocator and TLS instruction recipes against closed generic mechanisms. A
+consumer using the current-Cargo build adapter supplies its own package,
+workspace-role, feature, profile and evidence-label policy through
+`ConsumerPolicySpec`. The policy definition is a separate physical source
+identity, matched against independently compiled bytes by
+`VerifiedConsumerPolicy::resolve`; a serialized receipt cannot create that
+authority. `VerifiedCompiledSources::with_consumer_build` joins the policy to
+the actual successful command, complete Cargo events and selected output.
+
+The consumer retains that enriched source context through qualification,
+staging and receipt publication. Receipt verification receives the independently
+resolved current policy through `ConsumerExpectation::expected_current_policy`
+and closes its file identity after use. Policy data cannot supply custom
+instructions, offsets, masks, callbacks, fallback recipes or relaxed checks.
+These are static build/ELF qualifications, with no executed workload, runtime
+parity or whole-suite claim. Non-Cargo provenance adapters remain separate;
+ordinary evidence qualification does not acquire a universal Cargo requirement.
