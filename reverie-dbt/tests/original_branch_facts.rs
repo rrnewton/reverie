@@ -419,6 +419,16 @@ fn all_original_images_keep_prefix_and_helper_work() {
                     fs::copy(file.path(), mutant.join(file.file_name())).unwrap();
                 }
             }
+            // Preserve the native test header's relative include without copying
+            // or rebuilding the SDK in this mutant source directory.
+            let bootstrap_header = "vendor/dynamorio/core/unix/bootstrap_private_segments.h";
+            let copied_header = out.join(bootstrap_header);
+            fs::create_dir_all(copied_header.parent().unwrap()).unwrap();
+            fs::copy(
+                Path::new(env!("CARGO_MANIFEST_DIR")).join(bootstrap_header),
+                copied_header,
+            )
+            .unwrap();
             let header_path = mutant.join("branch_counter.h");
             let header = fs::read_to_string(&header_path).unwrap();
             let anchor = "  instr_set_note(instruction, (void*)branch_counter_original_note);";
