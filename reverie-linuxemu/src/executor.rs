@@ -1776,6 +1776,128 @@ mod tests {
     }
 
     #[test]
+    fn getcwd_walks_the_working_directory_at_each_call() {
+        let root = TestDir::new();
+        std::fs::create_dir(root.0.join("sub")).unwrap();
+        std::fs::create_dir(root.0.join("named (deleted)")).unwrap();
+        let mut state = test_state(&root.0);
+        let mut memory = GuestMemory::new(0, 0x2000).unwrap();
+        let root_path = std::fs::canonicalize(&root.0).unwrap();
+
+        write_c_string(&mut memory, 0x100, "sub");
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_chdir,
+                [0x100, 0, 0, 0, 0, 0]
+            ),
+            0
+        );
+        // A rename on the host moves the working directory with it, as Linux's
+        // getcwd reports for a renamed directory.
+        std::fs::rename(root.0.join("sub"), root.0.join("moved")).unwrap();
+        assert_eq!(
+            current_directory(&mut memory, &mut state),
+            root_path.join("moved")
+        );
+
+        // A removed working directory is ENOENT, before the size check.
+        std::fs::remove_dir(root.0.join("moved")).unwrap();
+        for size in [1, 0x400] {
+            assert_eq!(
+                syscall_result(
+                    &mut memory,
+                    &mut state,
+                    libc::SYS_getcwd,
+                    [0x800, size, 0, 0, 0, 0],
+                ),
+                negative_errno(libc::ENOENT),
+                "size {size}"
+            );
+        }
+
+        // A directory really named with the " (deleted)" suffix is linked, so
+        // it reports its name.
+        write_c_string(&mut memory, 0x100, root_path.to_str().unwrap());
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_chdir,
+                [0x100, 0, 0, 0, 0, 0]
+            ),
+            0
+        );
+        write_c_string(&mut memory, 0x100, "named (deleted)");
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_chdir,
+                [0x100, 0, 0, 0, 0, 0]
+            ),
+            0
+        );
+        assert_eq!(
+            current_directory(&mut memory, &mut state),
+            root_path.join("named (deleted)")
+        );
+    }
+
+    #[test]
+    fn getcwd_copies_out_the_prefix_before_a_read_only_page() {
+        let root = TestDir::new();
+        let mut state = test_state(&root.0);
+        let path = std::fs::canonicalize(&root.0).unwrap();
+        let path = path.as_os_str().as_bytes();
+        let mut buffer = SocketQueryCopyoutBuffer::new();
+        buffer.protect_page(1, libc::PROT_READ);
+        let page = PAGE_SIZE as usize;
+        assert_eq!(
+            syscall_result(
+                &mut buffer.guest,
+                &mut state,
+                libc::SYS_getcwd,
+                [PAGE_SIZE - 4, path.len() as u64 + 1, 0, 0, 0, 0],
+            ),
+            negative_errno(libc::EFAULT)
+        );
+        let mut expected = vec![0xa5; SocketQueryCopyoutBuffer::LENGTH];
+        expected[page - 4..page].copy_from_slice(&path[..4]);
+        assert_eq!(
+            buffer.bytes(),
+            expected,
+            "only the writable prefix is copied"
+        );
+
+        // The host kernel's getcwd, for this process's own working directory,
+        // copies the same prefix and fails the same way.
+        let native_cwd = std::env::current_dir().unwrap();
+        let native_cwd = native_cwd.as_os_str().as_bytes();
+        // SAFETY: the pointer names the owned mapping; the kernel checks the
+        // read-only page itself.
+        let result = unsafe {
+            libc::syscall(
+                libc::SYS_getcwd,
+                buffer.pointer(PAGE_SIZE - 4),
+                native_cwd.len() + 1,
+            )
+        };
+        assert_eq!(result, -1);
+        assert_eq!(
+            std::io::Error::last_os_error().raw_os_error(),
+            Some(libc::EFAULT)
+        );
+        // SAFETY: both pages of the owned mapping are readable.
+        let native = unsafe {
+            std::slice::from_raw_parts(buffer.native.cast::<u8>(), SocketQueryCopyoutBuffer::LENGTH)
+        };
+        assert_eq!(&native[page - 4..page], &native_cwd[..4]);
+        assert!(native[page..].iter().all(|byte| *byte == 0xa5));
+    }
+
+    #[test]
     fn chdir_rejects_missing_and_nondirectory_targets() {
         let root = TestDir::new();
         std::fs::write(root.0.join("file"), b"x").unwrap();
