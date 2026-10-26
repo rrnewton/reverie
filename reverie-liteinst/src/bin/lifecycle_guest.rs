@@ -1343,8 +1343,17 @@ fn fast_path() {
     let traps = reverie_liteinst::reverie_liteinst_site_trap_count(address);
     let hooks = reverie_liteinst::reverie_liteinst_site_hook_count(address);
     println!("calls={FAST_CALLS} traps={traps} hooks={hooks}");
-    assert_eq!(traps, 1);
-    assert_eq!(hooks, FAST_CALLS);
+    if cfg!(feature = "liteinst") {
+        assert_eq!(traps, 1);
+        assert_eq!(hooks, FAST_CALLS);
+    } else {
+        assert_eq!(traps, 0);
+        assert_eq!(hooks, 0);
+        assert_eq!(
+            reverie_liteinst::reverie_liteinst_fallback_syscall_count(libc::SYS_getpid),
+            FAST_CALLS
+        );
+    }
 }
 
 /// Returns this process's `TracerPid` from procfs; zero means no ptrace attach.
@@ -1486,7 +1495,10 @@ fn fallback_fork_stats() {
     let child = unsafe { fork() };
     assert!(child >= 0, "fork failed: {child}");
     assert_eq!(reverie_liteinst::reverie_liteinst_site_hook_count(site), 0);
-    assert_eq!(reverie_liteinst::reverie_liteinst_site_trap_count(site), 1);
+    assert_eq!(
+        reverie_liteinst::reverie_liteinst_site_trap_count(site),
+        u64::from(cfg!(feature = "liteinst"))
+    );
     assert_eq!(
         reverie_liteinst::reverie_liteinst_fallback_syscall_count(libc::SYS_fork),
         1

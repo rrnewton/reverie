@@ -390,13 +390,22 @@ rust_library(
     autocargo = {
         "cargo_toml_config": {
             "package": dict(_PUBLIC_CRATE_METADATA, documentation = "https://docs.rs/reverie-liteinst"),
+            "dependencies_override": {
+                "dependencies": {
+                    "iced-x86": {"version": "1.21.0", "optional": True, "default-features": False, "features": ["std", "decoder"]},
+                    "liteinst2": {"version": "0.1.0", "git": "https://github.com/rrnewton/liteinst2", "rev": "d64dc833418a4c265803645653b8f597d0f25060", "optional": True},
+                    "reverie-inguest": {"default-features": False, "features": ["coordinator-rpc", "rcb-clock", "launcher"]},
+                },
+            },
             "features": {
-                "default": ["preload-constructor"],
+                "default": ["liteinst"],
+                "liteinst": ["dep:iced-x86", "dep:liteinst2"],
                 "preload-constructor": [],
             },
         },
         "cargo_toml_dir": "reverie-liteinst",
     },
+    features = ["liteinst"],
     test_deps = [
         "fbsource//third-party/rust:tracing-subscriber",
     ],
@@ -405,6 +414,29 @@ rust_library(
         "fbsource//third-party/rust:iced-x86",
         "fbsource//third-party/rust:libc",
         "fbsource//third-party/rust:liteinst2",
+        "fbsource//third-party/rust:serde",
+        "fbsource//third-party/rust:tempfile",
+        "fbsource//third-party/rust:tokio",
+        "fbsource//third-party/rust:tracing",
+        ":reverie",
+        ":reverie-inguest",
+        ":reverie-rpc-transport",
+    ],
+)
+
+# The shared trap runtime uses the ordinary in-guest dependency, without site patching.
+rust_library(
+    name = "reverie-liteinst-trap-only",
+    srcs = glob(["reverie-liteinst/src/**/*.rs"]),
+    crate = "reverie_liteinst",
+    skip_autocargo_manifest = True,
+    features = [],
+    test_deps = [
+        "fbsource//third-party/rust:tracing-subscriber",
+    ],
+    deps = [
+        "fbsource//third-party/rust:bincode",
+        "fbsource//third-party/rust:libc",
         "fbsource//third-party/rust:serde",
         "fbsource//third-party/rust:tempfile",
         "fbsource//third-party/rust:tokio",

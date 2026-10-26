@@ -1,6 +1,10 @@
 //! Native Strace exact-syscall trampoline contract. Calibration is absent.
+//! These standalone legacy Strace positive controls require LiteInst. The
+//! trap-only build refuses that frontend before installation; installed Tool
+//! continuation, context and native-exec positives remain in their shared suites.
 //! The separately ignored installed-hook pkey_alloc regression remains a loss,
 //! not a passing part of this deliberately bounded read/write capability.
+#![cfg(feature = "liteinst")]
 use std::collections::BTreeMap;
 use std::ffi::OsString;
 use std::fs;
@@ -81,6 +85,7 @@ fn fixture() -> &'static Fixture {
                 "-Wl,--export-dynamic",
                 "-Wl,-z,now",
             ])
+            .arg("-DREVERIE_EXPECTED_SITE_TRAPS=2")
             .arg(sources.join("native_unpublished.c"))
             .arg(sources.join("native_unpublished.S"))
             .arg("-o")
@@ -871,7 +876,6 @@ fn native_unpublished_guest_pkey_permissions() {
 fn native_unpublished_other_number_is_refused() {
     for role in [Role::Native, Role::Strace] {
         let capture = run(role, "other-number", Action::None);
-        complete(&capture, role, &[(0, 1)], 3);
         let text = String::from_utf8(capture.stdout.clone()).unwrap();
         let value = text
             .lines()
@@ -884,6 +888,8 @@ fn native_unpublished_other_number_is_refused() {
         } else {
             assert!(value > 0);
         }
+        let expected = vec![(0, 1)];
+        complete(&capture, role, &expected, 3);
     }
 }
 
@@ -891,25 +897,21 @@ fn native_unpublished_other_number_is_refused() {
 fn native_unpublished_interior_entry_is_refused() {
     for role in [Role::Native, Role::Strace] {
         let capture = run(role, "contrast", Action::None);
-        complete(
-            &capture,
-            role,
-            &[],
-            if role == Role::Native { 2 } else { 3 },
-        );
+        let refused = role == Role::Strace;
+        complete(&capture, role, &[], if refused { 3 } else { 2 });
         let text = String::from_utf8(capture.stdout.clone()).unwrap();
-        assert!(text.contains(if role == Role::Native {
-            "POLICY name=contrast-read result=1\n"
-        } else {
+        assert!(text.contains(if refused {
             "POLICY name=contrast-read result=-95\n"
+        } else {
+            "POLICY name=contrast-read result=1\n"
         }));
     }
 }
 
 #[test]
 fn native_unpublished_original_nondefault_sigtrap_is_refused() {
-    // These are executed named refusal controls. They are never reported as
-    // admitted native-I/O parity, and neither original disposition is changed.
+    // These are named LiteInst refusal controls, never admitted native-I/O
+    // parity. Neither original disposition is changed.
     for case in ["prior-ignore", "prior-unknown"] {
         for role in [Role::Native, Role::Strace] {
             let capture = run(role, case, Action::None);
@@ -931,13 +933,13 @@ fn native_unpublished_original_nondefault_sigtrap_is_refused() {
                 &capture,
                 role,
                 &[],
-                if role == Role::Native { 3 } else { 4 },
+                if role == Role::Strace { 4 } else { 3 },
             );
             let text = String::from_utf8(capture.stdout.clone()).unwrap();
-            assert!(text.contains(if role == Role::Native {
-                "POLICY name=prior-profile-read result=1\n"
-            } else {
+            assert!(text.contains(if role == Role::Strace {
                 "POLICY name=prior-profile-read result=-95\n"
+            } else {
+                "POLICY name=prior-profile-read result=1\n"
             }));
         }
     }
@@ -1012,6 +1014,7 @@ fn native_unpublished_signal_frame_pkru_survives() {
 fn cached_refusal(case: &str, changed: bool, extra_observations: usize) {
     for role in [Role::Native, Role::Strace] {
         let capture = run(role, case, Action::None);
+        let refused = role == Role::Strace;
         complete(
             &capture,
             role,
@@ -1019,15 +1022,19 @@ fn cached_refusal(case: &str, changed: bool, extra_observations: usize) {
             if role == Role::Native { 8 } else { 11 } + extra_observations,
         );
         let text = String::from_utf8(capture.stdout.clone()).unwrap();
-        assert!(text.contains(if role == Role::Native {
-            "POLICY name=cached-after-change result=1\n"
-        } else {
+        assert!(text.contains(if refused {
             "POLICY name=cached-after-change result=-95\n"
+        } else {
+            "POLICY name=cached-after-change result=1\n"
         }));
         assert!(text.contains("OBS name=cache-initial-read result=1 expected=1\n"));
         assert!(text.contains("OBS name=cache-initial-literal result=70 expected=70\n"));
         assert!(text.contains("OBS name=cache-second-read result=1 expected=1\n"));
         assert!(text.contains("OBS name=cache-second-literal result=66 expected=66\n"));
+        if !refused {
+            assert!(text.contains("OBS name=cache-native-literal result=83 expected=83\n"));
+            assert!(text.contains("OBS name=cache-native-residual result=-11 expected=-11\n"));
+        }
         assert!(text.contains(if role == Role::Strace {
             "COUNTS present=1 trap=2 hook=0\n"
         } else {
@@ -1055,7 +1062,7 @@ fn cached_refusal(case: &str, changed: bool, extra_observations: usize) {
         );
         assert_eq!(
             traces(&capture, site),
-            if role == Role::Strace {
+            if refused {
                 vec![(0, 1), (0, 1)]
             } else {
                 vec![]
@@ -1134,18 +1141,18 @@ fn native_unpublished_key_reassignment_is_refused() {
 fn native_unpublished_fork_retains_parent_image_and_child_cache() {
     for role in [Role::Native, Role::Strace] {
         let capture = run(role, "fork-cache", Action::None);
-        complete(
-            &capture,
-            role,
-            &[],
-            if role == Role::Native { 14 } else { 15 },
-        );
+        let refused = role == Role::Strace;
+        complete(&capture, role, &[], if refused { 15 } else { 14 });
         let text = String::from_utf8(capture.stdout.clone()).unwrap();
-        assert!(text.contains(if role == Role::Native {
-            "POLICY name=fork-child-after-change result=1\n"
-        } else {
+        assert!(text.contains(if refused {
             "POLICY name=fork-child-after-change result=-95\n"
+        } else {
+            "POLICY name=fork-child-after-change result=1\n"
         }));
+        if !refused {
+            assert!(text.contains("OBS name=fork-child-native-literal result=68 expected=68\n"));
+            assert!(text.contains("OBS name=fork-child-native-residual result=-11 expected=-11\n"));
+        }
         let mut changed = ORIGINAL.to_owned();
         changed.replace_range(6..8, "d2");
         assert!(text.contains(&format!("BYTES name=fork-child-cache value={changed}\n")));
@@ -1160,7 +1167,7 @@ fn native_unpublished_fork_retains_parent_image_and_child_cache() {
         );
         assert_eq!(
             traces(&capture, site),
-            if role == Role::Strace {
+            if refused {
                 vec![(0, 1), (0, 1), (0, 1)]
             } else {
                 vec![]
