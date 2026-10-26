@@ -12,13 +12,10 @@ use super::*;
 
 pub(super) const GUEST_NOFILE_LIMIT: libc::c_int = 1 << 20;
 pub(super) const ROBUST_LIST_HEAD_SIZE: u64 = 3 * std::mem::size_of::<u64>() as u64;
-// prctl(2) PR_CAPBSET_READ option; the deterministic container runs the guest as
-// root with the full capability bounding set up to a fixed CAP_LAST_CAP so the
-// answer is host-independent.
+// prctl(2) PR_CAPBSET_READ and PR_CAPBSET_DROP options.
 pub(super) const PR_CAPBSET_READ: u64 = 23;
 pub(super) const PR_CAPBSET_DROP: u64 = 24;
 pub(super) const CAP_SYS_PTRACE: u64 = 19;
-pub(super) const GUEST_CAP_LAST_CAP: u64 = 40;
 pub(super) const LINUX_CAPABILITY_VERSION_3: u32 = 0x2008_0522;
 pub(super) const PROCESS_CLONE_TID_FLAGS: u64 = libc::CLONE_PARENT_SETTID as u64
     | libc::CLONE_CHILD_SETTID as u64
@@ -106,7 +103,6 @@ pub(super) const FALLOCATE_VALID_MODES: &[libc::c_int] = &[
     libc::FALLOC_FL_UNSHARE_RANGE | libc::FALLOC_FL_KEEP_SIZE,
     FALLOC_FL_WRITE_ZEROES,
 ];
-pub(super) const GUEST_SUPPLEMENTARY_GROUPS: &[libc::gid_t] = &[65_534];
 pub(super) const LEGACY_OPEN_FLAGS: u64 = (libc::O_ACCMODE
     | libc::O_APPEND
     | libc::O_ASYNC

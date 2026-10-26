@@ -18,6 +18,8 @@
 //! Its modules and the gVisor Sentry packages (`pkg/sentry/...`) they
 //! correspond to:
 //!
+//! - [`credentials`]: the credentials a guest starts with and their change at
+//!   exec (`kernel/auth`).
 //! - [`executor`]: syscall dispatch and the per-syscall handlers
 //!   (`syscalls/linux`), with the process lifecycle (`kernel/task_*`), the fd
 //!   table (`kernel/fd_table`), pipes, epoll, inotify and the other file
@@ -36,6 +38,7 @@
 
 #![cfg(target_arch = "x86_64")]
 
+pub mod credentials;
 pub mod elf;
 pub mod executor;
 pub mod fdinfo;

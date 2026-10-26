@@ -32,7 +32,6 @@ use crate::GuestMemory;
 use crate::SyscallRequest;
 use crate::bootstrap::BOOT_RESERVED_END;
 use crate::bootstrap::SegmentBase;
-use crate::elf::GUEST_CAPABILITY_MASK;
 use crate::elf::GuestFileIdentity;
 use crate::elf::GuestFileIdentityEntry;
 use crate::elf::IdentityTimestamps;
@@ -481,11 +480,15 @@ pub fn native_loaded_state(cwd: &std::path::Path) -> LoadedStaticElf {
         thread_group_leader_name: Arc::new(Mutex::new(*b"test\0\0\0\0\0\0\0\0\0\0\0\0")),
         thp_disabled: Arc::new(std::sync::atomic::AtomicU8::new(0)),
         keep_capabilities: false,
-        capability_effective: GUEST_CAPABILITY_MASK,
-        capability_permitted: GUEST_CAPABILITY_MASK,
+        capability_effective: crate::credentials::capability_mask(),
+        capability_permitted: crate::credentials::capability_mask(),
         capability_inheritable: 0,
-        capability_bounding: GUEST_CAPABILITY_MASK,
+        capability_bounding: crate::credentials::capability_mask(),
         capability_ambient: 0,
+        credential_root: crate::credentials::RootIds {
+            effective: true,
+            real: true,
+        },
         dumpable: true,
         process_signals: Arc::new(std::sync::Mutex::new(ProcessSignalState::default())),
         signal_transaction: Default::default(),
@@ -24114,14 +24117,19 @@ mod tests {
         );
     }
     #[test]
-    fn getgroups_uses_fixed_guest_credentials_and_validates_output() {
+    fn getgroups_reports_the_launcher_s_groups_and_validates_output() {
         const GROUPS: u64 = 0x100;
 
         let root = TestDir::new();
         let mut state = test_state(&root.0);
-        let mut memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
-        let count = GUEST_SUPPLEMENTARY_GROUPS.len() as libc::c_int;
-        assert_eq!(GUEST_SUPPLEMENTARY_GROUPS, &[65_534]);
+        // This process's supplementary groups, from the host kernel.
+        let mut host = vec![0 as libc::gid_t; 65_536];
+        // SAFETY: host is writable for its length.
+        let count = unsafe { libc::getgroups(host.len() as libc::c_int, host.as_mut_ptr()) };
+        assert!(count >= 0);
+        host.truncate(count as usize);
+        let size = (GROUPS + 4 * host.len() as u64).next_multiple_of(PAGE_SIZE);
+        let mut memory = GuestMemory::new(0, size as usize).unwrap();
         assert_eq!(
             syscall_result(
                 &mut memory,
@@ -24149,19 +24157,34 @@ mod tests {
             ),
             i64::from(count)
         );
-        assert_eq!(
-            read_struct::<libc::gid_t>(&memory, GROUPS),
-            GUEST_SUPPLEMENTARY_GROUPS[0]
-        );
-        assert_eq!(
-            syscall_result(
-                &mut memory,
-                &mut state,
-                libc::SYS_getgroups,
-                [count as u64, u64::MAX, 0, 0, 0, 0],
-            ),
-            negative_errno(libc::EFAULT)
-        );
+        let mut groups = vec![0_u8; host.len() * std::mem::size_of::<libc::gid_t>()];
+        memory.read(GROUPS, &mut groups).unwrap();
+        let groups: Vec<libc::gid_t> = groups
+            .chunks(4)
+            .map(|bytes| libc::gid_t::from_ne_bytes(bytes.try_into().unwrap()))
+            .collect();
+        assert_eq!(groups, host);
+        if count > 0 {
+            assert_eq!(
+                syscall_result(
+                    &mut memory,
+                    &mut state,
+                    libc::SYS_getgroups,
+                    [count as u64 - 1, GROUPS, 0, 0, 0, 0],
+                ),
+                negative_errno(libc::EINVAL),
+                "a size below the group count"
+            );
+            assert_eq!(
+                syscall_result(
+                    &mut memory,
+                    &mut state,
+                    libc::SYS_getgroups,
+                    [count as u64, u64::MAX, 0, 0, 0, 0],
+                ),
+                negative_errno(libc::EFAULT)
+            );
+        }
     }
 
     #[test]
@@ -43615,15 +43638,13 @@ mod tests {
         let root = TestDir::new();
         let mut state = test_state(&root.0);
         // Valid capabilities are present (root holds the full bounding set).
-        for cap in [0, 7, 15, 32, GUEST_CAP_LAST_CAP] {
+        let last = crate::credentials::last_capability();
+        for cap in [0, 7, 15, 32, last] {
             assert_eq!(prctl(&mut state, &[PR_CAPBSET_READ, cap, 0, 0, 0, 0]), 1);
         }
         // Out-of-range capabilities are rejected exactly like Linux.
         assert_eq!(
-            prctl(
-                &mut state,
-                &[PR_CAPBSET_READ, GUEST_CAP_LAST_CAP + 1, 0, 0, 0, 0]
-            ),
+            prctl(&mut state, &[PR_CAPBSET_READ, last + 1, 0, 0, 0, 0]),
             negative_errno(libc::EINVAL)
         );
         // Deterministic: repeated queries return the same answer.
@@ -44037,7 +44058,7 @@ mod tests {
             ),
             0
         );
-        let reduced = GUEST_CAPABILITY_MASK & !(1_u64 << CAP_SYS_TIME);
+        let reduced = crate::credentials::capability_mask() & !(1_u64 << CAP_SYS_TIME);
         memory
             .write(DATA, &capability_data_bytes(reduced, reduced, 1))
             .unwrap();
@@ -44108,6 +44129,29 @@ mod tests {
         assert_eq!(after_exec.capability_permitted, reduced);
         assert_eq!(after_exec.capability_bounding, reduced);
         assert_eq!(after_exec.capability_ambient, 1);
+    }
+
+    #[test]
+    fn exec_of_a_non_root_guest_keeps_only_ambient_capabilities() {
+        let root = TestDir::new();
+        let mut state = test_state(&root.0);
+        state.credential_root = crate::credentials::RootIds::default();
+        state.capability_inheritable = 1;
+        state.capability_ambient = 1;
+        let mut after_exec = test_state(&root.0);
+        after_exec.inherit_process_state(state);
+        assert_eq!(after_exec.capability_permitted, 1);
+        assert_eq!(after_exec.capability_effective, 1);
+        assert_eq!(after_exec.capability_inheritable, 1);
+        assert_eq!(after_exec.capability_ambient, 1);
+        assert_eq!(
+            after_exec.capability_bounding,
+            crate::credentials::capability_mask()
+        );
+        assert_eq!(
+            after_exec.credential_root,
+            crate::credentials::RootIds::default()
+        );
     }
 
     #[test]
