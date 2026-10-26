@@ -178,6 +178,10 @@ pub struct ExpectedGraph {
     pub dependencies: BTreeMap<String, ExpectedProducer>,
 }
 
+// A complete ExpectedGraph retains all producer/member associations. This
+// dedicated per-document allowance is not a heap bound; reports stay at 64 MiB.
+pub(super) const MAX_EXPECTED_GRAPH_BYTES: usize = 96 * 1024 * 1024;
+
 /// Data exported by the normal typed producer provider. `files` is the complete
 /// declared input set, including recipe, generated/response/tool/native inputs.
 /// Output associations are separate because the leaf has not produced them yet.
@@ -417,6 +421,15 @@ impl Custody {
             .insert(path.to_owned(), opened.file.clone());
         self.files.push(opened);
         Ok(bytes)
+    }
+    fn expected_graph(&mut self, path: &Path) -> Result<ExpectedGraph> {
+        let (opened, bytes) = OpenedFile::expected_graph_bytes(path)?;
+        // Register the exact namespace/content guard before fallible parsing,
+        // so the outer close also preserves failures after graph acquisition.
+        self.requested_files
+            .insert(path.to_owned(), opened.file.clone());
+        self.files.push(opened);
+        decode_expected_graph(&bytes)
     }
     fn directory(&mut self, path: &Path) -> Result<()> {
         self.directories.push(DirectoryGuard::capture(path)?);
@@ -1035,8 +1048,7 @@ fn open_controls(
             == BTreeSet::from(["owner", "expected"]),
         "native owner control input roles differ",
     )?;
-    let manifest_bytes = custody.bytes(&declared.control_inputs["expected"])?;
-    let manifest: ExpectedGraph = decode(&manifest_bytes)?;
+    let manifest = custody.expected_graph(&declared.control_inputs["expected"])?;
     require(
         manifest.leaf == *expected,
         "producer expected control differs from independent role/cohort requirements",
@@ -2041,6 +2053,10 @@ fn decode<T: serde::de::DeserializeOwned>(bytes: &[u8]) -> Result<T> {
     )?)
     .map_err(|e| format!("native action record: {e}"))
 }
+fn decode_expected_graph(bytes: &[u8]) -> Result<ExpectedGraph> {
+    serde_json::from_value(super::native_wire::parse(bytes, MAX_EXPECTED_GRAPH_BYTES)?)
+        .map_err(|e| format!("native action record: {e}"))
+}
 fn graph_shape(expected: &ExpectedGraph, declared: &DeclaredGraph) -> Result<()> {
     require(
         expected
@@ -2899,7 +2915,7 @@ fn with_owned_files_in_context(
 ) -> Result<OwnedProduct> {
     let mut custody = Custody::new();
     let data = (|| {
-        let expected: ExpectedGraph = decode(&custody.bytes(expected_path)?)?;
+        let expected = custody.expected_graph(expected_path)?;
         let bytes = custody.bytes(&outputs.recipe)?;
         let mut recipes = BTreeMap::new();
         for path in super::native_action_input::declared_recipe_paths(&bytes)? {
@@ -3976,6 +3992,128 @@ mod context_tests {
             )
             .unwrap();
         }
+    }
+
+    // Reader/decoder/custody controls only; padding is not a native product or
+    // a claim that this small fixture reproduces the measured graph's records.
+    #[test]
+    fn expected_graph_measured_size_and_96_mib_keep_typed_custody() {
+        for size in [71_335_429, 96 * 1024 * 1024] {
+            let fixture = OwnerControlFixture::new();
+            let path = &fixture.declared.control_inputs["expected"];
+            let expected = ExpectedGraph {
+                leaf: fixture.expected.clone(),
+                dependencies: BTreeMap::new(),
+            };
+            let mut bytes = serde_json::to_vec(&expected).unwrap();
+            bytes.resize(size, b' ');
+            fs::write(path, &bytes).unwrap();
+            let mut custody = Custody::new();
+            assert_eq!(custody.expected_graph(path).unwrap(), expected);
+            assert_eq!(custody.requested_files[path].sha256, sha256(&bytes));
+            custody.close().unwrap();
+            // The per-producer control is also a complete ExpectedGraph, not
+            // an individual ExpectedProducer with a separate relaxed limit.
+            let controls = open_retained_controls(
+                &fixture.expected,
+                &BTreeMap::new(),
+                &fixture.declared,
+                &mut custody,
+            )
+            .unwrap();
+            assert_eq!(controls["$control:expected"].sha256, sha256(&bytes));
+            custody.close().unwrap();
+        }
+    }
+
+    #[test]
+    fn expected_graph_96_mib_plus_one_refuses_before_read_or_decode() {
+        let fixture = OwnerControlFixture::new();
+        let path = &fixture.declared.control_inputs["expected"];
+        let bytes = vec![b' '; (96 * 1024 * 1024) + 1];
+        let error = decode_expected_graph(&bytes).unwrap_err();
+        assert!(error.contains("byte bound"), "{error}");
+        fs::write(path, bytes).unwrap();
+        let mut custody = Custody::new();
+        let error = custody.expected_graph(path).unwrap_err();
+        assert!(error.contains("expected graph"), "{error}");
+        assert!(custody.files.is_empty());
+    }
+
+    #[test]
+    fn generic_reports_keep_exact_64_mib_limit_beside_graph_reader() {
+        let fixture = OwnerControlFixture::new();
+        let path = &fixture.declared.control_inputs["expected"];
+        let expected = ExpectedGraph {
+            leaf: fixture.expected.clone(),
+            dependencies: BTreeMap::new(),
+        };
+        let mut bytes = serde_json::to_vec(&expected).unwrap();
+        bytes.resize(64 * 1024 * 1024, b' ');
+        fs::write(path, &bytes).unwrap();
+        let mut custody = Custody::new();
+        assert_eq!(custody.bytes(path).unwrap(), bytes);
+        assert_eq!(decode::<ExpectedGraph>(&bytes).unwrap(), expected);
+        custody.close().unwrap();
+        bytes.push(b' ');
+        fs::write(path, &bytes).unwrap();
+        let error = decode::<ExpectedGraph>(&bytes).unwrap_err();
+        assert!(error.contains("byte bound"), "{error}");
+        let mut custody = Custody::new();
+        let error = custody.bytes(path).unwrap_err();
+        assert!(error.contains("native report"), "{error}");
+        assert_eq!(custody.expected_graph(path).unwrap(), expected);
+        let error = custody.bytes(path).unwrap_err();
+        assert!(error.contains("native report"), "{error}");
+        custody.close().unwrap();
+    }
+
+    #[test]
+    fn expected_graph_decoder_preserves_duplicate_integer_and_shape_refusals() {
+        let fixture = OwnerControlFixture::new();
+        let graph = ExpectedGraph {
+            leaf: fixture.expected.clone(),
+            dependencies: BTreeMap::new(),
+        };
+        for (bytes, message) in [
+            (
+                br#"{"leaf":{"role":"a","role":"b"},"dependencies":{}}"#.as_slice(),
+                "duplicate JSON key: role",
+            ),
+            (
+                br#"{"leaf":18446744073709551617,"dependencies":{}}"#.as_slice(),
+                "integer lexeme exceeds supported i64/u64 range",
+            ),
+            (b"{} {}".as_slice(), "trailing characters"),
+        ] {
+            let error = decode_expected_graph(bytes).unwrap_err();
+            assert!(error.contains(message), "{error}");
+        }
+        let mut unknown = serde_json::to_value(&graph).unwrap();
+        unknown["leaf"]["unexpected"] = serde_json::json!(true);
+        let error = decode_expected_graph(&serde_json::to_vec(&unknown).unwrap()).unwrap_err();
+        assert!(error.contains("unknown field"), "{error}");
+        let mut missing = serde_json::to_value(&graph).unwrap();
+        missing.as_object_mut().unwrap().remove("dependencies");
+        let error = decode_expected_graph(&serde_json::to_vec(&missing).unwrap()).unwrap_err();
+        assert!(error.contains("missing field"), "{error}");
+    }
+
+    #[test]
+    fn expected_graph_parse_failure_retains_guard_and_primary_plus_close_errors() {
+        let fixture = OwnerControlFixture::new();
+        let path = &fixture.declared.control_inputs["expected"];
+        fs::write(path, br#"{"leaf":null,"leaf":false}"#).unwrap();
+        let mut custody = Custody::new();
+        let primary = custody.expected_graph(path);
+        assert!(primary.as_ref().unwrap_err().contains("duplicate JSON key"));
+        assert_eq!(custody.files.len(), 1);
+        fs::write(path, b"changed graph bytes").unwrap();
+        let error = finish(primary, custody.close()).unwrap_err();
+        assert!(error.contains("duplicate JSON key"), "{error}");
+        assert!(error.contains("native action close"), "{error}");
+        assert!(error.contains("owned file identity changed"), "{error}");
+        assert!(error.contains("expected.json"), "{error}");
     }
 
     #[test]
