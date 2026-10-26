@@ -66,6 +66,20 @@ const DIAGNOSTIC_FD: libc::c_int = 198;
 /// Exit code used when DynamoRIO cannot start the sideline runtime thread before guest code runs.
 pub const CLIENT_THREAD_START_FAILURE_EXIT_CODE: i32 = 125;
 
+/// Selects the random offset used for DynamoRIO's private mapping reservation.
+///
+/// This affects the engine's preferred-base placement path. Near-application
+/// placement, relocation and reservation failure handling remain engine-owned;
+/// neither choice promises a fixed address or identical guest mappings.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum DbtPrivatePlacement {
+    /// Leave the option unset and use the bundled engine's default.
+    #[default]
+    SdkDefault,
+    /// Request no random offset from the engine's preferred private base.
+    NoRandomOffset,
+}
+
 /// Launches Linux programs under the Reverie DynamoRIO client.
 ///
 /// The native client is built separately by
@@ -82,6 +96,7 @@ pub struct DbtRunner {
     drrun: PathBuf,
     client: PathBuf,
     client_arguments: Vec<OsString>,
+    private_placement: DbtPrivatePlacement,
     private_environment: Vec<OsString>,
     diagnostic_file: Option<Arc<File>>,
     evidence: Option<Arc<EvidenceSession>>,
@@ -164,6 +179,7 @@ impl DbtRunner {
             drrun,
             client,
             client_arguments: Vec::new(),
+            private_placement: DbtPrivatePlacement::SdkDefault,
             private_environment: Vec::new(),
             diagnostic_file: None,
             evidence: None,
@@ -179,6 +195,19 @@ impl DbtRunner {
     /// Enables or disables the instrumentation summary written at process exit.
     pub fn summary(mut self, enabled: bool) -> Self {
         self.summary = enabled;
+        self
+    }
+
+    /// Selects the engine's private mapping offset policy.
+    ///
+    /// The default leaves `vm_max_offset` unset. Callers that require the
+    /// historical zero-offset request can select
+    /// [`DbtPrivatePlacement::NoRandomOffset`]. This does not change guest ASLR
+    /// handling or the engine's reservation ownership and failure rules.
+    /// Clones preserve the selection; a later call replaces it, including
+    /// returning to [`DbtPrivatePlacement::SdkDefault`].
+    pub fn private_placement(mut self, policy: DbtPrivatePlacement) -> Self {
+        self.private_placement = policy;
         self
     }
 
@@ -1190,14 +1219,12 @@ impl DbtRunner {
         environment: Option<&BTreeMap<OsString, OsString>>,
     ) -> Command {
         let mut command = Command::new(&self.drrun);
+        command.arg("-quiet").arg("-disable_rseq");
+        if self.private_placement == DbtPrivatePlacement::NoRandomOffset {
+            // DynamoRIO parses address options as hexadecimal.
+            command.args(["-vm_max_offset", "0x0"]);
+        }
         command
-            .arg("-quiet")
-            .arg("-disable_rseq")
-            // DynamoRIO reserves its code region at -vm_base plus a random
-            // offset (seeded from /dev/urandom), which a guest sees in
-            // /proc/self/maps and smaps: no offset, so the layout repeats.
-            // The value must be hex: DynamoRIO parses address options so.
-            .args(["-vm_max_offset", "0x0"])
             .args(["-stack_size", "2M"])
             .arg("-c")
             .arg(&self.client)
@@ -2134,6 +2161,7 @@ mod tests {
             drrun: PathBuf::from("/opt/dynamorio/bin64/drrun"),
             client: PathBuf::from("/opt/reverie/libreverie_dbt_client.so"),
             client_arguments: Vec::new(),
+            private_placement: DbtPrivatePlacement::SdkDefault,
             private_environment: Vec::new(),
             diagnostic_file: None,
             evidence: None,
@@ -2344,6 +2372,48 @@ mod tests {
     }
 
     #[test]
+    fn private_placement_is_replaced_and_preserved_by_clones() {
+        let configured = runner().private_placement(DbtPrivatePlacement::NoRandomOffset);
+        let guest = Command::new("/bin/true");
+        let expected = [
+            "-quiet",
+            "-disable_rseq",
+            "-vm_max_offset",
+            "0x0",
+            "-stack_size",
+            "2M",
+            "-c",
+            "/opt/reverie/libreverie_dbt_client.so",
+            "-diagnostic_fd",
+            "198",
+            "--",
+            "/bin/true",
+        ]
+        .map(OsStr::new);
+        assert_eq!(
+            configured
+                .command(&guest, None)
+                .get_args()
+                .collect::<Vec<_>>(),
+            expected
+        );
+        assert_eq!(
+            configured
+                .clone()
+                .command(&guest, None)
+                .get_args()
+                .collect::<Vec<_>>(),
+            expected
+        );
+        let reset = configured.private_placement(DbtPrivatePlacement::SdkDefault);
+        let default = runner().command(&guest, None);
+        assert_eq!(
+            reset.command(&guest, None).get_args().collect::<Vec<_>>(),
+            default.get_args().collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
     fn client_arguments_and_isolation_flag_precede_guest_separator() {
         let wrapped = runner()
             .client_argument("-panic-on-unsupported-syscalls")
@@ -2354,8 +2424,6 @@ mod tests {
             [
                 "-quiet",
                 "-disable_rseq",
-                "-vm_max_offset",
-                "0x0",
                 "-stack_size",
                 "2M",
                 "-c",
@@ -2391,8 +2459,6 @@ mod tests {
             [
                 "-quiet",
                 "-disable_rseq",
-                "-vm_max_offset",
-                "0x0",
                 "-stack_size",
                 "2M",
                 "-c",
@@ -2431,8 +2497,6 @@ mod tests {
             [
                 OsStr::new("-quiet"),
                 OsStr::new("-disable_rseq"),
-                OsStr::new("-vm_max_offset"),
-                OsStr::new("0x0"),
                 OsStr::new("-stack_size"),
                 OsStr::new("2M"),
                 OsStr::new("-c"),
@@ -2465,8 +2529,6 @@ mod tests {
             [
                 OsStr::new("-quiet"),
                 OsStr::new("-disable_rseq"),
-                OsStr::new("-vm_max_offset"),
-                OsStr::new("0x0"),
                 OsStr::new("-stack_size"),
                 OsStr::new("2M"),
                 OsStr::new("-c"),
@@ -2499,8 +2561,6 @@ mod tests {
             [
                 OsStr::new("-quiet"),
                 OsStr::new("-disable_rseq"),
-                OsStr::new("-vm_max_offset"),
-                OsStr::new("0x0"),
                 OsStr::new("-stack_size"),
                 OsStr::new("2M"),
                 OsStr::new("-c"),
@@ -2529,8 +2589,8 @@ mod tests {
 
         let wrapped = runner().command(&guest, None);
         let args = wrapped.get_args().collect::<Vec<_>>();
-        assert_eq!(args[11], OsStr::new("/bin/sh"));
-        assert_eq!(args[12], script.as_os_str());
+        assert_eq!(args[9], OsStr::new("/bin/sh"));
+        assert_eq!(args[10], script.as_os_str());
         assert_eq!(wrapped.get_current_dir(), Some(root.path()));
     }
 
@@ -2549,8 +2609,8 @@ mod tests {
 
         let wrapped = runner().command(&guest, None);
         let args = wrapped.get_args().collect::<Vec<_>>();
-        assert_eq!(args[11], OsStr::new("/bin/sh"));
-        assert_eq!(args[12], wrapper.as_os_str());
+        assert_eq!(args[9], OsStr::new("/bin/sh"));
+        assert_eq!(args[10], wrapper.as_os_str());
     }
 
     #[test]
@@ -2566,8 +2626,8 @@ mod tests {
 
         let wrapped = runner().command(&guest, None);
         let args = wrapped.get_args().collect::<Vec<_>>();
-        assert_eq!(args[11], OsStr::new("guest-elf"));
-        assert_eq!(args[12], OsStr::new("argument"));
+        assert_eq!(args[9], OsStr::new("guest-elf"));
+        assert_eq!(args[10], OsStr::new("argument"));
     }
 
     #[test]

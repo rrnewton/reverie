@@ -46,6 +46,21 @@ runners use the default without an implicit caller prefix. Raw `drrun` scripts
 remain responsible for their own environment; scripts and benchmarks invoking
 the Counter2 bins inherit those bins' selection.
 
+## Caller-owned private placement
+
+`DbtRunner` leaves DynamoRIO's `vm_max_offset` option unset by default.
+Callers that require the historical zero-offset request select
+`private_placement(DbtPrivatePlacement::NoRandomOffset)`; selecting
+`SdkDefault` afterward removes that request. Clones preserve the selection.
+Hermit selects `NoRandomOffset` through its own startup policy.
+
+This controls jitter in the engine's preferred-base private reservation path.
+Near-application placement may run first, and relocation or shrinking can still
+change the result. The engine's existing random-number source and guest
+`ADDR_NO_RANDOMIZE` personality handling are unchanged. Neither choice
+guarantees a fixed address, repeatable mappings, or memory determinism.
+Private image reservation ownership and named refusal rules remain unchanged.
+
 ## Build
 
 DynamoRIO's build-required source is vendored in this crate at the pinned

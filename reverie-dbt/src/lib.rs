@@ -69,6 +69,7 @@ pub use evidence::decode_evidence_with_validator;
 // TODO-HUMAN-REVIEW(PR-134): Review the native bootstrap failure ABI export.
 pub use launcher::CLIENT_THREAD_START_FAILURE_EXIT_CODE;
 pub use launcher::DbtFailedRunOutput;
+pub use launcher::DbtPrivatePlacement;
 pub use launcher::DbtRunner;
 pub use launcher::DbtStatsSink;
 pub use launcher::failed_run_output;
