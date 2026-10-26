@@ -1427,21 +1427,46 @@ pub(super) fn utimensat(memory: &GuestMemory, state: &LoadedStaticElf, args: &[u
     zero_or_errno(result as libc::c_int)
 }
 
+/// Linux's getcwd walks the working directory at the call
+/// (https://github.com/torvalds/linux/blob/v6.18/fs/d_path.c#L412), so a
+/// renamed directory reports its new name and a removed one gets ENOENT,
+/// before any size check. The host kernel's d_path of the cwd handle is the
+/// same walk; it marks a removed directory, Linux's d_unlinked test, with a
+/// " (deleted)" suffix, and a zero link count tells that from a directory
+/// really named that way.
 pub(super) fn getcwd(memory: &mut GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) -> i64 {
-    let bytes = state.cwd.as_os_str().as_bytes();
-    let Ok(capacity) = usize::try_from(args[1]) else {
-        return negative_errno(libc::EINVAL);
+    let fd = state.cwd_fd.as_raw_fd();
+    let path = canonical_fd_path(fd);
+    let maybe_removed = match &path {
+        Ok(path) => path.as_os_str().as_bytes().ends_with(b" (deleted)"),
+        Err(error) => *error == negative_errno(libc::ENAMETOOLONG),
     };
-    let Some(required) = bytes.len().checked_add(1) else {
-        return negative_errno(libc::ERANGE);
+    if maybe_removed {
+        // SAFETY: an all-zero stat is a valid output buffer.
+        let mut stat: libc::stat = unsafe { std::mem::zeroed() };
+        // SAFETY: fd is the live cwd handle and stat is writable.
+        if unsafe { libc::fstat(fd, &mut stat) } != 0 {
+            return io_error(std::io::Error::last_os_error());
+        }
+        if stat.st_nlink == 0 {
+            return negative_errno(libc::ENOENT);
+        }
+    }
+    let path = match path {
+        Ok(path) => path,
+        Err(error) => return error,
     };
-    if capacity < required {
+    let bytes = path.as_os_str().as_bytes();
+    let required = bytes.len() + 1;
+    if (args[1] as usize) < required {
         return negative_errno(libc::ERANGE);
     }
     let mut terminated = Vec::with_capacity(required);
     terminated.extend_from_slice(bytes);
     terminated.push(0);
-    match memory.user().write(args[0], &terminated) {
+    // copy_to_user: respects guest write permissions and keeps the copied
+    // prefix when a later page faults.
+    match memory.user().copy_to_user(args[0], &terminated) {
         Ok(()) => required as i64,
         Err(_) => negative_errno(libc::EFAULT),
     }
@@ -1452,9 +1477,9 @@ pub(super) fn getcwd(memory: &mut GuestMemory, state: &LoadedStaticElf, args: &[
 // `chdir`/`fchdir` update the emulated working directory that `getcwd` reports
 // and that relative-path resolution (`host_dirfd_and_path`) resolves against.
 // Both replace `state.cwd_fd` with a fresh `O_PATH|O_DIRECTORY` handle so cwd
-// identity survives host renames (the same invariant `cwd_fd` had at load), and
-// canonicalize `state.cwd` from that handle so `getcwd` returns a stable, real
-// host path -- deterministic given the same external filesystem.
+// identity survives host renames (the same invariant `cwd_fd` had at load).
+// `getcwd` walks that handle at each call; `state.cwd` keeps the path at the
+// last change for exec's relative paths and the synthetic /proc/self/cwd.
 pub(super) fn chdir(memory: &GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6]) -> i64 {
     let path = match read_c_string(&ProviderMemory(memory), args[0], 4096) {
         Ok(path) => path,
@@ -1527,8 +1552,8 @@ fn open_cwd_directory(host_dirfd: RawFd, path: &CStr) -> Result<std::fs::File, i
     Ok(file)
 }
 
-/// Commit `directory` as the new working directory, deriving the canonical
-/// `state.cwd` string from the descriptor so `getcwd` stays consistent with it.
+/// Commit `directory` as the new working directory, recording its canonical
+/// path in `state.cwd` for the callers that still read the string.
 fn set_cwd(state: &mut LoadedStaticElf, directory: std::fs::File) -> i64 {
     match canonical_fd_path(directory.as_raw_fd()) {
         Ok(path) => {
