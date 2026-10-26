@@ -412,6 +412,27 @@ impl OpenedFile {
         })
     }
 
+    // Only complete ExpectedGraph documents use this dedicated larger route.
+    // The unchanged read helper retains strict file/namespace/content custody.
+    pub(super) fn expected_graph_bytes(path: &Path) -> Result<(Self, Vec<u8>)> {
+        Self::read(path, |file| {
+            let limit = super::native_action::MAX_EXPECTED_GRAPH_BYTES;
+            require(
+                file.metadata().map_err(|e| e.to_string())?.len() <= limit as u64,
+                "native expected graph is not a bounded regular file",
+            )?;
+            let mut bytes = Vec::new();
+            file.take(limit as u64 + 1)
+                .read_to_end(&mut bytes)
+                .map_err(|e| e.to_string())?;
+            require(
+                bytes.len() <= limit,
+                "native expected graph grew beyond its byte bound",
+            )?;
+            Ok((super::sha256(&bytes), bytes))
+        })
+    }
+
     pub(super) fn verify(&self) -> Result<()> {
         self.parent.verify()?;
         require(
