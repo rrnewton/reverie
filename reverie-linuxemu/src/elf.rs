@@ -2329,6 +2329,26 @@ fn copy_program_headers(memory: &mut GuestMemory, image: &[u8], elf: &Elf<'_>) -
     memory.write_raw(PROGRAM_HEADERS_ADDRESS, headers)
 }
 
+/// `N` bytes from the host's getrandom(2), the source Linux's
+/// get_random_bytes draws on.
+fn host_random_bytes<const N: usize>() -> Result<[u8; N]> {
+    let mut bytes = [0; N];
+    let mut filled = 0;
+    while filled < N {
+        // SAFETY: the pointer and length name the unfilled tail of `bytes`.
+        let result = unsafe { libc::getrandom(bytes[filled..].as_mut_ptr().cast(), N - filled, 0) };
+        if result < 0 {
+            let error = std::io::Error::last_os_error();
+            if error.kind() == std::io::ErrorKind::Interrupted {
+                continue;
+            }
+            return Err(Error::HostIo(error));
+        }
+        filled += result as usize;
+    }
+    Ok(bytes)
+}
+
 #[allow(clippy::too_many_arguments)]
 fn build_initial_stack(
     memory: &mut GuestMemory,
@@ -2371,10 +2391,8 @@ fn build_initial_stack(
     cursor = push_c_string(memory, cursor, GUEST_PLATFORM)?;
     let platform_address = cursor;
 
-    let random = [
-        0x52, 0x65, 0x76, 0x65, 0x72, 0x69, 0x65, 0x2d, 0x4b, 0x56, 0x4d, 0x2d, 0x45, 0x4c, 0x46,
-        0x21,
-    ];
+    // Linux's create_elf_tables fills AT_RANDOM from get_random_bytes.
+    let random = host_random_bytes::<16>()?;
     cursor = cursor
         .checked_sub(random.len() as u64)
         .ok_or(Error::LongModeMemoryTooSmall)?;
@@ -2984,7 +3002,28 @@ mod tests {
         );
         assert_eq!(read(platform, 7), b"x86_64\0");
 
-        assert_eq!(read(random, 16), b"Reverie-KVM-ELF!");
+        // AT_RANDOM holds 16 bytes from the host's getrandom, as Linux's
+        // get_random_bytes fills it, so a second load draws other bytes.
+        let mut second_memory = GuestMemory::new(0, TEST_MEMORY_SIZE).unwrap();
+        let second = load_static_elf(
+            &mut second_memory,
+            &image,
+            &["/prog", "a"],
+            &["X=1", "Y=22"],
+            &std::env::current_dir().unwrap(),
+        )
+        .unwrap();
+        let second_random = second
+            .auxv
+            .iter()
+            .find(|(entry, _)| *entry == libc::AT_RANDOM)
+            .unwrap()
+            .1;
+        assert_eq!(second_random, random);
+        let mut second_bytes = [0; 16];
+        let physical = second_memory.user_range_to_guest(random, 16).unwrap();
+        second_memory.read_raw(physical, &mut second_bytes).unwrap();
+        assert_ne!(read(random, 16), second_bytes);
 
         let words = 1 + 3 + 3 + 2 * loaded.auxv.len() as u64 + 2;
         assert_eq!(loaded.stack_pointer, (random - words * 8) & !0xf);
