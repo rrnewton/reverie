@@ -181,8 +181,13 @@ fn initialize_rcb_clock_with(
             // keeps it as its own too rather than leave it reachable.
             crate::guest::protect::record_if_open(created)?;
         }
+        // Recorded before the guard restores the mask: a signal held during
+        // the move is delivered then, and its handler must already find the
+        // counter protected.
+        crate::guest::protect::record_runtime_fd(clock.descriptor())?;
+    } else {
+        crate::guest::protect::record_runtime_fd(clock.descriptor())?;
     }
-    crate::guest::protect::record_runtime_fd(clock.descriptor())?;
     let active_entry = if active_depth == 0 {
         0
     } else {

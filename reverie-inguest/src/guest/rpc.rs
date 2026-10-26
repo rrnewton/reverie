@@ -151,7 +151,7 @@ impl<G: GlobalTool> CoordinatorRpc<G> {
         let path = path.as_ref().to_path_buf();
         let pid = current_id(libc::SYS_getpid)?;
         let tid = current_id(libc::SYS_gettid)?;
-        let client = connect_ordinary::<G>(&path, tid)
+        let client = connect_ordinary::<G>(&path, tid, |_| Ok(()))
             .map_err(|error| io::Error::other(describe_rpc_error(&error)))?;
         let config = client.config().clone();
         let fd = client.as_raw_fd();
@@ -212,11 +212,14 @@ impl<G: GlobalTool> CoordinatorRpc<G> {
             let pid = current_id(libc::SYS_getpid).unwrap_or_else(|_| rpc_fatal(122));
             if connection.pid != pid {
                 let tid = current_id(libc::SYS_gettid).unwrap_or_else(|_| rpc_fatal(122));
-                let client =
-                    connect_ordinary::<G>(&self.path, tid).unwrap_or_else(|_| rpc_fatal(123));
-                let new_fd = client.as_raw_fd();
-                let old_fd = self.fd.swap(new_fd, Ordering::AcqRel);
-                (self.on_reconnect)(old_fd, new_fd).unwrap_or_else(|_| rpc_fatal(123));
+                // The new connection is recorded as the coordinator's
+                // before the placement unblocks signals, so a guest handler
+                // run then already finds it protected.
+                let client = connect_ordinary::<G>(&self.path, tid, |new_fd| {
+                    let old_fd = self.fd.swap(new_fd, Ordering::AcqRel);
+                    (self.on_reconnect)(old_fd, new_fd)
+                })
+                .unwrap_or_else(|_| rpc_fatal(123));
                 let inherited = std::mem::replace(&mut *connection, RpcConnection { pid, client });
                 let (_, _, stream) = inherited.client.into_parts();
                 match stream {
@@ -237,6 +240,10 @@ impl<G: GlobalTool> CoordinatorRpc<G> {
                             .unwrap_or_else(|_| rpc_fatal(123));
                         drop(blocked);
                     }
+                    // Not reached: connect_ordinary builds only Ordinary
+                    // streams, and an active exec-private domain exits with
+                    // 123 above. Dropped as before, without the survivor
+                    // check.
                     #[cfg(feature = "exec-private-init")]
                     GuestRpcStream::Native(stream) => drop(stream),
                 }
@@ -272,9 +279,13 @@ pub fn describe_rpc_error(error: &reverie_rpc_transport::RpcError) -> String {
     }
 }
 
+/// Connects to the coordinator at `path` and places the connection in the
+/// runtime's range; `record` records its number before signals are unblocked
+/// (protect::place_runtime_fd_and).
 fn connect_ordinary<G: GlobalTool>(
     path: &Path,
     tid: Pid,
+    record: impl FnOnce(libc::c_int) -> io::Result<()>,
 ) -> Result<BlockingRpcClient<G, GuestRpcStream>, reverie_rpc_transport::RpcError> {
     // The connection goes to the runtime's range (protect::runtime_fd_minimums:
     // 1025, or just below a soft RLIMIT_NOFILE that leaves no number free
@@ -287,7 +298,7 @@ fn connect_ordinary<G: GlobalTool>(
     // Authenticated initial-image callers keep their own high descriptor
     // helper and separate descriptor contract.
     let connected = UnixStream::connect(path)?;
-    let placed = crate::guest::protect::place_runtime_fd(connected.into_raw_fd())?;
+    let placed = crate::guest::protect::place_runtime_fd_and(connected.into_raw_fd(), record)?;
     // SAFETY: `placed` is the connected socket's only descriptor, owned here.
     let stream = unsafe { UnixStream::from_raw_fd(placed) };
     BlockingRpcClient::from_connected_stream(GuestRpcStream::from(stream), tid)

@@ -60,7 +60,7 @@ const RUNTIME_FD_RESERVE: libc::c_int = 8;
 
 /// The minimums the runtime tries, in order, when it places one of its
 /// descriptors: [`RUNTIME_FD_MIN`], then, when the soft `RLIMIT_NOFILE` is
-/// below `RUNTIME_FD_MIN + RUNTIME_FD_RESERVE`, the top [`RUNTIME_FD_RESERVE`]
+/// below `RUNTIME_FD_MIN + RUNTIME_FD_RESERVE`, the top `RUNTIME_FD_RESERVE` (8)
 /// numbers below that limit (never below 3), which take a descriptor only when
 /// no number at or above `RUNTIME_FD_MIN` is free under the limit. When the
 /// limit cannot be read, only `RUNTIME_FD_MIN`. Either way a program's first
@@ -197,9 +197,14 @@ pub fn replace_coordinator_fd(old: libc::c_int, new: libc::c_int) -> io::Result<
 /// cannot be changed (a seccomp filter the guest installed can refuse it).
 ///
 /// Code inside the window must make every syscall through the runtime's own
-/// gate (`raw_syscall6`), never through libc: a syscall from a patched or
-/// trapped site arrives as SIGSYS, and a blocked SIGSYS the kernel forces
-/// takes its default action, killing the process.
+/// gate (`raw_syscall6`), never through libc, and must not execute CPUID or
+/// RDTSC: a syscall from a patched or trapped site arrives as SIGSYS, and
+/// while either instruction is subscribed it faults into SIGSEGV; the kernel
+/// forces both, and a blocked forced signal takes its default action, killing
+/// the process. This is the one deliberate exception to
+/// [`crate::guest::signal::reserved_signal_mask`], which keeps those two
+/// signals unblocked everywhere else; it holds because nothing in a window
+/// raises either.
 pub fn block_all_signals() -> io::Result<crate::guest::support::SignalInstallGuard> {
     let all: u64 = !0;
     let mut previous: u64 = 0;
@@ -234,15 +239,37 @@ pub fn block_all_signals() -> io::Result<crate::guest::support::SignalInstallGua
 /// record is full that fails, and so does this, with both numbers still open;
 /// the caller must not let the guest run on. Signals stay blocked throughout
 /// ([`block_all_signals`]).
+///
+/// The returned number is not protected until the caller records it, and a
+/// signal held during the placement is delivered as this returns; use
+/// [`place_runtime_fd_and`] to record it first. Installation's coordinator
+/// connection is still recorded after its handshake (`tool_install`), so a
+/// handler the guest installed before the runtime's constructor could reach it
+/// in between; installation resets the guest's handlers shortly after.
 pub fn place_runtime_fd(fd: libc::c_int) -> io::Result<libc::c_int> {
+    place_runtime_fd_and(fd, |_| Ok(()))
+}
+
+/// [`place_runtime_fd`], then `record(placed)` before signals are unblocked,
+/// so a handler of a signal held during the placement already finds the
+/// number protected. `record` runs inside the window and follows
+/// [`block_all_signals`]'s rule; its error is returned with the number still
+/// open.
+pub fn place_runtime_fd_and(
+    fd: libc::c_int,
+    record: impl FnOnce(libc::c_int) -> io::Result<()>,
+) -> io::Result<libc::c_int> {
     let _blocked = block_all_signals()?;
     let moved = dup_into_runtime_range(fd);
-    if moved < 0 {
-        return Ok(fd);
-    }
-    unsafe { raw_syscall6(libc::SYS_close, [fd as u64, 0, 0, 0, 0, 0]) };
-    record_if_open(fd)?;
-    Ok(moved as libc::c_int)
+    let placed = if moved < 0 {
+        fd
+    } else {
+        unsafe { raw_syscall6(libc::SYS_close, [fd as u64, 0, 0, 0, 0, 0]) };
+        record_if_open(fd)?;
+        moved as libc::c_int
+    };
+    record(placed)?;
+    Ok(placed)
 }
 
 /// Records `fd` ([`record_runtime_fd`]) if it is still open: the old number of
@@ -286,7 +313,7 @@ pub fn descriptor_is_open(fd: libc::c_int) -> io::Result<bool> {
 /// then keeps the guest away from as it does the coordinator connection
 /// ([`protect_runtime_descriptors`]) and reports ([`is_runtime_owned_fd`]). A
 /// counter is placed first (`InGuestRcbCounter::move_descriptor_at_least`).
-/// Fails with `OutOfMemory` when [`RECORDED_FD_CAPACITY`] descriptors are
+/// Fails with `OutOfMemory` when `RECORDED_FD_CAPACITY` (8) descriptors are
 /// already recorded.
 pub fn record_runtime_fd(fd: libc::c_int) -> io::Result<()> {
     if fd < 0 {
@@ -1424,6 +1451,36 @@ pub(crate) mod tests {
                 ],
             ) as i32
         }
+    }
+
+    /// The caller's record runs while every signal is still blocked, so a
+    /// handler of a signal held during the placement cannot run before it.
+    #[test]
+    fn a_placements_record_runs_before_signals_are_unblocked() {
+        in_child(|| {
+            let mut blocked_in_record = 0_u64;
+            let placed = place_runtime_fd_and(open_eventfd(), |_| {
+                let read = unsafe {
+                    raw_syscall6(
+                        libc::SYS_rt_sigprocmask,
+                        [
+                            libc::SIG_BLOCK as u64,
+                            0,
+                            (&raw mut blocked_in_record) as u64,
+                            8,
+                            0,
+                            0,
+                        ],
+                    )
+                };
+                assert_eq!(read, 0);
+                Ok(())
+            })
+            .unwrap();
+            assert!(placed >= runtime_fd_minimums().last().unwrap());
+            // Every signal but SIGKILL and SIGSTOP, which the kernel never blocks.
+            assert_eq!(blocked_in_record, 0xffff_ffff_fffb_feff);
+        });
     }
 
     /// A placement blocks every signal only while it runs and leaves the
