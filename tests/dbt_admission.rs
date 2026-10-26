@@ -137,3 +137,53 @@ fn missing_coordinator_refuses_the_actual_caller_runtime() {
         "{stderr}"
     );
 }
+
+fn primary_survives(deferred: bool, operation: &str) {
+    let (output, global) =
+        test_cmd_with_config::<AdmissionTool>(GUEST, &[operation], Mode::ProtectFds { deferred })
+            .unwrap();
+    assert_eq!(output.status, ExitStatus::Exited(0), "{output:?}");
+    assert_eq!(output.stdout, b"primary-survived\n");
+    let expected = if deferred && operation != "protect-dup2" {
+        vec![1, 3, 2]
+    } else {
+        vec![1, 2]
+    };
+    assert_eq!(
+        *global.0.lock().unwrap(),
+        expected,
+        "primary RPC failed, or a protected dup2 reached the Tool"
+    );
+}
+
+#[test]
+fn primary_rpc_survives_original_close_range() {
+    primary_survives(false, "protect-close-range");
+}
+
+#[test]
+fn primary_rpc_survives_deferred_close_range() {
+    primary_survives(true, "protect-close-range");
+}
+
+#[test]
+fn primary_rpc_survives_original_dup2() {
+    primary_survives(false, "protect-dup2");
+}
+
+#[test]
+fn primary_rpc_survives_deferred_dup2_without_tool_delivery() {
+    primary_survives(true, "protect-dup2");
+}
+
+// These isolate the primary descriptor. They do not replace the full-range
+// controls above, which also exercise unrelated native/SDK descriptors.
+#[test]
+fn primary_rpc_survives_original_single_fd_range() {
+    primary_survives(false, "protect-primary-range");
+}
+
+#[test]
+fn primary_rpc_survives_deferred_single_fd_range() {
+    primary_survives(true, "protect-primary-range");
+}

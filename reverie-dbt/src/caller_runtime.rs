@@ -276,6 +276,12 @@ impl<T: Tool + 'static> Runtime<T> {
         self.syscalls.fetch_add(1, Ordering::Relaxed);
         let mut lease = owner.try_borrow(callback.port())?;
         lease.admit(callback.identity)?;
+        if let Some(result) = protect_tool_syscall(callback.context, callback.invoke, syscall, true)
+        {
+            return Ok(NativeSyscallOutcome::Complete(DrivenSyscall::Result(
+                result,
+            )));
+        }
         let tail = TailResult::default();
         let mut factory = Factory::new(callback);
         let outcome = if owner
@@ -287,6 +293,18 @@ impl<T: Tool + 'static> Runtime<T> {
             drive_tool_syscall_with(tool, &mut guest, syscall, &tail, &NativeDriver::new())
         } else {
             NativeSyscallOutcome::ExecuteOriginal(syscall)
+        };
+        // The driver has dropped its future and Guest before a deferred
+        // operation reaches this boundary. Preserve the same primary-FD
+        // protection as the legacy driver, including unsubscribed originals.
+        let outcome = match outcome {
+            NativeSyscallOutcome::ExecuteOriginal(syscall) => {
+                match protect_tool_syscall(callback.context, callback.invoke, syscall, false) {
+                    Some(result) => NativeSyscallOutcome::Complete(DrivenSyscall::Result(result)),
+                    None => NativeSyscallOutcome::ExecuteOriginal(syscall),
+                }
+            }
+            other => other,
         };
         let terminal = match &outcome {
             NativeSyscallOutcome::ExecuteOriginal(syscall) => {
@@ -644,7 +662,10 @@ macro_rules! export_caller_tool {
                 _number: i64,
                 _args: *const u64,
             ) -> i32 {
-                RUNTIME.failure("initial-root Tool domain refuses copied runtime")
+                RUNTIME.failure("initial-root Tool domain refuses copied runtime");
+                // Negative actions are guest errno values in the copied
+                // native corridor. Use its existing unsupported-action path.
+                1
             }
             #[unsafe(no_mangle)]
             pub unsafe extern "C" fn reverie_dbt_runtime_signal_event(

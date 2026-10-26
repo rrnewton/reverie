@@ -12,8 +12,10 @@ use reverie::ExitStatus;
 use reverie::Rdtsc;
 use reverie_test_support::dbt::DbtTestTool;
 use reverie_test_support::dbt::test_cmd;
+use reverie_test_support::dbt::test_cmd_with_config;
 use tools::ControlGlobal;
 use tools::ControlTool;
+use tools::InstructionErrorMode;
 use tools::PROBE_LEAF;
 use tools::PROBE_REPLY;
 use tools::PROBE_SUBLEAF;
@@ -323,5 +325,120 @@ fn unsubscribed_instructions_keep_physical_results_without_tool_callbacks() {
         events
             .iter()
             .all(|request| !matches!(request, Request::Cpuid { .. } | Request::Rdtsc { .. }))
+    );
+}
+
+fn instruction_hook_error(mode: InstructionErrorMode, argument: &str, errno: reverie::Errno) {
+    let (output, global) =
+        test_cmd_with_config::<ControlTool<true>>(guest(), &[argument], mode).unwrap();
+    assert!(
+        matches!(output.status, ExitStatus::Exited(code) if code != 0),
+        "instruction error must take the native fatal path, not signal/panic/timeout: {:?}",
+        output.status
+    );
+    // Exact output requires proof that main reached the selected probe, and
+    // rejects continuing past that instruction even if a later failure occurs.
+    assert_eq!(output.stdout, format!("before-{argument}\n").as_bytes());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let reason = format!("reverie-dbt: caller Tool refused: {errno}");
+    assert!(stderr.contains(&reason), "missing {reason:?}: {stderr}");
+    assert!(!stderr.contains("panicked at"), "{stderr}");
+    eprintln!(
+        "expected subscribed {mode:?} hook error: status={:?}, stderr={stderr}",
+        output.status
+    );
+
+    let events = global.events.lock().unwrap();
+    assert_eq!(
+        global.requests.load(Ordering::SeqCst) as usize,
+        events.len()
+    );
+    let Some((
+        root,
+        Request::ThreadStart {
+            state: initial,
+            pid,
+        },
+    )) = events.first()
+    else {
+        panic!("hook failure did not follow the real thread-start callback");
+    };
+    assert_eq!(root, pid);
+    assert!(*root > 0);
+    assert_eq!(initial.initialized_tid, *root);
+    assert_eq!(initial.injected_start_pid, i64::from(*root));
+    assert_eq!(initial.thread_starts, 1);
+    assert_eq!(initial.post_execs, 0);
+    let Some((from, Request::PostExec { state: post })) = events.get(1) else {
+        panic!("hook failure did not follow the real post-exec callback");
+    };
+    assert_eq!(from, root);
+    assert_eq!(post.thread_starts, 1);
+    assert_eq!(post.post_execs, 1);
+    assert!(events.iter().all(|(from, _)| from == root));
+    let errors: Vec<_> = events
+        .iter()
+        .enumerate()
+        .filter_map(|(index, (_, request))| match request {
+            Request::InstructionError { mode, errno, state } => Some((index, *mode, *errno, state)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        errors.len(),
+        1,
+        "expected exactly one actual failing hook RPC"
+    );
+    let (error_index, actual_mode, actual_errno, state) = errors[0];
+    assert!(error_index > 1);
+    assert_eq!(actual_mode, mode);
+    assert_eq!(actual_errno, errno.into_raw());
+    assert_eq!(state.initialized_tid, *root);
+    assert_eq!(state.thread_starts, 1);
+    assert_eq!(state.post_execs, 1);
+    assert_eq!(
+        state.cookie,
+        0x52 + state.syscalls + state.cpuid_callbacks + state.rdtsc_callbacks
+    );
+    if mode == InstructionErrorMode::Cpuid {
+        assert!(state.cpuid_callbacks > 0);
+        assert!(!state.rdtsc_error_armed);
+    } else {
+        assert!(state.rdtsc_error_armed);
+        assert!(state.rdtsc_callbacks > 0);
+        let probes: Vec<_> = events[..error_index]
+            .iter()
+            .filter_map(|(_, request)| match request {
+                Request::Cpuid {
+                    leaf: PROBE_LEAF,
+                    subleaf: PROBE_SUBLEAF,
+                    value,
+                } => Some(*value),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            probes,
+            [PROBE_REPLY],
+            "RDTSC error was not armed by the guest probe"
+        );
+    }
+}
+
+#[test]
+fn subscribed_cpuid_error_refuses_before_the_guest_continues() {
+    instruction_hook_error(
+        InstructionErrorMode::Cpuid,
+        "cpuid-error",
+        reverie::Errno::EINVAL,
+    );
+}
+
+#[test]
+fn subscribed_rdtsc_error_refuses_before_the_guest_continues() {
+    instruction_hook_error(
+        InstructionErrorMode::Rdtsc,
+        "rdtsc-error",
+        reverie::Errno::ERANGE,
     );
 }

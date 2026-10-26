@@ -718,6 +718,45 @@ impl<'a, T: Tool, R: GlobalRPC<T::GlobalState>> DbtGuest<'a, T, R> {
         Errno::from_ret(result as usize).map(|value| value as i64)
     }
 
+    async fn inject_checked<S: SyscallInfo>(
+        &mut self,
+        syscall: S,
+        purpose: InjectionPurpose,
+    ) -> Result<i64, Errno> {
+        let (number, args) = syscall.into_parts();
+        let syscall = Syscall::from_raw(number, args);
+        if let Some(tail) = self.common_tail {
+            if tail.ending() {
+                return std::future::pending().await;
+            }
+            let raw = [
+                args.arg0 as u64,
+                args.arg1 as u64,
+                args.arg2 as u64,
+                args.arg3 as u64,
+                args.arg4 as u64,
+                args.arg5 as u64,
+            ];
+            if matches!(
+                reverie::tool_host::physical_operation(
+                    reverie::tool_host::AdmissionDomain::InitialRootOnly,
+                    number.id() as i64,
+                    raw,
+                    None
+                ),
+                reverie::tool_host::PhysicalOperation::Refused { .. }
+            ) {
+                tail.refuse_initial_root_operation(number.id() as i64);
+                return std::future::pending().await;
+            }
+            if matches!(number.id() as i64, libc::SYS_exit | libc::SYS_exit_group) {
+                tail.set_exit(number.id() as i64, raw);
+                return std::future::pending().await;
+            }
+        }
+        self.inject_for_purpose(syscall, purpose)
+    }
+
     /// Reads optional image/task-scoped original-conditional facts. This is
     /// DBT-internal observation transport, not a shared clock capability.
     pub fn branch_fact(&self) -> Result<BranchFact, BranchFactUnavailable> {
@@ -775,26 +814,6 @@ where
         } else {
             self.global_state.receive_rpc(self.tid, message).await
         }
-    }
-
-    fn try_send_rpc_sync(
-        &self,
-        message: <T::GlobalState as GlobalTool>::Request,
-    ) -> Result<<T::GlobalState as GlobalTool>::Response, <T::GlobalState as GlobalTool>::Request>
-    {
-        if !crate::sync_rpc::is_active() {
-            return Err(message);
-        }
-        let Some((context, invoke)) = self.guest_rpc else {
-            return Err(message);
-        };
-        Ok(crate::sync_rpc::send_rpc_from_guest::<T::GlobalState>(
-            context,
-            invoke,
-            self.tid,
-            self.config,
-            message,
-        ))
     }
 
     fn config(&self) -> &<T::GlobalState as GlobalTool>::Config {
@@ -1010,12 +1029,8 @@ impl<T: Tool, R: GlobalRPC<T::GlobalState> + Send> Guest<T> for DbtGuest<'_, T, 
     async fn daemonize(&mut self) {}
 
     async fn inject<S: SyscallInfo>(&mut self, syscall: S) -> Result<i64, Errno> {
-        self.inject_with_purpose(syscall, InjectionPurpose::Application)
+        self.inject_checked(syscall, InjectionPurpose::Application)
             .await
-            .map_err(|error| match error {
-                Error::Errno(errno) => errno,
-                _ => Errno::EIO,
-            })
     }
 
     async fn inject_with_purpose<S: SyscallInfo>(
@@ -1023,38 +1038,8 @@ impl<T: Tool, R: GlobalRPC<T::GlobalState> + Send> Guest<T> for DbtGuest<'_, T, 
         syscall: S,
         purpose: InjectionPurpose,
     ) -> Result<i64, Error> {
-        let (number, args) = syscall.into_parts();
-        let syscall = Syscall::from_raw(number, args);
-        if let Some(tail) = self.common_tail {
-            if tail.ending() {
-                return std::future::pending().await;
-            }
-            let raw = [
-                args.arg0 as u64,
-                args.arg1 as u64,
-                args.arg2 as u64,
-                args.arg3 as u64,
-                args.arg4 as u64,
-                args.arg5 as u64,
-            ];
-            if matches!(
-                reverie::tool_host::physical_operation(
-                    reverie::tool_host::AdmissionDomain::InitialRootOnly,
-                    number.id() as i64,
-                    raw,
-                    None
-                ),
-                reverie::tool_host::PhysicalOperation::Refused { .. }
-            ) {
-                tail.refuse_initial_root_operation(number.id() as i64);
-                return std::future::pending().await;
-            }
-            if matches!(number.id() as i64, libc::SYS_exit | libc::SYS_exit_group) {
-                tail.set_exit(number.id() as i64, raw);
-                return std::future::pending().await;
-            }
-        }
-        self.inject_for_purpose(syscall, purpose)
+        self.inject_checked(syscall, purpose)
+            .await
             .map_err(Error::from)
     }
 

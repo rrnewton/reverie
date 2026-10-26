@@ -12,6 +12,7 @@ use reverie::Tool;
 use reverie::syscalls::Errno;
 use reverie::syscalls::Syscall;
 use reverie::syscalls::SyscallArgs;
+use reverie::syscalls::SyscallInfo;
 use reverie::syscalls::Sysno;
 use serde::Deserialize;
 use serde::Serialize;
@@ -25,6 +26,9 @@ pub enum Mode {
     Error,
     FailStart,
     FailPostExec,
+    ProtectFds {
+        deferred: bool,
+    },
 }
 
 #[derive(Default)]
@@ -49,10 +53,14 @@ impl Tool for AdmissionTool {
     fn new(_pid: Pid, config: &Mode) -> Self {
         Self(*config)
     }
-    fn subscriptions(_config: &Mode) -> Subscription {
+    fn subscriptions(config: &Mode) -> Subscription {
         {
             let mut subscription = Subscription::none();
             subscription.syscall(Sysno::getpid);
+            if matches!(config, Mode::ProtectFds { deferred: true }) {
+                subscription.syscall(Sysno::close_range);
+                subscription.syscall(Sysno::dup2);
+            }
             subscription
         }
     }
@@ -74,6 +82,36 @@ impl Tool for AdmissionTool {
         original: Syscall,
     ) -> Result<i64, Error> {
         match self.0 {
+            Mode::ProtectFds { .. } => {
+                if original.number() != Sysno::getpid {
+                    // A targeted dup2 must be refused before Tool execution.
+                    // close_range remains visible for Tool accounting.
+                    let tag = if original.number() == Sysno::close_range {
+                        3
+                    } else {
+                        4
+                    };
+                    assert_eq!(guest.send_rpc(tag).await, tag);
+                    guest.tail_inject(original).await
+                }
+                let (_, args) = original.into_parts();
+                if args.arg0 != 0x5246_4454 {
+                    return guest.inject(original).await.map_err(Error::from);
+                }
+                let phase = args.arg1 as u64;
+                assert!(matches!(phase, 1 | 2));
+                assert_eq!(guest.send_rpc(phase).await, phase);
+                if phase == 1 {
+                    // Observe the actual existing ownership fact; never assume
+                    // that this launch assigned fd 1024 or any other number.
+                    let fd = (0..1_048_576)
+                        .find(|fd| guest.is_runtime_owned_fd(*fd))
+                        .expect("no live primary descriptor");
+                    Ok(i64::from(fd))
+                } else {
+                    Ok(0x517a)
+                }
+            }
             Mode::Inject(number) | Mode::Tail(number) => {
                 let operation = Syscall::from_raw(
                     Sysno::new(number as usize).unwrap(),

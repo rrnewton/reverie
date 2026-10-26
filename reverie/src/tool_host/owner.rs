@@ -497,8 +497,10 @@ impl<'a, T: Tool, P: CallbackPorts<T::GlobalState>> CallbackLease<'a, T, P> {
 
     /// Run real startup callbacks using a Guest constructed by this lease.
     ///
-    /// The startup phase never leaves the owner. An adapter cannot pair it
-    /// with a foreign Guest, state or connection to manufacture completion.
+    /// The startup phase never leaves the owner, so a caller-built Guest cannot
+    /// mint completion. Factories must use the supplied parts faithfully; that
+    /// property is established by the adapter implementation and its tests,
+    /// not by the generic factory type alone.
     pub fn startup<F: TaskGuestFactory<T, P::Port<'a>>>(
         &mut self,
         factory: &mut F,

@@ -154,17 +154,28 @@ impl<G: GlobalTool> PrimaryPort<'_, G> {
         }
         port.exchange(|client| client.declare_initial_root_ready())
     }
+
+    fn request(&self, message: G::Request) -> Result<G::Response, Error> {
+        // User serialization/deserialization may execute Tool code. Retain
+        // the primary lease only for the actual framed exchange.
+        let request = reverie_rpc_transport::RpcRequest::new(self.call.identity.tid, message)
+            .map_err(io::Error::other)?;
+        let response = self.exchange(|client| client.receive_response(request))?;
+        response
+            .decode()
+            .map_err(|error| io::Error::other(error).into())
+    }
 }
 
 #[reverie::tool]
 impl<G: GlobalTool> GlobalRPC<G> for PrimaryPort<'_, G> {
     async fn send_rpc(&self, request: G::Request) -> G::Response {
-        self.exchange(|client| client.try_send_rpc(request))
+        self.request(request)
             .expect("caller Tool primary RPC failed")
     }
     fn try_send_rpc_sync(&self, request: G::Request) -> Result<G::Response, G::Request> {
         Ok(self
-            .exchange(|client| client.try_send_rpc(request))
+            .request(request)
             .expect("caller Tool primary RPC failed"))
     }
     fn config(&self) -> &G::Config {

@@ -54,6 +54,36 @@ fn main() {
                 println!("{}", libc::syscall(libc::SYS_getpid));
                 return;
             }
+            "raw-close-range" => {
+                let phase_file = std::env::args_os().nth(2).expect("phase file");
+                std::fs::write(&phase_file, b"before-full-range\n").unwrap();
+                println!("before-full-range");
+                assert_eq!(libc::syscall(libc::SYS_close_range, 3_u32, u32::MAX, 0), 0);
+                assert!(libc::syscall(libc::SYS_getpid) > 0);
+                std::fs::write(&phase_file, b"after-full-range\n").unwrap();
+                println!("after-full-range");
+                return;
+            }
+            "protect-close-range" | "protect-primary-range" | "protect-dup2" => {
+                let primary = libc::syscall(libc::SYS_getpid, 0x5246_4454, 1);
+                assert!(primary >= 3);
+                if operation == "protect-close-range" {
+                    assert_eq!(libc::syscall(libc::SYS_close_range, 3_u32, u32::MAX, 0), 0);
+                } else if operation == "protect-primary-range" {
+                    assert_eq!(libc::syscall(libc::SYS_close_range, primary, primary, 0), 0);
+                } else {
+                    assert_eq!(libc::syscall(libc::SYS_dup2, 1, primary), -1);
+                    assert_eq!(
+                        std::io::Error::last_os_error().raw_os_error(),
+                        Some(libc::EBADF)
+                    );
+                }
+                // This subscribed call must reach the real coordinator and
+                // receive its reply over the still-owned primary socket.
+                assert_eq!(libc::syscall(libc::SYS_getpid, 0x5246_4454, 2), 0x517a);
+                println!("primary-survived");
+                return;
+            }
             _ => panic!("unknown operation"),
         };
         if child == 0 {

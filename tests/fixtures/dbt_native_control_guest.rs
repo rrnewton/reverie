@@ -6,6 +6,7 @@
 use std::arch::x86_64::__cpuid_count;
 use std::arch::x86_64::_mm_lfence;
 use std::arch::x86_64::_rdtsc;
+use std::io::Write;
 
 fn getpid() -> i64 {
     let result: i64;
@@ -49,6 +50,20 @@ fn main() {
             );
             println!("tsc={first},{second}");
         }
-        _ => panic!("expected getpid, exit42, or instructions"),
+        Some("cpuid-error") => {
+            println!("before-cpuid-error");
+            std::io::stdout().flush().unwrap();
+            std::hint::black_box(__cpuid_count(0x4fff_fffe, 0x1357));
+            println!("after-cpuid-error");
+        }
+        Some("rdtsc-error") => {
+            println!("before-rdtsc-error");
+            std::io::stdout().flush().unwrap();
+            // This explicit probe arms the Tool only after startup/loader work.
+            std::hint::black_box(__cpuid_count(0x4fff_fffe, 0x1357));
+            std::hint::black_box(ordered_tsc());
+            println!("after-rdtsc-error");
+        }
+        _ => panic!("expected getpid, exit42, instructions, cpuid-error, or rdtsc-error"),
     }
 }

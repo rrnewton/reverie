@@ -18,6 +18,33 @@ const NAME: &str = "primary_binding_and_ports_refuse_changed_provenance_before_i
 const CONFIG: u64 = 0x6a71;
 const FORBIDDEN_REQUEST: u64 = 999;
 
+static SERIALIZED: AtomicUsize = AtomicUsize::new(0);
+static DESERIALIZED: AtomicUsize = AtomicUsize::new(0);
+
+#[derive(Debug, PartialEq)]
+struct Wire(u64);
+
+impl serde::Serialize for Wire {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        assert!(
+            GUEST_CLIENT.connection.try_lock().is_ok(),
+            "user serialization ran under the primary I/O lease"
+        );
+        SERIALIZED.fetch_add(1, Ordering::SeqCst);
+        self.0.serialize(serializer)
+    }
+}
+impl<'de> serde::Deserialize<'de> for Wire {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        assert!(
+            GUEST_CLIENT.connection.try_lock().is_ok(),
+            "user deserialization ran under the primary I/O lease"
+        );
+        DESERIALIZED.fetch_add(1, Ordering::SeqCst);
+        u64::deserialize(deserializer).map(Self)
+    }
+}
+
 #[derive(Default)]
 struct Global {
     requests: Mutex<Vec<(i32, u64)>>,
@@ -25,13 +52,16 @@ struct Global {
 
 #[reverie::global_tool]
 impl GlobalTool for Global {
-    type Request = u64;
-    type Response = u64;
+    type Request = Wire;
+    type Response = Wire;
     type Config = u64;
 
-    async fn receive_rpc(&self, from: Tid, request: u64) -> u64 {
-        self.requests.lock().unwrap().push((from.as_raw(), request));
-        request ^ CONFIG
+    async fn receive_rpc(&self, from: Tid, request: Wire) -> Wire {
+        self.requests
+            .lock()
+            .unwrap()
+            .push((from.as_raw(), request.0));
+        Wire(request.0 ^ CONFIG)
     }
 }
 
@@ -89,7 +119,7 @@ fn assert_refused_before_io(
     assert_error(
         port.exchange(|client| {
             operation_entered = true;
-            client.try_send_rpc(FORBIDDEN_REQUEST)
+            client.try_send_rpc(Wire(FORBIDDEN_REQUEST))
         }),
         expected,
     );
@@ -177,7 +207,10 @@ fn exercise_primary() {
     }
     let port = binding.borrow(call).unwrap();
     let before = calls.count.load(Ordering::SeqCst);
-    assert_eq!(port.try_send_rpc_sync(7), Ok(7 ^ CONFIG));
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .build()
+        .unwrap();
+    assert_eq!(runtime.block_on(port.send_rpc(Wire(7))), Wire(7 ^ CONFIG));
     assert!(calls.count.load(Ordering::SeqCst) > before);
 
     for wrong in [helper, other_process] {
@@ -269,7 +302,9 @@ fn exercise_primary() {
     assert!(!GUEST_CLIENT.connection.is_poisoned());
     assert_eq!(GUEST_CLIENT.descriptor(std::process::id()), Some(fd));
     let port = binding.borrow(call).unwrap();
-    assert_eq!(port.try_send_rpc_sync(8), Ok(8 ^ CONFIG));
+    assert_eq!(port.try_send_rpc_sync(Wire(8)), Ok(Wire(8 ^ CONFIG)));
+    assert_eq!(SERIALIZED.load(Ordering::SeqCst), 2);
+    assert_eq!(DESERIALIZED.load(Ordering::SeqCst), 2);
     assert!(!calls.wrong_purpose.load(Ordering::SeqCst));
 }
 

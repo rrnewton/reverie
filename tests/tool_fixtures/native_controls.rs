@@ -29,6 +29,14 @@ pub const PROBE_LEAF: u32 = 0x4fff_fffe;
 pub const PROBE_SUBLEAF: u32 = 0x1357;
 pub const PROBE_REPLY: [u32; 4] = [0x3141_5926, 0x5358_9793, 0x2384_6264, 0x3383_2795];
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum InstructionErrorMode {
+    #[default]
+    None,
+    Cpuid,
+    Rdtsc,
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ThreadState {
     pub initialized_tid: i32,
@@ -39,6 +47,7 @@ pub struct ThreadState {
     pub ordinary_getpids: u64,
     pub cpuid_callbacks: u64,
     pub rdtsc_callbacks: u64,
+    pub rdtsc_error_armed: bool,
     pub cookie: u64,
 }
 
@@ -64,6 +73,11 @@ pub enum Request {
         request: Rdtsc,
         value: RdtscResult,
     },
+    InstructionError {
+        mode: InstructionErrorMode,
+        errno: i32,
+        state: ThreadState,
+    },
     ThreadExit {
         status: i32,
         state: ThreadState,
@@ -83,7 +97,7 @@ pub struct ControlGlobal {
 impl GlobalTool for ControlGlobal {
     type Request = Request;
     type Response = u64;
-    type Config = ();
+    type Config = InstructionErrorMode;
 
     async fn receive_rpc(&self, from: Pid, request: Request) -> u64 {
         let mut events = self.events.lock().unwrap();
@@ -110,7 +124,7 @@ impl<const INSTRUCTIONS: bool> Tool for ControlTool<INSTRUCTIONS> {
     type GlobalState = ControlGlobal;
     type ThreadState = ThreadState;
 
-    fn subscriptions(_: &()) -> Subscription {
+    fn subscriptions(_: &InstructionErrorMode) -> Subscription {
         let mut subscriptions = Subscription::all_syscalls();
         if INSTRUCTIONS {
             subscriptions.cpuid().rdtsc();
@@ -194,6 +208,29 @@ impl<const INSTRUCTIONS: bool> Tool for ControlTool<INSTRUCTIONS> {
         subleaf: u32,
     ) -> Result<CpuIdResult, Errno> {
         assert!(INSTRUCTIONS, "an unsubscribed CPUID reached the Tool");
+        let probe = leaf == PROBE_LEAF && subleaf == PROBE_SUBLEAF;
+        let error_mode = *guest.config();
+        if probe && error_mode != InstructionErrorMode::None {
+            // Only the explicit guest probe may select an error. Loader
+            // instruction callbacks must retain their ordinary answers.
+            assert_eq!(guest.thread_state().thread_starts, 1);
+            assert_eq!(guest.thread_state().post_execs, 1);
+            if error_mode == InstructionErrorMode::Cpuid {
+                let state = guest.thread_state_mut();
+                state.cpuid_callbacks += 1;
+                state.cookie += 1;
+                let errno = Errno::EINVAL;
+                guest
+                    .send_rpc(Request::InstructionError {
+                        mode: error_mode,
+                        errno: errno.into_raw(),
+                        state: guest.thread_state().clone(),
+                    })
+                    .await;
+                return Err(errno);
+            }
+            guest.thread_state_mut().rdtsc_error_armed = true;
+        }
         let value = if leaf == PROBE_LEAF && subleaf == PROBE_SUBLEAF {
             PROBE_REPLY
         } else {
@@ -224,6 +261,23 @@ impl<const INSTRUCTIONS: bool> Tool for ControlTool<INSTRUCTIONS> {
         request: Rdtsc,
     ) -> Result<RdtscResult, Errno> {
         assert!(INSTRUCTIONS, "an unsubscribed RDTSC reached the Tool");
+        if guest.thread_state().rdtsc_error_armed {
+            assert_eq!(*guest.config(), InstructionErrorMode::Rdtsc);
+            assert_eq!(guest.thread_state().thread_starts, 1);
+            assert_eq!(guest.thread_state().post_execs, 1);
+            let state = guest.thread_state_mut();
+            state.rdtsc_callbacks += 1;
+            state.cookie += 1;
+            let errno = Errno::ERANGE;
+            guest
+                .send_rpc(Request::InstructionError {
+                    mode: InstructionErrorMode::Rdtsc,
+                    errno: errno.into_raw(),
+                    state: guest.thread_state().clone(),
+                })
+                .await;
+            return Err(errno);
+        }
         // Preserve physical time. This fixture tests event routing and return
         // propagation, not a determinization strategy or a predicted timestamp.
         let value = RdtscResult::new(request);

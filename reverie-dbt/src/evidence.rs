@@ -3032,9 +3032,7 @@ mod tests {
         assert!(event_exit.contains("finalize_runtime_process();"));
     }
 
-    #[test]
-    fn native_processes_finalize_after_their_runtime_output() {
-        let source = include_str!("../native/client.c");
+    fn assert_native_finalization_contract(source: &str) {
         let event_exit = source
             .split_once("static void event_exit(void) {")
             .unwrap()
@@ -3063,24 +3061,101 @@ mod tests {
             .find("task_state->magic != TASK_STATE_MAGIC")
             .unwrap();
         let startup_refusal = background.find("if (startup_status != 0)").unwrap();
-        let background_final = background
-            .find("require_evidence_flush(EVIDENCE_FRAME_FINAL);")
-            .unwrap();
-        let background_quiescent = background
-            .find("atomic_store_explicit(&runtime_background_state, 3")
+        let success_finalization = background
+            .find("finish_runtime_background(false);")
             .unwrap();
         assert!(background_initialization < background_runtime);
         assert!(mode_validation < background_runtime);
         assert!(background.contains("uint32_t native_mode = runtime_uses_external_global()"));
         assert!(background_runtime < background_callback_leave);
         assert!(background_callback_leave < startup_refusal);
-        assert!(startup_refusal < background_final);
-        assert!(
-            background[startup_refusal..background_final]
-                .contains("exit_runtime_tree(CLIENT_THREAD_START_FAILURE_EXIT_CODE);")
+        assert!(startup_refusal < success_finalization);
+        // Identity, mode and callback-status failures must finalize as failed
+        // and return, never enter DR cleanup from the helper.
+        assert_eq!(
+            background
+                .matches("finish_runtime_background(true);\n    return;")
+                .count(),
+            3
         );
-        assert!(background_callback_leave < background_final);
-        assert!(background_final < background_quiescent);
+        for refusal in [
+            "if (!evidence_process_start_time(",
+            "if (task_state == NULL",
+            "if (startup_status != 0)",
+        ] {
+            let branch = background
+                .split_once(refusal)
+                .unwrap()
+                .1
+                .split_once('}')
+                .unwrap()
+                .0;
+            assert!(branch.contains("finish_runtime_background(true);\n    return;"));
+        }
+        assert!(!background.contains("exit_runtime_tree("));
+        let helper = source
+            .split_once("static void finish_runtime_background(bool failed) {")
+            .unwrap()
+            .1
+            .split_once("static void runtime_background_init(")
+            .unwrap()
+            .0;
+        let sticky = helper
+            .find("if (failed)\n    mark_backend_failure();")
+            .unwrap();
+        let final_attempt = helper
+            .find("bool finalized = evidence_flush(EVIDENCE_FRAME_FINAL);")
+            .unwrap();
+        let failed_final = helper.find("if (!finalized) {").unwrap();
+        let acknowledge = helper
+            .find("if (finalized)\n    atomic_store_explicit(")
+            .unwrap();
+        let finished = helper
+            .find("&runtime_process_control->finished_helper_epoch,")
+            .unwrap();
+        let terminal = helper
+            .find("&runtime_background_state, failed ? RUNTIME_BACKGROUND_FAILED : 3,")
+            .unwrap();
+        assert!(sticky < final_attempt && final_attempt < failed_final);
+        assert!(failed_final < acknowledge && acknowledge < finished && finished < terminal);
+        let final_error = &helper[failed_final..acknowledge];
+        assert!(
+            final_error.contains("mark_backend_failure();")
+                && final_error.contains("failed = true;")
+        );
+        assert!(
+            helper[finished..terminal]
+                .contains("runtime_process_epoch,\n        memory_order_release);")
+        );
+        assert!(helper[terminal..].contains("memory_order_release);"));
+        assert!(
+            !helper.contains("require_evidence_flush(") && !helper.contains("exit_runtime_tree(")
+        );
+        assert!(source.contains("#define RUNTIME_BACKGROUND_FAILED 4"));
+        let wait = source
+            .split_once("static bool wait_for_runtime_ready(bool require_background_finished) {")
+            .unwrap()
+            .1
+            .split_once("static uint64_t guest_tsc(")
+            .unwrap()
+            .0;
+        let acquire = wait
+            .find("atomic_load_explicit(&runtime_background_state, memory_order_acquire);")
+            .unwrap();
+        let failure = wait
+            .find("if (state == RUNTIME_BACKGROUND_FAILED) {")
+            .unwrap();
+        let fatal = wait
+            .find("exit_runtime_tree(CLIENT_THREAD_START_FAILURE_EXIT_CODE);")
+            .unwrap();
+        let readiness = wait
+            .find("if (require_background_finished ? state == 3 :")
+            .unwrap();
+        assert!(acquire < failure && failure < fatal && fatal < readiness);
+        assert!(wait[fatal..readiness].contains("return false;"));
+        assert!(wait[readiness..].contains("reverie_dbt_runtime_ready("));
+        assert_eq!(source.matches("!wait_for_runtime_ready(false)").count(), 4);
+        assert_eq!(source.matches("!wait_for_runtime_ready(true)").count(), 1);
         assert!(event_exit.contains("finalize_runtime_process();"));
         let finalizer = source
             .split_once("static void finalize_runtime_process(void) {")
@@ -3096,6 +3171,54 @@ mod tests {
             .find("require_evidence_flush(EVIDENCE_FRAME_FINAL);")
             .unwrap();
         assert!(process_exit < final_frame);
+    }
+
+    #[test]
+    fn native_processes_finalize_after_their_runtime_output() {
+        assert_native_finalization_contract(include_str!("../native/client.c"));
+    }
+
+    #[test]
+    fn native_finalization_contract_rejects_order_and_failure_mutations() {
+        let source = include_str!("../native/client.c");
+        // These are checker mutation controls, not execution of mutated C.
+        for (before, after) in [
+            (
+                "finish_runtime_background(true);",
+                "finish_runtime_background(false);",
+            ),
+            (
+                "bool finalized = evidence_flush(EVIDENCE_FRAME_FINAL);",
+                "bool finalized = true;",
+            ),
+            (
+                "if (finalized)\n    atomic_store_explicit(",
+                "if (failed)\n    atomic_store_explicit(",
+            ),
+            (
+                "&runtime_background_state, failed ? RUNTIME_BACKGROUND_FAILED : 3,",
+                "&runtime_background_state, 3,",
+            ),
+            (
+                "#define RUNTIME_BACKGROUND_FAILED 4",
+                "#define RUNTIME_BACKGROUND_FAILED 3",
+            ),
+            (
+                "!wait_for_runtime_ready(false)",
+                "!reverie_dbt_runtime_ready(1)",
+            ),
+            (
+                "reverie_dbt_runtime_process_exit();",
+                "require_evidence_flush(EVIDENCE_FRAME_FINAL);\n    reverie_dbt_runtime_process_exit();",
+            ),
+        ] {
+            let changed = source.replacen(before, after, 1);
+            assert_ne!(source, changed, "mutation did not match: {before}");
+            assert!(
+                std::panic::catch_unwind(|| assert_native_finalization_contract(&changed)).is_err(),
+                "checker accepted mutation: {before}"
+            );
+        }
     }
 
     #[test]

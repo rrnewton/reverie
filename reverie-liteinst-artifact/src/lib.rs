@@ -1032,8 +1032,8 @@ const CONTENT_REVERIE_CATALOG: [(&str, u64, &str); 61] = [
     ),
     (
         "reverie/src/tool_host/owner.rs",
-        26496,
-        "d0663932e4731e565d04f26bc5292b5383af56cefb76789f380ddbc2e33ded76",
+        26628,
+        "45df95ce484d40161dd97ef5f957adcb57d8ad52744d1285efb6b085e0e4cefd",
     ),
     (
         "reverie/src/tool_host/driver.rs",
