@@ -21,7 +21,9 @@ use crate::guest::support::raw_result;
 use crate::guest::support::tool_callback_active;
 use crate::trap::raw_syscall6;
 
-/// Move an owned ordinary coordinator socket above the guest's low descriptors.
+/// Move an owned ordinary coordinator socket into the runtime range, at or
+/// above [`crate::guest::protect::RUNTIME_FD_MIN`], above the guest's low
+/// descriptors.
 ///
 /// This preserves the same open-file description and connection, setting
 /// close-on-exec on its new descriptor. It neither connects nor authenticates a
@@ -30,7 +32,8 @@ use crate::trap::raw_syscall6;
 /// drops the original owner exactly once; failure drops it and returns the
 /// actual duplication error. Native inherited-gate streams do not use this.
 pub fn move_ordinary_coordinator_stream(stream: UnixStream) -> io::Result<UnixStream> {
-    // Explicit InitialImage placement; the ordinary connection does not opt in.
+    // InitialImage placement, which fails rather than keep a low number; the
+    // ordinary connection uses `protect::place_runtime_fd`, which falls back.
     // An occupied high descriptor is skipped, never overwritten.
     let reserved_fd = raw_result(unsafe {
         raw_syscall6(
@@ -38,7 +41,7 @@ pub fn move_ordinary_coordinator_stream(stream: UnixStream) -> io::Result<UnixSt
             [
                 stream.as_raw_fd() as u64,
                 libc::F_DUPFD_CLOEXEC as u64,
-                1024,
+                crate::guest::protect::RUNTIME_FD_MIN as u64,
                 0,
                 0,
                 0,
