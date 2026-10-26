@@ -56,8 +56,11 @@ use crate::trap::raw_syscall6;
 /// A backend's part in [`install_tool_with`]: its patcher, the steps that
 /// prepare it, its runtime services and its option selectors, called on the
 /// installing thread before application threads start. The steps from
-/// [`Self::preflight`] to [`Self::runtime_config`] run once each, in the order
-/// listed; [`Self::patcher`] and [`Self::runtime`] are asked when needed.
+/// [`Self::preflight`] to [`Self::runtime_config`] run once each. A host may
+/// explicitly preflight its selector through [`Self::preflight_site_patching`]
+/// before fixed-gate publication. Otherwise [`Self::site_patching`] retains
+/// its position after coordinator and instruction setup. [`Self::patcher`]
+/// and [`Self::runtime`] are asked when needed.
 ///
 /// # Safety
 ///
@@ -77,6 +80,14 @@ pub unsafe trait PatchHost {
     /// selected: checks the backend's own allocation preconditions.
     fn preflight(&self) -> io::Result<()> {
         Ok(())
+    }
+
+    /// Optional selector preflight before irreversible fixed-gate publication.
+    /// `None` preserves the installation order of existing hosts. A host that
+    /// returns `Some` supplies the result once; installation consumes that
+    /// captured value instead of calling [`Self::site_patching`] again.
+    fn preflight_site_patching(&self) -> Option<io::Result<bool>> {
+        None
     }
 
     /// Registers the fallback continuation's handlers and prepares this
@@ -150,6 +161,33 @@ where
     // heap, never in the guest's own malloc heap; see LiteInst's installer.
     let _private_allocations = crate::guest::alloc::enter_dispatch();
     host.preflight()?;
+    // A host can refuse a compile-time capability before fixed-gate
+    // publication. Hosts that do not opt in retain the original late
+    // selection and fatal-on-error boundary after publication.
+    #[cfg(feature = "fixed-syscall-gates")]
+    let preflight_site_patching = match host.preflight_site_patching() {
+        None => None,
+        Some(Ok(selected)) => Some(selected),
+        Some(Err(error)) => {
+            // An output launcher must see this ordinary installation refusal,
+            // rather than mistake the child for an unsupported executable.
+            // Only a fresh, unfiltered image may make the config-only
+            // handshake. Do not publish gates or reserve a protected fd, and
+            // retain the original selector error if the handshake also fails.
+            // SAFETY: as in the inherited-filter check below, the caller owns
+            // the exclusive startup boundary and its trusted raw syscall gate.
+            // This query only reads the process's current filter count.
+            if !crate::trap::fixed_gates_published()
+                && unsafe { crate::guest::sigalrm::seccomp_filter_count() } == Some(0)
+            {
+                let _refusal_rpc = CoordinatorRpc::<T::GlobalState>::connect(
+                    coordinator,
+                    crate::guest::protect::replace_coordinator_fd,
+                );
+            }
+            return Err(error);
+        }
+    };
     #[cfg(feature = "fixed-syscall-gates")]
     let mut fixed_install = FixedGateInstallation { complete: false };
     #[cfg(feature = "fixed-syscall-gates")]
@@ -194,6 +232,12 @@ where
         rdtsc: subscriptions.has_rdtsc(),
     };
     crate::guest::instruction::preflight_instruction_faulting(instruction_subscriptions)?;
+    #[cfg(feature = "fixed-syscall-gates")]
+    let site_patching = match preflight_site_patching {
+        Some(selected) => selected,
+        None => host.site_patching()?,
+    };
+    #[cfg(not(feature = "fixed-syscall-gates"))]
     let site_patching = host.site_patching()?;
     let vdso_sites = if site_patching {
         reverie::vdso::patch_current_vdso(&subscriptions)

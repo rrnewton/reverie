@@ -1269,6 +1269,16 @@ fn coordinator(path: &Path) {
 
 unsafe extern "C" fn forbidden_signal_handler(_signal: libc::c_int) {}
 
+// Site diagnostics describe patcher-owned sites. Trap-only builds claim none;
+// syscall/continuation and Tool callback counters remain independently checked.
+fn expected_site_count(with_liteinst: u64) -> u64 {
+    if cfg!(feature = "liteinst") {
+        with_liteinst
+    } else {
+        0
+    }
+}
+
 fn guest(path: &Path) {
     let mut expected_mask = 0_u64;
     let mask_query = unsafe {
@@ -1328,13 +1338,13 @@ fn guest(path: &Path) {
     println!(
         "calls={CALLS} traps={traps} hooks={hooks} rpc_delta={rpc_delta} nested_traps={nested_traps} nested_hooks={nested_hooks} mask_traps={mask_traps} mask_hooks={mask_hooks} mask_result={mask_result} first_use_exec_result={first_use_exec_result} first_use_signal_result={first_use_signal_result} nested_uid={nested_uid} expected_uid={expected_uid}"
     );
-    assert_eq!(traps, 1);
-    assert_eq!(hooks, CALLS);
+    assert_eq!(traps, expected_site_count(1));
+    assert_eq!(hooks, expected_site_count(CALLS));
     assert_eq!(rpc_delta, CALLS + 2);
-    assert_eq!(nested_traps, 1);
-    assert_eq!(nested_hooks, CALLS + 1);
-    assert_eq!(mask_traps, 1);
-    assert_eq!(mask_hooks, CALLS + 1);
+    assert_eq!(nested_traps, expected_site_count(1));
+    assert_eq!(nested_hooks, expected_site_count(CALLS + 1));
+    assert_eq!(mask_traps, expected_site_count(1));
+    assert_eq!(mask_hooks, expected_site_count(CALLS + 1));
     assert_eq!(mask_result, -i64::from(libc::EPERM));
     assert_eq!(first_use_exec_result, -i64::from(libc::ENOTSUP));
     assert_eq!(first_use_signal_result, -i64::from(libc::EPERM));
@@ -1420,7 +1430,11 @@ fn tool_signal_runtime_guest(path: &Path) {
 
     unsafe { reverie_liteinst::install_tool::<CounterTool>(path) }.unwrap();
     assert!(reverie_inguest::trap::signal_return_restricted());
-    for signal in [libc::SIGSYS, libc::SIGTRAP] {
+    for signal in [
+        libc::SIGSYS,
+        #[cfg(feature = "liteinst")]
+        libc::SIGTRAP,
+    ] {
         let mut action = KernelSigaction::default();
         unsafe { raw_sigaction(signal, None, Some(&mut action)) }.unwrap();
         assert_ne!(action.handler, libc::SIG_DFL as u64, "signal {signal}");
@@ -1461,8 +1475,14 @@ fn tool_guest_sigreturn_guest(path: &Path, through_hook: bool, alias: bool) -> !
             );
         }
         let site = core::ptr::addr_of!(reverie_liteinst_rpc_numbered_site) as usize as u64;
-        assert!(reverie_liteinst::reverie_liteinst_site_hook_count(site) >= 1);
-        println!("numbered-site-hooked");
+        if cfg!(feature = "liteinst") {
+            assert!(reverie_liteinst::reverie_liteinst_site_hook_count(site) >= 1);
+            println!("numbered-site-hooked");
+        } else {
+            assert_eq!(reverie_liteinst::reverie_liteinst_site_hook_count(site), 0);
+            assert_eq!(reverie_liteinst::reverie_liteinst_site_trap_count(site), 0);
+            println!("numbered-site-trapped");
+        }
         unsafe { reverie_liteinst_rpc_numbered(number) };
     } else if alias {
         println!("sigreturn-site-fresh");
@@ -2141,13 +2161,79 @@ fn sigalrm_inherited_filter_guest(path: &Path) {
         )
     };
     assert_eq!(added, 0);
-    unsafe { reverie_liteinst::install_tool::<CounterTool>(path) }.unwrap();
-    assert!(!reverie_inguest::guest::sigalrm::admitted());
-    assert_eq!(
-        sigalrm_sigaction(&guest_handler_action(0)),
-        Err(libc::EPERM)
-    );
-    println!("sigalrm-inherited-filter-ok");
+    #[cfg(not(feature = "fixed-syscall-gates"))]
+    {
+        unsafe { reverie_liteinst::install_tool::<CounterTool>(path) }.unwrap();
+        assert!(!reverie_inguest::guest::sigalrm::admitted());
+        assert_eq!(
+            sigalrm_sigaction(&guest_handler_action(0)),
+            Err(libc::EPERM)
+        );
+        println!("sigalrm-inherited-filter-ok");
+    }
+    #[cfg(feature = "fixed-syscall-gates")]
+    {
+        // Fixed-gate installation has a stronger admission rule: refuse the
+        // complete runtime before publishing gates, a dispatcher or a Tool.
+        let action = physical_sigalrm_action();
+        let mask = physical_mask();
+        assert_eq!(
+            unsafe { reverie_inguest::guest::sigalrm::seccomp_filter_count() },
+            Some(1)
+        );
+        assert_eq!(REFUSED_INSTALL_CALLBACKS.load(Ordering::Relaxed), 0);
+        let error =
+            unsafe { reverie_liteinst::install_tool::<RefusedInstallTool>(path) }.unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::Unsupported);
+        assert_eq!(
+            error.to_string(),
+            "fixed syscall gates refuse an inherited or unreadable seccomp filter state"
+        );
+        assert!(!reverie_inguest::trap::fixed_gates_published());
+        assert!(!reverie_inguest::trap::has_dispatcher());
+        fixed_gates_guest::assert_page_absent();
+        assert!(!reverie_inguest::guest::sigalrm::admitted());
+        assert_eq!(REFUSED_INSTALL_CALLBACKS.load(Ordering::Relaxed), 0);
+        assert_eq!(
+            unsafe { reverie_inguest::guest::sigalrm::seccomp_filter_count() },
+            Some(1)
+        );
+        let after = physical_sigalrm_action();
+        assert_eq!(
+            (after.handler, after.flags, after.restorer, after.mask),
+            (action.handler, action.flags, action.restorer, action.mask)
+        );
+        assert_eq!(physical_mask(), mask);
+        // Exercise a genuine syscall after refusal: it must not reach a Tool.
+        assert!(unsafe { libc::syscall(libc::SYS_getpid) } > 0);
+        assert_eq!(REFUSED_INSTALL_CALLBACKS.load(Ordering::Relaxed), 0);
+        println!(
+            "sigalrm-inherited-filter-refused Unsupported gates=absent dispatcher=absent callbacks=0 filter=unchanged action=unchanged mask=unchanged"
+        );
+    }
+}
+
+#[cfg(feature = "fixed-syscall-gates")]
+static REFUSED_INSTALL_CALLBACKS: AtomicU64 = AtomicU64::new(0);
+
+#[cfg(feature = "fixed-syscall-gates")]
+#[derive(Default)]
+struct RefusedInstallTool;
+
+#[cfg(feature = "fixed-syscall-gates")]
+#[reverie::tool]
+impl Tool for RefusedInstallTool {
+    type GlobalState = CounterGlobal;
+    type ThreadState = ();
+
+    async fn handle_syscall_event<G: Guest<Self>>(
+        &self,
+        guest: &mut G,
+        syscall: Syscall,
+    ) -> Result<i64, Error> {
+        REFUSED_INSTALL_CALLBACKS.fetch_add(1, Ordering::Relaxed);
+        Ok(guest.inject(syscall).await?)
+    }
 }
 
 /// Memory with a protection key other than 0 before the runtime starts keeps
@@ -2730,11 +2816,11 @@ fn instruction_guest(path: &Path, publication: InstructionPublication) {
         core::ptr::addr_of!(reverie_liteinst_rpc_nested_cpuid_site) as usize as u64;
     assert_eq!(
         reverie_liteinst::reverie_liteinst_site_trap_count(patched_cpuid_address),
-        1
+        expected_site_count(1)
     );
     assert_eq!(
         reverie_liteinst::reverie_liteinst_site_hook_count(patched_cpuid_address),
-        2,
+        expected_site_count(2),
         "the planted nested call must traverse the existing hook exactly once"
     );
     let first_use_rdtsc_address =
@@ -2756,11 +2842,11 @@ fn instruction_guest(path: &Path, publication: InstructionPublication) {
     );
     assert_eq!(
         reverie_liteinst::reverie_liteinst_site_trap_count(first_use_rdtsc_address),
-        1
+        expected_site_count(1)
     );
     assert_eq!(
         reverie_liteinst::reverie_liteinst_site_hook_count(first_use_rdtsc_address),
-        1
+        expected_site_count(1)
     );
     assert_eq!(
         unsafe { reverie_liteinst_straddling_cpuid() } as u32,
@@ -2803,9 +2889,15 @@ fn instruction_guest(path: &Path, publication: InstructionPublication) {
     );
     assert_eq!(INSTRUCTION_HANDLER_RPC_CALLS.load(Ordering::Relaxed), 1);
     assert_eq!(INSTRUCTION_TOOL_CALLBACKS.load(Ordering::Relaxed), 9);
-    println!(
-        "cpuid=tool rdtsc=tool rdtscp=tool rdrand=masked rdseed=masked instruction-handler-rpc=1 patched-native=1 first-use-native=1 nested-syscall-native=1 tool-callbacks=9"
-    );
+    if cfg!(feature = "liteinst") {
+        println!(
+            "cpuid=tool rdtsc=tool rdtscp=tool rdrand=masked rdseed=masked instruction-handler-rpc=1 patched-native=1 first-use-native=1 nested-syscall-native=1 tool-callbacks=9"
+        );
+    } else {
+        println!(
+            "cpuid=tool rdtsc=tool rdtscp=tool rdrand=masked rdseed=masked instruction-handler-rpc=1 trapped-native=1 first-use-native=1 nested-syscall-native=1 tool-callbacks=9"
+        );
+    }
     std::io::stdout().flush().unwrap();
 }
 
@@ -2902,11 +2994,11 @@ fn fork_guest(path: &Path) {
     let wait_address = core::ptr::addr_of!(reverie_liteinst_rpc_wait4_site) as usize as u64;
     assert_eq!(
         reverie_liteinst::reverie_liteinst_site_trap_count(wait_address),
-        1
+        expected_site_count(1)
     );
     assert_eq!(
         reverie_liteinst::reverie_liteinst_site_hook_count(wait_address),
-        1
+        expected_site_count(1)
     );
     let observed = unsafe { reverie_liteinst_rpc_getpid() };
     assert_eq!(observed, i64::from(unsafe { libc::getpid() }));
@@ -3211,11 +3303,11 @@ fn signal_mask_checks(label: &str, expected_uid: i64, full_mask: u64) -> u64 {
         core::ptr::addr_of!(reverie_liteinst_rpc_sigprocmask_first_site) as usize as u64;
     assert_eq!(
         reverie_liteinst::reverie_liteinst_site_trap_count(first_site),
-        1
+        expected_site_count(1)
     );
     assert_eq!(
         reverie_liteinst::reverie_liteinst_site_hook_count(first_site),
-        1
+        expected_site_count(1)
     );
     assert_eq!(current_signal_mask(), full_mask);
 
@@ -3238,7 +3330,10 @@ fn signal_mask_checks(label: &str, expected_uid: i64, full_mask: u64) -> u64 {
     };
     assert_eq!((fallback, old), (0, initial));
     assert_eq!(current_signal_mask(), full_mask);
-    assert_eq!(reverie_liteinst::reverie_liteinst_site_trap_count(site), 2);
+    assert_eq!(
+        reverie_liteinst::reverie_liteinst_site_trap_count(site),
+        expected_site_count(2)
+    );
     assert_eq!(reverie_liteinst::reverie_liteinst_site_hook_count(site), 0);
 
     // The first call at this site traps with SIGSYS. Had SIGSYS been blocked,
@@ -3248,7 +3343,7 @@ fn signal_mask_checks(label: &str, expected_uid: i64, full_mask: u64) -> u64 {
     let getuid_site = core::ptr::addr_of!(reverie_liteinst_rpc_getuid_site) as usize as u64;
     assert_eq!(
         reverie_liteinst::reverie_liteinst_site_trap_count(getuid_site),
-        1
+        expected_site_count(1)
     );
     let unreadable = 0x10 as *const u64;
     assert_eq!(
@@ -3420,7 +3515,7 @@ fn mask_instruction_guest(path: &Path) {
     let rdtsc_site = core::ptr::addr_of!(reverie_liteinst_rpc_mask_rdtsc_site) as usize as u64;
     assert_eq!(
         reverie_liteinst::reverie_liteinst_site_trap_count(rdtsc_site),
-        1
+        expected_site_count(1)
     );
     assert_eq!(MASK_INSTRUCTION_CALLBACKS.load(Ordering::Relaxed), 1);
     assert_eq!(
@@ -3430,6 +3525,10 @@ fn mask_instruction_guest(path: &Path) {
     assert_eq!(current_signal_mask(), initial);
     println!("rdtsc-after-full-mask=tool");
 }
+
+#[cfg(feature = "fixed-syscall-gates")]
+#[path = "rpc_tool_guest/selector_preflight.rs"]
+mod selector_preflight_guest;
 
 fn main() {
     let mut args = std::env::args_os();
@@ -3444,6 +3543,25 @@ fn main() {
             fixed_gates_guest::inherited_filter(Path::new(&path))
         }
         Some("fixed-gate-install-failure") => fixed_gates_guest::install_failure(Path::new(&path)),
+        #[cfg(feature = "fixed-syscall-gates")]
+        Some("selector-preflight") => selector_preflight_guest::run(
+            Path::new(&path),
+            Path::new(&args.next().expect("observation path")),
+            &args.next().expect("selector mode").to_string_lossy(),
+        ),
+        #[cfg(feature = "fixed-syscall-gates")]
+        Some("fixed-gate-selector-refusal") => fixed_gates_guest::selector_refusal(
+            Path::new(&path),
+            args.next()
+                .expect("refusal state")
+                .to_str()
+                .expect("UTF-8 state"),
+        ),
+        #[cfg(feature = "fixed-syscall-gates")]
+        Some("fixed-gate-selector-order") => fixed_gates_guest::selector_order(
+            Path::new(&path),
+            Path::new(&args.next().expect("observation path")),
+        ),
         Some("guest") => guest(Path::new(&path)),
         Some("same-tool") => same_tool_guest::run(
             Path::new(&path),

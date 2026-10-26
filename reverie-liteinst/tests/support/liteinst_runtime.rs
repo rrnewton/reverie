@@ -310,7 +310,10 @@ fn qualify_runtime() -> Result<QualifiedRuntime, String> {
             crate_types: vec!["cdylib".into()],
             target_source: artifact::real_file(&leaf.join("src/lib.rs"))?,
         };
-        let features = vec!["allocator-fixture".to_owned()];
+        let mut features = vec!["allocator-fixture".to_owned()];
+        if cfg!(feature = "liteinst") {
+            features.push("liteinst".to_owned());
+        }
         let profile = serde_json::json!({
             "opt_level": "0", "debuginfo": 2, "debug_assertions": true,
             "overflow_checks": true, "test": false,
@@ -321,6 +324,7 @@ fn qualify_runtime() -> Result<QualifiedRuntime, String> {
         ]);
         let expectation = artifact::ConsumerExpectation {
             compiled_sources: None,
+            expected_current_policy: None,
             package: &package,
             features: &features,
             profile_name: "dev",

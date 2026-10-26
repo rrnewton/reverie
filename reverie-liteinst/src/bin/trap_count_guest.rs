@@ -86,6 +86,8 @@ fn main() {
         match mode.as_str() {
             "pc-relative-native" => self_lea(false),
             "pc-relative-hooked" => self_lea(true),
+            #[cfg(not(feature = "liteinst"))]
+            "pc-relative-trapped" => trapped_self_lea(),
             _ => panic!("unknown trap-count mode: {mode}"),
         }
         return;
@@ -104,8 +106,106 @@ fn main() {
     // SAFETY: names and exported function signatures are fixed by the runtime.
     let hooks = unsafe { count_function(c"reverie_liteinst_site_hook_count")(address) };
     println!("calls={CALLS} traps={traps} hooks={hooks}");
-    assert_eq!(traps, 1);
-    assert_eq!(hooks, CALLS);
+    if cfg!(feature = "liteinst") {
+        assert_eq!(traps, 1);
+        assert_eq!(hooks, CALLS);
+    } else {
+        // The trap-only runtime never claims a patch site. The parent test
+        // independently checks that all CALLS syscalls reached the Tool.
+        assert_eq!(traps, 0);
+        assert_eq!(hooks, 0);
+    }
+}
+
+#[cfg(not(feature = "liteinst"))]
+fn trapped_self_lea() {
+    unsafe fn symbol(name: &CStr) -> *mut libc::c_void {
+        let address = unsafe { libc::dlsym(libc::RTLD_DEFAULT, name.as_ptr()) };
+        assert!(
+            !address.is_null(),
+            "missing qualified FullTool fixture export: {name:?}"
+        );
+        address
+    }
+    // SAFETY: these allocator-fixture-only exports have the stated C ABIs.
+    let install: unsafe extern "C" fn() -> i32 =
+        unsafe { core::mem::transmute(symbol(c"m6_mapping_fixture_install_full_tool")) };
+    let callbacks: unsafe extern "C" fn(i64) -> u64 =
+        unsafe { core::mem::transmute(symbol(c"m6_mapping_fixture_full_tool_callback_count")) };
+    let syscall_count: unsafe extern "C" fn(i64) -> u64 =
+        unsafe { core::mem::transmute(symbol(c"reverie_liteinst_fallback_syscall_count")) };
+    let total_count: unsafe extern "C" fn() -> u64 =
+        unsafe { core::mem::transmute(symbol(c"reverie_liteinst_fallback_dispatch_count")) };
+    assert_eq!(
+        unsafe { install() },
+        0,
+        "genuine Fixed FullTool installation failed"
+    );
+    let expected = core::ptr::addr_of!(reverie_liteinst_self_lea_site) as usize as u64;
+    let start = reverie_liteinst_start_lea as unsafe extern "C" fn() -> u64 as usize as u64;
+    let functions = [
+        reverie_liteinst_self_lea as *const u8,
+        reverie_liteinst_start_lea as *const u8,
+    ];
+    // Each existing function is exactly mov(5), syscall(2), lea(7), ret(1).
+    let original: [[u8; 15]; 2] =
+        functions.map(|address| unsafe { address.cast::<[u8; 15]>().read_unaligned() });
+    let before = unsafe {
+        (
+            total_count(),
+            syscall_count(libc::SYS_getpid),
+            callbacks(libc::SYS_getpid),
+        )
+    };
+    let mut addresses = 0;
+    let mut start_addresses = 0;
+    for call in 0..CALLS {
+        assert_eq!(
+            unsafe { reverie_liteinst_self_lea() },
+            expected,
+            "self-relative LEA changed at call {call}"
+        );
+        addresses += 1;
+        assert_eq!(
+            unsafe { reverie_liteinst_start_lea() },
+            start,
+            "function-start LEA changed at call {call}"
+        );
+        start_addresses += 1;
+    }
+    let after = unsafe {
+        (
+            total_count(),
+            syscall_count(libc::SYS_getpid),
+            callbacks(libc::SYS_getpid),
+        )
+    };
+    assert_eq!(after.0 - before.0, CALLS * 2);
+    assert_eq!(after.1 - before.1, CALLS * 2);
+    assert_eq!(after.2 - before.2, CALLS * 2);
+    for (address, original) in functions.into_iter().zip(original) {
+        assert_eq!(
+            unsafe { address.cast::<[u8; 15]>().read_unaligned() },
+            original
+        );
+    }
+    for address in [
+        core::ptr::addr_of!(reverie_liteinst_self_lea_syscall),
+        core::ptr::addr_of!(reverie_liteinst_start_lea_syscall),
+    ] {
+        let address = address as usize as u64;
+        assert_eq!(
+            unsafe { count_function(c"reverie_liteinst_site_trap_count")(address) },
+            0
+        );
+        assert_eq!(
+            unsafe { count_function(c"reverie_liteinst_site_hook_count")(address) },
+            0
+        );
+    }
+    println!(
+        "pc-relative trapped: calls={CALLS} addresses={addresses} start_addresses={start_addresses} fallback=64 callbacks=64 sites=0 hooks=0 bytes=unchanged"
+    );
 }
 
 fn self_lea(hooked: bool) {
@@ -146,7 +246,7 @@ fn self_lea(hooked: bool) {
         // SAFETY: the runtime exports both functions with this exact C ABI.
         let traps = unsafe { count_function(c"reverie_liteinst_site_trap_count")(address) };
         let hooks = unsafe { count_function(c"reverie_liteinst_site_hook_count")(address) };
-        assert_eq!(traps, CALLS);
+        assert_eq!(traps, if cfg!(feature = "liteinst") { CALLS } else { 0 });
         assert_eq!(hooks, 0);
         let start_address = core::ptr::addr_of!(reverie_liteinst_start_lea_syscall) as usize as u64;
         // SAFETY: the runtime exports both functions with this exact C ABI.
@@ -154,8 +254,13 @@ fn self_lea(hooked: bool) {
             unsafe { count_function(c"reverie_liteinst_site_trap_count")(start_address) };
         let start_hooks =
             unsafe { count_function(c"reverie_liteinst_site_hook_count")(start_address) };
-        assert_eq!(start_traps, 1);
-        assert_eq!(start_hooks, CALLS);
+        if cfg!(feature = "liteinst") {
+            assert_eq!(start_traps, 1);
+            assert_eq!(start_hooks, CALLS);
+        } else {
+            assert_eq!(start_traps, 0);
+            assert_eq!(start_hooks, 0);
+        }
         println!(
             "pc-relative hooked: calls={CALLS} addresses={addresses} traps={traps} hooks={hooks} \
              start_addresses={start_addresses} start_traps={start_traps} start_hooks={start_hooks}"

@@ -77,8 +77,15 @@ fn trial(label: &str, inert: bool, alt_stack: bool) -> Result<(), String> {
     let launcher_identity = artifact::FileIdentity::read(&launcher)?;
     let setarch = artifact::real_file(Path::new("/usr/bin/setarch"))?;
     let setarch_identity = artifact::FileIdentity::read(&setarch)?;
+    let final_exec_environment = if !cfg!(feature = "liteinst") && !inert {
+        let path = artifact::real_file(Path::new("/usr/bin/env"))?;
+        let identity = artifact::FileIdentity::read(&path)?;
+        Some((path, identity))
+    } else {
+        None
+    };
     let mode = if inert { "inert" } else { "observe" };
-    let policy = serde_json::to_vec(&serde_json::json!({
+    let mut policy = serde_json::json!({
         "schema": 1,
         "observation": "M2 real standalone leaf; continuation NotPrepared/NotReached",
         "source_head": runtime.source.head,
@@ -90,13 +97,20 @@ fn trial(label: &str, inert: bool, alt_stack: bool) -> Result<(), String> {
         "setarch": setarch_identity,
         "mode": mode,
         "alt_stack": alt_stack,
-        "site_patching": true,
+        "site_patching": cfg!(feature = "liteinst"),
         "personality": "ADDR_NO_RANDOMIZE via setarch -R",
         "stdin": "closed; fixture reads no input",
         "full_entry_isolation_claimed": false,
         "guest_write_protection_claimed": false,
-    }))
-    .map_err(|error| error.to_string())?;
+    });
+    if let Some((_, identity)) = &final_exec_environment {
+        policy["final_exec_environment"] =
+            serde_json::to_value(identity).map_err(|error| error.to_string())?;
+        policy["activation"] = serde_json::json!(
+            "qualified fixture explicit-config shared passthrough; builtin constructor defaults unchanged; no FullTool continuation"
+        );
+    }
+    let policy = serde_json::to_vec(&policy).map_err(|error| error.to_string())?;
     let mut held = liteinst_runtime::held_environment(policy);
     let mut environment: BTreeMap<OsString, OsString> = held.environment.into_iter().collect();
     for name in [
@@ -110,7 +124,7 @@ fn trial(label: &str, inert: bool, alt_stack: bool) -> Result<(), String> {
     }
     environment.insert(
         reverie_liteinst::SITE_PATCHING_ENV.into(),
-        OsString::from("1"),
+        OsString::from(if cfg!(feature = "liteinst") { "1" } else { "0" }),
     );
     environment.insert(
         reverie_liteinst::ALT_STACK_ENV.into(),
@@ -125,15 +139,28 @@ fn trial(label: &str, inert: bool, alt_stack: bool) -> Result<(), String> {
     if inert {
         // Load the genuine constructor-bearing leaf, with no active selector.
         environment.insert("LD_PRELOAD".into(), runtime.path.as_os_str().to_owned());
-    } else {
+    } else if cfg!(feature = "liteinst") {
         // The public strace launcher itself selects exactly the qualified leaf.
         command.arg(&launcher);
+    } else {
+        // Keep setarch and env uninstrumented. The final guest loads the
+        // genuine leaf inertly and invokes its distinct fixture startup with
+        // explicit config; the normal builtin constructor retains its default.
+        environment.remove(&OsString::from("LD_PRELOAD"));
+        let mut preload = OsString::from("LD_PRELOAD=");
+        preload.push(runtime.path.as_os_str());
+        command
+            .arg(&final_exec_environment.as_ref().unwrap().0)
+            .arg(preload);
     }
     command
         .arg(&guest)
         .arg(mode)
         .arg(&runtime.path)
         .current_dir(&runtime.source.root);
+    if !cfg!(feature = "liteinst") && !inert {
+        command.arg("explicit-builtin");
+    }
     held.environment = environment.into_iter().collect();
 
     let result = (|| -> Result<(), String> {
@@ -199,6 +226,9 @@ fn trial(label: &str, inert: bool, alt_stack: bool) -> Result<(), String> {
         guest_receipt.binary.verify()?;
         launcher_identity.verify()?;
         setarch_identity.verify()?;
+        if let Some((_, identity)) = &final_exec_environment {
+            identity.verify()?;
+        }
         liteinst_runtime::verify_unchanged(&evidence)
     })();
     match (result, after) {
