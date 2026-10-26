@@ -11,9 +11,6 @@
 use super::*;
 
 pub(super) const GUEST_NOFILE_LIMIT: libc::c_int = 1 << 20;
-// AUTONOMOUS-BOT-IMPLEMENTED
-// TODO-HUMAN-REVIEW(PR-235): Review the single virtual network namespace identity.
-pub(super) const GUEST_NETNS_COOKIE: u64 = 1;
 pub(super) const ROBUST_LIST_HEAD_SIZE: u64 = 3 * std::mem::size_of::<u64>() as u64;
 // prctl(2) PR_CAPBSET_READ option; the deterministic container runs the guest as
 // root with the full capability bounding set up to a fixed CAP_LAST_CAP so the
