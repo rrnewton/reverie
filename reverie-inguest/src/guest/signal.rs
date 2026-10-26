@@ -26,7 +26,10 @@ use crate::trap::raw_syscall6;
 /// Signals the runtime receives as forced signals and so must never be
 /// blocked: SIGSYS for every trapped system call, and SIGSEGV for CPUID or
 /// RDTSC faulting while an instruction is subscribed. Linux resets a blocked
-/// forced signal to its default action, which kills the process.
+/// forced signal to its default action, which kills the process. The one
+/// exception is the runtime's own close-and-check window
+/// ([`crate::guest::protect::block_all_signals`]), which blocks these too and
+/// so makes no trapped syscall and executes no subscribed instruction.
 pub fn reserved_signal_mask() -> u64 {
     let mut reserved = 1_u64 << (libc::SIGSYS - 1);
     if any_instruction_subscribed() {
