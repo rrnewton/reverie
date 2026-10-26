@@ -116,7 +116,77 @@ fn virtual_signal_call(
         rights,
     };
     // SAFETY: called only while forwarding the guest's own call, in its turn.
-    unsafe { super::sigalrm::intercept(&policy, number, args) }
+    if let Some(result) = unsafe { super::sigalrm::intercept(&policy, number, args) } {
+        return Some(result);
+    }
+    if !super::runtime_mask::delivers_signals() {
+        return None;
+    }
+    // Under the signal-delivery gate the kernel's mask is the runtime's while
+    // the call is handled: the calls on the blocked set act on the guest's
+    // saved mask instead (`runtime_mask::saved_mask_call`).
+    // SAFETY: as above, under the gate.
+    match unsafe { super::runtime_mask::saved_mask_call(rights, policy.reserved, number, args) } {
+        None => None,
+        Some(Ok(result)) => Some(result),
+        Some(Err(reason)) => tool_fatal(125, &Error::Tool(io::Error::other(reason).into())),
+    }
+}
+
+/// Under the signal-delivery gate, ends the process by name before a raw
+/// forward of `number(args)` that would install a signal mask of its own in
+/// the kernel ([`super::runtime_mask::installs_signal_mask`]): the kernel
+/// could then deliver a guest signal while the runtime runs. A Tool decides
+/// such calls itself under the gate, so reaching here is a defect. Before a
+/// forwarded `rt_sigtimedwait`, the ignored instances Linux discarded at send
+/// are taken from the queue ([`super::runtime_mask::prepare_forward`]).
+/// `rights` are those the forward runs under: the guest's saved PKRU for the
+/// guest's own call ([`ForwardRights::Guest`]), and the calling thread's
+/// current rights for a Tool's injection ([`ForwardRights::Runtime`]), so
+/// that a Tool's private buffer is read as the kernel will read it. With the
+/// gate off it checks nothing.
+fn refuse_mask_installing_forward(
+    runtime: &impl HostRuntime,
+    rights: ForwardRights,
+    number: i64,
+    args: [u64; 6],
+) {
+    if !super::runtime_mask::delivers_signals() {
+        return;
+    }
+    let rights = match rights {
+        ForwardRights::Guest(pkru) => super::sigalrm::GuestRights {
+            pkru,
+            original_args: args,
+        },
+        ForwardRights::Runtime => super::sigalrm::GuestRights::default(),
+    };
+    match super::runtime_mask::prepare_forward(rights, runtime.reserved_signal_mask(), number, args)
+    {
+        Ok(false) => {}
+        Ok(true) => tool_fatal(
+            125,
+            &Error::Tool(
+                io::Error::other(format!(
+                    "a raw forward of syscall {number}, which would install a signal mask in \
+                     the kernel while the runtime runs, under in-guest signal delivery is refused"
+                ))
+                .into(),
+            ),
+        ),
+        Err(reason) => tool_fatal(125, &Error::Tool(io::Error::other(reason).into())),
+    }
+}
+
+/// The protection-key rights a raw forward runs under
+/// ([`refuse_mask_installing_forward`]).
+#[derive(Clone, Copy)]
+enum ForwardRights {
+    /// The guest's own call, forwarded with its saved PKRU.
+    Guest(Option<u32>),
+    /// A Tool's injection, forwarded with the calling thread's current
+    /// rights.
+    Runtime,
 }
 
 /// Retain allocation's native permission effect in this event's return image.
@@ -599,8 +669,7 @@ where
         let _scratch_scope = DispatchScratchScope::enter();
         #[cfg(feature = "exec-native-injection")]
         let original_event = *event;
-        let tid = raw_pid(libc::SYS_gettid);
-        let pid = raw_pid(libc::SYS_getpid);
+        let (tid, pid) = event_identity();
         let ppid = (pid != self.root_pid).then(|| raw_pid(libc::SYS_getppid));
 
         // These process-wide locks are valid only while thread creation stays
@@ -821,6 +890,12 @@ where
             // This is the original unsubscribed guest operation. Private
             // inject/tail_inject below keep caller rights except for the
             // scalar pkey allocation handled above.
+            refuse_mask_installing_forward(
+                &self.runtime,
+                ForwardRights::Guest(guest_pkru),
+                number,
+                args,
+            );
             match stripped_signal_mask(&self.runtime, number, args) {
                 Err(error) => guest.event.result = -i64::from(error.into_raw()),
                 Ok(None) => guest.event.result = unsafe { guest.event.forward() },
@@ -970,8 +1045,7 @@ where
         }
 
         let _scratch_scope = DispatchScratchScope::enter();
-        let tid = raw_pid(libc::SYS_gettid);
-        let pid = raw_pid(libc::SYS_getpid);
+        let (tid, pid) = event_identity();
         let ppid = (pid != self.root_pid).then(|| raw_pid(libc::SYS_getppid));
         let mut tool_slot = self.tool.lock();
         let tool = tool_slot.as_ref().unwrap_or_else(|| fatal(126));
@@ -1664,6 +1738,21 @@ fn is_exit_syscall(number: i64) -> bool {
 fn is_process_exit(number: i64, tid: Pid, pid: Pid) -> bool {
     // AUTONOMOUS-BOT-IMPLEMENTED
     number == libc::SYS_exit_group || tid == pid
+}
+
+/// The calling thread's id and its process's id for one event: read from the
+/// kernel, or, under the signal-delivery gate, which admits one guest thread
+/// per process and no exec, the values cached at installation and rebound in
+/// a fork child (`runtime_mask::cached_identity`).
+fn event_identity() -> (Pid, Pid) {
+    if super::runtime_mask::delivers_signals() {
+        let (tid, pid) = super::runtime_mask::cached_identity();
+        if tid <= 0 || pid <= 0 {
+            fatal(126);
+        }
+        return (Pid::from_raw(tid), Pid::from_raw(pid));
+    }
+    (raw_pid(libc::SYS_gettid), raw_pid(libc::SYS_getpid))
 }
 
 fn raw_pid(number: i64) -> Pid {
@@ -3096,6 +3185,18 @@ impl<'a, T: Tool, R: HostRuntime> Guest<T> for InGuest<'a, T, R> {
 
     async fn daemonize(&mut self) {}
 
+    /// Under the signal-delivery gate, the mask the guest resumes under: the
+    /// mask its handler runs under when a delivery is prepared for this
+    /// return (signal phase 1's open window), and otherwise the guest mask
+    /// the continuation saved and its completion installs. `None` with the
+    /// gate off, where the kernel's mask is the guest's own.
+    fn resume_signal_mask(&self) -> Option<u64> {
+        if !super::runtime_mask::delivers_signals() {
+            return None;
+        }
+        super::sigalrm::open_window_handler_mask().or_else(super::continuation::saved_guest_mask)
+    }
+
     fn take_unsupported_refusal(&mut self) -> Option<reverie::UnsupportedRefusal> {
         self.unsupported_refusal.take()
     }
@@ -3271,6 +3372,7 @@ impl<'a, T: Tool, R: HostRuntime> Guest<T> for InGuest<'a, T, R> {
         if let Some(result) = perform_pkey_alloc(self.event, number, raw_args) {
             return Errno::from_ret(result as usize).map(|value| value as i64);
         }
+        refuse_mask_installing_forward(self.runtime, ForwardRights::Runtime, number, raw_args);
         let kernel_signal_mask = stripped_signal_mask(self.runtime, number, raw_args)?;
         if let Some(mask) = kernel_signal_mask.as_ref() {
             raw_args[1] = mask as *const u64 as u64;
@@ -3418,6 +3520,7 @@ impl<'a, T: Tool, R: HostRuntime> Guest<T> for InGuest<'a, T, R> {
         } else if let Some(result) = perform_pkey_alloc(self.event, number, args) {
             self.tail.set_result(result);
         } else {
+            refuse_mask_installing_forward(self.runtime, ForwardRights::Runtime, number, args);
             let value = match stripped_signal_mask(self.runtime, number, args) {
                 Err(error) => -i64::from(error.into_raw()),
                 // SAFETY: every admission filter above has run on exactly these arguments.
