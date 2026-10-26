@@ -10,6 +10,26 @@ Hermit's `liteinst` feature is optional and off by default.
 standalone `liteinst2` patching library, the shared `reverie-inguest` runtime,
 and `reverie-rpc-transport`.
 
+## Optional site patching
+
+The core crate, preload leaf and examples retain LiteInst site patching by
+default. Build with `--no-default-features` for the shared in-guest trap runtime
+without `liteinst2`; explicitly select the `liteinst` feature to restore it.
+The trap runtime keeps Tool installation, RPC, instruction emulation, allocator
+ownership and lifecycle services. It creates no executable patch arenas or
+LiteInst SIGTRAP guard router.
+
+Without LiteInst, an unset site-patching selector selects the trap runtime;
+explicit `1` returns `Unsupported`, and `0` is accepted. Legacy standalone
+Strace/Compatibility launchers also return `Unsupported` before activation.
+These negative controls do not establish parity with their ON comparison legs.
+Installed FullTool tests retain their own strict callback, fallback, state,
+owner, mapping, sentinel and lease assertions in either configuration.
+
+The raw-mseal behavior fixture is source-built and NONQUALIFIED, not an M1 or
+native artifact admission. Its nested preload build follows the test's actual
+compiled LiteInst feature in both ON and OFF configurations.
+
 ## Preload and allocator ownership
 
 The `reverie-liteinst` core is an allocator-neutral rlib. The standalone runtime

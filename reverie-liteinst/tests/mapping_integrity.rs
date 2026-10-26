@@ -1,9 +1,12 @@
 //! Additive real forwarding controls; all original workload sources are separate.
 
+#[cfg(feature = "liteinst")]
 use std::ffi::OsStr;
 use std::process::Command;
 
+#[cfg(feature = "liteinst")]
 use reverie_liteinst::PreloadTool;
+#[cfg(feature = "liteinst")]
 use reverie_liteinst::configure_command;
 
 // This consumer uses only part of the shared runtime qualification support.
@@ -73,6 +76,9 @@ fn published_owner_guest_mprotect_and_munmap_preserve_real_spare_pages() -> Resu
             .arg("-o")
             .arg(&binary)
             .current_dir(&evidence);
+        if !cfg!(feature = "liteinst") {
+            compiler.arg("-DREVERIE_MAPPING_FULLTOOL=1");
+        }
         let compiled = match runtime::contract::run_without_input(compiler, &held) {
             Ok(run) => run,
             Err(failure) => {
@@ -104,6 +110,7 @@ fn published_owner_guest_mprotect_and_munmap_preserve_real_spare_pages() -> Resu
         guest_environment
             .retain(|(name, _)| !name.to_string_lossy().starts_with("REVERIE_LITEINST_"));
         let mut failures = Vec::new();
+        #[cfg(feature = "liteinst")]
         for (tool, label) in [
             (PreloadTool::Strace, "strace"),
             (PreloadTool::Compatibility, "compat"),
@@ -180,6 +187,22 @@ fn published_owner_guest_mprotect_and_munmap_preserve_real_spare_pages() -> Resu
                 receipt_identity.verify()?;
             }
         }
+        #[cfg(not(feature = "liteinst"))]
+        failures.extend(full_tool_trials(
+            &leaf.path,
+            &evidence,
+            &binary,
+            &guest_environment,
+            &["mprotect", "munmap"],
+            "MAPPING_LITERAL ",
+            &[
+                &c_source,
+                &asm_source,
+                &guest_identity,
+                &leaf.receipt.artifact,
+                &receipt_identity,
+            ],
+        )?);
         require(
             failures.is_empty(),
             format!(
@@ -259,6 +282,9 @@ fn native_mapping_boundaries_preserve_guards_break_abi_and_fork_owner() -> Resul
             .arg("-o")
             .arg(&binary)
             .current_dir(&evidence);
+        if !cfg!(feature = "liteinst") {
+            compiler.arg("-DREVERIE_MAPPING_FULLTOOL=1");
+        }
         let compiled = match runtime::contract::run_without_input(compiler, &held) {
             Ok(run) => run,
             Err(failure) => {
@@ -292,6 +318,7 @@ fn native_mapping_boundaries_preserve_guards_break_abi_and_fork_owner() -> Resul
         guest_environment
             .retain(|(name, _)| !name.to_string_lossy().starts_with("REVERIE_LITEINST_"));
         let mut failures = Vec::new();
+        #[cfg(feature = "liteinst")]
         for (tool, label) in [
             (PreloadTool::Strace, "strace"),
             (PreloadTool::Compatibility, "compat"),
@@ -368,6 +395,22 @@ fn native_mapping_boundaries_preserve_guards_break_abi_and_fork_owner() -> Resul
                 receipt_identity.verify()?;
             }
         }
+        #[cfg(not(feature = "liteinst"))]
+        failures.extend(full_tool_trials(
+            &leaf.path,
+            &evidence,
+            &binary,
+            &guest_environment,
+            &["guard", "live", "brk", "mseal", "fork"],
+            "MAPPING_BOUNDARY ",
+            &[
+                &c_source,
+                &asm_source,
+                &guest_identity,
+                &leaf.receipt.artifact,
+                &receipt_identity,
+            ],
+        )?);
         require(
             failures.is_empty(),
             format!(

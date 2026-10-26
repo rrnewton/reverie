@@ -96,10 +96,11 @@ pub fn build(evidence: &Path) -> Result<SourceBuiltFixture, String> {
             features.contains_key("allocator-fixture"),
             "preload allocator fixture feature missing",
         )?;
-        // The pre-feature base has no liteinst feature. The feature stack does;
-        // request ON explicitly there, without trusting a default or receipt.
+        // Select the caller's actual compiled mode. Declaring the optional
+        // feature in Cargo metadata must not turn an OFF behavior test ON.
         let mut expected_features = vec!["allocator-fixture".to_owned()];
-        if features.contains_key("liteinst") {
+        if cfg!(feature = "liteinst") {
+            require(features.contains_key("liteinst"), "preload LiteInst feature missing")?;
             expected_features.push("liteinst".to_owned());
         }
         let target_owner = tempfile::Builder::new()

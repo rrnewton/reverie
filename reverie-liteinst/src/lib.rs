@@ -24,7 +24,9 @@ pub mod fixed_arena_fixture;
 pub mod generic_fixture;
 #[cfg(feature = "exec-private-init")]
 mod initial_image_stats;
+#[cfg(feature = "liteinst")]
 mod interior_entry;
+#[cfg(feature = "liteinst")]
 mod liteinst_census;
 #[cfg(feature = "native-exec-state")]
 pub mod native_exec_state;
@@ -101,6 +103,7 @@ pub use runtime::site_patching_enabled;
 pub use runtime::site_patching_from_env_value;
 pub use runtime::tool_output_fd;
 pub use straddler::STRADDLER_STALENESS_TICKS_ENV;
+#[cfg(feature = "liteinst")]
 pub use straddler::straddler_staleness_from_env_value;
 #[cfg(feature = "exec-private-init")]
 pub use tool_host::InstalledInitialImage;
@@ -207,8 +210,14 @@ fn preload_library_beside(executable: &std::path::Path) -> io::Result<PathBuf> {
     })
 }
 
-/// Configures a guest command to load the runtime and select a built-in tool.
+/// Configures a guest command to load the runtime and select a legacy tool.
+///
+/// Strace and Compatibility require the `liteinst` Cargo feature. Without it,
+/// this returns [`io::ErrorKind::Unsupported`] before resolving a preload or
+/// changing the command. The shared [`BuiltinTool`] and installed Tool routes
+/// remain available through their own entry points.
 pub fn configure_command(command: &mut Command, tool: PreloadTool) -> io::Result<()> {
+    runtime::require_legacy_tool(tool.as_str())?;
     let mut preload = preload_library_path()?.into_os_string();
     if let Some(existing) = env::var_os("LD_PRELOAD").filter(|value| !value.is_empty()) {
         preload.push(OsStr::new(":"));
@@ -277,9 +286,10 @@ pub fn set_guest_process_forks(command: &mut Command, allowed: bool) {
 ///
 /// With `enabled == false` every trapping syscall runs the Tool through the
 /// in-guest `SIGSYS` fallback and no syscall site is patched; subscribed
-/// `cpuid`, `rdtsc`, and `rdtscp` instruction sites still are. See
+/// `cpuid`, `rdtsc`, and `rdtscp` instructions use that continuation too. See
 /// [`SITE_PATCHING_ENV`].
-/// The written value round-trips through [`site_patching_from_env_value`].
+/// Enabling patching requires the `liteinst` Cargo feature; a trap-only runtime
+/// refuses that request during installation.
 pub fn set_guest_site_patching(command: &mut Command, enabled: bool) {
     command.env(SITE_PATCHING_ENV, if enabled { "1" } else { "0" });
 }
@@ -518,6 +528,7 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "liteinst")]
     #[test]
     fn site_patching_setter_round_trips_through_the_parser() {
         for enabled in [true, false] {
@@ -537,6 +548,7 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "liteinst")]
     #[test]
     fn site_patching_parser_defaults_on_and_rejects_other_values() {
         assert!(site_patching_from_env_value(None).unwrap());
@@ -547,6 +559,66 @@ mod tests {
                 error.kind(),
                 std::io::ErrorKind::InvalidInput,
                 "{rejected:?}"
+            );
+        }
+    }
+
+    #[cfg(not(feature = "liteinst"))]
+    #[test]
+    fn trap_only_build_defaults_off_and_refuses_explicit_patching() {
+        assert!(!site_patching_from_env_value(None).unwrap());
+        assert!(!site_patching_from_env_value(Some(OsStr::new("0"))).unwrap());
+        let mut command = Command::new("/bin/true");
+        set_guest_site_patching(&mut command, true);
+        let requested = command
+            .get_envs()
+            .find(|(key, _)| *key == OsStr::new(SITE_PATCHING_ENV))
+            .and_then(|(_, value)| value)
+            .unwrap();
+        let error = site_patching_from_env_value(Some(requested)).unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::Unsupported);
+        assert!(error.to_string().contains("built without LiteInst"));
+        for rejected in ["", " 0", "0 ", "off", "false", "2", "yes"] {
+            let error = site_patching_from_env_value(Some(OsStr::new(rejected)))
+                .expect_err("invalid selectors must still be rejected");
+            assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
+        }
+    }
+
+    #[cfg(not(feature = "liteinst"))]
+    #[test]
+    fn trap_only_legacy_configuration_refuses_before_mutating_the_command() {
+        for tool in [
+            super::PreloadTool::Strace,
+            super::PreloadTool::Compatibility,
+        ] {
+            let mut command = Command::new("/a/guest/that/must/not/be/launched");
+            command
+                .arg("retained argument")
+                .env("LD_PRELOAD", "retained-preload")
+                .env("REVERIE_LITEINST_TOOL", "retained-selector");
+            let before = command
+                .get_envs()
+                .map(|(key, value)| (key.to_owned(), value.map(ToOwned::to_owned)))
+                .collect::<Vec<_>>();
+            let error = super::configure_command(&mut command, tool).unwrap_err();
+            assert_eq!(error.kind(), std::io::ErrorKind::Unsupported);
+            assert!(error.to_string().contains(tool.as_str()));
+            assert!(error.to_string().contains("built without LiteInst"));
+            assert_eq!(
+                command
+                    .get_envs()
+                    .map(|(key, value)| (key.to_owned(), value.map(ToOwned::to_owned)))
+                    .collect::<Vec<_>>(),
+                before
+            );
+            assert_eq!(
+                command.get_program(),
+                OsStr::new("/a/guest/that/must/not/be/launched")
+            );
+            assert_eq!(
+                command.get_args().collect::<Vec<_>>(),
+                [OsStr::new("retained argument")]
             );
         }
     }

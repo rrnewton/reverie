@@ -115,6 +115,12 @@ fn release_page() {
     );
 }
 
+#[cfg(feature = "fixed-syscall-gates")]
+pub(super) fn assert_page_absent() {
+    reserve_page();
+    release_page();
+}
+
 pub fn collision(path: &Path) {
     reserve_page();
     unsafe {
@@ -165,6 +171,221 @@ pub fn install_failure(path: &Path) {
     // the real coordinator connection fails after irreversible publication.
     let _ = unsafe { reverie_liteinst::install_tool::<FixedGateTool>(path) };
     panic!("a failed published installation resumed the caller");
+}
+
+#[cfg(feature = "fixed-syscall-gates")]
+pub fn selector_refusal(path: &Path, state: &str) {
+    use reverie_inguest::signal::KernelSigaction;
+    use reverie_inguest::signal::raw_sigaction;
+    use reverie_inguest::signal::raw_sigprocmask;
+
+    match state {
+        "inherited" => {
+            let mut instruction = libc::sock_filter {
+                code: (libc::BPF_RET | libc::BPF_K) as u16,
+                jt: 0,
+                jf: 0,
+                k: libc::SECCOMP_RET_ALLOW,
+            };
+            let filter = libc::sock_fprog {
+                len: 1,
+                filter: &mut instruction,
+            };
+            assert_eq!(
+                unsafe { libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) },
+                0
+            );
+            assert_eq!(
+                unsafe {
+                    libc::syscall(libc::SYS_seccomp, libc::SECCOMP_SET_MODE_FILTER, 0, &filter)
+                },
+                0
+            );
+        }
+        "published" => unsafe { reverie_inguest::trap::prepare_fixed_gates() }.unwrap(),
+        "fresh" => {}
+        other => panic!("unknown refusal state {other:?}"),
+    }
+    let published = state == "published";
+    let filters = u64::from(state == "inherited");
+    assert_eq!(
+        unsafe { reverie_inguest::guest::sigalrm::seccomp_filter_count() },
+        Some(filters)
+    );
+    assert_eq!(reverie_inguest::trap::fixed_gates_published(), published);
+    let page = published.then(|| unsafe { *(BASE as *const [u8; 4096]) });
+    let gate_mapping = || {
+        std::fs::read_to_string("/proc/self/maps")
+            .unwrap()
+            .lines()
+            .find(|line| line.starts_with("500000000000-500000001000 "))
+            .map(str::to_owned)
+    };
+    let mapping = gate_mapping();
+    let actions = || {
+        (1..=64)
+            .filter(|signal| !matches!(*signal, libc::SIGKILL | libc::SIGSTOP))
+            .map(|signal| {
+                let mut action = KernelSigaction::default();
+                unsafe { raw_sigaction(signal, None, Some(&mut action)) }.unwrap();
+                action
+            })
+            .collect::<Vec<_>>()
+    };
+    let mask = || {
+        let mut mask = 0;
+        unsafe { raw_sigprocmask(libc::SIG_BLOCK, None, Some(&mut mask)) }.unwrap();
+        mask
+    };
+    let previous_actions = actions();
+    let previous_mask = mask();
+    let environment = std::env::vars_os().collect::<std::collections::BTreeMap<_, _>>();
+    let error = unsafe { reverie_liteinst::install_tool::<FixedGateTool>(path) }.unwrap_err();
+    #[cfg(not(feature = "liteinst"))]
+    {
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
+        assert_eq!(
+            error.to_string(),
+            "unsupported REVERIE_LITEINST_SITE_PATCHING value \"2\""
+        );
+    }
+    #[cfg(feature = "liteinst")]
+    {
+        // Enabled builds retain the baseline order: an inherited filter is
+        // refused before selector parsing, while a later error is fatal once
+        // gates have been published. Fresh/published cases cannot return here.
+        assert_eq!(state, "inherited");
+        assert_eq!(error.kind(), std::io::ErrorKind::Unsupported);
+        assert_eq!(
+            error.to_string(),
+            "fixed syscall gates refuse an inherited or unreadable seccomp filter state"
+        );
+    }
+    assert_eq!(
+        unsafe { reverie_inguest::guest::sigalrm::seccomp_filter_count() },
+        Some(filters)
+    );
+    assert_eq!(reverie_inguest::trap::fixed_gates_published(), published);
+    assert!(!reverie_inguest::trap::has_dispatcher());
+    assert_eq!(CALLS.load(Ordering::Relaxed), 0);
+    assert_eq!(actions(), previous_actions);
+    assert_eq!(mask(), previous_mask);
+    assert_eq!(
+        std::env::vars_os().collect::<std::collections::BTreeMap<_, _>>(),
+        environment
+    );
+    assert_eq!(gate_mapping(), mapping);
+    if let Some(page) = page {
+        assert_eq!(unsafe { &*(BASE as *const [u8; 4096]) }, &page);
+    } else {
+        assert_page_absent();
+    }
+    #[cfg(not(feature = "liteinst"))]
+    println!("selector refusal: state={state} original-error=preserved runtime-state=unchanged");
+    #[cfg(feature = "liteinst")]
+    println!("selector refusal: state={state} inherited-filter=preserved runtime-state=unchanged");
+}
+
+#[cfg(feature = "fixed-syscall-gates")]
+pub fn selector_order(path: &Path, observation: &Path) {
+    use std::io;
+    use std::io::Write;
+
+    use reverie_inguest::guest::runtime_seam::PatcherRef;
+    use reverie_inguest::guest::tool_install::PatchHost;
+    use reverie_inguest::guest::tool_install::TrapHost;
+    use reverie_inguest::guest::tool_install::TrapOptions;
+    use reverie_inguest::guest::tool_install::TrapRuntime;
+    use reverie_inguest::lifecycle::RuntimeConfig;
+    use reverie_inguest::stats::GuestStatsHooks;
+
+    struct ObservedHost {
+        host: TrapHost,
+        observation: std::fs::File,
+    }
+
+    impl ObservedHost {
+        fn record(&self, phase: &str) -> io::Result<()> {
+            let mut observation = &self.observation;
+            writeln!(
+                observation,
+                "{phase} gates={} filters={:?} dispatcher={} callbacks={}",
+                reverie_inguest::trap::fixed_gates_published(),
+                // SAFETY: this fixture owns the single startup thread and
+                // calls only before any guest filter or dispatcher is active.
+                unsafe { reverie_inguest::guest::sigalrm::seccomp_filter_count() },
+                reverie_inguest::trap::has_dispatcher(),
+                CALLS.load(Ordering::Relaxed),
+            )
+        }
+    }
+
+    // SAFETY: TrapHost supplies its unchanged no-patcher contract. The extra
+    // steps only observe startup and return a deliberate error; they neither
+    // run guest code nor install a filter. The binary declares its allocator.
+    unsafe impl PatchHost for ObservedHost {
+        type Runtime = TrapRuntime;
+
+        fn patcher(&self) -> &'static PatcherRef {
+            self.host.patcher()
+        }
+
+        fn preflight(&self) -> io::Result<()> {
+            self.record("preflight")?;
+            self.host.preflight()
+        }
+
+        // Deliberately retain the default no-preflight selector contract.
+        fn initialize_continuation(&self) -> io::Result<()> {
+            self.record("continuation")?;
+            self.host.initialize_continuation()
+        }
+
+        fn prepare_entries(&self) -> io::Result<()> {
+            self.record("entries")?;
+            self.host.prepare_entries()
+        }
+
+        fn site_patching(&self) -> io::Result<bool> {
+            self.record("selector")?;
+            Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "observed late selector refusal",
+            ))
+        }
+
+        fn stage_stream(&self) -> io::Result<bool> {
+            self.host.stage_stream()
+        }
+
+        fn process_forks_allowed(&self) -> io::Result<bool> {
+            self.host.process_forks_allowed()
+        }
+
+        fn sigalrm_handlers(&self) -> io::Result<bool> {
+            self.host.sigalrm_handlers()
+        }
+
+        fn runtime_config(&self) -> io::Result<RuntimeConfig> {
+            self.host.runtime_config()
+        }
+
+        fn runtime(&self, stats: GuestStatsHooks) -> Self::Runtime {
+            self.host.runtime(stats)
+        }
+    }
+
+    let observation = std::fs::File::create_new(observation).unwrap();
+    let host = ObservedHost {
+        host: TrapHost::new(TrapOptions::default()),
+        observation,
+    };
+    let returned = unsafe {
+        reverie_inguest::guest::tool_install::install_tool_with::<FixedGateTool, _>(
+            path, false, host,
+        )
+    };
+    panic!("a failed published selector resumed the caller: {returned:?}");
 }
 
 pub fn run(path: &Path) {
