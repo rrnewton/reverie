@@ -24728,14 +24728,15 @@ fn fixed_scalar_publication_syscall_mode(
         .get("fixed_arena_backing")
         .is_some_and(|w| w.kind == AuthenticatedDetcoreOperationKind::ValidateTemplate(74))
     {
-        // Exactly the observed host compositions: native Detcore, and the
+        // Exactly the observed host compositions: Detcore caller63 with the
+        // native factory or (below) the ordinary bit-result wrapper proof, and the
         // ordinary standalone image with caller69 or caller323 (80).
         require(
             matches!(
                 (image_kind, native_syscalls, kind),
                 (
                     FixedImageKind::Detcore,
-                    true,
+                    _,
                     AuthenticatedDetcoreOperationKind::ValidateTemplate(63)
                 ) | (
                     FixedImageKind::Standalone,
@@ -52401,8 +52402,9 @@ mod tests {
 
         // This is an independently valid ordinary raw23/template26 witness and
         // setup/caller pair. Swap only the four host leaf/entry witnesses while
-        // keeping their exact public bindings, so the mode refusal cannot be
-        // attributed to a malformed wrapper or missing cohort member.
+        // keeping their exact public bindings. The HOST allocator-fixture Detcore
+        // image emits exactly this composition, so it is admitted, but only
+        // through the complete ordinary wrapper and caller/setup edge proof.
         let mut wrong_mode = scalar_ordinary_bit_result_control_graph(false);
         let mut host_mode = scalar_publication_host_native_control_graph(false);
         for sample in scalar_publication_host_native_samples() {
@@ -52431,15 +52433,27 @@ mod tests {
         )
         .unwrap();
         fixed_scalar_ordinary_bit_result(&wrong_mode.witnesses).unwrap();
+        fixed_scalar_publication_syscall_mode(
+            &wrong_mode.witnesses,
+            FixedImageKind::Detcore,
+            false,
+        )
+        .unwrap();
+        let mut no_wrapper = wrong_mode.witnesses;
+        no_wrapper.remove("fixed_scalar_syscall");
         assert_eq!(
+            fixed_scalar_publication_syscall_mode(&no_wrapper, FixedImageKind::Detcore, false)
+                .unwrap_err()
+                .to_string(),
+            "scalar bit-result caller lacks authenticated ordinary syscall wrapper",
+        );
+        assert!(
             fixed_scalar_publication_syscall_mode(
-                &wrong_mode.witnesses,
+                &graph.witnesses,
                 FixedImageKind::Detcore,
                 false,
             )
-            .unwrap_err()
-            .to_string(),
-            "host scalar publication requires its observed native syscall factory",
+            .is_err()
         );
         assert!(
             fixed_scalar_publication_syscall_mode(
