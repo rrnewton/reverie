@@ -37,7 +37,11 @@ jobs:
       with:
         submodules: false
     - name: Dependencies
-      run: sudo apt-get install -y libunwind-dev liblzma-dev cmake zlib1g-dev
+      # Refresh the index first: the runner image's index can name package
+      # versions the mirror no longer serves, and install then fails with 404.
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y libunwind-dev liblzma-dev cmake zlib1g-dev
     - name: Establish ordinary-user namespace prerequisite
       id: userns
       timeout-minutes: 1
