@@ -106,6 +106,7 @@ pub struct DbtRunner {
     terminate_process_group_on_exit: bool,
     defer_evidence_finish: bool,
     tool_answers_brk: bool,
+    caller_tool: bool,
 }
 
 // A blocking socket-to-pipe splice can hold the child's stdin pipe mutex
@@ -189,6 +190,7 @@ impl DbtRunner {
             terminate_process_group_on_exit: false,
             defer_evidence_finish: false,
             tool_answers_brk: false,
+            caller_tool: false,
         })
     }
 
@@ -568,6 +570,25 @@ impl DbtRunner {
         }
     }
 
+    /// Run a paired caller Tool runtime whose actual root acknowledges its
+    /// installed owner and consuming exit through the shared RPC protocol.
+    ///
+    /// A Config-only connection or application RPC is not activation. The
+    /// final receipt must match the real child's exit code. Legacy launch
+    /// methods keep their existing application-request guard.
+    pub async fn output_with_caller_tool<G>(
+        &self,
+        guest: &Command,
+        config: G::Config,
+    ) -> io::Result<(Output, G)>
+    where
+        G: GlobalTool + 'static,
+    {
+        let mut runner = self.clone();
+        runner.caller_tool = true;
+        runner.output_with_global::<G>(guest, config).await
+    }
+
     // AUTONOMOUS-BOT-IMPLEMENTED
     // TODO-HUMAN-REVIEW(impl-dbi-gap-closure): Review exact-environment DBT coordinator launch.
     /// Runs `guest` with captured output, one shared global, and an exact environment.
@@ -819,6 +840,9 @@ impl DbtRunner {
         }
         let mut global = Arc::new(global);
         let requested = Arc::new(AtomicBool::new(false));
+        let activation = self
+            .caller_tool
+            .then(reverie_rpc_transport::tool_activation::ActivationRun::new);
         let mut server = RpcServer::bind_with_readiness(
             &socket,
             Arc::clone(&global),
@@ -828,6 +852,9 @@ impl DbtRunner {
         .map_err(|error| io::Error::other(error.to_string()))?;
         if containment_enabled {
             server = server.mapping_capture(mapping_capture_control);
+        }
+        if let Some(run) = &activation {
+            server = server.tool_activation(run.clone());
         }
 
         // AUTONOMOUS-BOT-IMPLEMENTED
@@ -869,6 +896,12 @@ impl DbtRunner {
             runner.terminate_and_reap(&mut child);
             return Err(error);
         }
+        if let Some(run) = &activation {
+            if let Err(error) = run.bind_root(child.id() as i32) {
+                runner.terminate_and_reap(&mut child);
+                return Err(io::Error::other(error.to_string()));
+            }
+        }
         // A reusable Command retains a caller-supplied Stdio owner after spawn.
         // Keep no parent reader beyond the Tool's temporary initial-image lease.
         drop(command);
@@ -908,7 +941,23 @@ impl DbtRunner {
         // The wait owns real child/tree cleanup. Only then may a complete
         // capture become an ordinary guest status, including verify-allow.
         mapping_capture_owner.finish()?;
-        if missing_coordinator_request_is_error(requested.load(Ordering::Acquire), &wait) {
+        if let Some(run) = &activation {
+            let receipt = match run.completed() {
+                Ok(receipt) => receipt,
+                Err(error) => {
+                    return Err(DbtFailedRunOutput::attach_wait(
+                        io::Error::other(error.to_string()),
+                        wait,
+                    ));
+                }
+            };
+            if wait.status().code() != Some(i32::from(receipt.exit_code())) {
+                return Err(DbtFailedRunOutput::attach_wait(
+                    io::Error::other("caller Finished receipt does not match actual child exit"),
+                    wait,
+                ));
+            }
+        } else if missing_coordinator_request_is_error(requested.load(Ordering::Acquire), &wait) {
             return Err(io::Error::new(
                 io::ErrorKind::ConnectionAborted,
                 "DBT guest exited successfully without sending a request to the global-state coordinator",
@@ -1371,6 +1420,9 @@ impl DbtRunner {
 /// then stop after a bounded drain, and the streams end there.
 #[derive(Debug)]
 pub struct DbtFailedRunOutput {
+    /// Actual reaped child status, when failure followed a completed wait.
+    /// Earlier wait/evidence failures may not retain a status.
+    pub status: Option<ExitStatus>,
     /// Everything the guest tree wrote to stdout.
     pub stdout: Vec<u8>,
     /// Everything the guest tree wrote to stderr.
@@ -1383,6 +1435,24 @@ impl DbtFailedRunOutput {
         io::Error::new(
             error.kind(),
             Self {
+                status: None,
+                stdout,
+                stderr,
+                error,
+            },
+        )
+    }
+
+    fn attach_wait(error: io::Error, wait: ChildWait) -> io::Error {
+        let status = wait.status();
+        let (stdout, stderr) = match wait {
+            ChildWait::Output(output) => (output.stdout, output.stderr),
+            ChildWait::Status(_) => (Vec::new(), Vec::new()),
+        };
+        io::Error::new(
+            error.kind(),
+            Self {
+                status: Some(status),
                 stdout,
                 stderr,
                 error,
@@ -1393,7 +1463,11 @@ impl DbtFailedRunOutput {
 
 impl fmt::Display for DbtFailedRunOutput {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        self.error.fmt(formatter)
+        self.error.fmt(formatter)?;
+        if let Some(status) = self.status {
+            write!(formatter, " (native child status: {status})")?;
+        }
+        Ok(())
     }
 }
 
@@ -2079,6 +2153,7 @@ fn duplicate_to_diagnostic_fd(source: libc::c_int) -> io::Result<()> {
 
 #[cfg(test)]
 mod tests {
+    mod caller_transport_failure;
     mod inherited_input;
     mod namespace_cleanup;
     mod stats_capture;
@@ -2171,6 +2246,7 @@ mod tests {
             terminate_process_group_on_exit: false,
             defer_evidence_finish: false,
             tool_answers_brk: false,
+            caller_tool: false,
         }
     }
 
@@ -3603,6 +3679,44 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    async fn caller_activation_failure_retains_the_reaped_child_output() {
+        let directory = tempfile::tempdir().unwrap();
+        let pid_file = directory.path().join("child-pid");
+        let runner = DbtRunner::new(fake_drrun(directory.path()), fake_client())
+            .unwrap()
+            .terminate_process_group_on_exit(true);
+        let mut guest = Command::new("/bin/bash");
+        guest.args([
+            "-c",
+            "printf '%s' \"$$\" > \"$1\"; printf 'native-out\\n'; printf 'native-diagnostic\\n' >&198; exit 7",
+            "caller-capture-fixture",
+        ]);
+        guest.arg(&pid_file);
+        let error = tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            runner.output_with_caller_tool::<crate::Counter2Global>(&guest, ()),
+        )
+        .await
+        .expect("caller capture fixture timed out")
+        .unwrap_err();
+        let pid: i32 = std::fs::read_to_string(&pid_file).unwrap().parse().unwrap();
+        // The real wait and existing containment finish before a protocol error
+        // returns; this fixture does not execute a DynamoRIO/native Tool host.
+        let waited = unsafe { libc::waitpid(pid, std::ptr::null_mut(), libc::WNOHANG) };
+        assert_eq!(waited, -1);
+        assert_eq!(
+            io::Error::last_os_error().raw_os_error(),
+            Some(libc::ECHILD)
+        );
+        assert!(error.to_string().contains("Tool"), "{error}");
+        let output = failed_run_output(&error)
+            .unwrap_or_else(|| panic!("caller protocol error dropped reaped output: {error}"));
+        assert_eq!(output.status.unwrap().code(), Some(7));
+        assert_eq!(output.stdout, b"native-out\n");
+        assert_eq!(output.stderr, b"native-diagnostic\n");
+    }
+
     #[test]
     fn a_failed_run_keeps_its_error_and_carries_its_output() {
         let original = io::Error::new(io::ErrorKind::InvalidData, "evidence failed");
@@ -3610,6 +3724,7 @@ mod tests {
         assert_eq!(error.kind(), io::ErrorKind::InvalidData);
         assert_eq!(error.to_string(), "evidence failed");
         let output = failed_run_output(&error).expect("captured output");
+        assert_eq!(output.status, None);
         assert_eq!(output.stdout, b"out");
         assert_eq!(output.stderr, b"why\n");
         assert!(failed_run_output(&io::Error::other("plain")).is_none());

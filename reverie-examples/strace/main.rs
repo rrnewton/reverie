@@ -35,6 +35,11 @@ struct Opts {
     #[clap(long)]
     preload: Option<std::path::PathBuf>,
 
+    /// Verified caller artifact manifest for DBT. Defaults to
+    /// reverie-dbt-callers/strace/manifest.json beside this binary.
+    #[clap(long, env = "REVERIE_DBT_CALLER_ARTIFACT")]
+    dbt_artifact: Option<std::path::PathBuf>,
+
     #[clap(flatten)]
     common: CommonToolArguments,
 
@@ -50,16 +55,31 @@ fn main() -> anyhow::Result<()> {
 }
 
 fn run_main(args: Opts) -> anyhow::Result<()> {
+    let caller = if args.backend == backend::BackendKind::Dbt {
+        let path = match &args.dbt_artifact {
+            Some(path) => path.clone(),
+            None => std::env::current_exe()?
+                .parent()
+                .ok_or_else(|| anyhow::anyhow!("strace executable has no profile directory"))?
+                .join("reverie-dbt-callers/strace/manifest.json"),
+        };
+        Some(reverie_dbt::CallerArtifact::load(&path).map_err(|error| {
+            anyhow::anyhow!("cannot load DBT caller artifact {}: {error}; run reverie-dbt/scripts/build-client.sh --caller-manifest reverie-examples/strace-dbt-runtime/Cargo.toml --profile <this binary's Cargo profile>", path.display())
+        })?)
+    } else {
+        None
+    };
     let config = Config {
         filters: args.trace,
     };
     let log_guard = args.common.init_tracing();
-    let run = backend::run_blocking::<Strace>(
+    let run = backend::run_blocking_with_caller::<Strace>(
         args.backend,
         &args.common,
         config,
         "strace",
         args.preload.clone(),
+        caller,
     )?;
     let (status, _) = (run.status, run.global_state);
     drop(log_guard); // Flush logs before exiting.
@@ -156,14 +176,18 @@ mod typed_configuration_tests {
     use std::os::unix::net::UnixStream;
     use std::process::Command;
     use std::process::Stdio;
+    use std::sync::Mutex;
     use std::time::Duration;
     use std::time::Instant;
 
     use reverie::GlobalRPC;
+    use reverie::GlobalTool;
+    use reverie::Guest;
     use reverie::InjectionPurpose;
     use reverie::Pid;
     use reverie::Tool;
     use reverie::ToolConfiguration;
+    use reverie::syscalls::Displayable;
     use reverie::syscalls::Syscall;
     use reverie::syscalls::SyscallArgs;
     use reverie::syscalls::Sysno;
@@ -175,14 +199,26 @@ mod typed_configuration_tests {
 
     use super::*;
 
-    struct Endpoint<'a>(&'a ToolConfiguration<Strace>);
+    struct Endpoint<'a> {
+        configuration: &'a ToolConfiguration<Strace>,
+        expected: Mutex<Option<global_state::OutputEvent>>,
+        events: Mutex<Vec<global_state::OutputEvent>>,
+    }
     #[reverie::tool]
     impl GlobalRPC<global_state::GlobalState> for Endpoint<'_> {
-        async fn send_rpc(&self, _: ()) {
-            panic!("Strace must not send an application RPC")
+        async fn send_rpc(&self, event: global_state::OutputEvent) -> Result<(), String> {
+            assert_eq!(
+                Some(&event),
+                self.expected.lock().unwrap().as_ref(),
+                "only the exact post-construction write diagnostic is expected"
+            );
+            self.events.lock().unwrap().push(event.clone());
+            global_state::GlobalState
+                .receive_rpc(Pid::from_raw(unsafe { libc::getpid() }), event)
+                .await
         }
         fn config(&self) -> &Config {
-            self.0.config()
+            self.configuration.config()
         }
     }
 
@@ -306,7 +342,11 @@ mod typed_configuration_tests {
                 .iter_syscalls()
                 .any(|s| s == Sysno::read)
         );
-        let endpoint = Endpoint(&owner);
+        let endpoint = Endpoint {
+            configuration: &owner,
+            expected: Mutex::new(None),
+            events: Mutex::new(Vec::new()),
+        };
         let pid = Pid::from_raw(unsafe { libc::getpid() });
         let tid = Pid::from_raw(unsafe { libc::syscall(libc::SYS_gettid) } as i32);
         let tool = owner.new_process(pid);
@@ -331,12 +371,19 @@ mod typed_configuration_tests {
             Sysno::write,
             SyscallArgs::new(1, message.as_ptr() as usize, message.len(), 0, 0, 0),
         );
+        let expected = global_state::OutputEvent::Syscall(format!(
+            "[pid {}] {} = 6",
+            tid.colored(),
+            syscall.display_with_outputs(&guest.memory())
+        ));
+        *endpoint.expected.lock().unwrap() = Some(expected.clone());
         assert!(matches!(
             run_tool_syscall_with_guest(&tool, guest, syscall).unwrap(),
             DbtSyscallOutcome::Suppress(6)
         ));
         assert_eq!(calls.get(), 1);
         assert_eq!(tool::take_handled_syscalls(), 1);
+        assert_eq!(*endpoint.events.lock().unwrap(), [expected]);
         // Avoid writing libtest's completion line onto application stdout.
         std::process::exit(0);
     }

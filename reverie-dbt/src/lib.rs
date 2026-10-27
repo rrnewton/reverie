@@ -18,6 +18,11 @@
 
 pub mod backend_stats;
 mod branch_facts;
+pub mod caller_abi;
+mod caller_artifact;
+mod caller_effects;
+mod caller_exports;
+pub mod caller_runtime;
 pub mod counter;
 mod counter2_global;
 mod evidence;
@@ -60,6 +65,7 @@ pub use branch_facts::BranchFactQuery;
 pub use branch_facts::BranchFactUnavailable;
 pub use branch_facts::NativeBranchFact;
 pub use branch_facts::install_branch_fact_query;
+pub use caller_artifact::CallerArtifact;
 pub use counter2_global::Counter2Global;
 pub use evidence::CoordinatorEvidence;
 pub use evidence::DbtEvidence;
@@ -257,6 +263,7 @@ pub fn install_guest_compare_exchange(compare_exchange: MemoryCompareExchange) {
 pub struct DbtMemory {
     local: LocalMemory,
     compare_exchange: Option<MemoryCompareExchange>,
+    caller_effects: Option<Arc<caller_effects::CallerEffects>>,
 }
 
 impl Default for DbtMemory {
@@ -272,7 +279,15 @@ impl DbtMemory {
         Self {
             local: LocalMemory::new(),
             compare_exchange: GUEST_COMPARE_EXCHANGE.get().copied(),
+            caller_effects: None,
         }
+    }
+
+    fn check_access(&self) -> Result<(), Errno> {
+        if let Some(effects) = &self.caller_effects {
+            effects.check_memory()?;
+        }
+        Ok(())
     }
 }
 
@@ -282,6 +297,7 @@ impl MemoryAccess for DbtMemory {
         read_from: &[std::io::IoSlice],
         write_to: &mut [std::io::IoSliceMut],
     ) -> Result<usize, Errno> {
+        self.check_access()?;
         self.local.read_vectored(read_from, write_to)
     }
 
@@ -290,6 +306,7 @@ impl MemoryAccess for DbtMemory {
         read_from: &[std::io::IoSlice],
         write_to: &mut [std::io::IoSliceMut],
     ) -> Result<usize, Errno> {
+        self.check_access()?;
         self.local.write_vectored(read_from, write_to)
     }
 
@@ -297,15 +314,50 @@ impl MemoryAccess for DbtMemory {
     where
         A: Into<reverie::syscalls::Addr<'a, u8>>,
     {
+        self.check_access()?;
         self.local.read(addr, buf)
     }
 
     fn write(&mut self, addr: AddrMut<u8>, buf: &[u8]) -> Result<usize, Errno> {
+        self.check_access()?;
         self.local.write(addr, buf)
     }
 
     fn write_with_user_access(&mut self, addr: AddrMut<u8>, buf: &[u8]) -> Result<usize, Errno> {
+        self.check_access()?;
         self.local.write_with_user_access(addr, buf)
+    }
+
+    fn write_native_user_vectored(
+        &mut self,
+        expected_tid: i32,
+        local: &[std::io::IoSlice],
+        remote: &[reverie_memory::RemoteIoVec],
+    ) -> Result<usize, Errno> {
+        self.check_access()?;
+        self.local
+            .write_native_user_vectored(expected_tid, local, remote)
+    }
+
+    fn read_exact<'a, A>(&self, addr: A, buf: &mut [u8]) -> Result<(), Errno>
+    where
+        A: Into<Addr<'a, u8>>,
+    {
+        self.check_access()?;
+        self.local.read_exact(addr, buf)
+    }
+
+    fn read_exact_with_user_access<'a, A>(&self, addr: A, buf: &mut [u8]) -> Result<(), Errno>
+    where
+        A: Into<Addr<'a, u8>>,
+    {
+        self.check_access()?;
+        self.local.read_exact_with_user_access(addr, buf)
+    }
+
+    fn write_exact(&mut self, addr: AddrMut<u8>, buf: &[u8]) -> Result<(), Errno> {
+        self.check_access()?;
+        self.local.write_exact(addr, buf)
     }
 
     fn compare_exchange_u32(
@@ -314,6 +366,7 @@ impl MemoryAccess for DbtMemory {
         expected: u32,
         desired: u32,
     ) -> Result<u32, Errno> {
+        self.check_access()?;
         let Some(compare_exchange) = self.compare_exchange else {
             return Err(Errno::ENOSYS);
         };
@@ -372,7 +425,18 @@ pub type RuntimeIdler = unsafe extern "C" fn();
 /// producer cannot write or validate the new pointee layout.
 /// Version 15 appends the prepared mapping-capture primitive at offset 80;
 /// the callback table is 88 bytes. Ownership snapshot and task layout stay fixed.
-pub const DBT_RUNTIME_ABI_VERSION: u32 = 15;
+/// Version 16 appends terminal admission at offset88 and RPC transport failure
+/// at offset96 (104-byte table), and
+/// versions image initialization, readiness and terminal notification records
+/// for an explicitly paired caller runtime. Legacy capabilities remain zero.
+pub const DBT_RUNTIME_ABI_VERSION: u32 = 16;
+
+/// Nonreturning native-owner failure for a caller Tool's lost RPC transport.
+///
+/// The native owner validates the current callback context, records backend
+/// failure, and terminates using the shared transport failure status. It does
+/// not consume a normal guest exit or fabricate an RPC response.
+pub type RuntimeRpcTransportFatal = unsafe extern "C" fn(context: usize) -> !;
 
 /// Initialized native execution mode supplied by the version-6 startup bridge.
 ///
@@ -424,6 +488,7 @@ struct DbtRuntimeCallbacksV1 {
 // TODO-HUMAN-REVIEW(PR-66): Confirm the C-compatible callback layout.
 /// Callbacks supplied to an external Tool runtime on its background client thread.
 #[repr(C)]
+#[derive(Clone, Copy)]
 pub struct DbtRuntimeCallbacks {
     /// Emits already-formatted runtime output through DynamoRIO.
     pub emit: RuntimeEmitter,
@@ -463,6 +528,11 @@ pub struct DbtRuntimeCallbacks {
     pub branch_fact: BranchFactQuery,
     /// Prepared cooperative mapping capture, with native restoration ownership.
     pub mapping_capture: MappingCapture,
+    /// Native reservation of a caller's explicit exit without consuming state.
+    pub admit_terminal: caller_abi::TerminalAdmission,
+    /// Native termination on caller RPC failure. Capability-clear legacy
+    /// adapters may omit it; a caller runtime requires it before configuration.
+    pub rpc_transport_fatal: Option<RuntimeRpcTransportFatal>,
 }
 
 /// Reports the exact native-client/external-runtime ABI version.
@@ -648,6 +718,10 @@ where
     signal_info_replacement: Option<[u8; reverie::SIGNAL_INFO_SIZE]>,
     /// Injections made through this guest ([`Guest::injected_syscalls`]).
     injected_syscalls: u64,
+    // Only the explicit caller adapter supplies this per-thread lifetime.
+    // Legacy constructors retain their existing behavior and authority.
+    caller_effects: Option<Arc<caller_effects::CallerEffects>>,
+    caller_syscall_phase: bool,
 }
 
 impl<'a, T> DbtGuest<'a, T>
@@ -754,6 +828,28 @@ where
             signal_info: None,
             signal_info_replacement: None,
             injected_syscalls: 0,
+            caller_effects: None,
+            caller_syscall_phase: false,
+        }
+    }
+
+    fn with_caller_effects(
+        mut self,
+        effects: Arc<caller_effects::CallerEffects>,
+        syscall_phase: bool,
+    ) -> Self {
+        self.caller_effects = Some(effects);
+        self.caller_syscall_phase = syscall_phase;
+        self
+    }
+
+    async fn wait_if_caller_stopped(&self) {
+        if self
+            .caller_effects
+            .as_ref()
+            .is_some_and(|effects| effects.stopped())
+        {
+            std::future::pending::<()>().await;
         }
     }
 
@@ -772,6 +868,12 @@ where
             args.arg4 as u64,
             args.arg5 as u64,
         ];
+        if let Some(effects) = &self.caller_effects {
+            if caller_effects::unsupported_operation(number.id() as i64, &args, true) {
+                effects.refuse("caller-returning-lifecycle-unsupported");
+                return Err(Errno::EOPNOTSUPP);
+            }
+        }
         if let Some(result) = sync_rpc::protect_guest_operation(
             self.context,
             self.invoke_syscall,
@@ -896,6 +998,7 @@ where
     ) -> <T::GlobalState as GlobalTool>::Response {
         // AUTONOMOUS-BOT-IMPLEMENTED
         // TODO-HUMAN-REVIEW(#121): Review cross-process GlobalState RPC routing.
+        self.wait_if_caller_stopped().await;
         self.rpc.endpoint().send_rpc(message).await
     }
 
@@ -904,6 +1007,13 @@ where
         message: <T::GlobalState as GlobalTool>::Request,
     ) -> Result<<T::GlobalState as GlobalTool>::Response, <T::GlobalState as GlobalTool>::Request>
     {
+        if self
+            .caller_effects
+            .as_ref()
+            .is_some_and(|effects| effects.stopped())
+        {
+            return Err(message);
+        }
         self.rpc.try_send_rpc_sync(message)
     }
 
@@ -1034,7 +1144,7 @@ where
     // `reverie_dbt_runtime_cpuid` (ABI version 9), which the runtime answers
     // through its Tool's `handle_cpuid_event`.
     fn has_cpuid_interception(&self) -> bool {
-        true
+        self.caller_effects.is_none()
     }
 
     fn injected_syscalls(&self) -> Option<u64> {
@@ -1042,7 +1152,10 @@ where
     }
 
     fn memory(&self) -> Self::Memory {
-        DbtMemory::new()
+        DbtMemory {
+            caller_effects: self.caller_effects.clone(),
+            ..DbtMemory::new()
+        }
     }
 
     // The application's own auxiliary vector, the one on its initial stack,
@@ -1072,6 +1185,17 @@ where
     }
 
     fn set_signal_info(&mut self, info: [u8; reverie::SIGNAL_INFO_SIZE]) -> Result<(), Errno> {
+        if self
+            .caller_effects
+            .as_ref()
+            .is_some_and(|effects| effects.stopped())
+        {
+            return Err(Errno::ESRCH);
+        }
+        if let Some(effects) = &self.caller_effects {
+            effects.refuse("caller-signal-replacement-unsupported");
+            return Err(Errno::ENOSYS);
+        }
         let original = self.signal_info.ok_or(Errno::EINVAL)?;
         if info[..4] != original[..4] {
             return Err(Errno::EINVAL);
@@ -1081,6 +1205,7 @@ where
     }
 
     async fn regs(&mut self) -> libc::user_regs_struct {
+        self.wait_if_caller_stopped().await;
         let mut regs = unsafe { std::mem::zeroed() };
         let read = unsafe { (self.read_registers)(self.context, &mut regs) };
         assert_ne!(read, 0, "DynamoRIO failed to translate the guest registers");
@@ -1090,6 +1215,7 @@ where
     // AUTONOMOUS-BOT-IMPLEMENTED
     // TODO-HUMAN-REVIEW(PR-167): Review the DBT guest register-write path.
     async fn set_regs(&mut self, regs: libc::user_regs_struct) -> Result<(), Error> {
+        self.wait_if_caller_stopped().await;
         // The write counterpart to `regs()`: hand the tool-supplied register
         // file to the native `dr_set_mcontext` callback. DynamoRIO applies the
         // modified integer context when the guest resumes from this syscall
@@ -1110,6 +1236,7 @@ where
     async fn daemonize(&mut self) {}
 
     async fn inject<S: SyscallInfo>(&mut self, syscall: S) -> Result<i64, Errno> {
+        self.wait_if_caller_stopped().await;
         self.inject_for_purpose(syscall, InjectionPurpose::Application)
     }
 
@@ -1118,6 +1245,7 @@ where
         syscall: S,
         purpose: InjectionPurpose,
     ) -> Result<i64, Error> {
+        self.wait_if_caller_stopped().await;
         self.inject_for_purpose(syscall, purpose)
             .map_err(Error::from)
     }
@@ -1125,17 +1253,65 @@ where
     // AUTONOMOUS-BOT-IMPLEMENTED
     // TODO-HUMAN-REVIEW(PR-154): Review exact syscall deferral for DBT tail injection.
     async fn tail_inject<S: SyscallInfo>(&mut self, syscall: S) -> Never {
+        self.wait_if_caller_stopped().await;
         // A tail injection never resumes the handler, so execute it only after
         // this future and every Rust state borrow have been dropped. Besides
         // preserving DynamoRIO lifecycle bookkeeping, this keeps blocking calls
         // such as futex out of `dr_invoke_syscall_as_app`.
         let (number, args) = syscall.into_parts();
+        if let Some(effects) = &self.caller_effects {
+            let raw = [
+                args.arg0 as u64,
+                args.arg1 as u64,
+                args.arg2 as u64,
+                args.arg3 as u64,
+                args.arg4 as u64,
+                args.arg5 as u64,
+            ];
+            if !self.caller_syscall_phase {
+                effects.refuse("caller-startup-terminal-unsupported");
+                return std::future::pending().await;
+            }
+            if caller_effects::unsupported_operation(number.id() as i64, &raw, false) {
+                effects.refuse("caller-tail-lifecycle-unsupported");
+                return std::future::pending().await;
+            }
+            if matches!(number.id() as i64, libc::SYS_exit | libc::SYS_exit_group) {
+                effects.admit_exit(number.id() as i64, raw);
+                return std::future::pending().await;
+            }
+        }
         self.tail_inject_result
             .set_execute_original(Syscall::from_raw(number, args));
         std::future::pending().await
     }
 
+    async fn defer_signal_delivery(&mut self, _event: reverie::SignalEvent) -> Result<(), Error> {
+        self.wait_if_caller_stopped().await;
+        if let Some(effects) = &self.caller_effects {
+            effects.refuse("caller-signal-delivery-unsupported");
+        }
+        Err(Errno::ENOSYS.into())
+    }
+
+    async fn defer_signal_delivery_before_syscall(
+        &mut self,
+        _event: reverie::SignalEvent,
+    ) -> Result<(), Error> {
+        self.wait_if_caller_stopped().await;
+        if let Some(effects) = &self.caller_effects {
+            effects.refuse("caller-signal-delivery-unsupported");
+        }
+        Err(Errno::ENOSYS.into())
+    }
+
     fn set_timer(&mut self, _sched: TimerSchedule) -> Result<(), Error> {
+        if let Some(effects) = &self.caller_effects {
+            if effects.stopped() {
+                return Err(Errno::ESRCH.into());
+            }
+            effects.refuse("caller-timer-unsupported");
+        }
         // A working timer needs a retired-conditional-branch threshold trap
         // installed in the native DynamoRIO client; the branch counter is
         // currently only sampled at syscall boundaries, never armed.
@@ -1145,6 +1321,12 @@ where
     }
 
     fn set_timer_precise(&mut self, _sched: TimerSchedule) -> Result<(), Error> {
+        if let Some(effects) = &self.caller_effects {
+            if effects.stopped() {
+                return Err(Errno::ESRCH.into());
+            }
+            effects.refuse("caller-precise-timer-unsupported");
+        }
         // Precise timers additionally require single-stepping to the exact
         // instruction, which the native client does not implement.
         // TODO-STUB(#31): add RCB + single-step delivery in the native client.
@@ -1163,6 +1345,13 @@ where
     // AUTONOMOUS-BOT-IMPLEMENTED
     // TODO-HUMAN-REVIEW(PR-ratchet16): Review the DBT in-process guest backtrace.
     fn backtrace(&mut self) -> Option<Backtrace> {
+        if self
+            .caller_effects
+            .as_ref()
+            .is_some_and(|effects| effects.stopped())
+        {
+            return None;
+        }
         // The DBT Tool runs *in-process*, in the guest's own address space, so a
         // backtrace needs no remote unwinder (unlike ptrace, which unwinds the
         // tracee over `/proc/pid/mem` with libunwind): the guest stack is
@@ -1934,6 +2123,143 @@ fn run_tool_syscall_on_prepared_guest<T: Tool>(
     }
 }
 
+/// Outcome from the admitted caller Tool's shared completion policy.
+/// Legacy Detcore and prototype dispatch do not use this policy implicitly.
+#[derive(Debug)]
+pub enum CallerSyscallOutcome {
+    /// Return the handler's value without forwarding the original call.
+    Suppress(i64),
+    /// Forward exactly one unadmitted ordinary tail after dropping the future.
+    ExecuteOriginal(Syscall),
+    /// Finish the exact native reservation after all Guest borrows are dropped.
+    Terminal(caller_abi::TerminalFact),
+}
+
+fn caller_error(reason: &'static str) -> Error {
+    std::io::Error::other(reason).into()
+}
+
+// Reuse the existing DBT waker/parking engine. Only this caller entry and the
+// trap consume the common completion policy; the legacy result mapper above
+// deliberately remains byte-for-byte unchanged.
+fn run_caller_callback<F: Future>(
+    future: F,
+    tail: &TailInjectResult,
+    effects: &caller_effects::CallerEffects,
+    phase: reverie::CallbackPhase,
+) -> reverie::CallbackDecision<F::Output, caller_abi::TerminalFact> {
+    let mut future = pin!(future);
+    let driver_tail = TailInjectResult::default();
+    run_ready(
+        std::future::poll_fn(|cx| {
+            let polled = future.as_mut().poll(cx);
+            let fact = if let Some(ending) = effects.ending() {
+                Some(reverie::TailFact::Established(ending))
+            } else {
+                tail.take().map(|action| match action {
+                    TailInjectAction::ExecuteOriginal(syscall) => {
+                        let (number, args) = syscall.into_parts();
+                        reverie::TailFact::Deferred {
+                            number: number.id() as i64,
+                            args: [
+                                args.arg0 as u64,
+                                args.arg1 as u64,
+                                args.arg2 as u64,
+                                args.arg3 as u64,
+                                args.arg4 as u64,
+                                args.arg5 as u64,
+                            ],
+                        }
+                    }
+                })
+            };
+            match reverie::classify_callback(phase, polled, fact, effects.refusal()) {
+                reverie::CallbackDecision::Wait => Poll::Pending,
+                outcome => Poll::Ready(outcome),
+            }
+        }),
+        &driver_tail,
+    )
+    .expect("caller classifier always resolves through its explicit outcome")
+}
+
+/// Drive an admitted caller's syscall through the shared Tool process owner.
+///
+/// This entry requires the caller adapter's per-thread effect state. It neither
+/// adopts a legacy Guest nor changes the legacy drivers' errno/fatal policy.
+/// The caller retains native admission, primary RPC ownership and final forward
+/// preparation; an established terminal result is not kernel completion.
+pub fn run_caller_syscall_with_guest<T: Tool>(
+    process: &reverie::ToolProcess<T>,
+    mut guest: DbtGuest<'_, T>,
+    syscall: Syscall,
+) -> Result<CallerSyscallOutcome, Error> {
+    let effects = guest
+        .caller_effects
+        .clone()
+        .ok_or_else(|| caller_error("caller driver requires admitted thread ownership"))?;
+    if let Some(result) = protect_tool_syscall(guest.context, guest.invoke_syscall, syscall, true) {
+        return Ok(CallerSyscallOutcome::Suppress(result));
+    }
+    let tail = Arc::clone(&guest.tail_inject_result);
+    loop {
+        tail.clear();
+        let outcome = run_caller_callback(
+            process.handle_syscall_event(&mut guest, syscall),
+            &tail,
+            &effects,
+            reverie::CallbackPhase::Syscall,
+        );
+        match outcome {
+            reverie::CallbackDecision::Ready(result) => {
+                match reverie::classify_syscall_result(result) {
+                    reverie::SyscallResult::Value(value) => {
+                        return Ok(CallerSyscallOutcome::Suppress(value));
+                    }
+                    reverie::SyscallResult::Restart => continue,
+                    reverie::SyscallResult::Fatal(error) => return Err(error),
+                }
+            }
+            reverie::CallbackDecision::Completed(value) => {
+                return Ok(CallerSyscallOutcome::Suppress(value));
+            }
+            reverie::CallbackDecision::Established(fact) => {
+                return Ok(CallerSyscallOutcome::Terminal(fact));
+            }
+            reverie::CallbackDecision::Deferred { number, args } => {
+                let number = reverie::syscalls::Sysno::from(
+                    i32::try_from(number)
+                        .map_err(|_| caller_error("caller deferred an invalid syscall"))?,
+                );
+                let syscall = Syscall::from_raw(
+                    number,
+                    reverie::syscalls::SyscallArgs::new(
+                        args[0] as usize,
+                        args[1] as usize,
+                        args[2] as usize,
+                        args[3] as usize,
+                        args[4] as usize,
+                        args[5] as usize,
+                    ),
+                );
+                return Ok(
+                    match protect_tool_syscall(guest.context, guest.invoke_syscall, syscall, false)
+                    {
+                        Some(value) => CallerSyscallOutcome::Suppress(value),
+                        None => CallerSyscallOutcome::ExecuteOriginal(syscall),
+                    },
+                );
+            }
+            reverie::CallbackDecision::Refused(reason) => return Err(caller_error(reason)),
+            reverie::CallbackDecision::ForkChild { .. } | reverie::CallbackDecision::Wait => {
+                return Err(caller_error(
+                    "caller driver received an impossible transition",
+                ));
+            }
+        }
+    }
+}
+
 fn protect_tool_syscall(
     context: usize,
     invoke_syscall: SyscallInvoker,
@@ -2104,9 +2430,9 @@ static PROCESS_CLONE_RESULT_PROBE: AtomicBool = AtomicBool::new(false);
 /// Begins a new DynamoRIO application image and returns its generation.
 #[cfg(feature = "prototype-runtime")]
 #[unsafe(no_mangle)]
-pub extern "C" fn reverie_dbt_runtime_image_init() -> u64 {
+pub extern "C" fn reverie_dbt_runtime_image_init() -> caller_abi::ImageDescriptor {
     READY_IMAGE_GENERATION.store(0, Ordering::Release);
-    IMAGE_GENERATION.fetch_add(1, Ordering::SeqCst) + 1
+    caller_abi::ImageDescriptor::legacy(IMAGE_GENERATION.fetch_add(1, Ordering::SeqCst) + 1)
 }
 
 /// Initializes the prototype state for the current application thread.
@@ -2226,7 +2552,8 @@ pub unsafe extern "C" fn reverie_dbt_runtime_thread_exit(
     _context: *mut c_void,
     tid: i32,
     _invoke_syscall: SyscallInvoker,
-) {
+    _fact: *const caller_abi::TerminalFact,
+) -> i32 {
     if tools::counter2_exact_enabled() {
         let thread_syscalls = unsafe { (*counters).observed_syscalls };
         let _ = run_tool_thread_exit(
@@ -2238,6 +2565,7 @@ pub unsafe extern "C" fn reverie_dbt_runtime_thread_exit(
             ExitStatus::SUCCESS,
         );
     }
+    0
 }
 
 /// Restores prototype state after an exec syscall returns with an error.
@@ -2307,7 +2635,6 @@ pub extern "C" fn reverie_dbt_runtime_copied_syscall(_sysnum: i64, _args: *const
 }
 
 // TODO-HUMAN-REVIEW(PR-154): Review the deferred lifecycle syscall callback ABI.
-#[cfg(any(feature = "prototype-runtime", test))]
 unsafe fn write_deferred_syscall(syscall: Syscall, number: *mut i64, args: *mut u64) {
     let (sysno, syscall_args) = syscall.into_parts();
     unsafe { number.write(sysno.id() as i64) };
@@ -2937,10 +3264,23 @@ pub extern "C" fn reverie_dbt_runtime_process_exit() {
 /// Reports whether the built-in prototype runtime is ready for callbacks.
 #[cfg(feature = "prototype-runtime")]
 #[unsafe(no_mangle)]
-pub extern "C" fn reverie_dbt_runtime_ready(image_generation: u64) -> i32 {
-    i32::from(
+pub unsafe extern "C" fn reverie_dbt_runtime_ready(
+    image_generation: u64,
+    snapshot: *mut caller_abi::ReadySnapshot,
+) -> i32 {
+    let ready = i32::from(
         image_generation != 0 && READY_IMAGE_GENERATION.load(Ordering::Acquire) == image_generation,
-    )
+    );
+    if ready == 1 && !snapshot.is_null() {
+        unsafe {
+            snapshot.write(caller_abi::ReadySnapshot {
+                size: std::mem::size_of::<caller_abi::ReadySnapshot>() as u32,
+                owner_generation: image_generation,
+                ..Default::default()
+            });
+        }
+    }
+    ready
 }
 
 /// Returns the name of the built-in DBT runtime for native summary evidence.
@@ -3008,6 +3348,7 @@ pub unsafe extern "C" fn reverie_dbt_runtime_totals(
 mod tests {
     use super::*;
 
+    mod caller_contract;
     mod rpc_owner;
     mod tool_configuration;
 
@@ -3452,6 +3793,7 @@ mod tests {
         let mut memory = DbtMemory {
             local: LocalMemory::new(),
             compare_exchange: Some(fake_compare_exchange),
+            caller_effects: None,
         };
         assert_eq!(memory.compare_exchange_u32(address, 7, 9), Ok(7));
         assert_eq!(word.load(Ordering::SeqCst), 9);
@@ -3476,6 +3818,7 @@ mod tests {
         let mut memory = DbtMemory {
             local: LocalMemory::new(),
             compare_exchange: None,
+            caller_effects: None,
         };
         assert_eq!(
             memory.compare_exchange_u32(address, 7, 9),
@@ -3486,11 +3829,19 @@ mod tests {
 
     #[test]
     fn startup_abi_preserves_layout_and_requires_initialized_native_mode() {
-        assert_eq!(reverie_dbt_runtime_abi_version(), 15);
+        assert_eq!(reverie_dbt_runtime_abi_version(), 16);
         assert_eq!(std::mem::size_of::<DbtSignalEvent>(), 200);
         assert_eq!(std::mem::align_of::<DbtSignalEvent>(), 8);
-        assert_eq!(reverie_dbt_runtime_callbacks_size(), 88);
-        assert_eq!(std::mem::size_of::<DbtRuntimeCallbacks>(), 88);
+        assert_eq!(reverie_dbt_runtime_callbacks_size(), 104);
+        assert_eq!(std::mem::size_of::<DbtRuntimeCallbacks>(), 104);
+        assert_eq!(
+            std::mem::offset_of!(DbtRuntimeCallbacks, rpc_transport_fatal),
+            96
+        );
+        assert_eq!(
+            std::mem::offset_of!(DbtRuntimeCallbacks, admit_terminal),
+            88
+        );
         assert_eq!(std::mem::offset_of!(DbtRuntimeCallbacks, branch_fact), 72);
         assert_eq!(std::mem::size_of::<NativeBranchFact>(), 48);
         assert_eq!(

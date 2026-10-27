@@ -200,7 +200,7 @@ impl<G: GlobalTool> CoordinatorRpc<G> {
     ) -> G::Response {
         #[cfg(feature = "exec-private-successor")]
         if self.native_failed.load(Ordering::Acquire) {
-            rpc_fatal(123);
+            rpc_fatal(reverie_rpc_transport::TOOL_RPC_FAILURE_EXIT_CODE);
         }
         // Fork detection without a per-hop syscall: the common round-trip only
         // reads the atfork flag. It is set exclusively in a freshly forked
@@ -211,22 +211,25 @@ impl<G: GlobalTool> CoordinatorRpc<G> {
             // retained native stream can never reconnect as ordinary I/O.
             #[cfg(feature = "exec-private-init")]
             if super::exec_private::active() {
-                rpc_fatal(123);
+                rpc_fatal(reverie_rpc_transport::TOOL_RPC_FAILURE_EXIT_CODE);
             }
             let pid = current_id(libc::SYS_getpid).unwrap_or_else(|_| rpc_fatal(122));
             if connection.pid != pid {
                 let tid = current_id(libc::SYS_gettid).unwrap_or_else(|_| rpc_fatal(122));
-                let client =
-                    connect_ordinary::<G>(&self.path, tid).unwrap_or_else(|_| rpc_fatal(123));
+                let client = connect_ordinary::<G>(&self.path, tid).unwrap_or_else(|_| {
+                    rpc_fatal(reverie_rpc_transport::TOOL_RPC_FAILURE_EXIT_CODE)
+                });
                 let new_fd = client.as_raw_fd();
                 let old_fd = self.fd.swap(new_fd, Ordering::AcqRel);
-                (self.on_reconnect)(old_fd, new_fd).unwrap_or_else(|_| rpc_fatal(123));
+                (self.on_reconnect)(old_fd, new_fd).unwrap_or_else(|_| {
+                    rpc_fatal(reverie_rpc_transport::TOOL_RPC_FAILURE_EXIT_CODE)
+                });
                 *connection = RpcConnection { pid, client };
             }
         }
         match connection.client.try_send_rpc(message) {
             Ok(response) => response,
-            Err(_) => rpc_fatal(123),
+            Err(_) => rpc_fatal(reverie_rpc_transport::TOOL_RPC_FAILURE_EXIT_CODE),
         }
     }
 }

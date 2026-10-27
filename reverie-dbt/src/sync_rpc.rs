@@ -168,6 +168,16 @@ impl From<InitialConfigFailure> for InitialConfigError {
 /// The socket is retired with one close attempt before either result returns;
 /// close is not retried, including on Linux `EINTR`.
 pub fn read_initial_config<C: DeserializeOwned>(path: &Path) -> Result<C, InitialConfigError> {
+    read_initial_config_with_digest(path).map(|(config, _)| config)
+}
+
+/// Receive Config and its exact raw-frame digest on the temporary reader.
+///
+/// This does not grant a primary role. The actual application callback must
+/// establish its own connection and compare that connection's Config digest.
+pub fn read_initial_config_with_digest<C: DeserializeOwned>(
+    path: &Path,
+) -> Result<(C, reverie_rpc_transport::initial_image::ConfigDigest), InitialConfigError> {
     // Validate all address bytes before creating any descriptor. In particular,
     // an embedded NUL must not silently select a different filesystem socket.
     if path.as_os_str().as_bytes().contains(&0) {
@@ -200,18 +210,21 @@ pub fn read_initial_config<C: DeserializeOwned>(path: &Path) -> Result<C, Initia
 
 fn receive_initial_config<C: DeserializeOwned>(
     stream: &mut UnixStream,
-) -> Result<C, InitialConfigFailure> {
+) -> Result<(C, reverie_rpc_transport::initial_image::ConfigDigest), InitialConfigFailure> {
     let payload = read_config_frame(stream).map_err(|error| match error {
         RpcError::Closed => InitialConfigFailure::Read(io::ErrorKind::UnexpectedEof.into()),
         RpcError::Io(error) => InitialConfigFailure::Read(error),
         RpcError::FrameTooLarge { .. } => InitialConfigFailure::FrameTooLarge,
         error => InitialConfigFailure::Read(io::Error::other(error)),
     })?;
-    decode_exact(&payload).map_err(|error| match error {
-        RpcError::Decode(error) => InitialConfigFailure::Decode(error),
-        RpcError::TrailingBytes { .. } => InitialConfigFailure::TrailingBytes,
-        error => InitialConfigFailure::Read(io::Error::other(error)),
-    })
+    let digest = reverie_rpc_transport::initial_image::config_digest(&payload);
+    decode_exact(&payload)
+        .map(|config| (config, digest))
+        .map_err(|error| match error {
+            RpcError::Decode(error) => InitialConfigFailure::Decode(error),
+            RpcError::TrailingBytes { .. } => InitialConfigFailure::TrailingBytes,
+            error => InitialConfigFailure::Read(io::Error::other(error)),
+        })
 }
 
 fn close_initial_socket(fd: RawFd) -> io::Result<()> {
@@ -412,7 +425,11 @@ struct GuestConnection {
     // A capture framing failure leaves the reserved numeric slot occupied,
     // but this image may never reconnect or reuse that stream for another RPC.
     usable: bool,
+    generation: u64,
+    config_digest: reverie_rpc_transport::initial_image::ConfigDigest,
 }
+
+static NEXT_CONNECTION_GENERATION: AtomicU64 = AtomicU64::new(1);
 
 pub(crate) struct MappingCapturePrimary {
     guard: Option<std::sync::MutexGuard<'static, Option<GuestConnection>>>,
@@ -531,6 +548,140 @@ impl GuestClient {
 }
 
 static GUEST_CLIENT: GuestClient = GuestClient::new();
+
+/// Identity of the caller's one configured application primary. This owns no
+/// callback context or connection lease, and has no reconnect/fallback path.
+pub(crate) struct CallerPrimary {
+    pid: u32,
+    fd: i32,
+    generation: u64,
+    digest: reverie_rpc_transport::initial_image::ConfigDigest,
+    finished: std::sync::atomic::AtomicBool,
+}
+
+impl CallerPrimary {
+    pub(crate) fn prepare(
+        context: usize,
+        invoke_syscall: SyscallInvoker,
+        actual_pid: i32,
+        digest: reverie_rpc_transport::initial_image::ConfigDigest,
+    ) -> io::Result<Self> {
+        if actual_pid <= 0 || actual_pid as u32 != std::process::id() {
+            return Err(io::Error::other("caller primary has wrong actual process"));
+        }
+        let path = std::env::var_os(RPC_SOCKET_ENV)
+            .ok_or_else(|| io::Error::other("caller requires a coordinator socket"))?;
+        let mut slot = GUEST_CLIENT
+            .connection
+            .try_lock()
+            .map_err(|_| io::Error::other("caller primary is contended or poisoned"))?;
+        if slot.is_none() {
+            GUEST_CLIENT.replace(
+                &mut slot,
+                context,
+                invoke_syscall,
+                Path::new(&path),
+                actual_pid as u32,
+            )?;
+        }
+        let connection = slot
+            .as_ref()
+            .ok_or_else(|| io::Error::other("caller primary missing"))?;
+        if !connection.usable
+            || connection.pid != actual_pid as u32
+            || connection.path != Path::new(&path)
+            || connection.config_digest != digest
+            || GUEST_CLIENT.descriptor(connection.pid) != Some(connection.fd)
+        {
+            return Err(io::Error::other(
+                "caller primary configuration or owner mismatch",
+            ));
+        }
+        Ok(Self {
+            pid: connection.pid,
+            fd: connection.fd,
+            generation: connection.generation,
+            digest,
+            finished: std::sync::atomic::AtomicBool::new(false),
+        })
+    }
+
+    fn with_stream<R>(
+        &self,
+        context: usize,
+        invoke_syscall: SyscallInvoker,
+        operation: impl FnOnce(&mut GuestIo) -> Result<R, RpcError>,
+    ) -> Result<R, RpcError> {
+        if self.finished.load(Ordering::Acquire) {
+            return Err(io::Error::other("caller RPC after FinishedAck").into());
+        }
+        let mut slot = GUEST_CLIENT
+            .connection
+            .try_lock()
+            .map_err(|_| io::Error::other("caller primary is contended or poisoned"))?;
+        let connection = slot
+            .as_mut()
+            .ok_or_else(|| io::Error::other("caller primary disappeared"))?;
+        if !connection.usable
+            || connection.pid != self.pid
+            || self.pid != std::process::id()
+            || connection.fd != self.fd
+            || connection.generation != self.generation
+            || connection.config_digest != self.digest
+            || GUEST_CLIENT.descriptor(self.pid) != Some(self.fd)
+        {
+            return Err(io::Error::other("caller primary was replaced or retired").into());
+        }
+        let mut stream = GuestIo {
+            context,
+            invoke_syscall,
+            fd: self.fd,
+        };
+        let result = operation(&mut stream);
+        if result.is_err() {
+            connection.usable = false;
+        }
+        result
+    }
+
+    pub(crate) fn control(
+        &self,
+        context: usize,
+        invoke_syscall: SyscallInvoker,
+        control: &reverie_rpc_transport::tool_activation::ToolControl,
+    ) -> Result<(), RpcError> {
+        self.with_stream(context, invoke_syscall, |stream| {
+            reverie_rpc_transport::exchange_tool_control(stream, control)
+        })?;
+        if matches!(
+            control,
+            reverie_rpc_transport::tool_activation::ToolControl::Finished { .. }
+        ) {
+            self.finished.store(true, Ordering::Release);
+        }
+        Ok(())
+    }
+
+    pub(crate) fn send<G: GlobalTool>(
+        &self,
+        context: usize,
+        invoke_syscall: SyscallInvoker,
+        from: Tid,
+        config: &G::Config,
+        request: G::Request,
+    ) -> Result<G::Response, RpcError> {
+        if self.finished.load(Ordering::Acquire) {
+            return Err(io::Error::other("caller RPC after FinishedAck").into());
+        }
+        // User serialization and decoding do not run under the primary lease.
+        let request = RpcRequest::<G>::new(from, request)?;
+        self.with_stream(context, invoke_syscall, |stream| {
+            BlockingRpcClient::<G>::from_borrowed_stream(stream, from, config)
+                .receive_response(request)
+        })?
+        .decode()
+    }
+}
 
 /// The existing primary owner's live fact, without acquiring its RPC lease.
 pub(crate) fn is_runtime_owned_fd(fd: i32) -> bool {
@@ -656,12 +807,19 @@ fn connect_guest(
             invoke_syscall,
             fd,
         };
-        let _config = read_config_frame(&mut stream).map_err(io::Error::other)?;
+        let config = read_config_frame(&mut stream).map_err(io::Error::other)?;
+        let generation = NEXT_CONNECTION_GENERATION
+            .try_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
+                value.checked_add(1)
+            })
+            .map_err(|_| io::Error::other("DBT primary connection generation exhausted"))?;
         Ok(GuestConnection {
             pid,
             path: path.to_path_buf(),
             fd,
             usable: true,
+            generation,
+            config_digest: reverie_rpc_transport::initial_image::config_digest(&config),
         })
     })();
     if result.is_err() {

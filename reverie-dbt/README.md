@@ -70,6 +70,10 @@ revision recorded in `vendor/dynamorio/REVISION`. Build normally:
 cargo build -p reverie-dbt
 ```
 
+This builds the reusable Rust library, package binaries, and SDK. To produce
+the prototype runtime and native client, use `scripts/build-client.sh` (or
+`PROFILE=release scripts/build-client.sh` for a release build).
+
 Cargo configures and builds the pinned source in a temporary directory beside
 the package `OUT_DIR`, then atomically publishes a content-addressed install in
 the Cargo target profile. Distinct package fingerprints (such as `cargo build`
@@ -111,10 +115,13 @@ Set `REVERIE_DBT_SUMMARY=1` when using `DbtRunner` to print branch and syscall
 totals. The summary is opt-in because its branch count is diagnostic and can
 vary between otherwise equivalent runs.
 
-The Rust runtime and native client still have two link phases. Cargo first
-builds DynamoRIO and `libreverie_dbt.so`; `build-client.sh` then asks the
+The Rust runtime and native client still have two link phases. Normal Cargo
+builds emit a reusable rlib. `build-client.sh` explicitly requests the prototype
+`libreverie_dbt.so` with `cargo rustc --lib --crate-type cdylib`, then asks the
 Cargo-built path helper for `DynamoRIOConfig.cmake` and links the native client
-against that Rust runtime. This ordering is required because Cargo build scripts
+against that Rust runtime. The separate cdylib request preserves Cargo's
+hash-bearing dependency artifacts when workspaces with different dependency
+features share one target directory. This ordering is required because Cargo build scripts
 run before their package's Rust library exists. Per-thread tool state is
 allocated by DynamoRIO and stored in `drmgr` TLS. The Rust runtime receives
 that state through an explicit C ABI pointer, avoiding dynamic Rust TLS inside

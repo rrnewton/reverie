@@ -53,6 +53,15 @@ fn inputs() -> &'static [(&'static str, &'static [u8])] {
             include_bytes!("../../reverie/src/tool_configuration.rs"),
         ),
         (
+            "rv/core/tool_process.rs",
+            include_bytes!("../../reverie/src/tool_process.rs"),
+        ),
+        (
+            "rv/core/tool_outcome.rs",
+            include_bytes!("../../reverie/src/tool_outcome.rs"),
+        ),
+        ("rv/tool_host.rs", include_bytes!("tool_host.rs")),
+        (
             "rv/guest/host_linux.rs",
             include_bytes!("guest/host_linux.rs"),
         ),
@@ -95,12 +104,20 @@ fn inputs() -> &'static [(&'static str, &'static [u8])] {
             include_bytes!("trap/fixed_gates.rs"),
         ),
         (
+            "rv/transport/lib.rs",
+            include_bytes!("../../reverie-rpc-transport/src/lib.rs"),
+        ),
+        (
             "rv/transport/server.rs",
             include_bytes!("../../reverie-rpc-transport/src/server.rs"),
         ),
         (
             "rv/transport/blocking_client.rs",
             include_bytes!("../../reverie-rpc-transport/src/blocking_client.rs"),
+        ),
+        (
+            "rv/transport/tool_activation.rs",
+            include_bytes!("../../reverie-rpc-transport/src/tool_activation.rs"),
         ),
         (
             "rv/transport/successor.rs",
@@ -205,6 +222,23 @@ mod tests {
             (
                 "rv/core/tool_configuration.rs",
                 include_bytes!("../../reverie/src/tool_configuration.rs").as_slice(),
+            ),
+            (
+                "rv/core/tool_process.rs",
+                include_bytes!("../../reverie/src/tool_process.rs").as_slice(),
+            ),
+            (
+                "rv/core/tool_outcome.rs",
+                include_bytes!("../../reverie/src/tool_outcome.rs").as_slice(),
+            ),
+            ("rv/tool_host.rs", include_bytes!("tool_host.rs").as_slice()),
+            (
+                "rv/transport/lib.rs",
+                include_bytes!("../../reverie-rpc-transport/src/lib.rs").as_slice(),
+            ),
+            (
+                "rv/transport/tool_activation.rs",
+                include_bytes!("../../reverie-rpc-transport/src/tool_activation.rs").as_slice(),
             ),
         ] {
             let matches: Vec<_> = original

@@ -101,6 +101,8 @@ impl SocketFixture {
             path: PathBuf::from("/mapping-capture-must-not-reconnect/rpc"),
             fd,
             usable: true,
+            generation: 1,
+            config_digest: [0; 32],
         });
         GUEST_CLIENT
             .primary

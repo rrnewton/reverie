@@ -93,6 +93,24 @@ jobs:
         cat "$generation/bundle/github.env" >> "$GITHUB_ENV"
     - name: DBT virtual identity and pidfd_open policy
       run: reverie-dbt/scripts/test-identity-policy.sh
+    - name: DBT Strace caller artifact and standalone gates
+      timeout-minutes: 15
+      env:
+        CARGO_BUILD_JOBS: "8"
+        CARGO_INCREMENTAL: "0"
+      run: >-
+        reverie-dbt/scripts/build-client.sh
+        --caller-manifest reverie-examples/strace-dbt-runtime/Cargo.toml
+        --profile debug --jobs 8 --check
+    - name: DBT lifecycle caller artifact and standalone gates
+      timeout-minutes: 15
+      env:
+        CARGO_BUILD_JOBS: "8"
+        CARGO_INCREMENTAL: "0"
+      run: >-
+        reverie-dbt/scripts/build-client.sh
+        --caller-manifest reverie-dbt/tests/fixtures/caller-lifecycle-runtime/Cargo.toml
+        --profile debug --jobs 8 --check
     - name: Test regular workspace cases
       run: >-
         cargo test --workspace --exclude reverie-kvm --exclude reverie-kvm-core --exclude reverie-linuxemu --exclude reverie-inguest --all-features --no-fail-fast --
@@ -234,6 +252,8 @@ jobs:
         fi
     - name: Rust toolchain
       uses: dtolnay/rust-toolchain@nightly
+      with:
+        components: clippy, rustfmt
     - name: Build
       run: cargo build --workspace --all-features
     - name: LiteInst allocator fixtures
@@ -246,6 +266,23 @@ jobs:
         cat "$generation/bundle/github.env" >> "$GITHUB_ENV"
     - name: DBT native client
       run: reverie-dbt/scripts/build-client.sh
+    - name: DBT Strace caller artifact and standalone gates
+      env:
+        CARGO_BUILD_JOBS: "8"
+        CARGO_INCREMENTAL: "0"
+      run: >-
+        reverie-dbt/scripts/build-client.sh
+        --caller-manifest reverie-examples/strace-dbt-runtime/Cargo.toml
+        --profile debug --jobs 8 --check
+    - name: DBT lifecycle caller artifact and standalone gates
+      timeout-minutes: 15
+      env:
+        CARGO_BUILD_JOBS: "8"
+        CARGO_INCREMENTAL: "0"
+      run: >-
+        reverie-dbt/scripts/build-client.sh
+        --caller-manifest reverie-dbt/tests/fixtures/caller-lifecycle-runtime/Cargo.toml
+        --profile debug --jobs 8 --check
     - name: Host-dependent workspace tests
       env:
         REVERIE_REQUIRE_KVM: "1"
