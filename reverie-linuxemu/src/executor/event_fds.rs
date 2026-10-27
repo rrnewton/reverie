@@ -7,6 +7,14 @@
  */
 
 //! eventfd, signalfd and timerfd (gVisor: pkg/sentry/fsimpl/eventfd, fsimpl/signalfd, fsimpl/timerfd).
+//!
+//! Debt: this backend keeps the guest's pending signal queues itself, because
+//! its guest threads are not host tasks that the host kernel queues signals
+//! for, and its signalfd answers from them as Linux would: a probe reads the
+//! polling thread's own queue and its process's (`signalfd_readable`), and a
+//! host wait is woken by a covered signal (`SignalFdWaiter`). That is Linux's
+//! signal semantics carried in a backend. It goes when a Tool can own the
+//! queues and decide readiness from them; do not extend it.
 
 use super::*;
 
@@ -133,18 +141,6 @@ pub(super) fn signalfd(
         None
     };
 
-    // One shared eventfd cannot encode per-caller readiness. Signalfd is fully
-    // modeled for a single-thread process; setup/update remains refused once a
-    // sibling exists, and thread creation is refused while a signalfd is open.
-    if state
-        .task_lifecycle
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
-        .has_live_sibling(state.tid, state.pid)
-    {
-        return negative_errno(libc::ENOSYS);
-    }
-
     if let Some(alias_fds) = update_aliases {
         let ready = {
             let mut process_signals = state
@@ -157,15 +153,7 @@ pub(super) fn signalfd(
                     .signalfd_masks
                     .insert(fd, description.clone());
             }
-            let generations = &process_signals.pending_generations;
-            state
-                .thread_signals
-                .lock()
-                .pending
-                .any_matching(mask, generations)
-                || process_signals
-                    .shared_pending
-                    .any_matching(mask, generations)
+            shared_queue_covers(&process_signals, mask)
         };
         for fd in alias_fds {
             let file = state
@@ -218,15 +206,7 @@ pub(super) fn signalfd(
         process_signals
             .signalfd_masks
             .insert(guest_fd, Arc::new(mask));
-        let generations = &process_signals.pending_generations;
-        state
-            .thread_signals
-            .lock()
-            .pending
-            .any_matching(mask, generations)
-            || process_signals
-                .shared_pending
-                .any_matching(mask, generations)
+        shared_queue_covers(&process_signals, mask)
     };
     let file = state
         .files
@@ -277,9 +257,10 @@ pub(super) fn queue_signal_event_locked(
             return Ok(());
         }
 
-        // Thread-private readiness is exact because the process cannot acquire
-        // a sibling while a signalfd description exists (prepare_thread above).
-        if process_directed || state.thread_signals.lock().blocked.contains(signal) {
+        // A keeper shows only the shared queue. Only the receiving thread
+        // queues a private event here, so it is not waiting in a poll, and its
+        // next probe reads its own queue (`signalfd_readable`).
+        if process_directed {
             process_signals
                 .signalfd_masks
                 .iter()
@@ -388,6 +369,35 @@ pub(super) fn encode_signalfd_siginfo(event: reverie::SignalEvent) -> [u8; SIGNA
     bytes
 }
 
+/// Whether the process's shared queue holds a signal `mask` covers: what a
+/// signalfd's eventfd keeper shows. One keeper serves every thread, so it
+/// cannot show a thread's own queue as well.
+pub(super) fn shared_queue_covers(
+    process: &crate::signal::ProcessSignalState,
+    mask: KernelSigset,
+) -> bool {
+    process
+        .shared_pending
+        .any_matching(mask, &process.pending_generations)
+}
+
+/// Whether a signalfd for `mask` is readable by the calling thread: a covered
+/// signal is pending for it alone or for its whole process. Linux's
+/// signalfd_poll checks exactly these two queues of the polling task
+/// (fs/signalfd.c), and a read takes from them in that order.
+pub(super) fn signalfd_readable(state: &LoadedStaticElf, mask: KernelSigset) -> bool {
+    let process = state
+        .process_signals
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    state
+        .thread_signals
+        .lock()
+        .pending
+        .any_matching(mask, &process.pending_generations)
+        || shared_queue_covers(&process, mask)
+}
+
 pub(super) fn refresh_all_signalfd_readiness_locked(state: &LoadedStaticElf) -> Result<(), i64> {
     refresh_signalfd_readiness_for_signal_locked(state, None)
 }
@@ -413,19 +423,7 @@ fn refresh_signalfd_readiness_from_files_locked(
             .signalfd_masks
             .iter()
             .filter(|(_, mask)| signal.is_none_or(|signal| mask.contains(signal)))
-            .map(|(&fd, mask)| {
-                (
-                    fd,
-                    state
-                        .thread_signals
-                        .lock()
-                        .pending
-                        .any_matching(**mask, &process_signals.pending_generations)
-                        || process_signals
-                            .shared_pending
-                            .any_matching(**mask, &process_signals.pending_generations),
-                )
-            })
+            .map(|(&fd, mask)| (fd, shared_queue_covers(&process_signals, **mask)))
             .collect::<Vec<_>>()
     };
     for (fd, ready) in readiness {
@@ -447,7 +445,6 @@ pub(super) fn refresh_signalfd_readiness_from_carriers_locked(
             .process_signals
             .lock()
             .unwrap_or_else(|p| p.into_inner());
-        let thread = state.thread_signals.lock();
         process
             .signalfd_masks
             .iter()
@@ -458,13 +455,7 @@ pub(super) fn refresh_signalfd_readiness_from_carriers_locked(
                     .get(fd)
                     .cloned()
                     .ok_or_else(|| negative_errno(libc::EBADF))?;
-                let ready = thread
-                    .pending
-                    .any_matching(**mask, &process.pending_generations)
-                    || process
-                        .shared_pending
-                        .any_matching(**mask, &process.pending_generations);
-                Ok((carrier, ready))
+                Ok((carrier, shared_queue_covers(&process, **mask)))
             })
             .collect::<Result<Vec<_>, i64>>()?
     };
