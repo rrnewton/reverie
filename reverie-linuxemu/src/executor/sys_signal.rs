@@ -2017,6 +2017,11 @@ impl ElfExecutor {
     /// no stopped userspace return frame, so making an exec-preserved pending
     /// signal eligible here must fail before the mask or old-mask output is
     /// changed and before the new image executes.
+    ///
+    /// Returns `None` when the request may run, its own `-EINVAL` or `-EFAULT`
+    /// when its arguments are invalid, and `-ENOSYS` only when a valid mask
+    /// change would make a pending signal eligible, so a caller can tell that
+    /// refusal from an argument error by its errno.
     pub fn lifecycle_signal_mask_preflight(
         &self,
         request: &SyscallRequest,

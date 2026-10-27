@@ -9,8 +9,9 @@
 //! The preemption timer against real KVM and the real PMU: the kick lands,
 //! every decision follows the clock, a late arrival is recorded (exactly at
 //! the target too), the clock is the same with and without the timer, an
-//! unarmed thread's entries issue no syscall for the timer, and a request
-//! re-armed after the timer stopped counting is programmed afresh.
+//! unarmed thread's entries issue no syscall for the timer, a request
+//! re-armed after the timer stopped counting is programmed afresh, and a
+//! request found due outside user mode is delivered once back in it.
 //!
 //! Placement: tests whose names say pinned force pinned placement and run on
 //! every host. Tests that need following placement print NOT EXECUTED and
@@ -1027,6 +1028,91 @@ fn requests_beyond_the_longest_period_are_programmed_in_pieces() {
     );
     assert!(backend.vcpu.read_clock().is_ok());
     assert_eq!(reverie::take_skid_overshoot_count(), 0);
+}
+
+/// A request found due where the vCPU is not in user mode, here the
+/// trampoline at its VMCALL (where the Tool loop leaves it only after
+/// `rt_sigreturn`: a syscall's exit delivers at the syscall's return), is not
+/// delivered there. It is armed again at its target, and the kick that
+/// follows finds the guest back in user mode, where the request is taken
+/// once, with the live registers.
+fn a_request_due_outside_user_mode_is_delivered_back_in_it(placement: CounterPlacement) {
+    let block = 1_000_u64;
+    let mut backend = counted_backend(&block_loop(block as u32), placement);
+    assert_eq!(next_exit(&mut backend.vcpu), Exit::Syscall);
+    assert_eq!(backend.vcpu.read_clock().unwrap(), block);
+    assert_eq!(
+        backend.vcpu.get_sregs().unwrap().cs.dpl,
+        0,
+        "in the trampoline"
+    );
+    // As if this exit had found an imprecise request due.
+    let found = TimerDue {
+        target: block,
+        clock: block,
+        late: false,
+    };
+    backend.vcpu.clock.timer = TimerState::Due(found);
+    assert!(backend.timer_instruction_boundary().unwrap().is_none());
+    assert_eq!(
+        backend.vcpu.clock.timer,
+        TimerState::Armed {
+            target: block,
+            kind: TimerKind::Imprecise,
+            margin: 0,
+        }
+    );
+    // A syscall exit before the kick finds it due in ring 0 again.
+    let mut exits = Vec::new();
+    let boundary = loop {
+        let exit = next_exit(&mut backend.vcpu);
+        exits.push((exit, backend.vcpu.read_clock().unwrap()));
+        assert!(exits.len() < 100, "{exits:?}");
+        if let Some(boundary) = backend.timer_instruction_boundary().unwrap() {
+            break boundary;
+        }
+        assert!(backend.vcpu.timer_due().is_none(), "{exits:?}");
+    };
+    let crate::vm::ToolInstructionBoundary::Timer(boundary) = boundary else {
+        panic!("not a timer boundary");
+    };
+    let (exit, clock) = *exits.last().unwrap();
+    assert_eq!(exit, Exit::Kick, "{exits:?}");
+    // Programmed two RCBs past the clock at the deferral, the earliest
+    // overflow Linux allows.
+    assert!(clock >= block + 2, "{exits:?}");
+    assert_eq!(
+        boundary.instruction,
+        TimerDue {
+            target: block,
+            clock,
+            late: false,
+        }
+    );
+    let user = boundary.user_registers();
+    assert_eq!(user.cs & 3, 3);
+    assert_eq!(user.rip, backend.vcpu.get_regs().unwrap().rip);
+    // Taken once.
+    assert_eq!(backend.vcpu.clock.timer, TimerState::Idle);
+    assert!(backend.timer_instruction_boundary().unwrap().is_none());
+    println!(
+        "timer deferral ({placement:?}): due at {block}, delivered at {clock} after {exits:?}"
+    );
+}
+
+#[test]
+fn a_request_due_outside_user_mode_is_delivered_back_in_it_with_following_events() {
+    if CounterPlacement::default() != CounterPlacement::FollowTask {
+        println!("timer deferral: FollowTask NOT EXECUTED; this host pins each entry");
+        return;
+    }
+    a_request_due_outside_user_mode_is_delivered_back_in_it(CounterPlacement::FollowTask);
+}
+
+#[test]
+fn a_request_due_outside_user_mode_is_delivered_back_in_it_with_pinned_entries() {
+    let _pin = PinThread::here();
+    a_request_due_outside_user_mode_is_delivered_back_in_it(CounterPlacement::PinEachEntry);
 }
 
 // The kick signal outside KVM_RUN (see the module documentation of
