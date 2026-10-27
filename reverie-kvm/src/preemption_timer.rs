@@ -14,11 +14,12 @@
 //! branches (RCBs) of one guest thread in guest user mode. The timer event has
 //! the same encoding and the same filter, so it counts exactly what the clock
 //! counts, but it samples: at its overflow Linux sends [`KICK_SIGNAL`] to the
-//! vCPU's host thread, which ends `KVM_RUN` with `EINTR`. Ending `KVM_RUN` is
-//! the signal's only effect. Every decision is made from the clock value read
-//! at the exit, never from the signal or the timer's own count, so a late,
-//! spurious or lost kick can change when the backend looks, never what it
-//! decides at a given count.
+//! vCPU's host thread, which ends `KVM_RUN` with `EINTR` (see below for how
+//! the signal stays out of host code). Ending `KVM_RUN` is the signal's only
+//! effect. Every decision is made from the clock value read at the exit,
+//! never from the signal or the timer's own count, so a late, spurious or
+//! lost kick can change when the backend looks, never what it decides at a
+//! given count.
 //!
 //! Two events, not one. Linux throttles a sampling event that overflows more
 //! often than `perf_event_max_sample_rate` allows, and a throttled event stops
@@ -56,6 +57,43 @@
 //! [`reverie::SKID_OVERSHOOT_MARKER`] line and the process-global witness
 //! count.
 //!
+//! A kick never interrupts a host call. The interrupt behind a kick can be
+//! held past the exit it would have caused, even across several further
+//! exits, so its signal can arrive while the vCPU thread runs host code, where
+//! an empty handler would still interrupt the call in progress (a sleep or a
+//! poll returns `EINTR`, a read or write that has moved some bytes returns a
+//! short count) and LinuxEmu would pass that result to the guest. On a
+//! PREEMPT_RT kernel perf sends the signal from a thread, so this would be
+//! routine there. So the vCPU thread keeps [`KICK_SIGNAL`] blocked in host
+//! code, and `KVM_RUN` alone runs with it unblocked, as gVisor's KVM platform
+//! does for its own kick signal:
+//! - Opening a timer event blocks the signal on the thread and sets the vCPU's
+//!   signal mask (`KVM_SET_SIGNAL_MASK`) to the thread's mask from before with
+//!   only the kick signal unblocked. Linux installs that mask for `KVM_RUN`
+//!   and restores the thread's own when it returns, so `KVM_RUN` runs under
+//!   the thread's mask exactly, signal 64 (the entry signal) and `SIGURG` (the
+//!   worker interrupt) included, except that a kick ends it.
+//! - A kick that ends `KVM_RUN` is left pending by the restored mask, and the
+//!   `EINTR` exit takes it with one `rt_sigtimedwait` with a zero timeout. A
+//!   kick that arrives in host code stays pending and interrupts nothing; it
+//!   ends the next `KVM_RUN` at once, before the guest runs, and is taken at
+//!   that exit. The signal does not queue, so each kick costs at most that one
+//!   extra exit.
+//! - The vCPU mask follows the thread's mask. When reverie-kvm changes the
+//!   thread's `SIGURG` state, the vCPU's next counted entry on that thread
+//!   composes the mask again, and so does an `EINTR` exit that takes no kick.
+//!   A signal blocked on the thread since the mask was composed then costs one
+//!   exit for each kick pending with it, each of which takes its kick, plus at
+//!   most one more exit, which takes no kick and composes the mask again. An
+//!   entry with no timer event withdraws a mask composed on another thread or
+//!   before such a change, and a new guest lifetime withdraws the mask too.
+//! - The empty handler stays installed, so that a kick on a thread that
+//!   unblocked the signal again runs it rather than the default action, which
+//!   ends the process.
+//!
+//! A thread that never opens a timer event has no vCPU mask and pays nothing:
+//! its entries issue exactly the syscalls they would without this module.
+//!
 //! Nothing outside this crate's tests requests a timer yet. `KvmGuest`'s
 //! `set_timer` and `set_timer_precise` still arm nothing, and
 //! `BackendCapabilities::KVM` keeps `delivers_preemption_timer_events` false,
@@ -63,33 +101,28 @@
 //!
 //! Limits, for the work that wires requests to this timer and delivers its
 //! events:
-//! - A late kick reaches host code. The interrupt behind a kick can be held
-//!   past the exit it would have caused, even across several further exits,
-//!   and the signal then lands while the vCPU thread runs host code. The
-//!   empty handler interrupts the host call in progress, and LinuxEmu passes
-//!   the result to the guest: its host `nanosleep` and a relative host
-//!   `clock_nanosleep` return `EINTR` with the remainder, an absolute one
-//!   returns `EINTR`, its blocking host `ppoll` returns `EINTR`, a
-//!   zero-timeout host `poll` returns `EINTR` when nothing is ready, and a
-//!   blocking host `read` or `write` that has moved some bytes returns a short
-//!   count. On a PREEMPT_RT kernel perf sends the signal from a thread, so
-//!   late kicks are routine there. The planned fix keeps the kick signal
-//!   blocked in host code, unblocks it only inside `KVM_RUN` through
-//!   `KVM_SET_SIGNAL_MASK`, and drains a kick left pending at an `EINTR` exit.
 //! - Nothing checks the timer event's residency. A pinned event that the PMU
 //!   cannot schedule never kicks: a guest that makes no exit runs on, and its
 //!   next exit records the request late.
 //! - Only counted entries displace another binding's events. An uncounted
 //!   vCPU on the same host task leaves an enabled timer counting its branches:
-//!   the timer overflows early, inside that vCPU's run, reloads a whole period
-//!   and kicks the armed thread late, by up to that period, so the request
-//!   comes due at a later exit and is recorded late.
+//!   the timer overflows early, inside that vCPU's run, and reloads a whole
+//!   period. Its kick stays pending (that vCPU has no vCPU mask) and ends the
+//!   armed vCPU's next entry at once, so the request comes due at a later exit
+//!   and is recorded late.
 //! - An exec keeps the vCPU and its clock, and so an armed request; wiring
 //!   requests to this timer must cancel it there.
 //! - Nothing refuses a PREEMPT_RT kernel or nested virtualization, where the
 //!   kick's latency has not been measured.
-//! - The kick signal is unblocked when a timer event is opened and is not
-//!   checked again; code that blocks it later on that thread stops the kicks.
+//! - Nothing checks that the kick signal stays blocked on the vCPU thread:
+//!   code that unblocks it there lets a late kick interrupt a host call again.
+//! - While the vCPU mask stays installed, a signal that code outside
+//!   reverie-kvm unblocks on the vCPU thread does not end `KVM_RUN` until the
+//!   mask is composed again (see above). The mask can outlive its timer event:
+//!   when the binding is reopened on the same thread (on another CPU under
+//!   pinned placement, or with another raw encoding) while the request is idle
+//!   or already due, no new timer event opens, and the mask composed before
+//!   stays installed.
 
 use std::os::fd::AsRawFd;
 use std::os::fd::FromRawFd;
@@ -169,9 +202,31 @@ thread_local! {
     /// Kicks this thread's handler has taken.
     pub(crate) static KICKS_TAKEN: std::sync::atomic::AtomicU64 =
         const { std::sync::atomic::AtomicU64::new(0) };
+    /// Kicks taken from this thread's pending signals at `EINTR` exits.
+    pub(crate) static KICKS_DRAINED: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
     /// Host syscalls this thread issued for a timer: signal reservation, event
-    /// creation and setup, and every programming ioctl.
+    /// creation and setup, every programming ioctl, the vCPU signal mask, and
+    /// every drain of a pending kick.
     pub(crate) static TIMER_SYSCALLS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+thread_local! {
+    /// Changes reverie-kvm made to this thread's signal mask, other than
+    /// blocking the kick signal. A vCPU signal mask composed from this
+    /// thread's mask at an earlier count may no longer match it.
+    static MASK_CHANGES: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// Records that reverie-kvm changed the calling thread's signal mask, so that
+/// a vCPU signal mask composed from it before is composed again at its vCPU's
+/// next counted entry on this thread.
+pub(crate) fn note_thread_mask_change() {
+    MASK_CHANGES.with(|changes| changes.set(changes.get().wrapping_add(1)));
+}
+
+/// The calling thread's count of [`note_thread_mask_change`] calls.
+pub(crate) fn thread_mask_changes() -> u64 {
+    MASK_CHANGES.with(|changes| changes.get())
 }
 
 fn count_syscall() {
@@ -180,11 +235,119 @@ fn count_syscall() {
 }
 
 extern "C" fn kick(_signal: libc::c_int) {
-    // Nothing to do: the delivery itself ends KVM_RUN with EINTR, and every
-    // decision is made from the clock. A const thread local without a
-    // destructor is a plain TLS access, safe in a signal handler.
+    // Nothing to do. A vCPU thread blocks the kick signal outside KVM_RUN,
+    // so a kick reaches this handler only on a thread that unblocked it
+    // again; the handler keeps that kick from taking the default action,
+    // which ends the process. A const thread local without a destructor is
+    // a plain TLS access, safe in a signal handler.
     #[cfg(test)]
     KICKS_TAKEN.with(|kicks| kicks.fetch_add(1, std::sync::atomic::Ordering::Relaxed));
+}
+
+/// A kernel `sigset_t` on x86-64 Linux, as `KVM_SET_SIGNAL_MASK` and
+/// `rt_sigtimedwait` take it: bit `n - 1` for signal `n`.
+pub(crate) type KernelSigset = u64;
+
+const fn kernel_bit(signal: libc::c_int) -> KernelSigset {
+    1 << (signal - 1)
+}
+
+/// Blocks [`KICK_SIGNAL`] on the calling thread, and returns the thread's
+/// signal mask from just before. The raw `rt_sigprocmask` reports the whole
+/// kernel mask, including the two signals glibc reserves for itself.
+pub(crate) fn block_kick_signal() -> Result<KernelSigset> {
+    let set = kernel_bit(KICK_SIGNAL);
+    let mut previous: KernelSigset = 0;
+    count_syscall();
+    // SAFETY: both sets are initialized kernel sigsets of the size passed;
+    // the change affects only this thread.
+    if unsafe {
+        libc::syscall(
+            libc::SYS_rt_sigprocmask,
+            libc::SIG_BLOCK,
+            std::ptr::from_ref(&set),
+            std::ptr::from_mut(&mut previous),
+            std::mem::size_of::<KernelSigset>(),
+        )
+    } != 0
+    {
+        return Err(host_failure("block host signal SIGSTKFLT"));
+    }
+    Ok(previous)
+}
+
+/// The signal mask `KVM_RUN` runs under for a thread whose own mask is
+/// `thread_mask`: the same signals blocked, except [`KICK_SIGNAL`].
+pub(crate) const fn vcpu_signal_mask(thread_mask: KernelSigset) -> KernelSigset {
+    thread_mask & !kernel_bit(KICK_SIGNAL)
+}
+
+/// `KVM_SET_SIGNAL_MASK`: `_IOW(KVMIO, 0x8b, struct kvm_signal_mask)`, whose
+/// flexible array leaves the struct 4 bytes long.
+const KVM_SET_SIGNAL_MASK: libc::c_ulong = (1 << 30) | (4 << 16) | (0xae << 8) | 0x8b;
+
+/// `struct kvm_signal_mask` with its array sized for x86-64's `sigset_t`.
+#[repr(C)]
+struct KvmSignalMask {
+    len: u32,
+    sigset: [u8; 8],
+}
+
+/// Makes `KVM_RUN` on `vcpu` run under `mask` in place of the calling
+/// thread's own signal mask, or under the thread's own mask again for None.
+/// Linux installs the mask when `KVM_RUN` starts and restores the thread's
+/// own when it returns (`kvm_sigset_activate`, `kvm_sigset_deactivate`). The
+/// setting belongs to the vCPU, whichever thread runs it.
+pub(crate) fn set_vcpu_signal_mask(
+    vcpu: std::os::fd::RawFd,
+    mask: Option<KernelSigset>,
+) -> Result<()> {
+    let argument = mask.map(|mask| KvmSignalMask {
+        len: std::mem::size_of::<KernelSigset>() as u32,
+        sigset: mask.to_ne_bytes(),
+    });
+    let pointer = argument
+        .as_ref()
+        .map_or(std::ptr::null(), std::ptr::from_ref);
+    count_syscall();
+    // SAFETY: KVM reads `len`, then `len` bytes of the set, from the
+    // initialized argument, which outlives the call; a null pointer makes it
+    // read nothing.
+    if unsafe { libc::ioctl(vcpu, KVM_SET_SIGNAL_MASK as _, pointer) } < 0 {
+        return Err(host_failure("set the vCPU signal mask"));
+    }
+    Ok(())
+}
+
+/// Takes a kick left pending on the calling thread, without waiting: one
+/// `rt_sigtimedwait` with a zero timeout. Returns whether there was one.
+pub(crate) fn drain_kick() -> Result<bool> {
+    let set = kernel_bit(KICK_SIGNAL);
+    let zero = libc::timespec {
+        tv_sec: 0,
+        tv_nsec: 0,
+    };
+    count_syscall();
+    // SAFETY: the set and the timeout are initialized and outlive the call,
+    // and a null info pointer asks for no siginfo.
+    let taken = unsafe {
+        libc::syscall(
+            libc::SYS_rt_sigtimedwait,
+            std::ptr::from_ref(&set),
+            std::ptr::null_mut::<libc::siginfo_t>(),
+            std::ptr::from_ref(&zero),
+            std::mem::size_of::<KernelSigset>(),
+        )
+    };
+    if taken == i64::from(KICK_SIGNAL) {
+        #[cfg(test)]
+        KICKS_DRAINED.with(|kicks| kicks.set(kicks.get() + 1));
+        return Ok(true);
+    }
+    if taken < 0 && std::io::Error::last_os_error().raw_os_error() == Some(libc::EAGAIN) {
+        return Ok(false);
+    }
+    Err(host_failure("take a pending kick"))
 }
 
 fn query_kick_disposition() -> std::result::Result<usize, i32> {
@@ -201,21 +364,21 @@ fn query_kick_disposition() -> std::result::Result<usize, i32> {
     }
 }
 
-/// Reserves [`KICK_SIGNAL`] for timer kicks and unblocks it on the calling
-/// thread, which is about to own a timer event.
+/// Reserves [`KICK_SIGNAL`] for timer kicks and blocks it on the calling
+/// thread, which is about to own a timer event. Returns the thread's signal
+/// mask from just before, for the vCPU signal mask (see the module
+/// documentation).
 ///
 /// The first call in a process installs a handler that does nothing, with
 /// `SA_RESTART`, and refuses with `EBUSY` if the signal already has a handler
 /// or is ignored: it has another owner. The handler is never restored. Every
 /// call checks that the installed handler is still in place, so a replacement
-/// is refused at the next timer this process opens. A blocked kick would not
-/// end `KVM_RUN`, so the calling thread unblocks the signal. A kick that
-/// arrives outside `KVM_RUN` runs the empty handler. `SA_RESTART` restarts a
-/// host call that has moved no data, but Linux never restarts a sleep or a
-/// poll, which returns `EINTR`, and a blocking read or write that has moved
-/// some bytes returns a short count: the late-kick limit in the module
-/// documentation.
-pub(crate) fn reserve_kick_signal() -> Result<()> {
+/// is refused at the next timer this process opens. The vCPU thread blocks
+/// the signal, so a kick that arrives while it runs host code stays pending
+/// and interrupts no host call. The handler is kept all the same: on a thread
+/// that unblocks the signal again, a kick runs it rather than the default
+/// action, which ends the process.
+pub(crate) fn reserve_kick_signal() -> Result<KernelSigset> {
     static INSTALL: OnceLock<std::result::Result<usize, i32>> = OnceLock::new();
     let installed = *INSTALL.get_or_init(|| {
         if query_kick_disposition()? != libc::SIG_DFL {
@@ -261,21 +424,7 @@ pub(crate) fn reserve_kick_signal() -> Result<()> {
             )));
         }
     }
-    count_syscall();
-    // SAFETY: both sets are valid storage; the change affects only this thread.
-    let error = unsafe {
-        let mut set: libc::sigset_t = std::mem::zeroed();
-        libc::sigemptyset(&mut set);
-        libc::sigaddset(&mut set, KICK_SIGNAL);
-        libc::pthread_sigmask(libc::SIG_UNBLOCK, &set, std::ptr::null_mut())
-    };
-    if error != 0 {
-        return Err(failure(format!(
-            "preemption timer: unblock host signal SIGSTKFLT: {}",
-            std::io::Error::from_raw_os_error(error)
-        )));
-    }
-    Ok(())
+    block_kick_signal()
 }
 
 /// The sampling event that kicks one guest thread's vCPU out of `KVM_RUN`
@@ -339,10 +488,15 @@ fn programming(
 impl TimerEvent {
     /// Opens a disabled, quiet timer event for host task `tid` on `cpu` (-1
     /// for any CPU) with the clock's raw RCB encoding, owned by that task:
-    /// each overflow sends it [`KICK_SIGNAL`]. Reserves the signal and
-    /// unblocks it on the calling thread, which must be `tid`.
-    pub(crate) fn open(tid: libc::pid_t, cpu: libc::c_int, raw_event: u64) -> Result<Self> {
-        reserve_kick_signal()?;
+    /// each overflow sends it [`KICK_SIGNAL`]. Reserves the signal and blocks
+    /// it on the calling thread, which must be `tid`, and returns that
+    /// thread's signal mask from before, for the vCPU signal mask.
+    pub(crate) fn open(
+        tid: libc::pid_t,
+        cpu: libc::c_int,
+        raw_event: u64,
+    ) -> Result<(Self, KernelSigset)> {
+        let thread_mask = reserve_kick_signal()?;
         let mut attr = perf::perf_event_attr {
             type_: perf::PERF_TYPE_RAW,
             size: std::mem::size_of::<perf::perf_event_attr>() as u32,
@@ -411,7 +565,7 @@ impl TimerEvent {
         if unsafe { libc::fcntl(raw, libc::F_SETFL, libc::O_ASYNC) } < 0 {
             return Err(host_failure("enable overflow signal"));
         }
-        Ok(event)
+        Ok((event, thread_mask))
     }
 
     pub(crate) fn fd(&self) -> &Arc<OwnedFd> {
@@ -915,17 +1069,51 @@ mod tests {
         unsafe { libc::sigismember(&current_mask(), signal) == 1 }
     }
 
-    fn block_kick_signal() {
+    /// The calling thread's whole kernel signal mask.
+    fn raw_mask() -> KernelSigset {
+        let mut mask: KernelSigset = 0;
+        // SAFETY: a query into an initialized kernel sigset of the size passed.
+        let queried = unsafe {
+            libc::syscall(
+                libc::SYS_rt_sigprocmask,
+                libc::SIG_BLOCK,
+                std::ptr::null::<KernelSigset>(),
+                std::ptr::from_mut(&mut mask),
+                std::mem::size_of::<KernelSigset>(),
+            )
+        };
+        assert_eq!(queried, 0);
+        mask
+    }
+
+    fn unblock_kick_signal_here() {
         // SAFETY: valid set storage; affects only this thread.
         unsafe {
             let mut set: libc::sigset_t = std::mem::zeroed();
             libc::sigemptyset(&mut set);
             libc::sigaddset(&mut set, KICK_SIGNAL);
             assert_eq!(
-                libc::pthread_sigmask(libc::SIG_BLOCK, &set, std::ptr::null_mut()),
+                libc::pthread_sigmask(libc::SIG_UNBLOCK, &set, std::ptr::null_mut()),
                 0
             );
         }
+    }
+
+    #[test]
+    fn the_vcpu_signal_mask_is_the_thread_mask_without_the_kick_signal() {
+        let kick = kernel_bit(KICK_SIGNAL);
+        assert_eq!(kick, 1 << 15, "SIGSTKFLT is signal 16");
+        for thread_mask in [0, kick, u64::MAX, !kick, 1 << 63 | 1 << 22 | kick] {
+            assert_eq!(vcpu_signal_mask(thread_mask), thread_mask & !kick);
+        }
+        // Signal 64, the entry signal, and SIGURG keep the thread's state.
+        let entry = kernel_bit(64);
+        let urg = kernel_bit(libc::SIGURG);
+        assert_eq!(vcpu_signal_mask(entry | urg | kick), entry | urg);
+        assert_eq!(vcpu_signal_mask(kick), 0);
+        assert_eq!(std::mem::size_of::<KvmSignalMask>(), 12);
+        assert_eq!(std::mem::offset_of!(KvmSignalMask, sigset), 4);
+        assert_eq!(KVM_SET_SIGNAL_MASK, 0x4004_ae8b);
     }
 
     extern "C" fn foreign_handler(_: libc::c_int) {}
@@ -974,29 +1162,50 @@ mod tests {
         };
         match case.as_str() {
             "repeated" => {
-                block_kick_signal();
-                assert!(blocked(KICK_SIGNAL));
-                reserve_kick_signal().unwrap();
-                assert!(!blocked(KICK_SIGNAL), "reservation unblocks the caller");
+                unblock_kick_signal_here();
+                let mask = raw_mask();
+                assert_eq!(mask & kernel_bit(KICK_SIGNAL), 0);
+                // Reservation blocks the caller's kick signal and returns the
+                // caller's mask from before.
+                assert_eq!(reserve_kick_signal().unwrap(), mask);
+                assert!(blocked(KICK_SIGNAL), "reservation blocks the caller");
+                assert_eq!(
+                    raw_mask(),
+                    mask | kernel_bit(KICK_SIGNAL),
+                    "reservation changes nothing else"
+                );
                 // Not compared with `kick as usize`: the linker may fold the
                 // handler with an identical function (see reserve_kick_signal).
                 let installed = query_kick_disposition().unwrap();
                 assert_ne!(installed, libc::SIG_DFL);
                 assert_ne!(installed, libc::SIG_IGN);
-                block_kick_signal();
-                reserve_kick_signal().unwrap();
-                assert!(!blocked(KICK_SIGNAL));
+                // Again, with the signal blocked already.
+                assert_eq!(
+                    reserve_kick_signal().unwrap(),
+                    mask | kernel_bit(KICK_SIGNAL)
+                );
+                assert!(blocked(KICK_SIGNAL));
                 assert_eq!(query_kick_disposition().unwrap(), installed);
-                // Another thread reserves too, and is unblocked itself.
+                // Another thread reserves too, and blocks it on itself.
                 std::thread::spawn(move || {
-                    block_kick_signal();
+                    unblock_kick_signal_here();
                     reserve_kick_signal().unwrap();
-                    assert!(!blocked(KICK_SIGNAL));
+                    assert!(blocked(KICK_SIGNAL));
                     assert_eq!(query_kick_disposition().unwrap(), installed);
                 })
                 .join()
                 .unwrap();
-                // The empty handler takes a kick without effect.
+                // A kick blocked here stays pending, and the drain takes it.
+                // SAFETY: a thread-directed signal to this thread.
+                assert_eq!(
+                    unsafe { libc::pthread_kill(libc::pthread_self(), KICK_SIGNAL) },
+                    0
+                );
+                assert!(drain_kick().unwrap());
+                assert!(!drain_kick().unwrap(), "one kick, taken once");
+                // On a thread that unblocks the signal again, the empty
+                // handler takes a kick: it never kills the process.
+                unblock_kick_signal_here();
                 let before =
                     KICKS_TAKEN.with(|kicks| kicks.load(std::sync::atomic::Ordering::Relaxed));
                 // SAFETY: a thread-directed signal to this thread.
