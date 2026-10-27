@@ -30448,16 +30448,23 @@ mod tests {
     }
 
     #[test]
-    fn single_thread_signalfd_supports_private_pending_and_refuses_sibling_lifetimes() {
+    fn signalfd_readiness_and_reads_are_each_threads_own() {
         const MASK: u64 = 0x100;
         const POLL_FD: u64 = 0x140;
+        const RECORDS: u64 = 0x200;
 
         let root = TestDir::new();
         let mut leader = ElfExecutor::new(test_state(&root.0), false);
-        test_block_signal(&mut leader.state, libc::SIGUSR1);
+        for signal in [libc::SIGUSR1, libc::SIGUSR2] {
+            test_block_signal(&mut leader.state, signal);
+        }
+        // A second thread exists before the signalfd, and a third starts
+        // while it is open.
+        let mut worker = leader.thread_child(7).unwrap();
         let mut memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
         let mut mask = KernelSigset::default();
         mask.insert(libc::SIGUSR1);
+        mask.insert(libc::SIGUSR2);
         memory.write(MASK, &mask.to_bytes()).unwrap();
         let signal_fd = leader.execute(
             &SyscallRequest::new(
@@ -30473,144 +30480,100 @@ mod tests {
             ),
             &memory,
         );
-        assert_eq!(signal_fd, 3);
-        assert!(
-            leader.thread_child(7).is_err(),
-            "a signalfd owner cannot acquire a sibling with unrepresentable per-thread readiness",
-        );
-        let tid = leader.state.tid;
         assert_eq!(
-            leader.execute(
-                &SyscallRequest::new(
-                    libc::SYS_tkill as u64,
-                    [tid as u64, libc::SIGUSR1 as u64, 0, 0, 0, 0],
-                ),
-                &memory,
-            ),
-            0,
-            "the single owning thread can publish exact private readiness",
+            signal_fd, 3,
+            "a process with a second thread gets a signalfd"
         );
+        assert_eq!(leader.take_unsupported_refusal(), None);
+        let mut late = leader.thread_child(8).unwrap();
 
-        let poll_fd = libc::pollfd {
-            fd: signal_fd as libc::c_int,
-            events: libc::POLLIN,
-            revents: 0,
-        };
-        assert_eq!(
-            write_struct(&mut ProviderMemory(&memory), POLL_FD, &poll_fd),
-            0
-        );
-        assert_eq!(
-            leader.execute(
+        let poll = |executor: &mut ElfExecutor| {
+            let poll_fd = libc::pollfd {
+                fd: signal_fd as libc::c_int,
+                events: libc::POLLIN,
+                revents: 0,
+            };
+            assert_eq!(
+                write_struct(&mut ProviderMemory(&memory), POLL_FD, &poll_fd),
+                0
+            );
+            let ready = executor.execute(
                 &SyscallRequest::new(libc::SYS_poll as u64, [POLL_FD, 1, 0, 0, 0, 0]),
                 &memory,
-            ),
-            1,
-        );
-        assert_eq!(
-            leader.execute(
+            );
+            let polled: libc::pollfd = read_struct(&memory, POLL_FD);
+            assert_eq!(polled.revents, if ready == 1 { libc::POLLIN } else { 0 });
+            ready
+        };
+        // Up to two records; the signal number of each one read.
+        let read = |executor: &mut ElfExecutor| {
+            let result = executor.execute(
                 &SyscallRequest::new(
                     libc::SYS_read as u64,
-                    [signal_fd as u64, 0x180, 128, 0, 0, 0],
+                    [signal_fd as u64, RECORDS, 256, 0, 0, 0],
                 ),
                 &memory,
-            ),
-            128,
-        );
-
-        // The single-thread reverse ordering is representable too: setup sees
-        // the already-pending private signal and publishes readiness.
-        let mut standalone = test_state(&root.0);
-        let tid = standalone.tid;
-        test_block_signal(&mut standalone, libc::SIGUSR1);
-        assert_eq!(
-            result_of(kill_signal(
-                &mut standalone,
-                libc::SYS_tkill as u64,
-                &[tid as u64, libc::SIGUSR1 as u64, 0, 0, 0, 0],
-            )),
-            0,
-        );
-        assert_eq!(
-            syscall_result(
-                &mut memory,
-                &mut standalone,
-                libc::SYS_signalfd4,
-                [99, MASK, KERNEL_SIGSET_SIZE as u64, 0, 0, 0],
-            ),
-            negative_errno(libc::EINVAL),
-            "ordinary descriptor validation must precede the limitation",
-        );
-        assert!(
-            standalone
-                .thread_signals
-                .lock()
-                .pending
-                .contains(libc::SIGUSR1)
-        );
-        assert_eq!(
-            syscall_result(
-                &mut memory,
-                &mut standalone,
-                libc::SYS_signalfd4,
-                [
-                    u64::MAX,
-                    MASK,
-                    KERNEL_SIGSET_SIZE as u64,
-                    libc::SFD_NONBLOCK as u64,
-                    0,
-                    0,
-                ],
-            ),
-            3,
-        );
-        assert!(
-            standalone
-                .thread_signals
-                .lock()
-                .pending
-                .contains(libc::SIGUSR1)
-        );
-        assert_eq!(standalone.files.len(), 1);
-
-        let mut reverse_leader = ElfExecutor::new(test_state(&root.0), false);
-        let mut reverse_worker = reverse_leader.thread_child(8).unwrap();
-        test_block_signal(&mut reverse_worker.state, libc::SIGUSR1);
-        assert_eq!(
-            result_of(kill_signal(
-                &mut reverse_worker.state,
-                libc::SYS_tkill as u64,
-                &[8, libc::SIGUSR1 as u64, 0, 0, 0, 0],
-            )),
-            0,
-        );
-        assert_eq!(
-            reverse_leader.execute(
-                &SyscallRequest::new(
-                    libc::SYS_signalfd4 as u64,
-                    [
-                        u64::MAX,
-                        MASK,
-                        KERNEL_SIGSET_SIZE as u64,
-                        (libc::SFD_CLOEXEC | libc::SFD_NONBLOCK) as u64,
-                        0,
-                        0,
-                    ],
+            );
+            let signals = (0..result.max(0) as u64 / 128)
+                .map(|record| {
+                    let mut signo = [0_u8; 4];
+                    memory.read(RECORDS + 128 * record, &mut signo).unwrap();
+                    u32::from_ne_bytes(signo) as libc::c_int
+                })
+                .collect::<Vec<_>>();
+            (result, signals)
+        };
+        let tkill = |executor: &mut ElfExecutor, tid: u64, signal: libc::c_int| {
+            assert_eq!(
+                executor.execute(
+                    &SyscallRequest::new(libc::SYS_tkill as u64, [tid, signal as u64, 0, 0, 0, 0]),
+                    &memory,
                 ),
-                &memory,
-            ),
-            negative_errno(libc::ENOSYS),
-            "a sibling's private pending state is not observable by shared eventfd setup",
-        );
-        assert!(
-            reverse_worker
-                .state
-                .thread_signals
-                .lock()
-                .pending
-                .contains(libc::SIGUSR1)
-        );
-        assert!(reverse_leader.state.files.is_empty());
+                0
+            );
+        };
+        let pid = leader.state.pid;
+
+        // A signal queued for the worker alone is readable by the worker
+        // only, as Linux's signalfd_poll checks the polling task's queue.
+        tkill(&mut leader, 7, libc::SIGUSR1);
+        assert_eq!(poll(&mut leader), 0);
+        assert_eq!(poll(&mut late), 0);
+        assert_eq!(poll(&mut worker), 1);
+        assert_eq!(read(&mut leader), (negative_errno(libc::EAGAIN), vec![]));
+        assert_eq!(read(&mut worker), (128, vec![libc::SIGUSR1]));
+        assert_eq!(poll(&mut worker), 0);
+
+        // A signal queued for the process is readable by every thread, and
+        // read once.
+        queue_signal_event(
+            &mut leader.state,
+            event_for_process(libc::SIGUSR2, pid).unwrap(),
+            true,
+        )
+        .unwrap();
+        for executor in [&mut leader, &mut worker, &mut late] {
+            assert_eq!(poll(executor), 1);
+        }
+        assert_eq!(read(&mut late), (128, vec![libc::SIGUSR2]));
+        for executor in [&mut leader, &mut worker, &mut late] {
+            assert_eq!(poll(executor), 0);
+        }
+
+        // A read takes the thread's own signal before the process's, as
+        // Linux's dequeue_signal does, even where the process's has the lower
+        // number.
+        tkill(&mut late, 8, libc::SIGUSR2);
+        queue_signal_event(
+            &mut leader.state,
+            event_for_process(libc::SIGUSR1, pid).unwrap(),
+            true,
+        )
+        .unwrap();
+        assert_eq!(read(&mut late), (256, vec![libc::SIGUSR2, libc::SIGUSR1]));
+        for executor in [&mut leader, &mut worker, &mut late] {
+            assert_eq!(poll(executor), 0);
+        }
     }
 
     #[test]
@@ -30643,6 +30606,16 @@ mod tests {
             executor.execute(&SyscallRequest::new(libc::SYS_fork as u64, [0; 6]), &memory,),
             negative_errno(libc::ENOSYS),
             "a shared host eventfd cannot represent per-process readiness after fork",
+        );
+        assert_eq!(
+            executor
+                .take_unsupported_refusal()
+                .map(|refusal| (refusal.operation, refusal.diagnostic)),
+            Some((
+                reverie::UnsupportedOperation::Signalfd,
+                SIGNALFD_FORK_REFUSAL
+            )),
+            "the refusal is named",
         );
         assert!(executor.take_process_action().is_none());
         assert!(
@@ -31398,7 +31371,7 @@ mod tests {
     }
 
     #[test]
-    fn ppoll_refuses_blocking_virtual_signalfd_before_guest_or_host_mutation() {
+    fn ppoll_waits_on_a_virtual_signalfd_and_epoll_refuses_one() {
         const MASK: u64 = 0x100;
         const POLL_FD: u64 = 0x180;
         const TIMEOUT: u64 = 0x200;
@@ -31436,40 +31409,37 @@ mod tests {
             events: libc::POLLIN,
             revents: libc::POLLPRI,
         };
-        for timeout in [
-            None,
-            Some(libc::timespec {
-                tv_sec: 5,
-                tv_nsec: 0,
-            }),
-        ] {
-            assert_eq!(
-                write_struct(&mut ProviderMemory(&memory), POLL_FD, &untouched),
-                0
-            );
-            let timeout_address = if let Some(timeout) = timeout {
-                assert_eq!(
-                    write_struct(&mut ProviderMemory(&memory), TIMEOUT, &timeout),
-                    0
-                );
-                TIMEOUT
-            } else {
-                0
-            };
-            assert_eq!(
-                syscall_result(
-                    &mut memory,
-                    &mut state,
-                    libc::SYS_ppoll,
-                    [POLL_FD, 1, timeout_address, 0, 0, 0],
-                ),
-                negative_errno(libc::ENOSYS),
-            );
-            let observed: libc::pollfd = read_struct(&memory, POLL_FD);
-            assert_eq!(observed.fd, untouched.fd);
-            assert_eq!(observed.events, untouched.events);
-            assert_eq!(observed.revents, untouched.revents);
-        }
+        // With nothing pending, a ppoll with a timeout waits it out, and
+        // reports nothing ready (see
+        // ppoll_on_a_virtual_signalfd_wakes_for_a_covered_signal for a wait a
+        // signal ends).
+        let short = libc::timespec {
+            tv_sec: 0,
+            tv_nsec: 30_000_000,
+        };
+        assert_eq!(
+            write_struct(&mut ProviderMemory(&memory), POLL_FD, &untouched),
+            0
+        );
+        assert_eq!(
+            write_struct(&mut ProviderMemory(&memory), TIMEOUT, &short),
+            0
+        );
+        let started = std::time::Instant::now();
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_ppoll,
+                [POLL_FD, 1, TIMEOUT, 0, 0, 0],
+            ),
+            0,
+        );
+        assert!(started.elapsed() >= std::time::Duration::from_millis(30));
+        let observed: libc::pollfd = read_struct(&memory, POLL_FD);
+        assert_eq!(observed.fd, untouched.fd);
+        assert_eq!(observed.events, untouched.events);
+        assert_eq!(observed.revents, 0);
 
         let zero_timeout = libc::timespec {
             tv_sec: 0,
@@ -31584,6 +31554,192 @@ mod tests {
             "the refused epoll_ctl calls did not mutate the host epoll set",
         );
     }
+    /// A ppoll that waits in the host on a signalfd ends when a signal the
+    /// signalfd covers is queued for the waiting thread or for its process,
+    /// and not for one it does not cover. The signalfd's eventfd keeper shows
+    /// the process's queue; a signal for the waiting thread alone reaches it
+    /// through its waiter.
+    #[test]
+    fn ppoll_on_a_virtual_signalfd_wakes_for_a_covered_signal() {
+        const MASK: u64 = 0x100;
+        const POLL_FD: u64 = 0x180;
+        const TIMEOUT: u64 = 0x200;
+        let root = TestDir::new();
+        let mut leader = ElfExecutor::new(test_state(&root.0), false);
+        for signal in [libc::SIGUSR1, libc::SIGUSR2] {
+            test_block_signal(&mut leader.state, signal);
+        }
+        let mut worker = leader.thread_child(7).unwrap();
+        let mut memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
+        let mut mask = KernelSigset::default();
+        mask.insert(libc::SIGUSR1);
+        memory.write(MASK, &mask.to_bytes()).unwrap();
+        let signal_fd = leader.execute(
+            &SyscallRequest::new(
+                libc::SYS_signalfd4 as u64,
+                [
+                    u64::MAX,
+                    MASK,
+                    KERNEL_SIGSET_SIZE as u64,
+                    libc::SFD_NONBLOCK as u64,
+                    0,
+                    0,
+                ],
+            ),
+            &memory,
+        );
+        assert_eq!(signal_fd, 3);
+        let waiting = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
+        let wait = |worker: &mut ElfExecutor| {
+            let poll_fd = libc::pollfd {
+                fd: signal_fd as libc::c_int,
+                events: libc::POLLIN,
+                revents: 0,
+            };
+            assert_eq!(
+                write_struct(&mut ProviderMemory(&waiting), POLL_FD, &poll_fd),
+                0
+            );
+            let long = libc::timespec {
+                tv_sec: 20,
+                tv_nsec: 0,
+            };
+            assert_eq!(
+                write_struct(&mut ProviderMemory(&waiting), TIMEOUT, &long),
+                0
+            );
+            let started = std::time::Instant::now();
+            let ready = worker.execute(
+                &SyscallRequest::new(libc::SYS_ppoll as u64, [POLL_FD, 1, TIMEOUT, 0, 0, 0]),
+                &waiting,
+            );
+            let polled: libc::pollfd = read_struct(&waiting, POLL_FD);
+            (ready, polled.revents, started.elapsed())
+        };
+        let settle = || std::thread::sleep(std::time::Duration::from_millis(100));
+        let pid = leader.state.pid;
+
+        // A signal for the waiting thread alone: one it does not cover leaves
+        // it waiting, one it covers ends the wait.
+        std::thread::scope(|scope| {
+            let waiter = scope.spawn(|| wait(&mut worker));
+            settle();
+            for signal in [libc::SIGUSR2, libc::SIGUSR1] {
+                assert_eq!(
+                    leader.execute(
+                        &SyscallRequest::new(
+                            libc::SYS_tkill as u64,
+                            [7, signal as u64, 0, 0, 0, 0]
+                        ),
+                        &memory,
+                    ),
+                    0
+                );
+                if signal == libc::SIGUSR2 {
+                    settle();
+                    assert!(!waiter.is_finished(), "an uncovered signal ends no wait");
+                }
+            }
+            let (ready, revents, waited) = waiter.join().unwrap();
+            assert_eq!((ready, revents), (1, libc::POLLIN));
+            assert!(waited < std::time::Duration::from_secs(10));
+        });
+        assert_eq!(
+            worker.execute(
+                &SyscallRequest::new(
+                    libc::SYS_read as u64,
+                    [signal_fd as u64, 0x400, 128, 0, 0, 0]
+                ),
+                &memory,
+            ),
+            128
+        );
+
+        // A covered signal for the process ends the wait too.
+        std::thread::scope(|scope| {
+            let waiter = scope.spawn(|| wait(&mut worker));
+            settle();
+            queue_signal_event(
+                &mut leader.state,
+                event_for_process(libc::SIGUSR1, pid).unwrap(),
+                true,
+            )
+            .unwrap();
+            let (ready, revents, waited) = waiter.join().unwrap();
+            assert_eq!((ready, revents), (1, libc::POLLIN));
+            assert!(waited < std::time::Duration::from_secs(10));
+        });
+        assert_eq!(worker.state.thread_signals.lock().signalfd_waiter, None);
+    }
+
+    /// The signalfd operations this backend does not model fail with ENOSYS
+    /// and a typed refusal that names them.
+    #[test]
+    fn unmodelled_signalfd_operations_are_refused_by_name() {
+        const MASK: u64 = 0x100;
+        const EVENT: u64 = 0x180;
+        let root = TestDir::new();
+        let mut executor = ElfExecutor::new(test_state(&root.0), false);
+        test_block_signal(&mut executor.state, libc::SIGUSR1);
+        let mut memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
+        let mut mask = KernelSigset::default();
+        mask.insert(libc::SIGUSR1);
+        memory.write(MASK, &mask.to_bytes()).unwrap();
+        let blocking = executor.execute(
+            &SyscallRequest::new(
+                libc::SYS_signalfd4 as u64,
+                [u64::MAX, MASK, KERNEL_SIGSET_SIZE as u64, 0, 0, 0],
+            ),
+            &memory,
+        );
+        assert_eq!(blocking, 3);
+        let mut refused = |number: libc::c_long, args: [u64; 6]| {
+            let result = executor.execute(&SyscallRequest::new(number as u64, args), &memory);
+            (
+                result,
+                executor
+                    .take_unsupported_refusal()
+                    .map(|refusal| (refusal.operation, refusal.diagnostic)),
+            )
+        };
+        let named = |diagnostic| {
+            (
+                negative_errno(libc::ENOSYS),
+                Some((reverie::UnsupportedOperation::Signalfd, diagnostic)),
+            )
+        };
+        assert_eq!(
+            refused(libc::SYS_read, [blocking as u64, 0x200, 128, 0, 0, 0]),
+            named(SIGNALFD_WAITING_READ_REFUSAL),
+        );
+        let epoll = refused(libc::SYS_epoll_create1, [0; 6]).0;
+        assert!(epoll >= 0);
+        let event = libc::epoll_event {
+            events: libc::EPOLLIN as u32,
+            u64: 1,
+        };
+        assert_eq!(write_struct(&mut ProviderMemory(&memory), EVENT, &event), 0);
+        assert_eq!(
+            refused(
+                libc::SYS_epoll_ctl,
+                [
+                    epoll as u64,
+                    libc::EPOLL_CTL_ADD as u64,
+                    blocking as u64,
+                    EVENT,
+                    0,
+                    0
+                ],
+            ),
+            named(SIGNALFD_EPOLL_REFUSAL),
+        );
+        // Answers Linux itself gives carry no refusal.
+        assert_eq!(
+            refused(libc::SYS_read, [blocking as u64, 0x200, 64, 0, 0, 0]),
+            (negative_errno(libc::EINVAL), None),
+        );
+    }
+
     #[test]
     fn signalfd_backing_is_not_writable_seekable_or_pollout_visible() {
         const MASK: u64 = 0x100;
@@ -31792,35 +31948,35 @@ mod tests {
         );
         assert_eq!(read_struct::<u64>(&memory, FD_SET), 0);
 
-        let long_timeout = libc::timespec {
-            tv_sec: 60,
-            tv_nsec: 0,
+        // A signalfd never reports POLLOUT, so a ppoll that asks only for it
+        // waits out its timeout, as on Linux, and reports nothing.
+        let short_timeout = libc::timespec {
+            tv_sec: 0,
+            tv_nsec: 30_000_000,
         };
         assert_eq!(
-            write_struct(&mut ProviderMemory(&memory), TIMESPEC, &long_timeout),
+            write_struct(&mut ProviderMemory(&memory), TIMESPEC, &short_timeout),
             0
         );
-        for timeout_address in [TIMESPEC, 0] {
-            assert_eq!(
-                write_struct(&mut ProviderMemory(&memory), POLL_FD, &pollout),
-                0
-            );
-            let started = std::time::Instant::now();
-            assert_eq!(
-                syscall_result(
-                    &mut memory,
-                    &mut state,
-                    libc::SYS_ppoll,
-                    [POLL_FD, 1, timeout_address, 0, 0, 0],
-                ),
-                negative_errno(libc::ENOSYS),
-            );
-            assert!(started.elapsed() < std::time::Duration::from_secs(1));
-            let observed: libc::pollfd = read_struct(&memory, POLL_FD);
-            assert_eq!(observed.fd, pollout.fd);
-            assert_eq!(observed.events, pollout.events);
-            assert_eq!(observed.revents, pollout.revents);
-        }
+        assert_eq!(
+            write_struct(&mut ProviderMemory(&memory), POLL_FD, &pollout),
+            0
+        );
+        let started = std::time::Instant::now();
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_ppoll,
+                [POLL_FD, 1, TIMESPEC, 0, 0, 0],
+            ),
+            0,
+        );
+        assert!(started.elapsed() >= std::time::Duration::from_millis(30));
+        let observed: libc::pollfd = read_struct(&memory, POLL_FD);
+        assert_eq!(observed.fd, pollout.fd);
+        assert_eq!(observed.events, pollout.events);
+        assert_eq!(observed.revents, 0);
 
         let pid = state.pid;
         assert_eq!(
@@ -31831,6 +31987,22 @@ mod tests {
             )),
             0,
         );
+        // A pending signal does not end a wait that asks only for POLLOUT.
+        assert_eq!(
+            write_struct(&mut ProviderMemory(&memory), POLL_FD, &pollout),
+            0
+        );
+        let started = std::time::Instant::now();
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_ppoll,
+                [POLL_FD, 1, TIMESPEC, 0, 0, 0],
+            ),
+            0,
+        );
+        assert!(started.elapsed() >= std::time::Duration::from_millis(30));
         let readable = libc::pollfd {
             fd: alias as libc::c_int,
             events: libc::POLLIN | libc::POLLOUT,

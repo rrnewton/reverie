@@ -222,6 +222,60 @@ pub(super) fn madvise_refusal_diagnostic(advice: libc::c_int) -> &'static str {
     }
 }
 
+/// Diagnostic for this backend's refusal of a signalfd read that would wait,
+/// with no covered signal pending for the caller or its process.
+pub(crate) const SIGNALFD_WAITING_READ_REFUSAL: &str =
+    "KVM does not wait in a blocking signalfd read: no covered signal is pending";
+/// Diagnostic for this backend's refusal to add a signalfd to an epoll set.
+pub(crate) const SIGNALFD_EPOLL_REFUSAL: &str = "KVM does not add a signalfd to an epoll set";
+/// Diagnostic for this backend's refusal to create a process while a signalfd
+/// is open: the child's copy would have to read the child's own signals.
+pub(crate) const SIGNALFD_FORK_REFUSAL: &str =
+    "KVM does not create a process while a signalfd is open";
+
+/// The typed refusal, if any, that a result carries for a signalfd operation
+/// this backend does not model. Linux's read, readv, preadv, preadv2 and
+/// epoll_ctl never fail with ENOSYS, so an ENOSYS answer naming a signalfd
+/// descriptor is this backend's own refusal; every other result carries none.
+/// Process creation records its refusal where it decides it (`prepare_fork`).
+pub(super) fn signalfd_refusal(
+    state: &LoadedStaticElf,
+    request: &SyscallRequest,
+    result: i64,
+) -> Option<reverie::UnsupportedRefusal> {
+    if result != negative_errno(libc::ENOSYS) {
+        return None;
+    }
+    let number = request.number();
+    let args = request.args();
+    let reads = [
+        libc::SYS_read,
+        libc::SYS_readv,
+        libc::SYS_preadv,
+        libc::SYS_preadv2,
+    ];
+    let diagnostic = if reads.iter().any(|read| number == *read as u64)
+        && signalfd_mask(state, args[0] as libc::c_int).is_some()
+    {
+        SIGNALFD_WAITING_READ_REFUSAL
+    } else if number == libc::SYS_epoll_ctl as u64
+        && matches!(
+            args[1] as libc::c_int,
+            libc::EPOLL_CTL_ADD | libc::EPOLL_CTL_MOD
+        )
+        && signalfd_mask(state, args[2] as libc::c_int).is_some()
+    {
+        SIGNALFD_EPOLL_REFUSAL
+    } else {
+        return None;
+    };
+    Some(reverie::UnsupportedRefusal::new(
+        reverie::UnsupportedOperation::Signalfd,
+        reverie::Errno::ENOSYS,
+        diagnostic,
+    ))
+}
+
 /// The typed refusal, if any, that a `madvise` result carries. Linux's
 /// madvise fails with ENOSYS only where the whole syscall is configured out
 /// (`CONFIG_ADVISE_SYSCALLS`), which this executor does not model, so every

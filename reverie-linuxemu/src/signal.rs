@@ -443,6 +443,53 @@ impl PartialEq for SignalFdCarrier {
 }
 impl Eq for SignalFdCarrier {}
 
+/// A thread waiting in a host poll that includes signalfds. Their eventfd
+/// keepers show only the process's shared queue, so a covered signal queued
+/// for this thread alone wakes the wait through `wake` instead.
+#[derive(Clone, Debug)]
+pub(crate) struct SignalFdWaiter {
+    /// The signals of every signalfd the poll waits on.
+    mask: KernelSigset,
+    wake: Arc<std::fs::File>,
+}
+
+impl SignalFdWaiter {
+    /// A waiter for `mask` with a fresh nonblocking eventfd, kept out of the
+    /// host's standard descriptor slots.
+    pub(crate) fn new(mask: KernelSigset) -> std::io::Result<Self> {
+        use std::os::fd::FromRawFd;
+        // SAFETY: eventfd validates its constant flags and returns a new fd.
+        let raw = unsafe { libc::eventfd(0, libc::EFD_CLOEXEC | libc::EFD_NONBLOCK) };
+        if raw < 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        // SAFETY: eventfd returned a new owned descriptor.
+        let created = unsafe { std::fs::File::from_raw_fd(raw) };
+        let wake = SignalFdCarrier::pin_eventfd(&created)?.0;
+        Ok(Self { mask, wake })
+    }
+
+    pub(crate) fn file(&self) -> &std::fs::File {
+        &self.wake
+    }
+
+    /// Wakes the wait if it covers `signal`. The eventfd write never blocks.
+    pub(crate) fn wake_for(&self, signal: i32) -> std::io::Result<()> {
+        use std::io::Write;
+        if self.mask.contains(signal) {
+            (&*self.wake).write_all(&1u64.to_ne_bytes())?;
+        }
+        Ok(())
+    }
+}
+
+impl PartialEq for SignalFdWaiter {
+    fn eq(&self, other: &Self) -> bool {
+        self.mask == other.mask && Arc::ptr_eq(&self.wake, &other.wake)
+    }
+}
+impl Eq for SignalFdWaiter {}
+
 /// Signal state shared by all threads in one guest process.
 #[derive(Clone, Debug)]
 #[cfg_attr(any(test, feature = "test-support"), derive(Eq, PartialEq))]
@@ -554,6 +601,9 @@ pub(crate) struct ThreadSignalState {
     /// Admission identity, never reconstructed from a possibly reused numeric TID.
     pub(crate) dequeue_identity: Option<reverie::SignalTaskIdentity>,
     pub(crate) dequeue_wake: SignalDequeueWake,
+    /// Set only while this thread waits in a host poll that includes
+    /// signalfds; a sender that queues a covered signal for it wakes it.
+    pub(crate) signalfd_waiter: Option<SignalFdWaiter>,
 }
 
 impl ThreadSignalState {
@@ -566,6 +616,7 @@ impl ThreadSignalState {
             saved_sigmask: None,
             dequeue_identity: None,
             dequeue_wake: SignalDequeueWake::default(),
+            signalfd_waiter: None,
         }
     }
 
@@ -578,6 +629,7 @@ impl ThreadSignalState {
             saved_sigmask: None,
             dequeue_identity: None,
             dequeue_wake: SignalDequeueWake::default(),
+            signalfd_waiter: None,
         }
     }
 
@@ -590,6 +642,7 @@ impl ThreadSignalState {
             saved_sigmask: None,
             dequeue_identity: self.dequeue_identity,
             dequeue_wake: self.dequeue_wake.clone(),
+            signalfd_waiter: None,
         }
     }
 }

@@ -1010,6 +1010,7 @@ impl ElfExecutor {
                     .or_else(|| process_group_refusal(request, result))
                     .or_else(|| tool_decided_refusal(request, result))
                     .or_else(|| madvise_refusal(request, result))
+                    .or_else(|| signalfd_refusal(&self.state, request, result))
                 {
                     self.unsupported_refusal = Some(refusal);
                 }

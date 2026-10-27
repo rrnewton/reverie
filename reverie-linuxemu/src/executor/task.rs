@@ -917,16 +917,9 @@ impl ElfExecutor {
         // timing choose which thread dequeues it. Refuse before allocating a
         // tid or publishing any child state; Hermit's later scheduler
         // integration will own deterministic process-signal target selection.
-        if self.parent_death_enrolled()
-            || self.has_shared_pending_signal()
-            || !self
-                .state
-                .process_signals
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .signalfd_masks
-                .is_empty()
-        {
+        // An open signalfd is no obstacle: each thread's probe reads its own
+        // queue (`signalfd_readable`).
+        if self.parent_death_enrolled() || self.has_shared_pending_signal() {
             return negative_errno(libc::ENOSYS);
         }
         let Some(child_tid) = self.allocate_task_id() else {
@@ -971,6 +964,11 @@ impl ElfExecutor {
             .signalfd_masks
             .is_empty()
         {
+            self.unsupported_refusal = Some(reverie::UnsupportedRefusal::new(
+                reverie::UnsupportedOperation::Signalfd,
+                reverie::Errno::ENOSYS,
+                SIGNALFD_FORK_REFUSAL,
+            ));
             return negative_errno(libc::ENOSYS);
         }
         let Some(child_pid) = self.allocate_task_id() else {
@@ -1318,17 +1316,10 @@ impl ElfExecutor {
         let _transaction = transaction.lock().unwrap_or_else(|p| p.into_inner());
         // Controlled mode admits new task generations through the Tool before
         // any delivery permit. A pending process signal no longer makes physical
-        // thread creation race a backend-selected recipient. Signalfd sharing
-        // keeps its separate existing unsupported boundary.
+        // thread creation race a backend-selected recipient. An open signalfd
+        // is no obstacle: each thread's probe reads its own queue.
         if self.parent_death_enrolled()
             || (!self.signal_controlled() && self.has_shared_pending_signal())
-            || !self
-                .state
-                .process_signals
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .signalfd_masks
-                .is_empty()
         {
             return Err(crate::Error::UnexpectedVcpuExit(
                 "cannot create a KVM guest thread while a process-directed signal lacks a selected recipient"
