@@ -56,23 +56,36 @@ static TOOL_OUTPUT_FD: AtomicI32 = AtomicI32::new(-1);
 pub const RUNTIME_FD_MIN: libc::c_int = 1025;
 /// How many numbers just below the soft `RLIMIT_NOFILE` the runtime falls back
 /// to when no number at or above [`RUNTIME_FD_MIN`] is free under that limit
-/// (the common default soft limit is 1024). A process holds at most a few at
+/// (the common default soft limit is 1024), and the size of each lower block
+/// it tries after that ([`runtime_fd_minimums`]). A process holds at most a few at
 /// once (the coordinator connection, the Tool output socket, a counter, a fork
 /// child's inherited copies until it closes them).
 const RUNTIME_FD_RESERVE: libc::c_int = 8;
 
-/// The minimums the runtime tries, in order, when it places one of its
-/// descriptors: [`RUNTIME_FD_MIN`], then, when the soft `RLIMIT_NOFILE` is
+/// The minimums the runtime tries, in order, when it places or moves one of
+/// its descriptors: [`RUNTIME_FD_MIN`]; then, when the soft `RLIMIT_NOFILE` is
 /// below `RUNTIME_FD_MIN + RUNTIME_FD_RESERVE`, the top `RUNTIME_FD_RESERVE` (8)
-/// numbers below that limit (never below 3), which take a descriptor only when
-/// no number at or above `RUNTIME_FD_MIN` is free under the limit. When the
-/// limit cannot be read, only `RUNTIME_FD_MIN`. Either way a program's first
-/// descriptors are 3, 4 and so on, as without the runtime, whatever limit the
-/// process started with; the runtime changes no limit. The guest sees the
-/// descriptors' numbers only by asking for one of them (a `dup2` onto it fails
-/// with EBADF) or by allocating up to the limit.
+/// numbers below that limit; then successively lower blocks of
+/// `RUNTIME_FD_RESERVE` numbers, down to 3. `F_DUPFD` takes the lowest free
+/// number at or above a minimum, so a descriptor lands in the highest block
+/// with a free number: clear of a program's first descriptors (3, 4 and so on,
+/// as without the runtime, whatever limit the process started with), and, when
+/// the guest has taken the higher numbers, on any number it has not, which it
+/// does not see either. The runtime changes no limit. The guest sees the
+/// descriptors' numbers only by allocating up to them with calls that take
+/// the lowest free number (a `dup2`, `dup3` or `F_DUPFD` that names one moves
+/// the runtime's descriptor away first; see
+/// [`protect_runtime_descriptors`]).
 pub fn runtime_fd_minimums() -> impl Iterator<Item = libc::c_int> {
-    core::iter::once(RUNTIME_FD_MIN).chain(runtime_fd_fallback_floor())
+    let fallback = runtime_fd_fallback_floor();
+    let start = fallback.unwrap_or(RUNTIME_FD_MIN);
+    let lower = (1..)
+        .map(move |block| start - block * RUNTIME_FD_RESERVE)
+        .take_while(|&minimum| minimum > 3)
+        .chain((start > 3).then_some(3));
+    core::iter::once(RUNTIME_FD_MIN)
+        .chain(fallback)
+        .chain(lower)
 }
 
 /// The fallback band's lowest number; see [`runtime_fd_minimums`].
@@ -236,12 +249,11 @@ pub fn block_all_signals() -> io::Result<crate::guest::support::SignalInstallGua
     ))
 }
 
-/// Moves `fd`, a descriptor the runtime is about to own, into the runtime's
-/// range ([`runtime_fd_minimums`]), close-on-exec, closes `fd`, and returns the
-/// new number. When no number in that range is free, or the limit could not be
-/// read and excludes [`RUNTIME_FD_MIN`], returns `fd` unchanged: the runtime
-/// still owns and protects it there, and only the guest's own numbering
-/// differs (its first descriptor is not 3).
+/// Moves `fd`, a descriptor the runtime is about to own, to the first of
+/// [`runtime_fd_minimums`] with a free number, close-on-exec, closes `fd`, and
+/// returns the new number. When no number is free (the table is full up to
+/// the limit), returns `fd` unchanged: the runtime still owns and protects it
+/// there, and only the guest's own numbering differs.
 ///
 /// When `fd` stays open after its close (a seccomp filter the guest installed
 /// can report success without running it), the runtime records that number
@@ -436,13 +448,13 @@ pub fn is_runtime_owned_fd(fd: libc::c_int) -> bool {
 /// descriptor operation on it fails with `EBADF`, as on a number the guest does
 /// not have open. A guest `dup2`/`dup3` onto its number succeeds as it would if
 /// the number were free: the runtime first moves the socket to another free
-/// number in that range, so the Tool must read the current
+/// number ([`runtime_fd_minimums`]), so the Tool must read the current
 /// number from [`tool_output_fd`] for each use. Tool code writes to it through
 /// its own syscalls, which the runtime does not dispatch to the guest's
 /// protections. A forked child inherits the descriptor and its protection.
 ///
-/// A guest dup onto the number needs one more free descriptor in that range
-/// to move the socket to. When there is none (the descriptor table is full),
+/// A guest dup onto the number needs one more free descriptor to move the
+/// socket to. When there is none (the descriptor table is full),
 /// the runtime gives the socket up so the guest's call keeps its native
 /// outcome: it sends `retirement` on the socket, closes the socket, and
 /// [`tool_output_fd`] then returns `None`. The Tool chooses a message its
@@ -830,108 +842,207 @@ enum GuestTarget {
 /// A guest `dup2`/`dup3` onto a number the runtime holds, or a guest
 /// `F_DUPFD`/`F_DUPFD_CLOEXEC` whose answer would be such a number, is an
 /// ordinary operation the guest is entitled to: to the guest that number is
-/// free. For `dup2`/`dup3`, first applies the kernel's own checks, in its order
-/// (ksys_dup3), without moving anything: `dup3` flags other than `O_CLOEXEC`
-/// (`EINVAL`), a target at or above `RLIMIT_NOFILE` (`EBADF`), and a source
-/// that is not open (`EBADF`). For `F_DUPFD`, finds the number Linux would
-/// return by making the same call itself and closing the result: the lowest
-/// runtime number below it is the guest's answer. Then moves the runtime's
-/// descriptor off that number ([`relocate_runtime_fd`]), so the guest's call
-/// runs with its native outcome.
+/// free. The runtime moves its descriptor off that number
+/// ([`relocate_runtime_fd`]) and lets the guest's call run with its native
+/// outcome; see [`make_room_for_dup`] and [`make_room_for_f_dupfd`].
 unsafe fn make_room_for_guest_descriptor(event: &SyscallEvent, protected: &[u64]) -> GuestTarget {
-    let replacing = matches!(event.number, libc::SYS_dup2 | libc::SYS_dup3);
-    let target = if replacing {
-        let source = fd_arg(event, 0);
-        let target = fd_arg(event, 1);
-        if !protected.contains(&target) || protected.contains(&source) {
-            return GuestTarget::NotThis;
-        }
-        if event.number == libc::SYS_dup3 && fd_arg(event, 2) & !(libc::O_CLOEXEC as u64) != 0 {
-            return GuestTarget::Refuse(-i64::from(libc::EINVAL));
-        }
-        if soft_nofile_limit().is_some_and(|soft| target >= soft) {
-            return GuestTarget::Refuse(-i64::from(libc::EBADF));
-        }
-        if unsafe { raw_syscall6(libc::SYS_fcntl, [source, libc::F_GETFD as u64, 0, 0, 0, 0]) } < 0
-        {
-            return GuestTarget::Refuse(-i64::from(libc::EBADF));
-        }
-        target
-    } else if event.number == libc::SYS_fcntl
-        && matches!(
-            event.args[1] as u32 as libc::c_int,
-            libc::F_DUPFD | libc::F_DUPFD_CLOEXEC
-        )
+    match event.number {
+        libc::SYS_dup2 | libc::SYS_dup3 => unsafe { make_room_for_dup(event, protected) },
+        libc::SYS_fcntl
+            if matches!(
+                event.args[1] as u32 as libc::c_int,
+                libc::F_DUPFD | libc::F_DUPFD_CLOEXEC
+            ) =>
+        unsafe { make_room_for_f_dupfd(event, protected) },
+        _ => GuestTarget::NotThis,
+    }
+}
+
+/// A guest `dup2`/`dup3` that names a runtime number as its source or target
+/// gets Linux's answer, checked in Linux's order (sys_dup2, ksys_dup3) before
+/// anything moves: `dup3` flags other than `O_CLOEXEC` (`EINVAL`), a `dup3`
+/// whose source and target are the same number (`EINVAL`), then a runtime
+/// source, which is not open as far as the guest knows (`EBADF`), a target at
+/// or above `RLIMIT_NOFILE` (`EBADF`) and a source that is not open (`EBADF`).
+/// Only then does the runtime move its descriptor off the target.
+unsafe fn make_room_for_dup(event: &SyscallEvent, protected: &[u64]) -> GuestTarget {
+    let source = fd_arg(event, 0);
+    let target = fd_arg(event, 1);
+    let hidden_source = protected.contains(&source);
+    if !hidden_source && !protected.contains(&target) {
+        return GuestTarget::NotThis;
+    }
+    if event.number == libc::SYS_dup3
+        && (fd_arg(event, 2) & !(libc::O_CLOEXEC as u64) != 0 || source == target)
     {
-        let source = fd_arg(event, 0);
-        let minimum = fd_arg(event, 2);
-        if protected.contains(&source) || !protected.iter().any(|&fd| fd >= minimum) {
-            return GuestTarget::NotThis;
-        }
-        let probe = unsafe {
+        return GuestTarget::Refuse(-i64::from(libc::EINVAL));
+    }
+    if hidden_source || soft_nofile_limit().is_some_and(|soft| target >= soft) {
+        return GuestTarget::Refuse(-i64::from(libc::EBADF));
+    }
+    match descriptor_is_open(source as libc::c_int) {
+        Ok(true) => {}
+        Ok(false) => return GuestTarget::Refuse(-i64::from(libc::EBADF)),
+        // The check of the runtime's old number after the move would go
+        // unanswered too: refuse while nothing has moved.
+        Err(error) => return GuestTarget::Refuse(errno_of(error)),
+    }
+    match unsafe { relocate_runtime_fd(target as libc::c_int) } {
+        Ok(()) => GuestTarget::Proceed,
+        Err(errno) => GuestTarget::Refuse(errno),
+    }
+}
+
+/// A guest `F_DUPFD`/`F_DUPFD_CLOEXEC` gets the number Linux would give it: the
+/// lowest at or above its minimum that is free or the runtime's. After the
+/// guest's source checks out (`F_GETFD`; otherwise the guest's call fails as
+/// it would), the runtime makes the same call on one of its own descriptors
+/// and closes the result, which yields the lowest free number (or the same
+/// `EINVAL`/`EMFILE`) without touching the guest's file: closing a duplicate of
+/// the guest's file would drop the process's POSIX locks on it
+/// (locks_remove_posix in filp_flush) and flush it. The lowest runtime number
+/// below that free number is the guest's answer, and the runtime moves its
+/// descriptor off it. A probe that survives its close (a seccomp filter the
+/// guest installed can fake one) is recorded as the runtime's and made
+/// close-on-exec, and a number
+/// that cannot move (a native-exec lease, or none free) leaves the guest's
+/// call to take the next free number, as before.
+unsafe fn make_room_for_f_dupfd(event: &SyscallEvent, protected: &[u64]) -> GuestTarget {
+    let source = fd_arg(event, 0);
+    let minimum = fd_arg(event, 2);
+    if protected.contains(&source)
+        || !protected.iter().any(|&fd| fd >= minimum)
+        || !descriptor_is_open(source as libc::c_int).unwrap_or(false)
+    {
+        return GuestTarget::NotThis;
+    }
+    let Ok(_blocked) = block_all_signals() else {
+        return GuestTarget::NotThis;
+    };
+    let mut probe = -i64::from(libc::EBADF);
+    for &own in protected {
+        // The guest's own command and minimum, on a runtime descriptor.
+        probe = unsafe {
             raw_syscall6(
                 libc::SYS_fcntl,
-                [source, libc::F_DUPFD_CLOEXEC as u64, minimum, 0, 0, 0],
+                [own, event.args[1], event.args[2], 0, 0, 0],
             )
         };
-        if probe < 0 {
-            // The guest's call fails the same way.
-            return GuestTarget::NotThis;
+        if probe != -i64::from(libc::EBADF) {
+            break;
         }
+    }
+    let free = if probe >= 0 {
         unsafe { raw_syscall6(libc::SYS_close, [probe as u64, 0, 0, 0, 0, 0]) };
-        match protected
-            .iter()
-            .copied()
-            .filter(|&fd| fd >= minimum && fd < probe as u64)
-            .min()
-        {
-            Some(target) => target,
+        record_survivor_or_exit(probe as libc::c_int);
+        if is_recorded(probe as libc::c_int) {
+            // The record does not outlive this image: a survivor made with the
+            // guest's F_DUPFD must not reach the next one either.
+            unsafe {
+                raw_syscall6(
+                    libc::SYS_fcntl,
+                    [
+                        probe as u64,
+                        libc::F_SETFD as u64,
+                        libc::FD_CLOEXEC as u64,
+                        0,
+                        0,
+                        0,
+                    ],
+                )
+            };
+        }
+        probe as u64
+    } else if probe == -i64::from(libc::EMFILE) {
+        // Every number from `minimum` up to the limit is taken.
+        match soft_nofile_limit() {
+            Some(limit) => limit,
             None => return GuestTarget::NotThis,
         }
     } else {
+        // EINVAL (a minimum at or above the limit): the guest's call fails the
+        // same way.
         return GuestTarget::NotThis;
     };
-    match unsafe { relocate_runtime_fd(target as libc::c_int, replacing) } {
-        Ok(()) => GuestTarget::Proceed,
-        Err(errno) => GuestTarget::Refuse(errno),
+    match protected
+        .iter()
+        .copied()
+        .filter(|&fd| fd >= minimum && fd < free)
+        .min()
+    {
+        Some(target) if unsafe { relocate_runtime_fd(target as libc::c_int) }.is_ok() => {
+            GuestTarget::Proceed
+        }
+        _ => GuestTarget::NotThis,
     }
 }
 
 /// Moves the runtime's descriptor at `fd` off that number, for a guest call
 /// about to take it, with every signal blocked ([`block_all_signals`]):
 ///
-/// - the Tool output socket moves to another free number in the runtime's
-///   range, or, when none is free, is given up (see [`reserve_tool_output_fd`]);
+/// - the Tool output socket moves to another free number (see
+///   [`runtime_fd_minimums`]), or, when none is free, is given up (see
+///   [`reserve_tool_output_fd`]);
 /// - the coordinator connection moves (`CoordinatorRpc::relocate`);
 /// - this thread's performance counter moves (`clock::relocate_rcb_counter`);
 /// - any other recorded number (a fork child's inherited copy, an old number a
 ///   faked close left) is closed and forgotten.
 ///
-/// `replacing` is true for a `dup2`/`dup3`, whose own call closes whatever is
-/// still at `fd`; for an `F_DUPFD` the number must be free, so an old number
-/// that survives its close stays recorded (and the guest's call then gets the
-/// next number, as it would have before). A native-exec lease is refused with
-/// `EBADF`, as before. Returns the negated errno when nothing could move.
-unsafe fn relocate_runtime_fd(fd: libc::c_int, replacing: bool) -> Result<(), i64> {
-    let errno = |error: io::Error| -i64::from(error.raw_os_error().unwrap_or(libc::EBADF));
-    let _blocked = block_all_signals().map_err(errno)?;
+/// All or nothing for the guest: when the old number survives its close (a
+/// seccomp filter the guest installed can fake one), it stays recorded, and so
+/// protected, whatever the guest's call then does; a successful guest call
+/// that takes the number replaces it, and the record goes then
+/// ([`observe_guest_descriptor_change`]). A native-exec lease cannot move:
+/// `EBADF`. Returns the negated errno when nothing moved.
+unsafe fn relocate_runtime_fd(fd: libc::c_int) -> Result<(), i64> {
+    let _blocked = block_all_signals().map_err(errno_of)?;
     if TOOL_OUTPUT_FD.load(Ordering::Acquire) == fd {
         unsafe { relocate_tool_output(fd) };
     } else if COORDINATOR_FD.load(Ordering::Acquire) == fd {
-        relocate_coordinator(fd).map_err(errno)?;
+        relocate_coordinator(fd).map_err(errno_of)?;
         unsafe { raw_syscall6(libc::SYS_close, [fd as u64, 0, 0, 0, 0, 0]) };
     } else if is_recorded(fd) {
-        if !relocate_counter(fd).map_err(errno)? {
+        if !relocate_counter(fd).map_err(errno_of)? {
             unsafe { raw_syscall6(libc::SYS_close, [fd as u64, 0, 0, 0, 0, 0]) };
             forget_recorded_fd(fd);
         }
     } else {
         return Err(-i64::from(libc::EBADF));
     }
-    if !replacing {
-        record_if_open(fd).map_err(errno)?;
-    }
+    record_survivor_or_exit(fd);
     Ok(())
+}
+
+/// `error`'s errno, negated, as a syscall result (`EBADF` when it has none).
+fn errno_of(error: io::Error) -> i64 {
+    -i64::from(error.raw_os_error().unwrap_or(libc::EBADF))
+}
+
+/// Records `fd` if it survived the runtime's close of it ([`record_if_open`]).
+/// When that cannot be done (the record is full, or the kernel will not say
+/// whether `fd` is open), a runtime descriptor could be left reachable, so the
+/// process ends (status 126) rather than let the guest run on.
+fn record_survivor_or_exit(fd: libc::c_int) {
+    if record_if_open(fd).is_err() {
+        unsafe { crate::guest::support::exit_now(126) };
+    }
+}
+
+/// After a guest `dup2`, `dup3` or `F_DUPFD`/`F_DUPFD_CLOEXEC` ran
+/// (`runtime_seam::process_tool_syscall_with`): the number it returned now
+/// holds the guest's descriptor, so a record of that number (an old runtime
+/// number that survived a faked close, kept protected in case the call
+/// failed; see `relocate_runtime_fd`) is forgotten.
+pub fn observe_guest_descriptor_change(event: &SyscallEvent) {
+    let creates = matches!(event.number, libc::SYS_dup2 | libc::SYS_dup3)
+        || (event.number == libc::SYS_fcntl
+            && matches!(
+                event.args[1] as u32 as libc::c_int,
+                libc::F_DUPFD | libc::F_DUPFD_CLOEXEC
+            ));
+    if creates && event.result >= 0 {
+        forget_recorded_fd(event.result as libc::c_int);
+    }
 }
 
 /// Moves the installed Tool's coordinator connection off `fd`
@@ -965,7 +1076,7 @@ fn relocate_counter(fd: libc::c_int) -> io::Result<bool> {
 }
 
 /// Moves the Tool output socket off `tool`, its current number, to another
-/// free number in the runtime's range and closes `tool`. When no number is
+/// free number ([`runtime_fd_minimums`]) and closes `tool`. When no number is
 /// free, gives the socket up instead (see [`reserve_tool_output_fd`]). No
 /// unprotected copy of the socket is left behind on any path.
 unsafe fn relocate_tool_output(tool: libc::c_int) {
@@ -1265,13 +1376,25 @@ pub(crate) mod tests {
     /// Under the common default soft `RLIMIT_NOFILE` of 1024, which leaves no
     /// number at or above [`RUNTIME_FD_MIN`], a runtime descriptor goes to the
     /// top [`RUNTIME_FD_RESERVE`] numbers below the limit instead, still clear
-    /// of the guest's first numbers.
+    /// of the guest's first numbers; lower blocks follow, down to 3.
     #[test]
     fn a_descriptor_goes_just_below_a_limit_that_excludes_the_runtime_range() {
         in_child_with_soft_nofile(1024, || {
+            let minimums = runtime_fd_minimums().collect::<Vec<_>>();
             assert_eq!(
-                runtime_fd_minimums().collect::<Vec<_>>(),
-                [RUNTIME_FD_MIN, 1024 - RUNTIME_FD_RESERVE]
+                minimums[..3],
+                [
+                    RUNTIME_FD_MIN,
+                    1024 - RUNTIME_FD_RESERVE,
+                    1024 - 2 * RUNTIME_FD_RESERVE
+                ]
+            );
+            assert_eq!(minimums.last(), Some(&3));
+            assert!(
+                minimums[1..]
+                    .windows(2)
+                    .all(|pair| pair[0] > pair[1] && pair[0] - pair[1] <= RUNTIME_FD_RESERVE),
+                "{minimums:?}"
             );
             let fd = open_eventfd();
             let placed = place_runtime_fd(fd).unwrap();
@@ -1301,19 +1424,35 @@ pub(crate) mod tests {
         });
     }
 
-    /// With every number in the runtime's range taken, a descriptor keeps the
-    /// number it has (the `EMFILE` fallback) and stays open.
+    /// With the band below the limit taken, a descriptor goes to the highest
+    /// lower block with a free number rather than stay where it is.
     #[test]
-    fn a_descriptor_keeps_its_number_when_the_runtime_range_is_full() {
+    fn a_full_band_sends_a_descriptor_to_the_next_block_down() {
+        in_child_with_soft_nofile(1024, || {
+            let spare = open_eventfd();
+            fill_from(spare, 1024 - RUNTIME_FD_RESERVE);
+            let placed = place_runtime_fd(open_eventfd()).unwrap();
+            assert!(
+                (1024 - 2 * RUNTIME_FD_RESERVE..1024 - RUNTIME_FD_RESERVE).contains(&placed),
+                "placed at {placed}"
+            );
+        });
+    }
+
+    /// With every number up to the limit taken, a descriptor keeps the number
+    /// it has (the `EMFILE` fallback) and stays open.
+    #[test]
+    fn a_descriptor_keeps_its_number_when_the_table_is_full() {
         in_child_with_soft_nofile(1024, || {
             let fd = open_eventfd();
-            fill_from(fd, 1024 - RUNTIME_FD_RESERVE);
+            fill_from(fd, 0);
             assert_eq!(place_runtime_fd(fd).unwrap(), fd);
             assert!(is_open(fd));
         });
     }
 
-    /// A soft limit so low that the band would reach below 3 starts it at 3.
+    /// A soft limit so low that the band would reach below 3 starts it at 3,
+    /// and nothing lower follows.
     #[test]
     fn the_fallback_band_never_reaches_the_standard_descriptors() {
         in_child_with_soft_nofile(8, || {
@@ -1321,6 +1460,314 @@ pub(crate) mod tests {
                 runtime_fd_minimums().collect::<Vec<_>>(),
                 [RUNTIME_FD_MIN, 3]
             );
+        });
+    }
+
+    /// The device and inode of the file open at `fd`.
+    fn identity_of(fd: libc::c_int) -> (u64, u64) {
+        let mut metadata: libc::stat = unsafe { core::mem::zeroed() };
+        assert_eq!(unsafe { libc::fstat(fd, &mut metadata) }, 0, "fstat({fd})");
+        (metadata.st_dev, metadata.st_ino)
+    }
+
+    /// A connected socket pair, close-on-exec.
+    fn socket_pair() -> [libc::c_int; 2] {
+        let mut pair = [0; 2];
+        assert_eq!(
+            unsafe {
+                libc::socketpair(
+                    libc::AF_UNIX,
+                    libc::SOCK_STREAM | libc::SOCK_CLOEXEC,
+                    0,
+                    pair.as_mut_ptr(),
+                )
+            },
+            0
+        );
+        pair
+    }
+
+    /// Runs `dup` through the protections as a guest syscall, requires that it
+    /// is left to run, runs it, and reports its result as the runtime seam does
+    /// after the Tool ([`observe_guest_descriptor_change`]).
+    fn run_guest_dup(mut dup: SyscallEvent) -> i64 {
+        assert!(
+            !unsafe { protect_runtime_descriptors(&mut dup, true) },
+            "{} {:?} was refused with {}",
+            dup.number,
+            &dup.args[..3],
+            dup.result
+        );
+        dup.result = unsafe { raw_syscall6(dup.number, dup.args) };
+        observe_guest_descriptor_change(&dup);
+        dup.result
+    }
+
+    /// The reviewers' case under the common soft `RLIMIT_NOFILE` of 1024: a
+    /// guest `dup2`s onto every number of the band below the limit, where the
+    /// runtime's descriptors sit, and each call gets its number as on Linux,
+    /// while the Tool output socket moves ahead of it and finally to a lower
+    /// block, staying the same socket throughout.
+    #[test]
+    fn every_guest_dup2_onto_the_band_under_a_1024_limit_goes_ahead() {
+        in_child_with_soft_nofile(1024, || {
+            let pair = socket_pair();
+            let tool = unsafe { reserve_tool_output_fd(pair[0], b"retired") }.unwrap();
+            assert!(
+                (1024 - RUNTIME_FD_RESERVE..1024).contains(&tool),
+                "reserved at {tool}"
+            );
+            let socket = identity_of(tool);
+            for _ in 0..2 {
+                record_runtime_fd(place_runtime_fd(open_eventfd()).unwrap()).unwrap();
+            }
+            for target in 1024 - RUNTIME_FD_RESERVE..1024 {
+                let dup = event(libc::SYS_dup2, [1, target as u64, 0, 0, 0, 0]);
+                assert_eq!(run_guest_dup(dup), i64::from(target));
+                let tool = tool_output_fd().expect("the Tool output socket is kept");
+                assert_eq!(identity_of(tool), socket);
+            }
+            let tool = tool_output_fd().unwrap();
+            assert!(tool < 1024 - RUNTIME_FD_RESERVE, "moved to {tool}");
+            assert_eq!(unsafe { libc::write(tool, b"x".as_ptr().cast(), 1) }, 1);
+            let mut byte = 0_u8;
+            assert_eq!(unsafe { libc::read(pair[1], (&raw mut byte).cast(), 1) }, 1);
+            assert_eq!(byte, b'x');
+        });
+    }
+
+    /// All or nothing: when the runtime's close of the old number is faked
+    /// and the guest's `dup2` onto it is then refused (both by seccomp filters
+    /// the guest installed), the old number, which still holds the Tool output
+    /// socket, stays the runtime's: protected and reported, never the guest's.
+    #[test]
+    fn a_refused_guest_dup2_leaves_a_surviving_old_number_protected() {
+        in_child_with_soft_nofile(2048, || {
+            let pair = socket_pair();
+            let tool = unsafe { reserve_tool_output_fd(pair[0], b"retired") }.unwrap();
+            suppress_close_of(tool);
+            install_filter(
+                libc::SYS_dup2,
+                1,
+                tool as u32,
+                libc::SECCOMP_RET_ERRNO | libc::EPERM as u32,
+            );
+            let mut dup = event(libc::SYS_dup2, [0, tool as u64, 0, 0, 0, 0]);
+            assert!(!unsafe { protect_runtime_descriptors(&mut dup, true) });
+            assert_ne!(tool_output_fd(), Some(tool), "the socket moved");
+            assert!(is_open(tool), "the filter kept the old number open");
+            assert!(is_runtime_owned_fd(tool), "the old number stays protected");
+            dup.result = unsafe { raw_syscall6(dup.number, dup.args) };
+            assert_eq!(dup.result, -i64::from(libc::EPERM));
+            observe_guest_descriptor_change(&dup);
+            assert!(is_runtime_owned_fd(tool), "a refused dup2 replaced nothing");
+            for number in [libc::SYS_write, libc::SYS_close] {
+                let mut call = event(number, [tool as u64, 0, 0, 0, 0, 0]);
+                assert!(unsafe { protect_runtime_descriptors(&mut call, true) });
+                assert_eq!(call.result, -i64::from(libc::EBADF));
+            }
+        });
+    }
+
+    /// The other half: once the guest's `dup2` onto a surviving old number
+    /// succeeds, the number holds the guest's descriptor and is no longer
+    /// the runtime's.
+    #[test]
+    fn a_guest_dup2_onto_a_surviving_old_number_makes_it_the_guests() {
+        in_child_with_soft_nofile(2048, || {
+            let recorded = place_runtime_fd(open_eventfd()).unwrap();
+            record_runtime_fd(recorded).unwrap();
+            suppress_close_of(recorded);
+            let mut dup = event(libc::SYS_dup2, [0, recorded as u64, 0, 0, 0, 0]);
+            assert!(!unsafe { protect_runtime_descriptors(&mut dup, true) });
+            assert!(
+                is_runtime_owned_fd(recorded),
+                "protected until the guest's call replaces it"
+            );
+            dup.result = unsafe { raw_syscall6(dup.number, dup.args) };
+            assert_eq!(dup.result, i64::from(recorded));
+            observe_guest_descriptor_change(&dup);
+            assert!(
+                !is_runtime_owned_fd(recorded),
+                "the number is the guest's now"
+            );
+            assert_eq!(identity_of(recorded), identity_of(0));
+        });
+    }
+
+    /// Whether a process other than this one finds `fd`'s whole file
+    /// write-locked (POSIX record locks never conflict with their owner's).
+    fn locked_for_another_process(fd: libc::c_int) -> bool {
+        let child = unsafe { libc::fork() };
+        assert!(child >= 0);
+        if child == 0 {
+            let mut lock: libc::flock = unsafe { core::mem::zeroed() };
+            lock.l_type = libc::F_WRLCK as libc::c_short;
+            lock.l_whence = libc::SEEK_SET as libc::c_short;
+            let queried = unsafe { libc::fcntl(fd, libc::F_GETLK, &mut lock) };
+            let status = if queried != 0 {
+                2
+            } else if lock.l_type == libc::F_UNLCK as libc::c_short {
+                1
+            } else {
+                0
+            };
+            unsafe { libc::_exit(status) };
+        }
+        let mut status = 0;
+        assert_eq!(unsafe { libc::waitpid(child, &mut status, 0) }, child);
+        assert!(libc::WIFEXITED(status) && libc::WEXITSTATUS(status) != 2);
+        libc::WEXITSTATUS(status) == 0
+    }
+
+    /// A guest `F_DUPFD` keeps the process's POSIX record locks. The runtime
+    /// finds Linux's answer by duplicating one of its own descriptors and
+    /// closing the copy; closing a copy of the guest's descriptor instead
+    /// would drop every POSIX lock the process holds on that file
+    /// (locks_remove_posix).
+    #[test]
+    fn a_guest_f_dupfd_keeps_the_processs_posix_locks() {
+        in_child_with_soft_nofile(2048, || {
+            let recorded = place_runtime_fd(open_eventfd()).unwrap();
+            record_runtime_fd(recorded).unwrap();
+            let file = unsafe { libc::memfd_create(c"locked".as_ptr(), libc::MFD_CLOEXEC) };
+            assert!(file >= 0);
+            assert_eq!(unsafe { libc::ftruncate(file, 16) }, 0);
+            let mut lock: libc::flock = unsafe { core::mem::zeroed() };
+            lock.l_type = libc::F_WRLCK as libc::c_short;
+            lock.l_whence = libc::SEEK_SET as libc::c_short;
+            assert_eq!(unsafe { libc::fcntl(file, libc::F_SETLK, &lock) }, 0);
+            assert!(locked_for_another_process(file));
+            // The first answer is a free low number; the second is the
+            // runtime's number, which moves.
+            for minimum in [0, recorded] {
+                let dup = event(
+                    libc::SYS_fcntl,
+                    [
+                        file as u64,
+                        libc::F_DUPFD_CLOEXEC as u64,
+                        minimum as u64,
+                        0,
+                        0,
+                        0,
+                    ],
+                );
+                assert!(run_guest_dup(dup) >= i64::from(minimum));
+                assert!(
+                    locked_for_another_process(file),
+                    "the lock was dropped by an F_DUPFD from {minimum}"
+                );
+            }
+            assert!(!is_runtime_owned_fd(recorded));
+        });
+    }
+
+    /// The probe's copy is the runtime's: when a filter fakes its close, the
+    /// copy that stays open is recorded and protected, it is a copy of a
+    /// runtime descriptor (not of the guest's), and it is close-on-exec, since
+    /// its record does not outlive the image. The probe uses the guest's own
+    /// command (`F_DUPFD` here): a filter that refuses `F_DUPFD_CLOEXEC`
+    /// leaves it working.
+    #[test]
+    fn a_probe_that_survives_its_close_is_the_runtimes() {
+        in_child_with_soft_nofile(2048, || {
+            let recorded = place_runtime_fd(open_eventfd()).unwrap();
+            record_runtime_fd(recorded).unwrap();
+            let lowest = dup_at_least(0, 0);
+            assert!(lowest >= 0);
+            let lowest = lowest as libc::c_int;
+            assert_eq!(unsafe { libc::close(lowest) }, 0);
+            suppress_close_of(lowest);
+            install_filter(
+                libc::SYS_fcntl,
+                1,
+                libc::F_DUPFD_CLOEXEC as u32,
+                libc::SECCOMP_RET_ERRNO | libc::EPERM as u32,
+            );
+            let mut dup = event(libc::SYS_fcntl, [0, libc::F_DUPFD as u64, 0, 0, 0, 0]);
+            assert!(!unsafe { protect_runtime_descriptors(&mut dup, true) });
+            assert!(is_open(lowest), "the filter kept the probe open");
+            assert!(is_runtime_owned_fd(lowest), "and it is recorded");
+            assert_eq!(identity_of(lowest), identity_of(recorded));
+            assert_ne!(identity_of(lowest), identity_of(0));
+            let flags = unsafe {
+                raw_syscall6(
+                    libc::SYS_fcntl,
+                    [lowest as u64, libc::F_GETFD as u64, 0, 0, 0, 0],
+                )
+            };
+            assert_eq!(
+                flags,
+                i64::from(libc::FD_CLOEXEC),
+                "the survivor is close-on-exec"
+            );
+        });
+    }
+
+    /// A `dup2`/`dup3` that names a runtime number, as source or target, gets
+    /// exactly the answer Linux gives when that number is not open (measured
+    /// here on a number that really is not open), in Linux's order: `dup3`
+    /// flags and a `dup3` onto its own source (`EINVAL`) come before the
+    /// source's check (`EBADF`). Nothing moves.
+    #[test]
+    fn a_dup_naming_a_runtime_number_gets_linuxs_answer_for_a_closed_one() {
+        in_child_with_soft_nofile(2048, || {
+            const RUNTIME: u64 = u64::MAX;
+            let recorded = place_runtime_fd(open_eventfd()).unwrap();
+            record_runtime_fd(recorded).unwrap();
+            let closed = 1500;
+            assert!(!is_open(closed) && !is_open(100));
+            let o_cloexec = libc::O_CLOEXEC as u64;
+            for (number, [source, target, flags]) in [
+                (libc::SYS_dup3, [RUNTIME, RUNTIME, 0]),
+                (libc::SYS_dup3, [RUNTIME, 100, 1]),
+                (libc::SYS_dup3, [RUNTIME, 100, o_cloexec]),
+                (libc::SYS_dup3, [RUNTIME, 4096, 0]),
+                (libc::SYS_dup2, [RUNTIME, RUNTIME, 0]),
+                (libc::SYS_dup2, [RUNTIME, 100, 0]),
+                (libc::SYS_dup3, [0, RUNTIME, 1]),
+                (libc::SYS_dup3, [9999, RUNTIME, 0]),
+            ] {
+                let with = |runtime: u64| {
+                    let at = |fd: u64| if fd == RUNTIME { runtime } else { fd };
+                    [at(source), at(target), flags, 0, 0, 0]
+                };
+                let native = unsafe { raw_syscall6(number, with(closed as u64)) };
+                assert!(
+                    native < 0,
+                    "{number} {:?} succeeded natively",
+                    with(closed as u64)
+                );
+                let mut call = event(number, with(recorded as u64));
+                assert!(unsafe { protect_runtime_descriptors(&mut call, true) });
+                assert_eq!(call.result, native, "{number} {:?}", with(recorded as u64));
+            }
+            assert!(
+                is_runtime_owned_fd(recorded) && is_open(recorded),
+                "nothing moved"
+            );
+            assert!(!is_open(100));
+        });
+    }
+
+    /// A guest `F_DUPFD` whose minimum leaves no free number up to the limit
+    /// gets the runtime's number there, as on Linux, when a free number is
+    /// left below the minimum for the runtime's descriptor to move to.
+    #[test]
+    fn a_guest_f_dupfd_with_every_number_above_its_minimum_taken_gets_the_runtimes() {
+        in_child_with_soft_nofile(64, || {
+            let pair = socket_pair();
+            let tool = unsafe { reserve_tool_output_fd(pair[0], b"retired") }.unwrap();
+            assert!(
+                (64 - RUNTIME_FD_RESERVE..64).contains(&tool),
+                "reserved at {tool}"
+            );
+            let spare = open_eventfd();
+            fill_from(spare, 40);
+            let dup = event(libc::SYS_fcntl, [0, libc::F_DUPFD as u64, 40, 0, 0, 0]);
+            assert_eq!(run_guest_dup(dup), i64::from(tool));
+            let moved = tool_output_fd().expect("the Tool output socket is kept");
+            assert!(moved < 40, "moved to {moved}");
         });
     }
 
