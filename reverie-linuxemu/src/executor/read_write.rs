@@ -529,7 +529,9 @@ fn raise_guest_sigpipe(state: &LoadedStaticElf) -> Result<(), i64> {
             .enqueue(event, process_signals.pending_generation(signal))
             .map_err(|errno| negative_errno(errno.into_raw()))?;
     }
-    refresh_all_signalfd_readiness_locked(state)
+    // A signalfd's eventfd keeper shows only the shared queue, so a private
+    // signal changes none; the writer reads its own queue at its next probe.
+    Ok(())
 }
 
 pub(super) fn signal_is_pending(signal: libc::c_int) -> Result<bool, libc::c_int> {
