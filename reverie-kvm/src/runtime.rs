@@ -581,10 +581,14 @@ trait GuestSyscallExecutor<T: Tool>:
 {
     fn read_clock(&self) -> Result<u64>;
 
-    /// Requests an imprecise timer event `ticks` RCBs from the clock's value
-    /// now (see `Guest::set_timer`). An adapter whose run delivers no timer
-    /// events refuses.
-    fn request_timer(&mut self, _ticks: u64) -> Result<()> {
+    /// Requests a timer event of `kind` `ticks` RCBs from the clock's value
+    /// now (see `Guest::set_timer` and `Guest::set_timer_precise`). An
+    /// adapter whose run delivers no timer events refuses.
+    fn request_timer(
+        &mut self,
+        _ticks: u64,
+        _kind: crate::preemption_timer::TimerKind,
+    ) -> Result<()> {
         Err(Error::GuestClock(
             "preemption timer: this execution delivers no timer events".to_owned(),
         ))
@@ -1536,10 +1540,12 @@ where
         self.backend.vcpu.read_clock()
     }
 
-    fn request_timer(&mut self, ticks: u64) -> Result<()> {
-        self.backend
-            .vcpu
-            .request_timer(ticks, crate::preemption_timer::TimerKind::Imprecise)
+    fn request_timer(
+        &mut self,
+        ticks: u64,
+        kind: crate::preemption_timer::TimerKind,
+    ) -> Result<()> {
+        self.backend.vcpu.request_timer(ticks, kind)
     }
 
     fn cancel_timer(&mut self) {
@@ -2115,8 +2121,8 @@ impl<T: Tool> GlobalRPC<T::GlobalState> for KvmGuest<'_, T> {
 
 /// The message of the `Unsupported` error that `KvmGuest::set_timer_precise`
 /// returns.
-const PRECISE_TIMER_REFUSAL: &str = "the KVM backend does not deliver precise timer events: \
-     it cannot yet run a guest to an exact count (Guest::set_timer requests an imprecise one)";
+const INSTRUCTION_OFFSET_REFUSAL: &str = "the KVM backend delivers a precise timer event at \
+     its RCB count; it does not step instructions past it (TimerSchedule::RcbsAndInstructions)";
 
 #[reverie::tool]
 impl<T: Tool> Guest<T> for KvmGuest<'_, T> {
@@ -2602,22 +2608,41 @@ impl<T: Tool> Guest<T> for KvmGuest<'_, T> {
             return Err(Errno::EINVAL.into());
         }
         self.executor
-            .request_timer(ticks)
+            .request_timer(ticks, crate::preemption_timer::TimerKind::Imprecise)
             .map_err(|error| reverie::Error::Io(std::io::Error::other(error)))
     }
 
-    /// Refused: a precise event is delivered exactly at its count, which
-    /// needs single steps to that count, and this backend takes none yet.
-    /// The refusal is an `Unsupported` I/O error, so a Tool that propagates
-    /// it fails the run rather than handing the guest an errno.
+    /// Requests a precise timer event (see `preemption_timer.rs`), delivered
+    /// exactly when the clock reaches its count, with the schedule mapped as
+    /// in reverie-ptrace: `Rcbs(r)` requests `r` RCBs, `Time` is converted
+    /// at reverie-ptrace's rate, and a request for 0 RCBs is refused with
+    /// `EINVAL`. `RcbsAndInstructions` is refused with an `Unsupported` I/O
+    /// error, so that a Tool that propagates it fails the run: this backend
+    /// does not step instructions past the count.
     fn set_timer_precise(
         &mut self,
-        _schedule: TimerSchedule,
+        schedule: TimerSchedule,
     ) -> std::result::Result<(), reverie::Error> {
-        Err(reverie::Error::Io(std::io::Error::new(
-            std::io::ErrorKind::Unsupported,
-            PRECISE_TIMER_REFUSAL,
-        )))
+        if let Err(error) = self.check_ordinary_operation() {
+            self.signal_ordinary_failure(error);
+            return Err(Errno::EIO.into());
+        }
+        let ticks = match schedule {
+            TimerSchedule::Rcbs(rcbs) => rcbs,
+            TimerSchedule::Time(duration) => crate::preemption_timer::rcbs_for_duration(duration),
+            TimerSchedule::RcbsAndInstructions(..) => {
+                return Err(reverie::Error::Io(std::io::Error::new(
+                    std::io::ErrorKind::Unsupported,
+                    INSTRUCTION_OFFSET_REFUSAL,
+                )));
+            }
+        };
+        if ticks == 0 {
+            return Err(Errno::EINVAL.into());
+        }
+        self.executor
+            .request_timer(ticks, crate::preemption_timer::TimerKind::Precise)
+            .map_err(|error| reverie::Error::Io(std::io::Error::other(error)))
     }
 
     fn read_clock(&mut self) -> std::result::Result<u64, reverie::Error> {
@@ -6904,6 +6929,9 @@ impl KvmBackend {
                         InstructionCallback::Finished(exit) => return Ok(exit),
                     }
                 }
+                // A precise request within its stepping window steps the
+                // guest to its target (see `prepare_timer_steps`).
+                self.prepare_timer_steps()?;
                 let vcpu_exit = match self.vcpu.run() {
                     Ok(Some(exit)) => {
                         subscribe_entry_wait = false;
@@ -6924,7 +6952,10 @@ impl KvmBackend {
                     // An interrupted entry, by a timer kick or another signal:
                     // the next iteration delivers a request that the clock
                     // read at this exit made due.
-                    Err(Error::Kvm(error)) if error.errno() == libc::EINTR => continue,
+                    Err(Error::Kvm(error)) if error.errno() == libc::EINTR => {
+                        self.note_interrupted_entry()?;
+                        continue;
+                    }
                     Err(error) => return Err(error),
                 };
                 Self::record_exit(self.exit_collector.as_deref(), &vcpu_exit);
@@ -6935,7 +6966,14 @@ impl KvmBackend {
                         }
                         (exit.args[0], std::ptr::from_mut(exit.ret) as usize)
                     }
+                    // A single step, or a breakpoint the steps ran to: the next
+                    // iteration delivers a request the step made due.
+                    VcpuExit::Debug(debug) => {
+                        self.finish_timer_step(debug)?;
+                        continue;
+                    }
                     VcpuExit::Hlt => {
+                        self.scrub_stepped_exception_frame()?;
                         if let Some(boundary) = self.tool_instruction_exception()? {
                             match self
                                 .run_tool_instruction_callback(
@@ -7083,6 +7121,31 @@ impl KvmBackend {
                     let mut signal_delivered = false;
                     if let Some(restored) = self.restore_rt_sigreturn(executor, frame_address)? {
                         executor.set_current_user_stack_pointer(restored.rsp);
+                        // A timer request this exit found due is delivered
+                        // here, with the user registers the call restores, as
+                        // at any other syscall's return.
+                        if let Some(boundary) = self.syscall_return_timer_boundary(restored)? {
+                            match self
+                                .run_tool_instruction_callback(
+                                    executor,
+                                    pid,
+                                    tid,
+                                    &tool,
+                                    &memory,
+                                    &auxv,
+                                    &mut thread_state,
+                                    &global_state,
+                                    config,
+                                    subscriptions,
+                                    &stack_checked_out,
+                                    boundary,
+                                )
+                                .await?
+                            {
+                                InstructionCallback::Resumed => {}
+                                InstructionCallback::Finished(exit) => return Ok(exit),
+                            }
+                        }
                         let pending = self
                             .filter_one_pending_signal_with_tool(
                                 executor,
