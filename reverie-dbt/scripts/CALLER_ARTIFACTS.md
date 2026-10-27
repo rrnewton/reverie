@@ -12,6 +12,16 @@ unify prototype exports into the caller. This is a separate validation boundary:
 parent workspace checks remain required and do not validate this artifact. Keep
 the OSS caller manifest and its internal build target synchronized on export.
 
+The initial native caller domain requires a single application root without
+inherited seccomp restrictions. Before serving Config or admitting the Tool,
+the controller reads that owned root task's proc status and requires matching
+PID/TGID, seccomp mode zero, and zero filters. An unreadable, incomplete, or
+ambiguous status refuses with `caller-inherited-seccomp-unsupported`; cleanup
+retains the actual terminated child status and captured output. Child-side
+queries remain additional checks, because a filter can spoof their result.
+This check does not impose an unfiltered requirement on the trap backend's
+own interception filters.
+
 ## Produce a pair
 
 Use the repository toolchain, cached Cargo dependencies, and the same existing

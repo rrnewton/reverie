@@ -5,6 +5,8 @@
 
 //! One typed native test Tool over the ordinary caller export contract.
 
+mod lifecycle;
+pub mod protocol;
 pub mod tool;
 
 include!(concat!(env!("OUT_DIR"), "/caller_identity.rs"));

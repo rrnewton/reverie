@@ -9,6 +9,7 @@
 
 use std::fs;
 use std::os::unix::process::CommandExt;
+use std::os::unix::process::ExitStatusExt;
 use std::path::Path;
 use std::path::PathBuf;
 use std::process::Child;
@@ -25,15 +26,18 @@ use reverie_dbt::bundled_drrun_path;
 use reverie_dbt::failed_run_output;
 use tempfile::TempDir;
 
-#[path = "fixtures/caller-lifecycle-runtime/src/tool.rs"]
-pub mod tool;
+#[path = "fixtures/caller-lifecycle-runtime/src/lifecycle.rs"]
+mod lifecycle;
+#[path = "fixtures/caller-lifecycle-runtime/src/protocol.rs"]
+pub mod protocol;
 
+use lifecycle::raw_call;
+use protocol as tool;
 use tool::Config;
 use tool::Event;
 use tool::LifecycleGlobal;
 use tool::Mode;
 use tool::Terminal;
-use tool::raw_call;
 
 const CHILD_CASE: &str = "REVERIE_DBT_CALLER_LIFECYCLE_CASE";
 const CHILD_SELECTOR: &str = "REVERIE_DBT_CALLER_LIFECYCLE_SELECTOR";
@@ -90,7 +94,10 @@ fn caller_manifest() -> PathBuf {
         .join("reverie-dbt-callers/caller-lifecycle/manifest.json")
 }
 
-fn run_native(config: Config, guest: &Path) {
+fn launch_native(
+    config: &Config,
+    guest: &Path,
+) -> (std::io::Result<(Output, LifecycleGlobal)>, Vec<u8>) {
     config.validate();
     // This exact manifest is required; no older image or prototype fallback.
     let artifact = CallerArtifact::load(caller_manifest()).unwrap();
@@ -114,7 +121,11 @@ fn run_native(config: Config, guest: &Path) {
         .build()
         .unwrap()
         .block_on(runner.output_with_caller_tool::<LifecycleGlobal>(&command, config.clone()));
-    let native_diagnostics = fs::read(&diagnostic_path).unwrap();
+    (result, fs::read(&diagnostic_path).unwrap())
+}
+
+fn run_native(config: Config, guest: &Path) {
+    let (result, native_diagnostics) = launch_native(&config, guest);
     let (output, global) = result.unwrap_or_else(|error| {
         panic!(
             "native caller failed: {error}; output: {:?}; diagnostic: {}",
@@ -138,6 +149,35 @@ fn run_native(config: Config, guest: &Path) {
 
     let (received_config, rows) = global.snapshot();
     assert_eq!(received_config, config);
+    if config.mode == Mode::NoApplicationRpc {
+        assert_eq!(LifecycleGlobal::no_application_rpc_requests(), 0);
+        assert!(rows.is_empty(), "unexpected application request: {rows:?}");
+        let witness = fs::read_to_string(config.witness.as_ref().unwrap()).unwrap();
+        let first = witness.lines().next().expect("missing constructor witness");
+        let pid: i32 = first.split_whitespace().next().unwrap().parse().unwrap();
+        assert!(pid > 0);
+        assert_ne!(pid as u32, std::process::id());
+        let expected = [
+            "Constructed selections=1".to_owned(),
+            "ThreadState".to_owned(),
+            format!("{:?}", Event::StartHook),
+            format!("{:?}", Event::PostExecHook),
+            format!(
+                "{:?}",
+                Event::ThreadExit {
+                    code: 23,
+                    attempts: 0,
+                    drops: 0,
+                    continued: false,
+                }
+            ),
+            format!("{:?}", Event::ProcessExit { code: 23 }),
+        ]
+        .map(|event| format!("{pid} {} {event}\n", config.nonce))
+        .concat();
+        assert_eq!(witness, expected);
+        return;
+    }
     let pid = rows.first().expect("startup RPC was not received").0;
     assert!(pid > 0);
     assert_ne!(pid as u32, std::process::id());
@@ -236,13 +276,17 @@ fn output_with_timeout(command: &mut Command) -> Output {
 }
 
 fn run_cases(selector: &str, cases: &[Config]) {
+    run_cases_using(selector, cases, run_native);
+}
+
+fn run_cases_using(selector: &str, cases: &[Config], run: fn(Config, &Path)) {
     if let Some(index) = std::env::var_os(CHILD_CASE) {
         assert_eq!(std::env::var(CHILD_SELECTOR).unwrap(), selector);
         let index: usize = index.to_str().unwrap().parse().unwrap();
         let config = cases.get(index).expect("unknown fixture case").clone();
         let guest = PathBuf::from(std::env::var_os(CHILD_GUEST).unwrap());
         assert!(guest.is_file());
-        run_native(config, &guest);
+        run(config, &guest);
         println!("{WITNESS}:{selector}:{index}");
         return;
     }
@@ -318,5 +362,140 @@ fn caller_rewrite_to_terminal_preserves_actual_status() {
     run_cases(
         "caller_rewrite_to_terminal_preserves_actual_status",
         &[23, 0x117].map(|code| Config::new(Mode::RewriteToTerminal, Terminal::ExitGroup, code)),
+    );
+}
+
+#[test]
+fn caller_without_application_rpc_constructs_and_consumes_the_real_tool() {
+    let directory = temporary_directory("caller-no-rpc-witness-");
+    run_cases(
+        "caller_without_application_rpc_constructs_and_consumes_the_real_tool",
+        &[Config::without_application_rpc(
+            directory.path().join("hooks"),
+        )],
+    );
+}
+
+fn inherit_query_spoof_filter() {
+    let before = fs::read_to_string("/proc/thread-self/status").unwrap();
+    assert!(
+        reverie::pidfd_self::status_has_exactly_seccomp_filters(&before, 0),
+        "query-spoof setup requires an initially unfiltered helper"
+    );
+    let statement = |code: u32, k: u32| libc::sock_filter {
+        code: code as u16,
+        jt: 0,
+        jf: 0,
+        k,
+    };
+    let mut filter = [
+        statement(libc::BPF_LD | libc::BPF_W | libc::BPF_ABS, 0),
+        libc::sock_filter {
+            code: (libc::BPF_JMP | libc::BPF_JEQ | libc::BPF_K) as u16,
+            jt: 0,
+            jf: 3,
+            k: libc::SYS_prctl as u32,
+        },
+        // seccomp_data.args[0], the low 32 bits of prctl's int option.
+        statement(libc::BPF_LD | libc::BPF_W | libc::BPF_ABS, 16),
+        libc::sock_filter {
+            code: (libc::BPF_JMP | libc::BPF_JEQ | libc::BPF_K) as u16,
+            jt: 0,
+            jf: 1,
+            k: libc::PR_GET_SECCOMP as u32,
+        },
+        statement(libc::BPF_RET | libc::BPF_K, libc::SECCOMP_RET_ERRNO),
+        statement(libc::BPF_RET | libc::BPF_K, libc::SECCOMP_RET_ALLOW),
+    ];
+    let program = libc::sock_fprog {
+        len: filter.len() as u16,
+        filter: filter.as_mut_ptr(),
+    };
+    // SAFETY: this exec-isolated helper owns the filter; only its prctl query
+    // is spoofed. Normal launch, I/O, wait, cleanup and exit remain allowed.
+    unsafe {
+        assert_eq!(libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0), 0);
+        assert_eq!(
+            libc::syscall(
+                libc::SYS_seccomp,
+                libc::SECCOMP_SET_MODE_FILTER,
+                0,
+                &program
+            ),
+            0
+        );
+        assert_eq!(libc::prctl(libc::PR_GET_SECCOMP, 0, 0, 0, 0), 0);
+    }
+    let status = fs::read_to_string("/proc/thread-self/status").unwrap();
+    assert!(reverie::pidfd_self::status_has_exactly_seccomp_filters(
+        &status, 1
+    ));
+    println!("CALLER_QUERY_SPOOF_ESTABLISHED:query=0:mode=2:filters=1");
+}
+
+fn run_query_spoofed_native(config: Config, guest: &Path) {
+    assert_eq!(config.mode, Mode::NoApplicationRpc);
+    inherit_query_spoof_filter();
+    // Install before creating any server/runner threads, so the actual native
+    // root inherits this filter. The supervising test parent is unfiltered.
+    let (result, diagnostics) = launch_native(&config, guest);
+    // The public runner must reap its actual child even when admission fails.
+    // This helper created no other child (the guest was compiled by its parent).
+    let mut status = 0;
+    assert_eq!(unsafe { libc::waitpid(-1, &mut status, libc::WNOHANG) }, -1);
+    assert_eq!(
+        std::io::Error::last_os_error().raw_os_error(),
+        Some(libc::ECHILD)
+    );
+    let error = match result {
+        Err(error) => error,
+        Ok((output, global)) => panic!(
+            "filtered caller unexpectedly completed: {output:?}; application_requests={}; global={:?}; witness={:?}; diagnostics={}",
+            LifecycleGlobal::no_application_rpc_requests(),
+            global.snapshot(),
+            fs::read_to_string(config.witness.as_ref().unwrap()),
+            String::from_utf8_lossy(&diagnostics),
+        ),
+    };
+    assert!(
+        error
+            .to_string()
+            .contains("caller-inherited-seccomp-unsupported"),
+        "wrong refusal: {error}; output={:?}; diagnostics={}",
+        failed_run_output(&error),
+        String::from_utf8_lossy(&diagnostics),
+    );
+    assert_eq!(LifecycleGlobal::no_application_rpc_requests(), 0);
+    let captured = failed_run_output(&error).expect("refusal retains actual cleanup output/status");
+    let status = captured.status.expect("actual reaped root status");
+    assert_eq!(status.signal(), Some(libc::SIGKILL));
+    assert_eq!(status.code(), None);
+    assert!(
+        captured.stdout.is_empty(),
+        "guest ran before refusal: {captured:?}"
+    );
+    assert!(
+        captured.stderr.is_empty(),
+        "unexpected guest stderr: {captured:?}"
+    );
+    assert!(
+        diagnostics.is_empty(),
+        "unexpected native diagnostic: {diagnostics:?}"
+    );
+    assert!(
+        !config.witness.as_ref().unwrap().exists(),
+        "Tool was constructed before refusal"
+    );
+}
+
+#[test]
+fn caller_refuses_inherited_filter_that_spoofs_its_self_query() {
+    let directory = temporary_directory("caller-query-spoof-witness-");
+    run_cases_using(
+        "caller_refuses_inherited_filter_that_spoofs_its_self_query",
+        &[Config::without_application_rpc(
+            directory.path().join("hooks"),
+        )],
+        run_query_spoofed_native,
     );
 }

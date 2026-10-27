@@ -777,7 +777,6 @@ fn exercise(case: &str) {
                 counters.runtime_state.cast::<RootAttachment<Probe>>(),
             ));
         }
-        counters.runtime_state = std::ptr::null_mut();
         fixture.shutdown();
         server.finish();
         return;

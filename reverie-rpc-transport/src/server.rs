@@ -1691,33 +1691,36 @@ mod tool_activation_tests {
             let digest = crate::initial_image::config_digest(&bytes);
             // Ordinary Config and application requests are not activation.
             assert!(client_run.completed().is_err());
-            let rpc = crate::BlockingRpcClient::<CountingGlobal>::from_borrowed_stream(
-                &mut stream,
-                reverie::Tid::from_raw(root()),
-                &config,
-            );
-            assert_eq!(rpc.try_send_rpc(()).unwrap(), 1);
-            drop(rpc);
+            {
+                let rpc = crate::BlockingRpcClient::<CountingGlobal>::from_borrowed_stream(
+                    &mut stream,
+                    reverie::Tid::from_raw(root()),
+                    &config,
+                );
+                assert_eq!(rpc.try_send_rpc(()).unwrap(), 1);
+            }
             assert!(client_run.completed().is_err());
             crate::exchange_tool_control(&mut stream, &ToolControl::Claim { digest }).unwrap();
             // A real startup hook can use this same G before Started.
-            let rpc = crate::BlockingRpcClient::<CountingGlobal>::from_borrowed_stream(
-                &mut stream,
-                reverie::Tid::from_raw(root()),
-                &config,
-            );
-            assert_eq!(rpc.try_send_rpc(()).unwrap(), 2);
-            drop(rpc);
+            {
+                let rpc = crate::BlockingRpcClient::<CountingGlobal>::from_borrowed_stream(
+                    &mut stream,
+                    reverie::Tid::from_raw(root()),
+                    &config,
+                );
+                assert_eq!(rpc.try_send_rpc(()).unwrap(), 2);
+            }
             crate::exchange_tool_control(&mut stream, &ToolControl::Started { digest }).unwrap();
             assert!(client_run.completed().is_err());
             // Likewise, awaited consuming-hook RPC precedes Finished.
-            let rpc = crate::BlockingRpcClient::<CountingGlobal>::from_borrowed_stream(
-                &mut stream,
-                reverie::Tid::from_raw(root()),
-                &config,
-            );
-            assert_eq!(rpc.try_send_rpc(()).unwrap(), 3);
-            drop(rpc);
+            {
+                let rpc = crate::BlockingRpcClient::<CountingGlobal>::from_borrowed_stream(
+                    &mut stream,
+                    reverie::Tid::from_raw(root()),
+                    &config,
+                );
+                assert_eq!(rpc.try_send_rpc(()).unwrap(), 3);
+            }
             crate::exchange_tool_control(&mut stream, &finished(digest)).unwrap();
         });
         tokio::time::timeout(LIMIT, server.serve_one())

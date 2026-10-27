@@ -576,6 +576,11 @@ impl DbtRunner {
     /// A Config-only connection or application RPC is not activation. The
     /// final receipt must match the real child's exit code. Legacy launch
     /// methods keep their existing application-request guard.
+    ///
+    /// The initial caller domain requires an unfiltered application root. The
+    /// controller verifies its owned child's proc status before serving Config;
+    /// missing, malformed, or restricted status refuses before constructing the
+    /// Tool. A query issued by the child alone cannot establish this condition.
     pub async fn output_with_caller_tool<G>(
         &self,
         guest: &Command,
@@ -892,15 +897,20 @@ impl DbtRunner {
             command.stdout(Stdio::piped()).stderr(Stdio::piped());
         }
         let mut child = runner.spawn_command(&mut command)?;
+        if activation.is_some()
+            && let Err(error) = require_unfiltered_caller_root(&child)
+        {
+            return Err(runner.refuse_caller_admission(child, capture_output, error));
+        }
         if let Err(error) = mapping_capture_owner.bind_root(&child) {
             runner.terminate_and_reap(&mut child);
             return Err(error);
         }
-        if let Some(run) = &activation {
-            if let Err(error) = run.bind_root(child.id() as i32) {
-                runner.terminate_and_reap(&mut child);
-                return Err(io::Error::other(error.to_string()));
-            }
+        if let Some(run) = &activation
+            && let Err(error) = run.bind_root(child.id() as i32)
+        {
+            runner.terminate_and_reap(&mut child);
+            return Err(io::Error::other(error.to_string()));
         }
         // A reusable Command retains a caller-supplied Stdio owner after spawn.
         // Keep no parent reader beyond the Tool's temporary initial-image lease.
@@ -1247,6 +1257,45 @@ impl DbtRunner {
         }
         let _ = child.wait();
         let _ = self.finish_evidence(false);
+    }
+
+    /// Refuse before serving Config, retaining the actual cleanup status and
+    /// already-written bytes without starting evidence or admitting the Tool.
+    fn refuse_caller_admission(
+        &self,
+        mut child: Child,
+        capture_output: bool,
+        error: io::Error,
+    ) -> io::Error {
+        self.terminate_and_reap(&mut child);
+        let captured: io::Result<ChildWait> = (|| {
+            // Child caches its reaped status; this does not wait for another
+            // process or replace a native status with a fabricated exit code.
+            let status = child.wait()?;
+            if !capture_output {
+                return Ok(ChildWait::Status(status));
+            }
+            let mut stdout = child.stdout.take().ok_or_else(|| {
+                io::Error::new(io::ErrorKind::BrokenPipe, "missing refused caller stdout")
+            })?;
+            let mut stderr = child.stderr.take().ok_or_else(|| {
+                io::Error::new(io::ErrorKind::BrokenPipe, "missing refused caller stderr")
+            })?;
+            set_nonblocking(&stdout)?;
+            set_nonblocking(&stderr)?;
+            let stop = AtomicU8::new(READ_KEEP);
+            Ok(ChildWait::Output(Output {
+                status,
+                stdout: read_cancellable(&mut stdout, &stop)?,
+                stderr: read_cancellable(&mut stderr, &stop)?,
+            }))
+        })();
+        match captured {
+            Ok(wait) => DbtFailedRunOutput::attach_wait(error, wait),
+            Err(capture) => io::Error::other(format!(
+                "{error}; refused caller cleanup/output capture failed: {capture}"
+            )),
+        }
     }
 
     fn manages_process_group(&self) -> bool {
@@ -1698,6 +1747,65 @@ fn resolve_program(
 fn is_executable_file(path: &Path) -> bool {
     path.metadata()
         .is_ok_and(|metadata| metadata.is_file() && metadata.permissions().mode() & 0o111 != 0)
+}
+
+/// Caller mode currently requires no inherited seccomp restriction. A prctl
+/// query executed by the application is not authoritative: an inherited filter
+/// can return ERRNO|0 for that query. Read the still-owned root task from the
+/// controller instead, before binding admission or serving any Config frame.
+/// The server is only bound at this point, so the child cannot publish READY,
+/// complete Claim, construct T, or enter application code while this runs.
+fn require_unfiltered_caller_root(child: &Child) -> io::Result<()> {
+    let pid = child.id();
+    let status =
+        std::fs::read_to_string(format!("/proc/{pid}/task/{pid}/status")).map_err(|error| {
+            io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                format!("caller-inherited-seccomp-unsupported: cannot read root status: {error}"),
+            )
+        })?;
+    // read_to_string reaches EOF and closes its temporary descriptor before
+    // returning. Root ownership keeps this PID from being recycled meanwhile.
+    if !caller_root_status_is_unfiltered(&status, pid) {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "caller-inherited-seccomp-unsupported: root identity or unfiltered status not established",
+        ));
+    }
+    Ok(())
+}
+
+fn caller_root_status_is_unfiltered(status: &str, pid: u32) -> bool {
+    if pid == 0 || !status.ends_with('\n') || status.contains('\0') {
+        return false;
+    }
+    let mut fields = [None; 4];
+    for line in status.lines() {
+        let Some((name, value)) = line.split_once(':') else {
+            return false;
+        };
+        let index = match name {
+            "Pid" => 0,
+            "Tgid" => 1,
+            "Seccomp" => 2,
+            "Seccomp_filters" => 3,
+            _ => continue,
+        };
+        let value = value.trim();
+        if fields[index].is_some()
+            || value.is_empty()
+            || !value.bytes().all(|byte| byte.is_ascii_digit())
+        {
+            return false;
+        }
+        let Ok(value) = value.parse::<u64>() else {
+            return false;
+        };
+        fields[index] = Some(value);
+    }
+    // Both mode and count are required: strict mode can have zero filters.
+    fields == [Some(u64::from(pid)), Some(u64::from(pid)), Some(0), Some(0)]
+        && reverie::pidfd_self::status_has_exactly_seccomp_filters(status, 0)
 }
 
 fn set_nonblocking(stream: &impl AsRawFd) -> io::Result<()> {
@@ -2164,6 +2272,50 @@ mod tests {
 
     const TEST_DRRUN_STDERR: &str = "REVERIE_DBT_TEST_DRRUN_STDERR";
     const TEST_DRRUN_DIAGNOSTIC: &str = "REVERIE_DBT_TEST_DRRUN_DIAGNOSTIC";
+
+    #[test]
+    fn caller_root_status_requires_exact_identity_and_unfiltered_mode() {
+        let valid = "Name:\tguest\nTgid:\t123\nPid:\t123\nSeccomp:\t0\nSeccomp_filters:\t0\n";
+        assert!(caller_root_status_is_unfiltered(valid, 123));
+        assert!(!caller_root_status_is_unfiltered(valid, 0));
+        assert!(!caller_root_status_is_unfiltered(valid, 124));
+        assert!(!caller_root_status_is_unfiltered(valid.trim_end(), 123));
+        for invalid in [
+            valid.replace("Tgid:\t123", "Tgid:\t124"),
+            valid.replace("Pid:\t123", "Pid:\t124"),
+            // Strict mode has no BPF filters but is still restricted.
+            valid.replace("Seccomp:\t0", "Seccomp:\t1"),
+            valid.replace("Seccomp:\t0", "Seccomp:\t2"),
+            valid.replace("Seccomp_filters:\t0", "Seccomp_filters:\t1"),
+            valid.replace("Pid:\t123", "Pid:\t+123"),
+            valid.replace("Pid:\t123", "Pid:\t123 123"),
+            valid.replace("Pid:\t123", "Pid:\t18446744073709551616"),
+            valid.replace("Seccomp:\t0", "Seccomp:\t"),
+            valid.replace("Seccomp:\t0", "Seccomp:\tinvalid"),
+            valid.replace("Seccomp:\t0", "Seccomp 0"),
+            format!("{valid}\0\n"),
+        ] {
+            assert!(
+                !caller_root_status_is_unfiltered(&invalid, 123),
+                "{invalid:?}"
+            );
+        }
+        for field in [
+            "Tgid:\t123\n",
+            "Pid:\t123\n",
+            "Seccomp:\t0\n",
+            "Seccomp_filters:\t0\n",
+        ] {
+            assert!(!caller_root_status_is_unfiltered(
+                &valid.replace(field, ""),
+                123
+            ));
+            assert!(!caller_root_status_is_unfiltered(
+                &format!("{valid}{field}"),
+                123
+            ));
+        }
+    }
 
     #[test]
     fn failed_guest_status_is_preserved_before_coordinator_request() {

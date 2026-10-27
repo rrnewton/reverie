@@ -81,13 +81,22 @@ impl Tool for Probe {
             3 => Err(std::io::Error::other("actual fatal Tool error").into()),
             4 => guest.tail_inject(syscall).await,
             5 | 6 => {
-                let mut tail = pin!(guest.tail_inject(syscall));
+                let tail_drops = AtomicUsize::new(0);
+                let future = guest.tail_inject(syscall);
+                let mut tail = Box::pin(async {
+                    let _drop = Attempt(&tail_drops);
+                    future.await
+                });
                 assert!(
                     tail.as_mut()
                         .poll(&mut Context::from_waker(Waker::noop()))
                         .is_pending()
                 );
+                assert_eq!(tail_drops.load(Ordering::SeqCst), 0);
                 drop(tail);
+                // Drop the owned future (and its real tail-injection future),
+                // not only a temporary Pin<&mut _>, before returning Ready.
+                assert_eq!(tail_drops.load(Ordering::SeqCst), 1);
                 Ok(19)
             }
             _ => {

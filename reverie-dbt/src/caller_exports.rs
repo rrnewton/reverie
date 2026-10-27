@@ -9,7 +9,7 @@
 
 /// Export the complete native callback contract for one concrete caller Tool.
 ///
-/// `identity` is a producer-generated [u8;32] digest of declared source/build
+/// `identity` is a producer-generated `[u8; 32]` digest of declared source/build
 /// inputs, paired with the native client. It is not a self-hash or a runtime
 /// Tool-name selector. The runtime owns no local GlobalState.
 ///

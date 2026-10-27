@@ -19,6 +19,44 @@ use reverie_dbt::caller_abi::TerminalFact;
 
 const NATIVE: &str = include_str!("../native/client.c");
 const CMAKE: &str = include_str!("../native/CMakeLists.txt");
+const CALLER_EFFECTS: &str = include_str!("../src/caller_effects.rs");
+
+fn refusal_symbols(source: &str, prefix: &str) -> std::collections::BTreeSet<String> {
+    source
+        .split(prefix)
+        .skip(1)
+        .map(|suffix| {
+            suffix
+                .chars()
+                .take_while(|character| character.is_ascii_alphanumeric() || *character == '_')
+                .collect()
+        })
+        .collect()
+}
+
+fn check_refusal_symbols(native: &str, rust: &str) {
+    let native = between(
+        native,
+        "static bool caller_unsupported_operation(\n",
+        "static bool is_exec_syscall(int sysnum);",
+    );
+    let rust = &rust[rust.find("pub(crate) fn unsupported_operation(").unwrap()..];
+    for prefix in ["SYS_", "PR_"] {
+        assert_eq!(
+            refusal_symbols(native, prefix),
+            refusal_symbols(rust, prefix)
+        );
+    }
+}
+
+#[test]
+fn refusal_symbol_control_rejects_unpaired_native_or_rust_operations() {
+    check_refusal_symbols(NATIVE, CALLER_EFFECTS);
+    let native = NATIVE.replacen("case SYS_clone:", "case SYS_getuid: case SYS_clone:", 1);
+    assert!(std::panic::catch_unwind(|| check_refusal_symbols(&native, CALLER_EFFECTS)).is_err());
+    let rust = CALLER_EFFECTS.replacen("libc::SYS_clone", "libc::SYS_getuid | libc::SYS_clone", 1);
+    assert!(std::panic::catch_unwind(|| check_refusal_symbols(NATIVE, &rust)).is_err());
+}
 
 #[test]
 fn rpc_transport_failure_uses_native_ownership_and_the_exact_table() {
@@ -497,6 +535,7 @@ fn consumption_order_control_rejects_cleanup_moved_before_preparation() {
 
 #[test]
 fn caller_refusals_precede_effects_and_legacy_cleanup_order_remains() {
+    check_refusal_symbols(NATIVE, CALLER_EFFECTS);
     let guards = between(
         NATIVE,
         "static bool caller_unsupported_operation(\n",

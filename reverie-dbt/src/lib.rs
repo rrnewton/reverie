@@ -868,11 +868,11 @@ where
             args.arg4 as u64,
             args.arg5 as u64,
         ];
-        if let Some(effects) = &self.caller_effects {
-            if caller_effects::unsupported_operation(number.id() as i64, &args, true) {
-                effects.refuse("caller-returning-lifecycle-unsupported");
-                return Err(Errno::EOPNOTSUPP);
-            }
+        if let Some(effects) = &self.caller_effects
+            && caller_effects::unsupported_operation(number.id() as i64, &args, true)
+        {
+            effects.refuse("caller-returning-lifecycle-unsupported");
+            return Err(Errno::EOPNOTSUPP);
         }
         if let Some(result) = sync_rpc::protect_guest_operation(
             self.context,
@@ -3262,6 +3262,11 @@ pub extern "C" fn reverie_dbt_runtime_process_exit() {
 }
 
 /// Reports whether the built-in prototype runtime is ready for callbacks.
+///
+/// # Safety
+///
+/// A nonnull `snapshot` must point to writable, properly aligned storage for a
+/// complete `ReadySnapshot` and must not be accessed concurrently during this call.
 #[cfg(feature = "prototype-runtime")]
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn reverie_dbt_runtime_ready(

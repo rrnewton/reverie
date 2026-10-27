@@ -34,8 +34,9 @@ use crate::CallerArtifact;
 use crate::bundled_drrun_path;
 use crate::failed_run_output;
 
-#[path = "../../../tests/fixtures/caller-lifecycle-runtime/src/tool.rs"]
-mod tool;
+#[path = "../../../tests/fixtures/caller-lifecycle-runtime/src/protocol.rs"]
+mod protocol;
+use protocol as tool;
 use tool::Config;
 use tool::DisconnectPoint;
 use tool::Event;
@@ -402,10 +403,12 @@ fn caller_process_exit_rpc_disconnect_is_native_transport_failure() {
 async fn public_native_case(guest: &Path) {
     // No cfg exclusion or skip: an aborting controller cannot establish this
     // connection-unwind control and must fail its stated admission condition.
-    assert!(
-        cfg!(panic = "unwind"),
-        "public controller-panic control requires panic=unwind"
-    );
+    const {
+        assert!(
+            cfg!(panic = "unwind"),
+            "public controller-panic control requires panic=unwind"
+        );
+    }
     assert_eq!(TOOL_RPC_FAILURE_EXIT_CODE, 123);
     let point = DisconnectPoint::AsyncControllerPanic;
     let config = Config::disconnect_at(point);
