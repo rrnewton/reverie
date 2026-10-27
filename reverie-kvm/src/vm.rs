@@ -2102,6 +2102,15 @@ impl KvmBackend {
         self.is_guest_thread && self.thread_group.cancelled.load(Ordering::Acquire)
     }
 
+    /// Makes this backend a worker of its thread group and cancels the group's
+    /// workers without a group exit status, as another thread's exec or a
+    /// peer's failure does. For unit tests of the cancellation checks.
+    #[cfg(test)]
+    pub(crate) fn cancel_as_worker_for_test(&mut self) {
+        self.is_guest_thread = true;
+        self.thread_group.cancel_workers();
+    }
+
     /// Creates a VM with one vCPU and a memory slot starting at GPA zero.
     pub fn new(memory_size: usize) -> Result<Self> {
         let stdin = duplicate_stdin()?;
@@ -12837,3 +12846,7 @@ static DELAY_AFTER_CLEAR_TID_WAKE_MS: std::sync::atomic::AtomicU64 =
 #[cfg(test)]
 #[path = "vm/group_exit_order_tests.rs"]
 mod group_exit_order_tests;
+
+#[cfg(test)]
+#[path = "vm/group_exit_injection_loop_tests.rs"]
+mod group_exit_injection_loop_tests;

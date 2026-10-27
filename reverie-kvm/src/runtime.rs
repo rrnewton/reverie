@@ -908,6 +908,19 @@ impl Drop for StaticElfSyscallExecutor<'_> {
 }
 
 impl StaticElfSyscallExecutor<'_> {
+    /// Whether this thread's group has exited, or this worker was cancelled
+    /// (by the group exit, an exec or a peer's failure). Either way no call
+    /// may run for it any more: the vCPU loop makes the same check before it
+    /// enters the guest again, and the copy and park paths make it too. Both
+    /// halves are needed. A worker sees its own cancellation, but the root
+    /// thread is never marked cancelled, and sees only the group's committed
+    /// exit status. The thread that issues `exit_group` is not affected by
+    /// its own call: the status is published only after its callback returns.
+    fn thread_ended_by_its_group(&self) -> bool {
+        self.backend.guest_thread_is_cancelled()
+            || self.backend.guest_thread_group_exit_status().is_some()
+    }
+
     /// How an injection that staged no process action completes: it does not
     /// return when it left an exit pending, and returns its own result
     /// otherwise.
@@ -971,7 +984,15 @@ fn provider_disposition(error: Error) -> Result<ProviderOutcome> {
 ///   carries the FS/GS base `arch_prctl` set; `KvmGuest::inject` stages it in
 ///   the backend's slot through `GuestSyscallExecutor::stage_segment`, and
 ///   the vCPU loop applies it. `Cancelled` and `ThreadGroupExited` come from
-///   the executor's dispositional errors through [`provider_disposition`]. A
+///   the executor's dispositional errors through [`provider_disposition`].
+///   `Cancelled` also answers, without running the call, any call made after
+///   the caller's thread group has exited or after the caller was cancelled
+///   (see `thread_ended_by_its_group`). For a call made after that exit or
+///   cancellation is published, this is the thread death Linux supplies: the
+///   call does not return, so a callback that keeps injecting cannot outlive
+///   the group. A call that has already started is not covered: one blocking
+///   in a host call is ended only by the interrupt signal, and that wake can
+///   be lost (https://github.com/rrnewton/hermit/issues/4823). A
 ///   staged exit is still left in the executor's side channel, consumed
 ///   after `execute` by the vCPU loop. The vCPU loop's own direct executor
 ///   calls (an unsubscribed syscall, and runs with no Tool) still take
@@ -1081,6 +1102,21 @@ impl LinuxProvider for StaticElfSyscallExecutor<'_> {
             self.last_result = Some(0);
             self.process_context = ProcessExecutionContext::InitialExecCompleted;
             return Ok(ProviderOutcome::Return(0));
+        }
+        if self.thread_ended_by_its_group() {
+            // Linux kills every other thread of a group that is exiting or
+            // execing, and a syscall such a thread makes after that point never
+            // returns to the caller. Answer the same for a call made after the
+            // exit (or the exec, or a peer's failure) is published, before the
+            // call runs, so a callback that keeps injecting, such as a retry
+            // loop polling for an event that will never come, cannot keep this
+            // thread alive and hold up the group's exit. KvmGuest::inject
+            // turns Cancelled into this thread's cancellation, which retires it
+            // with the group's exit status when there is one. This check does
+            // not reach a call that has already started: one blocking in a host
+            // call is ended only by the interrupt signal, and that wake can be
+            // lost (https://github.com/rrnewton/hermit/issues/4823).
+            return Ok(ProviderOutcome::Cancelled);
         }
         // Whether an action was already staged before this call, by an earlier
         // call whose completion did not run.
@@ -2267,7 +2303,9 @@ impl<T: Tool> Guest<T> for KvmGuest<'_, T> {
             Ok(ProviderOutcome::Cancelled) => {
                 // Reuse the existing nonreturning cancellation disposition,
                 // including parked/dequeue ownership. No syscall result or
-                // signal-effect wrapper may be manufactured for this read.
+                // signal-effect wrapper may be manufactured for this call: a
+                // cancelled blocking read, or any call made after this
+                // thread's group exited or this thread was cancelled.
                 match self.cancel_current_thread().await {}
             }
             Err(error) => {
@@ -9286,3 +9324,7 @@ mod process_plan_tests;
 #[cfg(test)]
 #[path = "runtime/segment_slot_tests.rs"]
 mod segment_slot_tests;
+
+#[cfg(test)]
+#[path = "runtime/group_exit_call_tests.rs"]
+mod group_exit_call_tests;
