@@ -791,8 +791,8 @@ impl ProcSelfFdPath {
 // its own observation/seq state. Fixed files retain ordinary memfd I/O. `fstat`,
 // `newfstatat`, and `statx` on such a descriptor report synthesized, run-stable
 // metadata, because the backing memfd's own inode varies per run and would
-// otherwise perturb determinism. Directory enumeration of /proc itself is not
-// provided, so tools that scan every PID (e.g. `ps`) are out of scope here.
+// otherwise perturb determinism. `/proc` itself is not served: it is refused
+// as the rest of procfs is. The Tool serves `/proc` and its listing.
 pub(super) const SYNTHETIC_DEV_MAJOR: u32 = 0;
 pub(super) const SYNTHETIC_PROC_DEV_MINOR: u32 = 0xff01;
 pub(super) const SYNTHETIC_GUEST_FD_DEV_MINOR: u32 = 0xff02;
@@ -854,36 +854,10 @@ pub(super) fn synthetic_proc_inode(path: &[u8]) -> u64 {
 
 // TODO-HUMAN-REVIEW(PR-136): Review synthetic procfd link reconstruction.
 pub(super) fn synthetic_proc_path_for_inode(inode: u64) -> Option<&'static [u8]> {
-    std::iter::once(b"/proc".as_slice())
-        .chain(SYNTHETIC_REGULAR_PROC_PATHS.iter().copied())
+    SYNTHETIC_REGULAR_PROC_PATHS
+        .iter()
+        .copied()
         .find(|path| synthetic_proc_inode(path) == inode)
-}
-
-pub(super) fn is_synthetic_proc_directory_inode(inode: u64) -> bool {
-    inode == synthetic_proc_inode(b"/proc")
-}
-
-pub(super) fn is_synthetic_proc_directory(state: &LoadedStaticElf, path: &[u8]) -> bool {
-    normalize_proc_path(state, path).is_some_and(|path| path == b"/proc")
-}
-
-// TODO-HUMAN-REVIEW(PR-202): Review descriptor-relative synthetic procfs
-// resolution and its fail-closed handling of unlisted children.
-pub(super) fn synthetic_proc_relative_path(
-    state: &LoadedStaticElf,
-    guest_dirfd: libc::c_int,
-    path: &[u8],
-) -> Option<Vec<u8>> {
-    if path.starts_with(b"/") {
-        return None;
-    }
-    let inode = state.proc_files.get(&guest_dirfd).copied()?;
-    if !is_synthetic_proc_directory_inode(inode) {
-        return None;
-    }
-    let mut resolved = b"/proc/".to_vec();
-    resolved.extend_from_slice(path);
-    Some(resolved)
 }
 
 fn parse_proc_id(component: &[u8]) -> Option<i32> {
@@ -1131,122 +1105,17 @@ pub(super) fn open_synthetic_proc(
     guest_fd
 }
 
-#[derive(Debug, PartialEq, Eq)]
-pub(super) struct ProcDirectoryIdentity {
-    pub(super) device_major: u32,
-    pub(super) device_minor: u32,
-    pub(super) inode: u64,
-    pub(super) mount_id: u64,
-}
-
-pub(super) fn checked_proc_directory_identity(
-    stat: &libc::statx,
-) -> Result<ProcDirectoryIdentity, i64> {
-    let required = libc::STATX_TYPE | libc::STATX_INO | libc::STATX_MNT_ID;
-    if stat.stx_mask & required != required {
-        return Err(negative_errno(libc::EOPNOTSUPP));
-    }
-    if stat.stx_mode as libc::mode_t & libc::S_IFMT != libc::S_IFDIR {
-        return Err(negative_errno(libc::EACCES));
-    }
-    Ok(ProcDirectoryIdentity {
-        device_major: stat.stx_dev_major,
-        device_minor: stat.stx_dev_minor,
-        inode: stat.stx_ino,
-        mount_id: stat.stx_mnt_id,
-    })
-}
-
-fn proc_directory_identity(file: &std::fs::File) -> Result<ProcDirectoryIdentity, i64> {
-    let mut stat = std::mem::MaybeUninit::<libc::statx>::zeroed();
-    let result = unsafe {
-        libc::statx(
-            file.as_raw_fd(),
-            c"".as_ptr(),
-            libc::AT_EMPTY_PATH,
-            libc::STATX_BASIC_STATS | libc::STATX_MNT_ID,
-            stat.as_mut_ptr(),
-        )
-    };
-    if result != 0 {
-        return Err(io_error(std::io::Error::last_os_error()));
-    }
-    checked_proc_directory_identity(&unsafe { stat.assume_init() })
-}
-
-fn open_proc_root() -> Result<(std::fs::File, ProcDirectoryIdentity), i64> {
-    let file = std::fs::File::open("/proc").map_err(io_error)?;
-    if !fd_is_procfs(file.as_raw_fd())? {
-        return Err(negative_errno(libc::EACCES));
-    }
-    let identity = proc_directory_identity(&file)?;
-    Ok((file, identity))
-}
-
-pub(super) fn received_proc_inode(file: &std::fs::File) -> Result<Option<u64>, i64> {
-    if !fd_is_procfs(file.as_raw_fd())? {
-        return Ok(None);
-    }
-    let identity = proc_directory_identity(file)?;
-    let (root, root_identity) = open_proc_root()?;
-    let result = if identity == root_identity {
-        Ok(Some(synthetic_proc_inode(b"/proc")))
-    } else {
-        Err(negative_errno(libc::EACCES))
-    };
-    drop(root);
-    result
-}
-
-// TODO-HUMAN-REVIEW(PR-202): Review the empty synthetic /proc directory used
-// solely as an openat anchor for allowlisted deterministic children.
-pub(super) fn open_synthetic_proc_directory(
-    state: &mut LoadedStaticElf,
-    flags: u64,
-    close_on_exec: bool,
-) -> i64 {
-    let unsupported = (libc::O_CREAT | libc::O_EXCL | libc::O_PATH | libc::O_TRUNC) as u64;
-    if flags & unsupported != 0 {
-        return negative_errno(libc::EINVAL);
-    }
-    if flags & libc::O_TMPFILE as u64 == libc::O_TMPFILE as u64 {
-        return negative_errno(libc::EINVAL);
-    }
-    if flags & libc::O_ACCMODE as u64 != libc::O_RDONLY as u64 {
-        return negative_errno(libc::EISDIR);
-    }
-    let file = match open_proc_root() {
-        Ok((file, _)) => file,
-        Err(error) => return error,
-    };
-    let guest_fd = insert_file_with_flags(state, file, close_on_exec, None);
-    if guest_fd >= 0 {
-        state
-            .proc_files
-            .insert(guest_fd as libc::c_int, synthetic_proc_inode(b"/proc"));
-    }
-    guest_fd
-}
-
 /// Overwrite the nondeterministic fields of a memfd `stat` with the stable
 /// synthetic identity of a /proc file, keeping the (deterministic) size.
 pub(super) fn sanitize_proc_stat(stat: &mut libc::stat, inode: u64) {
-    let is_directory = is_synthetic_proc_directory_inode(inode);
     stat.st_dev = synthetic_dev(SYNTHETIC_PROC_DEV_MINOR);
     stat.st_ino = inode;
-    stat.st_mode = if is_directory {
-        libc::S_IFDIR | 0o555
-    } else {
-        libc::S_IFREG | 0o444
-    };
-    stat.st_nlink = if is_directory { 2 } else { 1 };
+    stat.st_mode = libc::S_IFREG | 0o444;
+    stat.st_nlink = 1;
     stat.st_uid = 0;
     stat.st_gid = 0;
     stat.st_rdev = 0;
     stat.st_blksize = PAGE_SIZE as libc::blksize_t;
-    if is_directory {
-        stat.st_size = 0;
-    }
     // 512-byte blocks, rounded up. A shift avoids the still-unstable
     // int_roundings `div_ceil` on the pinned toolchain (512 == 1 << 9).
     stat.st_blocks = (stat.st_size + 511) >> 9;
@@ -1280,17 +1149,12 @@ pub(super) fn synthetic_proc_statx(inode: u64, size: u64) -> libc::statx {
         | libc::STATX_SIZE
         | libc::STATX_BLOCKS;
     stx.stx_blksize = PAGE_SIZE as u32;
-    let is_directory = is_synthetic_proc_directory_inode(inode);
-    stx.stx_nlink = if is_directory { 2 } else { 1 };
+    stx.stx_nlink = 1;
     stx.stx_uid = 0;
     stx.stx_gid = 0;
-    stx.stx_mode = if is_directory {
-        (libc::S_IFDIR | 0o555) as u16
-    } else {
-        (libc::S_IFREG | 0o444) as u16
-    };
+    stx.stx_mode = (libc::S_IFREG | 0o444) as u16;
     stx.stx_ino = inode;
-    stx.stx_size = if is_directory { 0 } else { size };
+    stx.stx_size = size;
     stx.stx_blocks = (stx.stx_size + 511) >> 9;
     stx.stx_dev_major = SYNTHETIC_DEV_MAJOR;
     stx.stx_dev_minor = SYNTHETIC_PROC_DEV_MINOR;

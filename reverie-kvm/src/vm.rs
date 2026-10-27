@@ -2604,6 +2604,71 @@ impl KvmBackend {
         Ok(())
     }
 
+    /// Reserve the host directory at the absolute path `path` for the Tool.
+    ///
+    /// This is the reservation's whole contract; the README and
+    /// `reverie_linuxemu::elf::ToolDirectory` refer to it.
+    ///
+    /// - **A read-only mount.** The directory must be on a read-only mount,
+    ///   and empty. Nothing can then be created in it by any route the
+    ///   executor does not see, a race between a check and the call it
+    ///   checks included.
+    /// - **The exact path.** The executor reaches the directory for a guest
+    ///   path call only where the call names exactly `path`, byte for byte,
+    ///   as an `O_DIRECTORY` open that creates nothing or as `newfstatat`
+    ///   (also `stat` and `lstat`), and only while `path` still resolves to
+    ///   the directory recorded now: the same filesystem type, device and
+    ///   inode. Keep the path and the mounts under it stable for the run:
+    ///   once an ancestor is renamed or another mount covers the path, the
+    ///   exact path is refused too, and the recorded directory stays refused
+    ///   under any name.
+    /// - **Every other route fails with `ENOENT`,** as a lookup of a name
+    ///   that does not exist fails: the guest is to see no directory there.
+    ///   That is every other path call that resolves to the directory
+    ///   (through a symbolic link, relative to the working directory or to a
+    ///   descriptor, by a `..`, or as `statx`), a working directory in it
+    ///   (`chdir`, `fchdir`), removing, renaming or replacing it, and every
+    ///   call that would create, remove, rename or link a name in it: `open`,
+    ///   `openat` and `creat` with `O_CREAT`, `O_TMPFILE`, `mkdir`, `mknod`,
+    ///   `symlink`, `link`, `rename`, `unlink` and `rmdir`. procfs objects
+    ///   keep their own refusal, `EACCES`.
+    /// - **A creation through a final symbolic link** into the directory is
+    ///   not refused: the kernel follows the link and answers for the
+    ///   read-only mount, `EROFS`, and creates nothing.
+    /// - **Descriptors** opened there work as any other descriptor: the
+    ///   calls that name one are not refused, but a lookup from one that
+    ///   resolves to the directory or creates a name in it is.
+    /// - **Not covered:** AF_UNIX socket paths in `bind`, `connect` and
+    ///   `sendto` go to the host unchecked (a `bind` below the directory
+    ///   answers `EROFS`), and the interpreter an executable names in
+    ///   `PT_INTERP` is opened without the check; see
+    ///   <https://github.com/rrnewton/reverie/issues/1171>. Objects below
+    ///   the directory are not protected either, because the executor does
+    ///   not look below it: the directory must be empty.
+    /// - **Enforcement** is the built-in LinuxEmu executor's, which runs the
+    ///   installed image. A guest whose calls go to a caller-supplied
+    ///   [`crate::SyscallExecutor`] or to another provider gets no such
+    ///   protection: that executor must enforce the reservation itself.
+    ///
+    /// A Tool that keeps the exact path from the guest therefore keeps the
+    /// directory to itself, and a descriptor it opens there can stand for a
+    /// directory the Tool serves itself. The directory's identity is
+    /// recorded now, in this process's mount namespace, where the guest's
+    /// file operations run. Fork, clone and exec keep the reservation. Fails
+    /// with [`Error::StaticElfNotInstalled`] without an installed image, and
+    /// with [`Error::HostIo`] where the path is relative, names no directory,
+    /// names a procfs one (which the executor refuses whatever names it), or
+    /// names a directory whose mount is not read-only.
+    pub fn reserve_tool_directory(&mut self, path: &Path) -> Result<()> {
+        AbandonedRuns::admit(&self.abandoned_runs)?;
+        let loaded = self
+            .static_elf
+            .as_mut()
+            .ok_or(Error::StaticElfNotInstalled)?;
+        loaded.tool_directory = Some(crate::elf::ToolDirectory::open(path).map_err(Error::HostIo)?);
+        Ok(())
+    }
+
     /// Whether the installed image reports host metadata timestamps.
     fn host_metadata_timestamps_enabled(&self) -> bool {
         self.static_elf
