@@ -193,9 +193,9 @@ pub const HALVING_STOP_MARGINS: u64 = 4;
 
 /// Whether precise event notifications are halved by default (see
 /// [`PmuConfig::halves`]): on aarch64 only. In an aarch64 KVM guest under
-/// load, about one notification in four thousand was absorbed, and 10 runs
-/// in 24 of a guest that blocks often overshot; halving cut that to 4 in 24
-/// for 2% to 15% more wall time. On x86 bare metal no
+/// load, about one notification in four thousand was absorbed, and 11 runs
+/// in 24 of a guest that blocks often overshot; halving cut that to 5 in 24
+/// (a repeat gave 10 and 4) for 2% to 15% more wall time. On x86 bare metal no
 /// notification was absorbed in 40,000 events, and the extra stops, whose
 /// cost was within the noise of a loaded host, would buy nothing measured.
 /// [`HALVE_TIMER_STAGES_ENV`] turns it on or off.

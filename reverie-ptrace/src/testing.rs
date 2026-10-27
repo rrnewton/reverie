@@ -89,6 +89,13 @@ pub fn precise_timer_second_stages_armed() -> u64 {
     crate::timer::SECOND_STAGES_ARMED.load(std::sync::atomic::Ordering::Relaxed)
 }
 
+/// The number of precise timer notifications this process has programmed
+/// halfway (see [`crate::PmuConfig::halves`]). Concurrent tests in one
+/// process share the count.
+pub fn precise_timer_halved_stages_armed() -> u64 {
+    crate::timer::HALVED_STAGES_ARMED.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 /// The steps this process's timers have taken toward precise event targets,
 /// and the lookups in their block bound caches, so far.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]

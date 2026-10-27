@@ -5975,10 +5975,12 @@ impl<L: Tool + 'static> TracedTask<L> {
             // included: an injected-trap site is e9patch's, whose
             // capabilities say it does not report sigreturns. More than the keep margin
             // (`PmuConfig::keep_margin`) short of a precise event's target,
-            // before the programming can pass its period on any supported
+            // before a whole programming can pass its period on any supported
             // processor, it leaves the timer event as it was, and the
             // notification, yet to come, reaches the restored context and
-            // delivers the event. Nothing of the event is continued across
+            // delivers the event. A halved programming (`PmuConfig::halves`)
+            // can pass its period this far short, but its notification, pending
+            // or lost, only re-arms the rest of the event, so the same holds. Nothing of the event is continued across
             // the context switch, so closer to the target, where host timing
             // decides whether the notification is still pending, was taken
             // as single steps began, or was lost, the event is cancelled
