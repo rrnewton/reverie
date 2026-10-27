@@ -615,6 +615,8 @@ impl NativeFreshOwner {
         Ok(Self { record, origin })
     }
 
+    // Keep this transaction in each complete qualified prepare entry.
+    #[inline(always)]
     fn publish(self) -> Result<&'static ToolRegion, i32> {
         // SAFETY: self retains the native prefix's exclusive INITIALIZING
         // ownership from its successful CAS. from_native authenticated this
