@@ -919,6 +919,91 @@ impl FdEntry {
     }
 }
 
+/// A host directory the Tool reserves for its own use, as the executor
+/// recorded it when it was reserved: its absolute path ([`Self::path`]),
+/// filesystem type, device and inode.
+///
+/// The executor refuses it to the guest with `EACCES`, as it refuses procfs
+/// objects, except for an `O_DIRECTORY` open or a `newfstatat` of exactly
+/// [`Self::path`] while that path still names this directory. The
+/// reservation's contract, including the routes it does not cover, is
+/// written once, in the documentation of
+/// `reverie_kvm::KvmBackend::reserve_tool_directory`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ToolDirectory {
+    path: PathBuf,
+    device: libc::dev_t,
+    inode: libc::ino_t,
+    filesystem: libc::c_long,
+}
+
+impl ToolDirectory {
+    /// Record the directory at the absolute host path `path`. Fails with
+    /// `EINVAL` for a relative path or a procfs directory (the executor
+    /// refuses procfs whatever names it), and as the lookup fails otherwise
+    /// (`ENOTDIR` for what is no directory).
+    pub fn open(path: &Path) -> std::io::Result<Self> {
+        if !path.is_absolute() {
+            return Err(std::io::Error::from_raw_os_error(libc::EINVAL));
+        }
+        let file = OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_PATH | libc::O_DIRECTORY | libc::O_CLOEXEC)
+            .open(path)?;
+        let mut stat = std::mem::MaybeUninit::<libc::stat>::zeroed();
+        // SAFETY: stat is writable and file is live.
+        if unsafe { libc::fstat(file.as_raw_fd(), stat.as_mut_ptr()) } != 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        // SAFETY: fstat initialized stat on success.
+        let stat = unsafe { stat.assume_init() };
+        let mut filesystem = std::mem::MaybeUninit::<libc::statfs>::zeroed();
+        // SAFETY: filesystem is writable and file is live.
+        if unsafe { libc::fstatfs(file.as_raw_fd(), filesystem.as_mut_ptr()) } != 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        // SAFETY: fstatfs initialized filesystem on success.
+        let filesystem = unsafe { filesystem.assume_init() }.f_type as libc::c_long;
+        if filesystem == PROC_SUPER_MAGIC {
+            return Err(std::io::Error::from_raw_os_error(libc::EINVAL));
+        }
+        Ok(Self {
+            path: path.to_owned(),
+            device: stat.st_dev,
+            inode: stat.st_ino,
+            filesystem,
+        })
+    }
+
+    /// The absolute path the Tool's calls name it by.
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
+    /// Whether a guest call naming `path` (as the guest spelled it) names
+    /// the directory by its exact path.
+    pub(crate) fn is_spelled(&self, path: &[u8]) -> bool {
+        self.path.as_os_str().as_bytes() == path
+    }
+
+    /// Whether an open object of file system type `filesystem` (its
+    /// `fstatfs` `f_type`) and identity `(device, inode)` is the directory.
+    pub(crate) fn is(
+        &self,
+        filesystem: libc::c_long,
+        device: libc::dev_t,
+        inode: libc::ino_t,
+    ) -> bool {
+        filesystem == self.filesystem && device == self.device && inode == self.inode
+    }
+
+    /// Whether objects of file system type `filesystem` may be the directory,
+    /// so that only those need their identity read.
+    pub(crate) fn may_be_on(&self, filesystem: libc::c_long) -> bool {
+        filesystem == self.filesystem
+    }
+}
+
 #[derive(Debug)]
 pub struct LoadedStaticElf {
     pub entry_point: u64,
@@ -1006,6 +1091,12 @@ pub struct LoadedStaticElf {
     /// `reverie_kvm::KvmBackend::set_host_metadata_timestamps`; fork, clone and
     /// exec carry it unchanged.
     pub host_metadata_timestamps: bool,
+    /// The directory the Tool reserves for its own use, which the executor
+    /// refuses to the guest's path calls but for the exact spelling of its
+    /// path ([`ToolDirectory`]). `None` by default. Set through
+    /// `reverie_kvm::KvmBackend::reserve_tool_directory`; fork, clone and
+    /// exec carry it unchanged.
+    pub tool_directory: Option<ToolDirectory>,
     /// Linux task name (`comm`), including the terminating NUL byte.
     ///
     /// This is per-thread state: fork and clone inherit the caller's value,
@@ -1222,6 +1313,7 @@ impl LoadedStaticElf {
             linux_personality: self.linux_personality,
             ids_per_task: self.ids_per_task,
             host_metadata_timestamps: self.host_metadata_timestamps,
+            tool_directory: self.tool_directory.clone(),
             thread_name: self.thread_name,
             thread_group_leader_name: std::sync::Arc::new(std::sync::Mutex::new(self.thread_name)),
             thp_disabled: std::sync::Arc::new(AtomicU8::new(
@@ -1454,6 +1546,7 @@ impl LoadedStaticElf {
         self.linux_personality = previous.linux_personality;
         self.ids_per_task = previous.ids_per_task;
         self.host_metadata_timestamps = previous.host_metadata_timestamps;
+        self.tool_directory = previous.tool_directory;
         // `thread_name` intentionally remains the replacement image's name.
         self.thp_disabled = thp_disabled;
         self.keep_capabilities = false;
@@ -1995,6 +2088,7 @@ fn load_executable(
         linux_personality: LINUX_FIXED_PERSONALITY,
         ids_per_task: reverie::task_ids::LINUX_IDS_PER_TASK,
         host_metadata_timestamps: false,
+        tool_directory: None,
         thread_name,
         thread_group_leader_name: std::sync::Arc::new(std::sync::Mutex::new(thread_name)),
         thp_disabled: std::sync::Arc::new(AtomicU8::new(0)),
