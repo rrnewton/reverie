@@ -24422,9 +24422,26 @@ const FIXED_SCALAR_HOST_STANDALONE_COHORT: &[(&str, usize)] = &[
     ("fixed_generic_prepare", 79),
     ("fixed_arena_setup", DETCORE_THREE_BAND_SETUP),
 ];
+// The pinned standalone tuple as the pinned toolchain emits it for the release
+// runtime: identical except the complete caller323 (80). The census is the
+// pinned standalone one; caller323 calls the getter at +183 like caller69.
+const FIXED_SCALAR_STANDALONE_CMP_COHORT: &[(&str, usize)] = &[
+    ("fixed_region_publication_get_opaque", 67),
+    ("fixed_region_publication_set_opaque", 68),
+    ("fixed_tool_heap_metadata", 57),
+    ("fixed_arena_backing", 58),
+    ("fixed_tool_require_owned", 59),
+    ("fixed_tool_alloc", 60),
+    ("fixed_tool_dealloc", 72),
+    ("fixed_tool_realloc", 73),
+    ("fixed_native_from_native", 80),
+    ("fixed_constructor_prepare", 70),
+    ("fixed_generic_prepare", 71),
+    ("fixed_arena_setup", DETCORE_THREE_BAND_SETUP),
+];
 // The same host standalone tuple as emitted for the release runtime: identical
 // except the complete caller323 (80), which compares setup291's full EAX with 1.
-// Its incoming census is identical, and it is never paired with pinned leaves.
+// Its incoming census is identical to the host standalone one.
 const FIXED_SCALAR_HOST_STANDALONE_CMP_COHORT: &[(&str, usize)] = &[
     ("fixed_region_publication_get_opaque", 67),
     ("fixed_region_publication_set_opaque", 68),
@@ -24519,6 +24536,10 @@ fn fixed_scalar_publication_cohort(
                 FIXED_SCALAR_HOST_STANDALONE_INCOMING,
             )
         }
+        (FixedImageKind::Standalone, AuthenticatedDetcoreOperationKind::ValidateTemplate(80)) => (
+            FIXED_SCALAR_STANDALONE_CMP_COHORT,
+            FIXED_SCALAR_STANDALONE_INCOMING,
+        ),
         _ => return Err("unknown scalar publication whole composition".into()),
     };
     require(
@@ -52914,25 +52935,83 @@ mod tests {
                 AuthenticatedDetcoreOperationKind::ValidateTemplate(0);
             assert!(check(&bad).is_err(), "host cmp re-kinded {role}");
         }
-        // Caller323 is never paired with the pinned standalone leaves.
-        let mut samples = scalar_publication_standalone_sample_vector();
-        *samples
-            .iter_mut()
-            .find(|sample| sample.0 == "fixed_native_from_native")
-            .unwrap() = SCALAR_HOST_STANDALONE_CALLER323;
-        let pinned = scalar_publication_control_graph_from_samples(samples, false);
-        assert_eq!(
-            fixed_scalar_publication_cohort(
-                &pinned.witnesses,
-                &pinned.transfers,
-                &pinned.selected,
-                &pinned.targets,
-                FixedImageKind::Standalone,
-            )
-            .unwrap_err()
-            .to_string(),
-            "unknown scalar publication whole composition",
-        );
+        // The pinned toolchain's release runtime (ELF sha256
+        // b7139be52d11b5f1dd6728ad36f2f1402261f7137988c780f296f51c29709dd7) emits
+        // the same caller323 with the pinned standalone leaves and 210B entries.
+        let pinned_cmp = |mutations: bool| {
+            let mut samples = scalar_publication_standalone_sample_vector();
+            *samples
+                .iter_mut()
+                .find(|sample| sample.0 == "fixed_native_from_native")
+                .unwrap() = SCALAR_HOST_STANDALONE_CALLER323;
+            scalar_publication_control_graph_from_samples(samples, mutations)
+        };
+        let pinned = pinned_cmp(true);
+        assert_eq!(pinned.witnesses.len(), 12);
+        check(&pinned).unwrap();
+        for role in pinned.witnesses.keys() {
+            let mut bad = pinned_cmp(false);
+            bad.witnesses.get_mut(role).unwrap().kind =
+                AuthenticatedDetcoreOperationKind::ValidateTemplate(0);
+            assert!(check(&bad).is_err(), "pinned cmp re-kinded {role}");
+        }
+        // Each single host body mixed into the pinned caller323 tuple, and each
+        // pinned body mixed into the host one, fails the family join.
+        for host in scalar_publication_host_standalone_samples() {
+            for direction in 0..2 {
+                let mut samples = scalar_publication_standalone_sample_vector();
+                if direction == 1 {
+                    for replacement in scalar_publication_host_standalone_samples() {
+                        *samples
+                            .iter_mut()
+                            .find(|sample| sample.0 == replacement.0)
+                            .unwrap() = *replacement;
+                    }
+                }
+                let replacement = if direction == 0 {
+                    *host
+                } else {
+                    *scalar_publication_standalone_sample_vector()
+                        .iter()
+                        .find(|sample| sample.0 == host.0)
+                        .unwrap()
+                };
+                *samples
+                    .iter_mut()
+                    .find(|sample| sample.0 == host.0)
+                    .unwrap() = replacement;
+                *samples
+                    .iter_mut()
+                    .find(|sample| sample.0 == "fixed_native_from_native")
+                    .unwrap() = SCALAR_HOST_STANDALONE_CALLER323;
+                let bad = scalar_publication_control_graph_from_samples(samples, false);
+                assert_eq!(
+                    fixed_scalar_publication_cohort(
+                        &bad.witnesses,
+                        &bad.transfers,
+                        &bad.selected,
+                        &bad.targets,
+                        FixedImageKind::Standalone,
+                    )
+                    .unwrap_err()
+                    .to_string(),
+                    "mixed or unbound complete scalar publication family",
+                    "caller323 mixed role {}/{direction}",
+                    host.0,
+                );
+            }
+        }
+        for (image_kind, native) in [
+            (FixedImageKind::Standalone, true),
+            (FixedImageKind::Detcore, false),
+            (FixedImageKind::Detcore, true),
+        ] {
+            assert!(
+                fixed_scalar_publication_syscall_mode(&pinned.witnesses, image_kind, native)
+                    .is_err(),
+                "pinned cmp mode {native}"
+            );
+        }
         // Its exact direct setup291 edge at +300 is required.
         for mode in 0..3 {
             let mut bad = scalar_publication_host_standalone_cmp_control_graph(false);
