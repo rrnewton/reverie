@@ -71,6 +71,7 @@ use crate::bootstrap::stage_process_syscall_return;
 use crate::bootstrap::syscall_hypercall_address;
 use crate::bootstrap::thread_tool_stack_top;
 use crate::bootstrap::try_set_syscall_return_park;
+use crate::clock::StepMode;
 use crate::elf::LoadedStaticElf;
 use crate::elf::TaskLifecycleTable;
 use crate::elf::initial_thread_name;
@@ -110,6 +111,7 @@ use crate::signal::Ucontext;
 use crate::signal::XsaveImage;
 use crate::stats::KvmBackendStats;
 use crate::stats::KvmExitCollector;
+use crate::step_filter::StepClass;
 use crate::syscall::FRAME_SIZE;
 use crate::syscall::RETURN_FLAGS_WORD;
 use crate::syscall::RETURN_RIP_WORD;
@@ -1929,6 +1931,27 @@ pub struct KvmBackend {
     /// as an issue in the dev-hermit parent repository, at
     /// ai_docs/evidence/kvm-kernel-trait-design-20261016/pending-issue-reverie-kvm-segment-slot.md.
     pending_segment: Option<(SegmentBase, u64)>,
+    /// The user instruction the syscall trampoline, stopped at its VMCALL
+    /// within a precise timer event's stepping window, returns to (see
+    /// `prepare_timer_steps`), until the breakpoint there takes the guest
+    /// back or the guest is found in user mode.
+    trampoline_return: Option<u64>,
+    /// Whether a single step's fault frame still holds the step's trap flag.
+    stepped_fault: crate::preemption_timer::SteppedFault,
+}
+
+/// RFLAGS' trap flag.
+const TRAP_FLAG: u64 = 1 << 8;
+
+/// The refusal, by name, of what a guest does at `rip` while a precise timer
+/// event single-steps it: it sets its own trap flag, which the steps take
+/// over, or runs an instruction the steps cannot run (see
+/// [`crate::step_filter::StepClass::Refused`]).
+fn refused_while_stepping(what: &str, rip: u64) -> Error {
+    Error::GuestClock(format!(
+        "preemption timer: the guest {what} at {rip:#x} while a precise timer event \
+         single-steps it, which this backend does not support"
+    ))
 }
 
 struct CompletedToolPanic {
@@ -2260,6 +2283,8 @@ impl KvmBackend {
             exit_collector: None,
             abandoned_runs: Arc::default(),
             pending_segment: None,
+            trampoline_return: None,
+            stepped_fault: Default::default(),
         })
     }
 
@@ -4862,18 +4887,16 @@ impl KvmBackend {
     /// Only a vCPU stopped in user mode (a CPL 3 code segment) stands at a
     /// user instruction boundary: an exit that interrupts the guest there
     /// (a kick) stops it between two instructions, and the callback sees the
-    /// live registers. A syscall's exit delivers a request it finds due at the
-    /// syscall's return instead (see [`Self::syscall_return_timer_boundary`]),
-    /// and an exit whose Tool callback ran cancelled the request it found
-    /// outstanding before that callback. So a request found due anywhere else
-    /// was found by an exit that is neither: a kick that stopped the guest in
-    /// ring 0, in the syscall trampoline before its VMCALL or in an exception
-    /// stub before its HLT, or an `rt_sigreturn`, whose return restores a
-    /// signal frame's context. It is armed again at its target, so the next
-    /// entry has the timer overflow at the earliest count past the clock. The
-    /// exit that follows the trampoline or the stub (its VMCALL or its HLT)
-    /// decides it then, and after an `rt_sigreturn` the kick that follows the
-    /// restored context's next RCBs in user mode delivers it.
+    /// live registers. A syscall's exit, `rt_sigreturn`'s included, delivers a
+    /// request it finds due at the syscall's return instead (see
+    /// [`Self::syscall_return_timer_boundary`]), and an exit whose Tool
+    /// callback ran cancelled the request it found outstanding before that
+    /// callback. So a request found due anywhere else was found by a kick
+    /// that stopped the guest in ring 0, in the syscall trampoline or in an
+    /// exception stub. It is armed again at its target (a late precise one as
+    /// an imprecise one, see [`crate::preemption_timer::TimerState::defer_due`]),
+    /// so the next entry has the timer overflow at the earliest count past
+    /// the clock, and the exit that follows decides it then.
     pub(crate) fn timer_instruction_boundary(&mut self) -> Result<Option<ToolInstructionBoundary>> {
         let Some(due) = self.vcpu.timer_due() else {
             return Ok(None);
@@ -4920,6 +4943,153 @@ impl KvmBackend {
             code_segment: crate::signal::USER_CODE_SELECTOR,
             stack_segment: crate::signal::USER_DATA_SELECTOR,
         })))
+    }
+
+    /// Sets up the next entry for an armed precise timer request within its
+    /// stepping window (see `preemption_timer.rs`); outside it, the entry
+    /// runs unstepped and nothing is read. Each entry either single-steps one
+    /// user instruction, runs unstepped to a user instruction where a
+    /// breakpoint takes the guest back, or runs unstepped to an exit that
+    /// comes before any user instruction can retire a branch:
+    /// - In user mode the instruction at RIP decides (see
+    ///   [`crate::step_filter::classify`]); an instruction the steps cannot
+    ///   run is refused by name.
+    /// - In the syscall trampoline at its VMCALL, the entry runs to the user
+    ///   instruction the trampoline returns to, which the syscall frame
+    ///   names: the return of a syscall that made no Tool callback has no
+    ///   exit of its own. A host interrupt that stops the trampoline on its
+    ///   way back keeps that run.
+    /// - Anywhere else in ring 0 (the trampoline before its VMCALL, an
+    ///   exception stub before its HLT) it runs unstepped: that exit comes
+    ///   first.
+    pub(crate) fn prepare_timer_steps(&mut self) -> Result<()> {
+        if !self.vcpu.timer_stepping() {
+            self.trampoline_return = None;
+            return Ok(());
+        }
+        if let Some(collector) = self.exit_collector.as_deref() {
+            collector.record_timer_window_entry();
+        }
+        let special = self.vcpu.get_sregs()?;
+        let registers = self.vcpu.get_regs()?;
+        let mode = if special.cs.dpl == 3 {
+            self.trampoline_return = None;
+            // Outside a single step, RFLAGS shows the guest's own trap flag,
+            // which a POPF whose run a host interrupt ended, or an
+            // `rt_sigreturn`, may have loaded: it is refused at every
+            // user-mode entry in the window, whatever runs next.
+            if self.vcpu.last_step_mode().0 != StepMode::Step && registers.rflags & TRAP_FLAG != 0 {
+                return Err(refused_while_stepping(
+                    "sets its own trap flag",
+                    registers.rip,
+                ));
+            }
+            let mut code = crate::step_filter::InstructionBytes::default();
+            let fetched = crate::timestamp::fetch_user_code(
+                &self.memory,
+                special.cr3,
+                registers.rip,
+                &mut code.0[..crate::step_filter::MAX_INSTRUCTION_BYTES],
+            );
+            match crate::step_filter::classify(&code.0[..fetched], registers.rip) {
+                StepClass::Step => StepMode::Step,
+                StepClass::RunOver { length } => StepMode::RunTo(registers.rip + length),
+                StepClass::Unstepped => StepMode::Off,
+                StepClass::Refused(what) => {
+                    return Err(refused_while_stepping(what, registers.rip));
+                }
+            }
+        } else {
+            let hypercall = syscall_hypercall_address(
+                self.hypercall_instruction,
+                self.syscall_trampoline_address,
+                self.syscall_frame_address,
+            );
+            if [
+                hypercall,
+                hypercall + self.hypercall_instruction.len() as u64,
+            ]
+            .contains(&registers.rip)
+            {
+                self.trampoline_return = Some(crate::bootstrap::breakpoint_staged_return(
+                    &self.memory,
+                    self.syscall_frame_address,
+                )?);
+            }
+            self.trampoline_return
+                .map_or(StepMode::Off, StepMode::RunTo)
+        };
+        self.vcpu.step_next_entry(mode);
+        Ok(())
+    }
+
+    /// Finishes the `Debug` exit of an entry that `prepare_timer_steps` set
+    /// up: a single step's (DR6.BS), or a breakpoint's at the address the
+    /// entry ran to (DR6.B0). The guest's own trap flag, which a run to a
+    /// breakpoint leaves in RFLAGS (loaded by POPF or `rt_sigreturn`), is
+    /// refused by name, found there or trapping first. Any other is refused.
+    pub(crate) fn finish_timer_step(
+        &mut self,
+        debug: kvm_bindings::kvm_debug_exit_arch,
+    ) -> Result<()> {
+        const SINGLE_STEP: u64 = 1 << 14;
+        const BREAKPOINT_0: u64 = 1;
+        match self.vcpu.last_step_mode().0 {
+            StepMode::Step if debug.dr6 & SINGLE_STEP != 0 => Ok(()),
+            StepMode::RunTo(address) if debug.dr6 & BREAKPOINT_0 != 0 && debug.pc == address => {
+                if self.trampoline_return == Some(address) {
+                    self.trampoline_return = None;
+                }
+                if self.vcpu.get_regs()?.rflags & TRAP_FLAG != 0 {
+                    return Err(refused_while_stepping("sets its own trap flag", address));
+                }
+                Ok(())
+            }
+            StepMode::RunTo(_) if debug.dr6 & SINGLE_STEP != 0 => {
+                Err(refused_while_stepping("sets its own trap flag", debug.pc))
+            }
+            _ => Err(Error::UnexpectedVcpuExit(format!(
+                "debug exit outside a timer step: {debug:?}"
+            ))),
+        }
+    }
+
+    /// Notes an entry that a host signal interrupted: a stepped entry that
+    /// stopped in ring 0 had its instruction fault, and the frame its
+    /// exception stub halts with keeps the step's trap flag until then (see
+    /// [`crate::preemption_timer::SteppedFault`]).
+    pub(crate) fn note_interrupted_entry(&mut self) -> Result<()> {
+        if self.vcpu.last_step_mode().1 {
+            let in_ring_0 = self.vcpu.get_sregs()?.cs.dpl == 0;
+            self.stepped_fault.interrupted(in_ring_0);
+        }
+        Ok(())
+    }
+
+    /// Clears the trap flag a single step left in the frame of the exception
+    /// that ended it, before anything reads or resumes that frame: the CPU
+    /// pushed RFLAGS with the step's TF, which is not the guest's. The
+    /// exception (a page fault, a general protection fault, ...) is the
+    /// guest's own and reaches the Tool as before, which cancels the timer
+    /// request. Does nothing for a frame no step pushed.
+    pub(crate) fn scrub_stepped_exception_frame(&mut self) -> Result<()> {
+        if !self
+            .stepped_fault
+            .take_at_halt(self.vcpu.last_step_mode().1)
+        {
+            return Ok(());
+        }
+        let halted = self.vcpu.get_regs()?;
+        let Some(vector) = exception_from_halt(halted.rip) else {
+            return Ok(());
+        };
+        // An optional error code, then RIP, CS, RFLAGS, RSP and SS.
+        let first = u64::from(exception_pushes_error_code(vector));
+        let address = halted.rsp + (first + 2) * std::mem::size_of::<u64>() as u64;
+        let mut flags = [0; std::mem::size_of::<u64>()];
+        self.memory.read_raw(address, &mut flags)?;
+        let flags = u64::from_le_bytes(flags) & !TRAP_FLAG;
+        self.memory.write_raw(address, &flags.to_le_bytes())
     }
 
     fn cpuid_instruction_exception(&self) -> Result<Option<CpuidBoundary>> {
