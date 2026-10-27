@@ -568,17 +568,31 @@ pub(crate) struct ToolContext<'a, T: Tool> {
 /// `take_unsupported_refusal`), and [`LinuxEmuSignalControl`] and
 /// [`LinuxEmuMemoryMap`] are today's executor's own extensions (see
 /// `provider.rs`). The methods declared here are backend mechanics, on no
-/// provider trait: the vCPU clock, CPUID interception, the run's failure
-/// subscription, the adapter's signal guard, the two injection admission
-/// checks, the traced-parent query behind `Guest::ppid`, and the completion
-/// of process actions. The trait is generic over the Tool only because
-/// `complete_injection` starts child Tool instances.
+/// provider trait: the vCPU clock and its preemption timer, CPUID
+/// interception, the run's failure subscription, the adapter's signal guard,
+/// the two injection admission checks, the traced-parent query behind
+/// `Guest::ppid`, and the completion of process actions. The trait is generic
+/// over the Tool only because `complete_injection` starts child Tool
+/// instances.
 trait GuestSyscallExecutor<T: Tool>:
     LinuxProvider<Context = GuestMemory, Plan = StagedProcessAction, Error = Error>
     + LinuxEmuSignalControl
     + LinuxEmuMemoryMap
 {
     fn read_clock(&self) -> Result<u64>;
+
+    /// Requests an imprecise timer event `ticks` RCBs from the clock's value
+    /// now (see `Guest::set_timer`). An adapter whose run delivers no timer
+    /// events refuses.
+    fn request_timer(&mut self, _ticks: u64) -> Result<()> {
+        Err(Error::GuestClock(
+            "preemption timer: this execution delivers no timer events".to_owned(),
+        ))
+    }
+
+    /// Cancels the outstanding timer request: another event is about to be
+    /// delivered to the Tool.
+    fn cancel_timer(&mut self) {}
 
     fn has_cpuid_interception(&self) -> bool {
         false
@@ -1470,6 +1484,16 @@ where
         self.backend.vcpu.read_clock()
     }
 
+    fn request_timer(&mut self, ticks: u64) -> Result<()> {
+        self.backend
+            .vcpu
+            .request_timer(ticks, crate::preemption_timer::TimerKind::Imprecise)
+    }
+
+    fn cancel_timer(&mut self) {
+        self.backend.vcpu.cancel_timer();
+    }
+
     /// The static-ELF executor answers every syscall itself and implements no
     /// `pidfd_send_signal`: a call naming either sentinel would get its
     /// unsupported-syscall fallback. It declares that, and nothing is probed.
@@ -1997,6 +2021,11 @@ impl<T: Tool> GlobalRPC<T::GlobalState> for KvmGuest<'_, T> {
     }
 }
 
+/// The message of the `Unsupported` error that `KvmGuest::set_timer_precise`
+/// returns.
+const PRECISE_TIMER_REFUSAL: &str = "the KVM backend does not deliver precise timer events: \
+     it cannot yet run a guest to an exact count (Guest::set_timer requests an imprecise one)";
+
 #[reverie::tool]
 impl<T: Tool> Guest<T> for KvmGuest<'_, T> {
     fn has_cpuid_interception(&self) -> bool {
@@ -2444,15 +2473,41 @@ impl<T: Tool> Guest<T> for KvmGuest<'_, T> {
         std::future::pending().await
     }
 
-    fn set_timer(&mut self, _schedule: TimerSchedule) -> std::result::Result<(), reverie::Error> {
-        Ok(())
+    /// Requests an imprecise timer event (see `preemption_timer.rs` for how it
+    /// is decided and delivered). The schedule maps to RCBs as in
+    /// reverie-ptrace: `Rcbs(r)` and `RcbsAndInstructions(r, _)` request `r`,
+    /// since an imprecise event is not stepped past its count, and `Time` is
+    /// converted at reverie-ptrace's rate. A request for 0 RCBs is refused
+    /// with `EINVAL` and leaves the outstanding request in place.
+    fn set_timer(&mut self, schedule: TimerSchedule) -> std::result::Result<(), reverie::Error> {
+        if let Err(error) = self.check_ordinary_operation() {
+            self.signal_ordinary_failure(error);
+            return Err(Errno::EIO.into());
+        }
+        let ticks = match schedule {
+            TimerSchedule::Rcbs(rcbs) | TimerSchedule::RcbsAndInstructions(rcbs, _) => rcbs,
+            TimerSchedule::Time(duration) => crate::preemption_timer::rcbs_for_duration(duration),
+        };
+        if ticks == 0 {
+            return Err(Errno::EINVAL.into());
+        }
+        self.executor
+            .request_timer(ticks)
+            .map_err(|error| reverie::Error::Io(std::io::Error::other(error)))
     }
 
+    /// Refused: a precise event is delivered exactly at its count, which
+    /// needs single steps to that count, and this backend takes none yet.
+    /// The refusal is an `Unsupported` I/O error, so a Tool that propagates
+    /// it fails the run rather than handing the guest an errno.
     fn set_timer_precise(
         &mut self,
         _schedule: TimerSchedule,
     ) -> std::result::Result<(), reverie::Error> {
-        Ok(())
+        Err(reverie::Error::Io(std::io::Error::new(
+            std::io::ErrorKind::Unsupported,
+            PRECISE_TIMER_REFUSAL,
+        )))
     }
 
     fn read_clock(&mut self) -> std::result::Result<u64, reverie::Error> {
@@ -3522,6 +3577,9 @@ where
             ));
         }
 
+        // An exec cancels an outstanding timer request: the exec event comes
+        // before the post-exec callback, which may request another.
+        backend.vcpu.cancel_timer();
         let registers = kvm_registers(backend.vcpu.get_regs()?, 0);
         let handler_signal = Arc::new(Mutex::new(None));
         let pending_child_starts = Arc::new(Mutex::new(Vec::new()));
@@ -3690,6 +3748,9 @@ where
     registers.rdi = request.args()[0];
     registers.rsi = request.args()[1];
     registers.rdx = request.args()[2];
+    // The initial exec's syscall event cancels a timer request made before it,
+    // as reverie-ptrace retires one at the initial exec.
+    backend.vcpu.cancel_timer();
 
     let handler_signal = Arc::new(Mutex::new(None));
     let pending_child_starts = Arc::new(Mutex::new(Vec::new()));
@@ -5919,6 +5980,9 @@ impl KvmBackend {
         let Some(pending) = selected.map_err(|errno| Error::Reverie(errno.into()))? else {
             return Ok(CallbackOutcome::Completed(None));
         };
+        // The signal's event cancels an outstanding timer request before its
+        // callback.
+        self.vcpu.cancel_timer();
 
         let handler_signal = Arc::new(Mutex::new(None));
         let pending_child_starts = Arc::new(Mutex::new(Vec::new()));
@@ -6488,37 +6552,59 @@ impl KvmBackend {
                 if self.guest_thread_is_cancelled() {
                     return Ok(self.cancelled_tool_thread_status(executor));
                 }
-                let vcpu_exit = match self.vcpu.run() {
-                    Ok(Some(exit)) => {
-                        subscribe_entry_wait = false;
-                        exit
-                    }
-                    Ok(None) => {
-                        let Some((changed, cancelled)) = entry_wait else {
-                            subscribe_entry_wait = true;
+                // A timer request that the last exit made due is delivered
+                // before the guest runs on, through the instruction-boundary
+                // callback below, when the vCPU stopped in user mode.
+                let timer_boundary = self.timer_instruction_boundary()?;
+                let vcpu_exit = if timer_boundary.is_some() {
+                    None
+                } else {
+                    match self.vcpu.run() {
+                        Ok(Some(exit)) => {
+                            subscribe_entry_wait = false;
+                            Some(exit)
+                        }
+                        Ok(None) => {
+                            let Some((changed, cancelled)) = entry_wait else {
+                                subscribe_entry_wait = true;
+                                continue;
+                            };
+                            let _ = futures::future::select(
+                                futures::future::select(changed, cancelled),
+                                Pin::new(&mut callback_failure),
+                            )
+                            .await;
                             continue;
-                        };
-                        let _ = futures::future::select(
-                            futures::future::select(changed, cancelled),
-                            Pin::new(&mut callback_failure),
-                        )
-                        .await;
-                        continue;
+                        }
+                        // An interrupted entry, by a timer kick or another
+                        // signal: the next iteration delivers a request the
+                        // clock read at this exit made due.
+                        Err(Error::Kvm(error)) if error.errno() == libc::EINTR => continue,
+                        Err(error) => return Err(error),
                     }
-                    Err(Error::Kvm(error)) if error.errno() == libc::EINTR => continue,
-                    Err(error) => return Err(error),
                 };
-                Self::record_exit(self.exit_collector.as_deref(), &vcpu_exit);
+                if let Some(exit) = &vcpu_exit {
+                    Self::record_exit(self.exit_collector.as_deref(), exit);
+                }
                 let (frame_address, return_slot) = match vcpu_exit {
-                    VcpuExit::Hypercall(exit) => {
+                    Some(VcpuExit::Hypercall(exit)) => {
                         if exit.nr != VMCALL_SYSCALL_TRANSPORT {
                             return Err(Error::UnexpectedHypercall(exit.nr));
                         }
                         (exit.args[0], std::ptr::from_mut(exit.ret) as usize)
                     }
-                    VcpuExit::Hlt => {
-                        if let Some(boundary) = self.tool_instruction_exception()? {
+                    None | Some(VcpuExit::Hlt) => {
+                        let boundary = match timer_boundary {
+                            Some(boundary) => Some(boundary),
+                            None => self.tool_instruction_exception()?,
+                        };
+                        if let Some(boundary) = boundary {
                             executor.set_current_user_stack_pointer(boundary.user_registers().rsp);
+                            // This callback is an event of its own, so it
+                            // cancels an outstanding timer request first, as
+                            // every Tool callback for another event does (a
+                            // timer boundary has already taken its request).
+                            self.vcpu.cancel_timer();
                             let handler_signal = Arc::new(Mutex::new(None));
                             let pending_child_starts = Arc::new(Mutex::new(Vec::new()));
                             let mut process_completed = false;
@@ -6604,6 +6690,22 @@ impl KvmBackend {
                                         .await;
                                         map_handler_completion(completion, |result| {
                                             result.map(crate::vm::ToolInstructionResult::Cpuid)
+                                        })
+                                    }
+                                    crate::vm::ToolInstructionBoundary::Timer(_) => {
+                                        let completion = drive_entry_handler_completion_from(
+                                            || tool.handle_timer_event(&mut guest),
+                                            handler_signal,
+                                            pending_child_starts.clone(),
+                                            wait_for_failure(
+                                                global_state.as_ref(),
+                                                failure_subscription.clone(),
+                                            ),
+                                            &callback_watch,
+                                        )
+                                        .await;
+                                        map_handler_completion(completion, |()| {
+                                            Ok::<_, Errno>(crate::vm::ToolInstructionResult::Timer)
                                         })
                                     }
                                 }
@@ -6774,7 +6876,7 @@ impl KvmBackend {
                         }
                         continue;
                     }
-                    exit => return Err(Error::UnexpectedVcpuExit(format!("{exit:?}"))),
+                    Some(exit) => return Err(Error::UnexpectedVcpuExit(format!("{exit:?}"))),
                 };
                 // A CLONE_THREAD worker runs on its own vCPU with a per-thread
                 // syscall area, so the transported frame is `self.syscall_frame_address`
@@ -6925,6 +7027,11 @@ impl KvmBackend {
                     // the saved context reports EINTR or rewinds the syscall under
                     // SA_RESTART. The private errno itself never reaches userspace.
                     loop {
+                        // The syscall event cancels an outstanding timer
+                        // request before its callback, which may request
+                        // another. A callback run again after ERESTARTSYS is
+                        // the syscall's event again.
+                        self.vcpu.cancel_timer();
                         let (handler_signal, pending_child_starts) = callback_context.begin();
                         self.check_entry_owner()?;
                         expose_tool_scratch(&memory, tool_stack_top)?;
@@ -7518,6 +7625,9 @@ impl KvmBackend {
         #[cfg(test)]
         signal_future_sizes::record(&signal_future_sizes::RUN_LOOP, &execution);
         let mut caught = crate::failure::owned_future::catch_owned_future(execution).await;
+        // The thread has made its last exit: its exit event cancels an
+        // outstanding timer request before the exit callback.
+        self.vcpu.cancel_timer();
         // The kept failure wait outlived every callback that borrowed it.
         // Destroy it under a catch, as each callback's own wait was: a
         // GlobalTool's wait future may panic when dropped, and that panic
