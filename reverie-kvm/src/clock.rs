@@ -425,26 +425,24 @@ impl CountedVcpu {
 
 /// The guest thread's preemption timer (see `preemption_timer.rs`): one
 /// request at a time, decided at every exit from the clock read there.
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "only tests request a timer until KvmGuest's set_timer and set_timer_precise use it"
-    )
-)]
 impl CountedVcpu {
     /// Requests a timer event due when this thread's clock has advanced
     /// `ticks` RCBs from its value now, replacing any outstanding request.
     /// The next entry programs the timer event; this call issues no syscall.
-    /// Refused while the clock is not tracking or is poisoned, for 0 RCBs,
-    /// for a target past the clock's range, and on a CPU with no PMU profile,
-    /// whose skid margin is unknown. A refused request leaves the outstanding
-    /// one in place.
+    /// A precise request is first programmed one PMU skid margin short of its
+    /// target, and is refused on a CPU with no PMU profile, whose margin is
+    /// unknown. An imprecise request has no margin: it is programmed at its
+    /// target, as reverie-ptrace programs one. Refused while the clock is not
+    /// tracking or is poisoned, for 0 RCBs, and for a target past the clock's
+    /// range. A refused request leaves the outstanding one in place.
     pub(crate) fn request_timer(&mut self, ticks: u64, kind: TimerKind) -> Result<()> {
         let clock = self.clock.read()?;
-        let margin = reverie::pmu_config::try_get_pmu_config()
-            .ok_or_else(|| failure("preemption timer: this CPU has no PMU profile"))?
-            .skid_margin();
+        let margin = match kind {
+            TimerKind::Precise => reverie::pmu_config::try_get_pmu_config()
+                .ok_or_else(|| failure("preemption timer: this CPU has no PMU profile"))?
+                .skid_margin(),
+            TimerKind::Imprecise => 0,
+        };
         self.clock.timer = TimerState::request(clock, ticks, kind, margin)?;
         Ok(())
     }
@@ -456,6 +454,10 @@ impl CountedVcpu {
     }
 
     /// The target of the outstanding request, armed or due.
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "only tests read the target of a request")
+    )]
     pub(crate) fn timer_target(&self) -> Option<u64> {
         self.clock.timer.target()
     }
@@ -464,6 +466,17 @@ impl CountedVcpu {
     /// the clock read at that exit, and whether the exit was late for it.
     pub(crate) fn timer_due(&self) -> Option<TimerDue> {
         self.clock.timer.due()
+    }
+
+    /// Takes the due request for delivery (see [`TimerState::take_due`]).
+    pub(crate) fn take_due_timer(&mut self) -> Option<TimerDue> {
+        self.clock.timer.take_due()
+    }
+
+    /// Arms the due request again at its target, for an exit where it cannot
+    /// be delivered (see [`TimerState::defer_due`]).
+    pub(crate) fn defer_due_timer(&mut self) {
+        self.clock.timer.defer_due();
     }
 }
 
