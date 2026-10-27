@@ -354,8 +354,7 @@ fn open_file(
     if path.is_empty() {
         return negative_errno(libc::ENOENT);
     }
-    let relative_proc_path = synthetic_proc_relative_path(state, guest_dirfd, &path);
-    let path = relative_proc_path.as_deref().unwrap_or(&path);
+    let path = path.as_slice();
     let close_on_exec = flags & libc::O_CLOEXEC as u64 != 0;
     if let Some(target) = fdinfo_path_target(state, path) {
         return match target {
@@ -383,9 +382,6 @@ fn open_file(
                 .map_or_else(|error| error, |_| negative_errno(libc::ENOENT)),
             FdinfoPathTarget::InvalidTask => negative_errno(libc::ENOENT),
         };
-    }
-    if is_synthetic_proc_directory(state, path) {
-        return open_synthetic_proc_directory(state, flags, close_on_exec);
     }
     // Serve the synthetic /proc surface before touching the host filesystem, so
     // deterministic content replaces the deliberately-refused real procfs.
@@ -443,39 +439,54 @@ fn open_file(
             flags as libc::c_int,
         );
     }
-    // A relative lookup beneath the synthetic directory must never fall
-    // through to the harmless host directory that backs the descriptor.
-    if relative_proc_path.is_some() {
-        return negative_errno(libc::ENOENT);
-    }
     let guest_cloexec = close_on_exec;
     if let Some(guest_fd) = guest_fd_path(state, path) {
         return open_guest_fd_path(state, guest_fd, flags, guest_cloexec);
     }
+    let guest_path = path;
     let Ok((host_dirfd, path)) = host_dirfd_and_path(state, guest_dirfd, path) else {
         return negative_errno(libc::EBADF);
     };
     // Legacy open/openat reduce every O_PATH request to O_PATH_FLAGS before
-    // strict openat2 validation. Do this only after guest path/dirfd resolution
-    // so EFAULT/ENOENT/EBADF precedence remains observable.
+    // strict openat2 validation, as Linux's build_open_how does ("O_PATH
+    // beats everything else"), so such an open creates nothing. Do this only
+    // after guest path/dirfd resolution so EFAULT/ENOENT/EBADF precedence
+    // remains observable.
     let host_flags = if path_only {
         flags & LEGACY_O_PATH_FLAGS
     } else {
         flags
     };
-    let uses_mode = host_flags & libc::O_CREAT as u64 != 0
-        || host_flags & libc::O_TMPFILE as u64 == libc::O_TMPFILE as u64;
+    let tmpfile = host_flags & libc::O_TMPFILE as u64 == libc::O_TMPFILE as u64;
+    let named_create = host_flags & libc::O_CREAT as u64 != 0 && !tmpfile;
+    let uses_mode = named_create || tmpfile;
     let mode = if uses_mode {
         u64::from(raw_mode as libc::mode_t & 0o7777 & !state.umask)
     } else {
         0
     };
-    let named_create = host_flags & libc::O_CREAT as u64 != 0
-        && host_flags & libc::O_TMPFILE as u64 != libc::O_TMPFILE as u64;
+    // The Tool's reserved directory, opened by exactly its path as a
+    // directory, is the one open of it the executor admits, and only where
+    // that path still reaches it.
+    let admits_tool_directory = host_flags & libc::O_DIRECTORY as u64 != 0
+        && !uses_mode
+        && state
+            .tool_directory
+            .as_ref()
+            .is_some_and(|reserved| reserved.is_spelled(guest_path));
+    if uses_mode && state.tool_directory.is_some() {
+        let (file, created) =
+            match open_create_checked(state, host_dirfd, &path, host_flags, mode, tmpfile) {
+                Ok(opened) => opened,
+                Err(error) => return error,
+            };
+        return finish_open_file(state, file, created, mode, guest_cloexec, false);
+    }
     // Hermit requires a stable external filesystem. This follow-target probe
     // distinguishes an existing target from a dangling symlink before the
     // atomic O_EXCL create attempt below.
-    let target_existed = named_create && open_host_metadata_path(host_dirfd, &path, false).is_ok();
+    let target_existed =
+        named_create && open_host_metadata_path(state, host_dirfd, &path, false).is_ok();
     let open_with_flags = |open_flags| {
         let how = OpenHow {
             flags: open_flags,
@@ -520,10 +531,38 @@ fn open_file(
     };
     // SAFETY: openat2 returned a new owned descriptor on success.
     let file = unsafe { std::fs::File::from_raw_fd(host_fd as RawFd) };
-    if let Err(error) = ensure_not_procfs(&file) {
+    finish_open_file(
+        state,
+        file,
+        uses_mode && created,
+        mode,
+        guest_cloexec,
+        admits_tool_directory,
+    )
+}
+
+/// Check the object an open reached, apply the guest's mode to a file this
+/// call created, and install the descriptor. The object is refused where a
+/// guest path may not reach it ([`ensure_path_object_allowed`]); an admitted
+/// open of the Tool's reserved directory by its exact path must reach that
+/// very directory ([`ensure_is_tool_directory`]).
+fn finish_open_file(
+    state: &mut LoadedStaticElf,
+    file: std::fs::File,
+    created: bool,
+    mode: u64,
+    guest_cloexec: bool,
+    admits_tool_directory: bool,
+) -> i64 {
+    let checked = if admits_tool_directory {
+        ensure_is_tool_directory(state, &file)
+    } else {
+        ensure_path_object_allowed(state, &file)
+    };
+    if let Err(error) = checked {
         return error;
     }
-    if uses_mode && created {
+    if created {
         // Override the supervisor umask only for a file created by this call.
         // SAFETY: file is a live owned descriptor and mode is bounded above.
         if unsafe { libc::fchmod(file.as_raw_fd(), mode as libc::mode_t) } != 0 {
@@ -531,6 +570,285 @@ fn open_file(
         }
     }
     insert_file_with_flags(state, file, guest_cloexec, None)
+}
+
+/// Linux's bound on the symbolic links one lookup follows (MAXSYMLINKS,
+/// include/linux/namei.h; fs/namei.c reserve_stack).
+const MAXSYMLINKS: usize = 40;
+
+/// The mount flag of a mount that follows no symbolic link, as `fstatvfs`
+/// reports it (ST_NOSYMFOLLOW, include/linux/statfs.h).
+const ST_NOSYMFOLLOW: libc::c_ulong = 0x2000;
+
+/// A creating open (`O_CREAT`, or `O_TMPFILE`) while the Tool reserves a
+/// directory (`LoadedStaticElf::tool_directory`). The directory a name would
+/// be created in is opened, checked, and then used for the creation itself,
+/// so no lookup between the check and the creation can redirect it. A final
+/// symbolic link, which Linux follows to create its target when the call has
+/// neither `O_EXCL` nor `O_NOFOLLOW` (fs/namei.c open_last_lookups), is
+/// followed here one link at a time from the held directory it is in, at
+/// most [`MAXSYMLINKS`] links, then `ELOOP`: the kernel follows no final
+/// link of this call, so every name is created in a directory checked on the
+/// descriptor the creation uses. Before each link is followed, the kernel
+/// resolves the rest of its chain once (see [`ensure_link_followable`]), so
+/// a chain longer than Linux allows is refused with Linux's own count; the
+/// bound here stops a chain that changes while it is followed. Links in the
+/// directory part of the guest's own path are resolved by a lookup of that
+/// part alone, with a budget of its own, so a path that needs more than
+/// [`MAXSYMLINKS`] links counting those can succeed here where Linux answers
+/// `ELOOP`. Returns the open file and whether this call created it.
+fn open_create_checked(
+    state: &LoadedStaticElf,
+    host_dirfd: RawFd,
+    path: &CStr,
+    host_flags: u64,
+    mode: u64,
+    tmpfile: bool,
+) -> Result<(std::fs::File, bool), i64> {
+    if tmpfile {
+        // O_TMPFILE makes an unnamed file in the directory `path` names.
+        let directory = open_checked_directory(state, host_dirfd, path)?;
+        return open_at(directory.as_raw_fd(), c".", host_flags, mode).map(|file| (file, true));
+    }
+    let (parent, mut name) = split_final_name(path.to_bytes())?;
+    let mut directory = open_checked_directory(state, host_dirfd, &parent)?;
+    // Each pass examines one name, so this bounds the links followed.
+    for _ in 0..=MAXSYMLINKS {
+        match open_at(
+            directory.as_raw_fd(),
+            &name,
+            host_flags | libc::O_EXCL as u64,
+            mode,
+        ) {
+            Ok(file) => return Ok((file, true)),
+            Err(error)
+                if error == negative_errno(libc::EEXIST)
+                    && host_flags & libc::O_EXCL as u64 == 0 => {}
+            Err(error) => return Err(error),
+        }
+        // The name exists. Without O_NOFOLLOW, a symbolic link leads to the
+        // name its target spells, which Linux creates or opens instead.
+        if host_flags & libc::O_NOFOLLOW as u64 == 0 {
+            match read_link_at(directory.as_raw_fd(), &name)? {
+                // Removed since the attempt: create it again.
+                LinkLookup::Missing => continue,
+                LinkLookup::Link(target) => {
+                    ensure_link_followable(directory.as_raw_fd(), &name)?;
+                    let (target_parent, target_name) = split_final_name(target.to_bytes())?;
+                    let base = if target.to_bytes().starts_with(b"/") {
+                        libc::AT_FDCWD
+                    } else {
+                        directory.as_raw_fd()
+                    };
+                    directory = open_checked_directory(state, base, &target_parent)?;
+                    name = target_name;
+                    continue;
+                }
+                LinkLookup::NotLink => {}
+            }
+        }
+        // An existing name: open it as Linux does. With O_NOFOLLOW added, a
+        // link that replaced the entry since is refused (ELOOP), never
+        // followed; with the guest's own O_NOFOLLOW, ELOOP is Linux's answer.
+        return match open_at(
+            directory.as_raw_fd(),
+            &name,
+            host_flags | libc::O_NOFOLLOW as u64,
+            mode,
+        ) {
+            Ok(file) => Ok((file, false)),
+            // A creating open of a directory fails before anything is
+            // opened, so the check of the opened object never sees it. The
+            // Tool's reserved directory is refused here as anywhere else a
+            // lookup reaches it, rather than shown to be a directory.
+            Err(error) if error == negative_errno(libc::EISDIR) => {
+                match openat2_file(
+                    directory.as_raw_fd(),
+                    &name,
+                    (libc::O_PATH | libc::O_NOFOLLOW | libc::O_CLOEXEC) as u64,
+                    0,
+                ) {
+                    Ok(object) if ensure_path_object_allowed(state, &object).is_err() => {
+                        Err(negative_errno(libc::EACCES))
+                    }
+                    _ => Err(error),
+                }
+            }
+            Err(error) => Err(error),
+        };
+    }
+    Err(negative_errno(libc::ELOOP))
+}
+
+/// Split the nonempty `path` into the directory its final name is looked up
+/// in (`.` where it has none, `/` for a path of slashes) and that final name,
+/// which keeps its trailing slashes, so that a creation through the
+/// directory refuses them as Linux does (EISDIR).
+fn split_final_name(path: &[u8]) -> Result<(CString, CString), i64> {
+    let target_end = path
+        .iter()
+        .rposition(|byte| *byte != b'/')
+        .map_or(0, |index| index + 1);
+    let to_cstring = |bytes: &[u8]| CString::new(bytes).map_err(|_| negative_errno(libc::EINVAL));
+    if target_end == 0 {
+        return Ok((to_cstring(b"/")?, to_cstring(path)?));
+    }
+    let name_start = path[..target_end]
+        .iter()
+        .rposition(|byte| *byte == b'/')
+        .map_or(0, |index| index + 1);
+    let parent = if name_start == 0 {
+        b".".as_slice()
+    } else {
+        &path[..name_start]
+    };
+    Ok((to_cstring(parent)?, to_cstring(&path[name_start..])?))
+}
+
+/// One `openat2` of `path` from `base`, following no magic link.
+fn openat2_file(base: RawFd, path: &CStr, flags: u64, mode: u64) -> Result<std::fs::File, i64> {
+    let how = OpenHow {
+        flags,
+        mode,
+        resolve: RESOLVE_NO_MAGICLINKS,
+    };
+    // SAFETY: path and how are live for the call; Linux validates base and flags.
+    let fd = unsafe {
+        libc::syscall(
+            libc::SYS_openat2,
+            base,
+            path.as_ptr(),
+            &how,
+            std::mem::size_of::<OpenHow>(),
+        )
+    };
+    if fd < 0 {
+        return Err(io_error(std::io::Error::last_os_error()));
+    }
+    // SAFETY: openat2 returned a new owned descriptor on success.
+    Ok(unsafe { std::fs::File::from_raw_fd(fd as RawFd) })
+}
+
+/// [`openat2_file`] of a name in a held directory, with the guest's flags.
+fn open_at(directory: RawFd, name: &CStr, flags: u64, mode: u64) -> Result<std::fs::File, i64> {
+    openat2_file(directory, name, flags, mode)
+}
+
+/// An `O_PATH` descriptor on the directory `path` names from `base`, refused
+/// with `EACCES` where it is the Tool's reserved directory, so that a name is
+/// never created in it.
+fn open_checked_directory(
+    state: &LoadedStaticElf,
+    base: RawFd,
+    path: &CStr,
+) -> Result<std::fs::File, i64> {
+    let directory = openat2_file(
+        base,
+        path,
+        (libc::O_PATH | libc::O_DIRECTORY | libc::O_CLOEXEC) as u64,
+        0,
+    )?;
+    let filesystem = fd_filesystem_type(directory.as_raw_fd())?;
+    if fd_is_tool_directory(state, directory.as_raw_fd(), filesystem)? {
+        return Err(negative_errno(libc::EACCES));
+    }
+    Ok(directory)
+}
+
+/// What a name in a held directory is, for following a final link.
+enum LinkLookup {
+    Link(CString),
+    NotLink,
+    Missing,
+}
+
+fn read_link_at(directory: RawFd, name: &CStr) -> Result<LinkLookup, i64> {
+    let mut target = vec![0u8; libc::PATH_MAX as usize];
+    // SAFETY: name is NUL-terminated and target is writable for its length.
+    let length = unsafe {
+        libc::readlinkat(
+            directory,
+            name.as_ptr(),
+            target.as_mut_ptr().cast::<libc::c_char>(),
+            target.len(),
+        )
+    };
+    if length >= 0 {
+        target.truncate(length as usize);
+        return CString::new(target)
+            .map(LinkLookup::Link)
+            .map_err(|_| negative_errno(libc::EINVAL));
+    }
+    match std::io::Error::last_os_error().raw_os_error() {
+        Some(libc::EINVAL) => Ok(LinkLookup::NotLink),
+        Some(libc::ENOENT) => Ok(LinkLookup::Missing),
+        _ => Err(io_error(std::io::Error::last_os_error())),
+    }
+}
+
+/// Refuse to follow the final symbolic link `name` in the held directory
+/// `directory` where Linux's own lookup would refuse it (fs/namei.c
+/// pick_link, v6.17): a magic link, which no executor lookup follows
+/// (RESOLVE_NO_MAGICLINKS, so a probe of it refuses with ELOOP, as an
+/// ordinary chain longer than MAXSYMLINKS does), and a link on a
+/// nosymfollow mount, each with `ELOOP`; and, with fs.protected_symlinks
+/// set, a link in a sticky world-writable directory owned neither by the
+/// follower nor by the directory's owner, with `EACCES` (may_follow_link).
+fn ensure_link_followable(directory: RawFd, name: &CStr) -> Result<(), i64> {
+    if let Err(error) = openat2_file(directory, name, (libc::O_PATH | libc::O_CLOEXEC) as u64, 0)
+        && error == negative_errno(libc::ELOOP)
+    {
+        return Err(error);
+    }
+    let mut statvfs = std::mem::MaybeUninit::<libc::statvfs>::zeroed();
+    // SAFETY: statvfs is writable and directory is live.
+    if unsafe { libc::fstatvfs(directory, statvfs.as_mut_ptr()) } != 0 {
+        return Err(io_error(std::io::Error::last_os_error()));
+    }
+    // SAFETY: fstatvfs initialized statvfs on success.
+    if unsafe { statvfs.assume_init() }.f_flag & ST_NOSYMFOLLOW != 0 {
+        return Err(negative_errno(libc::ELOOP));
+    }
+    // An unreadable setting is taken as set, as distributions ship it.
+    let protected = std::fs::read("/proc/sys/fs/protected_symlinks")
+        .map_or(true, |value| value.first() != Some(&b'0'));
+    if !protected {
+        return Ok(());
+    }
+    let mut link = std::mem::MaybeUninit::<libc::stat>::zeroed();
+    // SAFETY: name is NUL-terminated, link is writable and directory is live.
+    if unsafe {
+        libc::fstatat(
+            directory,
+            name.as_ptr(),
+            link.as_mut_ptr(),
+            libc::AT_SYMLINK_NOFOLLOW,
+        )
+    } != 0
+    {
+        return Err(io_error(std::io::Error::last_os_error()));
+    }
+    // SAFETY: fstatat initialized link on success.
+    let link_owner = unsafe { link.assume_init() }.st_uid;
+    // SAFETY: geteuid has no preconditions; the executor never sets a
+    // separate filesystem uid, so this is the follower Linux checks.
+    if link_owner == unsafe { libc::geteuid() } {
+        return Ok(());
+    }
+    let mut parent = std::mem::MaybeUninit::<libc::stat>::zeroed();
+    // SAFETY: parent is writable and directory is live.
+    if unsafe { libc::fstat(directory, parent.as_mut_ptr()) } != 0 {
+        return Err(io_error(std::io::Error::last_os_error()));
+    }
+    // SAFETY: fstat initialized parent on success.
+    let parent = unsafe { parent.assume_init() };
+    let sticky_world_writable = libc::S_ISVTX | libc::S_IWOTH;
+    if parent.st_mode & sticky_world_writable == sticky_world_writable
+        && parent.st_uid != link_owner
+    {
+        return Err(negative_errno(libc::EACCES));
+    }
+    Ok(())
 }
 
 // TODO-HUMAN-REVIEW(PR-92): Review this KVM compatibility implementation.
@@ -660,8 +978,8 @@ pub(super) fn open_guest_fd_path(
         return negative_errno(libc::ENOENT);
     };
     let source_proc_inode = state.proc_files.get(&guest_fd).copied();
-    let regular_proc =
-        source_proc_inode.is_some_and(|inode| !is_synthetic_proc_directory_inode(inode));
+    // Every synthetic /proc descriptor is a regular file.
+    let regular_proc = source_proc_inode.is_some();
     let path_only = flags & libc::O_PATH as u64 != 0;
     let create_exclusive = !path_only
         && flags & (libc::O_CREAT | libc::O_EXCL) as u64 == (libc::O_CREAT | libc::O_EXCL) as u64;
@@ -770,16 +1088,134 @@ pub(super) fn ensure_fd_not_procfs(fd: RawFd) -> Result<(), i64> {
 }
 
 pub(super) fn fd_is_procfs(fd: RawFd) -> Result<bool, i64> {
+    Ok(fd_filesystem_type(fd)? == PROC_SUPER_MAGIC)
+}
+
+/// The file system type (`fstatfs`'s `f_type`) of the object `fd` is open on.
+fn fd_filesystem_type(fd: RawFd) -> Result<libc::c_long, i64> {
     let mut statfs = std::mem::MaybeUninit::<libc::statfs>::zeroed();
     // SAFETY: statfs is writable and fd is live.
     if unsafe { libc::fstatfs(fd, statfs.as_mut_ptr()) } != 0 {
         return Err(io_error(std::io::Error::last_os_error()));
     }
     // SAFETY: fstatfs initialized statfs on success.
-    Ok(unsafe { statfs.assume_init() }.f_type as libc::c_long == PROC_SUPER_MAGIC)
+    Ok(unsafe { statfs.assume_init() }.f_type as libc::c_long)
+}
+
+/// Whether the object `fd` is open on, of file system type `filesystem`, is
+/// the Tool's reserved directory (`LoadedStaticElf::tool_directory`). Only
+/// an object on a file system of the directory's type has its identity read.
+fn fd_is_tool_directory(
+    state: &LoadedStaticElf,
+    fd: RawFd,
+    filesystem: libc::c_long,
+) -> Result<bool, i64> {
+    let Some(reserved) = state
+        .tool_directory
+        .as_ref()
+        .filter(|reserved| reserved.may_be_on(filesystem))
+    else {
+        return Ok(false);
+    };
+    let mut stat = std::mem::MaybeUninit::<libc::stat>::zeroed();
+    // SAFETY: stat is writable and fd is live.
+    if unsafe { libc::fstat(fd, stat.as_mut_ptr()) } != 0 {
+        return Err(io_error(std::io::Error::last_os_error()));
+    }
+    // SAFETY: fstat initialized stat on success.
+    let stat = unsafe { stat.assume_init() };
+    Ok(reserved.is(filesystem, stat.st_dev, stat.st_ino))
+}
+
+/// The procfs backstop for an object a guest path resolved to: `EACCES` for
+/// procfs (see [`ensure_not_procfs`]) and for the Tool's reserved directory
+/// (`LoadedStaticElf::tool_directory`), which a guest path reaches only by a
+/// spelling the Tool does not hide.
+pub(super) fn ensure_path_object_allowed(
+    state: &LoadedStaticElf,
+    file: &std::fs::File,
+) -> Result<(), i64> {
+    let filesystem = fd_filesystem_type(file.as_raw_fd())?;
+    if filesystem == PROC_SUPER_MAGIC || fd_is_tool_directory(state, file.as_raw_fd(), filesystem)?
+    {
+        return Err(negative_errno(libc::EACCES));
+    }
+    Ok(())
+}
+
+/// The check for an admitted open or stat of the Tool's reserved directory
+/// by its exact path: the object must be that very directory, so that a path
+/// remounted or replaced since the reservation fails closed (`EACCES`).
+pub(super) fn ensure_is_tool_directory(
+    state: &LoadedStaticElf,
+    file: &std::fs::File,
+) -> Result<(), i64> {
+    let filesystem = fd_filesystem_type(file.as_raw_fd())?;
+    if filesystem == PROC_SUPER_MAGIC || !fd_is_tool_directory(state, file.as_raw_fd(), filesystem)?
+    {
+        return Err(negative_errno(libc::EACCES));
+    }
+    Ok(())
+}
+
+/// Refuse with `EACCES` a call whose `path`, looked up from `host_dirfd`
+/// (following a final link unless `nofollow`), names the Tool's reserved
+/// directory itself, which the call would remove, rename or replace. A
+/// lookup that fails decides nothing: the call then fails as Linux fails it.
+fn ensure_not_naming_tool_directory(
+    state: &LoadedStaticElf,
+    host_dirfd: RawFd,
+    path: &CStr,
+    nofollow: bool,
+) -> Result<(), i64> {
+    if state.tool_directory.is_none() {
+        return Ok(());
+    }
+    let Ok(object) = open_host_path(host_dirfd, path, nofollow) else {
+        return Ok(());
+    };
+    let filesystem = fd_filesystem_type(object.as_raw_fd())?;
+    if fd_is_tool_directory(state, object.as_raw_fd(), filesystem)? {
+        return Err(negative_errno(libc::EACCES));
+    }
+    Ok(())
 }
 
 pub(super) fn open_metadata_path(
+    state: &LoadedStaticElf,
+    guest_dirfd: libc::c_int,
+    path: &[u8],
+    nofollow: bool,
+) -> Result<std::fs::File, i64> {
+    let file = open_metadata_path_unchecked(state, guest_dirfd, path, nofollow)?;
+    ensure_path_object_allowed(state, &file)?;
+    Ok(file)
+}
+
+/// [`open_metadata_path`] for the newfstatat family (newfstatat, and its
+/// legacy stat and lstat forms), which reaches the Tool's reserved directory
+/// where it names exactly its path and that path still reaches it
+/// (`LoadedStaticElf::tool_directory`).
+pub(super) fn open_stat_path(
+    state: &LoadedStaticElf,
+    guest_dirfd: libc::c_int,
+    path: &[u8],
+    nofollow: bool,
+) -> Result<std::fs::File, i64> {
+    let file = open_metadata_path_unchecked(state, guest_dirfd, path, nofollow)?;
+    if state
+        .tool_directory
+        .as_ref()
+        .is_some_and(|reserved| reserved.is_spelled(path))
+    {
+        ensure_is_tool_directory(state, &file)?;
+    } else {
+        ensure_path_object_allowed(state, &file)?;
+    }
+    Ok(file)
+}
+
+fn open_metadata_path_unchecked(
     state: &LoadedStaticElf,
     guest_dirfd: libc::c_int,
     path: &[u8],
@@ -809,18 +1245,25 @@ pub(super) fn open_metadata_path(
         return Err(io_error(std::io::Error::last_os_error()));
     }
     // SAFETY: openat2 returned a new owned descriptor on success.
-    let file = unsafe { std::fs::File::from_raw_fd(fd as RawFd) };
-    ensure_not_procfs(&file)?;
-    Ok(file)
+    Ok(unsafe { std::fs::File::from_raw_fd(fd as RawFd) })
 }
 
 // AUTONOMOUS-BOT-IMPLEMENTED: Resolve mutation targets without host magic links.
 // TODO-HUMAN-REVIEW(#86): Review procfs isolation and Linux mutation semantics.
 fn open_host_metadata_path(
+    state: &LoadedStaticElf,
     host_dirfd: RawFd,
     path: &CStr,
     nofollow: bool,
 ) -> Result<std::fs::File, i64> {
+    let file = open_host_path(host_dirfd, path, nofollow)?;
+    ensure_path_object_allowed(state, &file)?;
+    Ok(file)
+}
+
+/// An `O_PATH` descriptor on `path`, looked up from `host_dirfd` without
+/// following a magic link (or, with `nofollow`, a final link), unchecked.
+fn open_host_path(host_dirfd: RawFd, path: &CStr, nofollow: bool) -> Result<std::fs::File, i64> {
     let mut flags = (libc::O_PATH | libc::O_CLOEXEC) as u64;
     if nofollow {
         flags |= libc::O_NOFOLLOW as u64;
@@ -844,17 +1287,29 @@ fn open_host_metadata_path(
         return Err(io_error(std::io::Error::last_os_error()));
     }
     // SAFETY: openat2 returned a new owned descriptor on success.
-    let file = unsafe { std::fs::File::from_raw_fd(fd as RawFd) };
-    ensure_not_procfs(&file)?;
-    Ok(file)
+    Ok(unsafe { std::fs::File::from_raw_fd(fd as RawFd) })
 }
 
-fn ensure_mutation_parent_not_procfs(host_dirfd: RawFd, path: &CStr) -> Result<(), i64> {
-    let bytes = path.to_bytes();
-    if bytes.is_empty() {
+fn ensure_mutation_parent_not_procfs(
+    state: &LoadedStaticElf,
+    host_dirfd: RawFd,
+    path: &CStr,
+) -> Result<(), i64> {
+    if path.to_bytes().is_empty() {
         return Ok(());
     }
+    let parent = mutation_parent(path)?;
+    let parent = open_host_metadata_path(state, host_dirfd, &parent, false)?;
+    if !parent.metadata().map_err(io_error)?.is_dir() {
+        return Err(negative_errno(libc::ENOTDIR));
+    }
+    Ok(())
+}
 
+/// The directory a call that creates or removes the final name of the
+/// nonempty `path` changes.
+fn mutation_parent(path: &CStr) -> Result<CString, i64> {
+    let bytes = path.to_bytes();
     // Trailing slashes constrain how Linux resolves the target, but they are
     // not part of its name. Ignore them only while locating the parent for
     // this safety check; read_path_at still returns the original path to the
@@ -873,12 +1328,7 @@ fn ensure_mutation_parent_not_procfs(host_dirfd: RawFd, path: &CStr) -> Result<(
             None => b".".as_slice(),
         }
     };
-    let parent = CString::new(parent).map_err(|_| negative_errno(libc::EINVAL))?;
-    let parent = open_host_metadata_path(host_dirfd, &parent, false)?;
-    if !parent.metadata().map_err(io_error)?.is_dir() {
-        return Err(negative_errno(libc::ENOTDIR));
-    }
-    Ok(())
+    CString::new(parent).map_err(|_| negative_errno(libc::EINVAL))
 }
 
 fn ensure_mutation_dirfd_not_synthetic_procfs(
@@ -912,7 +1362,7 @@ pub(super) fn read_path_at(
     }
     ensure_mutation_dirfd_not_synthetic_procfs(state, guest_dirfd, &path)?;
     let (host_dirfd, path) = host_dirfd_and_path(state, guest_dirfd, &path)?;
-    ensure_mutation_parent_not_procfs(host_dirfd, &path)?;
+    ensure_mutation_parent_not_procfs(state, host_dirfd, &path)?;
     Ok((host_dirfd, path))
 }
 
@@ -952,8 +1402,11 @@ pub(super) fn unlink_at(
         Ok(path) => path,
         Err(error) => return error,
     };
+    if let Err(error) = ensure_not_naming_tool_directory(state, host_dirfd, &path, true) {
+        return error;
+    }
     let removes_directory = raw_flags & libc::AT_REMOVEDIR as u64 != 0;
-    let removed_file = open_host_metadata_path(host_dirfd, &path, true).ok();
+    let removed_file = open_host_metadata_path(state, host_dirfd, &path, true).ok();
     let removed_key = removed_file
         .as_ref()
         .and_then(file_identity_stat)
@@ -1000,13 +1453,18 @@ pub(super) fn rename_at(
             Ok(path) => path,
             Err(error) => return error,
         };
+    for (host_dirfd, path) in [(old_host_dirfd, &old_path), (new_host_dirfd, &new_path)] {
+        if let Err(error) = ensure_not_naming_tool_directory(state, host_dirfd, path, true) {
+            return error;
+        }
+    }
     let old_file = if raw_flags == 0 {
-        open_host_metadata_path(old_host_dirfd, &old_path, true).ok()
+        open_host_metadata_path(state, old_host_dirfd, &old_path, true).ok()
     } else {
         None
     };
     let replaced_file = if raw_flags == 0 {
-        open_host_metadata_path(new_host_dirfd, &new_path, true).ok()
+        open_host_metadata_path(state, new_host_dirfd, &new_path, true).ok()
     } else {
         None
     };
@@ -1069,7 +1527,8 @@ pub(super) fn link_at(
             Err(error) => return error,
         };
     let follows_source = flags & libc::AT_SYMLINK_FOLLOW != 0;
-    let old_file = match open_host_metadata_path(old_host_dirfd, &old_path, !follows_source) {
+    let old_file = match open_host_metadata_path(state, old_host_dirfd, &old_path, !follows_source)
+    {
         Ok(file) => file,
         Err(error) => return error,
     };
@@ -1223,7 +1682,7 @@ pub(super) fn fchmodat(
         }
         None
     } else {
-        match open_host_metadata_path(host_dirfd, &path, nofollow) {
+        match open_host_metadata_path(state, host_dirfd, &path, nofollow) {
             Ok(file) => Some(file),
             Err(error) => return error,
         }
@@ -1360,7 +1819,7 @@ pub(super) fn utimensat(memory: &GuestMemory, state: &LoadedStaticElf, args: &[u
             host_dirfd
         } else {
             let nofollow = raw_flags & libc::AT_SYMLINK_NOFOLLOW != 0;
-            let file = match open_host_metadata_path(host_dirfd, &path, nofollow) {
+            let file = match open_host_metadata_path(state, host_dirfd, &path, nofollow) {
                 Ok(file) => file,
                 Err(error) => return error,
             };
@@ -1492,7 +1951,7 @@ pub(super) fn chdir(memory: &GuestMemory, state: &mut LoadedStaticElf, args: &[u
         Ok(resolved) => resolved,
         Err(error) => return error,
     };
-    let directory = match open_cwd_directory(host_dirfd, &path) {
+    let directory = match open_cwd_directory(state, host_dirfd, &path) {
         Ok(directory) => directory,
         Err(error) => return error,
     };
@@ -1516,7 +1975,7 @@ pub(super) fn fchdir(state: &mut LoadedStaticElf, args: &[u64; 6]) -> i64 {
     // Reopen the directory itself ("." relative to the guest's own descriptor)
     // as an independent O_PATH cwd handle so a later guest `close(fd)` cannot
     // invalidate the working directory.
-    let directory = match open_cwd_directory(file.as_raw_fd(), c".") {
+    let directory = match open_cwd_directory(state, file.as_raw_fd(), c".") {
         Ok(directory) => directory,
         Err(error) => return error,
     };
@@ -1525,9 +1984,13 @@ pub(super) fn fchdir(state: &mut LoadedStaticElf, args: &[u64; 6]) -> i64 {
 
 /// Open `path` (relative to `host_dirfd`) as an `O_PATH|O_DIRECTORY` handle
 /// suitable for use as `state.cwd_fd`. `O_DIRECTORY` yields `ENOTDIR` for a
-/// non-directory and procfs is refused, keeping cwd within the same isolation
-/// boundary as [`open_file`].
-fn open_cwd_directory(host_dirfd: RawFd, path: &CStr) -> Result<std::fs::File, i64> {
+/// non-directory, and procfs and the Tool's reserved directory are refused,
+/// keeping cwd within the same isolation boundary as [`open_file`].
+fn open_cwd_directory(
+    state: &LoadedStaticElf,
+    host_dirfd: RawFd,
+    path: &CStr,
+) -> Result<std::fs::File, i64> {
     let how = OpenHow {
         flags: (libc::O_PATH | libc::O_DIRECTORY | libc::O_CLOEXEC) as u64,
         mode: 0,
@@ -1548,7 +2011,7 @@ fn open_cwd_directory(host_dirfd: RawFd, path: &CStr) -> Result<std::fs::File, i
     }
     // SAFETY: openat2 returned a new owned descriptor on success.
     let file = unsafe { std::fs::File::from_raw_fd(fd as RawFd) };
-    ensure_not_procfs(&file)?;
+    ensure_path_object_allowed(state, &file)?;
     Ok(file)
 }
 
@@ -1626,13 +2089,6 @@ pub(super) fn getdents64<M: GuestMemoryAccess<Error = crate::Error>>(
     };
     if let Err(error) = ensure_directory(file) {
         return error;
-    }
-    if state
-        .proc_files
-        .get(&fd)
-        .is_some_and(|inode| is_synthetic_proc_directory_inode(*inode))
-    {
-        return 0;
     }
     // Let the kernel write through a protected shared alias. A snapshot/copyback
     // would clobber concurrent guest writes to untouched padding or the tail,
