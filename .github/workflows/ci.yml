@@ -1,7 +1,18 @@
 name: Rust
 
+# Owner decision, 2026-10-27: run CI automatically only for pull requests not
+# opened by the project bot (hermit-bot3). The hosted `regular` job runs for
+# such a pull request once it is out of draft, from a branch or a fork; it uses
+# no secrets and the read-only token below. The self-hosted `hardware` job keeps
+# its own condition below, which admits no external pull request: a pull
+# request's code must not run unreviewed on the PMU hosts.
 on:
   workflow_dispatch:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+
+permissions:
+  contents: read
 
 env:
   CARGO_TERM_COLOR: always
@@ -10,6 +21,7 @@ env:
 jobs:
   regular:
     name: Regular tests (GitHub-hosted)
+    if: github.event_name != 'pull_request' || (github.event.pull_request.user.login != 'hermit-bot3' && !github.event.pull_request.draft)
     runs-on: ubuntu-latest
 
     steps:
