@@ -1900,9 +1900,20 @@ pub(super) fn pipe_fionread<M: GuestMemoryAccess<Error = crate::Error>>(
             }
         }
     }
+    host_fionread(memory, host_fd, address)
+}
+
+/// The host's FIONREAD count for `host_fd`, copied to the guest's `address`.
+/// Only a descriptor whose host queue is the guest's own may use it: a pipe or
+/// FIFO, or an inotify instance.
+pub(super) fn host_fionread<M: GuestMemoryAccess<Error = crate::Error>>(
+    memory: &M,
+    host_fd: libc::c_int,
+    address: u64,
+) -> i64 {
     let mut count: libc::c_int = 0;
     // SAFETY: count is supervisor storage for one int. The kernel observes the
-    // actual pipe under its own mutex without consuming any queued bytes.
+    // actual queue under its own lock without consuming any queued bytes.
     if unsafe { libc::ioctl(host_fd, libc::FIONREAD, &mut count) } != 0 {
         return io_error(std::io::Error::last_os_error());
     }
