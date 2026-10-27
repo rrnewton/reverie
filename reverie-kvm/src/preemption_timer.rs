@@ -94,26 +94,84 @@
 //! A thread that never opens a timer event has no vCPU mask and pays nothing:
 //! its entries issue exactly the syscalls they would without this module.
 //!
-//! Nothing outside this crate's tests requests a timer yet. `KvmGuest`'s
-//! `set_timer` and `set_timer_precise` still arm nothing, and
-//! `BackendCapabilities::KVM` keeps `delivers_preemption_timer_events` false,
-//! so no Tool can rely on a timer event from this backend.
+//! `KvmGuest::set_timer` requests an imprecise event ([`TimerKind::Imprecise`])
+//! under the Reverie contract, as reverie-ptrace (its `Timer` and
+//! `TracedTask::set_timer`) implements it except where
+//! <https://github.com/rrnewton/reverie/issues/1176> says:
+//! - A thread has one request, and a new one replaces it. `Rcbs(r)` and
+//!   `RcbsAndInstructions(r, _)` request `r` RCBs, and `Time` is converted at
+//!   reverie-ptrace's rate ([`rcbs_for_duration`]). A request for 0 RCBs is
+//!   refused with `EINVAL` and leaves the outstanding one in place. The event
+//!   is programmed at the target, with no skid margin, and the clock read
+//!   when it is delivered is at least the target; it is never late.
+//! - The next event of another kind decides the request. Before each Tool
+//!   callback for another event (a subscribed syscall, a signal, CPUID or
+//!   RDTSC, an exec's post-exec callback, and the thread's exit) the request
+//!   is cancelled, so a request made inside that callback is a new one. The
+//!   initial exec cancels too. A syscall the Tool injects is not an event and
+//!   cancels nothing, and an exit with no Tool callback (an unsubscribed or
+//!   backend-owned syscall, the VMware backdoor probe, a kick) leaves the
+//!   request as it is.
+//! - Once an exit has found the clock at the target or past it, the request
+//!   is delivered through `Tool::handle_timer_event`, once, before the guest
+//!   runs on. At a kick that stopped the guest in user mode, between two
+//!   instructions, the callback sees the live registers. At the exit of a
+//!   syscall that made no Tool callback, it runs once the syscall has
+//!   completed, at its return, with the user registers the guest resumes
+//!   with, before a pending signal is selected there: so a guest that makes
+//!   such syscalls faster than a kick lands gets its event within a syscall
+//!   of the target. There `orig_rax` reads -1, where reverie-ptrace shows the
+//!   syscall's number. Found due anywhere else, it is armed again at its
+//!   target (see `KvmBackend::timer_instruction_boundary` for where that
+//!   happens).
+//! - The callback can inject syscalls that return, and exits. A process
+//!   action, a tail injection other than an exit, a signal that needs a
+//!   syscall return frame, or an `rt_sigprocmask` that would make a pending
+//!   signal deliverable is refused before it has any effect and ends the run
+//!   (`Error::TimerCallbackInjectionUnsupported`), so a Tool cannot take the
+//!   refusal for an ordinary failure of the syscall. The refusal stays the
+//!   callback's outcome: an injection the callback makes afterwards, having
+//!   dropped the refused one, never runs, and a later exit or retirement
+//!   does not replace it. Its writes to guest memory are not held back (see
+//!   the limits below). An `rt_sigprocmask` with invalid arguments still
+//!   returns its `EINVAL` or `EFAULT`, and one that makes no pending signal
+//!   deliverable runs as usual.
 //!
-//! Limits, for the work that wires requests to this timer and delivers its
-//! events:
+//! `KvmGuest::set_timer_precise` is refused with an `Unsupported` error:
+//! delivery at an exact count needs single steps to that count, which this
+//! backend does not take yet. `BackendCapabilities::KVM` keeps
+//! `delivers_preemption_timer_events` false, so no Tool can rely on a timer
+//! event from this backend.
+//!
+//! Limits, to address before that capability is set:
 //! - Nothing checks the timer event's residency. A pinned event that the PMU
 //!   cannot schedule never kicks: a guest that makes no exit runs on, and its
-//!   next exit records the request late.
+//!   next exit finds the request due, late if it is precise.
 //! - Only counted entries displace another binding's events. An uncounted
 //!   vCPU on the same host task leaves an enabled timer counting its branches:
 //!   the timer overflows early, inside that vCPU's run, and reloads a whole
 //!   period. Its kick stays pending (that vCPU has no vCPU mask) and ends the
 //!   armed vCPU's next entry at once, so the request comes due at a later exit
-//!   and is recorded late.
-//! - An exec keeps the vCPU and its clock, and so an armed request; wiring
-//!   requests to this timer must cancel it there.
+//!   (late, if it is precise).
 //! - Nothing refuses a PREEMPT_RT kernel or nested virtualization, where the
 //!   kick's latency has not been measured.
+//! - A timer event does not deliver the signals pending when it is handled:
+//!   they wait, as before, for the thread's next syscall or fault.
+//! - After a refused injection, the callback's own guest-memory and stack
+//!   writes, through handles it already holds, still reach memory until the
+//!   callback returns or suspends; the run then fails with the named reason.
+//! - A request found due after `rt_sigreturn` waits for the restored
+//!   context's next RCBs in user mode, so a guest that retires none before its
+//!   next exit gets the event no sooner, and a Tool callback at that exit
+//!   cancels it.
+//! - Only a Tool callback for another event cancels a request, so the
+//!   parent's request survives a fork, clone or vfork that the Tool does not
+//!   subscribe to. reverie-ptrace differs in three places
+//!   (<https://github.com/rrnewton/reverie/issues/1176>): its new-child and
+//!   vfork-done stops cancel a request though they make no callback on the
+//!   parent, its report of a held signal (`report_signal`) makes a callback
+//!   without cancelling, and its ordinary injected exec reaches the post-exec
+//!   callback without cancelling.
 //! - Nothing checks that the kick signal stays blocked on the vCPU thread:
 //!   code that unblocks it there lets a late kick interrupt a host call again.
 //! - While the vCPU mask stays installed, a signal that code outside
@@ -683,16 +741,17 @@ impl TimerEvent {
 
 /// Whether a request names an exact count, or any count from its target on.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "only tests request a timer until KvmGuest's set_timer and set_timer_precise use it"
-    )
-)]
 pub(crate) enum TimerKind {
     /// Due exactly when the clock reaches the target, as for
-    /// `Guest::set_timer_precise`.
+    /// `Guest::set_timer_precise`, which this backend refuses: only this
+    /// crate's tests request one.
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "KvmGuest refuses set_timer_precise until it can run a guest to an exact count"
+        )
+    )]
     Precise,
     /// Due at the target or at any later count, as for `Guest::set_timer`.
     Imprecise,
@@ -718,37 +777,24 @@ pub(crate) enum TimerState {
     #[default]
     Idle,
     /// A request whose target the clock has not reached.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "only tests request a timer until KvmGuest's set_timer and set_timer_precise use it"
-        )
-    )]
     Armed {
         target: u64,
         kind: TimerKind,
         /// How far short of the target a precise request is first programmed:
-        /// the PMU skid margin when it was requested.
+        /// the PMU skid margin when it was requested. 0 for an imprecise
+        /// request, which is programmed at its target.
         margin: u64,
     },
     /// A request whose target an exit reached. It stays here until it is
-    /// replaced or cancelled, and is recorded only once.
+    /// delivered, replaced or cancelled, and is recorded only once.
     Due(TimerDue),
 }
 
 impl TimerState {
     /// An armed request due when the clock, now `clock`, has advanced `ticks`
-    /// RCBs. `margin` is the PMU skid margin. A request for 0 RCBs names the
-    /// current count, which no exit can reach, and is refused, as is one past
-    /// the clock's range.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "only tests request a timer until KvmGuest's set_timer and set_timer_precise use it"
-        )
-    )]
+    /// RCBs. `margin` is the PMU skid margin of a precise request. A request
+    /// for 0 RCBs names the current count, which no exit can reach, and is
+    /// refused, as is one past the clock's range.
     pub(crate) fn request(clock: u64, ticks: u64, kind: TimerKind, margin: u64) -> Result<Self> {
         if ticks == 0 {
             return Err(failure(
@@ -834,20 +880,55 @@ impl TimerState {
         }
     }
 
-    /// The request an exit made due, while it is not replaced or cancelled.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "only tests read a due request until a backend delivers timer events"
-        )
-    )]
+    /// The request an exit made due, while it is not delivered, replaced or
+    /// cancelled.
     pub(crate) fn due(&self) -> Option<TimerDue> {
         match *self {
             Self::Due(due) => Some(due),
             Self::Idle | Self::Armed { .. } => None,
         }
     }
+
+    /// Takes the due request for delivery and leaves no request, so that it
+    /// is delivered once and a request made while it is handled is a new one.
+    pub(crate) fn take_due(&mut self) -> Option<TimerDue> {
+        let due = self.due()?;
+        *self = Self::Idle;
+        Some(due)
+    }
+
+    /// Arms a due imprecise request again at its own target, for an exit that
+    /// found it due where it cannot be delivered. The clock has reached the
+    /// target, so the next entry programs the earliest overflow the event
+    /// allows, [`MIN_PERIOD`] RCBs on (see [`Self::wanted_overflow`]), and the
+    /// next exit finds the request due again, still on time. A late precise
+    /// request stays due: it was recorded once, and nothing here delivers it.
+    pub(crate) fn defer_due(&mut self) {
+        if let Self::Due(TimerDue {
+            target,
+            late: false,
+            ..
+        }) = *self
+        {
+            *self = Self::Armed {
+                target,
+                kind: TimerKind::Imprecise,
+                margin: 0,
+            };
+        }
+    }
+}
+
+/// The RCB count `Guest::set_timer` requests for `TimerSchedule::Time`,
+/// converted as reverie-ptrace converts it (`Timer::as_ticks`): 0.6 RCB per
+/// nanosecond, from its assumptions of 10% conditional branches, 3 GHz and 2
+/// instructions per cycle. `TimerSchedule::Time` makes the conversion best
+/// effort. Where reverie-ptrace's arithmetic would overflow, this saturates.
+pub(crate) fn rcbs_for_duration(duration: std::time::Duration) -> u64 {
+    duration
+        .as_secs()
+        .saturating_mul(600_000_000)
+        .saturating_add(u64::from(duration.subsec_nanos()) * 6 / 10)
 }
 
 /// Records a late precise request with the canonical marker and the
@@ -981,6 +1062,61 @@ mod tests {
                 )
             );
         }
+    }
+
+    #[test]
+    fn a_due_request_is_taken_once_or_armed_again_at_its_target() {
+        let _turn = witness_turn();
+        let mut state = TimerState::Armed {
+            target: 1_000,
+            kind: TimerKind::Imprecise,
+            margin: 0,
+        };
+        assert_eq!(state.take_due(), None, "an armed request is not due");
+        assert_eq!(state.observe_exit(1_004), due_at(1_000, 1_004));
+        // Found due where it cannot be delivered: armed again at its target,
+        // and the next entry wants the earliest overflow past the clock.
+        state.defer_due();
+        assert_eq!(
+            state,
+            TimerState::Armed {
+                target: 1_000,
+                kind: TimerKind::Imprecise,
+                margin: 0,
+            }
+        );
+        assert_eq!(state.wanted_overflow(1_004), Some(1_004 + MIN_PERIOD));
+        // The next exit finds it due again, on time, and delivery takes it.
+        assert_eq!(state.observe_exit(1_006), due_at(1_000, 1_006));
+        assert_eq!(state.take_due(), due_at(1_000, 1_006));
+        assert_eq!(state, TimerState::Idle);
+        assert_eq!(state.take_due(), None, "a request is delivered once");
+        assert_eq!(state.wanted_overflow(1_006), None);
+        // A late precise request stays due when deferred.
+        let mut precise = armed(1_000, TimerKind::Precise);
+        let late = precise.observe_exit(1_000);
+        precise.defer_due();
+        assert_eq!(precise.due(), late);
+        assert_eq!(reverie::take_skid_overshoot_count(), 1);
+    }
+
+    fn due_at(target: u64, clock: u64) -> Option<TimerDue> {
+        Some(TimerDue {
+            target,
+            clock,
+            late: false,
+        })
+    }
+
+    #[test]
+    fn durations_convert_to_rcbs_as_reverie_ptrace_converts_them() {
+        assert_eq!(rcbs_for_duration(std::time::Duration::ZERO), 0);
+        assert_eq!(rcbs_for_duration(std::time::Duration::from_nanos(10)), 6);
+        assert_eq!(
+            rcbs_for_duration(std::time::Duration::new(2, 500)),
+            1_200_000_300
+        );
+        assert_eq!(rcbs_for_duration(std::time::Duration::MAX), u64::MAX);
     }
 
     #[test]

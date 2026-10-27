@@ -141,15 +141,23 @@ pub(crate) struct InstructionBoundary<I> {
 
 pub(crate) type TimestampBoundary = InstructionBoundary<crate::timestamp::TimestampInstruction>;
 pub(crate) type CpuidBoundary = InstructionBoundary<crate::cpuid_instruction::Instruction>;
+/// The user registers at which a due timer request is delivered, with that
+/// request: those of a vCPU stopped in user mode (see
+/// [`KvmBackend::timer_instruction_boundary`]), or those the return of a
+/// syscall resumes the guest with (see
+/// [`KvmBackend::syscall_return_timer_boundary`]).
+pub(crate) type TimerBoundary = InstructionBoundary<crate::preemption_timer::TimerDue>;
 
 pub(crate) enum ToolInstructionBoundary {
     Timestamp(TimestampBoundary),
     Cpuid(CpuidBoundary),
+    Timer(TimerBoundary),
 }
 
 pub(crate) enum ToolInstructionResult {
     Timestamp(reverie::RdtscResult),
     Cpuid(reverie::CpuIdResult),
+    Timer,
 }
 
 impl ToolInstructionBoundary {
@@ -157,6 +165,7 @@ impl ToolInstructionBoundary {
         match self {
             Self::Timestamp(boundary) => boundary.user_registers(),
             Self::Cpuid(boundary) => boundary.user_registers(),
+            Self::Timer(boundary) => boundary.user_registers(),
         }
     }
 }
@@ -4845,6 +4854,74 @@ impl KvmBackend {
             .map(ToolInstructionBoundary::Timestamp))
     }
 
+    /// The thread's due timer request, taken for `Tool::handle_timer_event`
+    /// at the user instruction boundary where the vCPU is stopped, or None.
+    /// Read before each entry; with no request due it reads nothing and
+    /// issues no syscall.
+    ///
+    /// Only a vCPU stopped in user mode (a CPL 3 code segment) stands at a
+    /// user instruction boundary: an exit that interrupts the guest there
+    /// (a kick) stops it between two instructions, and the callback sees the
+    /// live registers. A syscall's exit delivers a request it finds due at the
+    /// syscall's return instead (see [`Self::syscall_return_timer_boundary`]),
+    /// and an exit whose Tool callback ran cancelled the request it found
+    /// outstanding before that callback. So a request found due anywhere else
+    /// was found by an exit that is neither: a kick that stopped the guest in
+    /// ring 0, in the syscall trampoline before its VMCALL or in an exception
+    /// stub before its HLT, or an `rt_sigreturn`, whose return restores a
+    /// signal frame's context. It is armed again at its target, so the next
+    /// entry has the timer overflow at the earliest count past the clock. The
+    /// exit that follows the trampoline or the stub (its VMCALL or its HLT)
+    /// decides it then, and after an `rt_sigreturn` the kick that follows the
+    /// restored context's next RCBs in user mode delivers it.
+    pub(crate) fn timer_instruction_boundary(&mut self) -> Result<Option<ToolInstructionBoundary>> {
+        let Some(due) = self.vcpu.timer_due() else {
+            return Ok(None);
+        };
+        let special = self.vcpu.get_sregs()?;
+        if special.cs.dpl != 3 {
+            self.vcpu.defer_due_timer();
+            return Ok(None);
+        }
+        let registers = self.vcpu.get_regs()?;
+        self.vcpu.take_due_timer();
+        Ok(Some(ToolInstructionBoundary::Timer(InstructionBoundary {
+            registers,
+            instruction: due,
+            special_registers: special,
+            code_segment: special.cs.selector,
+            stack_segment: special.ss.selector,
+        })))
+    }
+
+    /// The thread's due timer request, taken for `Tool::handle_timer_event`
+    /// at the return of the syscall whose exit found it due, or None. With no
+    /// request due it issues no syscall. The syscall made no Tool callback,
+    /// which would have cancelled the request, and it has completed: the
+    /// callback sees `returned`, the user registers the guest resumes with
+    /// (see `process_syscall_return_registers`), in user mode. The vCPU itself
+    /// waits in the ring-0 trampoline, which returns the guest to them on the
+    /// next entry. Delivering here, rather than at a later kick in user mode,
+    /// keeps a guest that makes syscalls faster than a kick lands from
+    /// postponing the event to its last one.
+    pub(crate) fn syscall_return_timer_boundary(
+        &mut self,
+        returned: kvm_regs,
+    ) -> Result<Option<ToolInstructionBoundary>> {
+        let Some(due) = self.vcpu.timer_due() else {
+            return Ok(None);
+        };
+        let special = self.vcpu.get_sregs()?;
+        self.vcpu.take_due_timer();
+        Ok(Some(ToolInstructionBoundary::Timer(InstructionBoundary {
+            registers: returned,
+            instruction: due,
+            special_registers: special,
+            code_segment: crate::signal::USER_CODE_SELECTOR,
+            stack_segment: crate::signal::USER_DATA_SELECTOR,
+        })))
+    }
+
     fn cpuid_instruction_exception(&self) -> Result<Option<CpuidBoundary>> {
         if !self.cpuid_interception.enabled() {
             return Ok(None);
@@ -5008,6 +5085,9 @@ impl KvmBackend {
                 .ok_or_else(|| Error::UnexpectedVcpuExit("CPUID RIP overflow".to_owned()))?;
                 self.resume_instruction_registers(boundary, registers)
             }
+            // The guest resumes where the timer event found it: nothing of
+            // its register file was replaced, and the next entry runs it on.
+            (ToolInstructionBoundary::Timer(_), ToolInstructionResult::Timer) => Ok(()),
             _ => Err(Error::UnexpectedVcpuExit(
                 "instruction callback result kind changed".to_owned(),
             )),
