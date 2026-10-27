@@ -32,6 +32,7 @@ mod entry_driver;
 mod preemption_timer;
 mod runtime;
 mod stats;
+mod step_filter;
 mod timestamp;
 mod tools;
 mod vm;

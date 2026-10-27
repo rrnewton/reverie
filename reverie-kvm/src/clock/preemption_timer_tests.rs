@@ -174,11 +174,18 @@ fn timer_count(vcpu: &CountedVcpu) -> u64 {
     value
 }
 
+/// A request found due. These tests take no single steps, so a precise
+/// request is always late, and an on-time one is imprecise.
 fn due(target: u64, clock: u64, late: bool) -> Option<TimerDue> {
     Some(TimerDue {
         target,
         clock,
         late,
+        kind: if late {
+            TimerKind::Precise
+        } else {
+            TimerKind::Imprecise
+        },
     })
 }
 
@@ -747,7 +754,14 @@ fn re_arm_after(
     interlude: impl FnOnce(&mut crate::KvmBackend),
 ) -> (Option<u64>, Vec<(Exit, u64)>, TimerDue) {
     let block = u64::from(RE_ARM_BLOCK);
-    let margin = margin();
+    // The request is staged: its first stage is programmed one first stage
+    // margin short of the target.
+    let config = reverie::pmu_config::try_get_pmu_config().unwrap();
+    let margin = if config.stages(RE_ARM_TARGET) {
+        config.first_stage_margin()
+    } else {
+        config.skid_margin()
+    };
     let mut backend = counted_backend(&block_loop(RE_ARM_BLOCK), placement);
     backend
         .vcpu
@@ -1051,6 +1065,7 @@ fn a_request_due_outside_user_mode_is_delivered_back_in_it(placement: CounterPla
         target: block,
         clock: block,
         late: false,
+        kind: TimerKind::Imprecise,
     };
     backend.vcpu.clock.timer = TimerState::Due(found);
     assert!(backend.timer_instruction_boundary().unwrap().is_none());
@@ -1060,6 +1075,7 @@ fn a_request_due_outside_user_mode_is_delivered_back_in_it(placement: CounterPla
             target: block,
             kind: TimerKind::Imprecise,
             margin: 0,
+            first_stage: None,
         }
     );
     // A syscall exit before the kick finds it due in ring 0 again.
@@ -1087,6 +1103,7 @@ fn a_request_due_outside_user_mode_is_delivered_back_in_it(placement: CounterPla
             target: block,
             clock,
             late: false,
+            kind: TimerKind::Imprecise,
         }
     );
     let user = boundary.user_registers();
@@ -1795,4 +1812,83 @@ fn sigurg_ends_kvm_run_under_the_vcpu_mask_only_while_the_thread_leaves_it_unblo
         );
     }
     assert_eq!(reverie::take_skid_overshoot_count(), 0);
+}
+
+/// Single steps through the stepping engine take a precise request on
+/// `SPINNER` exactly to its target, on time, and this reports what that
+/// costs: the steps per event and the mean time per step. Each request is
+/// unstaged, so the event is first programmed one skid margin short of its
+/// target, and the steps start where its kick stops the guest. A kick that
+/// comes later than the margin, which the PMU's interrupt latency makes
+/// happen to about one in a thousand, finds the target passed: that event is
+/// late and recorded, and is counted apart.
+#[test]
+fn single_steps_take_a_precise_request_exactly_to_its_target() {
+    let _turn = witness_turn();
+    let margin = margin();
+    let ticks = 4 * margin;
+    let events = 50;
+    let mut backend = counted_backend(&SPINNER, CounterPlacement::default());
+    let mut steps = Vec::new();
+    let mut stepping = Duration::ZERO;
+    let mut late = 0;
+    while steps.len() < events {
+        assert!(late <= 5, "{late} late events");
+        let clock = backend.vcpu.read_clock().unwrap();
+        backend
+            .vcpu
+            .request_timer(ticks, TimerKind::Precise)
+            .unwrap();
+        let mut taken = 0_u64;
+        let mut first_step = None;
+        let due = loop {
+            backend.prepare_timer_steps().unwrap();
+            let stepped = backend.vcpu.next_step_mode == StepMode::Step;
+            if stepped && first_step.is_none() {
+                first_step = Some(Instant::now());
+            }
+            match backend.vcpu.run() {
+                Ok(Some(VcpuExit::Debug(debug))) => {
+                    backend.finish_timer_step(debug).unwrap();
+                    taken += u64::from(stepped);
+                }
+                Err(Error::Kvm(error)) if error.errno() == libc::EINTR => {}
+                other => panic!("unexpected exit {other:?}"),
+            }
+            if let Some(due) = backend.vcpu.take_due_timer() {
+                break due;
+            }
+        };
+        let target = clock + ticks;
+        if due.late {
+            // The margin's kick came after the target: nothing was stepped.
+            assert!(due.clock > target && first_step.is_none(), "{due:?}");
+            late += 1;
+            continue;
+        }
+        stepping += first_step.expect("the request was stepped").elapsed();
+        assert_eq!(
+            due,
+            TimerDue {
+                target,
+                clock: target,
+                late: false,
+                kind: TimerKind::Precise,
+            }
+        );
+        steps.push(taken);
+    }
+    assert_eq!(reverie::take_skid_overshoot_count(), late);
+    steps.sort_unstable();
+    let total: u64 = steps.iter().sum();
+    println!(
+        "{events} precise events {ticks} RCBs apart, skid margin {margin}, and {late} late: \
+         steps per event min {} median {} max {}; {:.2} us per step ({} steps in {:?})",
+        steps[0],
+        steps[steps.len() / 2],
+        steps[steps.len() - 1],
+        stepping.as_secs_f64() * 1e6 / total as f64,
+        total,
+        stepping,
+    );
 }
