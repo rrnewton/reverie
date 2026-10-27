@@ -147,6 +147,10 @@ impl<T: Tool> KvmGuest<'_, T> {
                     ));
                 }
                 let id = effect.id();
+                // The signal's event cancels an outstanding timer request,
+                // one this syscall's callback made, before the signal's
+                // callback, as at every boundary.
+                self.executor.cancel_timer();
                 let tool = self.process_state.clone();
                 let replacement = tool
                     .handle_structured_signal_event(self, pending.event)
