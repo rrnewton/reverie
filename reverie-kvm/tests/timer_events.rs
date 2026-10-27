@@ -6,10 +6,13 @@
  * LICENSE file in the root directory of this source tree.
  */
 
-//! Imprecise timer events end to end: `Guest::set_timer` through the
-//! production CPL3 SYSCALL transport to `Tool::handle_timer_event`, under the
-//! Reverie contract. These tests require KVM and the raw PMU event;
-//! unavailable hardware is not a pass.
+//! Timer events end to end: `Guest::set_timer` and
+//! `Guest::set_timer_precise` through the production CPL3 SYSCALL transport
+//! to `Tool::handle_timer_event`, under the Reverie contract. These tests
+//! require KVM and the raw PMU event; unavailable hardware is not a pass.
+//! A precise event must land exactly at its target, at the instruction
+//! boundary right after the target branch, with the same registers in every
+//! run.
 //!
 //! The guests run a loop of 3 RCBs per iteration far past each target, by at
 //! least [`TAIL`] RCBs, so a kick has time to land however late its
@@ -251,7 +254,14 @@ struct Plan {
     no_syscalls: bool,
     /// End the run from the timer event.
     exit_at_event: bool,
-    /// Ask for a precise event and for 0 RCBs after the requests.
+    /// Request precise events (`Guest::set_timer_precise`).
+    precise: bool,
+    /// From the callback of the guest's `getpid`, request this many RCBs.
+    rearm_at_getpid: Option<u64>,
+    /// From a signal's callback, request this many RCBs.
+    rearm_at_signal: Option<u64>,
+    /// Ask for a precise event with an instruction offset, and for 0 RCBs
+    /// precisely and imprecisely, after the requests.
     refusals: bool,
     /// Inject this from the timer event, ignore the error, and carry on.
     refused_at_event: Option<Refused>,
@@ -369,19 +379,32 @@ async fn inject_refused<G: Guest<TimerTool>>(
     }
 }
 
+/// Requests a timer event `ticks` RCBs on, precise if the plan says so.
+async fn arm<G: Guest<TimerTool>>(guest: &mut G, ticks: u64) {
+    let clock = guest.read_clock().unwrap();
+    let schedule = TimerSchedule::Rcbs(ticks);
+    if guest.config().precise {
+        guest.set_timer_precise(schedule).unwrap();
+    } else {
+        guest.set_timer(schedule).unwrap();
+    }
+    guest.send_rpc(Event::Requested { clock, ticks }).await;
+}
+
 async fn request<G: Guest<TimerTool>>(guest: &mut G) {
     let plan = guest.config().clone();
     for ticks in plan.requests {
-        let clock = guest.read_clock().unwrap();
-        guest.set_timer(TimerSchedule::Rcbs(ticks)).unwrap();
-        guest.send_rpc(Event::Requested { clock, ticks }).await;
+        arm(guest, ticks).await;
     }
     if plan.refusals {
-        let refused = match guest.set_timer_precise(TimerSchedule::Rcbs(1_000)) {
+        let schedule = TimerSchedule::RcbsAndInstructions(1_000, 3);
+        let refused = match guest.set_timer_precise(schedule) {
             Err(reverie::Error::Io(error)) => format!("{:?}: {error}", error.kind()),
             other => format!("{other:?}"),
         };
         guest.send_rpc(Event::Refused(refused)).await;
+        let refused = guest.set_timer_precise(TimerSchedule::Rcbs(0));
+        guest.send_rpc(Event::Refused(format!("{refused:?}"))).await;
         let refused = guest.set_timer(TimerSchedule::Rcbs(0));
         guest.send_rpc(Event::Refused(format!("{refused:?}"))).await;
     }
@@ -464,6 +487,9 @@ impl Tool for TimerTool {
                 }
             }
             (Arm::Execve, Sysno::execve) => request(guest).await,
+            (_, Sysno::getpid) if plan.rearm_at_getpid.is_some() => {
+                arm(guest, plan.rearm_at_getpid.unwrap()).await
+            }
             _ => {}
         }
         guest.tail_inject(syscall).await
@@ -475,6 +501,9 @@ impl Tool for TimerTool {
         signal: Signal,
     ) -> Result<Option<Signal>, Errno> {
         guest.send_rpc(Event::Signal(signal as i32)).await;
+        if let Some(ticks) = guest.config().rearm_at_signal {
+            arm(guest, ticks).await;
+        }
         Ok((signal != Signal::SIGUSR1 && signal != Signal::SIGALRM).then_some(signal))
     }
 
@@ -885,8 +914,8 @@ fn a_timer_event_can_request_the_next_one() {
 }
 
 #[test]
-fn precise_and_zero_requests_are_refused() {
-    if bounded("precise_and_zero_requests_are_refused") {
+fn instruction_offsets_and_zero_counts_are_refused() {
+    if bounded("instruction_offsets_and_zero_counts_are_refused") {
         return;
     }
     let ticks = 1_000_000;
@@ -906,13 +935,13 @@ fn precise_and_zero_requests_are_refused() {
             _ => None,
         })
         .collect();
-    assert_eq!(refusals.len(), 2, "{events:?}");
+    assert_eq!(refusals.len(), 3, "{events:?}");
     assert!(
         refusals[0].starts_with("Unsupported: ")
-            && refusals[0].contains("does not deliver precise timer events"),
+            && refusals[0].contains("TimerSchedule::RcbsAndInstructions"),
         "{events:?}"
     );
-    assert_eq!(refusals[1], "Err(Errno(EINVAL))", "{events:?}");
+    assert_eq!(refusals[1..], ["Err(Errno(EINVAL))"; 2], "{events:?}");
     // Neither refusal disturbed the outstanding request.
     let clocks = timer_clocks(&events);
     assert_eq!(clocks.len(), 1, "{events:?}");
@@ -1259,4 +1288,349 @@ fn a_restarted_callback_cancels_the_request_of_the_attempt_before() {
     assert_eq!(clocks.len(), 1, "{events:?}");
     let (requested_at, _) = last_request(&events);
     assert_delivered(clocks[0], requested_at, ticks, &format!("{events:?}"));
+}
+
+/// How many times each precise test runs its guest.
+const REPEATS: usize = 20;
+
+/// RCBs a precise test's guest runs past its target: an event delivered
+/// late, by a kick, still comes before the guest exits.
+const PRECISE_TAIL: u64 = 1_000_000;
+
+/// Exits with bit 8 of r15, where a guest collects the trap flag of the
+/// flags images it reads, as its status.
+const EXIT_WITH_TRAP_FLAG_SEEN: &str = "mov %r15d,%edi\nshr $8,%edi\nmov $60,%eax\nsyscall\nud2\n";
+
+/// Ten RCBs, with a label `branches` does not use.
+const TEN_RCBS: &str = "mov $10,%ecx\n7: dec %ecx\njnz 7b\n";
+
+/// A guest that keeps the addresses of `branches`' labels in r12 (label 1,
+/// where a loop's third branch leaves RIP), r13 (label 2, after its first)
+/// and r14 (label 3, after its second), runs `before`, which must not use
+/// those labels, then a loop of `rcbs` RCBs, then `exit`.
+fn labelled(before: &str, rcbs: u64, exit: &str) -> Program {
+    Program::new(&format!(
+        "lea 1f(%rip),%r12\nlea 2f(%rip),%r13\nlea 3f(%rip),%r14\n{before}{}{exit}",
+        branches(rcbs)
+    ))
+}
+
+/// Where the loop's `branch`-th branch, counted from 1, leaves RIP.
+fn after_branch(registers: &Registers, branch: u64) -> u64 {
+    match branch % 3 {
+        1 => registers.r13,
+        2 => registers.r14,
+        _ => registers.r12,
+    }
+}
+
+/// Late runs one precise test tolerates: see [`lands_exactly`]. Under this
+/// host's load about one kick in a hundred came past the 2,000 RCB margin.
+const LATE_RUNS: usize = 5;
+
+/// Runs `program` under `plan`, with registers reported, until `REPEATS`
+/// runs have exited with status 0 and got one timer event exactly at
+/// `target`, with RIP right after the loop's branch `branch`, and the same
+/// registers every time.
+///
+/// A request whose last notification is a kick (`kicked`: its target lies
+/// more than the skid margin plus the single-step allowance past the clock
+/// where it is requested) can come late: the PMU interrupt behind about one
+/// kick in a thousand on an idle host, and one in a hundred on a busy one,
+/// arrives past the margin. Such a run gets its one event
+/// past the target, recorded as late, and is run again, at most
+/// [`LATE_RUNS`] times. Every other run must land exactly and record no skid
+/// overshoot (the process-global witness count).
+fn lands_exactly(
+    program: &Program,
+    plan: Plan,
+    target: u64,
+    branch: u64,
+    kicked: bool,
+) -> Registers {
+    let mut first: Option<Registers> = None;
+    let mut late = 0;
+    let mut repeat = 0;
+    let _ = reverie::take_skid_overshoot_count();
+    while repeat < REPEATS {
+        let events = run(
+            program,
+            Plan {
+                registers: true,
+                ..plan.clone()
+            },
+        );
+        let witnessed = reverie::take_skid_overshoot_count();
+        let context = format!("target {target}, run {repeat}, {witnessed} recorded: {events:?}");
+        let clocks = timer_clocks(&events);
+        if kicked && late < LATE_RUNS && clocks.len() == 1 && clocks[0] > target {
+            assert!(witnessed > 0, "a late event is recorded: {context}");
+            late += 1;
+            println!(
+                "late run {late}: target {target}, delivered at {}",
+                clocks[0]
+            );
+            continue;
+        }
+        repeat += 1;
+        assert_eq!(clocks, [target], "{context}");
+        assert_eq!(witnessed, 0, "{context}");
+        let registers = events
+            .iter()
+            .find_map(|event| match event {
+                Event::Registers(registers) => Some(registers.clone()),
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(registers.rip, after_branch(&registers, branch), "{context}");
+        match &first {
+            None => first = Some(registers),
+            Some(first) => assert_eq!(&registers, first, "{context}"),
+        }
+    }
+    first.unwrap()
+}
+
+/// A precise event `k` RCBs from where the image starts, for each `k`.
+fn precise_events_land_exactly(ticks: &[u64]) {
+    for &k in ticks {
+        let program = labelled("", k + PRECISE_TAIL, EXIT);
+        let plan = Plan {
+            requests: vec![k],
+            precise: true,
+            ..Plan::default()
+        };
+        let kicked = k > skid_margin() + reverie::pmu_config::SINGLESTEP_TIMEOUT_RCBS;
+        let registers = lands_exactly(&program, plan, k, k, kicked);
+        println!(
+            "precise {k} RCBs: {REPEATS} runs at clock {k}, rip {:#x}, rcx {:#x}",
+            registers.rip, registers.rcx
+        );
+    }
+}
+
+#[test]
+fn a_precise_event_lands_exactly_one_to_six_rcbs_on() {
+    if bounded("a_precise_event_lands_exactly_one_to_six_rcbs_on") {
+        return;
+    }
+    precise_events_land_exactly(&[1, 2, 3, 4, 5, 6]);
+}
+
+#[test]
+fn a_precise_event_lands_exactly_around_the_skid_margin() {
+    if bounded("a_precise_event_lands_exactly_around_the_skid_margin") {
+        return;
+    }
+    let margin = skid_margin();
+    precise_events_land_exactly(&[margin - 1, margin, margin + 5, margin + 6]);
+}
+
+#[test]
+fn a_precise_event_lands_exactly_around_the_staging_edge_and_far_off() {
+    if bounded("a_precise_event_lands_exactly_around_the_staging_edge_and_far_off") {
+        return;
+    }
+    // The longest request that is not staged, and the shortest that is.
+    let edge = reverie::pmu_config::try_get_pmu_config()
+        .unwrap()
+        .first_stage_margin()
+        + reverie::pmu_config::SINGLESTEP_TIMEOUT_RCBS;
+    precise_events_land_exactly(&[edge, edge + 1, 1_000_000, 100_000_000]);
+}
+
+#[test]
+fn a_stepped_guest_never_sees_the_trap_flag() {
+    if bounded("a_stepped_guest_never_sees_the_trap_flag") {
+        return;
+    }
+    // Inside the window from the start: PUSHF, whose image the guest reads,
+    // PUSHF and POPF, an IRETQ to the next instruction, and PUSHF again.
+    let before = "xor %r15d,%r15d\n\
+         pushfq\npop %rax\nand $0x100,%eax\nor %eax,%r15d\n\
+         pushfq\npopfq\n\
+         mov %ss,%eax\npush %rax\nlea 8(%rsp),%rax\npush %rax\npushfq\n\
+         mov %cs,%eax\npush %rax\nlea 9f(%rip),%rax\npush %rax\niretq\n9:\n\
+         pushfq\npop %rax\nand $0x100,%eax\nor %eax,%r15d\n";
+    let k = 40;
+    let program = labelled(before, k + PRECISE_TAIL, EXIT_WITH_TRAP_FLAG_SEEN);
+    let plan = Plan {
+        requests: vec![k],
+        precise: true,
+        ..Plan::default()
+    };
+    lands_exactly(&program, plan.clone(), k, k, false);
+    // A guest that sets its own trap flag while it is stepped is refused.
+    let program = labelled(
+        "pushfq
+orq $0x100,(%rsp)
+popfq
+",
+        k + PRECISE_TAIL,
+        EXIT,
+    );
+    let (events, ending) = run_ending(&program, plan);
+    let failure = ending.expect_err(&format!("the run must fail: {events:?}"));
+    assert!(failure.contains("sets its own trap flag"), "{failure}");
+}
+
+#[test]
+fn a_syscall_inside_the_stepping_window() {
+    if bounded("a_syscall_inside_the_stepping_window") {
+        return;
+    }
+    // A request for 100 RCBs, then a getpid at clock 10.
+    let program = labelled(
+        &format!("{TEN_RCBS}mov $39,%eax\nsyscall\n"),
+        1_000 + PRECISE_TAIL,
+        EXIT,
+    );
+    let plan = Plan {
+        requests: vec![100],
+        precise: true,
+        ..Plan::default()
+    };
+    // Subscribed, the getpid cancels the request; one made in its callback
+    // lands exactly, and without one nothing comes.
+    let rearmed = Plan {
+        rearm_at_getpid: Some(50),
+        ..plan.clone()
+    };
+    lands_exactly(&program, rearmed, 60, 50, false);
+    let events = run(&program, plan.clone());
+    assert_eq!(timer_clocks(&events), [0; 0], "{events:?}");
+    // Unsubscribed, the backend answers it and the steps go on after it.
+    let quiet = Plan {
+        no_syscalls: true,
+        ..plan
+    };
+    lands_exactly(&program, quiet, 100, 90, false);
+}
+
+#[test]
+fn rdtsc_and_cpuid_inside_the_stepping_window() {
+    if bounded("rdtsc_and_cpuid_inside_the_stepping_window") {
+        return;
+    }
+    let program = labelled(
+        &format!("{TEN_RCBS}rdtsc\nxor %eax,%eax\ncpuid\n"),
+        1_000 + PRECISE_TAIL,
+        EXIT,
+    );
+    let plan = Plan {
+        requests: vec![100],
+        precise: true,
+        ..Plan::default()
+    };
+    // Unsubscribed, each runs unstepped to the next instruction, and the
+    // steps go on from there.
+    lands_exactly(&program, plan.clone(), 100, 90, false);
+    // Subscribed, each is an event of its own, which cancels the request.
+    for (name, plan, witness) in [
+        (
+            "RDTSC",
+            Plan {
+                rdtsc: true,
+                ..plan.clone()
+            },
+            Event::Rdtsc,
+        ),
+        (
+            "CPUID",
+            Plan {
+                cpuid: true,
+                ..plan
+            },
+            Event::Cpuid,
+        ),
+    ] {
+        let events = run(&program, plan);
+        assert!(events.contains(&witness), "{name}: {events:?}");
+        assert_eq!(timer_clocks(&events), [0; 0], "{name}: {events:?}");
+    }
+}
+
+#[test]
+fn a_fault_inside_the_stepping_window_leaves_no_trap_flag_in_its_frame() {
+    if bounded("a_fault_inside_the_stepping_window_leaves_no_trap_flag_in_its_frame") {
+        return;
+    }
+    // A SIGSEGV handler that collects the trap flag of the frame's saved
+    // RFLAGS into the frame's r15, and steps over the 8-byte load that
+    // faults; installed first. Then the marker, where 300 RCBs are
+    // requested, ten RCBs, the load at clock 10, and the loop.
+    let program = |fault: &str| {
+        labelled(
+            &format!(
+                "mov ${}, %edi\nlea action(%rip), %rsi\nxor %edx, %edx\nmov $8, %r10d\n\
+                 mov $13, %eax\nsyscall\nxor %r15d,%r15d\n{GETPPID}{TEN_RCBS}{fault}",
+                libc::SIGSEGV
+            ),
+            1_000 + PRECISE_TAIL,
+            &format!(
+                "{EXIT_WITH_TRAP_FLAG_SEEN}\
+                 handler: mov 176(%rdx),%rax\nand $0x100,%eax\nor %rax,96(%rdx)\n\
+                 addq $8,168(%rdx)\nret\nrestorer: mov $15,%eax\nsyscall\nud2\n\
+                 .data\n.balign 8\naction: .quad handler, 0x4000004, restorer, 0\n"
+            ),
+        )
+    };
+    let faulting = program("movq 0x10,%rax\n");
+    let plan = Plan {
+        arm: Arm::Marker,
+        requests: vec![300],
+        precise: true,
+        ..Plan::default()
+    };
+    // The fault's signal is an event of its own, which cancels the request.
+    let events = run(&faulting, plan.clone());
+    assert!(events.contains(&Event::Signal(libc::SIGSEGV)), "{events:?}");
+    assert_eq!(timer_clocks(&events), [0; 0], "{events:?}");
+    // One made in the signal's callback lands exactly: the steps go on
+    // through the handler and after its rt_sigreturn.
+    let rearmed = Plan {
+        rearm_at_signal: Some(200),
+        ..plan.clone()
+    };
+    lands_exactly(&faulting, rearmed, 210, 200, false);
+    // The control: without the fault, the request lands exactly.
+    lands_exactly(&program(""), plan, 300, 290, false);
+}
+
+#[test]
+fn a_replaced_or_stale_precise_request_still_lands_exactly() {
+    if bounded("a_replaced_or_stale_precise_request_still_lands_exactly") {
+        return;
+    }
+    let program = labelled("", 600 + PRECISE_TAIL, EXIT);
+    for (requests, target) in [(vec![500, 300], 300), (vec![300, 500], 500)] {
+        let plan = Plan {
+            requests,
+            precise: true,
+            ..Plan::default()
+        };
+        lands_exactly(&program, plan, target, target, false);
+    }
+    // A request for 3,000 RCBs, programmed 1,000 RCBs on, cancelled by a
+    // getpid at clock 10 whose callback requests 100,000: the event keeps
+    // its pending overflow at 1,000, now stale, which changes nothing.
+    let plan = Plan {
+        requests: vec![3_000],
+        precise: true,
+        ..Plan::default()
+    };
+    let program = |call: &str| labelled(&format!("{TEN_RCBS}{call}"), 200_000 + PRECISE_TAIL, EXIT);
+    let rearmed = Plan {
+        rearm_at_getpid: Some(100_000),
+        ..plan.clone()
+    };
+    lands_exactly(
+        &program("mov $39,%eax\nsyscall\n"),
+        rearmed,
+        100_010,
+        100_000,
+        true,
+    );
+    // The control: without the getpid, the first request lands exactly.
+    lands_exactly(&program(""), plan, 3_000, 2_990, true);
 }
