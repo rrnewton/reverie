@@ -12,9 +12,20 @@ use std::sync::atomic::Ordering;
 use std::time::Duration;
 use std::time::Instant;
 
+use reverie::Error;
+use reverie::GlobalRPC;
+use reverie::Guest;
+use reverie::Tool;
+use reverie::syscalls::Syscall;
+use reverie::syscalls::SyscallArgs;
+use reverie::syscalls::SyscallInfo;
+use reverie::syscalls::Sysno;
 use serde::Deserialize;
 
 use super::*;
+use crate::DbtGuest;
+use crate::DbtSyscallOutcome;
+use crate::run_tool_syscall_with_guest;
 
 const CHILD: &str = "REVERIE_DBT_SHARED_RPC_TEST_CHILD";
 
@@ -359,6 +370,247 @@ fn exercise_both_paths() {
     CLIENT.with(|slot| {
         slot.borrow_mut().take();
     });
+    exercise_public_driver();
+}
+
+#[derive(Default)]
+struct DriverTool;
+
+#[reverie::tool]
+impl Tool for DriverTool {
+    type GlobalState = Global;
+    type ThreadState = Vec<i64>;
+
+    async fn handle_syscall_event<G: Guest<Self>>(
+        &self,
+        guest: &mut G,
+        syscall: Syscall,
+    ) -> Result<i64, Error> {
+        // The Runtime entry must establish the actual primary before the
+        // first Tool callback, without relying on the handler to send RPC.
+        let primary = GUEST_CLIENT.descriptor(std::process::id()).unwrap();
+        assert!(guest.is_runtime_owned_fd(primary));
+        let number = syscall.number();
+        guest.thread_state_mut().push(number.id() as i64);
+        if number == Sysno::getpid {
+            assert_eq!(guest.send_rpc(Request(61)).await, Response(61, 61));
+        }
+        if matches!(number, Sysno::close | Sysno::close_range) {
+            guest.tail_inject(syscall).await
+        } else {
+            Ok(guest.inject(syscall).await?)
+        }
+    }
+}
+
+struct UnusedEndpoint;
+
+#[reverie::tool]
+impl GlobalRPC<Global> for UnusedEndpoint {
+    async fn send_rpc(&self, _: Request) -> Response {
+        panic!("operation protection must not issue endpoint RPC")
+    }
+
+    fn config(&self) -> &u64 {
+        &83
+    }
+}
+
+unsafe extern "C" fn no_register_read(_: usize, _: *mut libc::user_regs_struct) -> i32 {
+    panic!("these syscall hooks do not read registers")
+}
+
+unsafe extern "C" fn no_register_write(_: usize, _: *const libc::user_regs_struct) -> i32 {
+    panic!("these syscall hooks do not write registers")
+}
+
+fn exercise_public_driver() {
+    assert!(GUEST_CLIENT.descriptor(std::process::id()).is_none());
+    let mut callback = Callback::default();
+    let local_global = Global::default();
+    let mut state = Vec::new();
+    let guest = DbtGuest::<DriverTool>::new(
+        &mut callback as *mut Callback as usize,
+        Tid::from_raw(61),
+        Tid::from_raw(59),
+        None,
+        0,
+        &mut state,
+        &local_global,
+        &83,
+        invoke_callback,
+        no_register_read,
+        no_register_write,
+    );
+    let call = Syscall::from_raw(Sysno::getpid, SyscallArgs::new(0, 0, 0, 0, 0, 0));
+    assert!(
+        matches!(run_tool_syscall_with_guest(&DriverTool, guest, call).unwrap(),
+        DbtSyscallOutcome::Suppress(pid) if pid == i64::from(std::process::id()))
+    );
+    assert_eq!(state, [libc::SYS_getpid]);
+    assert_eq!(callback.count(libc::SYS_socket), 1);
+    assert_eq!(callback.count(libc::SYS_connect), 1);
+    assert_eq!(callback.count(libc::SYS_getpid), 1);
+    assert!(
+        local_global.requests.lock().unwrap().is_empty(),
+        "local fallback"
+    );
+    let primary = GUEST_CLIENT.descriptor(std::process::id()).unwrap();
+    let primary_identity = std::fs::read_link(format!("/proc/self/fd/{primary}")).unwrap();
+    let neighbor = std::fs::File::open("/dev/null").unwrap();
+    assert_ne!(primary, neighbor.as_raw_fd());
+
+    state.clear();
+    callback.calls.clear();
+    for (number, args, expected, tool_calls) in [
+        // The invalid output pointer is never used: the driver must refuse
+        // before entering the handler, RPC endpoint or native target call.
+        (
+            Sysno::fstat,
+            SyscallArgs::new(primary as usize, 0, 0, 0, 0, 0),
+            -i64::from(libc::EBADF),
+            0,
+        ),
+        (
+            Sysno::close,
+            SyscallArgs::new(primary as usize, 0, 0, 0, 0, 0),
+            -i64::from(libc::EBADF),
+            1,
+        ),
+        (
+            Sysno::close_range,
+            SyscallArgs::new(primary as usize, primary as usize, 0, 0, 0, 0),
+            0,
+            2,
+        ),
+    ] {
+        let guest = DbtGuest::<DriverTool>::new_with_rpc(
+            &mut callback as *mut Callback as usize,
+            Tid::from_raw(61),
+            Tid::from_raw(59),
+            None,
+            0,
+            &mut state,
+            &UnusedEndpoint,
+            invoke_callback,
+            no_register_read,
+            no_register_write,
+        );
+        assert!(
+            matches!(run_tool_syscall_with_guest(&DriverTool, guest, Syscall::from_raw(number, args)).unwrap(),
+            DbtSyscallOutcome::Suppress(result) if result == expected)
+        );
+        assert_eq!(state.len(), tool_calls);
+        assert!(callback.calls.is_empty());
+        assert_eq!(
+            std::fs::read_link(format!("/proc/self/fd/{primary}")).unwrap(),
+            primary_identity
+        );
+        assert_eq!(
+            unsafe { libc::fcntl(primary, libc::F_GETFD) },
+            libc::FD_CLOEXEC
+        );
+    }
+    assert_eq!(state, [libc::SYS_close, libc::SYS_close_range]);
+    let guest = DbtGuest::<DriverTool>::new_with_rpc(
+        &mut callback as *mut Callback as usize,
+        Tid::from_raw(61),
+        Tid::from_raw(59),
+        None,
+        0,
+        &mut state,
+        &UnusedEndpoint,
+        invoke_callback,
+        no_register_read,
+        no_register_write,
+    );
+    let call = Syscall::from_raw(
+        Sysno::fcntl,
+        SyscallArgs::new(
+            neighbor.as_raw_fd() as usize,
+            libc::F_GETFD as usize,
+            0,
+            0,
+            0,
+            0,
+        ),
+    );
+    assert!(
+        matches!(run_tool_syscall_with_guest(&DriverTool, guest, call).unwrap(),
+        DbtSyscallOutcome::Suppress(result) if result == i64::from(libc::FD_CLOEXEC))
+    );
+    assert_eq!(callback.calls, [(libc::SYS_fcntl, neighbor.as_raw_fd())]);
+    assert_eq!(
+        state,
+        [libc::SYS_close, libc::SYS_close_range, libc::SYS_fcntl]
+    );
+}
+
+#[test]
+fn runtime_driver_setup_error_precedes_the_tool_and_target_operation() {
+    const FAILURE_CHILD: &str = "REVERIE_DBT_DRIVER_SETUP_FAILURE_CHILD";
+    if std::env::var_os(FAILURE_CHILD).is_some() {
+        assert!(GUEST_CLIENT.descriptor(std::process::id()).is_none());
+        let mut callback = Callback::default();
+        let global = Global::default();
+        let mut state = Vec::new();
+        let guest = DbtGuest::<DriverTool>::new(
+            &mut callback as *mut Callback as usize,
+            Tid::from_raw(61),
+            Tid::from_raw(59),
+            None,
+            0,
+            &mut state,
+            &global,
+            &83,
+            invoke_callback,
+            no_register_read,
+            no_register_write,
+        );
+        let call = Syscall::from_raw(Sysno::getpid, SyscallArgs::new(0, 0, 0, 0, 0, 0));
+        assert!(
+            matches!(run_tool_syscall_with_guest(&DriverTool, guest, call),
+            Err(Error::Io(error)) if error.raw_os_error() == Some(libc::ENOENT))
+        );
+        assert!(state.is_empty());
+        assert!(global.requests.lock().unwrap().is_empty());
+        assert_eq!(callback.count(libc::SYS_socket), 1);
+        assert_eq!(callback.count(libc::SYS_connect), 1);
+        assert_eq!(callback.count(libc::SYS_getpid), 0);
+        assert_eq!(callback.count(libc::SYS_read), 0);
+        assert_eq!(callback.count(libc::SYS_write), 0);
+        assert!(GUEST_CLIENT.descriptor(std::process::id()).is_none());
+        return;
+    }
+    let directory = tempfile::tempdir().unwrap();
+    let dirfd = std::fs::File::open(directory.path()).unwrap();
+    let path = format!(
+        "/proc/{}/fd/{}/absent",
+        std::process::id(),
+        dirfd.as_raw_fd()
+    );
+    let mut child = std::process::Command::new(std::env::current_exe().unwrap())
+        .args(["--exact", "sync_rpc::shared_client_tests::runtime_driver_setup_error_precedes_the_tool_and_target_operation", "--test-threads=1"])
+        .env(FAILURE_CHILD, "1").env(RPC_SOCKET_ENV, path)
+        .stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped()).spawn().unwrap();
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while child.try_wait().unwrap().is_none() {
+        if Instant::now() >= deadline {
+            child.kill().unwrap();
+            panic!(
+                "setup-error control timed out: {:?}",
+                child.wait_with_output().unwrap()
+            );
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    let output = child.wait_with_output().unwrap();
+    assert!(output.status.success(), "{output:?}");
+    assert!(
+        String::from_utf8(output.stdout)
+            .unwrap()
+            .contains("test result: ok. 1 passed;")
+    );
 }
 
 #[test]
@@ -438,7 +690,8 @@ fn actual_dbt_clients_share_transport_and_keep_callback_and_pending_request_boun
             (34, 99),
             (41, 100),
             (42, 101),
-            (51, 6)
+            (51, 6),
+            (61, 61)
         ]
     );
 }

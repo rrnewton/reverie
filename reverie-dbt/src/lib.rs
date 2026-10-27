@@ -1835,6 +1835,40 @@ pub fn run_tool_syscall_with_memory_reader<T: Tool>(
     )
 }
 
+/// Drives one syscall using the caller's guest and global RPC endpoint.
+///
+/// The guest is consumed for this callback. Its endpoint and thread state must
+/// remain live until the handler completes, including while its future is
+/// suspended. The caller supplies the actual native context, PID, TID, in-tree
+/// parent PID and branch count, and may attach a fault-safe memory reader with
+/// [`DbtGuest::with_memory_reader`]. The caller also owns Tool construction,
+/// subscriptions and lifecycle admission; this function does not perform them.
+/// A positive native parent ID is `Some(Pid)`; a nonpositive ID is `None`.
+///
+/// A guest from [`DbtGuest::new`] prepares its configured native RPC route before
+/// protection or Tool entry. The guest has already been allocated by the caller;
+/// the older driver functions still prepare and protect before allocating it.
+/// A guest from [`DbtGuest::new_with_rpc`] uses only its supplied endpoint and
+/// does not prepare or select an ambient coordinator connection.
+///
+/// Operation protection covers the existing native primary descriptor, when
+/// present. It does not register or protect a borrowed endpoint's own descriptor.
+/// Such an endpoint must be usable in the callback's actual I/O domain; accepting
+/// it here grants no native mapping-capture or activation authority.
+pub fn run_tool_syscall_with_guest<T: Tool>(
+    tool: &T,
+    guest: DbtGuest<'_, T>,
+    syscall: Syscall,
+) -> Result<DbtSyscallOutcome, Error> {
+    if matches!(&guest.rpc, GuestRpc::Runtime(_)) {
+        sync_rpc::prepare_guest(guest.context, guest.invoke_syscall)?;
+    }
+    if let Some(result) = protect_tool_syscall(guest.context, guest.invoke_syscall, syscall, true) {
+        return Ok(DbtSyscallOutcome::Suppress(result));
+    }
+    run_tool_syscall_on_prepared_guest(tool, guest, syscall)
+}
+
 #[allow(clippy::too_many_arguments)]
 fn run_tool_syscall_inner<T: Tool>(
     tool: &T,
@@ -1871,6 +1905,14 @@ fn run_tool_syscall_inner<T: Tool>(
     if let Some(read_memory) = read_memory {
         guest = guest.with_memory_reader(read_memory);
     }
+    run_tool_syscall_on_prepared_guest(tool, guest, syscall)
+}
+
+fn run_tool_syscall_on_prepared_guest<T: Tool>(
+    tool: &T,
+    mut guest: DbtGuest<'_, T>,
+    syscall: Syscall,
+) -> Result<DbtSyscallOutcome, Error> {
     #[cfg(feature = "prototype-runtime")]
     branch_facts::observe_test_bridge(&guest, "tool-syscall", syscall.number().id() as i64);
     let tail_result = Arc::clone(&guest.tail_inject_result);
@@ -1882,7 +1924,7 @@ fn run_tool_syscall_inner<T: Tool>(
             .expect("tool handler suspended without a tail-inject result")
         {
             TailInjectAction::ExecuteOriginal(syscall) => Ok(
-                match protect_tool_syscall(context, invoke_syscall, syscall, false) {
+                match protect_tool_syscall(guest.context, guest.invoke_syscall, syscall, false) {
                     Some(result) => DbtSyscallOutcome::Suppress(result),
                     None => DbtSyscallOutcome::ExecuteOriginal(syscall),
                 },
