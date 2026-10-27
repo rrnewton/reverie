@@ -12837,3 +12837,7 @@ static DELAY_AFTER_CLEAR_TID_WAKE_MS: std::sync::atomic::AtomicU64 =
 #[cfg(test)]
 #[path = "vm/group_exit_order_tests.rs"]
 mod group_exit_order_tests;
+
+#[cfg(test)]
+#[path = "vm/group_exit_injection_loop_tests.rs"]
+mod group_exit_injection_loop_tests;
