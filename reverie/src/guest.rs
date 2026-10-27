@@ -475,6 +475,11 @@ pub trait Guest<T: Tool>: Send + GlobalRPC<T::GlobalState> {
     ///    handle successful calls to `execve`, use [`Tool::handle_post_exec`].
     ///    Failed calls to `execve` will still return, however. Thus, it is safe to
     ///    use [`Result::unwrap_err`] on the result of the `inject`.
+    ///  - An injection by a thread whose thread group has exited (another thread
+    ///    called `exit_group`, for example) never returns: the thread is dead.
+    ///    On the ptrace backend the kernel kills it; on the KVM backend the call
+    ///    is cancelled before it runs, for a call made after the group's exit
+    ///    is published.
     ///
     /// A signal can stop the injected syscall before it runs. The call then
     /// returns `Err(ERESTARTSYS)` rather than a value read from the register
