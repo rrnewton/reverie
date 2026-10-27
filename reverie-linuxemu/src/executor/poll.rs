@@ -8,7 +8,11 @@
 
 //! select, poll and epoll (gVisor: pkg/sentry/syscalls/linux/sys_poll.go, sys_epoll.go, pkg/sentry/vfs/epoll.go).
 
+use std::time::Duration;
+use std::time::Instant;
+
 use super::*;
+use crate::signal::SignalFdWaiter;
 
 /// Positive provenance is minted only by the corresponding native creator.
 /// In particular, a virtual signalfd's eventfd carrier is not NativeEventFd.
@@ -268,8 +272,8 @@ pub(super) fn pselect6(
             return negative_errno(libc::EBADF);
         };
         captured_alias_selected |= capture_output && output_alias(state, fd).is_some();
-        let virtual_signalfd = signalfd_mask(state, fd).is_some();
-        let events = if virtual_signalfd {
+        let signalfd = signalfd_mask(state, fd);
+        let events = if signalfd.is_some() {
             if membership[0] { libc::POLLIN } else { 0 }
         } else {
             // Linux includes the exception mask in its poll key unconditionally.
@@ -280,7 +284,7 @@ pub(super) fn pselect6(
             events,
             revents: 0,
         });
-        requested.push((bit, membership, virtual_signalfd));
+        requested.push((bit, membership, signalfd));
     }
     // Captured output lives in memory, not in the retained host carrier (or
     // ambient host stdout/stderr). Its readiness is not modeled yet. Validate
@@ -296,10 +300,11 @@ pub(super) fn pselect6(
     }
     let mut output = [0_u64; 3];
     let mut ready_count = 0;
-    for (entry, (bit, membership, virtual_signalfd)) in poll_fds.iter().zip(requested) {
-        let readiness = if virtual_signalfd {
-            // Do not expose the private eventfd carrier's always-writable bit.
-            [entry.revents & libc::POLLIN != 0, false, false]
+    for (entry, (bit, membership, signalfd)) in poll_fds.iter().zip(requested) {
+        let readiness = if let Some(mask) = signalfd {
+            // Readable from this thread's queues, never the eventfd keeper's
+            // always-writable bit.
+            [signalfd_readable(state, *mask), false, false]
         } else {
             [READ, WRITE, EXCEPT].map(|mask| entry.revents & mask != 0)
         };
@@ -405,15 +410,15 @@ pub(super) fn select(memory: &mut GuestMemory, state: &LoadedStaticElf, args: &[
         let Some(host_fd) = host_fd(state, guest_fd) else {
             return negative_errno(libc::EBADF);
         };
-        let virtual_signalfd = signalfd_mask(state, guest_fd).is_some();
+        let signalfd = signalfd_mask(state, guest_fd);
         let mut events = 0;
         if membership[0] {
             events |= libc::POLLIN;
         }
-        if membership[1] && !virtual_signalfd {
+        if membership[1] && signalfd.is_none() {
             events |= libc::POLLOUT;
         }
-        if membership[2] && !virtual_signalfd {
+        if membership[2] && signalfd.is_none() {
             events |= libc::POLLPRI;
         }
         poll_fds.push(libc::pollfd {
@@ -421,7 +426,7 @@ pub(super) fn select(memory: &mut GuestMemory, state: &LoadedStaticElf, args: &[
             events,
             revents: 0,
         });
-        requested.push((guest_fd, membership, virtual_signalfd));
+        requested.push((guest_fd, membership, signalfd));
     }
 
     // Detcore owns guest time. Preserve readiness that exists now without
@@ -437,12 +442,12 @@ pub(super) fn select(memory: &mut GuestMemory, state: &LoadedStaticElf, args: &[
         vec![0_u64; word_count],
     ];
     let mut ready_count = 0_i64;
-    for (poll_fd, (guest_fd, membership, virtual_signalfd)) in poll_fds.iter().zip(requested) {
-        let ready = if virtual_signalfd {
-            // The host eventfd is only a private carrier for virtual signal
-            // readiness. A Linux signalfd is read-only and never reports the
-            // eventfd's unconditional POLLOUT readiness.
-            [poll_fd.revents & libc::POLLIN != 0, false, false]
+    for (poll_fd, (guest_fd, membership, signalfd)) in poll_fds.iter().zip(requested) {
+        let ready = if let Some(mask) = signalfd {
+            // Readable from this thread's queues. A Linux signalfd is
+            // read-only and never reports the eventfd keeper's unconditional
+            // POLLOUT readiness.
+            [signalfd_readable(state, *mask), false, false]
         } else {
             [
                 poll_fd.revents & (libc::POLLIN | libc::POLLHUP | libc::POLLERR) != 0,
@@ -600,19 +605,19 @@ fn poll_with_timeout<M: GuestMemoryAccess<Error = crate::Error>>(
         .iter()
         .map(|poll_fd| poll_fd.events)
         .collect::<Vec<_>>();
-    let virtual_signalfds = guest_fds
+    let signalfds = guest_fds
         .iter()
-        .map(|fd| *fd >= 0 && signalfd_mask(state, *fd).is_some())
+        .map(|fd| (*fd >= 0).then(|| signalfd_mask(state, *fd)).flatten())
         .collect::<Vec<_>>();
-    let virtual_signalfd_wait = timeout != 0 && virtual_signalfds.iter().any(|present| *present);
     let mut invalid = vec![false; count];
     for (index, poll_fd) in poll_fds.iter_mut().enumerate() {
         poll_fd.revents = 0;
         if poll_fd.fd < 0 {
             continue;
         }
-        if virtual_signalfds[index] {
-            // A signalfd exposes only the carrier's synthetic readable state.
+        if signalfds[index].is_some() {
+            // A signalfd is only ever readable. Its eventfd keeper's POLLIN
+            // shows the shared queue, which wakes a wait below.
             poll_fd.events &= libc::POLLIN;
         }
         match host_fd(state, poll_fd.fd) {
@@ -623,41 +628,104 @@ fn poll_with_timeout<M: GuestMemoryAccess<Error = crate::Error>>(
             }
         }
     }
+    // The signals of every signalfd asked for POLLIN, the only readiness a
+    // signalfd reports: a signal for one asked only for POLLOUT ends no wait.
+    let mut signal_mask = KernelSigset::default();
+    let mut polls_signalfds = false;
+    for (mask, events) in signalfds.iter().zip(&guest_events) {
+        if let Some(mask) = mask
+            && events & libc::POLLIN != 0
+        {
+            signal_mask.union_with(**mask);
+            polls_signalfds = true;
+        }
+    }
 
     // SYS_poll remains nonblocking for deterministic personality calls. The
     // concurrent KVM ppoll path may block in the host so QEMU's root event loop
     // can wait for worker eventfds without spinning on virtual clock reads.
-    // A virtual signalfd is different: readiness is guest state, so probe it
-    // without blocking and fail closed below only when no event is ready.
     // A missing guest descriptor is already ready with POLLNVAL. Still probe
     // the other descriptors, but never wait for them before reporting it.
-    let host_timeout = if virtual_signalfd_wait || invalid.iter().any(|invalid| *invalid) {
-        0
-    } else {
-        timeout
+    let deadline = u64::try_from(timeout)
+        .ok()
+        .map(|milliseconds| Instant::now() + Duration::from_millis(milliseconds));
+    let mut first = true;
+    let ready_count = loop {
+        // A signalfd already readable by this thread ends the call at once,
+        // as an already-ready descriptor ends Linux's do_poll.
+        let waits = timeout != 0
+            && !invalid.iter().any(|invalid| *invalid)
+            && !(polls_signalfds && signalfd_readable(state, signal_mask));
+        let waiter = if waits && polls_signalfds {
+            match SignalFdWait::register(state, signal_mask) {
+                Ok(Some(waiter)) => Some(waiter),
+                // A covered signal arrived since the check above.
+                Ok(None) => continue,
+                Err(error) => return io_error(error),
+            }
+        } else {
+            None
+        };
+        let host_timeout = match (waits, first, deadline) {
+            (false, _, _) => 0,
+            (true, true, _) | (true, false, None) => timeout,
+            (true, false, Some(deadline)) => remaining_milliseconds(deadline),
+        };
+        first = false;
+        let mut host_fds = poll_fds.clone();
+        if let Some(waiter) = &waiter {
+            host_fds.push(libc::pollfd {
+                fd: waiter.fd(),
+                events: libc::POLLIN,
+                revents: 0,
+            });
+        }
+        // SAFETY: poll sees only initialized host-owned storage.
+        let ready = unsafe {
+            libc::poll(
+                host_fds.as_mut_ptr(),
+                host_fds.len() as libc::nfds_t,
+                host_timeout,
+            )
+        };
+        let error = std::io::Error::last_os_error();
+        drop(waiter);
+        if ready < 0 {
+            return io_error(error);
+        }
+        for (index, poll_fd) in poll_fds.iter_mut().enumerate() {
+            poll_fd.revents = host_fds[index].revents;
+            if invalid[index] {
+                poll_fd.revents = libc::POLLNVAL;
+            } else if let Some(mask) = &signalfds[index] {
+                // Readable from this thread's queues (fs/signalfd.c,
+                // signalfd_poll), never from the keeper alone, which another
+                // thread's read may already have emptied.
+                poll_fd.revents = if signalfd_readable(state, **mask) {
+                    libc::POLLIN & guest_events[index]
+                } else {
+                    0
+                };
+            }
+        }
+        let ready_count = poll_fds
+            .iter()
+            .filter(|poll_fd| poll_fd.revents != 0)
+            .count() as libc::c_int;
+        // A wake for a signal that another thread took, or that an ignored
+        // disposition discarded, waits again for the time left.
+        if ready_count == 0
+            && waits
+            && polls_signalfds
+            && deadline.is_none_or(|deadline| Instant::now() < deadline)
+        {
+            continue;
+        }
+        break ready_count;
     };
-    let ready = unsafe { libc::poll(poll_fds.as_mut_ptr(), count as libc::nfds_t, host_timeout) };
-    if ready < 0 {
-        return io_error(std::io::Error::last_os_error());
-    }
     for (index, poll_fd) in poll_fds.iter_mut().enumerate() {
         poll_fd.fd = guest_fds[index];
         poll_fd.events = guest_events[index];
-        if invalid[index] {
-            poll_fd.revents = libc::POLLNVAL;
-        } else if virtual_signalfds[index] {
-            poll_fd.revents &= libc::POLLIN;
-        }
-    }
-    let ready_count = poll_fds
-        .iter()
-        .filter(|poll_fd| poll_fd.revents != 0)
-        .count() as libc::c_int;
-    if virtual_signalfd_wait && ready_count == 0 {
-        // poll/ppoll ignores O_NONBLOCK. A real wait here would park the host
-        // vCPU outside Detcore's scheduler and race readiness publication.
-        // Refuse before changing the guest pollfd array.
-        return negative_errno(libc::ENOSYS);
     }
     // Linux writes only revents, one field at a time in array order. The
     // caller may change fd/events while a host-owned wait is blocked, and a
@@ -673,6 +741,59 @@ fn poll_with_timeout<M: GuestMemoryAccess<Error = crate::Error>>(
         }
     }
     i64::from(ready_count)
+}
+
+/// The milliseconds from now until `deadline`, rounded up, for a host poll.
+fn remaining_milliseconds(deadline: Instant) -> libc::c_int {
+    let left = deadline.saturating_duration_since(Instant::now());
+    left.as_nanos()
+        .div_ceil(1_000_000)
+        .min(libc::c_int::MAX as u128) as libc::c_int
+}
+
+/// This thread's registration as a signalfd waiter for one host poll
+/// ([`SignalFdWaiter`]). Dropping it ends the registration.
+struct SignalFdWait<'a> {
+    state: &'a LoadedStaticElf,
+    waiter: SignalFdWaiter,
+}
+
+impl<'a> SignalFdWait<'a> {
+    /// Registers this thread as waiting for a signal in `mask`, unless one is
+    /// already pending for it or its process. Both are checked under the
+    /// signal transaction and the thread's own lock, the lock a sender holds
+    /// while it queues a private signal and wakes the waiter, so no signal
+    /// queued after the check is missed. The transaction also keeps the
+    /// keepers' shared readiness consistent with the queues at the check.
+    fn register(state: &'a LoadedStaticElf, mask: KernelSigset) -> std::io::Result<Option<Self>> {
+        let waiter = SignalFdWaiter::new(mask)?;
+        let transaction = state.signal_transaction.clone();
+        let _transaction = transaction.lock().unwrap_or_else(|p| p.into_inner());
+        let process = state
+            .process_signals
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut thread = state.thread_signals.lock();
+        if thread
+            .pending
+            .any_matching(mask, &process.pending_generations)
+            || shared_queue_covers(&process, mask)
+        {
+            return Ok(None);
+        }
+        thread.signalfd_waiter = Some(waiter.clone());
+        Ok(Some(Self { state, waiter }))
+    }
+
+    fn fd(&self) -> RawFd {
+        self.waiter.file().as_raw_fd()
+    }
+}
+
+impl Drop for SignalFdWait<'_> {
+    fn drop(&mut self) {
+        self.state.thread_signals.lock().signalfd_waiter = None;
+    }
 }
 
 // AUTONOMOUS-BOT-IMPLEMENTED
