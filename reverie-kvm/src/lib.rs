@@ -17,8 +17,10 @@
 //! for this backend. First vCPU entry installs a process-wide handler that is
 //! not restored when a backend is dropped. Existing or later signal ownership
 //! conflicts cause entry errors; these checks do not make concurrent use by
-//! another library safe. SIGURG remains the separate worker-cancellation signal.
-//! See the crate README for the complete host signal requirements.
+//! another library safe. A thread that arms a preemption timer also reserves
+//! SIGSTKFLT, which the timer uses only to end `KVM_RUN`. SIGURG remains the
+//! separate worker-cancellation signal. See the crate README for the complete
+//! host signal requirements.
 
 #![cfg(target_arch = "x86_64")]
 #![cfg_attr(test, feature(thread_spawn_hook))]
@@ -26,6 +28,7 @@
 mod clock;
 mod cpuid_instruction;
 mod entry_driver;
+mod preemption_timer;
 mod runtime;
 mod stats;
 mod timestamp;
