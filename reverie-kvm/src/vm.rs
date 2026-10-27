@@ -2604,6 +2604,68 @@ impl KvmBackend {
         Ok(())
     }
 
+    /// Reserve the host directory at the absolute path `path` for the Tool.
+    ///
+    /// This is the reservation's whole contract; the README and
+    /// `reverie_linuxemu::elf::ToolDirectory` refer to it.
+    ///
+    /// - **The exact path.** The executor reaches the directory for a guest
+    ///   path call only where the call names exactly `path`, byte for byte,
+    ///   as an `O_DIRECTORY` open that creates nothing or as `newfstatat`
+    ///   (also `stat` and `lstat`), and only while `path` still resolves to
+    ///   the directory recorded now: the same filesystem type, device and
+    ///   inode. Keep the path and the mounts under it stable for the run:
+    ///   once an ancestor is renamed or another mount covers the path, the
+    ///   exact path is refused too, and the recorded directory stays refused
+    ///   under any name.
+    /// - **Every other route fails with `EACCES`,** as such calls fail for
+    ///   procfs objects: every other path call that resolves to the
+    ///   directory (through a symbolic link, relative to the working
+    ///   directory or to a descriptor, by a `..`, or as `statx`), a working
+    ///   directory in it, removing, renaming or replacing it, and every call
+    ///   that would remove, rename or link a name in it.
+    /// - **Creation.** A file-family creation in the directory fails with
+    ///   `EACCES` through any spelling: `open`, `openat` and `creat` with
+    ///   `O_CREAT`, also through a final symbolic link, which the executor
+    ///   follows itself as Linux does (at most 40 links, then `ELOOP`);
+    ///   `O_TMPFILE`; and `mkdir`, `mknod`, `symlink`, `link` and `rename`
+    ///   into it.
+    /// - **Descriptors** opened there work as any other descriptor: the
+    ///   calls that name one are not refused, but a lookup from one that
+    ///   resolves to the directory or creates a name in it is.
+    /// - **Not covered:** AF_UNIX socket paths in `bind`, `connect` and
+    ///   `sendto` go to the host unchecked, so a `bind` below the directory
+    ///   is not refused (a read-only directory answers `EROFS`, a writable
+    ///   one gets a socket inode), and the interpreter an executable names
+    ///   in `PT_INTERP` is opened without the check; see
+    ///   <https://github.com/rrnewton/reverie/issues/1171>. Objects below
+    ///   the directory are not protected either, because the executor does
+    ///   not look below it: the directory should be empty, as an empty
+    ///   read-only mount is.
+    /// - **Enforcement** is the built-in LinuxEmu executor's, which runs the
+    ///   installed image. A guest whose calls go to a caller-supplied
+    ///   [`crate::SyscallExecutor`] or to another provider gets no such
+    ///   protection: that executor must enforce the reservation itself.
+    ///
+    /// A Tool that keeps the exact path from the guest therefore keeps the
+    /// directory to itself, and a descriptor it opens there can stand for a
+    /// directory the Tool serves itself. The directory's identity is
+    /// recorded now, in this process's mount namespace, where the guest's
+    /// file operations run. Fork, clone and exec keep the reservation. Fails
+    /// with [`Error::HostIo`] where the path is relative, names no
+    /// directory, or names a procfs one, which the executor refuses whatever
+    /// names it.
+    pub fn reserve_tool_directory(&mut self, path: &Path) -> Result<()> {
+        AbandonedRuns::admit(&self.abandoned_runs)?;
+        let reserved = crate::elf::ToolDirectory::open(path).map_err(Error::HostIo)?;
+        let loaded = self
+            .static_elf
+            .as_mut()
+            .ok_or(Error::StaticElfNotInstalled)?;
+        loaded.tool_directory = Some(reserved);
+        Ok(())
+    }
+
     /// Whether the installed image reports host metadata timestamps.
     fn host_metadata_timestamps_enabled(&self) -> bool {
         self.static_elf

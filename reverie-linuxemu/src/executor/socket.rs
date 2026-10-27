@@ -1142,14 +1142,15 @@ pub(super) fn install_received_rights(
     let mut pending = rights.into_iter().zip(guest_fds);
 
     while let Some(((control_offset, file), guest_fd)) = pending.next() {
-        let prepared = received_proc_inode(file.as_file()).and_then(|proc_inode| {
+        // A real procfs right is refused, as every procfs object is.
+        let prepared = ensure_not_procfs(file.as_file()).and_then(|()| {
             let timestamps = received_carrier_timestamps(state, file.as_file());
             let object_inode =
                 allocate_received_fd_object_inode(state, file.as_file(), timestamps)?;
             let transfer = received_proc_transfer(state, file.as_file(), peek)?;
-            Ok((proc_inode, object_inode, transfer))
+            Ok((object_inode, transfer))
         });
-        let (proc_inode, object_inode, transfer) = match prepared {
+        let (object_inode, transfer) = match prepared {
             Ok(prepared) => prepared,
             Err(error) => {
                 rollback_received_rights(state, &installed);
@@ -1175,9 +1176,6 @@ pub(super) fn install_received_rights(
             if nofollow {
                 state.synthetic_proc_nofollow_fds.insert(guest_fd);
             }
-        } else if let Some(inode) = proc_inode {
-            state.fdinfo_files.remove(&guest_fd);
-            state.proc_files.insert(guest_fd, inode);
         } else {
             state.fdinfo_files.remove(&guest_fd);
             state.proc_files.remove(&guest_fd);
