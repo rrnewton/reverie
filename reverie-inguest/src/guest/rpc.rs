@@ -111,14 +111,20 @@ impl<G: GlobalTool> CoordinatorRpc<G> {
     /// Moves this process's coordinator connection off `from`, a number a
     /// guest `dup2`, `dup3` or `F_DUPFD` is about to take
     /// (protect::make_room_for_guest_descriptor): the same socket continues on
-    /// a free number in the runtime's range, recorded as the coordinator's, and
-    /// the new number is returned. `from` is left open and owned by no one,
-    /// for the guest's call to replace or the caller to close. Fails, moving
-    /// nothing, when `from` is not this connection's number or no number is
-    /// free. The caller blocks every signal (protect::block_all_signals); no
-    /// syscall here goes through libc.
+    /// another free number (protect::runtime_fd_minimums), recorded as the
+    /// coordinator's, and the new number is returned. `from` is left open and
+    /// owned by no one, for the caller to close (protect::relocate_runtime_fd
+    /// keeps it protected if it survives that close). Fails, moving
+    /// nothing, when `from` is not this connection's number, no number is
+    /// free, or a request of this process is in flight on the connection
+    /// (`EBUSY`; waiting would spin forever under re-entry). The caller blocks
+    /// every signal (protect::block_all_signals); no syscall here goes through
+    /// libc.
     pub(crate) fn relocate(&self, from: libc::c_int) -> io::Result<libc::c_int> {
-        let connection = self.connection.lock();
+        let connection = self
+            .connection
+            .try_lock()
+            .ok_or_else(|| io::Error::from_raw_os_error(libc::EBUSY))?;
         if connection.client.as_raw_fd() != from {
             return Err(io::Error::from_raw_os_error(libc::EBADF));
         }
@@ -328,12 +334,12 @@ fn connect_ordinary<G: GlobalTool>(
     tid: Pid,
     record: impl FnOnce(libc::c_int) -> io::Result<()>,
 ) -> Result<BlockingRpcClient<G, GuestRpcStream>, reverie_rpc_transport::RpcError> {
-    // The connection goes to the runtime's range (protect::runtime_fd_minimums:
+    // The connection goes to the runtime's numbers (protect::runtime_fd_minimums:
     // 1025, or just below a soft RLIMIT_NOFILE that leaves no number free
     // there), so the guest's own descriptors get the numbers they would get
-    // without the runtime (its first is 3). Where no number is free there it
+    // without the runtime (its first is 3). Where no number is free at all it
     // stays where connect put it; either way it is protected, and a guest dup2
-    // onto its number fails with EBADF as on any protected descriptor. A
+    // onto its number moves it first (CoordinatorRpc::relocate). A
     // placement that cannot record a surviving old number fails the connection
     // rather than leave that number reachable.
     // Authenticated initial-image callers keep their own high descriptor
