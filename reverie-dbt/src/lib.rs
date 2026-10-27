@@ -2717,7 +2717,8 @@ where
 #[cfg(feature = "prototype-runtime")]
 #[unsafe(no_mangle)]
 pub extern "C" fn reverie_dbt_runtime_process_exit() {
-    if tools::counter1_exact_enabled() {
+    // Coordinated runs report the launcher's actual global, not this unused local one.
+    if tools::counter1_exact_enabled() && !sync_rpc::is_active() {
         tools::emit_counter1_exact_summary();
     }
     if tools::counter2_exact_enabled() {

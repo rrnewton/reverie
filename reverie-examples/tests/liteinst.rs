@@ -6,11 +6,15 @@
  * LICENSE file in the root directory of this source tree.
  */
 
-//! End-to-end checks for the exact example `Tool` types on LiteInst.
+//! End-to-end checks for the exact example `Tool` types on LiteInst, with
+//! Counter1 allocator coverage through the shared backend launcher.
+//! The DBT cases require `reverie-dbt/scripts/build-client.sh` for the same
+//! Cargo profile, or a client explicitly selected by `REVERIE_DBT_CLIENT`.
 
 use std::fs::File;
 use std::os::fd::AsRawFd;
 use std::os::unix::process::CommandExt;
+use std::path::Path;
 use std::path::PathBuf;
 use std::process::Command;
 use std::process::Output;
@@ -19,6 +23,9 @@ use std::time::Duration;
 use std::time::Instant;
 
 use reverie_liteinst::STRADDLER_STALENESS_TICKS_ENV;
+
+#[path = "../dbt_client.rs"]
+mod dbt_client;
 
 const TEST_STRADDLER_STALENESS_TICKS: &str = "20000";
 
@@ -242,16 +249,89 @@ fn exact_counter1_tool_does_not_reenter_the_guest_allocator() {
         ],
     );
 
+    assert_counter1_allocator_output(
+        &output,
+        " [counter tool] Total system calls in process tree: ",
+    );
+}
+
+fn assert_counter1_allocator_output(output: &Output, summary_prefix: &str) {
     assert!(output.status.success(), "{output:?}");
     assert_eq!(output.stdout, b"allocator-growth-ok\n");
-    let stderr = String::from_utf8(output.stderr).unwrap();
+    let stderr = std::str::from_utf8(&output.stderr).unwrap();
     let total = stderr
         .lines()
-        .find_map(|line| line.strip_prefix(" [counter tool] Total system calls in process tree: "))
+        .find_map(|line| line.strip_prefix(summary_prefix))
         .expect("counter1 summary is missing")
         .parse::<u64>()
         .unwrap();
     assert!(total > 0, "{stderr}");
+}
+
+fn assert_one_counter1_allocator_summary(output: &Output) {
+    let prefix = "counter1-global syscalls=";
+    assert_counter1_allocator_output(output, prefix);
+    let stderr = std::str::from_utf8(&output.stderr).unwrap();
+    assert_eq!(
+        stderr
+            .lines()
+            .filter(|line| line.starts_with(prefix))
+            .count(),
+        1,
+        "{stderr}"
+    );
+}
+
+fn counter1_allocator_on(backend: &str) {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_counter1"));
+    command
+        .env(
+            STRADDLER_STALENESS_TICKS_ENV,
+            TEST_STRADDLER_STALENESS_TICKS,
+        )
+        .arg("--backend")
+        .arg(backend)
+        .arg("--preload")
+        .arg(preload())
+        .arg("--")
+        .arg(env!("CARGO_BIN_EXE_reverie-liteinst-env-guest"))
+        .arg("exercise-allocator");
+    assert_one_counter1_allocator_summary(&output_with_timeout(&mut command));
+}
+
+#[test]
+fn exact_counter1_tool_does_not_reenter_the_guest_allocator_on_ptrace() {
+    counter1_allocator_on("ptrace");
+}
+
+#[test]
+fn exact_counter1_tool_does_not_reenter_the_guest_allocator_on_dbt() {
+    counter1_allocator_on("dbt");
+}
+
+#[test]
+fn exact_counter1_tool_does_not_reenter_the_guest_allocator_on_in_guest_trap() {
+    counter1_allocator_on("in-guest-trap");
+}
+
+#[test]
+fn exact_counter1_tool_reports_its_local_global_without_a_coordinator() {
+    let client = dbt_client::find(Some(Path::new(env!("CARGO_BIN_EXE_counter1")))).expect(
+        "build the DBT client with reverie-dbt/scripts/build-client.sh or set REVERIE_DBT_CLIENT",
+    );
+    // The documented exact-mode flag selects the same Tool with a local GlobalState.
+    // Use the native launch shape from reverie-dbt/scripts/test-example-tools.sh.
+    let mut command = Command::new(reverie_dbt::bundled_drrun_path());
+    command
+        .env_remove(reverie_dbt::TOOL_ENV)
+        .env_remove(reverie_dbt::sync_rpc::RPC_SOCKET_ENV)
+        .env("HERMIT_DBT_COUNTER1_EXACT", "1")
+        .args(["-quiet", "-disable_rseq", "-stack_size", "2M", "-c"])
+        .arg(client)
+        .arg("--")
+        .arg(env!("CARGO_BIN_EXE_reverie-liteinst-env-guest"))
+        .arg("exercise-allocator");
+    assert_one_counter1_allocator_summary(&output_with_timeout(&mut command));
 }
 
 #[test]

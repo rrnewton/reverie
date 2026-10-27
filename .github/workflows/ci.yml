@@ -244,6 +244,8 @@ jobs:
         generation="$RUNNER_TEMP/liteinst-allocator-$GITHUB_JOB-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
         scripts/build-liteinst-test-runtime.rs --for-ci "$generation"
         cat "$generation/bundle/github.env" >> "$GITHUB_ENV"
+    - name: DBT native client
+      run: reverie-dbt/scripts/build-client.sh
     - name: Host-dependent workspace tests
       env:
         REVERIE_REQUIRE_KVM: "1"

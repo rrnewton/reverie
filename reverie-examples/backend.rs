@@ -41,6 +41,9 @@ use reverie::GlobalTool;
 use reverie::Tool;
 use reverie_util::CommonToolArguments;
 
+#[path = "dbt_client.rs"]
+mod dbt_client;
+
 /// A Reverie backend.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, clap::ValueEnum)]
 pub enum BackendKind {
@@ -297,20 +300,6 @@ where
     })
 }
 
-/// The DBT client, `libreverie_dbt_client.so` built against reverie-dbt's
-/// prototype runtime (`reverie-dbt/scripts/build-client.sh`): the
-/// `REVERIE_DBT_CLIENT` the environment names, or the one beside this binary.
-fn dbt_client() -> Option<PathBuf> {
-    if let Some(path) = std::env::var_os("REVERIE_DBT_CLIENT") {
-        return Some(PathBuf::from(path));
-    }
-    let executable = std::env::current_exe().ok()?;
-    let path = executable
-        .parent()?
-        .join("reverie-dbt-native/libreverie_dbt_client.so");
-    path.is_file().then_some(path)
-}
-
 async fn run_dbt<T>(
     args: &CommonToolArguments,
     config: <T::GlobalState as GlobalTool>::Config,
@@ -320,7 +309,7 @@ where
     T: Tool + 'static,
     T::GlobalState: 'static,
 {
-    let client = dbt_client().ok_or_else(|| {
+    let client = dbt_client::find(std::env::current_exe().ok().as_deref()).ok_or_else(|| {
         RunError::Refused(
             "the DBT client was not found: set REVERIE_DBT_CLIENT, or build it with \
              reverie-dbt/scripts/build-client.sh"
