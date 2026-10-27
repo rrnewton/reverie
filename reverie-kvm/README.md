@@ -26,14 +26,52 @@ unexplained pending instance before an entry causes an error, and so does an
 instance no closer sent that interrupts an entry's `KVM_RUN`, even one queued
 alongside a closer's kick.
 These checks detect visible conflicts; they do not coordinate ownership with
-another signal user. Signal 64 stays blocked on a thread from its first vCPU
-entry on: KVM unblocks it only inside `KVM_RUN`, through the vCPU's signal mask,
-and each entry drains its own notifications before it returns. Threads that
-such a thread creates, and host processes it spawns, inherit signal 64 blocked:
-Rust's `Command` and `posix_spawn` keep the parent's signal mask across exec.
-Neither this crate nor Hermit's Detcore spawns a host process from a vCPU
-thread. The existing `SIGURG` worker cancellation mechanism remains separate
-and unchanged.
+another signal user. Signal 64 is unblocked on a thread from its first vCPU
+entry on, and `KVM_RUN` runs under the thread's own signal mask: there is no
+KVM signal mask to keep in sync, and an entry issues no host syscall besides
+`KVM_RUN`. While an entry is published on the thread, the handler sets that
+vCPU's `kvm_run.immediate_exit` byte, so an instance that arrives just before
+`KVM_RUN` still keeps the guest from running, and one that arrives inside it
+ends it with `EINTR`. A foreign instance is therefore not left pending: the
+handler takes it at once, which can interrupt a host call the thread is making,
+and the thread's next entry refuses. Code that blocks signal 64 again on a vCPU
+thread breaks prompt interruption; entries re-check every 1,024 entries that it
+is still unblocked, and refuse if it is not. Threads that such a thread
+creates, and host processes it spawns, inherit its mask with signal 64
+unblocked; exec resets the handler to the default action. Neither this crate
+nor Hermit's Detcore spawns a host process from a vCPU thread.
+
+The backend's preemption timer reserves `SIGSTKFLT` (Reverie's
+`PERF_EVENT_SIGNAL`) the same way, at the first timer a thread opens. It
+installs a process-wide handler that does nothing, with `SA_RESTART`; refuses
+if the signal already has a handler or is ignored; checks the handler again at
+each later timer it opens; and unblocks the signal on that thread. Each timer
+is a sampling perf event that counts what the thread's branch clock counts and
+sends `SIGSTKFLT` to the vCPU thread when it overflows, which ends `KVM_RUN`
+with `EINTR`. Nothing is decided from the signal: every decision reads the
+clock at the exit. Other libraries must not use `SIGSTKFLT` in the embedding
+process. Nothing requests a timer yet: `Guest::set_timer` and
+`Guest::set_timer_precise` arm nothing on this backend, and a thread that never
+arms a timer opens no timer event.
+
+The timer's known limits must be addressed before anything requests it. The
+interrupt behind a kick can be held past the exit it would have caused, so the
+signal can land while the vCPU thread runs host code, and the empty handler
+then interrupts the host call in progress: LinuxEmu's host `nanosleep` and a
+relative host `clock_nanosleep` return `EINTR` with the remainder, an absolute
+one returns `EINTR`, its blocking host `ppoll` returns `EINTR`, a zero-timeout
+host `poll` returns `EINTR` when nothing is ready, and a blocking host `read`
+or `write` that has moved some bytes returns a short count, all of which reach
+the guest. On a PREEMPT_RT kernel perf sends the signal from a thread, so this
+is routine there. The planned fix keeps `SIGSTKFLT` blocked in host code,
+unblocks it only inside `KVM_RUN` through `KVM_SET_SIGNAL_MASK`, and drains a
+kick left pending at an `EINTR` exit. Nothing checks that the timer event is
+resident on a counter; an uncounted vCPU on the same host task advances an
+armed timer, which then kicks late; exec keeps an armed request; nothing
+refuses PREEMPT_RT kernels or nested virtualization; and `SIGSTKFLT` is
+unblocked when a timer opens and not checked again, so code that blocks it
+later on that thread stops the kicks. The existing `SIGURG` worker
+cancellation mechanism remains separate and unchanged.
 
 The private entry gate also stops every participant and callback memory copy
 sharing a Mapping when clock-interval setup or cleanup fails. That interval
