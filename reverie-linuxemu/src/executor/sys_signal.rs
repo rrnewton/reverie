@@ -2522,24 +2522,11 @@ pub(super) fn rt_sigaction(
             process_signals.dispositions.insert(signal, action);
         }
         let readiness = if discards_pending {
-            let generations = &process_signals.pending_generations;
             process_signals
                 .signalfd_masks
                 .iter()
-                .filter_map(|(&fd, mask)| {
-                    let mask = **mask;
-                    mask.contains(signal).then_some((
-                        fd,
-                        state
-                            .thread_signals
-                            .lock()
-                            .pending
-                            .any_matching(mask, generations)
-                            || process_signals
-                                .shared_pending
-                                .any_matching(mask, generations),
-                    ))
-                })
+                .filter(|(_, mask)| mask.contains(signal))
+                .map(|(&fd, mask)| (fd, shared_queue_covers(&process_signals, **mask)))
                 .collect()
         } else {
             Vec::new()
@@ -3077,13 +3064,14 @@ pub(super) fn send_thread_signal(
         {
             return continue_with(negative_errno(errno.into_raw()));
         }
-    }
-    // Threaded signalfd is already refused. The self-directed single-thread
-    // case still updates its eventfd readiness, after every state lock is gone.
-    if target == state.tid
-        && let Err(error) = refresh_all_signalfd_readiness_locked(state)
-    {
-        return continue_with(error);
+        // A signalfd's eventfd keeper shows only the shared queue. A receiver
+        // waiting in a host poll for a signalfd that covers this signal is
+        // woken here, under the lock it registered its wait with.
+        if let Some(waiter) = &target_signals.signalfd_waiter
+            && let Err(error) = waiter.wake_for(signal)
+        {
+            return continue_with(io_error(error));
+        }
     }
     continue_with(0)
 }
