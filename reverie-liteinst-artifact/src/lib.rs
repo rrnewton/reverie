@@ -22774,6 +22774,266 @@ const DETCORE_VALIDATE_TEMPLATES: &[DetcoreValidateTemplate] = &[
         ],
         transfers: &[(26, 0), (139, 1), (172, 2), (404, 3)],
     },
+    // 74: observed HOST be8e82435 native image7568cb1f, complete 88B.
+    DetcoreValidateTemplate {
+        role: "fixed_arena_backing",
+        hex: "4883ec180fb6055ebe230484c0740431c9eb31488d0556be23044889442410488d442410488b7c2410e862dcffff31c94885c0740f807810ff488d05787244ff480f45c848894c2408488d442408488b4424084883c418c3",
+        operands: &[
+            DetcoreValidateOperand {
+                displacement: 7,
+                next: 11,
+                key: "fixed_initializing",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 22,
+                next: 26,
+                key: "fixed_region",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 42,
+                next: 46,
+                key: "fixed_region_publication_get_opaque",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 60,
+                next: 64,
+                key: "fixed_backing_object",
+                got: false,
+            },
+        ],
+        transfers: &[(41, 2)],
+    },
+    // 75: observed HOST be8e82435 native image7568cb1f, complete 91B.
+    DetcoreValidateTemplate {
+        role: "fixed_tool_heap_metadata",
+        hex: "4883ec180fb605cebc230484c0740431c0eb34488d05c6bc23044889442410488d442410488b7c2410e8d2daffff4885c074dc31c9807810ff48b80030020000600000480f44c14889442408488d442408488b4424084883c418c3",
+        operands: &[
+            DetcoreValidateOperand {
+                displacement: 7,
+                next: 11,
+                key: "fixed_initializing",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 22,
+                next: 26,
+                key: "fixed_region",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 42,
+                next: 46,
+                key: "fixed_region_publication_get_opaque",
+                got: false,
+            },
+        ],
+        transfers: &[(41, 2)],
+    },
+    // 76: observed HOST be8e82435 native image7568cb1f, complete 303B.
+    DetcoreValidateTemplate {
+        role: "fixed_constructor_prepare",
+        hex: "415741564154534883ec384989ff4989e4488d7c2428bb010000004c89fe4c89e2b901000000e895d6ffff0fb644243084c00f849f00000041f6c7070f85a30000004d85ff0f84af0000004c8b7424284d89675848b9001000000060000048894c24104c89742418884424204c8d3d7dfb24044c893c244889e0488d4424104889442408488d442408488b3c24488b742408e8c919010084c0743c41f6c60775664d85f6747649c7464803000000c60534fb2404004c897c2410488d442410488b7c2410e8471901004885c0740931db807810ff0f94c389d84883c4385b415c415e415fc3488d155c812200bf080000004c89feff15d6d82300488d3d47812200ff15f90b2400488d15fa7e2200bf080000004c89f6ff15b4d82300488d3de57e2200ff15d70b2400ff15b90b2400",
+        operands: &[
+            DetcoreValidateOperand {
+                displacement: 39,
+                next: 43,
+                key: "fixed_native_from_native",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 111,
+                next: 115,
+                key: "fixed_region",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 147,
+                next: 151,
+                key: "fixed_region_publication_set_opaque",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 176,
+                next: 181,
+                key: "fixed_initializing",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 197,
+                next: 201,
+                key: "fixed_region_publication_get_opaque",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 232,
+                next: 236,
+                key: "fixed_scalar_constructor_record_location",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 246,
+                next: 250,
+                key: "fixed_heap_panic_misaligned",
+                got: true,
+            },
+            DetcoreValidateOperand {
+                displacement: 253,
+                next: 257,
+                key: "fixed_scalar_constructor_record_location",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 259,
+                next: 263,
+                key: "fixed_panic_null_reference",
+                got: true,
+            },
+            DetcoreValidateOperand {
+                displacement: 266,
+                next: 270,
+                key: "fixed_scalar_publish_record_location",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 280,
+                next: 284,
+                key: "fixed_heap_panic_misaligned",
+                got: true,
+            },
+            DetcoreValidateOperand {
+                displacement: 287,
+                next: 291,
+                key: "fixed_scalar_publish_record_location",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 293,
+                next: 297,
+                key: "fixed_panic_null_reference",
+                got: true,
+            },
+            DetcoreValidateOperand {
+                displacement: 299,
+                next: 303,
+                key: "fixed_publication_cannot_unwind",
+                got: true,
+            },
+        ],
+        transfers: &[
+            (38, 0),
+            (146, 2),
+            (196, 4),
+            (244, 6),
+            (257, 8),
+            (278, 10),
+            (291, 12),
+            (297, 13),
+        ],
+    },
+    // 77: observed HOST be8e82435 native image7568cb1f, complete 303B.
+    DetcoreValidateTemplate {
+        role: "fixed_generic_prepare",
+        hex: "415741564154534883ec384989ff4989e4488d7c24284c89fe4c89e2b902000000e86ad5ffff0fb6442430bb0100000084c00f849f00000041f6c7070f85a30000004d85ff0f84af0000004c8b7424284d89675848b9001000000060000048894c24104c89742418884424204c8d3d4dfa24044c893c244889e0488d4424104889442408488d442408488b3c24488b742408e89918010084c0743c41f6c60775664d85f6747649c7464803000000c60504fa2404004c897c2410488d442410488b7c2410e8171801004885c0740931db807810ff0f94c389d84883c4385b415c415e415fc3488d1544802200bf080000004c89feff15a6d72300488d3d2f802200ff15c90a2400488d15ca7d2200bf080000004c89f6ff1584d72300488d3db57d2200ff15a70a2400ff15890a2400",
+        operands: &[
+            DetcoreValidateOperand {
+                displacement: 34,
+                next: 38,
+                key: "fixed_native_from_native",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 111,
+                next: 115,
+                key: "fixed_region",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 147,
+                next: 151,
+                key: "fixed_region_publication_set_opaque",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 176,
+                next: 181,
+                key: "fixed_initializing",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 197,
+                next: 201,
+                key: "fixed_region_publication_get_opaque",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 232,
+                next: 236,
+                key: "fixed_scalar_generic_record_location",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 246,
+                next: 250,
+                key: "fixed_heap_panic_misaligned",
+                got: true,
+            },
+            DetcoreValidateOperand {
+                displacement: 253,
+                next: 257,
+                key: "fixed_scalar_generic_record_location",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 259,
+                next: 263,
+                key: "fixed_panic_null_reference",
+                got: true,
+            },
+            DetcoreValidateOperand {
+                displacement: 266,
+                next: 270,
+                key: "fixed_scalar_publish_record_location",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 280,
+                next: 284,
+                key: "fixed_heap_panic_misaligned",
+                got: true,
+            },
+            DetcoreValidateOperand {
+                displacement: 287,
+                next: 291,
+                key: "fixed_scalar_publish_record_location",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 293,
+                next: 297,
+                key: "fixed_panic_null_reference",
+                got: true,
+            },
+            DetcoreValidateOperand {
+                displacement: 299,
+                next: 303,
+                key: "fixed_publication_cannot_unwind",
+                got: true,
+            },
+        ],
+        transfers: &[
+            (33, 0),
+            (146, 2),
+            (196, 4),
+            (244, 6),
+            (257, 8),
+            (278, 10),
+            (291, 12),
+            (297, 13),
+        ],
+    },
 ];
 struct DetcoreRecipeBindings<'a> {
     targets: &'a BTreeMap<String, u64>,
@@ -23960,6 +24220,53 @@ const FIXED_SCALAR_STANDALONE_INCOMING: &[FixedScalarHelperIncoming] = &[
         ],
     ),
 ];
+// The HOST compiler's complete native composition uses CMOV for the two
+// scalar pointer results and SETE for the prepare return. Its opaque setter
+// still returns exactly 0/1, so TEST AL and TEST AL,1 have the same predicate.
+// This tuple is indivisible; an isolated host leaf in a pinned-root family
+// remains unknown. Compiler names never select or bypass an emitted-code proof.
+const FIXED_SCALAR_HOST_NATIVE_COHORT: &[(&str, usize)] = &[
+    ("fixed_region_publication_get_opaque", 55),
+    ("fixed_region_publication_set_opaque", 56),
+    ("fixed_tool_heap_metadata", 75),
+    ("fixed_arena_backing", 74),
+    ("fixed_tool_require_owned", 59),
+    ("fixed_tool_alloc", 60),
+    ("fixed_tool_dealloc", 61),
+    ("fixed_tool_realloc", 62),
+    ("fixed_native_from_native", 63),
+    ("fixed_constructor_prepare", 76),
+    ("fixed_generic_prepare", 77),
+    ("fixed_arena_setup", DETCORE_THREE_BAND_SETUP),
+];
+const FIXED_SCALAR_HOST_NATIVE_INCOMING: &[FixedScalarHelperIncoming] = &[
+    (
+        "fixed_region_publication_get_opaque",
+        &[
+            ("fixed_tool_heap_metadata", 41, false),
+            ("fixed_arena_backing", 41, false),
+            ("fixed_native_from_native", 188, false),
+            ("fixed_constructor_prepare", 196, false),
+            ("fixed_generic_prepare", 196, false),
+        ],
+    ),
+    (
+        "fixed_region_publication_set_opaque",
+        &[
+            ("fixed_constructor_prepare", 146, false),
+            ("fixed_generic_prepare", 146, false),
+        ],
+    ),
+    (
+        "fixed_tool_heap_metadata",
+        &[
+            ("fixed_tool_require_owned", 4, false),
+            ("fixed_tool_alloc", 13, false),
+            ("fixed_tool_dealloc", 4, false),
+            ("fixed_tool_realloc", 26, false),
+        ],
+    ),
+];
 fn fixed_scalar_publication_cohort(
     witnesses: &BTreeMap<String, AuthenticatedDetcoreOperation>,
     transfers: &BTreeMap<String, Vec<ConstructorTransfer>>,
@@ -23971,6 +24278,16 @@ fn fixed_scalar_publication_cohort(
         .get("fixed_native_from_native")
         .ok_or("scalar publication lacks authenticated complete owner")?;
     let (cohort, incoming) = match (image_kind, caller.kind) {
+        (FixedImageKind::Detcore, AuthenticatedDetcoreOperationKind::ValidateTemplate(63))
+            if witnesses.get("fixed_arena_backing").is_some_and(|w| {
+                w.kind == AuthenticatedDetcoreOperationKind::ValidateTemplate(74)
+            }) =>
+        {
+            (
+                FIXED_SCALAR_HOST_NATIVE_COHORT,
+                FIXED_SCALAR_HOST_NATIVE_INCOMING,
+            )
+        }
         (FixedImageKind::Detcore, AuthenticatedDetcoreOperationKind::ValidateTemplate(63)) => {
             (FIXED_SCALAR_NATIVE_COHORT, FIXED_SCALAR_NATIVE_INCOMING)
         }
@@ -24075,8 +24392,8 @@ fn fixed_scalar_publication_cohort(
     // Whole bodies prove: get(slot) returns only null/slot after the ready load;
     // set(slot,payload) copies all24B before ready and returns bool without
     // touching rejected payload; metadata/backing pass actual REGION. The two
-    // complete307/210 entries pass REGION and disjoint rsp+16 payloads under the
-    // native gate, test AL bit0, never reuse moved storage, set READY then clear
+    // complete307/303/210 entries pass REGION and disjoint rsp+16 payloads under the
+    // native gate, test the setter's exact boolean, never reuse moved storage, set READY then clear
     // INITIALIZING, and get/validate that same published slot. Every helper
     // null/alignment terminal therefore has the exact live aligned REGION
     // premise, never a general permission for arbitrary pointer callers.
@@ -24166,6 +24483,17 @@ fn fixed_scalar_publication_syscall_mode(
         .get("fixed_native_from_native")
         .ok_or("scalar syscall mode lacks authenticated complete caller")?
         .kind;
+    if witnesses
+        .get("fixed_arena_backing")
+        .is_some_and(|w| w.kind == AuthenticatedDetcoreOperationKind::ValidateTemplate(74))
+    {
+        require(
+            image_kind == FixedImageKind::Detcore
+                && native_syscalls
+                && kind == AuthenticatedDetcoreOperationKind::ValidateTemplate(63),
+            "host scalar publication requires its observed native syscall factory",
+        )?;
+    }
     if let Some(raw) = witnesses.get("fixed_scalar_syscall") {
         require(
             raw.role == "fixed_scalar_syscall"
@@ -51479,6 +51807,389 @@ mod tests {
                 "scalar {scalar_role} in historical family"
             );
         }
+    }
+
+    // Actual HOST86 ELF 7568cb1f4832537622bb23249cf7c19e0322470c9dcadc038b22b9a4b44f10c9.
+    // These four whole byte strings and instruction boundaries come from the retained
+    // image, independently of DETCORE_VALIDATE_TEMPLATES. The common control helper
+    // relocates only the listed operands and exercises every byte and target mutation.
+    fn scalar_publication_host_native_samples() -> &'static [ScalarPublicationSample] {
+        &[
+            (
+                "fixed_arena_backing",
+                74,
+                "4883ec180fb6055ebe230484c0740431c9eb31488d0556be23044889442410488d442410488b7c2410e862dcffff31c94885c0740f807810ff488d05787244ff480f45c848894c2408488d442408488b4424084883c418c3",
+                &[
+                    0, 4, 11, 13, 15, 17, 19, 26, 31, 36, 41, 46, 48, 51, 53, 57, 64, 68, 73, 78,
+                    83, 87,
+                ],
+                &[
+                    (7, 11, "fixed_initializing", false),
+                    (22, 26, "fixed_region", false),
+                    (42, 46, "fixed_region_publication_get_opaque", false),
+                    (60, 64, "fixed_backing_object", false),
+                ],
+            ),
+            (
+                "fixed_tool_heap_metadata",
+                75,
+                "4883ec180fb605cebc230484c0740431c0eb34488d05c6bc23044889442410488d442410488b7c2410e8d2daffff4885c074dc31c9807810ff48b80030020000600000480f44c14889442408488d442408488b4424084883c418c3",
+                &[
+                    0, 4, 11, 13, 15, 17, 19, 26, 31, 36, 41, 46, 49, 51, 53, 57, 67, 71, 76, 81,
+                    86, 90,
+                ],
+                &[
+                    (7, 11, "fixed_initializing", false),
+                    (22, 26, "fixed_region", false),
+                    (42, 46, "fixed_region_publication_get_opaque", false),
+                ],
+            ),
+            (
+                "fixed_constructor_prepare",
+                76,
+                "415741564154534883ec384989ff4989e4488d7c2428bb010000004c89fe4c89e2b901000000e895d6ffff0fb644243084c00f849f00000041f6c7070f85a30000004d85ff0f84af0000004c8b7424284d89675848b9001000000060000048894c24104c89742418884424204c8d3d7dfb24044c893c244889e0488d4424104889442408488d442408488b3c24488b742408e8c919010084c0743c41f6c60775664d85f6747649c7464803000000c60534fb2404004c897c2410488d442410488b7c2410e8471901004885c0740931db807810ff0f94c389d84883c4385b415c415e415fc3488d155c812200bf080000004c89feff15d6d82300488d3d47812200ff15f90b2400488d15fa7e2200bf080000004c89f6ff15b4d82300488d3de57e2200ff15d70b2400ff15b90b2400",
+                &[
+                    0, 2, 4, 6, 7, 11, 14, 17, 22, 27, 30, 33, 38, 43, 48, 50, 56, 60, 66, 69, 75,
+                    80, 84, 94, 99, 104, 108, 115, 119, 122, 127, 132, 137, 141, 146, 151, 153,
+                    155, 159, 161, 164, 166, 174, 181, 186, 191, 196, 201, 204, 206, 208, 212, 215,
+                    217, 221, 222, 224, 226, 228, 229, 236, 241, 244, 250, 257, 263, 270, 275, 278,
+                    284, 291, 297,
+                ],
+                &[
+                    (39, 43, "fixed_native_from_native", false),
+                    (111, 115, "fixed_region", false),
+                    (147, 151, "fixed_region_publication_set_opaque", false),
+                    (176, 181, "fixed_initializing", false),
+                    (197, 201, "fixed_region_publication_get_opaque", false),
+                    (232, 236, "fixed_scalar_constructor_record_location", false),
+                    (246, 250, "fixed_heap_panic_misaligned", true),
+                    (253, 257, "fixed_scalar_constructor_record_location", false),
+                    (259, 263, "fixed_panic_null_reference", true),
+                    (266, 270, "fixed_scalar_publish_record_location", false),
+                    (280, 284, "fixed_heap_panic_misaligned", true),
+                    (287, 291, "fixed_scalar_publish_record_location", false),
+                    (293, 297, "fixed_panic_null_reference", true),
+                    (299, 303, "fixed_publication_cannot_unwind", true),
+                ],
+            ),
+            (
+                "fixed_generic_prepare",
+                77,
+                "415741564154534883ec384989ff4989e4488d7c24284c89fe4c89e2b902000000e86ad5ffff0fb6442430bb0100000084c00f849f00000041f6c7070f85a30000004d85ff0f84af0000004c8b7424284d89675848b9001000000060000048894c24104c89742418884424204c8d3d4dfa24044c893c244889e0488d4424104889442408488d442408488b3c24488b742408e89918010084c0743c41f6c60775664d85f6747649c7464803000000c60504fa2404004c897c2410488d442410488b7c2410e8171801004885c0740931db807810ff0f94c389d84883c4385b415c415e415fc3488d1544802200bf080000004c89feff15a6d72300488d3d2f802200ff15c90a2400488d15ca7d2200bf080000004c89f6ff1584d72300488d3db57d2200ff15a70a2400ff15890a2400",
+                &[
+                    0, 2, 4, 6, 7, 11, 14, 17, 22, 25, 28, 33, 38, 43, 48, 50, 56, 60, 66, 69, 75,
+                    80, 84, 94, 99, 104, 108, 115, 119, 122, 127, 132, 137, 141, 146, 151, 153,
+                    155, 159, 161, 164, 166, 174, 181, 186, 191, 196, 201, 204, 206, 208, 212, 215,
+                    217, 221, 222, 224, 226, 228, 229, 236, 241, 244, 250, 257, 263, 270, 275, 278,
+                    284, 291, 297,
+                ],
+                &[
+                    (34, 38, "fixed_native_from_native", false),
+                    (111, 115, "fixed_region", false),
+                    (147, 151, "fixed_region_publication_set_opaque", false),
+                    (176, 181, "fixed_initializing", false),
+                    (197, 201, "fixed_region_publication_get_opaque", false),
+                    (232, 236, "fixed_scalar_generic_record_location", false),
+                    (246, 250, "fixed_heap_panic_misaligned", true),
+                    (253, 257, "fixed_scalar_generic_record_location", false),
+                    (259, 263, "fixed_panic_null_reference", true),
+                    (266, 270, "fixed_scalar_publish_record_location", false),
+                    (280, 284, "fixed_heap_panic_misaligned", true),
+                    (287, 291, "fixed_scalar_publish_record_location", false),
+                    (293, 297, "fixed_panic_null_reference", true),
+                    (299, 303, "fixed_publication_cannot_unwind", true),
+                ],
+            ),
+        ]
+    }
+
+    fn scalar_publication_host_native_sample_vector() -> Vec<ScalarPublicationSample> {
+        let mut samples = scalar_publication_leaf_samples().to_vec();
+        samples.extend_from_slice(scalar_publication_native_samples());
+        for replacement in scalar_publication_host_native_samples() {
+            let slot = samples
+                .iter_mut()
+                .find(|sample| sample.0 == replacement.0)
+                .unwrap();
+            *slot = *replacement;
+        }
+        samples
+    }
+
+    fn scalar_publication_host_native_control_graph(
+        mutations: bool,
+    ) -> DetcorePublicationControlGraph {
+        scalar_publication_control_graph_from_samples(
+            scalar_publication_host_native_sample_vector(),
+            mutations,
+        )
+    }
+
+    #[test]
+    fn observed_scalar_host_native_publication_family() {
+        let check = |g: &DetcorePublicationControlGraph| -> Result<()> {
+            fixed_scalar_publication_syscall_mode(&g.witnesses, FixedImageKind::Detcore, true)?;
+            fixed_scalar_publication_cohort(
+                &g.witnesses,
+                &g.transfers,
+                &g.selected,
+                &g.targets,
+                FixedImageKind::Detcore,
+            )?;
+            fixed_detcore_full_result_contract(&g.witnesses, &g.transfers, &g.selected, &g.targets)
+        };
+        // The shared helper first authenticates all twelve complete bodies and
+        // mutates every byte (including relocations), target, instruction census,
+        // Location byte and source filename. None is copied from the matcher.
+        let graph = scalar_publication_host_native_control_graph(true);
+        assert_eq!(graph.witnesses.len(), 12);
+        check(&graph).unwrap();
+        fixed_detcore_publication_cohort(
+            &graph.witnesses,
+            &graph.transfers,
+            &graph.selected,
+            &graph.targets,
+        )
+        .unwrap();
+        // Previously supported pinned native and ordinary compositions remain
+        // separately qualifying; the host tuple is not a replacement for them.
+        check(&scalar_publication_control_graph(true, false)).unwrap();
+        let ordinary = scalar_ordinary_bit_result_control_graph(false);
+        fixed_scalar_publication_syscall_mode(&ordinary.witnesses, FixedImageKind::Detcore, false)
+            .unwrap();
+
+        for role in graph.witnesses.keys() {
+            for mode in 0..5 {
+                let mut bad = scalar_publication_host_native_control_graph(false);
+                match mode {
+                    0 => {
+                        bad.witnesses.remove(role);
+                    }
+                    1 => {
+                        bad.selected.remove(role);
+                    }
+                    2 => {
+                        *bad.targets.get_mut(role).unwrap() += 1;
+                    }
+                    3 => {
+                        bad.transfers.remove(role);
+                    }
+                    _ => {
+                        bad.witnesses.get_mut(role).unwrap().kind =
+                            AuthenticatedDetcoreOperationKind::ValidateTemplate(0);
+                    }
+                }
+                assert!(check(&bad).is_err(), "host missing/unbound {role}/{mode}");
+            }
+        }
+        for field in [
+            "fixed_region",
+            "fixed_region_ready",
+            "fixed_region_value16",
+            "fixed_initializing",
+        ] {
+            let mut bad = scalar_publication_host_native_control_graph(false);
+            *bad.targets.get_mut(field).unwrap() += 1;
+            assert!(check(&bad).is_err(), "host storage field {field}");
+        }
+
+        let mut pinned_samples = scalar_publication_leaf_samples().to_vec();
+        pinned_samples.extend_from_slice(scalar_publication_native_samples());
+        // Each half authenticates independently. Every single changed role
+        // mixed into the other complete tuple must fail at the family join.
+        for host in scalar_publication_host_native_samples() {
+            for direction in 0..2 {
+                let mut samples = if direction == 0 {
+                    pinned_samples.clone()
+                } else {
+                    scalar_publication_host_native_sample_vector()
+                };
+                let replacement = if direction == 0 {
+                    *host
+                } else {
+                    *pinned_samples
+                        .iter()
+                        .find(|sample| sample.0 == host.0)
+                        .unwrap()
+                };
+                *samples
+                    .iter_mut()
+                    .find(|sample| sample.0 == host.0)
+                    .unwrap() = replacement;
+                let bad = scalar_publication_control_graph_from_samples(samples, false);
+                assert_eq!(
+                    fixed_scalar_publication_cohort(
+                        &bad.witnesses,
+                        &bad.transfers,
+                        &bad.selected,
+                        &bad.targets,
+                        FixedImageKind::Detcore,
+                    )
+                    .unwrap_err()
+                    .to_string(),
+                    "mixed or unbound complete scalar publication family",
+                    "host mixed role {}/{direction}",
+                    host.0,
+                );
+            }
+        }
+        for callee in [
+            "fixed_region_publication_get_opaque",
+            "fixed_region_publication_set_opaque",
+            "fixed_tool_heap_metadata",
+        ] {
+            let mut bad = scalar_publication_host_native_control_graph(false);
+            bad.transfers.insert(
+                "unqualified_extra_host_caller".into(),
+                vec![ConstructorTransfer {
+                    instruction: 1,
+                    target: bad.selected[callee],
+                    local_got_slot: None,
+                }],
+            );
+            assert_eq!(
+                check(&bad).unwrap_err().to_string(),
+                "unqualified scalar helper caller",
+            );
+        }
+        // Check the actual host PCs, including the newly moved getter sites,
+        // before corrupting both private and public census vectors together.
+        for (caller, callee, pc) in [
+            (
+                "fixed_arena_backing",
+                "fixed_region_publication_get_opaque",
+                41,
+            ),
+            (
+                "fixed_tool_heap_metadata",
+                "fixed_region_publication_get_opaque",
+                41,
+            ),
+            (
+                "fixed_native_from_native",
+                "fixed_region_publication_get_opaque",
+                188,
+            ),
+            (
+                "fixed_constructor_prepare",
+                "fixed_region_publication_get_opaque",
+                196,
+            ),
+            (
+                "fixed_generic_prepare",
+                "fixed_region_publication_get_opaque",
+                196,
+            ),
+            (
+                "fixed_constructor_prepare",
+                "fixed_region_publication_set_opaque",
+                146,
+            ),
+            (
+                "fixed_generic_prepare",
+                "fixed_region_publication_set_opaque",
+                146,
+            ),
+            ("fixed_tool_require_owned", "fixed_tool_heap_metadata", 4),
+            ("fixed_tool_alloc", "fixed_tool_heap_metadata", 13),
+            ("fixed_tool_dealloc", "fixed_tool_heap_metadata", 4),
+            ("fixed_tool_realloc", "fixed_tool_heap_metadata", 26),
+        ] {
+            let witness = &graph.witnesses[caller];
+            let edges: Vec<_> = witness
+                .edges
+                .iter()
+                .filter(|edge| edge.target == graph.selected[callee])
+                .collect();
+            assert_eq!(edges.len(), 1, "host incoming {caller}/{callee}");
+            assert_eq!(edges[0].instruction - witness.address, pc);
+            assert_eq!(edges[0].local_got_slot, None);
+            for mode in 0..4 {
+                let mut bad = scalar_publication_host_native_control_graph(false);
+                let target = bad.selected[callee];
+                let witness = bad.witnesses.get_mut(caller).unwrap();
+                let index = witness
+                    .edges
+                    .iter()
+                    .position(|edge| edge.target == target)
+                    .unwrap();
+                match mode {
+                    0 => {
+                        witness.edges.remove(index);
+                    }
+                    1 => {
+                        witness.edges.push(witness.edges[index].clone());
+                    }
+                    2 => {
+                        witness.edges[index].instruction += 1;
+                    }
+                    _ => {
+                        witness.edges[index].local_got_slot = Some(0x300020);
+                    }
+                }
+                bad.transfers.insert(caller.into(), witness.edges.clone());
+                assert_eq!(
+                    check(&bad).unwrap_err().to_string(),
+                    if mode == 0 {
+                        "missing scalar helper incoming edge"
+                    } else {
+                        "extra duplicate shifted or wrong-mode scalar helper edge"
+                    },
+                    "host census {caller}/{callee}/{mode}",
+                );
+            }
+        }
+
+        // This is an independently valid ordinary raw23/template26 witness and
+        // setup/caller pair. Swap only the four host leaf/entry witnesses while
+        // keeping their exact public bindings, so the mode refusal cannot be
+        // attributed to a malformed wrapper or missing cohort member.
+        let mut wrong_mode = scalar_ordinary_bit_result_control_graph(false);
+        let mut host_mode = scalar_publication_host_native_control_graph(false);
+        for sample in scalar_publication_host_native_samples() {
+            let role = sample.0;
+            let witness = host_mode.witnesses.remove(role).unwrap();
+            wrong_mode
+                .transfers
+                .insert(role.into(), witness.edges.clone());
+            wrong_mode.selected.insert(role.into(), witness.address);
+            wrong_mode.targets.insert(role.into(), witness.address);
+            wrong_mode.witnesses.insert(role.into(), witness);
+        }
+        fixed_scalar_publication_cohort(
+            &wrong_mode.witnesses,
+            &wrong_mode.transfers,
+            &wrong_mode.selected,
+            &wrong_mode.targets,
+            FixedImageKind::Detcore,
+        )
+        .unwrap();
+        fixed_detcore_full_result_contract(
+            &wrong_mode.witnesses,
+            &wrong_mode.transfers,
+            &wrong_mode.selected,
+            &wrong_mode.targets,
+        )
+        .unwrap();
+        fixed_scalar_ordinary_bit_result(&wrong_mode.witnesses).unwrap();
+        assert_eq!(
+            fixed_scalar_publication_syscall_mode(
+                &wrong_mode.witnesses,
+                FixedImageKind::Detcore,
+                false,
+            )
+            .unwrap_err()
+            .to_string(),
+            "host scalar publication requires its observed native syscall factory",
+        );
+        assert!(
+            fixed_scalar_publication_syscall_mode(
+                &graph.witnesses,
+                FixedImageKind::Standalone,
+                false,
+            )
+            .is_err()
+        );
     }
 
     // Independent fixture57 ELF 9cf626b49e6f83b74e1d3ff4ea54cb366bcfd8aed770104c94631c9712046f28:
