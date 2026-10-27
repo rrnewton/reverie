@@ -212,14 +212,12 @@ fn fstatat_impl(
         let Ok((host_fd, _)) = host_dirfd_and_path(state, guest_dirfd, &path) else {
             return negative_errno(libc::EBADF);
         };
-        if !state.proc_files.contains_key(&guest_dirfd)
-            && let Err(error) = ensure_fd_not_procfs(host_fd)
-        {
+        if let Err(error) = ensure_fd_not_procfs(host_fd) {
             return error;
         }
         host_fd
     } else {
-        opened_file = match open_metadata_path(
+        opened_file = match open_stat_path(
             state,
             guest_dirfd,
             &path,

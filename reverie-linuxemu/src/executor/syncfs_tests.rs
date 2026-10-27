@@ -382,11 +382,7 @@ fn syncfs_known_private_descriptions_are_refused_without_host_call() {
     let mut state = test_state(&root.0);
     let mut memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
     let mut fds = Vec::new();
-    for path in [
-        "/proc/self/maps",
-        "/proc/self/status",
-        "/proc",
-    ] {
+    for path in ["/proc/self/maps", "/proc/self/status"] {
         let fd = open_readonly(&mut memory, &mut state, path);
         assert!(fd >= 0, "{path}: {fd}");
         fds.push(fd);

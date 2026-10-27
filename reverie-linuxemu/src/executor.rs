@@ -476,6 +476,7 @@ pub fn native_loaded_state(cwd: &std::path::Path) -> LoadedStaticElf {
         linux_personality: crate::elf::LINUX_FIXED_PERSONALITY,
         ids_per_task: reverie::task_ids::LINUX_IDS_PER_TASK,
         host_metadata_timestamps: false,
+        tool_directory: None,
         thread_name: *b"test\0\0\0\0\0\0\0\0\0\0\0\0",
         thread_group_leader_name: Arc::new(Mutex::new(*b"test\0\0\0\0\0\0\0\0\0\0\0\0")),
         thp_disabled: Arc::new(std::sync::atomic::AtomicU8::new(0)),
@@ -551,6 +552,7 @@ mod tests {
     include!("executor/shared_file_tests.rs");
     include!("executor/read_zero_cancel_tests.rs");
     include!("executor/descriptor_generic_tests.rs");
+    include!("executor/tool_directory_tests.rs");
     use std::collections::BTreeMap;
     use std::io::Read;
     use std::io::Seek;
@@ -1073,95 +1075,12 @@ mod tests {
     }
 
     #[test]
-    fn proc_root_identity_requires_qualified_mount_and_directory() {
-        let root = std::fs::File::open("/proc").unwrap();
-        let mut stat: libc::statx = unsafe { std::mem::zeroed() };
-        assert_eq!(
-            unsafe {
-                libc::statx(
-                    root.as_raw_fd(),
-                    c"".as_ptr(),
-                    libc::AT_EMPTY_PATH,
-                    libc::STATX_BASIC_STATS | libc::STATX_MNT_ID,
-                    &mut stat,
-                )
-            },
-            0
-        );
-        println!(
-            "host /proc statx mask={:#x} mode={:#x} dev={}:{} ino={} mount={}",
-            stat.stx_mask,
-            stat.stx_mode,
-            stat.stx_dev_major,
-            stat.stx_dev_minor,
-            stat.stx_ino,
-            stat.stx_mnt_id
-        );
-        let identity = checked_proc_directory_identity(&stat).unwrap();
-        for missing in [libc::STATX_TYPE, libc::STATX_INO, libc::STATX_MNT_ID] {
-            let mut changed = stat;
-            changed.stx_mask &= !missing;
-            assert_eq!(
-                checked_proc_directory_identity(&changed),
-                Err(negative_errno(libc::EOPNOTSUPP))
-            );
-        }
-        for mode in [libc::S_IFREG, libc::S_IFLNK, libc::S_IFSOCK] {
-            let mut changed = stat;
-            changed.stx_mode = mode as u16;
-            assert_eq!(
-                checked_proc_directory_identity(&changed),
-                Err(negative_errno(libc::EACCES))
-            );
-        }
-        let mut changed = stat;
-        changed.stx_mnt_id ^= 1;
-        assert_ne!(checked_proc_directory_identity(&changed).unwrap(), identity);
-        changed = stat;
-        changed.stx_ino ^= 1;
-        assert_ne!(checked_proc_directory_identity(&changed).unwrap(), identity);
-        changed = stat;
-        changed.stx_dev_major ^= 1;
-        assert_ne!(checked_proc_directory_identity(&changed).unwrap(), identity);
-        changed = stat;
-        changed.stx_dev_minor ^= 1;
-        assert_ne!(checked_proc_directory_identity(&changed).unwrap(), identity);
-    }
-
-    #[test]
-    fn proc_root_received_install_preserves_only_exact_root() {
-        let directory = TestDir::new();
-        let mut state = test_state(&directory.0);
-        for (path, expected) in [("/proc", true), ("/", false)] {
-            let mut control = [0_u8; 4];
-            let installed = install_received_rights(
-                &mut state,
-                &mut control,
-                vec![PendingReceivedRight {
-                    control_offset: 0,
-                    file: std::fs::File::open(path).unwrap(),
-                }],
-                true,
-                false,
-            )
-            .unwrap();
-            let descriptor = installed[0];
-            assert_eq!(i32::from_ne_bytes(control), descriptor);
-            assert_eq!(
-                state.proc_files.get(&descriptor).copied(),
-                expected.then(|| synthetic_proc_inode(b"/proc")),
-                "received {path}"
-            );
-            assert!(state.cloexec_fds.contains(&descriptor));
-            assert_eq!(close(&mut state, descriptor as u64), 0);
-            assert!(!state.proc_files.contains_key(&descriptor));
-        }
-    }
-
-    #[test]
-    fn proc_root_received_install_refuses_other_proc_objects() {
+    fn received_procfs_rights_are_refused() {
+        // Every real procfs right is refused, `/proc` itself included: the
+        // executor serves no procfs directory.
         let directory = TestDir::new();
         for path in [
+            "/proc",
             "/proc/self",
             "/proc/self/task",
             "/proc/self/fd",
@@ -1175,7 +1094,7 @@ mod tests {
                 vec![
                     PendingReceivedRight {
                         control_offset: 0,
-                        file: std::fs::File::open("/proc").unwrap(),
+                        file: std::fs::File::open("/").unwrap(),
                     },
                     PendingReceivedRight {
                         control_offset: 4,
@@ -1208,59 +1127,19 @@ mod tests {
     }
 
     #[test]
-    fn proc_root_received_path_descriptor_does_not_gain_read_access() {
-        let directory = TestDir::new();
-        let mut state = test_state(&directory.0);
-        let mut memory = GuestMemory::new(0, 0x2000).unwrap();
-        let descriptor = unsafe {
-            libc::open(
-                c"/proc".as_ptr(),
-                libc::O_PATH | libc::O_DIRECTORY | libc::O_CLOEXEC,
-            )
-        };
-        assert!(descriptor >= 0);
-        let file = unsafe { std::fs::File::from_raw_fd(descriptor) };
-        let mut control = [0_u8; 4];
-        let installed = install_received_rights(
-            &mut state,
-            &mut control,
-            vec![PendingReceivedRight {
-                control_offset: 0,
-                file,
-            }],
-            false,
-            false,
-        )
-        .unwrap();
-        assert_eq!(installed, vec![3]);
-        assert_eq!(
-            state.proc_files.get(&3).copied(),
-            Some(synthetic_proc_inode(b"/proc"))
-        );
-        memory.write(0x100, &[0xa5; 512]).unwrap();
-        for number in [libc::SYS_getdents64, libc::SYS_read] {
-            assert_eq!(
-                syscall_result(&mut memory, &mut state, number, [3, 0x100, 512, 0, 0, 0]),
-                negative_errno(libc::EBADF)
-            );
-            let mut output = [0; 512];
-            memory.read(0x100, &mut output).unwrap();
-            assert_eq!(output, [0xa5; 512]);
-        }
-    }
-
-    #[test]
-    fn proc_root_received_install_rolls_back_all_metadata() {
+    fn received_install_rolls_back_all_metadata() {
         let directory = TestDir::new();
         let mut state = test_state(&directory.0);
         let mut control = [0_u8; 4];
+        // The second right's control slot is past the buffer, so the first
+        // right's installation must be undone too.
         let result = install_received_rights(
             &mut state,
             &mut control,
             vec![
                 PendingReceivedRight {
                     control_offset: 0,
-                    file: std::fs::File::open("/proc").unwrap(),
+                    file: std::fs::File::open("/").unwrap(),
                 },
                 PendingReceivedRight {
                     control_offset: 4,
@@ -1278,7 +1157,7 @@ mod tests {
     }
 
     #[test]
-    fn proc_root_real_receive_refusal_preserves_guest_buffers_and_fd_slots() {
+    fn procfs_real_receive_refusal_preserves_guest_buffers_and_fd_slots() {
         use std::os::unix::net::UnixDatagram;
 
         let directory = TestDir::new();
@@ -4522,20 +4401,6 @@ mod tests {
         ) as libc::c_int;
         assert_eq!(observed & retained, retained);
         assert_eq!(close(&mut state, reopened as u64), 0);
-
-        state.files.insert(4, std::fs::File::open("/proc").unwrap());
-        state.proc_files.insert(4, synthetic_proc_inode(b"/proc"));
-        write_c_string(&mut memory, PATH, "/proc/self/fd/4");
-        assert_eq!(
-            syscall_result(
-                &mut memory,
-                &mut state,
-                libc::SYS_openat,
-                [libc::AT_FDCWD as u64, PATH, libc::O_RDWR as u64, 0, 0, 0,],
-            ),
-            negative_errno(libc::EISDIR),
-            "synthetic proc directories retain native directory precedence"
-        );
     }
 
     #[test]
@@ -4917,8 +4782,13 @@ mod tests {
         );
         assert!(alias >= 3);
         let proc_file = open_readonly(&mut memory, &mut state, "/proc/self/maps");
-        let proc_root = open_readonly(&mut memory, &mut state, "/proc");
-        assert!(proc_file >= 3 && proc_root >= 3);
+        // A procfs descriptor the guest holds, as one it inherited: no guest
+        // open reaches procfs.
+        let proc_root = 9;
+        state
+            .files
+            .insert(proc_root, std::fs::File::open("/proc").unwrap());
+        assert!(proc_file >= 3);
 
         for upper in [0, 1_u64 << 32, 1_u64 << 63, 0xffff_ffff_0000_0000] {
             for fd in [1, 2, alias] {
@@ -5041,119 +4911,44 @@ mod tests {
     }
 
     #[test]
-    fn synthetic_proc_directory_resolves_relative_allowlisted_files() {
+    fn proc_root_opens_are_refused() {
+        // The executor serves no `/proc` directory: an open of it fails as
+        // an open of any procfs object does, by every spelling and flag.
         let root = TestDir::new();
         let mut state = test_state(&root.0);
         let mut memory = GuestMemory::new(0, 0x4000).unwrap();
-
-        write_c_string(&mut memory, 0x100, "/proc");
-        let proc_fd = syscall_result(
-            &mut memory,
-            &mut state,
-            libc::SYS_openat,
-            [
-                libc::AT_FDCWD as u64,
-                0x100,
-                (libc::O_RDONLY | libc::O_DIRECTORY) as u64,
-                0,
-                0,
-                0,
-            ],
-        );
-        assert!(proc_fd >= 0, "open /proc failed: {proc_fd}");
-
-        let stat_address = 0x1000;
-        assert_eq!(
-            syscall_result(
-                &mut memory,
-                &mut state,
-                libc::SYS_fstat,
-                [proc_fd as u64, stat_address, 0, 0, 0, 0]
-            ),
-            0
-        );
-        let stat: libc::stat = read_struct(&memory, stat_address);
-        assert_eq!(stat.st_mode, libc::S_IFDIR | 0o555);
-
-        write_c_string(&mut memory, 0x100, "self/status");
-        let status_fd = syscall_result(
-            &mut memory,
-            &mut state,
-            libc::SYS_openat,
-            [proc_fd as u64, 0x100, libc::O_RDONLY as u64, 0, 0, 0],
-        );
-        assert!(status_fd >= 0, "openat self/status failed: {status_fd}");
-        let status = read_fd_to_end(&mut memory, &mut state, status_fd);
-        assert!(
-            status.starts_with(b"Name:\ttest\n"),
-            "{}",
-            String::from_utf8_lossy(&status)
-        );
-
-        // A one-component name below the directory resolves too.
-        write_c_string(&mut memory, 0x100, "locks");
-        let locks_fd = syscall_result(
-            &mut memory,
-            &mut state,
-            libc::SYS_openat,
-            [proc_fd as u64, 0x100, libc::O_RDONLY as u64, 0, 0, 0],
-        );
-        assert!(locks_fd >= 0, "openat locks failed: {locks_fd}");
-        let expected_locks = synthetic_proc_content(&state, b"/proc/locks").unwrap();
-        assert_eq!(
-            read_fd_to_end(&mut memory, &mut state, locks_fd),
-            expected_locks
-        );
-
-        write_c_string(&mut memory, 0x100, "self/maps");
-        let maps_fd = syscall_result(
-            &mut memory,
-            &mut state,
-            libc::SYS_openat,
-            [proc_fd as u64, 0x100, libc::O_RDONLY as u64, 0, 0, 0],
-        );
-        assert!(maps_fd >= 0, "openat self/maps failed: {maps_fd}");
-        let maps = read_fd_to_end(&mut memory, &mut state, maps_fd);
-        assert!(maps.ends_with(b"[stack]\n"));
-
-        write_c_string(&mut memory, 0x100, "../etc/passwd");
-        assert_eq!(
-            syscall_result(
-                &mut memory,
-                &mut state,
-                libc::SYS_openat,
-                [proc_fd as u64, 0x100, libc::O_RDONLY as u64, 0, 0, 0],
-            ),
-            negative_errno(libc::ENOENT),
-            "unlisted relative proc path leaked through"
-        );
-
-        // A file Detcore renders has no copy here, so a relative open that
-        // reaches this executor anyway fails closed like any unlisted name.
-        for name in ["cpuinfo", "mounts", "self/mounts", "self/mountinfo"] {
-            write_c_string(&mut memory, 0x100, name);
-            assert_eq!(
-                syscall_result(
-                    &mut memory,
-                    &mut state,
-                    libc::SYS_openat,
-                    [proc_fd as u64, 0x100, libc::O_RDONLY as u64, 0, 0, 0],
-                ),
-                negative_errno(libc::ENOENT),
-                "relative {name} below the synthetic /proc directory"
-            );
+        state.files.insert(9, std::fs::File::open("/").unwrap());
+        let at_fdcwd = libc::AT_FDCWD as u64;
+        for (dirfd, spelling) in [
+            (at_fdcwd, "/proc"),
+            (at_fdcwd, "/proc/"),
+            (at_fdcwd, "//proc"),
+            (at_fdcwd, "/proc/."),
+            (at_fdcwd, "/proc/self/.."),
+            (9, "proc"),
+            (9, "proc/"),
+        ] {
+            for flags in [
+                libc::O_RDONLY | libc::O_DIRECTORY,
+                libc::O_RDONLY,
+                libc::O_PATH | libc::O_DIRECTORY,
+                libc::O_PATH,
+            ] {
+                write_c_string(&mut memory, 0x100, spelling);
+                assert_eq!(
+                    syscall_result(
+                        &mut memory,
+                        &mut state,
+                        libc::SYS_openat,
+                        [dirfd, 0x100, flags as u64, 0, 0, 0],
+                    ),
+                    negative_errno(libc::EACCES),
+                    "{spelling} from {dirfd:#x} with flags {flags:#x}"
+                );
+            }
         }
-
-        assert_eq!(
-            syscall_result(
-                &mut memory,
-                &mut state,
-                libc::SYS_getdents64,
-                [proc_fd as u64, 0x2000, 0x400, 0, 0, 0]
-            ),
-            0,
-            "the intentionally unenumerable synthetic directory must appear empty"
-        );
+        assert!(state.proc_files.is_empty());
+        assert_eq!(state.files.keys().copied().collect::<Vec<_>>(), vec![9]);
     }
 
     #[test]
@@ -24405,6 +24200,23 @@ mod tests {
         assert!(fresh.host_metadata_timestamps);
     }
 
+    #[test]
+    fn tool_directory_survives_fork_clone_and_exec() {
+        let Some(root) = in_read_only_reservation("tool_directory_survives_fork_clone_and_exec")
+        else {
+            return;
+        };
+        let reserved = crate::elf::ToolDirectory::open(&root.join("reserved")).unwrap();
+        let mut state = test_state(&root);
+        state.tool_directory = Some(reserved.clone());
+        let child = state.try_clone_for_fork(2).unwrap();
+        assert_eq!(child.tool_directory.as_ref(), Some(&reserved));
+        let mut fresh = test_state(&root);
+        assert!(fresh.tool_directory.is_none());
+        fresh.inherit_process_state(state);
+        assert_eq!(fresh.tool_directory, Some(reserved));
+    }
+
     /// Asserts that every stat route to `fd` reports only the fixed timestamp
     /// `fixed`: fstat, empty-path newfstatat and statx, and newfstatat and
     /// statx through its `/proc/self/fd` link.
@@ -27500,88 +27312,6 @@ mod tests {
         );
         let (_, decoy_records) = checked_getdents64(&mut memory, &mut state, 257, BUFFER, CAPACITY);
         assert_getdents64_names(&decoy_records, "decoy-entry");
-    }
-
-    #[test]
-    fn getdents64_low_words_keep_synthetic_proc_unenumerable() {
-        let root = TestDir::new();
-        let mut state = test_state(&root.0);
-        let mut memory = GuestMemory::new(0, 2 * PAGE_SIZE as usize).unwrap();
-        memory.map_user_range(0, PAGE_SIZE, false).unwrap();
-        memory.map_user_range(PAGE_SIZE, PAGE_SIZE, true).unwrap();
-        memory.enable_user_access();
-        let mut descriptors = Vec::new();
-        for flags in [
-            libc::O_RDONLY | libc::O_DIRECTORY,
-            libc::O_PATH | libc::O_DIRECTORY,
-        ] {
-            write_c_string(&mut memory, 0x100, "/proc");
-            let opened = syscall_result(
-                &mut memory,
-                &mut state,
-                libc::SYS_openat,
-                [libc::AT_FDCWD as u64, 0x100, flags as u64, 0, 0, 0],
-            );
-            let fd = if flags & libc::O_PATH != 0 {
-                // Direct synthetic /proc O_PATH opens retain their existing
-                // EINVAL refusal. Model an inherited O_PATH proc descriptor to
-                // ensure getdents64 checks O_PATH before the synthetic-zero rule.
-                assert_eq!(opened, negative_errno(libc::EINVAL));
-                let fd = 257;
-                let file = std::fs::OpenOptions::new()
-                    .read(true)
-                    .custom_flags(libc::O_PATH | libc::O_DIRECTORY)
-                    .open("/proc")
-                    .unwrap();
-                assert!(state.files.insert(fd, file).is_none());
-                state.proc_files.insert(fd, synthetic_proc_inode(b"/proc"));
-                i64::from(fd)
-            } else {
-                assert!(opened >= 0, "open /proc flags={flags:#x} returned {opened}");
-                opened
-            };
-            assert_eq!(
-                state.proc_files.get(&(fd as libc::c_int)),
-                Some(&synthetic_proc_inode(b"/proc"))
-            );
-            let alias = syscall_result(
-                &mut memory,
-                &mut state,
-                libc::SYS_dup,
-                [fd as u64, 0, 0, 0, 0, 0],
-            );
-            assert!(alias >= 0 && alias != fd);
-            assert_eq!(
-                state.proc_files.get(&(alias as libc::c_int)),
-                state.proc_files.get(&(fd as libc::c_int))
-            );
-            let expected = if flags & libc::O_PATH != 0 {
-                negative_errno(libc::EBADF)
-            } else {
-                0
-            };
-            descriptors.extend([(fd as u64, expected), (alias as u64, expected)]);
-        }
-        for (fd, expected) in descriptors {
-            for upper in GETDENTS64_UPPER_WORDS {
-                for address in [0x100, PAGE_SIZE, PAGE_SIZE - 23, u64::MAX] {
-                    for length in [0, 1, 23, 24, 1024] {
-                        assert_eq!(
-                            checked_getdents64(
-                                &mut memory,
-                                &mut state,
-                                upper | fd,
-                                address,
-                                length
-                            )
-                            .0,
-                            expected,
-                            "synthetic proc policy: fd={fd}, upper={upper:#x}, pointer={address:#x}, count={length}"
-                        );
-                    }
-                }
-            }
-        }
     }
 
     #[test]
@@ -37089,230 +36819,17 @@ mod tests {
     }
 
     #[test]
-    fn synthetic_proc_directory_fd_rejects_relative_mutation() {
-        const PROC: u64 = 0x100;
-        const ESCAPE: u64 = 0x300;
-
-        let root = TestDir::new();
-        let mut state = test_state(&root.0);
-        let mut memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
-        write_c_string(&mut memory, PROC, "/proc");
-        let proc_fd = syscall_result(
-            &mut memory,
-            &mut state,
-            libc::SYS_openat,
-            [
-                libc::AT_FDCWD as u64,
-                PROC,
-                (libc::O_RDONLY | libc::O_DIRECTORY) as u64,
-                0,
-                0,
-                0,
-            ],
-        );
-        assert!(proc_fd >= 0, "open /proc failed: {proc_fd}");
-
-        let escaped = format!(
-            "tmp/{}/escaped/",
-            root.0.file_name().unwrap().to_string_lossy()
-        );
-        write_c_string(&mut memory, ESCAPE, &escaped);
-        assert_eq!(
-            syscall_result(
-                &mut memory,
-                &mut state,
-                libc::SYS_mkdirat,
-                [proc_fd as u64, ESCAPE, 0o755, 0, 0, 0],
-            ),
-            negative_errno(libc::ENOENT)
-        );
-        assert!(!root.0.join("escaped").exists());
-    }
-
-    #[test]
-    fn synthetic_proc_directory_fd_rejects_every_relative_mutation_dispatcher() {
-        const PROC: u64 = 0x100;
-        const ESCAPED_MISSING: u64 = 0x300;
-        const ESCAPED_FILE: u64 = 0x500;
-        const ESCAPED_DIRECTORY: u64 = 0x700;
-        const LOCAL_SOURCE: u64 = 0x900;
-        const LOCAL_DESTINATION: u64 = 0xb00;
-        const ABSOLUTE_TARGET: u64 = 0xd00;
-
-        let root = TestDir::new();
-        std::fs::write(root.0.join("local-source"), b"payload").unwrap();
-        std::fs::set_permissions(
-            root.0.join("local-source"),
-            std::fs::Permissions::from_mode(0o600),
-        )
-        .unwrap();
-        std::fs::create_dir(root.0.join("removable")).unwrap();
-        let mut state = test_state(&root.0);
-        let mut memory = GuestMemory::new(0, 2 * PAGE_SIZE as usize).unwrap();
-        write_c_string(&mut memory, PROC, "/proc");
-        let proc_fd = syscall_result(
-            &mut memory,
-            &mut state,
-            libc::SYS_openat,
-            [
-                libc::AT_FDCWD as u64,
-                PROC,
-                (libc::O_RDONLY | libc::O_DIRECTORY) as u64,
-                0,
-                0,
-                0,
-            ],
-        );
-        assert!(proc_fd >= 0, "open /proc failed: {proc_fd}");
-
-        let host_relative_root = format!("tmp/{}", root.0.file_name().unwrap().to_string_lossy());
-        write_c_string(
-            &mut memory,
-            ESCAPED_MISSING,
-            &format!("{host_relative_root}/escaped///"),
-        );
-        write_c_string(
-            &mut memory,
-            ESCAPED_FILE,
-            &format!("{host_relative_root}/local-source"),
-        );
-        write_c_string(
-            &mut memory,
-            ESCAPED_DIRECTORY,
-            &format!("{host_relative_root}/removable///"),
-        );
-        write_c_string(&mut memory, LOCAL_SOURCE, "local-source");
-        write_c_string(&mut memory, LOCAL_DESTINATION, "local-destination");
-        write_c_string(
-            &mut memory,
-            ABSOLUTE_TARGET,
-            &format!("{}/absolute-target///", root.0.display()),
-        );
-        let proc_fd = proc_fd as u64;
-        let at_fdcwd = libc::AT_FDCWD as u64;
-        let calls = [
-            (
-                "mkdirat",
-                libc::SYS_mkdirat,
-                [proc_fd, ESCAPED_MISSING, 0o755, 0, 0, 0],
-            ),
-            (
-                "unlinkat",
-                libc::SYS_unlinkat,
-                [
-                    proc_fd,
-                    ESCAPED_DIRECTORY,
-                    libc::AT_REMOVEDIR as u64,
-                    0,
-                    0,
-                    0,
-                ],
-            ),
-            (
-                "renameat source",
-                libc::SYS_renameat,
-                [proc_fd, ESCAPED_FILE, at_fdcwd, LOCAL_DESTINATION, 0, 0],
-            ),
-            (
-                "renameat destination",
-                libc::SYS_renameat,
-                [at_fdcwd, LOCAL_SOURCE, proc_fd, ESCAPED_MISSING, 0, 0],
-            ),
-            (
-                "renameat2 source",
-                libc::SYS_renameat2,
-                [proc_fd, ESCAPED_FILE, at_fdcwd, LOCAL_DESTINATION, 0, 0],
-            ),
-            (
-                "renameat2 destination",
-                libc::SYS_renameat2,
-                [at_fdcwd, LOCAL_SOURCE, proc_fd, ESCAPED_MISSING, 0, 0],
-            ),
-            (
-                "linkat source",
-                libc::SYS_linkat,
-                [proc_fd, ESCAPED_FILE, at_fdcwd, LOCAL_DESTINATION, 0, 0],
-            ),
-            (
-                "linkat destination",
-                libc::SYS_linkat,
-                [at_fdcwd, LOCAL_SOURCE, proc_fd, ESCAPED_MISSING, 0, 0],
-            ),
-            (
-                "symlinkat",
-                libc::SYS_symlinkat,
-                [LOCAL_SOURCE, proc_fd, ESCAPED_MISSING, 0, 0, 0],
-            ),
-            (
-                "fchmodat",
-                libc::SYS_fchmodat,
-                [proc_fd, ESCAPED_FILE, 0o777, 0, 0, 0],
-            ),
-            (
-                "mknodat",
-                libc::SYS_mknodat,
-                [
-                    proc_fd,
-                    ESCAPED_MISSING,
-                    (libc::S_IFIFO | 0o600) as u64,
-                    0,
-                    0,
-                    0,
-                ],
-            ),
-            (
-                "utimensat",
-                libc::SYS_utimensat,
-                [proc_fd, ESCAPED_FILE, 0, 0, 0, 0],
-            ),
-        ];
-        assert_eq!(calls.len(), 12);
-
-        for (name, number, args) in calls {
-            assert_eq!(
-                syscall_result(&mut memory, &mut state, number, args),
-                negative_errno(libc::ENOENT),
-                "{name} lost the guest synthetic-proc directory identity"
-            );
-        }
-        assert_eq!(
-            std::fs::read(root.0.join("local-source")).unwrap(),
-            b"payload"
-        );
-        assert_eq!(
-            std::fs::metadata(root.0.join("local-source"))
-                .unwrap()
-                .mode()
-                & 0o777,
-            0o600
-        );
-        assert!(root.0.join("removable").is_dir());
-        assert!(!root.0.join("escaped").exists());
-        assert!(!root.0.join("local-destination").exists());
-
-        // Absolute paths ignore dirfd on Linux, including a synthetic proc fd.
-        assert_eq!(
-            syscall_result(
-                &mut memory,
-                &mut state,
-                libc::SYS_mkdirat,
-                [proc_fd, ABSOLUTE_TARGET, 0o755, 0, 0, 0],
-            ),
-            0
-        );
-        assert!(root.0.join("absolute-target").is_dir());
-    }
-
-    #[test]
-    fn utimensat_rejects_empty_paths_on_every_synthetic_proc_inode() {
+    fn utimensat_rejects_empty_paths_on_procfs_and_synthetic_proc_descriptors() {
         const EMPTY: u64 = 0x500;
         const CHILD: u64 = 0x700;
 
         let root = TestDir::new();
         let mut state = test_state(&root.0);
         let mut memory = GuestMemory::new(0, 2 * PAGE_SIZE as usize).unwrap();
-        let proc_directory_fd = open_readonly(&mut memory, &mut state, "/proc");
-        assert!(proc_directory_fd >= 0);
+        // A procfs descriptor the guest holds, as one it inherited: no guest
+        // open reaches procfs.
+        let proc_directory_fd: i64 = 9;
+        state.files.insert(9, std::fs::File::open("/proc").unwrap());
         let proc_file_fd = open_readonly(&mut memory, &mut state, "/proc/self/maps");
         assert!(proc_file_fd >= 0);
         write_c_string(&mut memory, EMPTY, "");
@@ -37342,7 +36859,7 @@ mod tests {
                     [fd as u64, path, 0, flags, 0, 0],
                 ),
                 negative_errno(libc::EACCES),
-                "{name} mutated a synthetic proc backing descriptor"
+                "{name} mutated a procfs or synthetic proc backing descriptor"
             );
         }
 
