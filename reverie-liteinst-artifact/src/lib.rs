@@ -9906,7 +9906,7 @@ const FIXED_READONLY_SPECS: &[FixedReadonlySpec] = &[
     FixedReadonlySpec {
         key: "publication_dev_data_369138",
         kind: "location",
-        hex: "00000000000000002e00000000000000de00000013000000",
+        hex: "00000000000000002e00000000000000e300000013000000",
         file_hex: "726576657269652d696e67756573742f7372632f67756573742f746f6f6c5f726567696f6e5f6172656e612e7273",
         owner: "",
         switch: &[],
@@ -34473,6 +34473,132 @@ mod tests {
             )
             .is_err()
         );
+        // Measured standalone diagnostic Location from the reviewed arena source.
+        // The input is retained ELF data, not generated from the selected spec.
+        // These physical controls do not qualify a whole runtime or authorize execution.
+        {
+            const KEY: &str = "publication_dev_data_369138";
+            fn bind_location(
+                bytes: &[u8],
+                relocation_count: usize,
+            ) -> Result<FixedReadonlyEvidence> {
+                let mut elf = Elf::parse(bytes).map_err(|e| e.to_string())?;
+                elf.dynrelas = goblin::elf::reloc::RelocSection::parse(
+                    bytes,
+                    0x3400,
+                    relocation_count * 24,
+                    true,
+                    goblin::container::Ctx::new(
+                        goblin::container::Container::Big,
+                        goblin::container::Endian::Little,
+                    ),
+                )
+                .map_err(|e| e.to_string())?;
+                let mut evidence = BTreeMap::new();
+                fixed_bind_operand_data(
+                    &elf,
+                    bytes,
+                    KEY,
+                    0x1200,
+                    &mut BTreeMap::new(),
+                    &mut BTreeMap::new(),
+                    &mut evidence,
+                )?;
+                evidence
+                    .remove(KEY)
+                    .ok_or("Location evidence absent".into())
+            }
+            let mut location = fixture();
+            location[0x1200..0x1218].copy_from_slice(&fixed_hex(
+                "00000000000000002e00000000000000e300000013000000",
+            ));
+            location[0x1300..0x132e]
+                .copy_from_slice(b"reverie-inguest/src/guest/tool_region_arena.rs");
+            put(&mut location, 0x3400, 8, 0x1200);
+            put(
+                &mut location,
+                0x3408,
+                8,
+                u64::from(reloc::R_X86_64_RELATIVE),
+            );
+            put(&mut location, 0x3410, 8, 0x1300);
+            let observed = bind_location(&location, 1).unwrap();
+            assert_eq!(observed.size, 24);
+            assert_eq!(observed.relative_pointer_slot, Some(0x1200));
+            assert_eq!(observed.file_address, Some(0x1300));
+            assert_eq!(
+                observed.sha256,
+                "8b21b3868610fdf144fc00bdce9f6b32da312087ee7f8b16d67e531729bd684b"
+            );
+            assert_eq!(
+                observed.file_sha256.as_deref(),
+                Some("a13d1d5966ffa80325d65ae12985a3531af936cc0f1e0ab1cfd91c963a31a36c")
+            );
+            let mut protected = location.clone();
+            put(&mut protected, 68, 4, 6);
+            put(
+                &mut protected,
+                120,
+                4,
+                u64::from(program_header::PT_GNU_RELRO),
+            );
+            put(&mut protected, 136, 8, 0x1000);
+            put(&mut protected, 160, 8, 0x2000);
+            assert_eq!(bind_location(&protected, 1).unwrap(), observed);
+            for byte in 0..24 {
+                for bit in 0..8 {
+                    let mut bad = location.clone();
+                    bad[0x1200 + byte] ^= 1 << bit;
+                    assert_eq!(
+                        bind_location(&bad, 1).unwrap_err(),
+                        "wrong complete Fixed source Location",
+                        "complete Location mutation {byte}/{bit}"
+                    );
+                }
+            }
+            // The former line 222 expectation and historical line 203 do not
+            // describe this exact source. Adjacent locations are not alternatives.
+            for line in [203, 222, 226, 228] {
+                let mut bad = location.clone();
+                put(&mut bad, 0x1210, 4, line);
+                assert_eq!(
+                    bind_location(&bad, 1).unwrap_err(),
+                    "wrong complete Fixed source Location"
+                );
+            }
+            for column in [18, 20] {
+                let mut bad = location.clone();
+                put(&mut bad, 0x1214, 4, column);
+                assert_eq!(
+                    bind_location(&bad, 1).unwrap_err(),
+                    "wrong complete Fixed source Location"
+                );
+            }
+            let mut wrong_file = location.clone();
+            wrong_file[0x1300] ^= 1;
+            assert_eq!(
+                bind_location(&wrong_file, 1).unwrap_err(),
+                "Fixed Location filename differs from exact source role"
+            );
+            assert!(bind_location(&location, 0).is_err());
+            for (offset, value) in [
+                (0x3400, 0x1208),
+                (0x3408, u64::from(reloc::R_X86_64_GLOB_DAT)),
+                (0x3408, (1u64 << 32) | u64::from(reloc::R_X86_64_RELATIVE)),
+                (0x3410, 0x1301),
+            ] {
+                let mut bad = location.clone();
+                put(&mut bad, offset, 8, value);
+                assert!(bind_location(&bad, 1).is_err());
+            }
+            let mut duplicate = location.clone();
+            duplicate.copy_within(0x3400..0x3418, 0x3418);
+            assert!(bind_location(&duplicate, 2).is_err());
+            let mut file_writer = duplicate;
+            put(&mut file_writer, 0x3418, 8, 0x1300);
+            put(&mut file_writer, 0x3428, 8, 0);
+            assert!(bind_location(&file_writer, 2).is_err());
+        }
         // The full census cannot silently omit the return or a direct call.
         let code = [0xe8, 0, 0, 0, 0, 0xc3];
         let instructions = vec![
