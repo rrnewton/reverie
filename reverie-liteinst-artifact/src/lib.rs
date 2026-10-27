@@ -23034,6 +23034,143 @@ const DETCORE_VALIDATE_TEMPLATES: &[DetcoreValidateTemplate] = &[
             (297, 13),
         ],
     },
+    // 78: observed HOST be8e82435 ordinary standalone, complete 206B. Template70's
+    // instructions and operands, except TEST AL,AL for TEST AL,1 on the exact 0/1
+    // setter result and SETE BL for JNE+MOV EBX,1 on the validate result.
+    DetcoreValidateTemplate {
+        role: "fixed_constructor_prepare",
+        hex: "415741564154534883ec384989fe4989e7488d7c2428bb010000004c89f64c89fab901000000e865f5ffff0fb644243084c00f84820000004c8b6424284d897e5848b9001000000060000048894c24104c89642418884424204c8d35605505024c8934244889e0488d4424104889442408488d442408488b3c24488b742408e80cd8ffff84c0743249c744244803000000c60521550502004c89742410488d442410488b7c2410e8c4d7ffff4885c0740931db807810ff0f94c389d84883c4385b415c415e415fc3ff15daf40400",
+        operands: &[
+            DetcoreValidateOperand {
+                displacement: 39,
+                next: 43,
+                key: "fixed_native_from_native",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 92,
+                next: 96,
+                key: "fixed_region",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 128,
+                next: 132,
+                key: "fixed_region_publication_set_opaque",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 147,
+                next: 152,
+                key: "fixed_initializing",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 168,
+                next: 172,
+                key: "fixed_region_publication_get_opaque",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 202,
+                next: 206,
+                key: "fixed_publication_cannot_unwind",
+                got: true,
+            },
+        ],
+        transfers: &[(38, 0), (127, 2), (167, 4), (200, 5)],
+    },
+    // 79: observed HOST be8e82435 ordinary standalone, complete 206B; template71
+    // with the same two predicate encodings as template78.
+    DetcoreValidateTemplate {
+        role: "fixed_generic_prepare",
+        hex: "415741564154534883ec384989fe4989e7488d7c24284c89f64c89fab902000000e87af3ffff0fb6442430bb0100000084c00f84820000004c8b6424284d897e5848b9001000000060000048894c24104c89642418884424204c8d35705305024c8934244889e0488d4424104889442408488d442408488b3c24488b742408e81cd6ffff84c0743249c744244803000000c60531530502004c89742410488d442410488b7c2410e8d4d5ffff4885c0740931db807810ff0f94c389d84883c4385b415c415e415fc3ff15eaf20400",
+        operands: &[
+            DetcoreValidateOperand {
+                displacement: 34,
+                next: 38,
+                key: "fixed_native_from_native",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 92,
+                next: 96,
+                key: "fixed_region",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 128,
+                next: 132,
+                key: "fixed_region_publication_set_opaque",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 147,
+                next: 152,
+                key: "fixed_initializing",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 168,
+                next: 172,
+                key: "fixed_region_publication_get_opaque",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 202,
+                next: 206,
+                key: "fixed_publication_cannot_unwind",
+                got: true,
+            },
+        ],
+        transfers: &[(33, 0), (127, 2), (167, 4), (200, 5)],
+    },
+    // 80: observed HOST be8e82435 ordinary standalone release runtime, complete
+    // 323B. Template69 through its setup291 call; then CMP EAX,1/JNE for TEST
+    // AL,1/JE on that setup's exclusively 0/1 EAX, as ordinary scalar345 does.
+    DetcoreValidateTemplate {
+        role: "fixed_native_from_native",
+        hex: "5541574156534883ec1848bb001000000060000080f901b83000020041b8a00002004c0f44c04909d84939f00f85b40000000fb6059ffa040249b800f0efffff9fffff4c01c24881faffff7f000f879300000084c00f848b00000089cd4989febfba0000004989f731f631d231c9e8dd0000004885c00f8e920000004c89f9493947400f85850000004883795001757e488379380074778b0183e00f83f808756d488d0538fa04024889442408488d442408488b7c2408e8b49cffff4885c0754dba02000000b801000000f0490fb15748753b0fb60384c074144c89f741c7060b000000eb32c70716000000eb2a48c74424080001000048c744241002090000488d7c2408e826f5ffff84c0741b4c89f741c7061600000031ed40886f084883c4185b415e415f5dc34889dfe8ef0800004c89f783f8017505418916ebda4d893eebd7",
+        operands: &[
+            DetcoreValidateOperand {
+                displacement: 53,
+                next: 57,
+                key: "fixed_initializing",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 111,
+                next: 115,
+                key: "fixed_scalar_syscall",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 164,
+                next: 168,
+                key: "fixed_region",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 184,
+                next: 188,
+                key: "fixed_region_publication_get_opaque",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 262,
+                next: 266,
+                key: "fixed_native_bitmap_range",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 301,
+                next: 305,
+                key: "fixed_arena_setup",
+                got: false,
+            },
+        ],
+        transfers: &[(110, 1), (183, 3), (261, 4), (300, 5)],
+    },
 ];
 struct DetcoreRecipeBindings<'a> {
     targets: &'a BTreeMap<String, u64>,
@@ -24267,6 +24404,69 @@ const FIXED_SCALAR_HOST_NATIVE_INCOMING: &[FixedScalarHelperIncoming] = &[
         ],
     ),
 ];
+// The HOST compiler's complete ordinary standalone composition: the pinned
+// standalone leaves, callers and setup, the two host CMOV leaves (74/75, with
+// their getter call at +41) and the two SETE prepare entries (78/79). Like the
+// host native tuple it is indivisible, and every member is a whole-body template.
+const FIXED_SCALAR_HOST_STANDALONE_COHORT: &[(&str, usize)] = &[
+    ("fixed_region_publication_get_opaque", 67),
+    ("fixed_region_publication_set_opaque", 68),
+    ("fixed_tool_heap_metadata", 75),
+    ("fixed_arena_backing", 74),
+    ("fixed_tool_require_owned", 59),
+    ("fixed_tool_alloc", 60),
+    ("fixed_tool_dealloc", 72),
+    ("fixed_tool_realloc", 73),
+    ("fixed_native_from_native", 69),
+    ("fixed_constructor_prepare", 78),
+    ("fixed_generic_prepare", 79),
+    ("fixed_arena_setup", DETCORE_THREE_BAND_SETUP),
+];
+// The same host standalone tuple as emitted for the release runtime: identical
+// except the complete caller323 (80), which compares setup291's full EAX with 1.
+// Its incoming census is identical, and it is never paired with pinned leaves.
+const FIXED_SCALAR_HOST_STANDALONE_CMP_COHORT: &[(&str, usize)] = &[
+    ("fixed_region_publication_get_opaque", 67),
+    ("fixed_region_publication_set_opaque", 68),
+    ("fixed_tool_heap_metadata", 75),
+    ("fixed_arena_backing", 74),
+    ("fixed_tool_require_owned", 59),
+    ("fixed_tool_alloc", 60),
+    ("fixed_tool_dealloc", 72),
+    ("fixed_tool_realloc", 73),
+    ("fixed_native_from_native", 80),
+    ("fixed_constructor_prepare", 78),
+    ("fixed_generic_prepare", 79),
+    ("fixed_arena_setup", DETCORE_THREE_BAND_SETUP),
+];
+const FIXED_SCALAR_HOST_STANDALONE_INCOMING: &[FixedScalarHelperIncoming] = &[
+    (
+        "fixed_region_publication_get_opaque",
+        &[
+            ("fixed_tool_heap_metadata", 41, false),
+            ("fixed_arena_backing", 41, false),
+            ("fixed_native_from_native", 183, false),
+            ("fixed_constructor_prepare", 167, false),
+            ("fixed_generic_prepare", 167, false),
+        ],
+    ),
+    (
+        "fixed_region_publication_set_opaque",
+        &[
+            ("fixed_constructor_prepare", 127, false),
+            ("fixed_generic_prepare", 127, false),
+        ],
+    ),
+    (
+        "fixed_tool_heap_metadata",
+        &[
+            ("fixed_tool_require_owned", 4, false),
+            ("fixed_tool_alloc", 13, false),
+            ("fixed_tool_dealloc", 4, false),
+            ("fixed_tool_realloc", 26, false),
+        ],
+    ),
+];
 fn fixed_scalar_publication_cohort(
     witnesses: &BTreeMap<String, AuthenticatedDetcoreOperation>,
     transfers: &BTreeMap<String, Vec<ConstructorTransfer>>,
@@ -24295,10 +24495,30 @@ fn fixed_scalar_publication_cohort(
             FIXED_SCALAR_ORDINARY_DETCORE_COHORT,
             FIXED_SCALAR_NATIVE_INCOMING,
         ),
+        (FixedImageKind::Standalone, AuthenticatedDetcoreOperationKind::ValidateTemplate(69))
+            if witnesses.get("fixed_arena_backing").is_some_and(|w| {
+                w.kind == AuthenticatedDetcoreOperationKind::ValidateTemplate(74)
+            }) =>
+        {
+            (
+                FIXED_SCALAR_HOST_STANDALONE_COHORT,
+                FIXED_SCALAR_HOST_STANDALONE_INCOMING,
+            )
+        }
         (FixedImageKind::Standalone, AuthenticatedDetcoreOperationKind::ValidateTemplate(69)) => (
             FIXED_SCALAR_STANDALONE_COHORT,
             FIXED_SCALAR_STANDALONE_INCOMING,
         ),
+        (FixedImageKind::Standalone, AuthenticatedDetcoreOperationKind::ValidateTemplate(80))
+            if witnesses.get("fixed_arena_backing").is_some_and(|w| {
+                w.kind == AuthenticatedDetcoreOperationKind::ValidateTemplate(74)
+            }) =>
+        {
+            (
+                FIXED_SCALAR_HOST_STANDALONE_CMP_COHORT,
+                FIXED_SCALAR_HOST_STANDALONE_INCOMING,
+            )
+        }
         _ => return Err("unknown scalar publication whole composition".into()),
     };
     require(
@@ -24392,7 +24612,7 @@ fn fixed_scalar_publication_cohort(
     // Whole bodies prove: get(slot) returns only null/slot after the ready load;
     // set(slot,payload) copies all24B before ready and returns bool without
     // touching rejected payload; metadata/backing pass actual REGION. The two
-    // complete307/303/210 entries pass REGION and disjoint rsp+16 payloads under the
+    // complete307/303/210/206 entries pass REGION and disjoint rsp+16 payloads under the
     // native gate, test the setter's exact boolean, never reuse moved storage, set READY then clear
     // INITIALIZING, and get/validate that same published slot. Every helper
     // null/alignment terminal therefore has the exact live aligned REGION
@@ -24487,10 +24707,21 @@ fn fixed_scalar_publication_syscall_mode(
         .get("fixed_arena_backing")
         .is_some_and(|w| w.kind == AuthenticatedDetcoreOperationKind::ValidateTemplate(74))
     {
+        // Exactly the observed host compositions: native Detcore, and the
+        // ordinary standalone image with caller69 or caller323 (80).
         require(
-            image_kind == FixedImageKind::Detcore
-                && native_syscalls
-                && kind == AuthenticatedDetcoreOperationKind::ValidateTemplate(63),
+            matches!(
+                (image_kind, native_syscalls, kind),
+                (
+                    FixedImageKind::Detcore,
+                    true,
+                    AuthenticatedDetcoreOperationKind::ValidateTemplate(63)
+                ) | (
+                    FixedImageKind::Standalone,
+                    false,
+                    AuthenticatedDetcoreOperationKind::ValidateTemplate(69 | 80)
+                )
+            ),
             "host scalar publication requires its observed native syscall factory",
         )?;
     }
@@ -24532,7 +24763,7 @@ fn fixed_scalar_publication_syscall_mode(
             ) | (
                 FixedImageKind::Standalone,
                 false,
-                AuthenticatedDetcoreOperationKind::ValidateTemplate(69)
+                AuthenticatedDetcoreOperationKind::ValidateTemplate(69 | 80)
             )
         ),
         "scalar complete caller mixed with another physical syscall family",
@@ -24762,6 +24993,7 @@ fn fixed_detcore_full_result_contract(
         AuthenticatedDetcoreOperationKind::ValidateTemplate(63) => 304,
         AuthenticatedDetcoreOperationKind::ValidateTemplate(66) => 304,
         AuthenticatedDetcoreOperationKind::ValidateTemplate(69) => 300,
+        AuthenticatedDetcoreOperationKind::ValidateTemplate(80) => 300,
         _ => return Ok(()),
     };
     let setup = witnesses
@@ -24820,8 +25052,8 @@ fn fixed_detcore_full_result_contract(
     // Complete scalar344 tests AL bit0, then stores EDX only on error and R15
     // only on success. It is paired with this same exact setup291, whose full
     // EAX is exclusively0/1; its bit test is therefore equivalent for this pair.
-    // Ordinary scalar345 compares full EAX with1, and standalone scalar322
-    // tests AL bit0. Both use this same complete setup291 with sole0/1 EAX,
+    // Ordinary scalar345 and host standalone scalar323 compare full EAX with1,
+    // and standalone scalar322 tests AL bit0. All use this same complete setup291 with sole0/1 EAX,
     // preserve EDX on the error arm and publish R15 only on the success arm.
     // This is unrelated to the scalar publication setter's C bool ABI.
     // Source Result enums and symbol extents alone never prove this ABI.
@@ -51359,13 +51591,19 @@ mod tests {
                 .unwrap();
             *slot = ordinary[0];
         } else {
-            for replacement in [ordinary[1], ordinary[2], ordinary[6], ordinary[7]] {
-                *samples.iter_mut().find(|s| s.0 == replacement.0).unwrap() = replacement;
-            }
-            samples.extend_from_slice(&ordinary[3..6]);
-            samples.push(scalar_publication_native_samples()[3]); // measured identical setup291
+            samples = scalar_publication_standalone_sample_vector();
         }
         scalar_publication_control_graph_from_samples(samples, mutations)
+    }
+    fn scalar_publication_standalone_sample_vector() -> Vec<ScalarPublicationSample> {
+        let mut samples = scalar_publication_leaf_samples().to_vec();
+        let ordinary = scalar_publication_ordinary_samples();
+        for replacement in [ordinary[1], ordinary[2], ordinary[6], ordinary[7]] {
+            *samples.iter_mut().find(|s| s.0 == replacement.0).unwrap() = replacement;
+        }
+        samples.extend_from_slice(&ordinary[3..6]);
+        samples.push(scalar_publication_native_samples()[3]); // measured identical setup291
+        samples
     }
     fn scalar_publication_control_graph(
         native: bool,
@@ -52517,6 +52755,486 @@ mod tests {
                 &native.witnesses,
                 FixedImageKind::Detcore,
                 false
+            )
+            .is_err()
+        );
+    }
+
+    // Actual HOST be8e82435 ordinary standalone ELF
+    // 460d78a73f76fdfbce075a3f893da99a8ba3dda8294433ecdc5e972644ee7cb3. These four
+    // whole byte strings and objdump instruction boundaries come from that image,
+    // independently of DETCORE_VALIDATE_TEMPLATES; its other eight publication
+    // bodies are byte-identical (outside operands) to the pinned standalone tuple.
+    fn scalar_publication_host_standalone_samples() -> &'static [ScalarPublicationSample] {
+        &[
+            (
+                "fixed_arena_backing",
+                74,
+                "4883ec180fb6059e4f050284c0740431c9eb31488d05964f05024889442410488d442410488b7c2410e832d2ffff31c94885c0740f807810ff488d05c840f8ff480f45c848894c2408488d442408488b4424084883c418c3",
+                &[
+                    0, 4, 11, 13, 15, 17, 19, 26, 31, 36, 41, 46, 48, 51, 53, 57, 64, 68, 73, 78,
+                    83, 87,
+                ],
+                &[
+                    (7, 11, "fixed_initializing", false),
+                    (22, 26, "fixed_region", false),
+                    (42, 46, "fixed_region_publication_get_opaque", false),
+                    (60, 64, "fixed_backing_object", false),
+                ],
+            ),
+            (
+                "fixed_tool_heap_metadata",
+                75,
+                "4883ec180fb6050e4e050284c0740431c0eb34488d05064e05024889442410488d442410488b7c2410e8a2d0ffff4885c074dc31c9807810ff48b80030020000600000480f44c14889442408488d442408488b4424084883c418c3",
+                &[
+                    0, 4, 11, 13, 15, 17, 19, 26, 31, 36, 41, 46, 49, 51, 53, 57, 67, 71, 76, 81,
+                    86, 90,
+                ],
+                &[
+                    (7, 11, "fixed_initializing", false),
+                    (22, 26, "fixed_region", false),
+                    (42, 46, "fixed_region_publication_get_opaque", false),
+                ],
+            ),
+            (
+                "fixed_constructor_prepare",
+                78,
+                "415741564154534883ec384989fe4989e7488d7c2428bb010000004c89f64c89fab901000000e865f5ffff0fb644243084c00f84820000004c8b6424284d897e5848b9001000000060000048894c24104c89642418884424204c8d35605505024c8934244889e0488d4424104889442408488d442408488b3c24488b742408e80cd8ffff84c0743249c744244803000000c60521550502004c89742410488d442410488b7c2410e8c4d7ffff4885c0740931db807810ff0f94c389d84883c4385b415c415e415fc3ff15daf40400",
+                &[
+                    0, 2, 4, 6, 7, 11, 14, 17, 22, 27, 30, 33, 38, 43, 48, 50, 56, 61, 65, 75, 80,
+                    85, 89, 96, 100, 103, 108, 113, 118, 122, 127, 132, 134, 136, 145, 152, 157,
+                    162, 167, 172, 175, 177, 179, 183, 186, 188, 192, 193, 195, 197, 199, 200,
+                ],
+                &[
+                    (39, 43, "fixed_native_from_native", false),
+                    (92, 96, "fixed_region", false),
+                    (128, 132, "fixed_region_publication_set_opaque", false),
+                    (147, 152, "fixed_initializing", false),
+                    (168, 172, "fixed_region_publication_get_opaque", false),
+                    (202, 206, "fixed_publication_cannot_unwind", true),
+                ],
+            ),
+            (
+                "fixed_generic_prepare",
+                79,
+                "415741564154534883ec384989fe4989e7488d7c24284c89f64c89fab902000000e87af3ffff0fb6442430bb0100000084c00f84820000004c8b6424284d897e5848b9001000000060000048894c24104c89642418884424204c8d35705305024c8934244889e0488d4424104889442408488d442408488b3c24488b742408e81cd6ffff84c0743249c744244803000000c60531530502004c89742410488d442410488b7c2410e8d4d5ffff4885c0740931db807810ff0f94c389d84883c4385b415c415e415fc3ff15eaf20400",
+                &[
+                    0, 2, 4, 6, 7, 11, 14, 17, 22, 25, 28, 33, 38, 43, 48, 50, 56, 61, 65, 75, 80,
+                    85, 89, 96, 100, 103, 108, 113, 118, 122, 127, 132, 134, 136, 145, 152, 157,
+                    162, 167, 172, 175, 177, 179, 183, 186, 188, 192, 193, 195, 197, 199, 200,
+                ],
+                &[
+                    (34, 38, "fixed_native_from_native", false),
+                    (92, 96, "fixed_region", false),
+                    (128, 132, "fixed_region_publication_set_opaque", false),
+                    (147, 152, "fixed_initializing", false),
+                    (168, 172, "fixed_region_publication_get_opaque", false),
+                    (202, 206, "fixed_publication_cannot_unwind", true),
+                ],
+            ),
+        ]
+    }
+
+    fn scalar_publication_host_standalone_sample_vector() -> Vec<ScalarPublicationSample> {
+        let mut samples = scalar_publication_standalone_sample_vector();
+        for replacement in scalar_publication_host_standalone_samples() {
+            *samples
+                .iter_mut()
+                .find(|sample| sample.0 == replacement.0)
+                .unwrap() = *replacement;
+        }
+        samples
+    }
+
+    fn scalar_publication_host_standalone_control_graph(
+        mutations: bool,
+    ) -> DetcorePublicationControlGraph {
+        scalar_publication_control_graph_from_samples(
+            scalar_publication_host_standalone_sample_vector(),
+            mutations,
+        )
+    }
+
+    // Actual HOST be8e82435 standalone release runtime ELF
+    // 57e45ce57eb4cdd1f937e193d87aae3d964ead217b4c7d8575c09cb86dc141a1: its
+    // complete caller323 and objdump boundaries. Its other eleven publication
+    // bodies are the host standalone tuple's, outside typed operands.
+    const SCALAR_HOST_STANDALONE_CALLER323: ScalarPublicationSample = (
+        "fixed_native_from_native",
+        80,
+        "5541574156534883ec1848bb001000000060000080f901b83000020041b8a00002004c0f44c04909d84939f00f85b40000000fb6059ffa040249b800f0efffff9fffff4c01c24881faffff7f000f879300000084c00f848b00000089cd4989febfba0000004989f731f631d231c9e8dd0000004885c00f8e920000004c89f9493947400f85850000004883795001757e488379380074778b0183e00f83f808756d488d0538fa04024889442408488d442408488b7c2408e8b49cffff4885c0754dba02000000b801000000f0490fb15748753b0fb60384c074144c89f741c7060b000000eb32c70716000000eb2a48c74424080001000048c744241002090000488d7c2408e826f5ffff84c0741b4c89f741c7061600000031ed40886f084883c4185b415e415f5dc34889dfe8ef0800004c89f783f8017505418916ebda4d893eebd7",
+        &[
+            0, 1, 3, 5, 6, 10, 20, 23, 28, 34, 38, 41, 44, 50, 57, 67, 70, 77, 83, 85, 91, 93, 96,
+            101, 104, 106, 108, 110, 115, 118, 124, 127, 131, 137, 142, 144, 149, 151, 153, 156,
+            159, 161, 168, 173, 178, 183, 188, 191, 193, 198, 203, 209, 211, 214, 216, 218, 221,
+            228, 230, 236, 238, 247, 256, 261, 266, 268, 270, 273, 280, 282, 286, 290, 291, 293,
+            295, 296, 297, 300, 305, 308, 311, 313, 316, 318, 321,
+        ],
+        &[
+            (53, 57, "fixed_initializing", false),
+            (111, 115, "fixed_scalar_syscall", false),
+            (164, 168, "fixed_region", false),
+            (184, 188, "fixed_region_publication_get_opaque", false),
+            (262, 266, "fixed_native_bitmap_range", false),
+            (301, 305, "fixed_arena_setup", false),
+        ],
+    );
+
+    fn scalar_publication_host_standalone_cmp_control_graph(
+        mutations: bool,
+    ) -> DetcorePublicationControlGraph {
+        let mut samples = scalar_publication_host_standalone_sample_vector();
+        *samples
+            .iter_mut()
+            .find(|sample| sample.0 == "fixed_native_from_native")
+            .unwrap() = SCALAR_HOST_STANDALONE_CALLER323;
+        scalar_publication_control_graph_from_samples(samples, mutations)
+    }
+
+    #[test]
+    fn observed_scalar_host_standalone_cmp_caller() {
+        let check = |g: &DetcorePublicationControlGraph| -> Result<()> {
+            fixed_scalar_publication_syscall_mode(&g.witnesses, FixedImageKind::Standalone, false)?;
+            fixed_scalar_publication_cohort(
+                &g.witnesses,
+                &g.transfers,
+                &g.selected,
+                &g.targets,
+                FixedImageKind::Standalone,
+            )?;
+            fixed_detcore_full_result_contract(&g.witnesses, &g.transfers, &g.selected, &g.targets)
+        };
+        // All twelve bodies, including every byte/target/census mutation of caller323.
+        let graph = scalar_publication_host_standalone_cmp_control_graph(true);
+        assert_eq!(graph.witnesses.len(), 12);
+        check(&graph).unwrap();
+        for role in graph.witnesses.keys() {
+            let mut bad = scalar_publication_host_standalone_cmp_control_graph(false);
+            bad.witnesses.get_mut(role).unwrap().kind =
+                AuthenticatedDetcoreOperationKind::ValidateTemplate(0);
+            assert!(check(&bad).is_err(), "host cmp re-kinded {role}");
+        }
+        // Caller323 is never paired with the pinned standalone leaves.
+        let mut samples = scalar_publication_standalone_sample_vector();
+        *samples
+            .iter_mut()
+            .find(|sample| sample.0 == "fixed_native_from_native")
+            .unwrap() = SCALAR_HOST_STANDALONE_CALLER323;
+        let pinned = scalar_publication_control_graph_from_samples(samples, false);
+        assert_eq!(
+            fixed_scalar_publication_cohort(
+                &pinned.witnesses,
+                &pinned.transfers,
+                &pinned.selected,
+                &pinned.targets,
+                FixedImageKind::Standalone,
+            )
+            .unwrap_err()
+            .to_string(),
+            "unknown scalar publication whole composition",
+        );
+        // Its exact direct setup291 edge at +300 is required.
+        for mode in 0..3 {
+            let mut bad = scalar_publication_host_standalone_cmp_control_graph(false);
+            let setup = bad.selected["fixed_arena_setup"];
+            let witness = bad.witnesses.get_mut("fixed_native_from_native").unwrap();
+            let index = witness
+                .edges
+                .iter()
+                .position(|edge| edge.target == setup)
+                .unwrap();
+            assert_eq!(witness.edges[index].instruction - witness.address, 300);
+            match mode {
+                0 => {
+                    witness.edges.remove(index);
+                }
+                1 => {
+                    witness.edges[index].instruction += 1;
+                }
+                _ => {
+                    witness.edges[index].local_got_slot = Some(0x300020);
+                }
+            }
+            bad.transfers
+                .insert("fixed_native_from_native".into(), witness.edges.clone());
+            assert!(
+                fixed_detcore_full_result_contract(
+                    &bad.witnesses,
+                    &bad.transfers,
+                    &bad.selected,
+                    &bad.targets,
+                )
+                .is_err(),
+                "host cmp setup edge {mode}"
+            );
+        }
+        for (image_kind, native) in [
+            (FixedImageKind::Standalone, true),
+            (FixedImageKind::Detcore, false),
+            (FixedImageKind::Detcore, true),
+        ] {
+            assert_eq!(
+                fixed_scalar_publication_syscall_mode(&graph.witnesses, image_kind, native)
+                    .unwrap_err()
+                    .to_string(),
+                "host scalar publication requires its observed native syscall factory",
+            );
+        }
+    }
+
+    #[test]
+    fn observed_scalar_host_standalone_publication_family() {
+        let check = |g: &DetcorePublicationControlGraph| -> Result<()> {
+            fixed_scalar_publication_syscall_mode(&g.witnesses, FixedImageKind::Standalone, false)?;
+            fixed_scalar_publication_cohort(
+                &g.witnesses,
+                &g.transfers,
+                &g.selected,
+                &g.targets,
+                FixedImageKind::Standalone,
+            )?;
+            fixed_detcore_full_result_contract(&g.witnesses, &g.transfers, &g.selected, &g.targets)
+        };
+        // The shared helper authenticates all twelve complete bodies and mutates
+        // every byte, target, instruction census, Location byte and filename.
+        let graph = scalar_publication_host_standalone_control_graph(true);
+        assert_eq!(graph.witnesses.len(), 12);
+        check(&graph).unwrap();
+        // The pinned standalone tuple still qualifies on its own.
+        check(&scalar_publication_ordinary_control_graph(
+            FixedImageKind::Standalone,
+            false,
+        ))
+        .unwrap();
+
+        for role in graph.witnesses.keys() {
+            for mode in 0..5 {
+                let mut bad = scalar_publication_host_standalone_control_graph(false);
+                match mode {
+                    0 => {
+                        bad.witnesses.remove(role);
+                    }
+                    1 => {
+                        bad.selected.remove(role);
+                    }
+                    2 => {
+                        *bad.targets.get_mut(role).unwrap() += 1;
+                    }
+                    3 => {
+                        bad.transfers.remove(role);
+                    }
+                    _ => {
+                        bad.witnesses.get_mut(role).unwrap().kind =
+                            AuthenticatedDetcoreOperationKind::ValidateTemplate(0);
+                    }
+                }
+                assert!(
+                    check(&bad).is_err(),
+                    "host standalone unbound {role}/{mode}"
+                );
+            }
+        }
+        for field in [
+            "fixed_region",
+            "fixed_region_ready",
+            "fixed_region_value16",
+            "fixed_initializing",
+        ] {
+            let mut bad = scalar_publication_host_standalone_control_graph(false);
+            *bad.targets.get_mut(field).unwrap() += 1;
+            assert!(
+                check(&bad).is_err(),
+                "host standalone storage field {field}"
+            );
+        }
+
+        // Every single host role mixed into the pinned standalone tuple, and
+        // every pinned or host-native role mixed into this one, fails the join.
+        let pinned = scalar_publication_standalone_sample_vector();
+        for host in scalar_publication_host_standalone_samples() {
+            for direction in 0..2 {
+                let (mut samples, replacement) = if direction == 0 {
+                    (pinned.clone(), *host)
+                } else {
+                    (
+                        scalar_publication_host_standalone_sample_vector(),
+                        *pinned.iter().find(|sample| sample.0 == host.0).unwrap(),
+                    )
+                };
+                *samples
+                    .iter_mut()
+                    .find(|sample| sample.0 == host.0)
+                    .unwrap() = replacement;
+                let bad = scalar_publication_control_graph_from_samples(samples, false);
+                assert_eq!(
+                    fixed_scalar_publication_cohort(
+                        &bad.witnesses,
+                        &bad.transfers,
+                        &bad.selected,
+                        &bad.targets,
+                        FixedImageKind::Standalone,
+                    )
+                    .unwrap_err()
+                    .to_string(),
+                    "mixed or unbound complete scalar publication family",
+                    "host standalone mixed role {}/{direction}",
+                    host.0,
+                );
+            }
+        }
+        for native in scalar_publication_host_native_samples() {
+            if graph.witnesses[native.0].kind
+                == AuthenticatedDetcoreOperationKind::ValidateTemplate(native.1)
+            {
+                continue; // the shared CMOV leaves are intentionally identical
+            }
+            let mut samples = scalar_publication_host_standalone_sample_vector();
+            *samples
+                .iter_mut()
+                .find(|sample| sample.0 == native.0)
+                .unwrap() = *native;
+            let bad = scalar_publication_control_graph_from_samples(samples, false);
+            assert!(
+                check(&bad).is_err(),
+                "host native {} in standalone",
+                native.0
+            );
+        }
+
+        for callee in [
+            "fixed_region_publication_get_opaque",
+            "fixed_region_publication_set_opaque",
+            "fixed_tool_heap_metadata",
+        ] {
+            let mut bad = scalar_publication_host_standalone_control_graph(false);
+            bad.transfers.insert(
+                "unqualified_extra_host_caller".into(),
+                vec![ConstructorTransfer {
+                    instruction: 1,
+                    target: bad.selected[callee],
+                    local_got_slot: None,
+                }],
+            );
+            assert_eq!(
+                check(&bad).unwrap_err().to_string(),
+                "unqualified scalar helper caller",
+            );
+        }
+        for (caller, callee, pc) in [
+            (
+                "fixed_arena_backing",
+                "fixed_region_publication_get_opaque",
+                41,
+            ),
+            (
+                "fixed_tool_heap_metadata",
+                "fixed_region_publication_get_opaque",
+                41,
+            ),
+            (
+                "fixed_native_from_native",
+                "fixed_region_publication_get_opaque",
+                183,
+            ),
+            (
+                "fixed_constructor_prepare",
+                "fixed_region_publication_get_opaque",
+                167,
+            ),
+            (
+                "fixed_generic_prepare",
+                "fixed_region_publication_get_opaque",
+                167,
+            ),
+            (
+                "fixed_constructor_prepare",
+                "fixed_region_publication_set_opaque",
+                127,
+            ),
+            (
+                "fixed_generic_prepare",
+                "fixed_region_publication_set_opaque",
+                127,
+            ),
+            ("fixed_tool_require_owned", "fixed_tool_heap_metadata", 4),
+            ("fixed_tool_alloc", "fixed_tool_heap_metadata", 13),
+            ("fixed_tool_dealloc", "fixed_tool_heap_metadata", 4),
+            ("fixed_tool_realloc", "fixed_tool_heap_metadata", 26),
+        ] {
+            let witness = &graph.witnesses[caller];
+            let edges: Vec<_> = witness
+                .edges
+                .iter()
+                .filter(|edge| edge.target == graph.selected[callee])
+                .collect();
+            assert_eq!(edges.len(), 1, "host standalone incoming {caller}/{callee}");
+            assert_eq!(edges[0].instruction - witness.address, pc);
+            assert_eq!(edges[0].local_got_slot, None);
+            for mode in 0..4 {
+                let mut bad = scalar_publication_host_standalone_control_graph(false);
+                let target = bad.selected[callee];
+                let witness = bad.witnesses.get_mut(caller).unwrap();
+                let index = witness
+                    .edges
+                    .iter()
+                    .position(|edge| edge.target == target)
+                    .unwrap();
+                match mode {
+                    0 => {
+                        witness.edges.remove(index);
+                    }
+                    1 => {
+                        witness.edges.push(witness.edges[index].clone());
+                    }
+                    2 => {
+                        witness.edges[index].instruction += 1;
+                    }
+                    _ => {
+                        witness.edges[index].local_got_slot = Some(0x300020);
+                    }
+                }
+                bad.transfers.insert(caller.into(), witness.edges.clone());
+                assert_eq!(
+                    check(&bad).unwrap_err().to_string(),
+                    if mode == 0 {
+                        "missing scalar helper incoming edge"
+                    } else {
+                        "extra duplicate shifted or wrong-mode scalar helper edge"
+                    },
+                    "host standalone census {caller}/{callee}/{mode}",
+                );
+            }
+        }
+
+        // The host standalone tuple is admitted only as an ordinary standalone
+        // image: never with native syscalls and never as a Detcore image.
+        assert_eq!(
+            fixed_scalar_publication_syscall_mode(
+                &graph.witnesses,
+                FixedImageKind::Standalone,
+                true,
+            )
+            .unwrap_err()
+            .to_string(),
+            "host scalar publication requires its observed native syscall factory",
+        );
+        assert_eq!(
+            fixed_scalar_publication_syscall_mode(
+                &graph.witnesses,
+                FixedImageKind::Detcore,
+                false,
+            )
+            .unwrap_err()
+            .to_string(),
+            "host scalar publication requires its observed native syscall factory",
+        );
+        assert!(
+            fixed_scalar_publication_cohort(
+                &graph.witnesses,
+                &graph.transfers,
+                &graph.selected,
+                &graph.targets,
+                FixedImageKind::Detcore,
             )
             .is_err()
         );
