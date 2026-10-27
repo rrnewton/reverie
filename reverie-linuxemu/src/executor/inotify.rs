@@ -18,7 +18,9 @@
 //
 // - reads go through the same staged host buffers as readv, whose inaccessible
 //   guest suffix is PROT_NONE, so the kernel stops and faults at the guest's own
-//   boundary and an event that does not fit the count is refused natively;
+//   boundary and an event that does not fit the count is refused natively; the
+//   events it copied before a fault reach the guest even where the count
+//   leaves them out (publish_uncounted_prefix, for a readv's later iovec);
 // - watches attach to the inode selected by one guest-namespace lookup (held as
 //   O_PATH), never to a second lookup of the pathname.
 //

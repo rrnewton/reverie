@@ -1949,6 +1949,9 @@ fn staged_vectored_transfer<M: GuestMemoryAccess<Error = crate::Error> + Address
             }
         }
         debug_assert_eq!(remaining, 0, "host returned more bytes than requested");
+        if publish_uncounted_prefix(memory, &staged_vectors, result as usize).is_err() {
+            return negative_errno(libc::EFAULT);
+        }
     } else if result == negative_errno(libc::EFAULT) {
         // Linux may modify an accessible prefix before reporting EFAULT. In
         // particular eventfd consumes its counter and datagram sockets discard
@@ -1973,6 +1976,40 @@ fn staged_vectored_transfer<M: GuestMemoryAccess<Error = crate::Error> + Address
         }
     }
     result
+}
+
+/// Publish what a vectored read that returned `counted` bytes wrote past
+/// them. Linux writes past a read's count only before a fault, so only up to
+/// the first partly accessible vector: a file without `read_iter` (inotify,
+/// for one) is read one vector at a time, and when a vector's read faults,
+/// readv returns the earlier vectors' count while the bytes copied into that
+/// vector before the fault stay (`do_loop_readv_writev`, fs/read_write.c);
+/// a pipe's `pipe_read` likewise does not count a chunk that faults partway.
+/// The staging was prefilled from guest memory, so every accessible byte from
+/// the count through that vector is published: the host's writes as the host
+/// made them, and the bytes it did not write as the guest held them.
+fn publish_uncounted_prefix<M: GuestMemoryAccess<Error = crate::Error>>(
+    memory: &M,
+    staged_vectors: &[StagedIoVector],
+    counted: usize,
+) -> Result<(), crate::Error> {
+    let Some(faulting) = staged_vectors
+        .iter()
+        .position(|vector| vector.accessible_length < vector.guest.length)
+    else {
+        return Ok(());
+    };
+    let mut start = 0usize;
+    for vector in &staged_vectors[..=faulting] {
+        let end = start + vector.guest.length;
+        let from = counted.saturating_sub(start);
+        if end > counted && from < vector.accessible_length {
+            let bytes = &vector.accessible_slice(vector.accessible_length)[from..];
+            memory.write_exact(vector.guest.base + from as u64, bytes)?;
+        }
+        start = end;
+    }
+    Ok(())
 }
 
 /// A host file backs a regular (or memfd) object when its mode is `S_IFREG`.
