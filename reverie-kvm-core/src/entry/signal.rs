@@ -16,9 +16,11 @@
 //! that vCPU's `kvm_run.immediate_exit` byte. An instance arriving inside
 //! `KVM_RUN` ends it with EINTR. One arriving after the entry's signal setup
 //! but before `KVM_RUN` runs the handler outside it, and `immediate_exit` then
-//! makes `KVM_RUN` return EINTR without entering the guest. `KVM_RUN`
-//! therefore runs under the thread's own signal mask, with no KVM signal mask
-//! to keep in sync, and an entry issues no host syscall besides `KVM_RUN`.
+//! makes `KVM_RUN` return EINTR without entering the guest. Entry control
+//! therefore needs no KVM signal mask of its own: `KVM_RUN` runs under the
+//! thread's mask, or a vCPU mask composed from it that keeps signal 64's
+//! state, and entry control adds no host syscall to an entry besides
+//! `KVM_RUN`.
 //!
 //! Each thread counts the instances its handler took and the kicks closers
 //! recorded against its entries, and the two must agree. An entry refuses to

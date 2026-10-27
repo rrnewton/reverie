@@ -387,9 +387,12 @@ fn install_worker_interrupt_handler() -> Result<()> {
     }
 }
 
-fn set_guest_interrupt_signal_mask(how: libc::c_int) -> Result<bool> {
+/// Blocks or unblocks the worker interrupt signal on this thread and returns
+/// whether it was blocked before. An actual change is noted for the
+/// preemption timer, whose vCPU signal mask follows this thread's mask.
+pub(crate) fn set_guest_interrupt_signal_mask(how: libc::c_int) -> Result<bool> {
     // SAFETY: set and previous are initialized before libc reads or writes them.
-    unsafe {
+    let was_blocked = unsafe {
         let mut set = std::mem::zeroed::<libc::sigset_t>();
         let mut previous = std::mem::zeroed::<libc::sigset_t>();
         libc::sigemptyset(&mut set);
@@ -398,8 +401,12 @@ fn set_guest_interrupt_signal_mask(how: libc::c_int) -> Result<bool> {
         if error != 0 {
             return Err(std::io::Error::from_raw_os_error(error).into());
         }
-        Ok(libc::sigismember(&previous, worker_interrupt_signal()) == 1)
+        libc::sigismember(&previous, worker_interrupt_signal()) == 1
+    };
+    if was_blocked != (how == libc::SIG_BLOCK) {
+        crate::preemption_timer::note_thread_mask_change();
     }
+    Ok(was_blocked)
 }
 type GuestWorkerResult = Result<(ExitStatus, Vec<u8>, Vec<u8>)>;
 
@@ -2402,8 +2409,7 @@ impl KvmBackend {
         regs.rip = entry_point;
         regs.rflags = 2;
         self.vcpu.set_regs(&regs)?;
-        self.vcpu.new_guest();
-        Ok(())
+        self.vcpu.new_guest()
     }
 
     /// Returns the Tool scratch-page top for this backend. Process leaders use
@@ -2544,8 +2550,7 @@ impl KvmBackend {
         // A new image starts a new task lifetime: nothing staged for an
         // earlier one survives (on the base it died with that executor).
         self.clear_pending_segment();
-        self.vcpu.new_elf_guest();
-        Ok(())
+        self.vcpu.new_elf_guest()
     }
 
     /// Loads image bytes from the supplied open file, retaining the final executable.

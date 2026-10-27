@@ -27,51 +27,77 @@ instance no closer sent that interrupts an entry's `KVM_RUN`, even one queued
 alongside a closer's kick.
 These checks detect visible conflicts; they do not coordinate ownership with
 another signal user. Signal 64 is unblocked on a thread from its first vCPU
-entry on, and `KVM_RUN` runs under the thread's own signal mask: there is no
-KVM signal mask to keep in sync, and an entry issues no host syscall besides
-`KVM_RUN`. While an entry is published on the thread, the handler sets that
-vCPU's `kvm_run.immediate_exit` byte, so an instance that arrives just before
-`KVM_RUN` still keeps the guest from running, and one that arrives inside it
-ends it with `EINTR`. A foreign instance is therefore not left pending: the
-handler takes it at once, which can interrupt a host call the thread is making,
-and the thread's next entry refuses. Code that blocks signal 64 again on a vCPU
-thread breaks prompt interruption; entries re-check every 1,024 entries that it
-is still unblocked, and refuse if it is not. Threads that such a thread
-creates, and host processes it spawns, inherit its mask with signal 64
-unblocked; exec resets the handler to the default action. Neither this crate
-nor Hermit's Detcore spawns a host process from a vCPU thread.
+entry on, and `KVM_RUN` runs under the thread's own signal mask, or under the
+preemption timer's vCPU signal mask, which leaves signal 64 as the thread has
+it (see below): the entry signal needs no KVM signal mask of its own, and adds
+no host syscall to an entry besides `KVM_RUN` (for the preemption timer's
+per-entry cost, see below). While an entry is published on the thread, the
+handler sets that vCPU's `kvm_run.immediate_exit` byte, so an instance that
+arrives just before `KVM_RUN` still keeps the guest from running, and one that
+arrives inside it ends it with `EINTR`. A foreign instance is
+therefore not left pending: the handler takes it at once, which can interrupt a
+host call the thread is making, and the thread's next entry refuses. Code that
+blocks signal 64 again on a vCPU thread breaks prompt interruption; entries
+re-check every 1,024 entries that it is still unblocked, and refuse if it is
+not. Threads that such a thread creates, and host processes it spawns, inherit
+its mask with signal 64 unblocked; exec resets the handler to the default
+action. Neither this crate nor Hermit's Detcore spawns a host process from a
+vCPU thread.
 
 The backend's preemption timer reserves `SIGSTKFLT` (Reverie's
 `PERF_EVENT_SIGNAL`) the same way, at the first timer a thread opens. It
 installs a process-wide handler that does nothing, with `SA_RESTART`; refuses
-if the signal already has a handler or is ignored; checks the handler again at
-each later timer it opens; and unblocks the signal on that thread. Each timer
-is a sampling perf event that counts what the thread's branch clock counts and
-sends `SIGSTKFLT` to the vCPU thread when it overflows, which ends `KVM_RUN`
-with `EINTR`. Nothing is decided from the signal: every decision reads the
-clock at the exit. Other libraries must not use `SIGSTKFLT` in the embedding
-process. Nothing requests a timer yet: `Guest::set_timer` and
-`Guest::set_timer_precise` arm nothing on this backend, and a thread that never
-arms a timer opens no timer event.
+if the signal already has a handler or is ignored; and checks the handler
+again at each later timer it opens. Each timer is a sampling perf event that
+counts what the thread's branch clock counts and sends `SIGSTKFLT` to the vCPU
+thread when it overflows, which ends `KVM_RUN` with `EINTR`. Nothing is
+decided from the signal: every decision reads the clock at the exit. Other
+libraries must not use `SIGSTKFLT` in the embedding process. Nothing requests
+a timer yet: `Guest::set_timer` and `Guest::set_timer_precise` arm nothing on
+this backend, and a thread that never arms a timer opens no timer event.
 
-The timer's known limits must be addressed before anything requests it. The
-interrupt behind a kick can be held past the exit it would have caused, so the
-signal can land while the vCPU thread runs host code, and the empty handler
-then interrupts the host call in progress: LinuxEmu's host `nanosleep` and a
-relative host `clock_nanosleep` return `EINTR` with the remainder, an absolute
-one returns `EINTR`, its blocking host `ppoll` returns `EINTR`, a zero-timeout
-host `poll` returns `EINTR` when nothing is ready, and a blocking host `read`
-or `write` that has moved some bytes returns a short count, all of which reach
-the guest. On a PREEMPT_RT kernel perf sends the signal from a thread, so this
-is routine there. The planned fix keeps `SIGSTKFLT` blocked in host code,
-unblocks it only inside `KVM_RUN` through `KVM_SET_SIGNAL_MASK`, and drains a
-kick left pending at an `EINTR` exit. Nothing checks that the timer event is
-resident on a counter; an uncounted vCPU on the same host task advances an
-armed timer, which then kicks late; exec keeps an armed request; nothing
-refuses PREEMPT_RT kernels or nested virtualization; and `SIGSTKFLT` is
-unblocked when a timer opens and not checked again, so code that blocks it
-later on that thread stops the kicks. The existing `SIGURG` worker
-cancellation mechanism remains separate and unchanged.
+A kick never interrupts a host call. The interrupt behind a kick can be held
+past the exit it would have caused, so its signal can arrive while the vCPU
+thread runs host code; there, even the empty handler would make LinuxEmu's
+host sleeps and polls return `EINTR`, or a blocking host `read` or `write`
+return a short count, to the guest, and on a PREEMPT_RT kernel this would be
+routine. So the vCPU thread keeps `SIGSTKFLT` blocked in host code, and only
+`KVM_RUN` runs with it unblocked, as in gVisor's KVM platform. Opening a timer
+blocks the signal on the thread and sets the vCPU's signal mask
+(`KVM_SET_SIGNAL_MASK`) to the thread's mask from before with only `SIGSTKFLT`
+unblocked; Linux installs that mask for `KVM_RUN` and restores the thread's own
+when it returns, so `KVM_RUN` runs under the thread's mask exactly, signal 64
+and `SIGURG` included, except that a kick ends it. The kick is then left
+pending, and the `EINTR` exit takes it with one `rt_sigtimedwait` with a zero
+timeout. A kick that arrives in host code stays pending, ends the next
+`KVM_RUN` at once, before the guest runs, and is taken there: one extra exit,
+since the signal does not queue. When reverie-kvm changes the thread's `SIGURG`
+state (as for an inline fork child), the vCPU's next counted entry composes the
+mask again, and so does an `EINTR` exit that takes no kick. A signal blocked on
+the thread since the mask was composed then costs one exit for each kick
+pending with it, each of which takes its kick, plus at most one more exit,
+which takes no kick and composes the mask again. The empty handler stays
+installed: a kick on a thread that unblocked `SIGSTKFLT` again runs it rather
+than the default action, which ends the process. A thread that never opens a
+timer has no vCPU mask, and its entries issue exactly the syscalls they did
+before. Once a timer is armed, an entry adds no host syscall while the target
+is unchanged (pinned placement keeps its existing enable and disable of the
+CPU-bound events). Opening the timer adds one `KVM_SET_SIGNAL_MASK` to its
+event's setup, an `EINTR` exit adds the one `rt_sigtimedwait`, and composing
+the mask again adds one `rt_sigprocmask` and one `KVM_SET_SIGNAL_MASK`.
+
+The timer's remaining limits must be addressed before anything requests it.
+Nothing checks that the timer event is resident on a counter; an uncounted
+vCPU on the same host task advances an armed timer, which then kicks late;
+exec keeps an armed request; nothing refuses PREEMPT_RT kernels or nested
+virtualization; and code that unblocks `SIGSTKFLT` on a vCPU thread lets a late
+kick interrupt a host call again. While the vCPU mask stays installed, a signal
+that code outside reverie-kvm unblocks on the vCPU thread does not end
+`KVM_RUN` until the mask is composed again; the mask can outlive its timer
+event, since a binding reopened on the same thread (on another CPU under pinned
+placement, or with another raw encoding) while the request is idle or already
+due opens no new timer event and keeps the mask composed before. The existing
+`SIGURG` worker cancellation mechanism remains separate and unchanged.
 
 The private entry gate also stops every participant and callback memory copy
 sharing a Mapping when clock-interval setup or cleanup fails. That interval

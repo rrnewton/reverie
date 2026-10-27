@@ -51,6 +51,7 @@ use crate::entry::owner::OperationOrigin;
 use crate::error::ErrorExt;
 use crate::failure::FailureContext;
 use crate::memory::GuestMemory;
+use crate::preemption_timer::KernelSigset;
 use crate::preemption_timer::TimerDue;
 use crate::preemption_timer::TimerEvent;
 use crate::preemption_timer::TimerKind;
@@ -214,6 +215,7 @@ impl CountedVcpu {
         // SAFETY: this struct owns fd, whose kvm_run mapping therefore
         // outlives every entry `run` prepares; moving fd does not move it.
         let immediate_exit = unsafe { crate::entry::ImmediateExit::new(&mut fd) };
+        let clock = GuestClock::for_vcpu(&fd);
         Ok(Self {
             fd,
             sync_regs,
@@ -222,7 +224,7 @@ impl CountedVcpu {
             participant,
             memory,
             origin_seed,
-            clock: GuestClock::default(),
+            clock,
             image_is_elf: false,
             initial_elf_ran: false,
             #[cfg(test)]
@@ -366,19 +368,25 @@ impl CountedVcpu {
     }
 
     /// Only initial installation creates a new thread lifetime. Exec retains
-    /// this vCPU and must not call this method.
-    pub(crate) fn new_guest(&mut self) {
-        self.clock = GuestClock::default();
+    /// this vCPU and must not call this method. A vCPU signal mask that an
+    /// earlier lifetime's timer composed is withdrawn with its clock.
+    pub(crate) fn new_guest(&mut self) -> Result<()> {
+        if self.clock.vcpu_mask.is_some() {
+            crate::preemption_timer::set_vcpu_signal_mask(self.fd.as_raw_fd(), None)?;
+        }
+        self.clock = GuestClock::for_vcpu(&self.fd);
         #[cfg(test)]
         {
             self.clock.run_probe = self.run_probe.clone();
         }
         self.image_is_elf = false;
+        Ok(())
     }
 
-    pub(crate) fn new_elf_guest(&mut self) {
-        self.new_guest();
+    pub(crate) fn new_elf_guest(&mut self) -> Result<()> {
+        self.new_guest()?;
         self.image_is_elf = true;
+        Ok(())
     }
 
     pub(crate) fn check_initial_elf_install(&self) -> Result<()> {
@@ -560,7 +568,8 @@ fn finish_run<T>(
     result: std::result::Result<T, kvm_ioctls::Error>,
     interval: CountInterval<'_>,
 ) -> Result<T> {
-    match (result, interval.finish()) {
+    let interrupted = matches!(&result, Err(error) if error.errno() == libc::EINTR);
+    match (result, interval.finish_after(interrupted)) {
         (result, Ok(())) => result.map_err(Error::Kvm),
         (Ok(_), Err(error)) => Err(error),
         (Err(kvm), Err(clock)) => Err(failure(format!("{clock}; KVM_RUN also failed: {kvm}"))),
@@ -757,11 +766,103 @@ struct GuestClock {
     poison: Option<String>,
     /// The thread's preemption timer request, decided from `total` alone.
     timer: TimerState,
+    /// The vCPU this clock counts, for its signal mask. None only for a
+    /// clock without a vCPU, which cannot open a timer event.
+    vcpu: Option<std::os::fd::RawFd>,
+    /// Present while `KVM_RUN` on the vCPU runs under a signal mask that a
+    /// timer composed from a host thread's mask (see `preemption_timer.rs`).
+    vcpu_mask: Option<VcpuMask>,
     #[cfg(test)]
     run_probe: Option<std::sync::Arc<RunProbe>>,
 }
 
+/// Whose mask a vCPU signal mask was composed from: the host thread, and
+/// that thread's count of mask changes reverie-kvm had made by then.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct VcpuMask {
+    thread: std::thread::ThreadId,
+    changes: u64,
+}
+
 impl GuestClock {
+    fn for_vcpu(vcpu: &VcpuFd) -> Self {
+        Self {
+            vcpu: Some(vcpu.as_raw_fd()),
+            ..Self::default()
+        }
+    }
+
+    fn vcpu(&self) -> Result<std::os::fd::RawFd> {
+        self.vcpu
+            .ok_or_else(|| failure("preemption timer: a clock without a vCPU has no signal mask"))
+    }
+
+    /// Before an entry on host thread `thread`, keeps `KVM_RUN` running under
+    /// that thread's own signal mask with the kick signal unblocked whenever
+    /// the binding has a timer event (`timer`). `opened` is the thread's mask
+    /// from just before a timer event opened at this entry blocked the kick
+    /// signal. The vCPU mask is composed when a timer event opens, and again
+    /// at an entry with a timer event after reverie-kvm changed this thread's
+    /// mask; it is withdrawn at an entry without a timer event that it no
+    /// longer matches. A thread that never opened a timer event pays nothing.
+    fn prepare_vcpu_mask(
+        &mut self,
+        opened: Option<KernelSigset>,
+        thread: std::thread::ThreadId,
+        timer: bool,
+    ) -> Result<()> {
+        if opened.is_none() && !timer && self.vcpu_mask.is_none() {
+            return Ok(());
+        }
+        let current = VcpuMask {
+            thread,
+            changes: crate::preemption_timer::thread_mask_changes(),
+        };
+        let thread_mask = match opened {
+            Some(thread_mask) => thread_mask,
+            None if self.vcpu_mask == Some(current) => return Ok(()),
+            None if !timer => {
+                crate::preemption_timer::set_vcpu_signal_mask(self.vcpu()?, None)?;
+                self.vcpu_mask = None;
+                return Ok(());
+            }
+            None => crate::preemption_timer::block_kick_signal()?,
+        };
+        crate::preemption_timer::set_vcpu_signal_mask(
+            self.vcpu()?,
+            Some(crate::preemption_timer::vcpu_signal_mask(thread_mask)),
+        )?;
+        self.vcpu_mask = Some(current);
+        Ok(())
+    }
+
+    /// After an `EINTR` exit of an entry that ran under the vCPU signal mask:
+    /// takes the kick that ended it, which the thread's own mask left pending.
+    /// When there is none, another signal ended `KVM_RUN`. If this thread has
+    /// blocked that signal since the mask was composed, it is still pending
+    /// and would end every later `KVM_RUN` at once, so the mask is composed
+    /// again from the thread's mask now. An exit that takes a kick composes
+    /// nothing, so such a signal pending with the kick also ends the next
+    /// entry, whose exit takes no kick and composes the mask.
+    fn take_kick(&mut self) -> Result<()> {
+        if crate::preemption_timer::drain_kick()? {
+            return Ok(());
+        }
+        let Some(mask) = self.vcpu_mask else {
+            return Ok(());
+        };
+        let thread_mask = crate::preemption_timer::block_kick_signal()?;
+        crate::preemption_timer::set_vcpu_signal_mask(
+            self.vcpu()?,
+            Some(crate::preemption_timer::vcpu_signal_mask(thread_mask)),
+        )?;
+        self.vcpu_mask = Some(VcpuMask {
+            changes: crate::preemption_timer::thread_mask_changes(),
+            ..mask
+        });
+        Ok(())
+    }
+
     /// Decides the timer at the exit that ended the interval just finished,
     /// from the clock read there: the timer event forgets an overflow the
     /// clock has reached, and an armed request whose target it reached
@@ -841,7 +942,9 @@ impl GuestClock {
             }
             let binding = self.binding.as_mut().unwrap();
             binding.start_interval()?;
-            binding.prepare_timer(self.total, &self.timer)
+            let opened = binding.prepare_timer(self.total, &self.timer)?;
+            let timer = binding.timer.is_some();
+            self.prepare_vcpu_mask(opened, identity.thread, timer)
         })();
         if let Err(error) = admission {
             // No guest instruction ran. Closing even an ambiguously enabled
@@ -1425,21 +1528,26 @@ impl CounterBinding {
     /// [`TimerEvent::prepare`]), opening it at the first entry with an armed
     /// request. Without an event and without a request this issues no
     /// syscall: an unarmed thread's entries cost nothing for the timer.
-    fn prepare_timer(&mut self, clock: u64, state: &TimerState) -> Result<()> {
+    /// Returns, when the event opened at this entry, the thread's signal mask
+    /// from before the event blocked the kick signal.
+    fn prepare_timer(&mut self, clock: u64, state: &TimerState) -> Result<Option<KernelSigset>> {
         let wanted = state.wanted_overflow(clock);
+        let mut opened = None;
         if self.timer.is_none() {
             if wanted.is_none() {
-                return Ok(());
+                return Ok(None);
             }
             let cpu = if self.identity.cpu == FOLLOWS_TASK {
                 -1
             } else {
                 self.identity.cpu as libc::c_int
             };
-            let timer = TimerEvent::open(self.identity.tid, cpu, self.identity.raw_event)?;
+            let (timer, thread_mask) =
+                TimerEvent::open(self.identity.tid, cpu, self.identity.raw_event)?;
             #[cfg(test)]
             let timer = timer.opened_at(clock);
             self.timer = Some(timer);
+            opened = Some(thread_mask);
         }
         let timer = self.timer.as_mut().unwrap();
         let was_enabled = timer.enabled();
@@ -1447,7 +1555,7 @@ impl CounterBinding {
         if !was_enabled && timer.enabled() && self.identity.cpu == FOLLOWS_TASK {
             self.register_following_timer();
         }
-        Ok(())
+        Ok(opened)
     }
 
     fn enable(&mut self) -> Result<()> {
@@ -1539,7 +1647,13 @@ struct CountInterval<'a> {
 }
 
 impl CountInterval<'_> {
-    fn finish(mut self) -> Result<()> {
+    fn finish(self) -> Result<()> {
+        self.finish_after(false)
+    }
+
+    /// Finishes the interval of an entry whose `KVM_RUN` returned, with
+    /// `EINTR` when `interrupted`.
+    fn finish_after(mut self, interrupted: bool) -> Result<()> {
         let counted = self
             .clock
             .binding
@@ -1552,12 +1666,20 @@ impl CountInterval<'_> {
         }
         let resident = self.affinity.as_ref().map_or(Ok(()), CpuAffinity::check);
         let restored = self.affinity.as_mut().map_or(Ok(()), CpuAffinity::restore);
+        // KVM_RUN ran with the kick signal unblocked, and returned with the
+        // thread's own mask, which blocks it: a kick that ended it is pending.
+        let drained = if interrupted && self.clock.vcpu_mask.is_some() {
+            self.clock.take_kick()
+        } else {
+            Ok(())
+        };
         self.finished = true;
         let mut errors = Vec::new();
         for error in [
             counted.as_ref().err(),
             resident.as_ref().err(),
             restored.as_ref().err(),
+            drained.as_ref().err(),
         ]
         .into_iter()
         .flatten()

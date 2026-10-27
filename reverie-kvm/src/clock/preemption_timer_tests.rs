@@ -26,6 +26,7 @@ use std::time::Instant;
 
 use super::*;
 use crate::preemption_timer::KICK_SIGNAL;
+use crate::preemption_timer::KICKS_DRAINED;
 use crate::preemption_timer::KICKS_TAKEN;
 use crate::preemption_timer::MAX_PERIOD;
 use crate::preemption_timer::TIMER_SYSCALLS;
@@ -37,11 +38,13 @@ use crate::preemption_timer::witness_turn;
 const MEMORY: usize = 16 * 1024 * 1024;
 
 /// Timer syscalls that open the timer event at an entry, once this process
-/// has installed the kick handler: query and unblock the kick signal,
-/// `perf_event_open`, three `fcntl`s, one `PERF_EVENT_IOC_PERIOD` and one
-/// `PERF_EVENT_IOC_ENABLE`. A pinned entry also disables its CPU-bound event
-/// when it ends, one more.
-const OPEN_SYSCALLS: u64 = 8;
+/// has installed the kick handler: query the kick signal's handler and block
+/// the signal (which reads the thread's mask), `perf_event_open`, three
+/// `fcntl`s, one `PERF_EVENT_IOC_PERIOD`, one `PERF_EVENT_IOC_ENABLE` and one
+/// `KVM_SET_SIGNAL_MASK`. A pinned entry also disables its CPU-bound event
+/// when it ends, one more, and an entry that a kick ends takes the kick, one
+/// more.
+const OPEN_SYSCALLS: u64 = 9;
 
 fn margin() -> u64 {
     reverie::pmu_config::try_get_pmu_config()
@@ -55,6 +58,10 @@ fn timer_syscalls() -> u64 {
 
 fn kicks_taken() -> u64 {
     KICKS_TAKEN.with(|kicks| kicks.load(Ordering::Relaxed))
+}
+
+fn kicks_drained() -> u64 {
+    KICKS_DRAINED.with(|kicks| kicks.get())
 }
 
 /// A CPL3 loop, forever: exactly `branches` conditional branches (`dec ecx;
@@ -340,7 +347,8 @@ fn every_kick_lands(placement: CounterPlacement, rounds: u64) {
     let rescued = AtomicU64::new(0);
     // SAFETY: the identity of this thread, which outlives the watchdog.
     let vcpu_thread = unsafe { libc::pthread_self() };
-    let kicks_before = kicks_taken();
+    let taken_before = kicks_taken();
+    let drained_before = kicks_drained();
     let mut exits = 0_u64;
     let mut precise = 0_u64;
     let mut most_late = 0_u64;
@@ -404,8 +412,13 @@ fn every_kick_lands(placement: CounterPlacement, rounds: u64) {
     });
     assert_eq!(rescued.load(Ordering::SeqCst), 0, "a kick was lost");
     assert_eq!(reverie::take_skid_overshoot_count(), precise);
-    let kicks = kicks_taken() - kicks_before;
     assert!(exits >= rounds, "every round needs a kick");
+    // Every EINTR exit took the kick that ended it, from the thread's
+    // pending signals, and no kick reached the handler: none landed in host
+    // code unblocked.
+    let drained = kicks_drained() - drained_before;
+    assert_eq!(drained, exits, "one kick taken at each EINTR exit");
+    assert_eq!(kicks_taken() - taken_before, 0, "a kick ran the handler");
     // The timer counted exactly what the clock counted from the entry that
     // opened it: neither lost a branch to the other's kicks.
     let clock = backend.vcpu.read_clock().unwrap();
@@ -413,8 +426,8 @@ fn every_kick_lands(placement: CounterPlacement, rounds: u64) {
     assert_eq!(timer, advance);
     println!(
         "timer kicks ({placement:?}, margin {margin}): {rounds} requests, {exits} EINTR exits, \
-         {kicks} kicks taken, 0 lost; clock {clock}; timer count {timer} = clock advance since it \
-         opened; largest overshoot {most_late} RCBs"
+         {drained} kicks taken at those exits, 0 by the handler, 0 lost; clock {clock}; timer \
+         count {timer} = clock advance since it opened; largest overshoot {most_late} RCBs"
     );
 }
 
@@ -697,9 +710,10 @@ fn the_timer_follows_a_guest_to_another_host_thread() {
         tid
     );
     // The first thread's timer installed the kick handler, so the new
-    // thread pays only the query and the unblock. On pinned placement the
-    // measured entry also ends with the disable of its CPU-bound timer.
-    let expected = OPEN_SYSCALLS + u64::from(placement == CounterPlacement::PinEachEntry);
+    // thread pays only the query and the block. The measured entry ends with
+    // a kick, which it takes, and on pinned placement also with the disable
+    // of its CPU-bound timer.
+    let expected = OPEN_SYSCALLS + 1 + u64::from(placement == CounterPlacement::PinEachEntry);
     assert_eq!(
         opened, expected,
         "the new host task opens its own timer ({placement:?})"
@@ -898,10 +912,13 @@ fn a_timer_that_cannot_be_displaced_refuses_the_displacing_entry() {
 
 /// A named limit, not a guarantee: only counted entries displace another
 /// binding's events. An uncounted vCPU on the armed thread's host task
-/// leaves its timer enabled, the timer counts that vCPU's branches,
-/// overflows inside its run, reloads a whole period, and kicks the armed
-/// thread late. This pins down that consequence: the request comes due at
-/// the block's syscall exit, recorded late.
+/// leaves its timer enabled, the timer counts that vCPU's branches and
+/// overflows inside its run, and reloads a whole period. The kick does not
+/// end that vCPU's run, which has no timer and so runs under the thread's
+/// own mask, where the kick signal is blocked: it stays pending and ends the
+/// armed vCPU's next entry at once, before any guest instruction. This pins
+/// down the consequence: the request comes due only at the block's syscall
+/// exit, recorded late.
 #[test]
 fn an_uncounted_vcpu_on_the_host_task_makes_the_armed_kick_late() {
     let _turn = witness_turn();
@@ -931,15 +948,28 @@ fn an_uncounted_vcpu_on_the_host_task_makes_the_armed_kick_late() {
     while uncounted_exits.last() != Some(&Exit::Syscall) {
         uncounted_exits.push(next_exit(&mut uncounted.vcpu));
     }
+    assert_eq!(
+        uncounted_exits,
+        [Exit::Syscall],
+        "a kick ended a run that has no timer"
+    );
     assert!(
-        uncounted_exits.contains(&Exit::Kick),
-        "the armed timer did not count the uncounted guest: {uncounted_exits:?}"
+        signal_pending(KICK_SIGNAL),
+        "the armed timer did not count the uncounted guest"
     );
     let mut exits = Vec::new();
     while armed.vcpu.timer_due().is_none() {
         let exit = next_exit(&mut armed.vcpu);
         exits.push((exit, armed.vcpu.read_clock().unwrap()));
     }
+    assert_eq!(
+        exits,
+        [
+            (Exit::Kick, block),
+            (Exit::Syscall, 2 * block),
+            (Exit::Syscall, 3 * block)
+        ]
+    );
     assert_eq!(
         armed.vcpu.timer_due(),
         due(RE_ARM_TARGET, 3 * block, true),
@@ -996,5 +1026,687 @@ fn requests_beyond_the_longest_period_are_programmed_in_pieces() {
         Some(MAX_PERIOD)
     );
     assert!(backend.vcpu.read_clock().is_ok());
+    assert_eq!(reverie::take_skid_overshoot_count(), 0);
+}
+
+// The kick signal outside KVM_RUN (see the module documentation of
+// `preemption_timer.rs`): blocked on the vCPU thread in host code, unblocked
+// only inside KVM_RUN through the vCPU signal mask, and taken at EINTR exits.
+
+/// A getpid exit, then a CPL3 loop with no exit at all.
+const EXIT_THEN_SPIN: [u8; 13] = [
+    0xb8, 0x27, 0x00, 0x00, 0x00, // mov eax, SYS_getpid
+    0x0f, 0x05, // syscall
+    0x31, 0xc0, // xor eax, eax
+    0x85, 0xc0, // loop: test eax, eax
+    0x74, 0xfc, // jz loop
+];
+
+/// nanosleep({0, 300 ms}, &remainder), then exit_group(-result): 0 when the
+/// sleep completed, EINTR when a signal interrupted it.
+const SLEEP_GUEST: [u8; 47] = [
+    0x48, 0x83, 0xec, 0x20, // sub rsp, 32
+    0x48, 0xc7, 0x04, 0x24, 0x00, 0x00, 0x00, 0x00, // mov qword [rsp], 0
+    0x48, 0xc7, 0x44, 0x24, 0x08, 0x00, 0xa3, 0xe1, 0x11, // mov qword [rsp+8], 300000000
+    0x48, 0x89, 0xe7, // mov rdi, rsp
+    0x48, 0x8d, 0x74, 0x24, 0x10, // lea rsi, [rsp+16]
+    0xb8, 0x23, 0x00, 0x00, 0x00, // mov eax, SYS_nanosleep
+    0x0f, 0x05, // syscall
+    0xf7, 0xd8, // neg eax
+    0x89, 0xc7, // mov edi, eax
+    0xb8, 0xe7, 0x00, 0x00, 0x00, // mov eax, SYS_exit_group
+    0x0f, 0x05, // syscall
+];
+
+/// pipe2(fds, 0), then ppoll of its empty read end for POLLIN with a 300 ms
+/// timeout and no signal mask, then exit_group(-result): 0 when the poll
+/// timed out, EINTR when a signal interrupted it, pipe2's errno if that
+/// failed.
+const PPOLL_GUEST: [u8; 95] = [
+    0x48, 0x83, 0xec, 0x40, // sub rsp, 64
+    0x48, 0x89, 0xe7, // mov rdi, rsp
+    0x31, 0xf6, // xor esi, esi
+    0xb8, 0x25, 0x01, 0x00, 0x00, // mov eax, SYS_pipe2
+    0x0f, 0x05, // syscall
+    0x85, 0xc0, // test eax, eax
+    0x75, 0x40, // jnz exit
+    0x8b, 0x04, 0x24, // mov eax, [rsp]
+    0x89, 0x44, 0x24, 0x10, // mov [rsp+16], eax: pollfd.fd
+    0xc7, 0x44, 0x24, 0x14, 0x01, 0x00, 0x00, 0x00, // pollfd.events = POLLIN
+    0x48, 0xc7, 0x44, 0x24, 0x20, 0x00, 0x00, 0x00, 0x00, // mov qword [rsp+32], 0
+    0x48, 0xc7, 0x44, 0x24, 0x28, 0x00, 0xa3, 0xe1, 0x11, // mov qword [rsp+40], 300000000
+    0x48, 0x8d, 0x7c, 0x24, 0x10, // lea rdi, [rsp+16]
+    0xbe, 0x01, 0x00, 0x00, 0x00, // mov esi, 1
+    0x48, 0x8d, 0x54, 0x24, 0x20, // lea rdx, [rsp+32]
+    0x45, 0x31, 0xd2, // xor r10d, r10d
+    0x41, 0xb8, 0x08, 0x00, 0x00, 0x00, // mov r8d, 8
+    0xb8, 0x0f, 0x01, 0x00, 0x00, // mov eax, SYS_ppoll
+    0x0f, 0x05, // syscall
+    0xf7, 0xd8, // exit: neg eax
+    0x89, 0xc7, // mov edi, eax
+    0xb8, 0xe7, 0x00, 0x00, 0x00, // mov eax, SYS_exit_group
+    0x0f, 0x05, // syscall
+];
+
+fn signal_bit(signal: libc::c_int) -> u64 {
+    1 << (signal - 1)
+}
+
+/// The calling thread's whole kernel signal mask, one bit per signal as
+/// above (glibc's own query hides the two signals it reserves).
+fn thread_mask() -> u64 {
+    let mut mask = 0_u64;
+    // SAFETY: a query into an initialized kernel sigset of the size passed.
+    let queried = unsafe {
+        libc::syscall(
+            libc::SYS_rt_sigprocmask,
+            libc::SIG_BLOCK,
+            std::ptr::null::<u64>(),
+            std::ptr::from_mut(&mut mask),
+            std::mem::size_of::<u64>(),
+        )
+    };
+    assert_eq!(queried, 0);
+    mask
+}
+
+fn change_mask(how: libc::c_int, signal: libc::c_int) {
+    // SAFETY: valid set storage; the change affects only this thread.
+    unsafe {
+        let mut set: libc::sigset_t = std::mem::zeroed();
+        libc::sigemptyset(&mut set);
+        libc::sigaddset(&mut set, signal);
+        assert_eq!(libc::pthread_sigmask(how, &set, std::ptr::null_mut()), 0);
+    }
+}
+
+fn signal_pending(signal: libc::c_int) -> bool {
+    // SAFETY: a query into initialized storage.
+    unsafe {
+        let mut pending: libc::sigset_t = std::mem::zeroed();
+        assert_eq!(libc::sigpending(&mut pending), 0);
+        libc::sigismember(&pending, signal) == 1
+    }
+}
+
+fn tgkill(tid: libc::pid_t, signal: libc::c_int) {
+    // SAFETY: a thread-directed signal to a live thread of this process.
+    let sent = unsafe { libc::syscall(libc::SYS_tgkill, libc::getpid(), tid, signal) };
+    assert_eq!(sent, 0, "{}", std::io::Error::last_os_error());
+}
+
+/// Restores the calling thread's whole signal mask when dropped.
+struct RestoreMask(libc::sigset_t);
+
+impl RestoreMask {
+    fn here() -> Self {
+        // SAFETY: a query into initialized storage.
+        unsafe {
+            let mut mask: libc::sigset_t = std::mem::zeroed();
+            assert_eq!(
+                libc::pthread_sigmask(libc::SIG_SETMASK, std::ptr::null(), &mut mask),
+                0
+            );
+            Self(mask)
+        }
+    }
+}
+
+impl Drop for RestoreMask {
+    fn drop(&mut self) {
+        // SAFETY: restores a mask this thread had.
+        unsafe { libc::pthread_sigmask(libc::SIG_SETMASK, &self.0, std::ptr::null_mut()) };
+    }
+}
+
+/// Host thread `tid`'s blocked signals as `/proc` reports them: the vCPU
+/// signal mask while that thread is inside KVM_RUN.
+fn proc_blocked(tid: libc::pid_t) -> u64 {
+    let status = std::fs::read_to_string(format!("/proc/self/task/{tid}/status")).unwrap();
+    let line = status
+        .lines()
+        .find_map(|line| line.strip_prefix("SigBlk:"))
+        .expect("a SigBlk line");
+    u64::from_str_radix(line.trim(), 16).unwrap()
+}
+
+/// The host syscall that thread `tid` is blocked in, if any.
+fn proc_syscall(tid: libc::pid_t) -> Option<i64> {
+    std::fs::read_to_string(format!("/proc/self/task/{tid}/syscall"))
+        .ok()?
+        .split_whitespace()
+        .next()?
+        .parse()
+        .ok()
+}
+
+/// Runs this thread's next entry, of a guest that never exits by itself,
+/// while another thread, on the CPUs `allowed`, reads this thread's blocked
+/// signals from `/proc` until they show KVM_RUN's mask (the kick signal
+/// unblocked, which this thread blocks in host code) and then ends the entry
+/// with a kick. Returns that mask.
+fn mask_inside_kvm_run(backend: &mut crate::KvmBackend, allowed: &libc::cpu_set_t) -> u64 {
+    let tid = host_tid();
+    let kick = signal_bit(KICK_SIGNAL);
+    assert_ne!(thread_mask() & kick, 0, "host code blocks the kick signal");
+    let seen = AtomicU64::new(0);
+    let late = AtomicBool::new(false);
+    let exit = std::thread::scope(|scope| {
+        scope.spawn(|| {
+            // Not on the vCPU thread's one CPU, where it would wait for it.
+            set_affinity(allowed).unwrap();
+            let deadline = Instant::now() + Duration::from_secs(20);
+            loop {
+                let blocked = proc_blocked(tid);
+                if blocked & kick == 0 {
+                    seen.store(blocked, Ordering::SeqCst);
+                    break;
+                }
+                if Instant::now() > deadline {
+                    // End the entry anyway so that the test fails rather
+                    // than hangs.
+                    late.store(true, Ordering::SeqCst);
+                    break;
+                }
+                std::thread::yield_now();
+            }
+            tgkill(tid, KICK_SIGNAL);
+        });
+        next_exit(&mut backend.vcpu)
+    });
+    assert!(
+        !late.load(Ordering::SeqCst),
+        "KVM_RUN's mask was never seen"
+    );
+    assert_eq!(exit, Exit::Kick);
+    seen.load(Ordering::SeqCst)
+}
+
+/// KVM_RUN runs under the vCPU thread's own mask with only the kick signal
+/// unblocked: signal 64, the entry signal, and SIGURG, the worker interrupt,
+/// keep the thread's state, and so does any other signal. When reverie-kvm
+/// changes this thread's SIGURG state, the next armed entry composes the mask
+/// again, for two more syscalls; an unchanged mask costs nothing.
+#[test]
+fn kvm_run_runs_under_the_thread_mask_with_only_the_kick_signal_unblocked() {
+    let _turn = witness_turn();
+    let allowed = affinity().unwrap();
+    let _pin = PinThread::here();
+    let _restore = RestoreMask::here();
+    let kick = signal_bit(KICK_SIGNAL);
+    let urg = signal_bit(libc::SIGURG);
+    let winch = signal_bit(libc::SIGWINCH);
+    // A marker in the thread's own mask, and SIGURG unblocked, as on a
+    // registered guest thread.
+    change_mask(libc::SIG_BLOCK, libc::SIGWINCH);
+    change_mask(libc::SIG_UNBLOCK, libc::SIGURG);
+    reserve_kick_signal().unwrap();
+    let mut backend = counted_backend(&EXIT_THEN_SPIN, CounterPlacement::default());
+    let pinned = backend.vcpu.clock.placement == CounterPlacement::PinEachEntry;
+    let per_entry = if pinned { 2 } else { 0 };
+    backend
+        .vcpu
+        .request_timer(1 << 40, TimerKind::Imprecise)
+        .unwrap();
+    let before = timer_syscalls();
+    assert_eq!(next_exit(&mut backend.vcpu), Exit::Syscall);
+    assert_eq!(timer_syscalls() - before, OPEN_SYSCALLS + u64::from(pinned));
+    let host = thread_mask();
+    assert_ne!(host & kick, 0, "host code blocks the kick signal");
+    assert_eq!(host & signal_bit(64), 0, "the entry unblocked signal 64");
+    assert_eq!(host & (urg | winch), winch);
+    let syscalls = timer_syscalls();
+    let inside = mask_inside_kvm_run(&mut backend, &allowed);
+    assert_eq!(inside, host & !kick);
+    assert_eq!(
+        timer_syscalls() - syscalls,
+        1 + per_entry,
+        "an unchanged mask costs only the kick's drain"
+    );
+    // reverie-kvm blocks SIGURG on this thread, as for an inline fork child:
+    // the next entry composes the mask again.
+    assert!(!crate::vm::set_guest_interrupt_signal_mask(libc::SIG_BLOCK).unwrap());
+    let syscalls = timer_syscalls();
+    let inside = mask_inside_kvm_run(&mut backend, &allowed);
+    assert_eq!(timer_syscalls() - syscalls, 3 + per_entry);
+    assert_eq!(inside, thread_mask() & !kick);
+    assert_ne!(inside & urg, 0);
+    // And unblocks it again.
+    assert!(crate::vm::set_guest_interrupt_signal_mask(libc::SIG_UNBLOCK).unwrap());
+    let syscalls = timer_syscalls();
+    let inside = mask_inside_kvm_run(&mut backend, &allowed);
+    assert_eq!(timer_syscalls() - syscalls, 3 + per_entry);
+    assert_eq!(inside, host & !kick);
+    // A call that changes nothing composes nothing.
+    assert!(!crate::vm::set_guest_interrupt_signal_mask(libc::SIG_UNBLOCK).unwrap());
+    let syscalls = timer_syscalls();
+    assert_eq!(mask_inside_kvm_run(&mut backend, &allowed), host & !kick);
+    assert_eq!(timer_syscalls() - syscalls, 1 + per_entry);
+    assert_eq!(reverie::take_skid_overshoot_count(), 0);
+    println!(
+        "timer vCPU mask: host code {host:#018x}, KVM_RUN {:#018x}; recomposed after each SIGURG \
+         change for 2 syscalls",
+        host & !kick
+    );
+}
+
+/// A kick that arrives while the vCPU thread runs host code interrupts
+/// nothing and stays pending. It ends the next KVM_RUN at once, before any
+/// guest instruction, and that exit takes it: one extra exit, then the guest
+/// runs.
+#[test]
+fn a_kick_left_pending_ends_the_next_entry_once_and_is_drained() {
+    let _turn = witness_turn();
+    let _pin = PinThread::here();
+    const BLOCK: u32 = 1_000;
+    let mut backend = counted_backend(&block_loop(BLOCK), CounterPlacement::default());
+    let pinned = backend.vcpu.clock.placement == CounterPlacement::PinEachEntry;
+    let per_entry = if pinned { 2 } else { 0 };
+    backend
+        .vcpu
+        .request_timer(1 << 40, TimerKind::Imprecise)
+        .unwrap();
+    assert_eq!(next_exit(&mut backend.vcpu), Exit::Syscall);
+    let clock = backend.vcpu.read_clock().unwrap();
+    let (syscalls, drained, taken) = (timer_syscalls(), kicks_drained(), kicks_taken());
+    tgkill(host_tid(), KICK_SIGNAL);
+    assert!(signal_pending(KICK_SIGNAL), "blocked in host code");
+    assert_eq!(next_exit(&mut backend.vcpu), Exit::Kick);
+    assert_eq!(
+        backend.vcpu.read_clock().unwrap(),
+        clock,
+        "no guest instruction ran"
+    );
+    assert!(!signal_pending(KICK_SIGNAL));
+    assert_eq!(kicks_drained() - drained, 1);
+    assert_eq!(timer_syscalls() - syscalls, 1 + per_entry, "one drain");
+    // One extra exit only: the next entry runs the guest to its exit.
+    assert_eq!(next_exit(&mut backend.vcpu), Exit::Syscall);
+    assert_eq!(backend.vcpu.read_clock().unwrap(), clock + u64::from(BLOCK));
+    assert_eq!(timer_syscalls() - syscalls, 1 + 2 * per_entry);
+    assert_eq!(kicks_taken(), taken, "no kick ran the handler");
+    assert_eq!(reverie::take_skid_overshoot_count(), 0);
+}
+
+/// A signal that code outside reverie-kvm blocks on the vCPU thread after
+/// the mask was composed, and that then arrives with no kick pending, is
+/// still unblocked in the vCPU mask: it ends the next KVM_RUN at once. That
+/// exit takes no kick and composes the mask again from the thread's mask, so
+/// it ends no other entry.
+#[test]
+fn a_signal_blocked_after_the_mask_was_composed_ends_one_entry_only() {
+    let _turn = witness_turn();
+    let _pin = PinThread::here();
+    let _restore = RestoreMask::here();
+    const BLOCK: u32 = 1_000;
+    change_mask(libc::SIG_UNBLOCK, libc::SIGWINCH);
+    let mut backend = counted_backend(&block_loop(BLOCK), CounterPlacement::default());
+    let pinned = backend.vcpu.clock.placement == CounterPlacement::PinEachEntry;
+    let per_entry = if pinned { 2 } else { 0 };
+    backend
+        .vcpu
+        .request_timer(1 << 40, TimerKind::Imprecise)
+        .unwrap();
+    assert_eq!(next_exit(&mut backend.vcpu), Exit::Syscall);
+    // SIGWINCH, ignored by default, is blocked with no notice and sent.
+    change_mask(libc::SIG_BLOCK, libc::SIGWINCH);
+    tgkill(host_tid(), libc::SIGWINCH);
+    assert!(signal_pending(libc::SIGWINCH));
+    let clock = backend.vcpu.read_clock().unwrap();
+    let (syscalls, drained) = (timer_syscalls(), kicks_drained());
+    assert_eq!(next_exit(&mut backend.vcpu), Exit::Kick);
+    assert_eq!(backend.vcpu.read_clock().unwrap(), clock);
+    assert_eq!(kicks_drained(), drained, "no kick to take");
+    // The drain that found nothing, then the block and the mask.
+    assert_eq!(timer_syscalls() - syscalls, 3 + per_entry);
+    assert_eq!(next_exit(&mut backend.vcpu), Exit::Syscall);
+    assert_eq!(backend.vcpu.read_clock().unwrap(), clock + u64::from(BLOCK));
+    assert_eq!(timer_syscalls() - syscalls, 3 + 2 * per_entry);
+    assert!(signal_pending(libc::SIGWINCH), "still blocked and pending");
+    assert_eq!(reverie::take_skid_overshoot_count(), 0);
+    // Dropping RestoreMask unblocks SIGWINCH, whose default action discards it.
+}
+
+/// The bound for such a signal pending together with a kick: one exit for
+/// the kick, which takes it and composes nothing, then one exit that takes
+/// no kick and composes the mask again, then the guest runs.
+#[test]
+fn a_kick_pending_with_a_signal_blocked_after_the_mask_was_composed_costs_two_exits() {
+    let _turn = witness_turn();
+    let _pin = PinThread::here();
+    let _restore = RestoreMask::here();
+    const BLOCK: u32 = 1_000;
+    change_mask(libc::SIG_UNBLOCK, libc::SIGWINCH);
+    let mut backend = counted_backend(&block_loop(BLOCK), CounterPlacement::default());
+    let pinned = backend.vcpu.clock.placement == CounterPlacement::PinEachEntry;
+    let per_entry = if pinned { 2 } else { 0 };
+    backend
+        .vcpu
+        .request_timer(1 << 40, TimerKind::Imprecise)
+        .unwrap();
+    assert_eq!(next_exit(&mut backend.vcpu), Exit::Syscall);
+    change_mask(libc::SIG_BLOCK, libc::SIGWINCH);
+    tgkill(host_tid(), libc::SIGWINCH);
+    tgkill(host_tid(), KICK_SIGNAL);
+    assert!(signal_pending(libc::SIGWINCH) && signal_pending(KICK_SIGNAL));
+    let clock = backend.vcpu.read_clock().unwrap();
+    let (syscalls, drained) = (timer_syscalls(), kicks_drained());
+    let mut exits = Vec::new();
+    while exits.last().is_none_or(|(exit, _)| *exit != Exit::Syscall) && exits.len() < 4 {
+        let exit = next_exit(&mut backend.vcpu);
+        exits.push((exit, backend.vcpu.read_clock().unwrap()));
+    }
+    assert_eq!(
+        exits,
+        [
+            (Exit::Kick, clock),
+            (Exit::Kick, clock),
+            (Exit::Syscall, clock + u64::from(BLOCK))
+        ]
+    );
+    assert_eq!(kicks_drained() - drained, 1, "the kick, taken once");
+    // The first exit's drain; the second exit's drain that found nothing,
+    // then the block and the mask.
+    assert_eq!(timer_syscalls() - syscalls, 4 + 3 * per_entry);
+    assert!(!signal_pending(KICK_SIGNAL));
+    assert!(signal_pending(libc::SIGWINCH), "still blocked and pending");
+    assert_eq!(reverie::take_skid_overshoot_count(), 0);
+    println!("timer kick with a blocked signal pending: exits {exits:?}");
+}
+
+/// How a test sends the vCPU thread a kick while it waits in a host call.
+#[derive(Clone, Copy, Debug)]
+enum KickSender {
+    Tgkill,
+    PerfOverflow,
+}
+
+/// Sends the kick signal to `tid` through real perf overflows: a software
+/// task-clock event on the calling thread, sampling every 50 µs of its CPU
+/// time, whose overflow notifications go to `tid` with `F_SETSIG`, as the
+/// timer's own do. Spins until the event has counted 200 µs, about four
+/// overflows.
+fn kick_through_perf_overflows(tid: libc::pid_t) {
+    const F_SETSIG: libc::c_int = 10;
+    const F_SETOWN_EX: libc::c_int = 15;
+    const F_OWNER_TID: libc::c_int = 0;
+    let mut attr = perf::perf_event_attr {
+        type_: perf::PERF_TYPE_SOFTWARE,
+        size: std::mem::size_of::<perf::perf_event_attr>() as u32,
+        config: u64::from(perf::PERF_COUNT_SW_TASK_CLOCK),
+        ..Default::default()
+    };
+    attr.__bindgen_anon_1.sample_period = 50_000;
+    attr.__bindgen_anon_2.wakeup_events = 1;
+    attr.set_disabled(1);
+    // SAFETY: attr describes a software event for the calling thread.
+    let fd = unsafe {
+        libc::syscall(
+            libc::SYS_perf_event_open,
+            &attr,
+            0,
+            -1,
+            -1,
+            perf::PERF_FLAG_FD_CLOEXEC,
+        )
+    };
+    assert!(fd >= 0, "{}", std::io::Error::last_os_error());
+    // SAFETY: a newly returned descriptor that nothing else owns.
+    let fd = unsafe { OwnedFd::from_raw_fd(fd as libc::c_int) };
+    let owner: [libc::c_int; 2] = [F_OWNER_TID, tid];
+    // SAFETY: fcntl and ioctl on a live descriptor; the owner outlives the
+    // call that reads it.
+    unsafe {
+        assert!(libc::fcntl(fd.as_raw_fd(), F_SETSIG, KICK_SIGNAL) >= 0);
+        assert!(libc::fcntl(fd.as_raw_fd(), F_SETOWN_EX, owner.as_ptr()) >= 0);
+        assert!(libc::fcntl(fd.as_raw_fd(), libc::F_SETFL, libc::O_ASYNC) >= 0);
+        assert_eq!(ioctls::ENABLE(fd.as_raw_fd(), 0), 0);
+    }
+    let mut task_clock = 0_u64;
+    while task_clock < 200_000 {
+        std::hint::spin_loop();
+        // SAFETY: a counting read of one native u64.
+        let read = unsafe {
+            libc::read(
+                fd.as_raw_fd(),
+                std::ptr::from_mut(&mut task_clock).cast(),
+                std::mem::size_of::<u64>(),
+            )
+        };
+        assert_eq!(read, std::mem::size_of::<u64>() as isize);
+    }
+    // SAFETY: an ioctl on a live descriptor.
+    unsafe { ioctls::DISABLE(fd.as_raw_fd(), 0) };
+}
+
+/// Runs `code` as a static ELF through LinuxEmu on this thread, with a timer
+/// event open (an imprecise request far ahead, which never comes due).
+/// Another thread waits until this thread blocks in one of the host syscalls
+/// `host_calls`, then sends it a kick by `sender`. Returns the guest's exit
+/// status and the kicks this thread took at EINTR exits.
+fn guest_status_with_a_kick_in_a_host_call(
+    code: &[u8],
+    host_calls: &[i64],
+    sender: KickSender,
+) -> (i32, u64) {
+    let mut backend = counted_backend(code, CounterPlacement::default());
+    backend
+        .vcpu
+        .request_timer(1 << 40, TimerKind::Imprecise)
+        .unwrap();
+    let tid = host_tid();
+    let drained = kicks_drained();
+    let done = AtomicBool::new(false);
+    let sent = AtomicBool::new(false);
+    let status = std::thread::scope(|scope| {
+        scope.spawn(|| {
+            while !done.load(Ordering::SeqCst) {
+                if proc_syscall(tid).is_some_and(|number| host_calls.contains(&number)) {
+                    match sender {
+                        KickSender::Tgkill => tgkill(tid, KICK_SIGNAL),
+                        KickSender::PerfOverflow => kick_through_perf_overflows(tid),
+                    }
+                    sent.store(true, Ordering::SeqCst);
+                    return;
+                }
+                std::thread::sleep(Duration::from_micros(200));
+            }
+        });
+        let status = backend.run_static_elf();
+        done.store(true, Ordering::SeqCst);
+        status
+    });
+    assert!(
+        sent.load(Ordering::SeqCst),
+        "the guest finished before its host call was seen"
+    );
+    let _ = reverie::take_skid_overshoot_count();
+    (status.unwrap(), kicks_drained() - drained)
+}
+
+/// Runs a guest whose one host call is among `host_calls`, kicked there by
+/// each sender in turn, and checks that the call completed (the guest exits
+/// with 0) and that the kick was taken after it. A tgkill sends one kick; the
+/// perf overflows, sent while the call waits, merge into one pending kick.
+fn check_a_kick_in_a_host_call(what: &str, code: &[u8], host_calls: &[i64]) {
+    let mut results = Vec::new();
+    for sender in [KickSender::Tgkill, KickSender::PerfOverflow] {
+        let (status, drained) = guest_status_with_a_kick_in_a_host_call(code, host_calls, sender);
+        println!(
+            "timer {what} with a kick by {sender:?}: guest result -{status}, {drained} kick(s) \
+             taken at EINTR exits"
+        );
+        results.push((sender, status, drained));
+    }
+    for (sender, status, drained) in results {
+        assert_eq!(
+            status, 0,
+            "{sender:?}: the kick interrupted the {what}, which returned -{status} to the guest"
+        );
+        assert!(drained >= 1, "{sender:?}: the kick was not taken");
+        if matches!(sender, KickSender::Tgkill) {
+            assert_eq!(drained, 1, "{sender:?}");
+        }
+    }
+}
+
+/// A kick that arrives while the vCPU thread sleeps in LinuxEmu's host
+/// nanosleep does not interrupt it: the guest's nanosleep returns 0, not
+/// EINTR. The kick stays pending, ends the next KVM_RUN, and is taken there.
+#[test]
+fn a_kick_during_a_host_sleep_does_not_interrupt_it() {
+    let _turn = witness_turn();
+    check_a_kick_in_a_host_call("host nanosleep", &SLEEP_GUEST, &[libc::SYS_nanosleep]);
+}
+
+/// As for the sleep, with LinuxEmu's blocking host poll for a guest ppoll:
+/// it times out normally, returning 0, not EINTR.
+#[test]
+fn a_kick_during_a_blocking_host_ppoll_does_not_interrupt_it() {
+    let _turn = witness_turn();
+    check_a_kick_in_a_host_call(
+        "blocking host poll",
+        &PPOLL_GUEST,
+        &[libc::SYS_poll, libc::SYS_ppoll],
+    );
+}
+
+/// Waits on another thread, on the CPUs `allowed`, until host thread `tid`
+/// runs KVM_RUN under a vCPU mask (its blocked signals lack the kick signal,
+/// which it blocks in host code), then runs `act` there. Returns false if
+/// that was never seen within 20 s, in which case `act` ran anyway.
+fn when_inside_kvm_run<T>(
+    tid: libc::pid_t,
+    allowed: &libc::cpu_set_t,
+    act: impl FnOnce() -> T,
+) -> (bool, T) {
+    set_affinity(allowed).unwrap();
+    let kick = signal_bit(KICK_SIGNAL);
+    let deadline = Instant::now() + Duration::from_secs(20);
+    let mut seen = true;
+    while proc_blocked(tid) & kick != 0 {
+        if Instant::now() > deadline {
+            seen = false;
+            break;
+        }
+        std::thread::yield_now();
+    }
+    (seen, act())
+}
+
+/// Signal 64, the entry signal, keeps the thread's state in the vCPU mask: a
+/// closer's kick still ends a KVM_RUN that runs under the timer's vCPU mask,
+/// and is accounted as before. That EINTR exit takes no timer kick, so it
+/// composes the mask again.
+#[test]
+fn a_closer_kick_ends_kvm_run_under_the_vcpu_mask() {
+    let _turn = witness_turn();
+    let allowed = affinity().unwrap();
+    let _pin = PinThread::here();
+    let mut backend = counted_backend(&EXIT_THEN_SPIN, CounterPlacement::default());
+    let pinned = backend.vcpu.clock.placement == CounterPlacement::PinEachEntry;
+    let per_entry = if pinned { 2 } else { 0 };
+    backend
+        .vcpu
+        .request_timer(1 << 40, TimerKind::Imprecise)
+        .unwrap();
+    assert_eq!(next_exit(&mut backend.vcpu), Exit::Syscall);
+    let host = thread_mask();
+    let gate = backend.memory.entry_gate();
+    let tid = host_tid();
+    let delivered = crate::entry::delivered_for_test();
+    let syscalls = timer_syscalls();
+    let (result, (seen, closing)) = std::thread::scope(|scope| {
+        let controller = scope
+            .spawn(|| when_inside_kvm_run(tid, &allowed, || gate.try_close().unwrap().unwrap()));
+        let result = backend.vcpu.run().map(|exit| exit.is_some());
+        (result, controller.join().unwrap())
+    });
+    assert!(seen, "KVM_RUN's mask was never seen");
+    assert!(
+        matches!(result, Err(Error::Kvm(ref error)) if error.errno() == libc::EINTR),
+        "{result:?}"
+    );
+    assert_eq!(
+        crate::entry::delivered_for_test(),
+        delivered + 1,
+        "the closer's kick reached the entry signal's handler"
+    );
+    // The drain that found no kick, then the block and the mask.
+    assert_eq!(timer_syscalls() - syscalls, 3 + per_entry);
+    drop(futures::executor::block_on(closing.finish()).unwrap());
+    // The entry after runs under the same mask, and a timer kick ends it.
+    let syscalls = timer_syscalls();
+    assert_eq!(
+        mask_inside_kvm_run(&mut backend, &allowed),
+        host & !signal_bit(KICK_SIGNAL)
+    );
+    assert_eq!(timer_syscalls() - syscalls, 1 + per_entry);
+    assert_eq!(reverie::take_skid_overshoot_count(), 0);
+}
+
+/// SIGURG, the worker interrupt, keeps the thread's state in the vCPU mask:
+/// it ends a KVM_RUN under the timer's vCPU mask while the thread leaves it
+/// unblocked, and not while reverie-kvm has it blocked there, which then
+/// leaves it pending, as without a timer.
+#[test]
+fn sigurg_ends_kvm_run_under_the_vcpu_mask_only_while_the_thread_leaves_it_unblocked() {
+    let _turn = witness_turn();
+    let allowed = affinity().unwrap();
+    let _pin = PinThread::here();
+    let _restore = RestoreMask::here();
+    change_mask(libc::SIG_UNBLOCK, libc::SIGURG);
+    let mut backend = counted_backend(&EXIT_THEN_SPIN, CounterPlacement::default());
+    backend
+        .vcpu
+        .request_timer(1 << 40, TimerKind::Imprecise)
+        .unwrap();
+    assert_eq!(next_exit(&mut backend.vcpu), Exit::Syscall);
+    let tid = host_tid();
+    let kick = signal_bit(KICK_SIGNAL);
+    for (round, blocked) in [false, true, false].into_iter().enumerate() {
+        // Through reverie-kvm, which notes the change; unblocking also
+        // delivers a SIGURG left pending by the round before to its empty
+        // handler.
+        crate::vm::set_guest_interrupt_signal_mask(if blocked {
+            libc::SIG_BLOCK
+        } else {
+            libc::SIG_UNBLOCK
+        })
+        .unwrap();
+        let drained = kicks_drained();
+        let (exit, (seen, ran_on)) = std::thread::scope(|scope| {
+            let controller = scope.spawn(|| {
+                when_inside_kvm_run(tid, &allowed, || {
+                    tgkill(tid, libc::SIGURG);
+                    // A blocked SIGURG cannot end the entry: give it time
+                    // to (wrongly) do so, then end it with a kick. An
+                    // unblocked one must end it: wait for that, or end it
+                    // with a kick and report the failure.
+                    let deadline =
+                        Instant::now() + Duration::from_millis(if blocked { 200 } else { 10_000 });
+                    while Instant::now() < deadline && proc_blocked(tid) & kick == 0 {
+                        std::thread::sleep(Duration::from_millis(1));
+                    }
+                    let ran_on = proc_blocked(tid) & kick == 0;
+                    if ran_on {
+                        tgkill(tid, KICK_SIGNAL);
+                    }
+                    ran_on
+                })
+            });
+            let exit = next_exit(&mut backend.vcpu);
+            (exit, controller.join().unwrap())
+        });
+        assert!(seen, "round {round}: KVM_RUN's mask was never seen");
+        assert_eq!(exit, Exit::Kick, "round {round}");
+        assert_eq!(ran_on, blocked, "round {round}: which signal ended KVM_RUN");
+        assert_eq!(signal_pending(libc::SIGURG), blocked, "round {round}");
+        assert_eq!(
+            kicks_drained() - drained,
+            u64::from(blocked),
+            "round {round}"
+        );
+    }
     assert_eq!(reverie::take_skid_overshoot_count(), 0);
 }
