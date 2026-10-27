@@ -18698,6 +18698,15 @@ struct DetcoreValidateDataSpec {
 }
 const DETCORE_VALIDATE_DATA: &[DetcoreValidateDataSpec] = &[
     DetcoreValidateDataSpec {
+        key: "fixed_detcore_validate_fixed_tool_span_end_data",
+        location: true,
+        hex: "00000000000000005f000000000000002201000010000000",
+        file_hex: "",
+        source_context_key: Some("rv:reverie-inguest/src/guest/alloc.rs"),
+        line: 290,
+        column: 16,
+    },
+    DetcoreValidateDataSpec {
         key: "fixed_detcore_validate_rust_alloc_zeroed_35_data",
         location: false,
         hex: "756e7361666520707265636f6e646974696f6e2873292076696f6c617465643a204c61796f75743a3a66726f6d5f73697a655f616c69676e6d656e745f756e636865636b656420726571756972657320746861742074686520726f756e6465642d757020616c6c6f636174696f6e2073697a6520646f6573206e6f7420657863656564206973697a653a3a4d41580a0a5468697320696e6469636174657320612062756720696e207468652070726f6772616d2e205468697320556e646566696e6564204265686176696f7220636865636b206973206f7074696f6e616c2c20616e642063616e6e6f742062652072656c696564206f6e20666f72207361666574792e",
@@ -21394,6 +21403,452 @@ const DETCORE_VALIDATE_TEMPLATES: &[DetcoreValidateTemplate] = &[
         ],
         transfers: &[(110, 1), (173, 3), (265, 4), (289, 5), (324, 7)],
     },
+    // 45: complete capflags e370e9a7 body; signals a327dd1c differs only at these typed fields.
+    DetcoreValidateTemplate {
+        role: "fixed_region_publication_get",
+        hex: "488d0da13a23020fb615b23a230231c084d2480f45c1c3",
+        operands: &[
+            DetcoreValidateOperand {
+                displacement: 3,
+                next: 7,
+                key: "fixed_region",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 10,
+                next: 14,
+                key: "fixed_region_ready",
+                got: false,
+            },
+        ],
+        transfers: &[],
+    },
+    // 46: complete capflags e370e9a7 body; signals a327dd1c differs only at these typed fields.
+    DetcoreValidateTemplate {
+        role: "fixed_tool_heap",
+        hex: "534889fb0fb6058629230284c0740c48c703000000004889d85bc3e8d0eeffff4885c074ea807810ff74e448b80030020000600000488903480500d0fd0f4889430848c74310000000024889d85bc3",
+        operands: &[
+            DetcoreValidateOperand {
+                displacement: 7,
+                next: 11,
+                key: "fixed_initializing",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 28,
+                next: 32,
+                key: "fixed_region_publication_get",
+                got: false,
+            },
+        ],
+        transfers: &[(27, 1)],
+    },
+    // 47: complete capflags e370e9a7 body; signals a327dd1c differs only at these typed fields.
+    DetcoreValidateTemplate {
+        role: "fixed_arena_backing",
+        hex: "0fb6054a28230284c0740331c0c350e89cedffff4885c074194889c131c0807910ff488d0d27774cff480f45c14883c408c331c04883c408c3",
+        operands: &[
+            DetcoreValidateOperand {
+                displacement: 3,
+                next: 7,
+                key: "fixed_initializing",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 16,
+                next: 20,
+                key: "fixed_region_publication_get",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 37,
+                next: 41,
+                key: "fixed_backing_object",
+                got: false,
+            },
+        ],
+        transfers: &[(15, 1)],
+    },
+    // 48: complete capflags e370e9a7 body; signals a327dd1c differs only at these typed fields.
+    DetcoreValidateTemplate {
+        role: "fixed_tool_require_owned",
+        hex: "534883ec204889fb488d7c2408e88e81ffff48837c240800741f488b4c2410488b4424184801c872154839d9770b4839d876064883c4205bc3e8d2290000488d3d137a2000ff15f5ae2100",
+        operands: &[
+            DetcoreValidateOperand {
+                displacement: 14,
+                next: 18,
+                key: "fixed_tool_heap",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 58,
+                next: 62,
+                key: "fixed_refuse_foreign",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 65,
+                next: 69,
+                key: "fixed_detcore_validate_fixed_tool_span_end_data",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 71,
+                next: 75,
+                key: "_RNvNtNtCs_4core9panicking11panic_const24panic_const_add_overflow",
+                got: true,
+            },
+        ],
+        transfers: &[(13, 0), (57, 1), (69, 3)],
+    },
+    // 49: complete capflags e370e9a7 body; signals a327dd1c differs only at these typed fields.
+    DetcoreValidateTemplate {
+        role: "fixed_tool_alloc",
+        hex: "4156534883ec384889d34989f6488d7c2408e8e94affff48837c240800742c488b44241848894424300f104424080f29442420488d7c24204c89f64889dae87dc6ffff4883c4385b415ec331c04883c4385b415ec3",
+        operands: &[
+            DetcoreValidateOperand {
+                displacement: 19,
+                next: 23,
+                key: "fixed_tool_heap",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 63,
+                next: 67,
+                key: "fixed_heap_allocate",
+                got: false,
+            },
+        ],
+        transfers: &[(18, 0), (62, 1)],
+    },
+    // 50: complete capflags e370e9a7 body; signals a327dd1c differs only at these typed fields.
+    DetcoreValidateTemplate {
+        role: "fixed_tool_dealloc",
+        hex: "534883ec204889f3488d7c2408e88e4affff488b7c24084885ff7427488b742410488b4424184801f0721d4839de77134839d8760e488b53f84883c4205be93dc4ffffe8c8f2ffff488d3d09432000ff15eb772100",
+        operands: &[
+            DetcoreValidateOperand {
+                displacement: 14,
+                next: 18,
+                key: "fixed_tool_heap",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 63,
+                next: 67,
+                key: "fixed_heap_deallocate",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 68,
+                next: 72,
+                key: "fixed_refuse_foreign",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 75,
+                next: 79,
+                key: "fixed_detcore_validate_fixed_tool_span_end_data",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 81,
+                next: 85,
+                key: "_RNvNtNtCs_4core9panicking11panic_const24panic_const_add_overflow",
+                got: true,
+            },
+        ],
+        transfers: &[(13, 0), (62, 1), (67, 2), (79, 4)],
+    },
+    // 51: complete capflags e370e9a7 body; signals a327dd1c differs only at these typed fields.
+    DetcoreValidateTemplate {
+        role: "fixed_tool_realloc",
+        hex: "4157415641554154534883ec304d89c74989ce4989d54889f3488d7c2418e81d4affff48837c2418000f849d000000488b44242848894424100f104424180f2904244c8b6424084c01e00f82810000004939dc77774839d87672498d45ff4985c50f95c048b900000000000000804c29e94939cf0f97c108c175414889e74c89ee4c89fae877c5ffff4885c0742e4d39f74d0f42f74889df4889c64c89f24989c6ff1529bc2100488b3c24488b53f84c89e6e869c3ffff4c89f0eb0231c04883c4305b415c415d415e415fc3e8dff1ffff488d3d20422000ff1502772100",
+        operands: &[
+            DetcoreValidateOperand {
+                displacement: 31,
+                next: 35,
+                key: "fixed_tool_heap",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 133,
+                next: 137,
+                key: "fixed_heap_allocate",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 163,
+                next: 167,
+                key: "fixed_copy_bytes",
+                got: true,
+            },
+            DetcoreValidateOperand {
+                displacement: 179,
+                next: 183,
+                key: "fixed_heap_deallocate",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 205,
+                next: 209,
+                key: "fixed_refuse_foreign",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 212,
+                next: 216,
+                key: "fixed_detcore_validate_fixed_tool_span_end_data",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 218,
+                next: 222,
+                key: "_RNvNtNtCs_4core9panicking11panic_const24panic_const_add_overflow",
+                got: true,
+            },
+        ],
+        transfers: &[(30, 0), (132, 1), (161, 2), (178, 3), (204, 4), (216, 6)],
+    },
+    // 52: complete capflags e370e9a7 body; signals a327dd1c differs only at these typed fields.
+    DetcoreValidateTemplate {
+        role: "fixed_native_from_native",
+        hex: "5541574156534883ec1848bb001000000060000080f901b83000020041b8a00002004c0f44c04909d84939f00f859a0000000fb6052838230249b800f0efffff9fffff4c01c24881faffff7f00777d84c0747989cd4989febfba0000004989f731f631d231c9e84504feff4c89fe40f6c6070f85b10000004885c04c89f77e4c48394640754648837e5001753f48837e380074388b0683e00f83f808752ee81dfdffff4c89f74885c07521ba02000000b801000000f0490fb15748750f0fb60384c0741fc7070b000000eb06c7071600000031ed40886f084883c4185b415e415f5dc348c74424080001000048c744241002090000488d7c2408e8a1c4ffff84c0740c4c89f741c70616000000ebc34889dfe8390f00004c89f783f8017505418916ebae4d893eebab488d1560fe2000bf08000000ff15553f2200",
+        operands: &[
+            DetcoreValidateOperand {
+                displacement: 53,
+                next: 57,
+                key: "fixed_initializing",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 103,
+                next: 107,
+                key: "fixed_scalar_syscall",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 159,
+                next: 163,
+                key: "fixed_region_publication_get",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 251,
+                next: 255,
+                key: "fixed_native_bitmap_range",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 275,
+                next: 279,
+                key: "fixed_arena_setup",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 300,
+                next: 304,
+                key: "fixed_detcore_validate_fixed_native_from_native_311_data",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 311,
+                next: 315,
+                key: "fixed_heap_panic_misaligned",
+                got: true,
+            },
+        ],
+        transfers: &[(102, 1), (158, 2), (250, 3), (274, 4), (309, 6)],
+    },
+    // 53: complete capflags e370e9a7 body; signals a327dd1c differs only at these typed fields.
+    DetcoreValidateTemplate {
+        role: "fixed_constructor_prepare",
+        hex: "415741564154534883ec484989fe4989e4488d7c2408bb010000004c89f64c89e2b901000000e855e8ffff0fb644241084c0747341f6c607757b4d85f60f84870000004c8b7c24084d89665848b9001000000060000048894c24184c897c242088442428488d7c2430488d742418e88de5ffff807c2440fe752d41f6c70775574d85ff746749c7474803000000c6054d20230200e8a7e5ffff4885c0740931db807810ff0f94c389d84883c4485b415c415e415fc3488d1514e82000bf080000004c89f6ff1546282200488d3dffe72000ff1539592200488d154ae72000bf080000004c89feff1524282200488d3d35e72000ff1517592200ff15f9582200",
+        operands: &[
+            DetcoreValidateOperand {
+                displacement: 39,
+                next: 43,
+                key: "fixed_native_from_native",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 111,
+                next: 115,
+                key: "fixed_region_publication_set",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 143,
+                next: 148,
+                key: "fixed_initializing",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 149,
+                next: 153,
+                key: "fixed_region_publication_get",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 184,
+                next: 188,
+                key: "fixed_detcore_validate_fixed_constructor_prepare_192_data",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 198,
+                next: 202,
+                key: "fixed_heap_panic_misaligned",
+                got: true,
+            },
+            DetcoreValidateOperand {
+                displacement: 205,
+                next: 209,
+                key: "fixed_detcore_validate_fixed_constructor_prepare_213_data",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 211,
+                next: 215,
+                key: "fixed_panic_null_reference",
+                got: true,
+            },
+            DetcoreValidateOperand {
+                displacement: 218,
+                next: 222,
+                key: "fixed_detcore_validate_fixed_constructor_prepare_226_data",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 232,
+                next: 236,
+                key: "fixed_heap_panic_misaligned",
+                got: true,
+            },
+            DetcoreValidateOperand {
+                displacement: 239,
+                next: 243,
+                key: "fixed_detcore_validate_fixed_constructor_prepare_247_data",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 245,
+                next: 249,
+                key: "fixed_panic_null_reference",
+                got: true,
+            },
+            DetcoreValidateOperand {
+                displacement: 251,
+                next: 255,
+                key: "fixed_publication_cannot_unwind",
+                got: true,
+            },
+        ],
+        transfers: &[
+            (38, 0),
+            (110, 1),
+            (148, 3),
+            (196, 5),
+            (209, 7),
+            (230, 9),
+            (243, 11),
+            (249, 12),
+        ],
+    },
+    // 54: complete capflags e370e9a7 body; signals a327dd1c differs only at these typed fields.
+    DetcoreValidateTemplate {
+        role: "fixed_generic_prepare",
+        hex: "415741564154534883ec484989fe4989e4488d7c24084c89f64c89e2b902000000e85ae7ffff0fb6442410bb0100000084c0747341f6c607757b4d85f60f84870000004c8b7c24084d89665848b9001000000060000048894c24184c897c242088442428488d7c2430488d742418e88de4ffff807c2440fe752d41f6c70775574d85ff746749c7474803000000c6054d1f230200e8a7e4ffff4885c0740931db807810ff0f94c389d84883c4485b415c415e415fc3488d152ce72000bf080000004c89f6ff1546272200488d3d17e72000ff1539582200488d154ae62000bf080000004c89feff1524272200488d3d35e62000ff1517582200ff15f9572200",
+        operands: &[
+            DetcoreValidateOperand {
+                displacement: 34,
+                next: 38,
+                key: "fixed_native_from_native",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 111,
+                next: 115,
+                key: "fixed_region_publication_set",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 143,
+                next: 148,
+                key: "fixed_initializing",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 149,
+                next: 153,
+                key: "fixed_region_publication_get",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 184,
+                next: 188,
+                key: "fixed_detcore_validate_fixed_generic_prepare_192_data",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 198,
+                next: 202,
+                key: "fixed_heap_panic_misaligned",
+                got: true,
+            },
+            DetcoreValidateOperand {
+                displacement: 205,
+                next: 209,
+                key: "fixed_detcore_validate_fixed_generic_prepare_213_data",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 211,
+                next: 215,
+                key: "fixed_panic_null_reference",
+                got: true,
+            },
+            DetcoreValidateOperand {
+                displacement: 218,
+                next: 222,
+                key: "fixed_detcore_validate_fixed_generic_prepare_226_data",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 232,
+                next: 236,
+                key: "fixed_heap_panic_misaligned",
+                got: true,
+            },
+            DetcoreValidateOperand {
+                displacement: 239,
+                next: 243,
+                key: "fixed_detcore_validate_fixed_generic_prepare_247_data",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 245,
+                next: 249,
+                key: "fixed_panic_null_reference",
+                got: true,
+            },
+            DetcoreValidateOperand {
+                displacement: 251,
+                next: 255,
+                key: "fixed_publication_cannot_unwind",
+                got: true,
+            },
+        ],
+        transfers: &[
+            (33, 0),
+            (110, 1),
+            (148, 3),
+            (196, 5),
+            (209, 7),
+            (230, 9),
+            (243, 11),
+            (249, 12),
+        ],
+    },
 ];
 struct DetcoreRecipeBindings<'a> {
     targets: &'a BTreeMap<String, u64>,
@@ -21601,6 +22056,23 @@ fn fixed_detcore_marker(elf: &Elf<'_>, bytes: &[u8], expected_root: &str) -> Res
 // and the corresponding argument/invariant proof in FIXED_ALLOCATOR_PROOF.md. They do not
 // admit a terminal into preparation or any unsupported caller/profile.
 const DETCORE_VALIDATE_GUARDED_TERMINAL_PAIRS: &[(&str, &str, &str)] = &[
+    // Complete specialized fixed_tool_heap returns literal base 0x600010000000
+    // and length 0x2000000; their sum cannot carry. The family join is mandatory.
+    (
+        "fixed_tool_require_owned",
+        "_RNvNtNtCs_4core9panicking11panic_const24panic_const_add_overflow",
+        "authenticated_specialized_fixed_tool_span_end",
+    ),
+    (
+        "fixed_tool_dealloc",
+        "_RNvNtNtCs_4core9panicking11panic_const24panic_const_add_overflow",
+        "authenticated_specialized_fixed_tool_span_end",
+    ),
+    (
+        "fixed_tool_realloc",
+        "_RNvNtNtCs_4core9panicking11panic_const24panic_const_add_overflow",
+        "authenticated_specialized_fixed_tool_span_end",
+    ),
     (
         "__rust_alloc_zeroed",
         "fixed_panic_nounwind_fmt",
@@ -22393,12 +22865,142 @@ const DETCORE_PUBLICATION_COHORT: [(&str, usize, usize); 5] = [
     ("fixed_tool_realloc", 11, 35),
 ];
 
+// These ten complete bodies form one closed specialization ABI. In particular,
+// get has no receiver argument, fixed_tool_heap writes the literal metadata/base/
+// length tuple, and the two setters use the global-REGION ABI at caller+110.
+const DETCORE_SPECIALIZED_COHORT: [(&str, usize); 10] = [
+    ("fixed_region_publication_get", 45),
+    ("fixed_tool_heap", 46),
+    ("fixed_arena_backing", 47),
+    ("fixed_tool_require_owned", 48),
+    ("fixed_tool_alloc", 49),
+    ("fixed_tool_dealloc", 50),
+    ("fixed_tool_realloc", 51),
+    ("fixed_native_from_native", 52),
+    ("fixed_constructor_prepare", 53),
+    ("fixed_generic_prepare", 54),
+];
+
+fn fixed_detcore_specialized_cohort(
+    witnesses: &BTreeMap<String, AuthenticatedDetcoreOperation>,
+    transfers: &BTreeMap<String, Vec<ConstructorTransfer>>,
+    selected: &BTreeMap<String, u64>,
+    targets: &BTreeMap<String, u64>,
+) -> Result<()> {
+    let mut addresses = BTreeSet::new();
+    for (role, index) in DETCORE_SPECIALIZED_COHORT.into_iter().chain([
+        ("fixed_region_publication_set", 21),
+        ("fixed_arena_setup", DETCORE_THREE_BAND_SETUP),
+    ]) {
+        let witness = witnesses
+            .get(role)
+            .ok_or("missing specialized Detcore role")?;
+        require(
+            witness.role == role
+                && witness.kind == AuthenticatedDetcoreOperationKind::ValidateTemplate(index)
+                && DETCORE_VALIDATE_TEMPLATES[index].role == role
+                && selected.get(role) == Some(&witness.address)
+                && targets.get(role) == Some(&witness.address)
+                && transfers.get(role) == Some(&witness.edges),
+            "mixed or unbound specialized Detcore family",
+        )?;
+        require(
+            witness.address != 0 && addresses.insert(witness.address),
+            "aliased specialized Detcore roles",
+        )?;
+    }
+    let region = *targets
+        .get("fixed_region")
+        .ok_or("specialized REGION absent")?;
+    let initializing = *targets
+        .get("fixed_initializing")
+        .ok_or("specialized INITIALIZING absent")?;
+    require(
+        region != 0
+            && initializing != 0
+            && targets.get("fixed_region_ready").copied() == region.checked_add(24)
+            && targets.get("fixed_region_value16").copied() == region.checked_add(16)
+            && !addresses.contains(&region)
+            && !addresses.contains(&initializing)
+            && region != initializing,
+        "specialized Detcore loses fixed publication storage",
+    )?;
+    for (callee, callers) in [
+        (
+            "fixed_region_publication_get",
+            &[
+                ("fixed_tool_heap", 27_u64),
+                ("fixed_arena_backing", 15),
+                ("fixed_native_from_native", 158),
+                ("fixed_constructor_prepare", 148),
+                ("fixed_generic_prepare", 148),
+            ][..],
+        ),
+        (
+            "fixed_tool_heap",
+            &[
+                ("fixed_tool_require_owned", 13),
+                ("fixed_tool_alloc", 18),
+                ("fixed_tool_dealloc", 13),
+                ("fixed_tool_realloc", 30),
+            ][..],
+        ),
+        (
+            "fixed_region_publication_set",
+            &[
+                ("fixed_constructor_prepare", 110),
+                ("fixed_generic_prepare", 110),
+            ][..],
+        ),
+    ] {
+        let target = witnesses[callee].address;
+        let mut incoming = BTreeSet::new();
+        for (role, edges) in transfers {
+            for edge in edges.iter().filter(|edge| edge.target == target) {
+                let (_, pc) = callers
+                    .iter()
+                    .find(|(caller, _)| *caller == role.as_str())
+                    .ok_or("unexpected specialized Detcore caller")?;
+                let caller = witnesses
+                    .get(role)
+                    .ok_or("specialized caller witness absent")?;
+                require(
+                    edge.instruction
+                        == caller
+                            .address
+                            .checked_add(*pc)
+                            .ok_or("specialized Detcore call overflow")?
+                        && edge.local_got_slot.is_none()
+                        && incoming.insert(role.as_str()),
+                    "duplicate or shifted specialized Detcore call",
+                )?;
+            }
+        }
+        require(
+            incoming
+                == callers
+                    .iter()
+                    .map(|(role, _)| *role)
+                    .collect::<BTreeSet<_>>(),
+            "missing specialized Detcore caller",
+        )?;
+    }
+    Ok(())
+}
+
 fn fixed_detcore_publication_cohort(
     witnesses: &BTreeMap<String, AuthenticatedDetcoreOperation>,
     transfers: &BTreeMap<String, Vec<ConstructorTransfer>>,
     selected: &BTreeMap<String, u64>,
     targets: &BTreeMap<String, u64>,
 ) -> Result<()> {
+    if witnesses.values().any(|witness| {
+        DETCORE_SPECIALIZED_COHORT.iter().any(|(_, index)| {
+            witness.kind == AuthenticatedDetcoreOperationKind::ValidateTemplate(*index)
+        })
+    }) {
+        return fixed_detcore_specialized_cohort(witnesses, transfers, selected, targets);
+    }
     let mut addresses = BTreeSet::new();
     for &(role, old, new) in &DETCORE_PUBLICATION_COHORT {
         let witness = witnesses
@@ -22478,7 +23080,7 @@ fn fixed_detcore_publication_cohort(
 }
 
 // Appended identities preserve every historical table index. This conditional
-// join covers only the new full-EAX caller; historical329 keeps its old contract.
+// join covers both appended full-EAX callers; historical329 keeps its old contract.
 const DETCORE_FULL_RESULT_CALLER: usize = 44;
 const DETCORE_THREE_BAND_SETUP: usize = 24;
 
@@ -22491,12 +23093,11 @@ fn fixed_detcore_full_result_contract(
     let Some(caller) = witnesses.get("fixed_native_from_native") else {
         return Ok(());
     };
-    if !matches!(
-        caller.kind,
-        AuthenticatedDetcoreOperationKind::ValidateTemplate(DETCORE_FULL_RESULT_CALLER)
-    ) {
-        return Ok(());
-    }
+    let setup_pc = match caller.kind {
+        AuthenticatedDetcoreOperationKind::ValidateTemplate(DETCORE_FULL_RESULT_CALLER) => 289,
+        AuthenticatedDetcoreOperationKind::ValidateTemplate(52) => 274,
+        _ => return Ok(()),
+    };
     let setup = witnesses
         .get("fixed_arena_setup")
         .filter(|w| {
@@ -22541,12 +23142,12 @@ fn fixed_detcore_full_result_contract(
             && incoming[0].instruction
                 == caller
                     .address
-                    .checked_add(289)
+                    .checked_add(setup_pc)
                     .ok_or("Detcore result call overflow")?
             && incoming[0].local_got_slot.is_none(),
         "full-EAX Detcore caller lacks exact direct setup edge",
     )?;
-    // Complete330 proves fixed Control in RDI, CMP EAX,1 / JNE success,
+    // Complete330 and specialized315 prove fixed Control in RDI, CMP EAX,1 / JNE success,
     // error EDX -> [R14], and success R15 -> [R14]. Complete291 proves
     // EBP=1 on every error, EBP=0 on success, and sole EAX=EBP/EDX=R14D
     // return. The eight bitmap/syscall edges are recursively census-qualified.
@@ -48561,6 +49162,494 @@ mod tests {
             selected,
             targets,
         }
+    }
+
+    // Retained capflags e370e9a7 bytes and instruction boundaries. All ten new
+    // bodies match signals a327dd1c except the enumerated typed address fields.
+    // These pure controls do not claim physical qualification or execution.
+    fn detcore_specialized_control_graph() -> DetcorePublicationControlGraph {
+        let samples: &[(&str, u64, usize, &str, &[usize])] = &[
+            (
+                "fixed_region_publication_get",
+                0xe30ae0,
+                45,
+                "488d0da13a23020fb615b23a230231c084d2480f45c1c3",
+                &[0, 7, 14, 16, 18, 22],
+            ),
+            (
+                "fixed_tool_heap",
+                0xe31bf0,
+                46,
+                "534889fb0fb6058629230284c0740c48c703000000004889d85bc3e8d0eeffff4885c074ea807810ff74e448b80030020000600000488903480500d0fd0f4889430848c74310000000024889d85bc3",
+                &[
+                    0, 1, 4, 11, 13, 15, 22, 25, 26, 27, 32, 35, 37, 41, 43, 53, 56, 62, 66, 74,
+                    77, 78,
+                ],
+            ),
+            (
+                "fixed_arena_backing",
+                0xe31d30,
+                47,
+                "0fb6054a28230284c0740331c0c350e89cedffff4885c074194889c131c0807910ff488d0d27774cff480f45c14883c408c331c04883c408c3",
+                &[
+                    0, 7, 9, 11, 13, 14, 15, 20, 23, 25, 28, 30, 34, 41, 45, 49, 50, 52, 56,
+                ],
+            ),
+            (
+                "fixed_tool_require_owned",
+                0xe39a50,
+                48,
+                "534883ec204889fb488d7c2408e88e81ffff48837c240800741f488b4c2410488b4424184801c872154839d9770b4839d876064883c4205bc3e8d2290000488d3d137a2000ff15f5ae2100",
+                &[
+                    0, 1, 5, 8, 13, 18, 24, 26, 31, 36, 39, 41, 44, 46, 49, 51, 55, 56, 57, 62, 69,
+                ],
+            ),
+            (
+                "fixed_tool_alloc",
+                0xe3d0f0,
+                49,
+                "4156534883ec384889d34989f6488d7c2408e8e94affff48837c240800742c488b44241848894424300f104424080f29442420488d7c24204c89f64889dae87dc6ffff4883c4385b415ec331c04883c4385b415ec3",
+                &[
+                    0, 2, 3, 7, 10, 13, 18, 23, 29, 31, 36, 41, 46, 51, 56, 59, 62, 67, 71, 72, 74,
+                    75, 77, 81, 82, 84,
+                ],
+            ),
+            (
+                "fixed_tool_dealloc",
+                0xe3d150,
+                50,
+                "534883ec204889f3488d7c2408e88e4affff488b7c24084885ff7427488b742410488b4424184801f0721d4839de77134839d8760e488b53f84883c4205be93dc4ffffe8c8f2ffff488d3d09432000ff15eb772100",
+                &[
+                    0, 1, 5, 8, 13, 18, 23, 26, 28, 33, 38, 41, 43, 46, 48, 51, 53, 57, 61, 62, 67,
+                    72, 79,
+                ],
+            ),
+            (
+                "fixed_tool_realloc",
+                0xe3d1b0,
+                51,
+                "4157415641554154534883ec304d89c74989ce4989d54889f3488d7c2418e81d4affff48837c2418000f849d000000488b44242848894424100f104424180f2904244c8b6424084c01e00f82810000004939dc77774839d87672498d45ff4985c50f95c048b900000000000000804c29e94939cf0f97c108c175414889e74c89ee4c89fae877c5ffff4885c0742e4d39f74d0f42f74889df4889c64c89f24989c6ff1529bc2100488b3c24488b53f84c89e6e869c3ffff4c89f0eb0231c04883c4305b415c415d415e415fc3e8dff1ffff488d3d20422000ff1502772100",
+                &[
+                    0, 2, 4, 6, 8, 9, 13, 16, 19, 22, 25, 30, 35, 41, 47, 52, 57, 62, 66, 71, 74,
+                    80, 83, 85, 88, 90, 94, 97, 100, 110, 113, 116, 119, 121, 123, 126, 129, 132,
+                    137, 140, 142, 145, 149, 152, 155, 158, 161, 167, 171, 175, 178, 183, 186, 188,
+                    190, 194, 195, 197, 199, 201, 203, 204, 209, 216,
+                ],
+            ),
+            (
+                "fixed_native_from_native",
+                0xe30d20,
+                52,
+                "5541574156534883ec1848bb001000000060000080f901b83000020041b8a00002004c0f44c04909d84939f00f859a0000000fb6052838230249b800f0efffff9fffff4c01c24881faffff7f00777d84c0747989cd4989febfba0000004989f731f631d231c9e84504feff4c89fe40f6c6070f85b10000004885c04c89f77e4c48394640754648837e5001753f48837e380074388b0683e00f83f808752ee81dfdffff4c89f74885c07521ba02000000b801000000f0490fb15748750f0fb60384c0741fc7070b000000eb06c7071600000031ed40886f084883c4185b415e415f5dc348c74424080001000048c744241002090000488d7c2408e8a1c4ffff84c0740c4c89f741c70616000000ebc34889dfe8390f00004c89f783f8017505418916ebae4d893eebab488d1560fe2000bf08000000ff15553f2200",
+                &[
+                    0, 1, 3, 5, 6, 10, 20, 23, 28, 34, 38, 41, 44, 50, 57, 67, 70, 77, 79, 81, 83,
+                    85, 88, 93, 96, 98, 100, 102, 107, 110, 114, 120, 123, 126, 128, 132, 134, 139,
+                    141, 146, 148, 150, 153, 156, 158, 163, 166, 169, 171, 176, 181, 187, 189, 192,
+                    194, 196, 202, 204, 210, 212, 216, 220, 221, 223, 225, 226, 227, 236, 245, 250,
+                    255, 257, 259, 262, 269, 271, 274, 279, 282, 285, 287, 290, 292, 295, 297, 304,
+                    309,
+                ],
+            ),
+            (
+                "fixed_constructor_prepare",
+                0xe324a0,
+                53,
+                "415741564154534883ec484989fe4989e4488d7c2408bb010000004c89f64c89e2b901000000e855e8ffff0fb644241084c0747341f6c607757b4d85f60f84870000004c8b7c24084d89665848b9001000000060000048894c24184c897c242088442428488d7c2430488d742418e88de5ffff807c2440fe752d41f6c70775574d85ff746749c7474803000000c6054d20230200e8a7e5ffff4885c0740931db807810ff0f94c389d84883c4485b415c415e415fc3488d1514e82000bf080000004c89f6ff1546282200488d3dffe72000ff1539592200488d154ae72000bf080000004c89feff1524282200488d3d35e72000ff1517592200ff15f9582200",
+                &[
+                    0, 2, 4, 6, 7, 11, 14, 17, 22, 27, 30, 33, 38, 43, 48, 50, 52, 56, 58, 61, 67,
+                    72, 76, 86, 91, 96, 100, 105, 110, 115, 120, 122, 126, 128, 131, 133, 141, 148,
+                    153, 156, 158, 160, 164, 167, 169, 173, 174, 176, 178, 180, 181, 188, 193, 196,
+                    202, 209, 215, 222, 227, 230, 236, 243, 249,
+                ],
+            ),
+            (
+                "fixed_generic_prepare",
+                0xe325a0,
+                54,
+                "415741564154534883ec484989fe4989e4488d7c24084c89f64c89e2b902000000e85ae7ffff0fb6442410bb0100000084c0747341f6c607757b4d85f60f84870000004c8b7c24084d89665848b9001000000060000048894c24184c897c242088442428488d7c2430488d742418e88de4ffff807c2440fe752d41f6c70775574d85ff746749c7474803000000c6054d1f230200e8a7e4ffff4885c0740931db807810ff0f94c389d84883c4485b415c415e415fc3488d152ce72000bf080000004c89f6ff1546272200488d3d17e72000ff1539582200488d154ae62000bf080000004c89feff1524272200488d3d35e62000ff1517582200ff15f9572200",
+                &[
+                    0, 2, 4, 6, 7, 11, 14, 17, 22, 25, 28, 33, 38, 43, 48, 50, 52, 56, 58, 61, 67,
+                    72, 76, 86, 91, 96, 100, 105, 110, 115, 120, 122, 126, 128, 131, 133, 141, 148,
+                    153, 156, 158, 160, 164, 167, 169, 173, 174, 176, 178, 180, 181, 188, 193, 196,
+                    202, 209, 215, 222, 227, 230, 236, 243, 249,
+                ],
+            ),
+            (
+                "fixed_region_publication_set",
+                0xe30aa0,
+                21,
+                "0fb605f93a230284c0740f488b4610488947100f10060f1107c3488b4610488905d33a23020f10060f1105b93a2302c605ca3a230201c64710fec3",
+                &[0, 7, 9, 11, 15, 19, 22, 25, 26, 30, 37, 40, 47, 54, 58],
+            ),
+            (
+                "fixed_arena_setup",
+                0xe31d70,
+                24,
+                "554157415653504889fbbeffff0000ba0120010031c9e8b5feffffbd0100000041be1600000084c00f84e5000000beff3f0100ba016001004889df31c9e88efeffff84c00f84c9000000beffff0d00ba01f00f004889df31c9e872feffff84c00f84ad00000049bf0030020000600000498db700d0fd0fbf0a000000ba00000002b903000000e8d5f3fdff4885c0787d498db700d0fd13bf0a000000ba00000002b903000000e8b5f3fdff4885c0785d0f57c0410f290741c647100049c7471800000000beffff0000ba012001004889dfb901000000e8f5fdffffbeff3f0100ba016001004889dfb901000000e8defdffffbeffff0d00ba01f00f004889dfb901000000e8c7fdffff31edeb064989c641f7de89e84489f24883c4085b415e415f5dc3",
+                &[
+                    0, 1, 3, 5, 6, 7, 10, 15, 20, 22, 27, 32, 38, 40, 46, 51, 56, 59, 61, 66, 68,
+                    74, 79, 84, 87, 89, 94, 96, 102, 112, 119, 124, 129, 134, 139, 142, 144, 151,
+                    156, 161, 166, 171, 174, 176, 179, 183, 188, 196, 201, 206, 209, 214, 219, 224,
+                    229, 232, 237, 242, 247, 252, 255, 260, 265, 267, 269, 272, 275, 277, 280, 284,
+                    285, 287, 289, 290,
+                ],
+            ),
+        ];
+        let mut targets: BTreeMap<String, u64> = BTreeMap::from([
+            (
+                "_RNvNtNtCs_4core9panicking11panic_const24panic_const_add_overflow".into(),
+                0xfd99f0,
+            ),
+            ("fixed_arena_backing".into(), 0xe31d30),
+            ("fixed_arena_setup".into(), 0xe31d70),
+            ("fixed_backing_object".into(), 0x2f9480),
+            ("fixed_constructor_prepare".into(), 0xe324a0),
+            ("fixed_copy_bytes".into(), 0xe3c440),
+            (
+                "fixed_detcore_validate_fixed_constructor_prepare_192_data".into(),
+                0x1040d70,
+            ),
+            (
+                "fixed_detcore_validate_fixed_constructor_prepare_213_data".into(),
+                0x1040d70,
+            ),
+            (
+                "fixed_detcore_validate_fixed_constructor_prepare_226_data".into(),
+                0x1040cc8,
+            ),
+            (
+                "fixed_detcore_validate_fixed_constructor_prepare_247_data".into(),
+                0x1040cc8,
+            ),
+            (
+                "fixed_detcore_validate_fixed_generic_prepare_192_data".into(),
+                0x1040d88,
+            ),
+            (
+                "fixed_detcore_validate_fixed_generic_prepare_213_data".into(),
+                0x1040d88,
+            ),
+            (
+                "fixed_detcore_validate_fixed_generic_prepare_226_data".into(),
+                0x1040cc8,
+            ),
+            (
+                "fixed_detcore_validate_fixed_generic_prepare_247_data".into(),
+                0x1040cc8,
+            ),
+            (
+                "fixed_detcore_validate_fixed_native_from_native_311_data".into(),
+                0x1040cb0,
+            ),
+            (
+                "fixed_detcore_validate_fixed_tool_span_end_data".into(),
+                0x10414a8,
+            ),
+            ("fixed_generic_prepare".into(), 0xe325a0),
+            ("fixed_heap_allocate".into(), 0xe397b0),
+            ("fixed_heap_deallocate".into(), 0xe395d0),
+            ("fixed_heap_panic_misaligned".into(), 0xfd8dd7),
+            ("fixed_initializing".into(), 0x3064581),
+            ("fixed_native_bitmap_range".into(), 0xe2d2c0),
+            ("fixed_native_from_native".into(), 0xe30d20),
+            ("fixed_panic_null_reference".into(), 0xfd8dbe),
+            ("fixed_publication_cannot_unwind".into(), 0xfd8d33),
+            ("fixed_refuse_foreign".into(), 0xe3c460),
+            ("fixed_region".into(), 0x3064588),
+            ("fixed_region_publication_get".into(), 0xe30ae0),
+            ("fixed_region_publication_set".into(), 0xe30aa0),
+            ("fixed_region_ready".into(), 0x30645a0),
+            ("fixed_region_value16".into(), 0x3064598),
+            ("fixed_scalar_syscall".into(), 0xe111d0),
+            ("fixed_setup_bitmap_range".into(), 0xe31c40),
+            ("fixed_tool_alloc".into(), 0xe3d0f0),
+            ("fixed_tool_dealloc".into(), 0xe3d150),
+            ("fixed_tool_heap".into(), 0xe31bf0),
+            ("fixed_tool_realloc".into(), 0xe3d1b0),
+            ("fixed_tool_require_owned".into(), 0xe39a50),
+        ]);
+        let got = BTreeMap::from([
+            (0x1054990, 0xfd99f0),
+            (0x1054db0, 0xfd8dd7),
+            (0x1057e98, 0xfd8d33),
+            (0x1057eb0, 0xfd8dbe),
+            (0x1058e80, 0xe3c440),
+        ]);
+        // Source filename authority stays outside the ELF.
+        let context = detcore_validate_control_context("54dc377");
+        let mut readonly = BTreeMap::new();
+        for (i, spec) in DETCORE_VALIDATE_DATA.iter().enumerate() {
+            if let Some(&address) = targets.get(spec.key) {
+                let (data, file) = detcore_validate_expected_data(spec, &context).unwrap();
+                fixed_insert_readonly(&mut readonly, address, &data).unwrap();
+                if let Some(file) = file {
+                    let address = 0x10000000 + i as u64 * 0x1000;
+                    targets.insert(format!("{}_file", spec.key), address);
+                    fixed_insert_readonly(&mut readonly, address, &file).unwrap();
+                }
+            }
+        }
+        let mut witnesses = BTreeMap::new();
+        let mut transfers = BTreeMap::new();
+        let mut selected = BTreeMap::new();
+        for &(role, address, index, whole, offsets) in samples {
+            let bytes = fixed_hex(whole);
+            let instructions = |b: &[u8]| -> Vec<EncodedConstructorInstruction> {
+                offsets
+                    .iter()
+                    .enumerate()
+                    .map(|(i, &offset)| {
+                        let end = offsets.get(i + 1).copied().unwrap_or(b.len());
+                        EncodedConstructorInstruction {
+                            address: address + offset as u64,
+                            bytes: b[offset..end].to_vec(),
+                        }
+                    })
+                    .collect()
+            };
+            let check = |b: &[u8],
+                         ins: &[EncodedConstructorInstruction],
+                         ts: &BTreeMap<String, u64>,
+                         gs: &BTreeMap<u64, u64>,
+                         ro: &BTreeMap<u64, Vec<u8>>,
+                         ctx: &BTreeMap<String, Vec<u8>>| {
+                fixed_detcore_qualified_operation(
+                    role,
+                    address,
+                    (b, ins),
+                    DetcoreRecipeBindings {
+                        targets: ts,
+                        got: gs,
+                        readonly: ro,
+                        context: ctx,
+                    },
+                    0xe0,
+                    false,
+                )
+            };
+            let ins = instructions(&bytes);
+            let witness = check(&bytes, &ins, &targets, &got, &readonly, &context)
+                .unwrap_or_else(|error| panic!("specialized {role}: {error}"));
+            assert_eq!(
+                witness.kind,
+                AuthenticatedDetcoreOperationKind::ValidateTemplate(index)
+            );
+            // All bytes are checked, including branch targets, literal metadata/
+            // base/length, registers and the typed address displacements.
+            for byte in 0..bytes.len() {
+                let mut bad = bytes.clone();
+                bad[byte] ^= 1;
+                assert!(
+                    check(
+                        &bad,
+                        &instructions(&bad),
+                        &targets,
+                        &got,
+                        &readonly,
+                        &context
+                    )
+                    .is_err(),
+                    "specialized {role}+{byte}"
+                );
+            }
+            assert!(
+                check(
+                    &bytes[..bytes.len() - 1],
+                    &ins,
+                    &targets,
+                    &got,
+                    &readonly,
+                    &context
+                )
+                .is_err()
+            );
+            let mut appended = bytes.clone();
+            appended.push(0x90);
+            assert!(check(&appended, &ins, &targets, &got, &readonly, &context).is_err());
+            let mut missing = ins.clone();
+            missing.remove(0);
+            assert!(check(&bytes, &missing, &targets, &got, &readonly, &context).is_err());
+            let mut shifted = ins.clone();
+            shifted[0].address += 1;
+            assert!(check(&bytes, &shifted, &targets, &got, &readonly, &context).is_err());
+            for op in DETCORE_VALIDATE_TEMPLATES[index].operands {
+                let mut bad = targets.clone();
+                bad.remove(op.key);
+                assert!(check(&bytes, &ins, &bad, &got, &readonly, &context).is_err());
+                let mut bad = targets.clone();
+                *bad.get_mut(op.key).unwrap() += 1;
+                assert!(check(&bytes, &ins, &bad, &got, &readonly, &context).is_err());
+                if op.got {
+                    let slot = fixed_rip_target(address, &bytes, op.displacement, op.next).unwrap();
+                    let mut bad = got.clone();
+                    bad.remove(&slot);
+                    assert!(check(&bytes, &ins, &targets, &bad, &readonly, &context).is_err());
+                    let mut bad = got.clone();
+                    *bad.get_mut(&slot).unwrap() += 1;
+                    assert!(check(&bytes, &ins, &targets, &bad, &readonly, &context).is_err());
+                }
+                if let Some(spec) = DETCORE_VALIDATE_DATA.iter().find(|spec| spec.key == op.key) {
+                    let at = targets[op.key];
+                    for byte in 0..readonly[&at].len() {
+                        let mut bad = readonly.clone();
+                        bad.get_mut(&at).unwrap()[byte] ^= 1;
+                        assert!(check(&bytes, &ins, &targets, &got, &bad, &context).is_err());
+                    }
+                    let mut bad = readonly.clone();
+                    bad.remove(&at);
+                    assert!(check(&bytes, &ins, &targets, &got, &bad, &context).is_err());
+                    if let Some(key) = spec.source_context_key {
+                        let mut bad = context.clone();
+                        bad.get_mut(key).unwrap().push(b'x');
+                        assert!(check(&bytes, &ins, &targets, &got, &readonly, &bad).is_err());
+                    }
+                }
+            }
+            selected.insert(role.into(), address);
+            transfers.insert(role.into(), witness.edges.clone());
+            witnesses.insert(role.into(), witness);
+        }
+        DetcorePublicationControlGraph {
+            witnesses,
+            transfers,
+            selected,
+            targets,
+        }
+    }
+
+    #[test]
+    fn observed_specialized_detcore_publication_family() {
+        let check = |g: &DetcorePublicationControlGraph| {
+            fixed_detcore_publication_cohort(&g.witnesses, &g.transfers, &g.selected, &g.targets)?;
+            fixed_detcore_full_result_contract(&g.witnesses, &g.transfers, &g.selected, &g.targets)
+        };
+        let graph = detcore_specialized_control_graph();
+        check(&graph).unwrap();
+        for &(role, _) in &DETCORE_SPECIALIZED_COHORT {
+            let mut bad = detcore_specialized_control_graph();
+            bad.witnesses.remove(role);
+            assert!(check(&bad).is_err(), "missing {role}");
+        }
+        // Each substituted old caller/callee is independently whole-body/census
+        // authenticated, but it cannot enter the specialized no-receiver ABI.
+        for role in [
+            "fixed_constructor_prepare",
+            "fixed_generic_prepare",
+            "fixed_region_publication_set",
+            "fixed_tool_dealloc",
+            "fixed_tool_realloc",
+        ] {
+            let mut old = detcore_publication_control_graph(31, false);
+            let mut bad = detcore_specialized_control_graph();
+            let witness = old.witnesses.remove(role).unwrap();
+            bad.selected.insert(role.into(), witness.address);
+            bad.targets.insert(role.into(), witness.address);
+            bad.transfers.insert(role.into(), witness.edges.clone());
+            bad.witnesses.insert(role.into(), witness);
+            assert!(check(&bad).is_err(), "mixed {role}");
+        }
+        let mut bad = detcore_specialized_control_graph();
+        let role = "fixed_region_publication_get";
+        let address = bad.selected[role];
+        let bytes = fixed_hex("0fb64f1831c084c9480f45c7c3");
+        let offsets = [0, 4, 6, 8, 12];
+        let ins: Vec<_> = offsets
+            .iter()
+            .enumerate()
+            .map(|(i, &at)| EncodedConstructorInstruction {
+                address: address + at as u64,
+                bytes: bytes[at..offsets.get(i + 1).copied().unwrap_or(bytes.len())].to_vec(),
+            })
+            .collect();
+        let witness = fixed_detcore_qualified_operation(
+            role,
+            address,
+            (&bytes, &ins),
+            DetcoreRecipeBindings {
+                targets: &bad.targets,
+                got: &BTreeMap::new(),
+                readonly: &BTreeMap::new(),
+                context: &BTreeMap::new(),
+            },
+            0xe0,
+            false,
+        )
+        .unwrap();
+        bad.transfers.insert(role.into(), witness.edges.clone());
+        bad.witnesses.insert(role.into(), witness);
+        assert!(check(&bad).is_err(), "mixed receiver-based getter");
+        let mut specialized = detcore_specialized_control_graph();
+        let mut old = detcore_publication_control_graph(0, false);
+        let witness = specialized
+            .witnesses
+            .remove("fixed_region_publication_get")
+            .unwrap();
+        old.selected.insert(witness.role.clone(), witness.address);
+        old.targets.insert(witness.role.clone(), witness.address);
+        old.transfers
+            .insert(witness.role.clone(), witness.edges.clone());
+        old.witnesses.insert(witness.role.clone(), witness);
+        assert!(check(&old).is_err(), "specialized getter with old callers");
+        for mode in 0..3 {
+            let mut bad = detcore_specialized_control_graph();
+            let caller = bad.witnesses.get_mut("fixed_constructor_prepare").unwrap();
+            match mode {
+                0 => {
+                    caller.edges.remove(1);
+                }
+                1 => {
+                    caller.edges.push(caller.edges[1].clone());
+                }
+                _ => {
+                    caller.edges[1].instruction += 1;
+                }
+            }
+            // Even matching public and private census vectors cannot remove,
+            // duplicate or shift the exact direct constructor+110 setter call.
+            bad.transfers
+                .insert("fixed_constructor_prepare".into(), caller.edges.clone());
+            assert!(check(&bad).is_err(), "setter census mode {mode}");
+        }
+
+        for field in ["fixed_region", "fixed_region_ready", "fixed_region_value16"] {
+            let mut bad = detcore_specialized_control_graph();
+            *bad.targets.get_mut(field).unwrap() += 1;
+            assert!(check(&bad).is_err(), "publication field {field}");
+        }
+        for role in [
+            "fixed_constructor_prepare",
+            "fixed_generic_prepare",
+            "fixed_tool_heap",
+            "fixed_tool_alloc",
+            "fixed_native_from_native",
+        ] {
+            let mut bad = detcore_specialized_control_graph();
+            bad.transfers.get_mut(role).unwrap()[0].instruction += 1;
+            assert!(check(&bad).is_err(), "census {role}");
+        }
+        for target in [
+            "fixed_region_publication_get",
+            "fixed_tool_heap",
+            "fixed_region_publication_set",
+        ] {
+            let mut bad = detcore_specialized_control_graph();
+            bad.transfers.insert(
+                "unqualified_extra_caller".into(),
+                vec![ConstructorTransfer {
+                    instruction: 1,
+                    target: bad.selected[target],
+                    local_got_slot: None,
+                }],
+            );
+            assert!(check(&bad).is_err(), "extra caller {target}");
+        }
+        let mut bad = detcore_specialized_control_graph();
+        bad.witnesses.get_mut("fixed_arena_setup").unwrap().kind =
+            AuthenticatedDetcoreOperationKind::ValidateTemplate(23);
+        assert!(
+            check(&bad).is_err(),
+            "full EAX requires exact three-band setup"
+        );
     }
 
     fn detcore_publication_cohort_controls() {
