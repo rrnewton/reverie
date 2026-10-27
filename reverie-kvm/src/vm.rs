@@ -71,6 +71,7 @@ use crate::bootstrap::stage_process_syscall_return;
 use crate::bootstrap::syscall_hypercall_address;
 use crate::bootstrap::thread_tool_stack_top;
 use crate::bootstrap::try_set_syscall_return_park;
+use crate::clock::StepMode;
 use crate::elf::LoadedStaticElf;
 use crate::elf::TaskLifecycleTable;
 use crate::elf::initial_thread_name;
@@ -110,6 +111,7 @@ use crate::signal::Ucontext;
 use crate::signal::XsaveImage;
 use crate::stats::KvmBackendStats;
 use crate::stats::KvmExitCollector;
+use crate::step_filter::StepClass;
 use crate::syscall::FRAME_SIZE;
 use crate::syscall::RETURN_FLAGS_WORD;
 use crate::syscall::RETURN_RIP_WORD;
@@ -1929,6 +1931,31 @@ pub struct KvmBackend {
     /// as an issue in the dev-hermit parent repository, at
     /// ai_docs/evidence/kvm-kernel-trait-design-20261016/pending-issue-reverie-kvm-segment-slot.md.
     pending_segment: Option<(SegmentBase, u64)>,
+    /// What the stepping engine does after the single step it set up for the
+    /// next entry ends with its `Debug` exit (see `prepare_timer_steps`).
+    pending_step: Option<PendingStep>,
+}
+
+/// A repair the stepping engine makes after a single step.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum PendingStep {
+    /// The step ran PUSHF: clear the trap flag it pushed.
+    ClearPushedTrapFlag,
+    /// The step ran POPF or IRETQ, which replaced the trap flag: set
+    /// stepping again.
+    Reissue,
+}
+
+/// RFLAGS' trap flag.
+const TRAP_FLAG: u64 = 1 << 8;
+
+/// The refusal of a guest that would set its own trap flag while a precise
+/// timer event single-steps it: the steps take the flag over.
+fn guest_trap_flag(rip: u64) -> Error {
+    Error::GuestClock(format!(
+        "preemption timer: the guest sets its own trap flag at {rip:#x} while a precise \
+         timer event single-steps it, which this backend does not support"
+    ))
 }
 
 struct CompletedToolPanic {
@@ -2260,6 +2287,7 @@ impl KvmBackend {
             exit_collector: None,
             abandoned_runs: Arc::default(),
             pending_segment: None,
+            pending_step: None,
         })
     }
 
@@ -4823,6 +4851,153 @@ impl KvmBackend {
             code_segment: crate::signal::USER_CODE_SELECTOR,
             stack_segment: crate::signal::USER_DATA_SELECTOR,
         })))
+    }
+
+    /// Sets up the next entry for an armed precise timer request within its
+    /// stepping window (see `preemption_timer.rs`); outside it, the entry
+    /// runs unstepped and nothing is read. Each entry either single-steps one
+    /// user instruction, runs unstepped to a user instruction where a
+    /// breakpoint takes the guest back, or runs unstepped to an exit that
+    /// comes before any user instruction can retire a branch:
+    /// - In user mode the instruction at RIP decides (see
+    ///   [`crate::step_filter::classify`]). A step that loads RFLAGS is
+    ///   refused if the image it loads sets the trap flag: the guest cannot
+    ///   use TF while it is stepped.
+    /// - In the syscall trampoline at its VMCALL, the entry runs to the user
+    ///   instruction the trampoline returns to, which the syscall frame
+    ///   names: the return of a syscall that made no Tool callback has no
+    ///   exit of its own.
+    /// - Anywhere else in ring 0 (the trampoline before its VMCALL, an
+    ///   exception stub before its HLT) it runs unstepped: that exit comes
+    ///   first.
+    pub(crate) fn prepare_timer_steps(&mut self) -> Result<()> {
+        self.pending_step = None;
+        if !self.vcpu.timer_stepping() {
+            return Ok(());
+        }
+        let special = self.vcpu.get_sregs()?;
+        let registers = self.vcpu.get_regs()?;
+        let mode = if special.cs.dpl == 3 {
+            let mut code = crate::step_filter::InstructionBytes::default();
+            let fetched = crate::timestamp::fetch_user_code(
+                &self.memory,
+                special.cr3,
+                registers.rip,
+                &mut code.0[..crate::step_filter::MAX_INSTRUCTION_BYTES],
+            );
+            match crate::step_filter::classify(&code.0[..fetched], registers.rip) {
+                StepClass::Step => StepMode::Step,
+                StepClass::PushFlags => {
+                    self.pending_step = Some(PendingStep::ClearPushedTrapFlag);
+                    StepMode::Step
+                }
+                StepClass::PopFlags { offset } => {
+                    // The image's bit 8, the trap flag, is bit 0 of its
+                    // second byte, whatever its width. An unreadable image
+                    // makes the instruction fault instead of loading it.
+                    let mut flags = [0];
+                    let read = self
+                        .memory
+                        .user()
+                        .read(registers.rsp.wrapping_add(offset + 1), &mut flags);
+                    if read.is_ok() && flags[0] & 1 != 0 {
+                        return Err(guest_trap_flag(registers.rip));
+                    }
+                    self.pending_step = Some(PendingStep::Reissue);
+                    StepMode::Step
+                }
+                StepClass::RunOver { length } => StepMode::RunTo(registers.rip + length),
+                StepClass::Unstepped => StepMode::Off,
+            }
+        } else {
+            let hypercall = syscall_hypercall_address(
+                self.hypercall_instruction,
+                self.syscall_trampoline_address,
+                self.syscall_frame_address,
+            );
+            if [
+                hypercall,
+                hypercall + self.hypercall_instruction.len() as u64,
+            ]
+            .contains(&registers.rip)
+            {
+                StepMode::RunTo(crate::bootstrap::breakpoint_staged_return(
+                    &self.memory,
+                    self.syscall_frame_address,
+                )?)
+            } else {
+                StepMode::Off
+            }
+        };
+        // Outside a step, the guest's own trap flag is what RFLAGS shows; a
+        // step would take it over, and turning stepping off would drop it.
+        if mode == StepMode::Step
+            && self.vcpu.last_step_mode().0 != StepMode::Step
+            && registers.rflags & TRAP_FLAG != 0
+        {
+            return Err(guest_trap_flag(registers.rip));
+        }
+        self.vcpu.step_next_entry(mode);
+        Ok(())
+    }
+
+    /// Finishes the `Debug` exit of an entry that `prepare_timer_steps` set
+    /// up: a single step's (the trap of KVM's single step, DR6.BS), after
+    /// which the repair it named is made, or a breakpoint's at the address
+    /// the entry ran to (DR6.B0). Any other is refused.
+    pub(crate) fn finish_timer_step(
+        &mut self,
+        debug: kvm_bindings::kvm_debug_exit_arch,
+    ) -> Result<()> {
+        const SINGLE_STEP: u64 = 1 << 14;
+        const BREAKPOINT_0: u64 = 1;
+        match self.vcpu.last_step_mode().0 {
+            StepMode::Step if debug.dr6 & SINGLE_STEP != 0 => {
+                match self.pending_step.take() {
+                    Some(PendingStep::ClearPushedTrapFlag) => {
+                        // The trap flag of the image PUSHF pushed, of either
+                        // width: bit 0 of its second byte.
+                        let address = self.vcpu.get_regs()?.rsp + 1;
+                        let mut byte = [0];
+                        self.memory.user().read(address, &mut byte)?;
+                        byte[0] &= !1;
+                        self.memory.user().write(address, &byte)?;
+                    }
+                    Some(PendingStep::Reissue) => self.vcpu.reissue_step(),
+                    None => {}
+                }
+                Ok(())
+            }
+            StepMode::RunTo(address) if debug.dr6 & BREAKPOINT_0 != 0 && debug.pc == address => {
+                Ok(())
+            }
+            _ => Err(Error::UnexpectedVcpuExit(format!(
+                "debug exit outside a timer step: {debug:?}"
+            ))),
+        }
+    }
+
+    /// Clears the trap flag a single step left in the frame of the exception
+    /// that ended it, before anything reads or resumes that frame: the CPU
+    /// pushed RFLAGS with the step's TF, which is not the guest's. The
+    /// exception (a page fault, a general protection fault, ...) is the
+    /// guest's own and reaches the Tool as before, which cancels the timer
+    /// request. Does nothing after an entry that did not step.
+    pub(crate) fn scrub_stepped_exception_frame(&mut self) -> Result<()> {
+        if !self.vcpu.last_step_mode().1 {
+            return Ok(());
+        }
+        let halted = self.vcpu.get_regs()?;
+        let Some(vector) = exception_from_halt(halted.rip) else {
+            return Ok(());
+        };
+        // An optional error code, then RIP, CS, RFLAGS, RSP and SS.
+        let first = u64::from(exception_pushes_error_code(vector));
+        let address = halted.rsp + (first + 2) * std::mem::size_of::<u64>() as u64;
+        let mut flags = [0; std::mem::size_of::<u64>()];
+        self.memory.read_raw(address, &mut flags)?;
+        let flags = u64::from_le_bytes(flags) & !TRAP_FLAG;
+        self.memory.write_raw(address, &flags.to_le_bytes())
     }
 
     fn cpuid_instruction_exception(&self) -> Result<Option<CpuidBoundary>> {
