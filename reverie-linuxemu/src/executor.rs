@@ -8227,6 +8227,105 @@ mod tests {
         }
     }
 
+    /// A stream read that fills one vector and faults partway through the
+    /// next returns the first vector's count; the chunk it was copying when it
+    /// faulted is not counted and stays queued, but the bytes it copied before
+    /// the fault stay in the faulting vector (unix_stream_read_generic).
+    #[test]
+    fn vectored_reads_publish_bytes_copied_before_a_later_fault() {
+        const IOV: u64 = 0x400;
+        const VALID: u64 = 0x2100;
+        const CROSSING: u64 = 0x2ffc;
+        let first = *b"ABCD";
+        let payload = 0x0807_0605_0403_0201_u64.to_ne_bytes();
+
+        // Two sends queue two chunks. The read's first vector takes the
+        // first; the second vector has 4 writable bytes before the fault.
+        let native_endpoint = native_vectored_endpoint(VectoredFaultEndpoint::Stream);
+        // SAFETY: writer is live and first is readable.
+        assert_eq!(
+            unsafe { libc::write(native_endpoint.writer.as_raw_fd(), first.as_ptr().cast(), 4) },
+            4
+        );
+        seed_native_endpoint(&native_endpoint, &payload);
+        let native_buffer = NativeFaultBuffer::new();
+        let mut native_iovecs = [
+            libc::iovec {
+                iov_base: native_buffer.later.cast(),
+                iov_len: 4,
+            },
+            libc::iovec {
+                iov_base: native_buffer.crossing.cast(),
+                iov_len: 8,
+            },
+        ];
+        let native_result = raw_vectored_call(
+            libc::SYS_readv,
+            native_endpoint.reader.as_raw_fd(),
+            &mut native_iovecs,
+        );
+        let mut native_valid = [0; 4];
+        // SAFETY: later's four bytes lie in the live first page.
+        unsafe { std::ptr::copy_nonoverlapping(native_buffer.later, native_valid.as_mut_ptr(), 4) };
+        let native = (
+            native_result,
+            native_valid,
+            native_buffer.prefix(),
+            read_native_endpoint(&native_endpoint),
+        );
+        assert_eq!(native.0, 4, "only the first chunk is counted");
+        assert_eq!(native.1, first);
+        assert_eq!(
+            native.2,
+            payload[..4],
+            "the faulting chunk's first bytes stay"
+        );
+        assert_eq!(native.3, (8, payload), "the faulting chunk stays queued");
+
+        let root = TestDir::new();
+        let mut state = test_state(&root.0);
+        let mut memory = GuestMemory::new(0, 0x5000).unwrap();
+        let (reader, writer) =
+            guest_vectored_endpoint(VectoredFaultEndpoint::Stream, &mut memory, &mut state);
+        for bytes in [&first[..], &payload[..]] {
+            // SAFETY: writer is a translated live host descriptor.
+            assert_eq!(
+                unsafe {
+                    libc::write(
+                        state.files[&writer].as_raw_fd(),
+                        bytes.as_ptr().cast(),
+                        bytes.len(),
+                    )
+                },
+                bytes.len() as isize
+            );
+        }
+        memory.write(VALID, b"yyyy").unwrap();
+        memory.write(CROSSING, b"xxxx").unwrap();
+        write_guest_iovecs(&mut memory, IOV, &[(VALID, 4), (CROSSING, 8)]);
+        memory.enable_user_access();
+        memory.map_user_range(IOV, PAGE_SIZE, false).unwrap();
+        memory.map_user_range(CROSSING, 4, false).unwrap();
+        let result = syscall_result(
+            &mut memory,
+            &mut state,
+            libc::SYS_readv,
+            [reader as u64, IOV, 2, 0, 0, 0],
+        );
+        let mut valid = [0; 4];
+        memory.read(VALID, &mut valid).unwrap();
+        let mut prefix = [0; 4];
+        memory.read(CROSSING, &mut prefix).unwrap();
+        let endpoint = NativeVectoredEndpoint {
+            reader: state.files[&reader].try_clone().unwrap(),
+            writer: state.files[&writer].try_clone().unwrap(),
+        };
+        assert_eq!(
+            (result, valid, prefix, read_native_endpoint(&endpoint)),
+            native
+        );
+    }
+
     #[test]
     fn vectored_fault_shape_retains_later_iovecs() {
         const IOV: u64 = 0x400;

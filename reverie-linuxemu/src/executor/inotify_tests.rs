@@ -620,6 +620,103 @@ mod inotify_tests {
         assert_eq!(queued(host), 0);
     }
 
+    /// A readv that fills its first iovec and faults in the second returns
+    /// the first iovec's count, and the record copied into the second before
+    /// the fault stays there, as natively: inotify has no read_iter, so each
+    /// iovec is read on its own (do_loop_readv_writev).
+    #[test]
+    fn inotify_readv_faulting_in_a_later_iovec_matches_native() {
+        const IOV: u64 = 0x800;
+        let root = TestDir::new();
+        let mut state = test_state(&root.0);
+        let native = native_instance();
+        let fd = {
+            let mut memory = GuestMemory::new(0, 4 * PAGE_SIZE as usize).unwrap();
+            let fd = create(&mut state, &mut memory) as u64;
+            assert_eq!(
+                add_watch(
+                    &mut state,
+                    &mut memory,
+                    fd,
+                    root.0.as_os_str().as_bytes(),
+                    libc::IN_CREATE
+                ),
+                native_watch(&native, &root.0, libc::IN_CREATE)
+            );
+            fd
+        };
+        let host = host_fd(&state, fd as i32).unwrap();
+        // Three 32-byte IN_CREATE records.
+        for name in ["alpha", "bravo", "charlie"] {
+            std::fs::File::create(root.0.join(name)).unwrap();
+        }
+        assert_eq!(queued(host), 96);
+        // The first iovec takes one record; the second has 40 writable bytes
+        // before guest page 2, which is inaccessible.
+        let writable = 40;
+        let edge = 2 * PAGE_SIZE - writable as u64;
+        let mut memory = GuestMemory::new(0, 4 * PAGE_SIZE as usize).unwrap();
+        memory.enable_user_access();
+        memory.map_user_range(0, 2 * PAGE_SIZE, false).unwrap();
+        memory
+            .map_user_range(2 * PAGE_SIZE, PAGE_SIZE, true)
+            .unwrap();
+        memory.write_raw(BUFFER, &[0xa5; 32]).unwrap();
+        memory.write_raw(edge, &vec![0xa5; writable]).unwrap();
+        let mut iovecs = Vec::new();
+        for (base, length) in [(BUFFER, 32_u64), (edge, 64)] {
+            iovecs.extend_from_slice(&base.to_ne_bytes());
+            iovecs.extend_from_slice(&length.to_ne_bytes());
+        }
+        memory.write_raw(IOV, &iovecs).unwrap();
+        let guest_result = syscall_result(
+            &mut memory,
+            &mut state,
+            libc::SYS_readv,
+            [fd, IOV, 2, 0, 0, 0],
+        );
+        let mut guest_first = vec![0_u8; 32];
+        memory.read(BUFFER, &mut guest_first).unwrap();
+        let mut guest_edge = vec![0_u8; writable];
+        memory.read(edge, &mut guest_edge).unwrap();
+
+        let native_fault = NativeFaultBuffer::new();
+        let mut native_first = vec![0xa5_u8; 32];
+        // SAFETY: the writable prefix lies in the native buffer's first page.
+        let native_edge = unsafe { native_fault.invalid.sub(writable) };
+        // SAFETY: only the live writable prefix is initialized.
+        unsafe { std::ptr::write_bytes(native_edge, 0xa5, writable) };
+        let native_iovecs = [
+            libc::iovec {
+                iov_base: native_first.as_mut_ptr().cast(),
+                iov_len: 32,
+            },
+            libc::iovec {
+                iov_base: native_edge.cast(),
+                iov_len: 64,
+            },
+        ];
+        // SAFETY: both iovecs are live; the second's protected suffix is
+        // intentional, so the kernel performs the copy rather than Rust.
+        let native_result = unsafe { libc::readv(native.as_raw_fd(), native_iovecs.as_ptr(), 2) };
+        let native_result = if native_result < 0 {
+            io_error(std::io::Error::last_os_error())
+        } else {
+            native_result as i64
+        };
+        let mut native_edge_bytes = vec![0_u8; writable];
+        // SAFETY: copy only the writable prefix, never the protected page.
+        unsafe {
+            std::ptr::copy_nonoverlapping(native_edge, native_edge_bytes.as_mut_ptr(), writable)
+        };
+        assert_eq!(native_result, 32);
+        assert_ne!(native_edge_bytes, vec![0xa5_u8; writable], "Linux wrote the second iovec");
+        assert_eq!(
+            (guest_result, guest_first, guest_edge, queued(host)),
+            (native_result, native_first, native_edge_bytes, queued(native.as_raw_fd()))
+        );
+    }
+
     #[test]
     fn inotify_rename_cookies_are_the_host_s_and_paired() {
         let root = TestDir::new();
