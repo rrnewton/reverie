@@ -24037,9 +24037,80 @@ fn fixed_scalar_publication_cohort(
     Ok(())
 }
 
-// The native wrapper factory proves a different complete syscall family from
-// the ordinary raw wrappers. Couple that actual factory state to the observed
-// complete caller; publication leaf identities alone must not select a mode.
+// The ordinary allocator-fixture image also emits the complete 344-byte
+// caller: its TEST AL,1 consumes the same setup291 result (exclusively EAX=0/1)
+// as the ordinary 345-byte caller's CMP EAX,1. That compiler choice does not
+// select a syscall family. Require the independently authenticated ordinary
+// wrapper and all three exact direct edges before admitting this composition.
+fn fixed_scalar_ordinary_bit_result(
+    witnesses: &BTreeMap<String, AuthenticatedDetcoreOperation>,
+) -> Result<()> {
+    let raw = witnesses
+        .get("fixed_scalar_syscall")
+        .filter(|w| {
+            w.role == "fixed_scalar_syscall"
+                && w.kind == AuthenticatedDetcoreOperationKind::ValidateTemplate(26)
+                && w.address != 0
+                && w.scalar_storage.is_none()
+                && w.edges.len() == 1
+                && w.address.checked_add(15) == Some(w.edges[0].instruction)
+                && w.edges[0].local_got_slot.is_some()
+                && w.edges[0].target != 0
+                && w.edges[0].target != w.address
+        })
+        .ok_or("scalar bit-result caller lacks authenticated ordinary syscall wrapper")?;
+    let mut addresses = BTreeSet::from([raw.address, raw.edges[0].target]);
+    for (role, index, offsets) in [
+        ("fixed_native_from_native", 63, &[110][..]),
+        (
+            "fixed_arena_setup",
+            DETCORE_THREE_BAND_SETUP,
+            &[134, 166][..],
+        ),
+    ] {
+        let caller = witnesses
+            .get(role)
+            .filter(|w| {
+                w.role == role
+                    && w.kind == AuthenticatedDetcoreOperationKind::ValidateTemplate(index)
+                    && w.address != 0
+            })
+            .ok_or("ordinary scalar syscall edge lacks complete caller witness")?;
+        require(
+            addresses.insert(caller.address),
+            "ordinary scalar syscall roles alias",
+        )?;
+        let expected: Vec<_> = offsets
+            .iter()
+            .map(|offset| {
+                caller
+                    .address
+                    .checked_add(*offset)
+                    .map(|instruction| ConstructorTransfer {
+                        instruction,
+                        target: raw.address,
+                        local_got_slot: None,
+                    })
+                    .ok_or("ordinary scalar syscall edge overflows")
+            })
+            .collect::<std::result::Result<_, _>>()?;
+        let actual: Vec<_> = caller
+            .edges
+            .iter()
+            .filter(|edge| edge.target == raw.address)
+            .cloned()
+            .collect();
+        require(
+            actual == expected,
+            "ordinary scalar syscall edges differ from the complete caller/setup pair",
+        )?;
+    }
+    Ok(())
+}
+
+// The native wrapper factory and the ordinary whole-wrapper recipe retain
+// independent physical proofs. A caller's Result encoding cannot substitute
+// for either one; publication leaf identities alone never select a mode.
 fn fixed_scalar_publication_syscall_mode(
     witnesses: &BTreeMap<String, AuthenticatedDetcoreOperation>,
     image_kind: FixedImageKind,
@@ -24049,6 +24120,30 @@ fn fixed_scalar_publication_syscall_mode(
         .get("fixed_native_from_native")
         .ok_or("scalar syscall mode lacks authenticated complete caller")?
         .kind;
+    if let Some(raw) = witnesses.get("fixed_scalar_syscall") {
+        require(
+            raw.role == "fixed_scalar_syscall"
+                && matches!(
+                    (native_syscalls, raw.kind),
+                    (true, AuthenticatedDetcoreOperationKind::NativeFixedSyscall3)
+                        | (
+                            false,
+                            AuthenticatedDetcoreOperationKind::ValidateTemplate(26)
+                        )
+                ),
+            "scalar syscall witness differs from its physical factory",
+        )?;
+    }
+    if matches!(
+        (image_kind, native_syscalls, kind),
+        (
+            FixedImageKind::Detcore,
+            false,
+            AuthenticatedDetcoreOperationKind::ValidateTemplate(63)
+        )
+    ) {
+        return fixed_scalar_ordinary_bit_result(witnesses);
+    }
     require(
         matches!(
             (image_kind, native_syscalls, kind),
@@ -51301,6 +51396,170 @@ mod tests {
                 .is_err(),
                 "scalar {scalar_role} in historical family"
             );
+        }
+    }
+
+    // Independent fixture57 ELF 9cf626b49e6f83b74e1d3ff4ea54cb366bcfd8aed770104c94631c9712046f28:
+    // caller63 at 0xb1a6b0 (344B), raw26 at 0xb0d1c0 (23B), setup24 (291B).
+    // All twelve publication bodies match the existing complete scalar tuple;
+    // the caller's bit test is not evidence of native syscall wrappers.
+    fn scalar_ordinary_bit_result_control_graph(mutations: bool) -> DetcorePublicationControlGraph {
+        let mut graph = scalar_publication_control_graph(true, mutations);
+        let role = "fixed_scalar_syscall";
+        let address = graph.targets[role];
+        let mut bytes = fixed_hex("5048c70424000000004531c04531c9ff15636e130059c3");
+        let offsets = [0, 1, 9, 12, 15, 21, 22];
+        let slot = 0x300020_u64;
+        let trusted = 0x200a00_u64;
+        let displacement = i32::try_from(i128::from(slot) - i128::from(address) - 21).unwrap();
+        bytes[17..21].copy_from_slice(&displacement.to_le_bytes());
+        graph
+            .targets
+            .insert("reverie_inguest_trusted_syscall".into(), trusted);
+        let got = BTreeMap::from([(slot, trusted)]);
+        let check = |body: &[u8], got: &BTreeMap<u64, u64>| {
+            let instructions: Vec<_> = offsets
+                .iter()
+                .enumerate()
+                .map(|(i, &start)| {
+                    let end = offsets.get(i + 1).copied().unwrap_or(body.len());
+                    EncodedConstructorInstruction {
+                        address: address + start as u64,
+                        bytes: body[start..end].to_vec(),
+                    }
+                })
+                .collect();
+            fixed_detcore_qualified_operation(
+                role,
+                address,
+                (body, &instructions),
+                DetcoreRecipeBindings {
+                    targets: &graph.targets,
+                    got,
+                    readonly: &BTreeMap::new(),
+                    context: &BTreeMap::new(),
+                },
+                0,
+                false,
+            )
+        };
+        let raw = check(&bytes, &got).unwrap();
+        assert_eq!(
+            raw.kind,
+            AuthenticatedDetcoreOperationKind::ValidateTemplate(26)
+        );
+        if mutations {
+            for i in 0..bytes.len() {
+                let mut bad = bytes.clone();
+                bad[i] ^= 1;
+                assert!(check(&bad, &got).is_err(), "ordinary wrapper byte {i}");
+            }
+            assert!(check(&bytes, &BTreeMap::new()).is_err());
+            assert!(check(&bytes, &BTreeMap::from([(slot, trusted + 1)])).is_err());
+        }
+        graph.selected.insert(role.into(), address);
+        graph.transfers.insert(role.into(), raw.edges.clone());
+        graph.witnesses.insert(role.into(), raw);
+        graph
+    }
+
+    #[test]
+    fn ordinary_fixture_bit_result_requires_the_actual_syscall_family() {
+        let check = |graph: &DetcorePublicationControlGraph| -> Result<()> {
+            fixed_scalar_publication_syscall_mode(
+                &graph.witnesses,
+                FixedImageKind::Detcore,
+                false,
+            )?;
+            fixed_scalar_publication_cohort(
+                &graph.witnesses,
+                &graph.transfers,
+                &graph.selected,
+                &graph.targets,
+                FixedImageKind::Detcore,
+            )?;
+            fixed_detcore_full_result_contract(
+                &graph.witnesses,
+                &graph.transfers,
+                &graph.selected,
+                &graph.targets,
+            )
+        };
+        let graph = scalar_ordinary_bit_result_control_graph(true);
+        check(&graph).unwrap();
+        assert!(
+            fixed_scalar_publication_syscall_mode(&graph.witnesses, FixedImageKind::Detcore, true,)
+                .is_err()
+        );
+        assert!(
+            fixed_scalar_publication_syscall_mode(
+                &graph.witnesses,
+                FixedImageKind::Standalone,
+                false,
+            )
+            .is_err()
+        );
+        for mode in 0..8 {
+            let mut bad = scalar_ordinary_bit_result_control_graph(false);
+            let raw = bad.witnesses.get_mut("fixed_scalar_syscall").unwrap();
+            match mode {
+                0 => {
+                    raw.kind = AuthenticatedDetcoreOperationKind::NativeFixedSyscall3;
+                }
+                1 => {
+                    raw.kind = AuthenticatedDetcoreOperationKind::ValidateTemplate(0);
+                }
+                2 => {
+                    raw.address += 1;
+                }
+                3 => {
+                    raw.edges.clear();
+                }
+                4 => {
+                    raw.edges.push(raw.edges[0].clone());
+                }
+                5 => {
+                    raw.edges[0].local_got_slot = None;
+                }
+                6 => {
+                    raw.role = "another wrapper".into();
+                }
+                _ => {
+                    bad.witnesses.remove("fixed_scalar_syscall");
+                }
+            }
+            assert!(check(&bad).is_err(), "ordinary wrapper witness {mode}");
+        }
+        for role in ["fixed_native_from_native", "fixed_arena_setup"] {
+            for mode in 0..5 {
+                let mut bad = scalar_ordinary_bit_result_control_graph(false);
+                let target = bad.witnesses["fixed_scalar_syscall"].address;
+                let caller = bad.witnesses.get_mut(role).unwrap();
+                let index = caller
+                    .edges
+                    .iter()
+                    .position(|e| e.target == target)
+                    .unwrap();
+                match mode {
+                    0 => {
+                        caller.edges.remove(index);
+                    }
+                    1 => {
+                        caller.edges.push(caller.edges[index].clone());
+                    }
+                    2 => {
+                        caller.edges[index].instruction += 1;
+                    }
+                    3 => {
+                        caller.edges[index].target += 1;
+                    }
+                    _ => {
+                        caller.edges[index].local_got_slot = Some(0x300020);
+                    }
+                }
+                bad.transfers.insert(role.into(), caller.edges.clone());
+                assert!(check(&bad).is_err(), "ordinary direct edge {role}/{mode}");
+            }
         }
     }
 
