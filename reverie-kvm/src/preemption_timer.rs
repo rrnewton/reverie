@@ -45,17 +45,17 @@
 //! Between the overflow and the exit that the kick causes, the guest keeps
 //! running for the interrupt's latency (the skid), so a precise request is
 //! first programmed one skid margin short of its target. From that close to
-//! the target, the event is programmed at the target itself: this backend
-//! cannot yet run the guest to the exact count, so the next kick lands at or
-//! after the target.
+//! the target, the guest is single-stepped to it (see below), and the event
+//! is programmed at the target itself, for the stretches that run unstepped.
 //!
 //! An exit that finds a precise request's target reached is late, even at
-//! exactly the target: an asynchronous exit does not stop the guest at the
-//! instruction boundary right after the target branch, and non-branch
-//! instructions may have run past it. Such an exit is recorded as every
-//! backend records a late timer event: the canonical
-//! [`reverie::SKID_OVERSHOOT_MARKER`] line and the process-global witness
-//! count.
+//! exactly the target, unless it ended a single step that retired the target
+//! branch: an asynchronous exit does not stop the guest at the instruction
+//! boundary right after the target branch, and non-branch instructions may
+//! have run past it. Such an exit is recorded as every backend records a late
+//! timer event: the canonical [`reverie::SKID_OVERSHOOT_MARKER`] line and the
+//! process-global witness count. It is delivered at the clock it found, as
+//! reverie-ptrace delivers an event its notification overshot.
 //!
 //! A kick never interrupts a host call. The interrupt behind a kick can be
 //! held past the exit it would have caused, even across several further
@@ -121,9 +121,10 @@
 //!   with, before a pending signal is selected there: so a guest that makes
 //!   such syscalls faster than a kick lands gets its event within a syscall
 //!   of the target. There `orig_rax` reads -1, where reverie-ptrace shows the
-//!   syscall's number. Found due anywhere else, it is armed again at its
-//!   target (see `KvmBackend::timer_instruction_boundary` for where that
-//!   happens).
+//!   syscall's number. At an `rt_sigreturn` it runs likewise, with the user
+//!   registers that call restores. Found due anywhere else (by a kick that
+//!   stopped the guest in ring 0), it is armed again at its target (see
+//!   `KvmBackend::timer_instruction_boundary`).
 //! - The callback can inject syscalls that return, and exits. A process
 //!   action, a tail injection other than an exit, a signal that needs a
 //!   syscall return frame, or an `rt_sigprocmask` that would make a pending
@@ -137,11 +138,57 @@
 //!   returns its `EINVAL` or `EFAULT`, and one that makes no pending signal
 //!   deliverable runs as usual.
 //!
-//! `KvmGuest::set_timer_precise` is refused with an `Unsupported` error:
-//! delivery at an exact count needs single steps to that count, which this
-//! backend does not take yet. `BackendCapabilities::KVM` keeps
-//! `delivers_preemption_timer_events` false, so no Tool can rely on a timer
-//! event from this backend.
+//! `KvmGuest::set_timer_precise` requests a precise event
+//! ([`TimerKind::Precise`]), delivered exactly when the clock reaches its
+//! target, at the instruction boundary right after the target branch:
+//! - The schedule maps as for `set_timer`, except that `RcbsAndInstructions`
+//!   is refused with an `Unsupported` error: this backend does not step
+//!   instructions past the count. A request is staged as reverie-ptrace
+//!   stages one ([`reverie::pmu_config::PmuConfig::stages`]): one longer than
+//!   the first stage margin plus [`SINGLESTEP_TIMEOUT_RCBS`] is programmed
+//!   one first stage margin short of its target, and the first exit at or
+//!   past that point sizes the second stage margin from the RCBs and the host
+//!   time (`CLOCK_MONOTONIC`) since the request. Any other is programmed one
+//!   skid margin short. Staging changes where the last kick comes, never
+//!   where the event is delivered.
+//! - Once the clock is no more than the margin plus
+//!   [`SINGLESTEP_TIMEOUT_RCBS`] short of the target, every entry runs under
+//!   KVM's guest debugging (`KvmBackend::prepare_timer_steps`): it
+//!   single-steps one user instruction (`KVM_GUESTDBG_SINGLESTEP`, one
+//!   `KVM_SET_GUEST_DEBUG` for a whole run of steps), or runs unstepped up
+//!   to a user instruction where an execution breakpoint
+//!   (`KVM_GUESTDBG_USE_HW_BP`) takes it back, or runs unstepped to an exit
+//!   that comes before any user instruction. A step retires at most one
+//!   conditional branch, so the first step that leaves the clock at the
+//!   target stops the guest exactly at the boundary after the target branch,
+//!   which is the same boundary in every run whichever instruction the steps
+//!   started from. The request is due on time there, and the next iteration
+//!   delivers it with the live registers.
+//! - The trap flag (TF) a step sets is in the guest's real RFLAGS, so
+//!   iced-x86 decodes the instruction at RIP first, and no instruction that
+//!   saves or loads RFLAGS is stepped (see `step_filter::StepClass` for each
+//!   kind). PUSHF and POPF run natively to a breakpoint on the next
+//!   instruction, with no check before them that another thread could
+//!   outrun; a guest whose POPF or `rt_sigreturn` loads its own TF is
+//!   refused by name there, before its next instruction, as are IRETQ and a
+//!   load of SS anywhere in the window. A fault during a step leaves TF in
+//!   the frame the CPU pushed; the frame loses it before anything reads it
+//!   (`KvmBackend::scrub_stepped_exception_frame`), even when a host
+//!   interrupt ends the entry inside the exception stub ([`SteppedFault`]),
+//!   and the fault, the guest's own, cancels the request as before.
+//! - In ring 0, the syscall trampoline stopped at its VMCALL runs to a
+//!   breakpoint at the user instruction it returns to, which the syscall
+//!   frame names, so the steps go on after a syscall that made no Tool
+//!   callback, or after an `rt_sigreturn`; a host interrupt that stops it on
+//!   its way back keeps that run, and for an IRETQ return the staged flags
+//!   lose RF, which would hold that breakpoint off. Anywhere else in ring 0
+//!   the entry runs unstepped: its exit comes first.
+//! - Every other entry runs unstepped: a vCPU leaves guest debugging off
+//!   unless an entry asks for it, and a register write since the last step
+//!   sets it again before the next.
+//!
+//! `BackendCapabilities::KVM` keeps `delivers_preemption_timer_events` false,
+//! so no Tool can rely on a timer event from this backend.
 //!
 //! Limits, to address before that capability is set:
 //! - Nothing checks the timer event's residency. A pinned event that the PMU
@@ -155,15 +202,47 @@
 //!   (late, if it is precise).
 //! - Nothing refuses a PREEMPT_RT kernel or nested virtualization, where the
 //!   kick's latency has not been measured.
+//! - A precise request is late when the PMU interrupt behind its last kick
+//!   comes after the margin, from the hardware's interrupt latency: at the
+//!   2,000 RCB margin on an EPYC 9D85, about one kick in a thousand on an
+//!   idle host, and up to about one in a hundred on a busy one.
+//! - Every other instruction in the stepping window is a step of its own,
+//!   with no block steps yet. In a release build a step costs about 3.3
+//!   microseconds under following placement, and about 17 under pinned
+//!   placement, where every entry also pins and restores the CPU and enables
+//!   and disables the events: about 12 syscalls per step, against 1.
+//! - REPE and REPNE CMPS and SCAS, and REP LODS, retire no counted branch
+//!   per iteration on this AMD host but are stepped one iteration at a time
+//!   until that is measured on Intel, so the window does not bound their
+//!   cost: a 256 KiB REPE CMPSB in the window took 0.93 s in a release build
+//!   (262,218 steps), against 37 ms for an imprecise request.
+//! - IRETQ, a load of SS and the guest's own TF are refused only inside the
+//!   stepping window, whose start depends on when a kick lands, so a guest
+//!   that uses them near a precise target can be refused in one run and not
+//!   in another.
+//! - The instruction at RIP is decoded from guest memory before the entry
+//!   that runs it. A peer thread that rewrites it in between, which needs a
+//!   writable executable mapping (or a writable alias of one) and a peer
+//!   running at the same time as the stepped thread, can have an
+//!   instruction that saves RFLAGS (PUSHF, or SYSCALL into R11) stepped,
+//!   which shows the step's TF, or a run end at a breakpoint that is no
+//!   longer the next instruction, which makes the event late and recorded.
+//!   An instruction rewritten into a POPF or IRETQ that is then stepped
+//!   replaces TF with its image's: a clear image ends the steps, so the
+//!   event is late and recorded; a set one is taken over by the steps and
+//!   dropped when they stop, instead of being refused by name. An on-time
+//!   event is never delivered at another point; a late one is delivered
+//!   later, and recorded. A Tool that serializes
+//!   guest threads never runs such a peer. Linux's ptrace single step, which
+//!   reverie-ptrace uses, shows TF to every stepped PUSHF and decodes POPF
+//!   and IRET just as racily (`arch/x86/kernel/step.c`). Before the
+//!   capability is set, decide whether a Tool that does not serialize
+//!   threads needs byte-stable stepping.
 //! - A timer event does not deliver the signals pending when it is handled:
 //!   they wait, as before, for the thread's next syscall or fault.
 //! - After a refused injection, the callback's own guest-memory and stack
 //!   writes, through handles it already holds, still reach memory until the
 //!   callback returns or suspends; the run then fails with the named reason.
-//! - A request found due after `rt_sigreturn` waits for the restored
-//!   context's next RCBs in user mode, so a guest that retires none before its
-//!   next exit gets the event no sooner, and a Tool callback at that exit
-//!   cancels it.
 //! - Only a Tool callback for another event cancels a request, so the
 //!   parent's request survives a fork, clone or vfork that the Tool does not
 //!   subscribe to. reverie-ptrace differs in three places
@@ -743,15 +822,7 @@ impl TimerEvent {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum TimerKind {
     /// Due exactly when the clock reaches the target, as for
-    /// `Guest::set_timer_precise`, which this backend refuses: only this
-    /// crate's tests request one.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "KvmGuest refuses set_timer_precise until it can run a guest to an exact count"
-        )
-    )]
+    /// `Guest::set_timer_precise`: single steps take the guest there.
     Precise,
     /// Due at the target or at any later count, as for `Guest::set_timer`.
     Imprecise,
@@ -764,10 +835,37 @@ pub(crate) struct TimerDue {
     pub(crate) target: u64,
     /// The clock value read at the exit that reached it.
     pub(crate) clock: u64,
-    /// The exit came too late for the request: always for a precise request,
-    /// even at exactly its target (see the module documentation), and never
-    /// for an imprecise one.
+    /// The exit came too late for the request: never for an imprecise one,
+    /// and for a precise one unless it ended a single step that retired the
+    /// target branch (see the module documentation). Any other exit at or
+    /// past a precise target is late, even exactly at it.
     pub(crate) late: bool,
+    /// The request's kind.
+    pub(crate) kind: TimerKind,
+}
+
+/// The first stage of a staged precise request (see
+/// [`reverie::pmu_config::PmuConfig::stages`]): when it was requested, by
+/// the host's monotonic clock and by the guest's clock. The guest did not run
+/// between the request and the entry that programmed it.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct FirstStage {
+    pub(crate) requested_ns: u64,
+    pub(crate) requested_clock: u64,
+}
+
+/// The host's `CLOCK_MONOTONIC` in nanoseconds, read through the vDSO: no
+/// syscall.
+pub(crate) fn monotonic_ns() -> u64 {
+    let mut now = libc::timespec {
+        tv_sec: 0,
+        tv_nsec: 0,
+    };
+    // SAFETY: the timespec is initialized and outlives the call.
+    unsafe { libc::clock_gettime(libc::CLOCK_MONOTONIC, &mut now) };
+    (now.tv_sec as u64)
+        .saturating_mul(1_000_000_000)
+        .saturating_add(now.tv_nsec as u64)
 }
 
 /// The one timer request of a guest thread, decided from its clock alone.
@@ -780,10 +878,13 @@ pub(crate) enum TimerState {
     Armed {
         target: u64,
         kind: TimerKind,
-        /// How far short of the target a precise request is first programmed:
-        /// the PMU skid margin when it was requested. 0 for an imprecise
-        /// request, which is programmed at its target.
+        /// How far short of the target a precise request is programmed: the
+        /// first stage margin while `first_stage` is present, then the second
+        /// stage margin, or the PMU skid margin for an unstaged request. 0
+        /// for an imprecise request, which is programmed at its target.
         margin: u64,
+        /// Present while a staged precise request is in its first stage.
+        first_stage: Option<FirstStage>,
     },
     /// A request whose target an exit reached. It stays here until it is
     /// delivered, replaced or cancelled, and is recorded only once.
@@ -792,10 +893,17 @@ pub(crate) enum TimerState {
 
 impl TimerState {
     /// An armed request due when the clock, now `clock`, has advanced `ticks`
-    /// RCBs. `margin` is the PMU skid margin of a precise request. A request
-    /// for 0 RCBs names the current count, which no exit can reach, and is
-    /// refused, as is one past the clock's range.
-    pub(crate) fn request(clock: u64, ticks: u64, kind: TimerKind, margin: u64) -> Result<Self> {
+    /// RCBs. `margin` is the margin a precise request is first programmed
+    /// with, and `first_stage` is present for a staged one. A request for 0
+    /// RCBs names the current count, which no exit can reach, and is refused,
+    /// as is one past the clock's range.
+    pub(crate) fn request(
+        clock: u64,
+        ticks: u64,
+        kind: TimerKind,
+        margin: u64,
+        first_stage: Option<FirstStage>,
+    ) -> Result<Self> {
         if ticks == 0 {
             return Err(failure(
                 "preemption timer: a request for 0 RCBs names the current count",
@@ -810,6 +918,7 @@ impl TimerState {
             target,
             kind,
             margin,
+            first_stage,
         })
     }
 
@@ -826,6 +935,7 @@ impl TimerState {
             target,
             kind,
             margin,
+            ..
         } = *self
         else {
             return None;
@@ -842,20 +952,62 @@ impl TimerState {
         Some(point.max(clock.saturating_add(MIN_PERIOD)))
     }
 
-    /// Decides the exit at which the clock read `clock`: an armed request
-    /// whose target it reached becomes due, and a precise one is recorded as
-    /// late. Returns the request this exit made due, at most once.
-    pub(crate) fn observe_exit(&mut self, clock: u64) -> Option<TimerDue> {
-        let Self::Armed { target, kind, .. } = *self else {
+    /// Whether the next entry at `clock` must single-step toward a precise
+    /// request's target: the clock is short of it by no more than the margin
+    /// plus [`SINGLESTEP_TIMEOUT_RCBS`], the point from which the timer event
+    /// is programmed at the target itself (see [`Self::wanted_overflow`]).
+    pub(crate) fn stepping(&self, clock: u64) -> bool {
+        matches!(
+            *self,
+            Self::Armed {
+                target,
+                kind: TimerKind::Precise,
+                margin,
+                first_stage: None,
+            } if clock < target
+                && target - clock <= margin.saturating_add(SINGLESTEP_TIMEOUT_RCBS)
+        )
+    }
+
+    /// Decides the exit at which the clock read `clock`. `stepped` says the
+    /// entry it ended ran a single step. An armed request whose target the
+    /// clock reached becomes due; a precise one is on time only when a single
+    /// step retired the target branch, so that the vCPU stands at the
+    /// boundary right after it, and any other is recorded as late. A staged
+    /// request whose first stage the clock reached gets its second stage
+    /// margin, from the RCBs and the host time since it was requested.
+    /// Returns the request this exit made due, at most once.
+    pub(crate) fn observe_exit(&mut self, clock: u64, stepped: bool) -> Option<TimerDue> {
+        let Self::Armed {
+            target,
+            kind,
+            margin,
+            first_stage,
+        } = *self
+        else {
             return None;
         };
         if clock < target {
+            if let Some(first) = first_stage
+                && clock >= target - margin
+                && let Some(config) = reverie::pmu_config::try_get_pmu_config()
+            {
+                let elapsed = monotonic_ns().saturating_sub(first.requested_ns);
+                *self = Self::Armed {
+                    target,
+                    kind,
+                    margin: config
+                        .second_stage_margin(clock - first.requested_clock, Some(elapsed)),
+                    first_stage: None,
+                };
+            }
             return None;
         }
         let due = TimerDue {
             target,
             clock,
-            late: matches!(kind, TimerKind::Precise),
+            late: matches!(kind, TimerKind::Precise) && !(stepped && clock == target),
+            kind,
         };
         if due.late {
             record_late(&due);
@@ -902,20 +1054,46 @@ impl TimerState {
     /// target, so the next entry programs the earliest overflow the event
     /// allows, [`MIN_PERIOD`] RCBs on (see [`Self::wanted_overflow`]), and the
     /// next exit finds the request due again, still on time. A late precise
-    /// request stays due: it was recorded once, and nothing here delivers it.
+    /// request is armed the same way, as an imprecise one: it was recorded
+    /// once, when it came due, and only its delivery remains. A precise one
+    /// on time was made due by a single step, which leaves the vCPU in user
+    /// mode, where it is delivered.
     pub(crate) fn defer_due(&mut self) {
         if let Self::Due(TimerDue {
-            target,
-            late: false,
-            ..
+            target, kind, late, ..
         }) = *self
+            && (kind == TimerKind::Imprecise || late)
         {
             *self = Self::Armed {
                 target,
                 kind: TimerKind::Imprecise,
                 margin: 0,
+                first_stage: None,
             };
         }
+    }
+}
+
+/// Whether the exception frame the guest's stub will halt with holds a single
+/// step's trap flag: the stepped instruction faulted, and the CPU saved
+/// RFLAGS with TF set. It is kept from the stepped entry until that stub's
+/// HLT, whatever the entries in between ran: a host interrupt can end the
+/// stepped entry inside the stub, before its HLT, and the entry that runs the
+/// stub on is not stepped.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(crate) struct SteppedFault(bool);
+
+impl SteppedFault {
+    /// Notes a stepped entry that a host signal interrupted, with the vCPU
+    /// found in ring 0 or not: only a fault takes a stepped instruction there.
+    pub(crate) fn interrupted(&mut self, in_ring_0: bool) {
+        self.0 |= in_ring_0;
+    }
+
+    /// At an exception stub's HLT, whether its frame must lose TF: a stepped
+    /// entry pushed it, this one (`stepped`) or an interrupted one before it.
+    pub(crate) fn take_at_halt(&mut self, stepped: bool) -> bool {
+        std::mem::take(&mut self.0) || stepped
     }
 }
 
@@ -958,23 +1136,24 @@ mod tests {
             target,
             kind,
             margin: MARGIN,
+            first_stage: None,
         }
     }
 
     #[test]
     fn requests_name_a_count_ahead_of_the_clock() {
         assert_eq!(
-            TimerState::request(10, 5, TimerKind::Precise, MARGIN).unwrap(),
+            TimerState::request(10, 5, TimerKind::Precise, MARGIN, None).unwrap(),
             armed(15, TimerKind::Precise)
         );
         assert!(
-            TimerState::request(10, 0, TimerKind::Imprecise, MARGIN)
+            TimerState::request(10, 0, TimerKind::Imprecise, MARGIN, None)
                 .unwrap_err()
                 .to_string()
                 .contains("0 RCBs")
         );
         assert!(
-            TimerState::request(u64::MAX - 1, 2, TimerKind::Precise, MARGIN)
+            TimerState::request(u64::MAX - 1, 2, TimerKind::Precise, MARGIN, None)
                 .unwrap_err()
                 .to_string()
                 .contains("overflows")
@@ -1004,6 +1183,7 @@ mod tests {
             target,
             clock: target,
             late: true,
+            kind: TimerKind::Precise,
         });
         assert_eq!(due.wanted_overflow(target), None);
     }
@@ -1016,38 +1196,41 @@ mod tests {
         let config = reverie::pmu_config::try_get_pmu_config();
         let mut state = armed(1_000, TimerKind::Precise);
         // Short of the target: nothing changes and nothing is recorded.
-        assert_eq!(state.observe_exit(999), None);
+        assert_eq!(state.observe_exit(999, false), None);
         assert_eq!(state, armed(1_000, TimerKind::Precise));
         // Exactly at the target: late, because an exit is asynchronous.
         let due = TimerDue {
             target: 1_000,
             clock: 1_000,
             late: true,
+            kind: TimerKind::Precise,
         };
-        assert_eq!(state.observe_exit(1_000), Some(due));
+        assert_eq!(state.observe_exit(1_000, false), Some(due));
         assert_eq!(state.due(), Some(due));
         assert_eq!(state.target(), Some(1_000));
         // Later exits find it already due and record nothing more.
-        assert_eq!(state.observe_exit(5_000), None);
+        assert_eq!(state.observe_exit(5_000, false), None);
         assert_eq!(state.due(), Some(due));
         // Past the target: late, with the overshoot the clock shows.
         let mut past = armed(1_000, TimerKind::Precise);
         assert_eq!(
-            past.observe_exit(1_007),
+            past.observe_exit(1_007, false),
             Some(TimerDue {
                 target: 1_000,
                 clock: 1_007,
                 late: true,
+                kind: TimerKind::Precise,
             })
         );
         // An imprecise request reached at or after its target is on time.
         let mut imprecise = armed(1_000, TimerKind::Imprecise);
         assert_eq!(
-            imprecise.observe_exit(1_000),
+            imprecise.observe_exit(1_000, false),
             Some(TimerDue {
                 target: 1_000,
                 clock: 1_000,
                 late: false,
+                kind: TimerKind::Imprecise,
             })
         );
         let witnessed = reverie::take_skid_overshoot_count();
@@ -1071,9 +1254,10 @@ mod tests {
             target: 1_000,
             kind: TimerKind::Imprecise,
             margin: 0,
+            first_stage: None,
         };
         assert_eq!(state.take_due(), None, "an armed request is not due");
-        assert_eq!(state.observe_exit(1_004), due_at(1_000, 1_004));
+        assert_eq!(state.observe_exit(1_004, false), due_at(1_000, 1_004));
         // Found due where it cannot be delivered: armed again at its target,
         // and the next entry wants the earliest overflow past the clock.
         state.defer_due();
@@ -1083,21 +1267,46 @@ mod tests {
                 target: 1_000,
                 kind: TimerKind::Imprecise,
                 margin: 0,
+                first_stage: None,
             }
         );
         assert_eq!(state.wanted_overflow(1_004), Some(1_004 + MIN_PERIOD));
         // The next exit finds it due again, on time, and delivery takes it.
-        assert_eq!(state.observe_exit(1_006), due_at(1_000, 1_006));
+        assert_eq!(state.observe_exit(1_006, false), due_at(1_000, 1_006));
         assert_eq!(state.take_due(), due_at(1_000, 1_006));
         assert_eq!(state, TimerState::Idle);
         assert_eq!(state.take_due(), None, "a request is delivered once");
         assert_eq!(state.wanted_overflow(1_006), None);
-        // A late precise request stays due when deferred.
+        // A late precise request, recorded once when it came due, is armed
+        // again the same way, and its delivery records nothing more.
         let mut precise = armed(1_000, TimerKind::Precise);
-        let late = precise.observe_exit(1_000);
-        precise.defer_due();
-        assert_eq!(precise.due(), late);
+        assert!(precise.observe_exit(1_000, false).unwrap().late);
         assert_eq!(reverie::take_skid_overshoot_count(), 1);
+        precise.defer_due();
+        assert_eq!(precise.wanted_overflow(1_000), Some(1_000 + MIN_PERIOD));
+        assert_eq!(precise.observe_exit(1_003, false), due_at(1_000, 1_003));
+        assert_eq!(reverie::take_skid_overshoot_count(), 0);
+        // One on time stays due, for delivery in user mode.
+        let mut precise = armed(1_000, TimerKind::Precise);
+        let on_time = precise.observe_exit(1_000, true);
+        precise.defer_due();
+        assert_eq!(precise.due(), on_time);
+    }
+
+    #[test]
+    fn a_stepped_fault_frame_is_scrubbed_at_its_halt_across_interruptions() {
+        // A stepped entry that reaches the stub's HLT.
+        assert!(SteppedFault::default().take_at_halt(true));
+        // Interrupted in the stub, then run on unstepped to its HLT, which
+        // scrubs once.
+        let mut fault = SteppedFault::default();
+        fault.interrupted(true);
+        assert!(fault.take_at_halt(false));
+        assert!(!fault.take_at_halt(false));
+        // Interrupted in user mode, before its instruction ran: no frame.
+        let mut fault = SteppedFault::default();
+        fault.interrupted(false);
+        assert!(!fault.take_at_halt(false));
     }
 
     fn due_at(target: u64, clock: u64) -> Option<TimerDue> {
@@ -1105,7 +1314,91 @@ mod tests {
             target,
             clock,
             late: false,
+            kind: TimerKind::Imprecise,
         })
+    }
+
+    #[test]
+    fn a_precise_request_is_stepped_within_its_margin_and_on_time_only_after_a_step() {
+        let _turn = witness_turn();
+        let target = 100_000;
+        let state = armed(target, TimerKind::Precise);
+        let edge = target - MARGIN - SINGLESTEP_TIMEOUT_RCBS;
+        // Stepped from the point at which the event is programmed at the target.
+        assert!(!state.stepping(edge - 1));
+        assert!(state.stepping(edge));
+        assert!(state.stepping(target - 1));
+        assert!(!state.stepping(target));
+        // Never an imprecise request, nor one in its first stage.
+        assert!(!armed(target, TimerKind::Imprecise).stepping(target - 1));
+        let staged = TimerState::Armed {
+            target,
+            kind: TimerKind::Precise,
+            margin: MARGIN,
+            first_stage: Some(FirstStage {
+                requested_ns: 0,
+                requested_clock: 0,
+            }),
+        };
+        assert!(!staged.stepping(target - 1));
+        // A step that retires the target branch makes it due on time and
+        // records nothing; a step can retire one branch at most, so it never
+        // passes the target, and anything else at the target is late.
+        let mut stepped = armed(target, TimerKind::Precise);
+        assert_eq!(stepped.observe_exit(target - 1, true), None);
+        assert_eq!(
+            stepped.observe_exit(target, true),
+            Some(TimerDue {
+                target,
+                clock: target,
+                late: false,
+                kind: TimerKind::Precise,
+            })
+        );
+        let mut overshot = armed(target, TimerKind::Precise);
+        assert!(overshot.observe_exit(target + 1, true).unwrap().late);
+        assert_eq!(reverie::take_skid_overshoot_count(), 1);
+    }
+
+    #[test]
+    fn a_staged_request_takes_its_second_stage_margin_once_its_first_stage_is_reached() {
+        let Some(config) = reverie::pmu_config::try_get_pmu_config() else {
+            println!("NOT EXECUTED: this CPU has no PMU profile");
+            return;
+        };
+        let first = config.first_stage_margin();
+        let target = 1_000_000;
+        let mut state = TimerState::Armed {
+            target,
+            kind: TimerKind::Precise,
+            margin: first,
+            first_stage: Some(FirstStage {
+                requested_ns: monotonic_ns(),
+                requested_clock: 0,
+            }),
+        };
+        // Short of the first stage point: still in the first stage.
+        assert_eq!(state.wanted_overflow(0), Some(target - first));
+        assert_eq!(state.observe_exit(target - first - 1, false), None);
+        assert!(matches!(
+            state,
+            TimerState::Armed {
+                first_stage: Some(_),
+                ..
+            }
+        ));
+        // At it: the second stage margin, between the skid margin and the
+        // first stage margin, sized by the guest's rate since the request.
+        assert_eq!(state.observe_exit(target - first, false), None);
+        let TimerState::Armed {
+            margin,
+            first_stage: None,
+            ..
+        } = state
+        else {
+            panic!("still in the first stage: {state:?}");
+        };
+        assert!((config.skid_margin()..=first).contains(&margin), "{margin}");
     }
 
     #[test]

@@ -174,11 +174,18 @@ fn timer_count(vcpu: &CountedVcpu) -> u64 {
     value
 }
 
+/// A request found due. These tests take no single steps, so a precise
+/// request is always late, and an on-time one is imprecise.
 fn due(target: u64, clock: u64, late: bool) -> Option<TimerDue> {
     Some(TimerDue {
         target,
         clock,
         late,
+        kind: if late {
+            TimerKind::Precise
+        } else {
+            TimerKind::Imprecise
+        },
     })
 }
 
@@ -747,7 +754,14 @@ fn re_arm_after(
     interlude: impl FnOnce(&mut crate::KvmBackend),
 ) -> (Option<u64>, Vec<(Exit, u64)>, TimerDue) {
     let block = u64::from(RE_ARM_BLOCK);
-    let margin = margin();
+    // The request is staged: its first stage is programmed one first stage
+    // margin short of the target.
+    let config = reverie::pmu_config::try_get_pmu_config().unwrap();
+    let margin = if config.stages(RE_ARM_TARGET) {
+        config.first_stage_margin()
+    } else {
+        config.skid_margin()
+    };
     let mut backend = counted_backend(&block_loop(RE_ARM_BLOCK), placement);
     backend
         .vcpu
@@ -1031,12 +1045,20 @@ fn requests_beyond_the_longest_period_are_programmed_in_pieces() {
 }
 
 /// A request found due where the vCPU is not in user mode, here the
-/// trampoline at its VMCALL (where the Tool loop leaves it only after
-/// `rt_sigreturn`: a syscall's exit delivers at the syscall's return), is not
-/// delivered there. It is armed again at its target, and the kick that
-/// follows finds the guest back in user mode, where the request is taken
-/// once, with the live registers.
+/// trampoline at its VMCALL (as a kick in the trampoline finds it: a syscall's
+/// exit delivers at the syscall's return), is not delivered there. It is
+/// armed again at its target, and the kick that follows finds the guest back
+/// in user mode, where the request is taken once, with the live registers.
+/// So is a late precise one, which records nothing more.
 fn a_request_due_outside_user_mode_is_delivered_back_in_it(placement: CounterPlacement) {
+    let _turn = witness_turn();
+    for kind in [TimerKind::Imprecise, TimerKind::Precise] {
+        a_found_request_is_delivered_back_in_user_mode(placement, kind);
+    }
+    assert_eq!(reverie::take_skid_overshoot_count(), 0);
+}
+
+fn a_found_request_is_delivered_back_in_user_mode(placement: CounterPlacement, kind: TimerKind) {
     let block = 1_000_u64;
     let mut backend = counted_backend(&block_loop(block as u32), placement);
     assert_eq!(next_exit(&mut backend.vcpu), Exit::Syscall);
@@ -1046,11 +1068,12 @@ fn a_request_due_outside_user_mode_is_delivered_back_in_it(placement: CounterPla
         0,
         "in the trampoline"
     );
-    // As if this exit had found an imprecise request due.
+    // As if this exit had found the request due: a precise one, late.
     let found = TimerDue {
         target: block,
         clock: block,
-        late: false,
+        late: kind == TimerKind::Precise,
+        kind,
     };
     backend.vcpu.clock.timer = TimerState::Due(found);
     assert!(backend.timer_instruction_boundary().unwrap().is_none());
@@ -1060,6 +1083,7 @@ fn a_request_due_outside_user_mode_is_delivered_back_in_it(placement: CounterPla
             target: block,
             kind: TimerKind::Imprecise,
             margin: 0,
+            first_stage: None,
         }
     );
     // A syscall exit before the kick finds it due in ring 0 again.
@@ -1087,6 +1111,7 @@ fn a_request_due_outside_user_mode_is_delivered_back_in_it(placement: CounterPla
             target: block,
             clock,
             late: false,
+            kind: TimerKind::Imprecise,
         }
     );
     let user = boundary.user_registers();
@@ -1113,6 +1138,111 @@ fn a_request_due_outside_user_mode_is_delivered_back_in_it_with_following_events
 fn a_request_due_outside_user_mode_is_delivered_back_in_it_with_pinned_entries() {
     let _pin = PinThread::here();
     a_request_due_outside_user_mode_is_delivered_back_in_it(CounterPlacement::PinEachEntry);
+}
+
+/// A host interrupt that stops the syscall trampoline on its way back to
+/// user mode, within a precise request's stepping window, keeps the run to
+/// the breakpoint at the user instruction it returns to. Two single steps in
+/// ring 0, which complete the VMCALL and run one more instruction, stop the
+/// trampoline here where such an interrupt could.
+#[test]
+fn an_interrupted_trampoline_keeps_its_run_to_the_user_return() {
+    let _pin = PinThread::here();
+    let mut backend = counted_backend(&EXIT_THEN_SPIN, CounterPlacement::default());
+    backend.vcpu.request_timer(100, TimerKind::Precise).unwrap();
+    assert_eq!(next_exit(&mut backend.vcpu), Exit::Syscall);
+    backend.prepare_timer_steps().unwrap();
+    let StepMode::RunTo(user_return) = backend.vcpu.next_step_mode else {
+        panic!("{:?}", backend.vcpu.next_step_mode);
+    };
+    for _ in 0..2 {
+        backend.vcpu.step_next_entry(StepMode::Step);
+        assert!(matches!(backend.vcpu.run(), Ok(Some(VcpuExit::Debug(_)))));
+    }
+    assert_eq!(backend.vcpu.get_sregs().unwrap().cs.dpl, 0);
+    let stopped = backend.vcpu.get_regs().unwrap().rip;
+    backend.prepare_timer_steps().unwrap();
+    assert_eq!(
+        backend.vcpu.next_step_mode,
+        StepMode::RunTo(user_return),
+        "stopped at {stopped:#x}"
+    );
+    let Ok(Some(VcpuExit::Debug(debug))) = backend.vcpu.run() else {
+        panic!("no breakpoint at {user_return:#x}");
+    };
+    backend.finish_timer_step(debug).unwrap();
+    assert_eq!(backend.vcpu.get_regs().unwrap().rip, user_return);
+    assert_eq!(backend.vcpu.get_sregs().unwrap().cs.dpl, 3);
+}
+
+/// The guest's own trap flag during a run to a breakpoint is refused by
+/// name: loaded by the instruction run there (POPF), the breakpoint finds it;
+/// set when the run starts (here through the registers, after the entry
+/// that checks for it), the trap it raises comes first.
+#[test]
+fn a_guest_trap_flag_during_a_run_to_a_breakpoint_is_refused_by_name() {
+    // push 0x302 (TF, IF and the reserved bit); popfq; jmp .
+    let popf = [0x68, 0x02, 0x03, 0x00, 0x00, 0x9d, 0xeb, 0xfe];
+    // rdtsc; jmp .
+    let rdtsc = [0x0f, 0x31, 0xeb, 0xfe];
+    for (code, entries) in [(&popf[..], 2), (&rdtsc[..], 1)] {
+        let mut backend = counted_backend(code, CounterPlacement::default());
+        backend.vcpu.request_timer(100, TimerKind::Precise).unwrap();
+        let mut refusal = None;
+        for entry in 1..=entries {
+            backend.prepare_timer_steps().unwrap();
+            if entries == 1 {
+                let mut registers = backend.vcpu.get_regs().unwrap();
+                registers.rflags |= 1 << 8;
+                backend.vcpu.set_regs(&registers).unwrap();
+            }
+            let Ok(Some(VcpuExit::Debug(debug))) = backend.vcpu.run() else {
+                panic!("no debug exit");
+            };
+            let finished = backend.finish_timer_step(debug);
+            if entry == entries {
+                refusal = Some(finished.unwrap_err().to_string());
+            } else {
+                finished.unwrap();
+            }
+        }
+        let refusal = refusal.unwrap();
+        assert!(refusal.contains("sets its own trap flag"), "{refusal}");
+    }
+}
+
+/// A host interrupt can end a POPF's run before its breakpoint, after the
+/// POPF loaded the guest's own trap flag. The next entry refuses it by name
+/// whatever runs there, here UD2 or SYSCALL, both unstepped, and runs them
+/// when TF is clear. The breakpoint's exit stands in for the interrupt: it
+/// leaves the vCPU in the same state, and finishing it is skipped.
+#[test]
+fn an_interrupted_popf_cannot_carry_its_trap_flag_past_the_next_entry() {
+    for (next, exit) in [([0x0f, 0x0b], "Hlt"), ([0x0f, 0x05], "Hypercall")] {
+        for flags in [0x302_u32, 0x202] {
+            // push flags; popfq; ud2 or syscall; jmp .
+            let [a, b, c, d] = flags.to_le_bytes();
+            let code = [0x68, a, b, c, d, 0x9d, next[0], next[1], 0xeb, 0xfe];
+            let mut backend = counted_backend(&code, CounterPlacement::default());
+            backend.vcpu.request_timer(100, TimerKind::Precise).unwrap();
+            for _ in 0..2 {
+                backend.prepare_timer_steps().unwrap();
+                assert!(matches!(backend.vcpu.run(), Ok(Some(VcpuExit::Debug(_)))));
+            }
+            match backend.prepare_timer_steps() {
+                Err(refusal) => {
+                    assert_ne!(flags & 0x100, 0, "{refusal}");
+                    assert!(refusal.to_string().contains("sets its own trap flag"));
+                }
+                Ok(()) => {
+                    assert_eq!(flags & 0x100, 0);
+                    assert_eq!(backend.vcpu.next_step_mode, StepMode::Off);
+                    let ran = format!("{:?}", backend.vcpu.run().unwrap());
+                    assert!(ran.contains(exit), "{ran}");
+                }
+            }
+        }
+    }
 }
 
 // The kick signal outside KVM_RUN (see the module documentation of
@@ -1795,4 +1925,89 @@ fn sigurg_ends_kvm_run_under_the_vcpu_mask_only_while_the_thread_leaves_it_unblo
         );
     }
     assert_eq!(reverie::take_skid_overshoot_count(), 0);
+}
+
+/// Single steps through the stepping engine take a precise request on
+/// `SPINNER` exactly to its target, on time, and this reports what that
+/// costs: the steps per event and the mean time per step. Each request is
+/// unstaged, so the event is first programmed one skid margin short of its
+/// target, and the steps start where its kick stops the guest. A kick that
+/// comes later than the margin, which the PMU's interrupt latency makes
+/// happen to between one in a thousand and one in a hundred (one in seven at
+/// a load average of 43), finds the target passed before any entry of the
+/// stepping window: that event is late and recorded, and is counted apart,
+/// within twice as many requests as events in all.
+#[test]
+fn single_steps_take_a_precise_request_exactly_to_its_target() {
+    let _turn = witness_turn();
+    let margin = margin();
+    let ticks = 4 * margin;
+    let events = 50;
+    let mut backend = counted_backend(&SPINNER, CounterPlacement::default());
+    let mut steps = Vec::new();
+    let mut stepping = Duration::ZERO;
+    let mut late = 0;
+    while steps.len() < events {
+        assert!(
+            steps.len() + (late as usize) < 2 * events,
+            "{late} late events"
+        );
+        let clock = backend.vcpu.read_clock().unwrap();
+        backend
+            .vcpu
+            .request_timer(ticks, TimerKind::Precise)
+            .unwrap();
+        let mut taken = 0_u64;
+        let mut first_step = None;
+        let due = loop {
+            if backend.vcpu.timer_stepping() && first_step.is_none() {
+                first_step = Some(Instant::now());
+            }
+            backend.prepare_timer_steps().unwrap();
+            let stepped = backend.vcpu.next_step_mode == StepMode::Step;
+            match backend.vcpu.run() {
+                Ok(Some(VcpuExit::Debug(debug))) => {
+                    backend.finish_timer_step(debug).unwrap();
+                    taken += u64::from(stepped);
+                }
+                Err(Error::Kvm(error)) if error.errno() == libc::EINTR => {}
+                other => panic!("unexpected exit {other:?}"),
+            }
+            if let Some(due) = backend.vcpu.take_due_timer() {
+                break due;
+            }
+        };
+        let target = clock + ticks;
+        if due.late {
+            // The margin's kick came after the target, before any entry of
+            // the window.
+            assert!(due.clock > target && first_step.is_none(), "{due:?}");
+            late += 1;
+            continue;
+        }
+        stepping += first_step.expect("the request was stepped").elapsed();
+        assert_eq!(
+            due,
+            TimerDue {
+                target,
+                clock: target,
+                late: false,
+                kind: TimerKind::Precise,
+            }
+        );
+        steps.push(taken);
+    }
+    assert_eq!(reverie::take_skid_overshoot_count(), late);
+    steps.sort_unstable();
+    let total: u64 = steps.iter().sum();
+    println!(
+        "{events} precise events {ticks} RCBs apart, skid margin {margin}, and {late} late: \
+         steps per event min {} median {} max {}; {:.2} us per step ({} steps in {:?})",
+        steps[0],
+        steps[steps.len() / 2],
+        steps[steps.len() - 1],
+        stepping.as_secs_f64() * 1e6 / total as f64,
+        total,
+        stepping,
+    );
 }
