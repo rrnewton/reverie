@@ -52,9 +52,31 @@ again at each later timer it opens. Each timer is a sampling perf event that
 counts what the thread's branch clock counts and sends `SIGSTKFLT` to the vCPU
 thread when it overflows, which ends `KVM_RUN` with `EINTR`. Nothing is
 decided from the signal: every decision reads the clock at the exit. Other
-libraries must not use `SIGSTKFLT` in the embedding process. Nothing requests
-a timer yet: `Guest::set_timer` and `Guest::set_timer_precise` arm nothing on
-this backend, and a thread that never arms a timer opens no timer event.
+libraries must not use `SIGSTKFLT` in the embedding process. A thread that
+never requests a timer opens no timer event.
+
+`Guest::set_timer` requests an imprecise timer event under reverie-ptrace's
+rules. A thread has one request, and a new one replaces it; `Rcbs(r)` and
+`RcbsAndInstructions(r, _)` request `r` RCBs, `Time` is converted at
+reverie-ptrace's rate of 0.6 RCB per nanosecond, and a request for 0 RCBs is
+refused with `EINVAL`. The event is programmed at the target, with no skid
+margin. The next event of another kind decides the request: before a Tool
+callback for a subscribed syscall, a signal, CPUID or RDTSC, an exec
+(including the initial one, as reverie-ptrace retires a request made before
+it) or the thread's exit, the request is cancelled, so a request made inside
+that callback is a new one. A syscall the Tool injects is not an event, and an
+exit with no Tool callback leaves the request alone. Once an exit has found
+the clock at or past the target, the backend calls `Tool::handle_timer_event`
+once, before the guest runs on, if the vCPU stopped in user mode, where a kick
+stops it between two instructions; the clock read there is at least the
+target. A request found due elsewhere, such as the ring-0 syscall trampoline
+after an unsubscribed syscall, is armed again at its target, and the kick that
+follows the guest's next RCBs in user mode delivers it. Signals pending at a
+timer event wait, as before, for the thread's next syscall or fault.
+`Guest::set_timer_precise` is refused with an `Unsupported` error: delivery at
+an exact count needs single steps to it, which this backend does not take yet.
+The backend's capabilities keep `delivers_preemption_timer_events` false, so
+no Tool can rely on a timer event from this backend.
 
 A kick never interrupts a host call. The interrupt behind a kick can be held
 past the exit it would have caused, so its signal can arrive while the vCPU
@@ -84,13 +106,17 @@ before. Once a timer is armed, an entry adds no host syscall while the target
 is unchanged (pinned placement keeps its existing enable and disable of the
 CPU-bound events). Opening the timer adds one `KVM_SET_SIGNAL_MASK` to its
 event's setup, an `EINTR` exit adds the one `rt_sigtimedwait`, and composing
-the mask again adds one `rt_sigprocmask` and one `KVM_SET_SIGNAL_MASK`.
+the mask again adds one `rt_sigprocmask` and one `KVM_SET_SIGNAL_MASK`. A due
+request adds one `KVM_GET_SREGS`, to find where the vCPU stopped; delivering
+it there adds one `KVM_GET_REGS`, and arming it again at most one
+`PERF_EVENT_IOC_PERIOD`.
 
-The timer's remaining limits must be addressed before anything requests it.
+The timer's remaining limits must be addressed before that capability is set.
 Nothing checks that the timer event is resident on a counter; an uncounted
 vCPU on the same host task advances an armed timer, which then kicks late;
-exec keeps an armed request; nothing refuses PREEMPT_RT kernels or nested
-virtualization; and code that unblocks `SIGSTKFLT` on a vCPU thread lets a late
+nothing refuses PREEMPT_RT kernels or nested virtualization; a due request
+found outside user mode waits for the guest's next RCBs in user mode; and code
+that unblocks `SIGSTKFLT` on a vCPU thread lets a late
 kick interrupt a host call again. While the vCPU mask stays installed, a signal
 that code outside reverie-kvm unblocks on the vCPU thread does not end
 `KVM_RUN` until the mask is composed again; the mask can outlive its timer
