@@ -91,6 +91,7 @@ use reverie::Signal;
 use reverie::Stack;
 use reverie::TimerSchedule;
 use reverie::Tool;
+use reverie::ToolConfiguration;
 use reverie::syscalls::Addr;
 use reverie::syscalls::AddrMut;
 use reverie::syscalls::Errno;
@@ -2456,10 +2457,20 @@ pub unsafe extern "C" fn reverie_dbt_runtime_pre_syscall(
         }
 
         if tools::recorder_enabled() {
+            let configuration = match tools::recorder_configuration() {
+                Ok(configuration) => configuration,
+                Err(error) => {
+                    tools::emit_line(&format!(
+                        "reverie-dbt: application configuration refused: {error}"
+                    ));
+                    return -1;
+                }
+            };
             return unsafe {
                 pre_syscall_with_unit_tool(
                     tools::recorder_tool(),
                     tools::recorder_global(),
+                    configuration,
                     context,
                     tid,
                     pid,
@@ -2476,10 +2487,20 @@ pub unsafe extern "C" fn reverie_dbt_runtime_pre_syscall(
             };
         }
         if tools::counter1_exact_enabled() {
+            let configuration = match tools::counter1_exact_configuration() {
+                Ok(configuration) => configuration,
+                Err(error) => {
+                    tools::emit_line(&format!(
+                        "reverie-dbt: application configuration refused: {error}"
+                    ));
+                    return -1;
+                }
+            };
             return unsafe {
                 pre_syscall_with_unit_tool(
                     tools::counter1_exact_tool(),
                     tools::counter1_exact_global(),
+                    configuration,
                     context,
                     tid,
                     pid,
@@ -2702,12 +2723,57 @@ pub unsafe extern "C" fn reverie_dbt_runtime_background_init_v3(
     0
 }
 
+/// Read and select a Tool's typed launch configuration using the existing
+/// coordinator handshake. This creates neither a Tool nor thread/global state
+/// and does not publish runtime readiness. A caller with an explicit Config
+/// can instead use [`ToolConfiguration::select`].
+pub fn read_tool_configuration<T: Tool>(
+    coordinator: &Path,
+) -> Result<ToolConfiguration<T>, sync_rpc::InitialConfigError> {
+    let config =
+        sync_rpc::read_initial_config::<<T::GlobalState as GlobalTool>::Config>(coordinator)?;
+    Ok(ToolConfiguration::select(Arc::new(config)))
+}
+
+// Standalone unit configuration is policy of these existing prototype Tools,
+// not a generic missing-config fallback in read_tool_configuration.
+#[cfg(feature = "prototype-runtime")]
+fn unit_tool_configuration<T: Tool>(
+    mode: DbtStartupMode,
+    control: Option<&std::ffi::OsStr>,
+) -> Result<ToolConfiguration<T>, String>
+where
+    T::GlobalState: GlobalTool<Config = ()>,
+{
+    match control {
+        Some(path) => {
+            read_tool_configuration::<T>(Path::new(path)).map_err(|error| error.to_string())
+        }
+        None if mode == DbtStartupMode::Coordinated => {
+            Err("coordinated startup requires a coordinator socket".into())
+        }
+        None => Ok(ToolConfiguration::select(Arc::new(()))),
+    }
+}
+
+#[cfg(feature = "prototype-runtime")]
+fn required_tool_configuration<T: Tool>(
+    owner: &std::sync::OnceLock<ToolConfiguration<T>>,
+) -> Result<&ToolConfiguration<T>, &'static str> {
+    owner
+        .get()
+        .ok_or("selected Tool configuration was not published")
+}
+
 #[cfg(feature = "prototype-runtime")]
 fn prototype_initial_config(
     native_mode: u32,
     control: Option<&std::ffi::OsStr>,
 ) -> Result<(), String> {
     let mode = DbtStartupMode::try_from(native_mode).map_err(|error| error.to_string())?;
+    if tools::initialize_exact_configuration(mode, control)? {
+        return Ok(());
+    }
     match control {
         Some(path) => {
             sync_rpc::read_initial_config::<()>(Path::new(path)).map_err(|error| error.to_string())
@@ -2781,6 +2847,7 @@ fn refuse_legacy_background_init(emitter: Option<RuntimeEmitter>) -> ! {
 unsafe fn pre_syscall_with_unit_tool<T>(
     tool: &T,
     global: &T::GlobalState,
+    configuration: &ToolConfiguration<T>,
     context: *mut c_void,
     tid: i32,
     pid: i32,
@@ -2796,7 +2863,6 @@ unsafe fn pre_syscall_with_unit_tool<T>(
 ) -> i32
 where
     T: Tool<ThreadState = ()>,
-    <T::GlobalState as GlobalTool>::Config: Default,
 {
     let syscall = Syscall::from_raw(
         Sysno::from(sysnum as i32),
@@ -2810,7 +2876,6 @@ where
         ),
     );
     let mut thread_state = ();
-    let config = Default::default();
     let outcome = run_tool_syscall(
         tool,
         context as usize,
@@ -2819,7 +2884,7 @@ where
         branches,
         &mut thread_state,
         global,
-        &config,
+        configuration.config(),
         syscall,
         invoke_syscall,
         read_registers,
@@ -2944,6 +3009,7 @@ mod tests {
     use super::*;
 
     mod rpc_owner;
+    mod tool_configuration;
 
     /// A word of `stack`, as if it started at address 0x1000.
     fn word_of(stack: &[u64]) -> impl Fn(u64) -> Option<u64> + '_ {

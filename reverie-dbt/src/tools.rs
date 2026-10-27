@@ -58,6 +58,7 @@ use std::sync::Arc;
 use std::sync::Condvar;
 use std::sync::LazyLock;
 use std::sync::Mutex;
+use std::sync::OnceLock;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::AtomicUsize;
@@ -79,6 +80,7 @@ use reverie::Pid;
 use reverie::Stack;
 use reverie::Tid;
 use reverie::Tool;
+use reverie::ToolConfiguration;
 use reverie::syscalls::Addr;
 use reverie::syscalls::Displayable;
 use reverie::syscalls::MemoryAccess;
@@ -177,6 +179,48 @@ static HOSTED_TOOL: LazyLock<Option<HostedTool>> = LazyLock::new(|| {
 
 pub(crate) fn hosted_tool() -> Option<HostedTool> {
     *HOSTED_TOOL
+}
+
+static COUNTER1_CONFIGURATION: OnceLock<ToolConfiguration<ExactCounter1Tool>> = OnceLock::new();
+static RECORDER_CONFIGURATION: OnceLock<ToolConfiguration<recorder_exact::Recorder>> =
+    OnceLock::new();
+
+// Called by background initialization before the READY generation is published.
+// The existing exact modes retain their static unit Tool/thread placement and
+// all-syscalls dispatch. This is not an arbitrary typed native Tool host.
+pub(crate) fn initialize_exact_configuration(
+    mode: crate::DbtStartupMode,
+    control: Option<&OsStr>,
+) -> Result<bool, String> {
+    match hosted_tool() {
+        Some(HostedTool::Counter1) => retain_configuration(&COUNTER1_CONFIGURATION, mode, control)?,
+        Some(HostedTool::Recorder) => retain_configuration(&RECORDER_CONFIGURATION, mode, control)?,
+        _ => return Ok(false),
+    }
+    Ok(true)
+}
+
+fn retain_configuration<T: Tool>(
+    slot: &OnceLock<ToolConfiguration<T>>,
+    mode: crate::DbtStartupMode,
+    control: Option<&OsStr>,
+) -> Result<(), String>
+where
+    T::GlobalState: GlobalTool<Config = ()>,
+{
+    let configuration = crate::unit_tool_configuration(mode, control)?;
+    slot.set(configuration)
+        .map_err(|_| "selected Tool configuration was already published".into())
+}
+
+pub(crate) fn counter1_exact_configuration()
+-> Result<&'static ToolConfiguration<ExactCounter1Tool>, &'static str> {
+    crate::required_tool_configuration(&COUNTER1_CONFIGURATION)
+}
+
+pub(crate) fn recorder_configuration()
+-> Result<&'static ToolConfiguration<recorder_exact::Recorder>, &'static str> {
+    crate::required_tool_configuration(&RECORDER_CONFIGURATION)
 }
 
 fn env_flag(name: &str) -> bool {

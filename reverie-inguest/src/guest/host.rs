@@ -27,6 +27,7 @@ use reverie::Rdtsc;
 use reverie::Stack;
 use reverie::TimerSchedule;
 use reverie::Tool;
+use reverie::ToolConfiguration;
 use reverie::syscalls::Addr;
 use reverie::syscalls::AddrMut;
 use reverie::syscalls::Errno;
@@ -245,6 +246,7 @@ impl Drop for DispatchScratchScope {
 /// calls back into.
 pub struct ToolHost<T: Tool, R: HostRuntime> {
     tool: SpinMutex<Option<T>>,
+    process_configuration: ProcessConfiguration<T>,
     rpc: CoordinatorRpc<T::GlobalState>,
     root_pid: Pid,
     subscriptions: HashSet<Sysno>,
@@ -255,6 +257,22 @@ pub struct ToolHost<T: Tool, R: HostRuntime> {
     prepared_exec: SpinMutex<Option<PreparedExecState<T>>>,
     #[cfg(feature = "exec-native-injection")]
     native_exec_driver: Option<std::sync::Arc<dyn super::native_exec::NativeExecDriver<T>>>,
+}
+
+// Private installers can restore an existing Tool and retain their original
+// constructor policy. A converted installer never falls back to that policy.
+enum ProcessConfiguration<T: Tool> {
+    Legacy,
+    Selected(ToolConfiguration<T>),
+}
+
+impl<T: Tool> ProcessConfiguration<T> {
+    fn new_process(&self, pid: Pid, rpc: &CoordinatorRpc<T::GlobalState>) -> T {
+        match self {
+            Self::Legacy => T::new(pid, rpc.config()),
+            Self::Selected(configuration) => configuration.new_process(pid),
+        }
+    }
 }
 
 #[cfg(feature = "exec-private-successor")]
@@ -328,9 +346,52 @@ where
         cpuid_interception: bool,
         runtime: R,
     ) -> Self {
+        Self::from_parts(
+            tool,
+            rpc,
+            root_pid,
+            subscriptions,
+            cpuid_interception,
+            runtime,
+            ProcessConfiguration::Legacy,
+        )
+    }
+
+    /// Retain the standard installer's selected configuration for later forks.
+    /// The Tool has already been constructed after that installer's preflight.
+    pub(crate) fn with_configuration(
+        tool: T,
+        rpc: CoordinatorRpc<T::GlobalState>,
+        root_pid: Pid,
+        configuration: ToolConfiguration<T>,
+        subscriptions: HashSet<Sysno>,
+        runtime: R,
+    ) -> Self {
+        let cpuid_interception = configuration.subscriptions().has_cpuid();
+        Self::from_parts(
+            tool,
+            rpc,
+            root_pid,
+            subscriptions,
+            cpuid_interception,
+            runtime,
+            ProcessConfiguration::Selected(configuration),
+        )
+    }
+
+    fn from_parts(
+        tool: T,
+        rpc: CoordinatorRpc<T::GlobalState>,
+        root_pid: Pid,
+        subscriptions: HashSet<Sysno>,
+        cpuid_interception: bool,
+        runtime: R,
+        process_configuration: ProcessConfiguration<T>,
+    ) -> Self {
         COMMITTED_STACKS.lock().clear();
         Self {
             tool: SpinMutex::new(Some(tool)),
+            process_configuration,
             rpc,
             root_pid,
             subscriptions,
@@ -806,7 +867,7 @@ where
                     finish_fork_child(
                         &mut tool_slot,
                         &mut states,
-                        &self.rpc,
+                        (&self.rpc, &self.process_configuration),
                         &self.runtime,
                         event,
                         parent_state,
@@ -1001,7 +1062,7 @@ where
                 finish_fork_child(
                     &mut tool_slot,
                     &mut states,
-                    &self.rpc,
+                    (&self.rpc, &self.process_configuration),
                     &self.runtime,
                     event,
                     parent_state,
@@ -1218,12 +1279,13 @@ where
 fn finish_fork_child<T: Tool, R: HostRuntime>(
     tool_slot: &mut Option<T>,
     states: &mut HashMap<i32, T::ThreadState>,
-    rpc: &CoordinatorRpc<T::GlobalState>,
+    configuration: (&CoordinatorRpc<T::GlobalState>, &ProcessConfiguration<T>),
     runtime: &R,
     event: &mut SyscallEvent,
     parent_snapshot: T::ThreadState,
     context: ForkChildContext,
 ) {
+    let (rpc, process_configuration) = configuration;
     let ForkChildContext {
         parent_tid,
         parent_pid,
@@ -1243,7 +1305,7 @@ fn finish_fork_child<T: Tool, R: HostRuntime>(
         .remove(&parent_tid.as_raw())
         .unwrap_or_else(|| fatal(126));
     drop(inherited_parent_state);
-    let child_tool = T::new(child_pid, rpc.config());
+    let child_tool = process_configuration.new_process(child_pid, rpc);
     let child_state = child_tool.init_thread_state(child_tid, Some((parent_tid, &parent_snapshot)));
     states.clear();
     states.insert(child_tid.as_raw(), child_state);
@@ -3692,6 +3754,10 @@ fn fatal(status: i32) -> ! {
         core::hint::spin_loop();
     }
 }
+
+#[cfg(test)]
+#[path = "tool_configuration_tests.rs"]
+mod tool_configuration_tests;
 
 #[cfg(test)]
 mod tests {

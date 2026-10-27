@@ -16,6 +16,7 @@ use std::os::fd::AsRawFd;
 use std::os::unix::net::UnixStream;
 use std::path::Path;
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use reverie::GlobalRPC;
 use reverie::GlobalTool;
@@ -80,7 +81,7 @@ struct RpcConnection<G: GlobalTool> {
 /// and Detcore requires one independently blocking connection per guest thread.
 pub struct CoordinatorRpc<G: GlobalTool> {
     connection: SpinMutex<RpcConnection<G>>,
-    config: G::Config,
+    config: Arc<G::Config>,
     path: PathBuf,
     fd: AtomicI32,
     on_reconnect: ReconnectHook,
@@ -95,6 +96,11 @@ pub struct CoordinatorRpc<G: GlobalTool> {
 pub type ReconnectHook = fn(old: libc::c_int, new: libc::c_int) -> io::Result<()>;
 
 impl<G: GlobalTool> CoordinatorRpc<G> {
+    /// Share the launch configuration cached by this connection owner.
+    pub fn shared_config(&self) -> Arc<G::Config> {
+        Arc::clone(&self.config)
+    }
+
     /// The current connection's descriptor.
     pub fn raw_fd(&self) -> libc::c_int {
         self.fd.load(Ordering::Acquire)
@@ -130,7 +136,7 @@ impl<G: GlobalTool> CoordinatorRpc<G> {
         if fd < 0 || valid < 0 {
             return Err(io::Error::other("live coordinator descriptor is invalid"));
         }
-        let config = client.config().clone();
+        let config = Arc::new(client.config().clone());
         Ok(Self {
             connection: SpinMutex::new(RpcConnection { pid, client }),
             config,
@@ -151,7 +157,7 @@ impl<G: GlobalTool> CoordinatorRpc<G> {
         let tid = current_id(libc::SYS_gettid)?;
         let client = connect_ordinary::<G>(&path, tid)
             .map_err(|error| io::Error::other(describe_rpc_error(&error)))?;
-        let config = client.config().clone();
+        let config = Arc::new(client.config().clone());
         let fd = client.as_raw_fd();
         Ok(Self {
             connection: SpinMutex::new(RpcConnection { pid, client }),

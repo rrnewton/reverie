@@ -105,4 +105,7 @@ tokio = { version = "1.52.4", features = ["full", "test-util", "tracing"] }
 tracing = { version = "0.1.41", features = ["attributes", "valuable"] }
 
 [dev-dependencies]
+# Shared coordinator framing for the retained-configuration Strace library test.
+# Keep the internal strace test dependency synchronized before the next export.
+reverie-rpc-transport = { version = "0.5.4", path = "../reverie-rpc-transport" }
 tempfile = "3.27.0"

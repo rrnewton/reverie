@@ -28,6 +28,7 @@ use std::sync::OnceLock;
 use reverie::GlobalRPC;
 use reverie::Pid;
 use reverie::Tool;
+use reverie::ToolConfiguration;
 
 use crate::guest::context::RegisterContext;
 use crate::guest::continuation;
@@ -188,7 +189,8 @@ where
     crate::guest::clock::initialize_rcb_clock()?;
     // The raw syscall, not libc's interposable getpid.
     let pid = Pid::from_raw(unsafe { raw_syscall6(libc::SYS_getpid, [0; 6]) } as i32);
-    let subscriptions = T::subscriptions(rpc.config());
+    let configuration = ToolConfiguration::<T>::select(rpc.shared_config());
+    let subscriptions = configuration.subscriptions();
     let delivers = T::in_guest_signal_delivery(rpc.config());
     let instruction_subscriptions = InstructionSubscriptions {
         cpuid: subscriptions.has_cpuid(),
@@ -197,9 +199,9 @@ where
     crate::guest::instruction::preflight_instruction_faulting(instruction_subscriptions)?;
     let site_patching = host.site_patching()?;
     let vdso_sites = if site_patching {
-        reverie::vdso::patch_current_vdso(&subscriptions)
+        reverie::vdso::patch_current_vdso(subscriptions)
     } else {
-        reverie::vdso::patch_current_vdso_trapping(&subscriptions).map(|()| Vec::new())
+        reverie::vdso::patch_current_vdso_trapping(subscriptions).map(|()| Vec::new())
     }
     .map_err(|error| io::Error::other(crate::guest::host::describe_reverie_error(&error)))?;
     let _signal_state =
@@ -209,13 +211,13 @@ where
         // SAFETY: tool installation runs before application-created threads.
         unsafe { std::env::remove_var(crate::bootstrap::COORDINATOR_ENV) };
     }
-    let tool = T::new(pid, rpc.config());
-    let tool_host = ToolHost::<T, H::Runtime>::new(
+    let tool = configuration.new_process(pid);
+    let tool_host = ToolHost::<T, H::Runtime>::with_configuration(
         tool,
         rpc,
         pid,
+        configuration,
         syscall_subscriptions,
-        instruction_subscriptions.cpuid,
         host.runtime(stats),
     );
     if delivers && site_patching {

@@ -1537,6 +1537,7 @@ dependencies = [
  "reverie-kvm",
  "reverie-liteinst",
  "reverie-ptrace",
+ "reverie-rpc-transport",
  "reverie-util",
  "serde",
  "serde_json",
