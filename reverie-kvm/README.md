@@ -97,9 +97,32 @@ to guest memory are not held back (see the limits below). An
 `rt_sigprocmask` with invalid arguments still returns its `EINVAL` or `EFAULT`,
 and one that makes no pending signal deliverable runs as usual. Signals
 pending at a timer event wait, as before, for the thread's next syscall or
-fault. `Guest::set_timer_precise` is refused with an `Unsupported` error:
-delivery at an exact count needs single steps to it, which this backend does
-not take yet. The backend's capabilities keep
+fault.
+
+`Guest::set_timer_precise` requests a precise timer event, delivered exactly
+when the clock reaches its target, at the instruction boundary right after the
+target branch. The schedule maps as for `set_timer`, except that
+`RcbsAndInstructions` is refused with an `Unsupported` error: this backend does
+not step instructions past the count. The request is staged as reverie-ptrace
+stages one: a long request is programmed one first stage margin (10,000 RCBs)
+short of its target, and the first exit past that point sizes a second stage
+margin from the guest's branch rate; others are programmed one skid margin
+short. Within the margin of the target, every entry runs under KVM's guest
+debugging: one user instruction at a time (`KVM_GUESTDBG_SINGLESTEP`), so the
+step that retires the target branch stops the guest exactly there in every
+run, or unstepped up to an execution breakpoint (`KVM_GUESTDBG_USE_HW_BP`), or
+unstepped to an exit that comes first. The trap flag a step sets is the
+guest's real one, so the instruction at RIP is decoded first, with iced-x86:
+PUSHF's pushed flags lose TF; POPF and IRETQ get stepping set again after them,
+and a guest that sets its own TF is refused; SYSCALL, INT n, INT3, INT1, INTO,
+UD0-2, HLT, IN, OUT and MOV SS run unstepped to the exit they cause; RDTSC,
+RDTSCP, CPUID, VMCALL and VMMCALL, which KVM may complete with no exit, run
+unstepped to a breakpoint on the next instruction; a fault during a step has
+TF cleared from its frame before anything reads it. After a syscall that made
+no Tool callback, or an `rt_sigreturn`, the trampoline runs to a breakpoint at
+the user instruction it returns to. An exit that finds the target passed is
+late, recorded with the skid overshoot marker, and delivered at the clock it
+found, as reverie-ptrace delivers one. The backend's capabilities keep
 `delivers_preemption_timer_events` false, so no Tool can rely on a timer event
 from this backend.
 
@@ -154,9 +177,14 @@ reverie-ptrace cancels it; and code that unblocks `SIGSTKFLT` on a vCPU thread
 lets a late kick interrupt a host call again. After a refused injection, the
 timer callback's own guest-memory and stack writes, through handles it already
 holds, still reach memory until the callback returns or suspends; the run then
-fails with the named reason. While the vCPU mask stays
-installed, a signal
-that code outside reverie-kvm unblocks on the vCPU thread does not end
+fails with the named reason. A precise event is late when the interrupt behind
+its last kick comes after the margin: at 2,000 RCBs on an EPYC 9D85, about one
+kick in a thousand on an idle host, and up to one in a hundred on a busy one.
+Each instruction in the window costs a step of its own, about 3.3
+microseconds in a release build, with no block steps yet. A MOV SS in the
+window, or a kick in the trampoline after its VMCALL, lets the guest run
+unstepped, so the event comes late. While the vCPU mask stays installed, a
+signal that code outside reverie-kvm unblocks on the vCPU thread does not end
 `KVM_RUN` until the mask is composed again; the mask can outlive its timer
 event, since a binding reopened on the same thread (on another CPU under pinned
 placement, or with another raw encoding) while the request is idle or already
