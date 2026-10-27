@@ -1002,8 +1002,8 @@ const CONTENT_REVERIE_CATALOG: [(&str, u64, &str); 57] = [
     ),
     (
         "reverie-inguest/src/guest/clock.rs",
-        24725,
-        "f09168cd1d1c09564876efcef73d89b84ed0000072788bf1f8da5668e3744aaa",
+        25871,
+        "d353ba4ec2ea2225de34e5e6fceed12ff864183fa35ba004a7e63bcfa0125907",
     ),
     (
         "reverie-inguest/src/lifecycle.rs",

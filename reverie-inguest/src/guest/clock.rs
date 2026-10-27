@@ -538,7 +538,8 @@ mod tests {
 
     /// A guest `dup2` onto this thread's counter number goes ahead as on
     /// Linux: the runtime first moves the counter to another number, records
-    /// that one instead, and keeps counting through it. Needs a usable branch
+    /// that one instead, and keeps counting through it; so does a guest
+    /// `F_DUPFD` whose answer is the counter's number. Needs a usable branch
     /// counter: on a host without one there is no counter to move, and the
     /// test says so.
     #[test]
@@ -575,6 +576,32 @@ mod tests {
             }
             let second = read_guest_rcb_clock().unwrap();
             assert!(second > first, "the counter stopped: {first} -> {second}");
+
+            let mut f_dupfd = event(
+                libc::SYS_fcntl,
+                [0, libc::F_DUPFD_CLOEXEC as u64, after as u64, 0, 0, 0],
+            );
+            assert!(!unsafe { protect_runtime_descriptors(&mut f_dupfd, true) });
+            let last = unsafe { &*RCB_CLOCK.get() }.descriptor();
+            assert_ne!(last, after);
+            assert!(is_runtime_owned_fd(last));
+            assert!(!is_runtime_owned_fd(after));
+            let got = unsafe {
+                raw_syscall6(
+                    libc::SYS_fcntl,
+                    [0, libc::F_DUPFD_CLOEXEC as u64, after as u64, 0, 0, 0],
+                )
+            };
+            assert_eq!(
+                got,
+                i64::from(after),
+                "the guest gets the counter's old number"
+            );
+            for step in 0..100_000_u64 {
+                spin = std::hint::black_box(spin.wrapping_add(step ^ spin));
+            }
+            let third = read_guest_rcb_clock().unwrap();
+            assert!(third > second, "the counter stopped: {second} -> {third}");
         });
     }
 }
