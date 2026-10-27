@@ -22,7 +22,8 @@
 //   events it copied before a fault reach the guest even where the count
 //   leaves them out (publish_uncounted_prefix, for a readv's later iovec);
 // - watches attach to the inode selected by one guest-namespace lookup (held as
-//   O_PATH), never to a second lookup of the pathname.
+//   O_PATH), never to a second lookup of the pathname;
+// - FIONREAD returns the host queue's byte count, which is the guest's.
 //
 // Rename cookies are the host's too: Linux draws IN_MOVED_FROM/IN_MOVED_TO
 // cookies from one host-wide counter that every process's renames advance, so

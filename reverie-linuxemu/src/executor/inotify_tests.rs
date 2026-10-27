@@ -217,6 +217,65 @@ mod inotify_tests {
     }
 
     #[test]
+    fn inotify_fionread_counts_the_queue_as_native() {
+        let root = TestDir::new();
+        let mut state = test_state(&root.0);
+        let mut memory = GuestMemory::new(0, 4 * PAGE_SIZE as usize).unwrap();
+        let native = native_instance();
+        let fd = create(&mut state, &mut memory) as u64;
+        let root_bytes = root.0.as_os_str().as_bytes().to_vec();
+        let mask = libc::IN_CREATE;
+        assert_eq!(
+            add_watch(&mut state, &mut memory, fd, &root_bytes, mask),
+            native_watch(&native, &root.0, mask)
+        );
+        let fionread = |state: &mut LoadedStaticElf, memory: &mut GuestMemory, address: u64| {
+            syscall_result(
+                memory,
+                state,
+                libc::SYS_ioctl,
+                [fd, libc::FIONREAD, address, 0, 0, 0],
+            )
+        };
+        let guest_queued = |state: &mut LoadedStaticElf, memory: &mut GuestMemory| {
+            assert_eq!(fionread(state, memory, BUFFER), 0);
+            let mut count = [0_u8; 4];
+            memory.read(BUFFER, &mut count).unwrap();
+            i32::from_ne_bytes(count)
+        };
+        assert_eq!(guest_queued(&mut state, &mut memory), 0);
+        assert_eq!(queued(native.as_raw_fd()), 0);
+        // Names of different padded lengths, so the count is the sum of each
+        // event's header and padded name, not an event count.
+        std::fs::write(root.0.join("a"), b"").unwrap();
+        std::fs::write(root.0.join("a-longer-file-name"), b"").unwrap();
+        // 16-byte headers with 16- and 32-byte padded names.
+        let both = queued(native.as_raw_fd());
+        assert_eq!(both, 80);
+        assert_eq!(guest_queued(&mut state, &mut memory), both);
+        // A read takes the first event; the count falls by exactly its size.
+        let (first, records) = guest_read(&mut state, &mut memory, fd, 32);
+        assert!(first > 0, "guest read returned {first}");
+        let mut scratch = [0_u8; 32];
+        assert_eq!(
+            native_read(native.as_raw_fd(), scratch.as_mut_ptr(), scratch.len()),
+            first
+        );
+        assert_eq!(cookies(&records).len(), 1);
+        assert_eq!(
+            guest_queued(&mut state, &mut memory),
+            queued(native.as_raw_fd())
+        );
+        assert_eq!(guest_queued(&mut state, &mut memory), both - first as i32);
+        assert_eq!(first, 32);
+        // The count's destination is checked as Linux's put_user checks it.
+        assert_eq!(
+            fionread(&mut state, &mut memory, 64 * PAGE_SIZE),
+            negative_errno(libc::EFAULT)
+        );
+    }
+
+    #[test]
     fn inotify_blocking_mode_switches_and_reads_are_refused() {
         let root = TestDir::new();
         let mut state = test_state(&root.0);
