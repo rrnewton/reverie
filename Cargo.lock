@@ -1591,6 +1591,7 @@ version = "0.5.4"
 dependencies = [
  "futures 0.3.34",
  "goblin",
+ "iced-x86",
  "io-uring",
  "kvm-bindings",
  "kvm-ioctls",
