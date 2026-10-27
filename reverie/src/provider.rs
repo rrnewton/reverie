@@ -13,8 +13,7 @@
 //!
 //! This module is part of Reverie's core, next to [`Tool`](crate::Tool),
 //! [`Guest`](crate::Guest) and [`Backend`](crate::Backend). It was step U6a
-//! of the provider seam (<https://github.com/rrnewton/hermit/issues/4485>,
-//! epic <https://github.com/rrnewton/hermit/issues/4492>) as its own crate,
+//! of the provider seam (<https://github.com/rrnewton/hermit/issues/4659>) as its own crate,
 //! reverie-linux-provider, which now only re-exports this module. It names no
 //! backend: reverie-kvm implements the memory traits for its guest arena and
 //! fixes the associated types; reverie-kvm's syscall executor and the
@@ -43,7 +42,7 @@
 //! that provider route. SaBRe does not route `Guest::inject` through it yet,
 //! and [`Backend`](crate::Backend) does not carry a provider. The remaining
 //! routes are later steps, tracked in
-//! <https://github.com/rrnewton/hermit/issues/4485>.
+//! <https://github.com/rrnewton/hermit/issues/4659>.
 //!
 //! # Rules every provider is held to
 //!

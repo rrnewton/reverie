@@ -634,6 +634,7 @@ where
             #[cfg(feature = "exec-native-injection")]
             mapping_driver: self.native_exec_driver.as_deref(),
             unsupported_refusal: None,
+            injected_syscalls: 0,
         };
 
         if is_new {
@@ -1008,6 +1009,7 @@ where
             #[cfg(feature = "exec-native-injection")]
             mapping_driver: self.native_exec_driver.as_deref(),
             unsupported_refusal: None,
+            injected_syscalls: 0,
         };
         if is_new {
             match callback_result(drive_callback(tool.handle_thread_start(&mut guest), &tail)) {
@@ -1200,6 +1202,7 @@ fn finish_fork_child<T: Tool, R: HostRuntime>(
         #[cfg(feature = "exec-native-injection")]
         mapping_driver: None,
         unsupported_refusal: None,
+        injected_syscalls: 0,
     };
     match callback_result(drive_callback(
         tool.handle_thread_start(&mut child_guest),
@@ -1710,6 +1713,9 @@ struct InGuest<'a, T: Tool, R: HostRuntime> {
     /// The typed refusal of the last injection, if the backend refused it
     /// ([`reverie::Guest::take_unsupported_refusal`]).
     unsupported_refusal: Option<reverie::UnsupportedRefusal>,
+    /// Injections made through this guest
+    /// ([`reverie::Guest::injected_syscalls`]).
+    injected_syscalls: u64,
 }
 
 impl<T: Tool, R: HostRuntime> InGuest<'_, T, R> {
@@ -2992,6 +2998,25 @@ impl<'a, T: Tool, R: HostRuntime> Guest<T> for InGuest<'a, T, R> {
         unsafe { runtime_tool_syscall(number, args) }
     }
 
+    /// Qualified at the guest's trusted physical gate, where this backend's
+    /// forwarded syscalls run ([`host_linux::forward`]), and only inside the
+    /// admitted Tool callback that owns this guest thread's turn. Outside
+    /// that scope, or once the guest admitted a seccomp filter of its own
+    /// (which could fail or fake the gate's calls), nothing is executed and
+    /// the spelling is unknown.
+    fn pidfd_self_spelling(&self) -> reverie::PidfdSelfSpelling {
+        // Read, never qualified, here: an image whose runtime installed its
+        // trap qualified it before the filter
+        // (`pidfd_self::initialize_before_runtime_filter`); any other image
+        // published nothing and reads Unknown. Outside the admitted callback, or once the guest has installed a
+        // filter of its own that could stand between the gate and the
+        // kernel, it is unknown. No syscall either way.
+        if !tool_callback_active() || guest_filter_admitted() {
+            return reverie::PidfdSelfSpelling::Unknown;
+        }
+        super::pidfd_self::spelling()
+    }
+
     fn thread_state_mut(&mut self) -> &mut T::ThreadState {
         self.state
     }
@@ -3075,6 +3100,10 @@ impl<'a, T: Tool, R: HostRuntime> Guest<T> for InGuest<'a, T, R> {
         self.unsupported_refusal.take()
     }
 
+    fn injected_syscalls(&self) -> Option<u64> {
+        Some(self.injected_syscalls)
+    }
+
     async fn inject_with_purpose<S: SyscallInfo>(
         &mut self,
         syscall: S,
@@ -3091,6 +3120,7 @@ impl<'a, T: Tool, R: HostRuntime> Guest<T> for InGuest<'a, T, R> {
 
     async fn inject<S: SyscallInfo>(&mut self, syscall: S) -> Result<i64, Errno> {
         self.unsupported_refusal = None;
+        self.injected_syscalls += 1;
         if self.tail.ending() {
             // The guest is ending (an exit or a SIGKILL of itself was staged,
             // perhaps in a future the Tool abandoned): no further call is
@@ -3666,6 +3696,7 @@ mod tests {
             #[cfg(feature = "exec-native-injection")]
             mapping_driver: None,
             unsupported_refusal: None,
+            injected_syscalls: 0,
         };
         let mut action: libc::sigaction = unsafe { core::mem::zeroed() };
         action.sa_sigaction = libc::SIG_DFL;
@@ -3706,6 +3737,156 @@ mod tests {
             // callback means the method must still use an intercepted site.
             let _ = guest.tool_syscall(Sysno::getpid, [0; 6]);
             super::super::support::exit_now(118);
+        }
+    }
+
+    /// Outside the admitted Tool callback the spelling is unknown, even with
+    /// the image's fact published, and nothing is executed.
+    #[test]
+    fn pidfd_self_spelling_outside_callback_executes_nothing() {
+        pidfd_self_spelling_under_the_runtime_filter(
+            "guest::host::tests::pidfd_self_spelling_outside_callback_executes_nothing",
+            false,
+        );
+    }
+
+    /// Inside the admitted Tool callback, under the runtime's real filter
+    /// with no SIGSYS handler (so any syscall but the trusted gate's kills the
+    /// process), the getter returns the fact the image published before the
+    /// filter, repeatedly, making no syscall.
+    #[test]
+    fn pidfd_self_spelling_inside_callback_reads_the_published_fact_without_syscalls() {
+        pidfd_self_spelling_under_the_runtime_filter(
+            "guest::host::tests::pidfd_self_spelling_inside_callback_reads_the_published_fact_without_syscalls",
+            true,
+        );
+    }
+
+    /// Runs `test` again in a child process that publishes the image's fact,
+    /// installs the runtime's real filter and asks for the spelling, inside a
+    /// Tool callback or not.
+    fn pidfd_self_spelling_under_the_runtime_filter(test: &str, inside: bool) {
+        use std::io::Write;
+        const CHILD: &str = "REVERIE_PIDFD_SELF_SPELLING_TEST_CHILD";
+        const READY: &[u8] = b"pidfd-self-filter-ready\n";
+        if std::env::var_os(CHILD).as_deref() != Some(std::ffi::OsStr::new(test)) {
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", test, "--nocapture", "--test-threads=1"])
+                .env(CHILD, test)
+                .output()
+                .unwrap();
+            assert_eq!(output.status.code(), Some(0), "{output:?}");
+            assert_eq!(output.stderr, READY, "{output:?}");
+            return;
+        }
+
+        assert!(!tool_callback_active());
+        // Published as the runtime publishes it, before its filter.
+        let published = crate::guest::pidfd_self::initialize_before_runtime_filter();
+        let mut filter =
+            crate::seccomp::SeccompFilter::for_trusted_gate(crate::trap::trusted_gate()).unwrap();
+        // Prewrite the actual config handshake; no server thread or pending
+        // RPC survives installation. No operation below may send an RPC.
+        let (client, mut peer) = std::os::unix::net::UnixStream::pair().unwrap();
+        client
+            .set_read_timeout(Some(std::time::Duration::from_secs(2)))
+            .unwrap();
+        let config = reverie_rpc_transport::codec::encode(&()).unwrap();
+        peer.write_all(&(config.len() as u32).to_be_bytes())
+            .unwrap();
+        peer.write_all(&config).unwrap();
+        let client = reverie_rpc_transport::BlockingRpcClient::<(), _>::from_connected_stream(
+            super::super::rpc::GuestRpcStream::from(client),
+            raw_pid(libc::SYS_gettid),
+        )
+        .unwrap();
+        let rpc = CoordinatorRpc::from_live_client("unused-tool-syscall-test", client, |_, _| {
+            panic!("Tool syscall test must not reconnect")
+        })
+        .unwrap();
+        let mut event = SyscallEvent {
+            number: libc::SYS_getpid,
+            args: [0; 6],
+            instruction_pointer: 0,
+            result: 0,
+            context: 0,
+            dispatch: SyscallDispatch::InstalledHook,
+            guest_pkru: None,
+        };
+        let tail = TailResult::default();
+        let mut state = ();
+        let tid = raw_pid(libc::SYS_gettid);
+        let guest = InGuest::<(), _> {
+            event: &mut event,
+            tid,
+            pid: raw_pid(libc::SYS_getpid),
+            ppid: None,
+            state: &mut state,
+            rpc: &rpc,
+            tail: &tail,
+            cpuid_interception: false,
+            fork_parent_state: None,
+            runtime: &ToolSyscallRuntime,
+            staged_signals: Vec::new(),
+            staged_signal_delivery: false,
+            in_syscall_handler: false,
+            #[cfg(feature = "exec-native-injection")]
+            exec: None,
+            #[cfg(feature = "exec-native-injection")]
+            mapping_driver: None,
+            unsupported_refusal: None,
+            injected_syscalls: 0,
+        };
+        let mut action: libc::sigaction = unsafe { core::mem::zeroed() };
+        action.sa_sigaction = libc::SIG_DFL;
+        let mut unblock: libc::sigset_t = unsafe { core::mem::zeroed() };
+        assert_eq!(unsafe { libc::sigemptyset(&mut action.sa_mask) }, 0);
+        assert_eq!(unsafe { libc::sigemptyset(&mut unblock) }, 0);
+        assert_eq!(unsafe { libc::sigaddset(&mut unblock, libc::SIGSYS) }, 0);
+        let no_core = libc::rlimit {
+            rlim_cur: 0,
+            rlim_max: 0,
+        };
+        unsafe {
+            if libc::setrlimit(libc::RLIMIT_CORE, &no_core) != 0
+                || libc::sigaction(libc::SIGSYS, &action, core::ptr::null_mut()) != 0
+                || libc::sigprocmask(libc::SIG_UNBLOCK, &unblock, core::ptr::null_mut()) != 0
+                || filter.install().is_err()
+            {
+                super::super::support::exit_now(117);
+            }
+            if raw_syscall6(libc::SYS_getpid, [0; 6]) != i64::from(guest.pid.as_raw()) {
+                super::super::support::exit_now(119);
+            }
+            if raw_syscall6(
+                libc::SYS_write,
+                [
+                    libc::STDERR_FILENO as u64,
+                    READY.as_ptr() as u64,
+                    READY.len() as u64,
+                    0,
+                    0,
+                    0,
+                ],
+            ) != READY.len() as i64
+            {
+                super::super::support::exit_now(120);
+            }
+            if inside {
+                // Any syscall but the gate's would meet the filter and, with
+                // SIGSYS at its default action, end the process.
+                let _callback = crate::guest::support::ToolCallbackGuard::enter();
+                for _ in 0..3 {
+                    if guest.pidfd_self_spelling() != published {
+                        super::super::support::exit_now(122);
+                    }
+                }
+            } else if guest.pidfd_self_spelling() != reverie::PidfdSelfSpelling::Unknown {
+                // Outside a Tool callback the spelling must be unknown with
+                // nothing executed.
+                super::super::support::exit_now(121);
+            }
+            super::super::support::exit_now(0);
         }
     }
 
@@ -4253,6 +4434,7 @@ mod tests {
                 #[cfg(feature = "exec-native-injection")]
                 mapping_driver: None,
                 unsupported_refusal: None,
+                injected_syscalls: 0,
             };
             let waker = Waker::noop();
             let mut context = Context::from_waker(waker);

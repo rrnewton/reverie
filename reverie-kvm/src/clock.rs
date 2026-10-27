@@ -42,6 +42,7 @@ use reverie::pmu::PmuProfile;
 
 use crate::Error;
 use crate::Result;
+use crate::entry::EntryOrigin;
 use crate::entry::Participant;
 use crate::entry::RunEntry;
 use crate::entry::owner::OperationOrigin;
@@ -155,7 +156,23 @@ pub(crate) struct CountedVcpu {
     immediate_exit: crate::entry::ImmediateExit,
     participant: Participant,
     // Keep the Mapping alive independently of the backend field's drop order.
+    // Its attribution was moved to `origin_seed` at construction: this handle
+    // is never used to issue an access, so nothing else reads it.
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "Held only to keep the Mapping alive; tests read guest memory through it"
+        )
+    )]
     memory: GuestMemory,
+    /// The construction handle's attribution, until the first
+    /// [`Self::set_failure_context`] or [`Self::set_operation_origin`]. The
+    /// participant's origin is the handle's whole attribution after each
+    /// set, so that first set gives it the part the call does not name from
+    /// here, as it once took that part from the handle. Placed after
+    /// `memory`, it is dropped where the handle dropped it.
+    origin_seed: Option<EntryOrigin>,
     clock: GuestClock,
     image_is_elf: bool,
     initial_elf_ran: bool,
@@ -178,7 +195,8 @@ impl Deref for CountedVcpu {
 }
 
 impl CountedVcpu {
-    pub(crate) fn new(mut fd: VcpuFd, memory: GuestMemory, sync_regs: bool) -> Result<Self> {
+    pub(crate) fn new(mut fd: VcpuFd, mut memory: GuestMemory, sync_regs: bool) -> Result<Self> {
+        let origin_seed = Some(memory.take_entry_origin());
         let participant = memory
             .entry_gate()
             .register()
@@ -197,6 +215,7 @@ impl CountedVcpu {
             immediate_exit,
             participant,
             memory,
+            origin_seed,
             clock: GuestClock::default(),
             image_is_elf: false,
             initial_elf_ran: false,
@@ -219,19 +238,23 @@ impl CountedVcpu {
         }
     }
 
+    /// Both register reads below read the fd's register state (its kvm_run
+    /// page or an ioctl), so the probe counts them as shared-fd accesses, as
+    /// a raw `Deref` read was counted before.
+    fn note_register_read(&self) {
+        #[cfg(test)]
+        if let Some(probe) = &self.run_probe {
+            probe.prepare.increment(&probe.shared_fd_accesses);
+        }
+    }
+
     /// The guest's general registers. After an exit this reads KVM's synced
     /// copy without an ioctl; otherwise, or after any raw fd access, it asks
     /// KVM (`KVM_GET_REGS`).
     pub(crate) fn get_regs(
         &self,
     ) -> std::result::Result<kvm_bindings::kvm_regs, kvm_ioctls::Error> {
-        // Both paths read the fd's register state (its kvm_run page or an
-        // ioctl), so the probe counts them as shared-fd accesses, as a raw
-        // `Deref` read was counted before.
-        #[cfg(test)]
-        if let Some(probe) = &self.run_probe {
-            probe.prepare.increment(&probe.shared_fd_accesses);
-        }
+        self.note_register_read();
         if self.synced_exit.load(std::sync::atomic::Ordering::Relaxed) {
             Ok(self.fd.sync_regs().regs)
         } else {
@@ -239,39 +262,101 @@ impl CountedVcpu {
         }
     }
 
+    /// [`Self::get_regs`], stored into `registers` rather than returned: the
+    /// same read from the same source, copied once into its destination
+    /// instead of through a returned `Result`. On an error `registers` is
+    /// unchanged.
+    pub(crate) fn get_regs_into(
+        &self,
+        registers: &mut kvm_bindings::kvm_regs,
+    ) -> std::result::Result<(), kvm_ioctls::Error> {
+        self.note_register_read();
+        if self.synced_exit.load(std::sync::atomic::Ordering::Relaxed) {
+            *registers = self.fd.sync_regs().regs;
+        } else {
+            *registers = self.fd.get_regs()?;
+        }
+        Ok(())
+    }
+
     /// The guest's special registers, from the synced copy as for
     /// [`Self::get_regs`] (`KVM_GET_SREGS` otherwise).
     pub(crate) fn get_sregs(
         &self,
     ) -> std::result::Result<kvm_bindings::kvm_sregs, kvm_ioctls::Error> {
-        // Both paths read the fd's register state (its kvm_run page or an
-        // ioctl), so the probe counts them as shared-fd accesses, as a raw
-        // `Deref` read was counted before.
-        #[cfg(test)]
-        if let Some(probe) = &self.run_probe {
-            probe.prepare.increment(&probe.shared_fd_accesses);
-        }
+        self.note_register_read();
         if self.synced_exit.load(std::sync::atomic::Ordering::Relaxed) {
             let special = self.fd.sync_regs().sregs;
-            // KVM sets bits in the synced interrupt bitmap but never clears
-            // them (measured on Linux 7.1.3), while KVM_GET_SREGS reports the
-            // pending bitmap. This backend injects no interrupt, so the bitmap
-            // is zero; should one ever be set, ask KVM rather than return it.
-            if special.interrupt_bitmap.iter().all(|word| *word == 0) {
+            if synced_special_registers_usable(&special) {
                 return Ok(special);
             }
         }
         self.fd.get_sregs()
     }
 
-    pub(crate) fn set_failure_context(&mut self, origin: Option<FailureContext>) {
-        self.memory.set_failure_context(origin);
-        self.participant.set_origin(self.memory.entry_origin());
+    /// [`Self::get_sregs`], stored into `special` rather than returned: the
+    /// same reads in the same order (the synced copy, then `KVM_GET_SREGS`
+    /// only when that copy is unusable), each copied once into its
+    /// destination. On an error `special` holds the synced copy that was
+    /// refused, and the caller discards it with the error.
+    pub(crate) fn get_sregs_into(
+        &self,
+        special: &mut kvm_bindings::kvm_sregs,
+    ) -> std::result::Result<(), kvm_ioctls::Error> {
+        self.note_register_read();
+        if self.synced_exit.load(std::sync::atomic::Ordering::Relaxed) {
+            *special = self.fd.sync_regs().sregs;
+            if synced_special_registers_usable(special) {
+                return Ok(());
+            }
+        }
+        *special = self.fd.get_sregs()?;
+        Ok(())
     }
 
+    /// Attribute this vCPU's entry failures to `origin`, keeping the
+    /// operation part. The participant is the only reader of this
+    /// attribution, so `origin` moves into it without a copy.
+    pub(crate) fn set_failure_context(&mut self, origin: Option<FailureContext>) {
+        let seed = &mut self.origin_seed;
+        self.participant.update_origin(|current| match seed.take() {
+            Some(seed) => {
+                *current = EntryOrigin {
+                    failure: origin,
+                    operation: seed.operation,
+                }
+            }
+            None => current.failure = origin,
+        });
+    }
+
+    /// Attribute this vCPU's entry failures to `origin`, keeping the failure
+    /// context. As for [`Self::set_failure_context`], `origin` moves into the
+    /// participant without a copy.
     pub(crate) fn set_operation_origin(&mut self, origin: Option<OperationOrigin>) {
-        self.memory.set_operation_origin(origin);
-        self.participant.set_origin(self.memory.entry_origin());
+        let seed = &mut self.origin_seed;
+        self.participant.update_origin(|current| match seed.take() {
+            Some(seed) => {
+                *current = EntryOrigin {
+                    failure: seed.failure,
+                    operation: origin,
+                }
+            }
+            None => current.operation = origin,
+        });
+    }
+
+    /// The attribution the participant would record now.
+    #[cfg(test)]
+    pub(crate) fn participant_origin(&self) -> &EntryOrigin {
+        self.participant.origin()
+    }
+
+    /// The attribution this vCPU's own memory handle carries: none, since
+    /// construction moved it aside for the participant.
+    #[cfg(test)]
+    pub(crate) fn handle_origin(&self) -> EntryOrigin {
+        self.memory.entry_origin()
     }
 
     /// Only initial installation creates a new thread lifetime. Exec retains
@@ -312,7 +397,7 @@ impl CountedVcpu {
         self.clock.tracking = true;
         // Admit the pinned event before the first lifecycle callback. No guest
         // has run yet, and excluded host work must not contribute to its clock.
-        self.clock.begin()?.finish()?;
+        self.clock.begin(&mut None)?.finish()?;
         if self.clock.total != 0 {
             return Err(self.clock.poison("counter counted outside KVM_RUN"));
         }
@@ -364,7 +449,10 @@ impl CountedVcpu {
             }
             return exit.map(Some);
         }
-        let interval = match self.clock.begin() {
+        // The interval's CPU pin, if any, lives here rather than inside the
+        // interval, which then stays small enough to move without a copy.
+        let mut affinity = None;
+        let interval = match self.clock.begin(&mut affinity) {
             Ok(interval) => interval,
             Err(error) => return finish_entry(Err(error), entry),
         };
@@ -572,6 +660,15 @@ impl CpuDomain {
     }
 }
 
+/// Whether KVM's synced special registers can stand for `KVM_GET_SREGS`.
+/// KVM sets bits in the synced interrupt bitmap but never clears them
+/// (measured on Linux 7.1.3), while KVM_GET_SREGS reports the pending bitmap.
+/// This backend injects no interrupt, so the bitmap is zero; should one ever
+/// be set, ask KVM rather than return it.
+fn synced_special_registers_usable(special: &kvm_bindings::kvm_sregs) -> bool {
+    special.interrupt_bitmap.iter().all(|word| *word == 0)
+}
+
 /// This host's domain, taken once per process (a fork child inherits it: the
 /// same host). None keeps every entry on the full lookup.
 ///
@@ -630,20 +727,25 @@ impl GuestClock {
         failure(reason)
     }
 
-    fn begin(&mut self) -> Result<CountInterval<'_>> {
+    /// Starts a counted interval. `affinity` is empty storage, owned by the
+    /// caller, for the interval's CPU pin under
+    /// `CounterPlacement::PinEachEntry`; the interval holds it as its own and
+    /// releases it when it is dropped, as if it held the pin inline.
+    fn begin<'a>(&'a mut self, affinity: &'a mut Option<CpuAffinity>) -> Result<CountInterval<'a>> {
         #[cfg(test)]
         if let Some(probe) = &self.run_probe {
             probe.prepare.increment(&probe.clock_begins);
         }
-        self.begin_with_raw_event(current_raw_event)
+        self.begin_with_raw_event(affinity, current_raw_event)
     }
 
-    fn begin_with_raw_event(
-        &mut self,
+    fn begin_with_raw_event<'a>(
+        &'a mut self,
+        affinity: &'a mut Option<CpuAffinity>,
         raw_event: impl FnOnce() -> Result<u64>,
-    ) -> Result<CountInterval<'_>> {
+    ) -> Result<CountInterval<'a>> {
         self.read()?;
-        let mut affinity = match self.placement {
+        *affinity = match self.placement {
             CounterPlacement::FollowTask => None,
             CounterPlacement::PinEachEntry => match CpuAffinity::enter() {
                 Ok(affinity) => Some(affinity),
@@ -681,7 +783,11 @@ impl GuestClock {
                 Ok(()) => error.to_string(),
                 Err(cleanup) => format!("{error}; cleanup also failed: {cleanup}"),
             };
-            return Err(self.poison(reason));
+            let error = self.poison(reason);
+            // The pin is released after poisoning, as it was when it was
+            // this function's local.
+            *affinity = None;
+            return Err(error);
         }
         #[cfg(test)]
         if let Some(probe) = &self.run_probe {
@@ -1266,8 +1372,9 @@ impl CounterBinding {
 
 struct CountInterval<'a> {
     clock: &'a mut GuestClock,
-    /// Present only under `CounterPlacement::PinEachEntry`.
-    affinity: Option<CpuAffinity>,
+    /// Present only under `CounterPlacement::PinEachEntry`. The interval owns
+    /// the pin; only its storage is the caller's (see `GuestClock::begin`).
+    affinity: &'a mut Option<CpuAffinity>,
     finished: bool,
 }
 
@@ -1312,6 +1419,9 @@ impl Drop for CountInterval<'_> {
             // the event before restoring affinity; later clock reads fail.
             self.clock.poison("unwound during counted KVM_RUN");
         }
+        // Released with the interval, after any poisoning, as a field it
+        // owned inline would be. Dropped in place: `take` would copy it out.
+        *self.affinity = None;
     }
 }
 
@@ -1777,7 +1887,8 @@ mod tests {
             .collect();
         for round in 0..2 {
             for index in 0..clocks.len() {
-                let interval = clocks[index].begin().unwrap();
+                let mut pin = None;
+                let interval = clocks[index].begin(&mut pin).unwrap();
                 for value in 0..10_000 {
                     std::hint::black_box(value);
                 }
@@ -1864,7 +1975,7 @@ mod tests {
         };
         let interval = CountInterval {
             clock: &mut clock,
-            affinity: Some(CpuAffinity::enter().unwrap()),
+            affinity: &mut Some(CpuAffinity::enter().unwrap()),
             finished: false,
         };
         let result = finish_run::<()>(Err(kvm_ioctls::Error::new(libc::EINTR)), interval);
@@ -1918,9 +2029,9 @@ mod tests {
                 ..Default::default()
             };
             let fd = clock.binding.as_ref().unwrap().fd.as_raw_fd();
-            let mut interval = CountInterval {
+            let interval = CountInterval {
                 clock: &mut clock,
-                affinity: Some(CpuAffinity::enter().unwrap()),
+                affinity: &mut Some(CpuAffinity::enter().unwrap()),
                 finished: false,
             };
             interval.affinity.as_mut().unwrap().closed_fd_before_restore = Some(fd);
@@ -1937,7 +2048,7 @@ mod tests {
             assert!(clock.binding.is_none());
             assert_eq!(clock.total, 100);
             assert!(clock.read().is_err());
-            assert!(clock.begin().is_err());
+            assert!(clock.begin(&mut None).is_err());
             assert!(same_affinity(&affinity().unwrap(), &original));
         }
         println!("\n{COMPLETE}");
@@ -1954,7 +2065,7 @@ mod tests {
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             let _interval = CountInterval {
                 clock: &mut clock,
-                affinity: Some(CpuAffinity::enter().unwrap()),
+                affinity: &mut Some(CpuAffinity::enter().unwrap()),
                 finished: false,
             };
             panic!("simulated vCPU unwinding");
@@ -1963,6 +2074,34 @@ mod tests {
         assert!(clock.binding.is_none());
         assert!(clock.read().unwrap_err().to_string().contains("unwound"));
         assert!(same_affinity(&affinity().unwrap(), &original));
+    }
+
+    /// The caller only stores an interval's CPU pin: dropping the interval,
+    /// finished or not, releases the pin (an active one restores the saved
+    /// affinity) and empties the storage, as when the interval held the pin
+    /// inline. An unfinished interval also poisons the clock.
+    #[test]
+    fn a_dropped_interval_releases_the_pin_its_caller_stores() {
+        let original = affinity().unwrap();
+        for finished in [true, false] {
+            let mut clock = GuestClock {
+                tracking: true,
+                binding: Some(reader(&[])),
+                ..Default::default()
+            };
+            let mut pin = Some(CpuAffinity::enter().unwrap());
+            let cpu = pin.as_ref().unwrap().cpu;
+            assert_eq!(unsafe { libc::sched_getcpu() }, cpu as libc::c_int);
+            drop(CountInterval {
+                clock: &mut clock,
+                affinity: &mut pin,
+                finished,
+            });
+            assert!(pin.is_none(), "finished={finished}");
+            assert!(same_affinity(&affinity().unwrap(), &original));
+            assert_eq!(clock.binding.is_none(), !finished);
+            assert_eq!(clock.read().is_err(), !finished);
+        }
     }
 
     fn single_cpu_interval_counts_no_host_work(original: &libc::cpu_set_t) -> usize {
@@ -1976,7 +2115,8 @@ mod tests {
             tracking: true,
             ..Default::default()
         };
-        let interval = clock.begin().unwrap();
+        let mut pin = None;
+        let interval = clock.begin(&mut pin).unwrap();
         let pinned = interval.affinity.as_ref().unwrap();
         assert_eq!(pinned.cpu, cpu);
         assert!(same_affinity(&pinned.saved, &singleton));
@@ -2008,7 +2148,8 @@ mod tests {
             ..Default::default()
         };
         for _ in 0..3 {
-            let interval = clock.begin().unwrap();
+            let mut pin = None;
+            let interval = clock.begin(&mut pin).unwrap();
             assert!(interval.affinity.is_none());
             assert!(same_affinity(&affinity().unwrap(), &original));
             for value in 0..1_000_000 {
@@ -2055,7 +2196,8 @@ mod tests {
             tracking: true,
             ..Default::default()
         };
-        let interval = clock.begin().unwrap();
+        let mut pin = None;
+        let interval = clock.begin(&mut pin).unwrap();
         let cpu = interval.affinity.as_ref().unwrap().cpu;
         let other = (0..libc::CPU_SETSIZE as usize)
             .find(|&candidate| candidate != cpu && unsafe { libc::CPU_ISSET(candidate, &original) })
@@ -2098,7 +2240,7 @@ mod tests {
             binding: Some(binding),
             ..Default::default()
         };
-        let error = match clock.begin_with_raw_event(|| Ok(0)) {
+        let error = match clock.begin_with_raw_event(&mut None, || Ok(0)) {
             Err(error) => error,
             Ok(_) => panic!("a pipe cannot enable a perf event"),
         };
@@ -2140,9 +2282,9 @@ mod tests {
             }))),
             ..Default::default()
         };
-        let mut interval = CountInterval {
+        let interval = CountInterval {
             clock: &mut clock,
-            affinity: Some(CpuAffinity::enter().unwrap()),
+            affinity: &mut Some(CpuAffinity::enter().unwrap()),
             finished: false,
         };
         // The real sched_setaffinity syscall rejects an empty saved mask.
@@ -2527,6 +2669,117 @@ mod tests {
             "raw event cache: {checked} permitted CPUs agree with the domain's {:#x}",
             domain.raw_event
         );
+    }
+
+    /// A set refused because an entry is outstanding (dropped unacknowledged,
+    /// or forgotten in `Setup` or `Running`) changes neither the
+    /// participant's attribution nor the construction handle's part held for
+    /// the first set: the refusal precedes every move, so what a later
+    /// failure names is the origin set before the entry, as before.
+    #[test]
+    fn a_refused_attribution_set_changes_and_consumes_nothing() {
+        use std::panic::AssertUnwindSafe;
+        use std::panic::catch_unwind;
+
+        fn same_origin(left: &EntryOrigin, right: &EntryOrigin) -> bool {
+            (match (&left.failure, &right.failure) {
+                (Some(left), Some(right)) => left.same_as(right),
+                (None, None) => true,
+                _ => false,
+            }) && match (&left.operation, &right.operation) {
+                (Some(left), Some(right)) => left.same_as(right),
+                (None, None) => true,
+                _ => false,
+            }
+        }
+
+        for case in [
+            "dropped",
+            "forgotten in setup",
+            "forgotten running",
+            "dropped before any set",
+        ] {
+            let mut backend = crate::KvmBackend::new(0x10000)
+                .expect("participant refusal control requires /dev/kvm");
+            let seeded = case == "dropped before any set";
+            let driver = (!seeded).then(|| backend.start_entry_driver());
+            let callback = (!seeded).then(|| backend.begin_entry_callback().unwrap().unwrap());
+            let before = backend.vcpu.participant.origin().clone();
+            if let Some(callback) = &callback {
+                assert!(
+                    before
+                        .operation
+                        .as_ref()
+                        .unwrap()
+                        .same_as(&callback.origin()),
+                    "{case}"
+                );
+            }
+            assert_eq!(backend.vcpu.origin_seed.is_some(), seeded, "{case}");
+            let gate = backend.memory.entry_gate();
+            match case {
+                "forgotten in setup" => {
+                    let entry = backend.vcpu.participant.try_enter().unwrap().unwrap();
+                    std::mem::forget(entry);
+                }
+                "forgotten running" => {
+                    let mut entry = backend.vcpu.participant.try_enter().unwrap().unwrap();
+                    assert!(entry.activate().unwrap());
+                    std::mem::forget(entry);
+                }
+                _ => {
+                    let mut entry = backend.vcpu.participant.try_enter().unwrap().unwrap();
+                    assert!(entry.activate().unwrap());
+                    drop(entry);
+                    let failure = gate.pending_failure().expect(case);
+                    assert!(
+                        match (&failure.operation, &before.operation) {
+                            (Some(left), Some(right)) => left.same_as(right),
+                            (None, None) => true,
+                            _ => false,
+                        },
+                        "{case}"
+                    );
+                }
+            }
+
+            let other = crate::entry::owner::DriverScope::new();
+            let global = std::sync::Arc::new(());
+            let run = crate::failure::RunFailure::new(&global);
+            let refusals = [
+                catch_unwind(AssertUnwindSafe(|| {
+                    backend
+                        .vcpu
+                        .set_operation_origin(Some(other.owner().origin()))
+                })),
+                catch_unwind(AssertUnwindSafe(|| {
+                    backend.vcpu.set_failure_context(Some(FailureContext::new(
+                        run.clone(),
+                        reverie::Pid::from_raw(1),
+                        reverie::Pid::from_raw(1),
+                    )))
+                })),
+                catch_unwind(AssertUnwindSafe(|| backend.vcpu.set_operation_origin(None))),
+            ];
+            for refused in refusals {
+                let refused = refused.expect_err(case);
+                assert_eq!(
+                    refused.downcast_ref::<&str>().copied(),
+                    Some("participant origin set while an entry is outstanding"),
+                    "{case}"
+                );
+            }
+            assert!(
+                same_origin(backend.vcpu.participant.origin(), &before),
+                "{case}"
+            );
+            assert_eq!(backend.vcpu.origin_seed.is_some(), seeded, "{case}");
+            // The registry lock was never taken, so it is not poisoned.
+            let _ = gate.pending_failure();
+            drop(callback);
+            drop(driver);
+            drop(other);
+        }
     }
 }
 

@@ -3382,6 +3382,11 @@ struct GlobalState<G: GlobalTool> {
     /// before the launch filter is installed, where one fewer is. `None` if
     /// the tracer's count cannot be read.
     seccomp_filter_baseline: Option<u64>,
+    /// How the kernel executing this session's guests spells the pidfd self
+    /// sentinels, qualified once when the root task is created
+    /// (`pidfd_self::qualify_session`) and read by
+    /// `Guest::pidfd_self_spelling`.
+    pidfd_self_spelling: reverie::PidfdSelfSpelling,
 
     /// Optional collector for general ptrace lifecycle activity.
     backend_stats: Option<PtraceBackendStatsSource>,
@@ -3615,6 +3620,7 @@ impl<G: GlobalTool> Clone for GlobalState<G> {
             sigtrap_tables: self.sigtrap_tables.clone(),
             sigtrap_scratch_lock: self.sigtrap_scratch_lock.clone(),
             seccomp_filter_baseline: self.seccomp_filter_baseline,
+            pidfd_self_spelling: self.pidfd_self_spelling,
             backend_stats: self.backend_stats.clone(),
             #[cfg(test)]
             final_resume_signal_for_test: self.final_resume_signal_for_test.clone(),
@@ -3733,6 +3739,10 @@ pub struct TracedTask<L: Tool> {
     /// The dispatcher that owns the frame writes it, or restarts the trap when
     /// it is a Linux restart code, after the callback is dropped.
     injected_tail_result: Option<Result<i64, Errno>>,
+
+    /// Injections the Tool has made through this task
+    /// ([`Guest::injected_syscalls`]).
+    injected_syscalls: u64,
 
     /// pending signal to deliver. This can happen when
     /// syscall got interrupted (by signal)
@@ -4119,6 +4129,7 @@ impl<L: Tool> TracedTask<L> {
                         .and_then(|count| count.trim().parse::<u64>().ok())
                 })
                 .map(|own| own + 1),
+            pidfd_self_spelling: crate::pidfd_self::qualify_session(),
             backend_stats: options.backend_stats,
             #[cfg(test)]
             final_resume_signal_for_test: options.final_resume_signal_for_test,
@@ -4158,6 +4169,7 @@ impl<L: Tool> TracedTask<L> {
                 Timer::new(tid, tid)
             },
             cancel_handler: Arc::new(AtomicBool::new(false)),
+            injected_syscalls: 0,
             pending_signal: None,
             pending_signal_taken: None,
             pending_signal_reported: false,
@@ -4259,6 +4271,7 @@ impl<L: Tool> TracedTask<L> {
             next_state_rx: Some(next_state_rx),
             timer: Timer::new(self.pid, child),
             cancel_handler: Arc::new(AtomicBool::new(false)),
+            injected_syscalls: 0,
             pending_signal: None,
             pending_signal_taken: None,
             pending_signal_reported: false,
@@ -4376,6 +4389,7 @@ impl<L: Tool> TracedTask<L> {
             next_state_rx: Some(next_state_rx),
             timer: Timer::new(child, child),
             cancel_handler: Arc::new(AtomicBool::new(false)),
+            injected_syscalls: 0,
             pending_signal: None,
             pending_signal_taken: None,
             pending_signal_reported: false,
@@ -12414,6 +12428,7 @@ impl<L: Tool + 'static> TracedTask<L> {
         args: SyscallArgs,
     ) -> reverie::provider::ProviderOutcome<std::convert::Infallible> {
         use reverie::provider::LinuxProvider;
+        self.injected_syscalls += 1;
         let request = host_linux::request(nr, args);
         let tid = self.tid();
         match host_linux::HostLinux::<L>::new()
@@ -13109,6 +13124,10 @@ impl<L: Tool + 'static> Guest<L> for TracedTask<L> {
     type Memory = crate::tool_memory::ToolMemory;
     type Stack = GuestStack;
 
+    fn pidfd_self_spelling(&self) -> reverie::PidfdSelfSpelling {
+        self.global_state.pidfd_self_spelling
+    }
+
     fn signal_info(&self) -> Option<[u8; reverie::SIGNAL_INFO_SIZE]> {
         self.reported_signal.and_then(|(_, info)| info)
     }
@@ -13528,6 +13547,10 @@ impl<L: Tool + 'static> Guest<L> for TracedTask<L> {
 
     fn has_cpuid_interception(&self) -> bool {
         self.has_cpuid_interception
+    }
+
+    fn injected_syscalls(&self) -> Option<u64> {
+        Some(self.injected_syscalls)
     }
 }
 

@@ -20,6 +20,7 @@ members = [
     "reverie-kvm",
     "reverie-kvm-core",
     "reverie-linux-provider",
+    "reverie-linuxemu",
     "reverie-liteinst",
     "reverie-liteinst-artifact",
     "reverie-liteinst-preload",
@@ -29,6 +30,7 @@ members = [
     "reverie-ptrace",
     "reverie-rpc-transport",
     "reverie-syscalls",
+    "reverie-test-support",
     "reverie-util",
     "safeptrace",
 ]
