@@ -793,16 +793,13 @@ int main(int argc, char **argv) {
     }
     CHECK(close(path) == 0 && close(regular) == 0);
     if (guest) {
-        // The backend deliberately exposes synthetic proc directories as empty.
-        fd = open("/proc", O_RDONLY | O_DIRECTORY);
-        CHECK(fd == 0);
-        CHECK(syscall(SYS_getdents64, fd, mapping, 128) == 0);
-        CHECK(syscall(SYS_getdents64, fd, (void *)-1, 0) == 0);
-        CHECK(close(fd) == 0);
+        // The backend refuses its own procfs, /proc itself included.
+        errno = 0;
+        CHECK(open("/proc", O_RDONLY | O_DIRECTORY) == -1 && errno == EACCES);
     }
     for (int i = 0; i < 8192; ++i) CHECK(mapping[i] == 0xa5);
     CHECK(munmap(mapping, 8192) == 0);
-    puts("copyout errors and synthetic proc policy PASS");
+    puts("copyout errors and procfs refusal PASS");
     return 0;
 }
 "#;
@@ -3433,453 +3430,6 @@ int main(int argc, char **argv) {
 }
 "#;
 
-#[test]
-fn proc_root_original_mutation_vectors_match_native() {
-    assert!(kvm_available(
-        "proc_root_original_mutation_vectors_match_native"
-    ));
-    let directory = TestDirectory::new();
-    let executable = compile_c_program(
-        &directory.0,
-        "proc-root-mutations",
-        PROC_ROOT_MUTATION_PROGRAM,
-    );
-    let native = std::process::Command::new(&executable).output().unwrap();
-    println!(
-        "native original vectors: {}",
-        String::from_utf8_lossy(&native.stdout)
-    );
-    assert_eq!(
-        native.status.code(),
-        Some(0),
-        "{}",
-        String::from_utf8_lossy(&native.stderr)
-    );
-    assert!(native.stderr.is_empty());
-    let image = std::fs::read(&executable).unwrap();
-    let mut backend = KvmBackend::new(256 * 1024 * 1024).unwrap();
-    backend
-        .install_static_elf_with_context(
-            &image,
-            &[executable.to_str().unwrap()],
-            &["PATH=/usr/bin:/bin"],
-            &directory.0,
-        )
-        .unwrap();
-    let (code, stdout, stderr) = backend.run_static_elf_captured().unwrap();
-    println!(
-        "guest original vectors: {}",
-        String::from_utf8_lossy(&stdout)
-    );
-    assert!(stderr.is_empty(), "{}", String::from_utf8_lossy(&stderr));
-    assert_eq!(code, 0);
-}
-
-const PROC_ROOT_MUTATION_PROGRAM: &str = r#"
-#define _GNU_SOURCE
-#include <errno.h>
-#include <fcntl.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-#include <sys/stat.h>
-#include <sys/syscall.h>
-#include <unistd.h>
-int main(void) {
-    char directory[] = "/tmp/reverie-proc-mutation-XXXXXX";
-    if (!mkdtemp(directory) || chdir(directory)) return 80;
-    int file = open("local-source", O_CREAT | O_EXCL | O_WRONLY, 0600);
-    if (file < 0 || write(file, "payload", 7) != 7 || close(file) || mkdir("removable", 0700)) return 81;
-    int proc = open("/proc", O_RDONLY | O_DIRECTORY);
-    if (proc < 0) return 82;
-    char missing[4096], single_slash[4096], source[4096], removable[4096];
-    if (snprintf(missing, sizeof(missing), "%s/escaped///", directory + 1) >= sizeof(missing)) return 83;
-    if (snprintf(single_slash, sizeof(single_slash), "%s/escaped/", directory + 1) >= sizeof(single_slash)) return 83;
-    if (snprintf(source, sizeof(source), "%s/local-source", directory + 1) >= sizeof(source)) return 83;
-    if (snprintf(removable, sizeof(removable), "%s/removable///", directory + 1) >= sizeof(removable)) return 83;
-    struct operation { const char *name; long number; long args[6]; } operations[] = {
-        {"mkdirat single slash", SYS_mkdirat, {proc, (long)single_slash, 0755}},
-        {"mkdirat", SYS_mkdirat, {proc, (long)missing, 0755}},
-        {"unlinkat", SYS_unlinkat, {proc, (long)removable, AT_REMOVEDIR}},
-        {"renameat source", SYS_renameat, {proc, (long)source, AT_FDCWD, (long)"local-destination"}},
-        {"renameat destination", SYS_renameat, {AT_FDCWD, (long)"local-source", proc, (long)missing}},
-        {"renameat2 source", SYS_renameat2, {proc, (long)source, AT_FDCWD, (long)"local-destination"}},
-        {"renameat2 destination", SYS_renameat2, {AT_FDCWD, (long)"local-source", proc, (long)missing}},
-        {"linkat source", SYS_linkat, {proc, (long)source, AT_FDCWD, (long)"local-destination"}},
-        {"linkat destination", SYS_linkat, {AT_FDCWD, (long)"local-source", proc, (long)missing}},
-        {"symlinkat", SYS_symlinkat, {(long)"local-source", proc, (long)missing}},
-        {"fchmodat", SYS_fchmodat, {proc, (long)source, 0777}},
-        {"mknodat", SYS_mknodat, {proc, (long)missing, S_IFIFO | 0600}},
-        {"utimensat", SYS_utimensat, {proc, (long)source}},
-    };
-    int failures = 0;
-    for (unsigned index = 0; index < sizeof(operations) / sizeof(operations[0]); ++index) {
-        const struct operation *operation = &operations[index];
-        errno = 0;
-        long result = syscall(operation->number, operation->args[0], operation->args[1], operation->args[2], operation->args[3], operation->args[4], operation->args[5]);
-        printf("%s result=%ld errno=%d\n", operation->name, result, errno);
-        if (result != -1 || errno != ENOENT) ++failures;
-        struct stat metadata;
-        if (stat("local-source", &metadata) || (metadata.st_mode & 0777) != 0600 || metadata.st_size != 7) return 84;
-        file = open("local-source", O_RDONLY);
-        char bytes[16], expected[16];
-        memset(bytes, 0xa5, sizeof(bytes));
-        memset(expected, 0xa5, sizeof(expected));
-        memcpy(expected, "payload", 7);
-        if (file < 0 || read(file, bytes, sizeof(bytes)) != 7 || memcmp(bytes, expected, sizeof(bytes)) || close(file)) return 85;
-        if (stat("removable", &metadata) || !S_ISDIR(metadata.st_mode)) return 86;
-        errno = 0;
-        if (lstat("escaped", &metadata) != -1 || errno != ENOENT) return 87;
-        errno = 0;
-        if (lstat("local-destination", &metadata) != -1 || errno != ENOENT) return 88;
-    }
-    if (close(proc) || unlink("local-source") || rmdir("removable") || chdir("/") || rmdir(directory)) return 89;
-    return failures ? 94 : 0;
-}
-"#;
-
-fn proc_root_consumer_case(case: usize) {
-    assert!(kvm_available("proc_root_consumer_case"));
-    let directory = TestDirectory::new();
-    let program = format!("#define CASE {case}\n{}", PROC_ROOT_CONSUMER_PROGRAM);
-    let executable = compile_c_program(&directory.0, "proc-root-consumer", &program);
-    let native = std::process::Command::new(&executable)
-        .arg("native")
-        .current_dir(&directory.0)
-        .output()
-        .unwrap();
-    println!(
-        "native consumer={case}: {:?} {}",
-        native.status.code(),
-        String::from_utf8_lossy(&native.stdout)
-    );
-    assert_eq!(
-        native.status.code(),
-        Some(0),
-        "{}",
-        String::from_utf8_lossy(&native.stderr)
-    );
-    assert!(native.stderr.is_empty());
-    let image = std::fs::read(&executable).unwrap();
-    let mut backend = KvmBackend::new(256 * 1024 * 1024).unwrap();
-    backend
-        .install_static_elf_with_context(
-            &image,
-            &[executable.to_str().unwrap(), "guest"],
-            &["PATH=/usr/bin:/bin"],
-            &directory.0,
-        )
-        .unwrap();
-    let (code, stdout, stderr) = backend.run_static_elf_captured().unwrap();
-    println!(
-        "guest consumer={case}: {code} {}",
-        String::from_utf8_lossy(&stdout)
-    );
-    assert!(stderr.is_empty(), "{}", String::from_utf8_lossy(&stderr));
-    assert_eq!(code, 0);
-}
-
-#[test]
-fn proc_root_received_full_metadata() {
-    proc_root_consumer_case(0);
-}
-#[test]
-fn proc_root_received_empty_enumeration() {
-    proc_root_consumer_case(1);
-}
-#[test]
-fn proc_root_received_allowlisted_contents() {
-    proc_root_consumer_case(2);
-}
-#[test]
-fn proc_root_received_aliases_and_reuse() {
-    proc_root_consumer_case(3);
-}
-#[test]
-fn proc_root_received_fork_exec() {
-    proc_root_consumer_case(4);
-}
-#[test]
-fn proc_root_received_filesystem_stat_refusal() {
-    proc_root_consumer_case(5);
-}
-#[test]
-fn proc_root_cwd_restriction_and_ordinary_positive() {
-    proc_root_consumer_case(6);
-}
-#[test]
-fn proc_root_received_shared_thread_files() {
-    proc_root_consumer_case(7);
-}
-
-const PROC_ROOT_CONSUMER_PROGRAM: &str = r#"
-#define _GNU_SOURCE
-#include <errno.h>
-#include <fcntl.h>
-#include <pthread.h>
-#include <stdint.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-#include <sys/socket.h>
-#include <sys/stat.h>
-#include <sys/statfs.h>
-#include <sys/syscall.h>
-#include <sys/wait.h>
-#include <unistd.h>
-
-#define CHECK(expression) do { if (!(expression)) { printf("failure line=%d errno=%d\n", __LINE__, errno); return 93; } } while (0)
-
-static int transfer(int descriptor, int cloexec) {
-    int sockets[2];
-    CHECK(socketpair(AF_UNIX, SOCK_DGRAM, 0, sockets) == 0);
-    char payload = 'x';
-    char control[CMSG_SPACE(sizeof(int))] = {0};
-    struct iovec vector = {.iov_base = &payload, .iov_len = 1};
-    struct msghdr message = {.msg_iov = &vector, .msg_iovlen = 1, .msg_control = control, .msg_controllen = sizeof(control)};
-    struct cmsghdr *header = CMSG_FIRSTHDR(&message);
-    header->cmsg_level = SOL_SOCKET;
-    header->cmsg_type = SCM_RIGHTS;
-    header->cmsg_len = CMSG_LEN(sizeof(int));
-    memcpy(CMSG_DATA(header), &descriptor, sizeof(int));
-    CHECK(sendmsg(sockets[0], &message, 0) == 1);
-    CHECK(close(descriptor) == 0);
-    memset(control, 0, sizeof(control));
-    message.msg_controllen = sizeof(control);
-    payload = 0;
-    CHECK(recvmsg(sockets[1], &message, cloexec ? MSG_CMSG_CLOEXEC : 0) == 1);
-    CHECK(payload == 'x' && !(message.msg_flags & MSG_CTRUNC));
-    header = CMSG_FIRSTHDR(&message);
-    CHECK(header && header->cmsg_level == SOL_SOCKET && header->cmsg_type == SCM_RIGHTS && header->cmsg_len == CMSG_LEN(sizeof(int)));
-    memcpy(&descriptor, CMSG_DATA(header), sizeof(int));
-    CHECK(close(sockets[0]) == 0 && close(sockets[1]) == 0);
-    CHECK(fcntl(descriptor, F_GETFD) == (cloexec ? FD_CLOEXEC : 0));
-    return descriptor;
-}
-
-static int metadata(int descriptor, int baseline, int guest) {
-    struct stat actual, expected;
-    memset(&actual, 0xa5, sizeof(actual));
-    memset(&expected, 0xa5, sizeof(expected));
-    CHECK(fstat(descriptor, &actual) == 0 && fstat(baseline, &expected) == 0);
-    CHECK(S_ISDIR(actual.st_mode));
-    if (guest) CHECK(memcmp(&actual, &expected, sizeof(actual)) == 0);
-    struct statx actualx, expectedx;
-    memset(&actualx, 0xa5, sizeof(actualx));
-    memset(&expectedx, 0xa5, sizeof(expectedx));
-    CHECK(statx(descriptor, "", AT_EMPTY_PATH, STATX_BASIC_STATS, &actualx) == 0);
-    CHECK(statx(baseline, "", AT_EMPTY_PATH, STATX_BASIC_STATS, &expectedx) == 0);
-    if (guest) CHECK(memcmp(&actualx, &expectedx, sizeof(actualx)) == 0);
-    struct stat empty;
-    memset(&empty, 0xa5, sizeof(empty));
-    CHECK(fstatat(descriptor, "", &empty, AT_EMPTY_PATH) == 0);
-    if (guest) CHECK(memcmp(&empty, &expected, sizeof(empty)) == 0);
-    char path[128], target[1024], wanted[1024];
-    CHECK(snprintf(path, sizeof(path), "/proc/self/fd/%d", descriptor) < sizeof(path));
-    memset(target, 0xa5, sizeof(target));
-    memset(wanted, 0xa5, sizeof(wanted));
-    memcpy(wanted, "/proc", 5);
-    CHECK(readlink(path, target, sizeof(target)) == 5);
-    CHECK(memcmp(target, wanted, sizeof(target)) == 0);
-    return 0;
-}
-
-static int enumeration(int descriptor, int guest) {
-    unsigned char output[16384], before[16384];
-    memset(output, 0xa5, sizeof(output));
-    memcpy(before, output, sizeof(output));
-    long result = syscall(SYS_getdents64, descriptor, output, sizeof(output));
-    if (guest) {
-        CHECK(result == 0);
-        CHECK(memcmp(output, before, sizeof(output)) == 0);
-    } else {
-        CHECK(result > 0);
-    }
-    return 0;
-}
-
-static int contents(int descriptor, int baseline, int guest) {
-    const char *paths[] = {"self/maps"};
-    for (unsigned index = 0; index < sizeof(paths) / sizeof(paths[0]); ++index) {
-        int actual = openat(descriptor, paths[index], O_RDONLY);
-        int expected = openat(baseline, paths[index], O_RDONLY);
-        CHECK(actual >= 0 && expected >= 0);
-        /* Read each file to EOF and compare the complete contents. */
-        enum { CONTENT_BYTES = 1 << 20 };
-        unsigned char *actual_bytes = malloc(CONTENT_BYTES), *expected_bytes = malloc(CONTENT_BYTES);
-        CHECK(actual_bytes != NULL && expected_bytes != NULL);
-        size_t actual_size = 0, expected_size = 0;
-        for (;;) {
-            CHECK(actual_size < CONTENT_BYTES);
-            ssize_t got = read(actual, actual_bytes + actual_size, CONTENT_BYTES - actual_size);
-            CHECK(got >= 0);
-            if (got == 0) break;
-            actual_size += (size_t)got;
-        }
-        for (;;) {
-            CHECK(expected_size < CONTENT_BYTES);
-            ssize_t got = read(expected, expected_bytes + expected_size, CONTENT_BYTES - expected_size);
-            CHECK(got >= 0);
-            if (got == 0) break;
-            expected_size += (size_t)got;
-        }
-        CHECK(actual_size > 0);
-        CHECK(actual_size == expected_size && memcmp(actual_bytes, expected_bytes, actual_size) == 0);
-        free(actual_bytes);
-        free(expected_bytes);
-        CHECK(close(actual) == 0 && close(expected) == 0);
-    }
-    if (guest) {
-        /* The mount tables are Detcore's to render; the backend keeps no copy. */
-        const char *unlisted[] = {"../etc/passwd", "self/environ", "thread-self/environ", "self/task", "self/fd", "1/environ", "mounts", "self/mountinfo"};
-        for (unsigned index = 0; index < sizeof(unlisted) / sizeof(unlisted[0]); ++index) {
-            errno = 0;
-            CHECK(openat(descriptor, unlisted[index], O_RDONLY) == -1 && errno == ENOENT);
-        }
-    }
-    return 0;
-}
-
-struct shared_context { int baseline; int guest; };
-
-static void *shared_worker(void *opaque) {
-    struct shared_context *context = opaque;
-    if (close(64)) return (void *)(uintptr_t)1;
-    int descriptor = open("/proc", O_RDONLY | O_DIRECTORY);
-    if (descriptor < 0 || dup2(descriptor, 65) != 65 || close(descriptor)) return (void *)(uintptr_t)2;
-    return (void *)(uintptr_t)metadata(65, context->baseline, context->guest);
-}
-
-static int filesystem_stats(int descriptor, int guest) {
-    char alias[128];
-    CHECK(snprintf(alias, sizeof(alias), "/proc/self/fd/%d", descriptor) < sizeof(alias));
-    for (int variant = 0; variant < 3; ++variant) {
-        unsigned char output[sizeof(struct statfs)], before[sizeof(struct statfs)];
-        memset(output, 0xa5, sizeof(output));
-        memcpy(before, output, sizeof(output));
-        errno = 0;
-        int result = variant == 0 ? fstatfs(descriptor, (struct statfs *)output) : statfs(variant == 1 ? alias : "/proc", (struct statfs *)output);
-        printf("statfs variant=%d result=%d errno=%d\n", variant, result, errno);
-        if (guest) {
-            CHECK(result == -1 && errno == EACCES);
-            CHECK(memcmp(output, before, sizeof(output)) == 0);
-        } else {
-            CHECK(result == 0);
-        }
-    }
-    struct statfs ordinary;
-    CHECK(statfs(".", &ordinary) == 0);
-    int ordinary_fd = open(".", O_RDONLY | O_DIRECTORY);
-    CHECK(ordinary_fd >= 0 && fstatfs(ordinary_fd, &ordinary) == 0);
-    errno = 0;
-    CHECK(syscall(SYS_fstatfs, ordinary_fd, (void *)1) == -1 && errno == EFAULT);
-    CHECK(close(ordinary_fd) == 0);
-    errno = 0;
-    CHECK(syscall(SYS_fstatfs, -1, (void *)1) == -1 && errno == EBADF);
-    return 0;
-}
-
-int main(int argc, char **argv) {
-    CHECK(argc >= 2);
-    int guest = strcmp(argv[1], "guest") == 0;
-    if (argc == 3) {
-        int baseline = open("/proc", O_RDONLY | O_DIRECTORY);
-        CHECK(baseline >= 0 && metadata(60, baseline, guest) == 0);
-        CHECK(contents(60, baseline, guest) == 0);
-        errno = 0;
-        CHECK(fcntl(61, F_GETFD) == -1 && errno == EBADF);
-        return 0;
-    }
-    int descriptor = open("/proc", O_RDONLY | O_DIRECTORY);
-    CHECK(descriptor >= 0);
-    descriptor = transfer(descriptor, 1);
-    CHECK(descriptor >= 0 && descriptor != 93);
-    descriptor = transfer(descriptor, 0);
-    CHECK(descriptor >= 0 && descriptor != 93);
-    int baseline = open("/proc", O_RDONLY | O_DIRECTORY);
-    CHECK(baseline >= 0);
-    if (CASE == 0) CHECK(metadata(descriptor, baseline, guest) == 0);
-    if (CASE == 1) CHECK(enumeration(descriptor, guest) == 0);
-    if (CASE == 2) CHECK(contents(descriptor, baseline, guest) == 0);
-    if (CASE == 3) {
-        int copies[3] = {dup(descriptor), fcntl(descriptor, F_DUPFD_CLOEXEC, 20), dup2(descriptor, 24)};
-        CHECK(close(descriptor) == 0);
-        for (unsigned index = 0; index < 3; ++index) {
-            CHECK(copies[index] >= 0 && metadata(copies[index], baseline, guest) == 0);
-            CHECK(contents(copies[index], baseline, guest) == 0);
-        }
-        const char *prefixes[] = {"/dev/fd/", "/proc/self/fd/", "/proc/thread-self/fd/"};
-        for (unsigned index = 0; index < 3; ++index) {
-            char path[128];
-            CHECK(snprintf(path, sizeof(path), "%s%d", prefixes[index], copies[0]) < sizeof(path));
-            int reopened = open(path, O_RDONLY | O_DIRECTORY);
-            CHECK(reopened >= 0 && metadata(reopened, baseline, guest) == 0);
-            CHECK(contents(reopened, baseline, guest) == 0);
-            CHECK(close(reopened) == 0);
-        }
-        char numeric_path[128];
-        CHECK(snprintf(numeric_path, sizeof(numeric_path), "/proc/%d/fd/%d", getpid(), copies[0]) < sizeof(numeric_path));
-        int numeric = open(numeric_path, O_RDONLY | O_DIRECTORY);
-        CHECK(numeric >= 0 && metadata(numeric, baseline, guest) == 0);
-        CHECK(contents(numeric, baseline, guest) == 0 && close(numeric) == 0);
-        int ordinary = open("/", O_RDONLY | O_DIRECTORY);
-        CHECK(ordinary >= 0 && dup2(ordinary, copies[0]) == copies[0]);
-        char path[128], target[1024];
-        CHECK(snprintf(path, sizeof(path), "/proc/self/fd/%d", copies[0]) < sizeof(path));
-        CHECK(readlink(path, target, sizeof(target)) == 1 && target[0] == '/');
-    }
-    if (CASE == 4) {
-        CHECK(dup2(descriptor, 60) == 60 && dup3(descriptor, 61, O_CLOEXEC) == 61);
-        pid_t child = fork();
-        CHECK(child >= 0);
-        if (child == 0) {
-            execl(argv[0], argv[0], argv[1], "after-exec", (char *)0);
-            _exit(94);
-        }
-        int status;
-        CHECK(waitpid(child, &status, 0) == child && WIFEXITED(status) && WEXITSTATUS(status) == 0);
-        CHECK(metadata(descriptor, baseline, guest) == 0);
-    }
-    if (CASE == 5) CHECK(filesystem_stats(descriptor, guest) == 0);
-    if (CASE == 6) {
-        char before[4096], after[4096];
-        CHECK(getcwd(before, sizeof(before)) != NULL);
-        int saved = open(".", O_RDONLY | O_DIRECTORY);
-        CHECK(saved >= 0);
-        errno = 0;
-        int result = fchdir(descriptor);
-        printf("fchdir result=%d errno=%d\n", result, errno);
-        if (guest) {
-            CHECK(result == -1 && errno == EACCES);
-            CHECK(getcwd(after, sizeof(after)) && strcmp(before, after) == 0);
-        } else {
-            CHECK(result == 0 && getcwd(after, sizeof(after)) && strcmp(after, "/proc") == 0);
-        }
-        CHECK(fchdir(saved) == 0);
-        CHECK(getcwd(after, sizeof(after)) && strcmp(before, after) == 0);
-        int path_fd = open(".", O_PATH | O_DIRECTORY);
-        CHECK(path_fd >= 0);
-        errno = 0;
-        result = fchdir(path_fd);
-        printf("O_PATH fchdir result=%d errno=%d\n", result, errno);
-        if (guest) CHECK(result == -1 && errno == EBADF);
-        else CHECK(result == 0);
-        CHECK(close(path_fd) == 0 && close(saved) == 0);
-    }
-    if (CASE == 7) {
-        CHECK(dup2(descriptor, 64) == 64);
-        struct shared_context context = {.baseline = baseline, .guest = guest};
-        pthread_t thread;
-        CHECK(pthread_create(&thread, NULL, shared_worker, &context) == 0);
-        void *result;
-        CHECK(pthread_join(thread, &result) == 0 && result == NULL);
-        errno = 0;
-        CHECK(fcntl(64, F_GETFD) == -1 && errno == EBADF);
-        CHECK(metadata(65, baseline, guest) == 0 && contents(65, baseline, guest) == 0);
-    }
-    return 0;
-}
-"#;
 const LOAD_ADDRESS: u64 = 0x20_0000;
 const CODE_OFFSET: usize = 0x1000;
 const POST_EXEC_RANDOM: [u8; 16] = *b"kvm-post-exec-ok";
@@ -3891,11 +3441,11 @@ static SIGNAL_EXIT_MEMORY: Mutex<Option<reverie_kvm::GuestMemory>> = Mutex::new(
 static POST_EXEC_UNMASK_CALLBACKS: AtomicU64 = AtomicU64::new(0);
 static POST_EXEC_ENTRY_WRITES: AtomicU64 = AtomicU64::new(0);
 
-fn proc_root_path_case(case: usize) {
-    assert!(kvm_available("proc_root_path_case"));
+fn relative_mkdirat_case(case: usize) {
+    assert!(kvm_available("relative_mkdirat_case"));
     let directory = TestDirectory::new();
-    let program = format!("#define CASE {case}\n{}", PROC_ROOT_PATH_PROGRAM);
-    let executable = compile_c_program(&directory.0, "proc-root-path", &program);
+    let program = format!("#define CASE {case}\n{}", RELATIVE_MKDIRAT_PROGRAM);
+    let executable = compile_c_program(&directory.0, "relative-mkdirat", &program);
     let native = std::process::Command::new(&executable)
         .current_dir(&directory.0)
         .output()
@@ -3932,37 +3482,20 @@ fn proc_root_path_case(case: usize) {
 }
 
 #[test]
-fn proc_root_local_trailing_positive() {
-    proc_root_path_case(0);
+fn relative_mkdirat_below_local_directory_with_trailing_slashes() {
+    relative_mkdirat_case(0);
 }
 #[test]
-fn proc_root_received_trailing_no_creation() {
-    proc_root_path_case(1);
-}
-#[test]
-fn proc_root_received_plain_no_creation() {
-    proc_root_path_case(2);
-}
-#[test]
-fn proc_root_direct_trailing_no_creation() {
-    proc_root_path_case(3);
-}
-#[test]
-fn proc_root_real_root_trailing_positive() {
-    proc_root_path_case(4);
-}
-#[test]
-fn proc_root_direct_parent_exit_positive() {
-    proc_root_path_case(5);
+fn relative_mkdirat_below_real_root_with_trailing_slashes() {
+    relative_mkdirat_case(1);
 }
 
-const PROC_ROOT_PATH_PROGRAM: &str = r#"
+const RELATIVE_MKDIRAT_PROGRAM: &str = r#"
 #define _GNU_SOURCE
 #include <errno.h>
 #include <fcntl.h>
 #include <stdio.h>
 #include <string.h>
-#include <sys/socket.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
@@ -3973,35 +3506,12 @@ int main(void) {
     struct stat initial;
     errno = 0;
     if (lstat(target, &initial) == 0 || errno != ENOENT) return 82;
-    int descriptor = open(CASE == 0 ? cwd : (CASE == 4 ? "/" : "/proc"), O_RDONLY | O_DIRECTORY);
+    int descriptor = open(CASE == 0 ? cwd : "/", O_RDONLY | O_DIRECTORY);
     if (descriptor < 0) return 83;
-    if (CASE == 1 || CASE == 2) {
-        int sockets[2];
-        if (socketpair(AF_UNIX, SOCK_DGRAM, 0, sockets)) return 84;
-        char payload = 'x';
-        char control[CMSG_SPACE(sizeof(int))] = {0};
-        struct iovec vector = {.iov_base = &payload, .iov_len = 1};
-        struct msghdr message = {.msg_iov = &vector, .msg_iovlen = 1, .msg_control = control, .msg_controllen = sizeof(control)};
-        struct cmsghdr *header = CMSG_FIRSTHDR(&message);
-        header->cmsg_level = SOL_SOCKET;
-        header->cmsg_type = SCM_RIGHTS;
-        header->cmsg_len = CMSG_LEN(sizeof(int));
-        memcpy(CMSG_DATA(header), &descriptor, sizeof(int));
-        if (sendmsg(sockets[0], &message, 0) != 1 || close(descriptor)) return 85;
-        memset(control, 0, sizeof(control));
-        message.msg_controllen = sizeof(control);
-        payload = 0;
-        if (recvmsg(sockets[1], &message, 0) != 1 || payload != 'x' || (message.msg_flags & MSG_CTRUNC)) return 86;
-        header = CMSG_FIRSTHDR(&message);
-        if (!header || header->cmsg_level != SOL_SOCKET || header->cmsg_type != SCM_RIGHTS || header->cmsg_len != CMSG_LEN(sizeof(int))) return 87;
-        memcpy(&descriptor, CMSG_DATA(header), sizeof(int));
-        close(sockets[0]);
-        close(sockets[1]);
-    }
     if (CASE == 0) {
         if (snprintf(relative, sizeof(relative), "private-created///") >= sizeof(relative)) return 88;
     } else {
-        if (snprintf(relative, sizeof(relative), "%s%s/private-created%s", CASE == 5 ? "../" : "", cwd + 1, (CASE == 2 || CASE == 5) ? "" : "///") >= sizeof(relative)) return 89;
+        if (snprintf(relative, sizeof(relative), "%s/private-created///", cwd + 1) >= sizeof(relative)) return 89;
     }
     errno = 0;
     int result = mkdirat(descriptor, relative, 0700);
@@ -4013,10 +3523,182 @@ int main(void) {
     if (!exists && lookup_errno != ENOENT) return 90;
     printf("case=%d result=%d errno=%d exists=%d directory=%d\n", CASE, result, saved_errno, exists, exists && S_ISDIR(after.st_mode));
     close(descriptor);
-    int expected_creation = CASE == 0 || CASE == 4 || CASE == 5;
-    int correct = expected_creation ? (result == 0 && exists && S_ISDIR(after.st_mode)) : (result == -1 && !exists);
+    int correct = result == 0 && exists && S_ISDIR(after.st_mode);
     if (exists && rmdir(target)) return 91;
     return correct ? 0 : 94;
+}
+"#;
+
+#[test]
+fn tool_directory_is_reached_only_by_its_exact_path() {
+    assert!(kvm_available(
+        "tool_directory_is_reached_only_by_its_exact_path"
+    ));
+    let directory = TestDirectory::new();
+    let reserved = directory.0.join("reserved");
+    std::fs::create_dir(&reserved).unwrap();
+    std::fs::create_dir(directory.0.join("elsewhere")).unwrap();
+    std::os::unix::fs::symlink(&reserved, directory.0.join("link")).unwrap();
+    let executable = compile_c_program(&directory.0, "tool-directory", TOOL_DIRECTORY_PROGRAM);
+    let image = std::fs::read(&executable).unwrap();
+    let exact = reserved.to_str().unwrap();
+    let mut unloaded = KvmBackend::new(64 * 1024 * 1024).unwrap();
+    assert!(matches!(
+        unloaded.reserve_tool_directory(&reserved),
+        Err(Error::StaticElfNotInstalled)
+    ));
+    // The same program without a reservation finds an ordinary directory,
+    // directly and with a Tool that injects every call; with one, only its
+    // exact path reaches it.
+    for (mode, tool_owned, expected) in [
+        ("control", false, "tool directory control PASS\n"),
+        ("control", true, "tool directory control PASS\n"),
+        ("reserved", false, "tool directory PASS\n"),
+        ("reserved", true, "tool directory PASS\n"),
+    ] {
+        let mut backend = KvmBackend::new(256 * 1024 * 1024).unwrap();
+        backend
+            .install_static_elf_with_context(
+                &image,
+                &[executable.to_str().unwrap(), mode, exact],
+                &["PATH=/usr/bin:/bin"],
+                &directory.0,
+            )
+            .unwrap();
+        if mode == "reserved" {
+            assert!(matches!(
+                backend.reserve_tool_directory(std::path::Path::new("reserved")),
+                Err(Error::HostIo(ref error)) if error.raw_os_error() == Some(libc::EINVAL)
+            ));
+            assert!(matches!(
+                backend.reserve_tool_directory(std::path::Path::new("/proc")),
+                Err(Error::HostIo(ref error)) if error.raw_os_error() == Some(libc::EINVAL)
+            ));
+            backend.reserve_tool_directory(&reserved).unwrap();
+        }
+        let (code, stdout, stderr) = if tool_owned {
+            let (_, code, stdout, stderr) = futures::executor::block_on(
+                backend.run_static_elf_with_tool::<StraceTool>((), true),
+            )
+            .unwrap();
+            (code, stdout, stderr)
+        } else {
+            backend.run_static_elf_captured().unwrap()
+        };
+        assert_eq!(
+            (code, String::from_utf8_lossy(&stdout).into_owned()),
+            (0, expected.to_owned()),
+            "mode={mode} tool_owned={tool_owned} stderr={}",
+            String::from_utf8_lossy(&stderr)
+        );
+        assert!(stderr.is_empty(), "{}", String::from_utf8_lossy(&stderr));
+        assert_eq!(std::fs::read_dir(&reserved).unwrap().count(), 0);
+    }
+}
+
+const TOOL_DIRECTORY_PROGRAM: &str = r#"
+#define _GNU_SOURCE
+#include <errno.h>
+#include <fcntl.h>
+#include <stdio.h>
+#include <string.h>
+#include <sys/inotify.h>
+#include <sys/stat.h>
+#include <sys/statfs.h>
+#include <sys/syscall.h>
+#include <sys/time.h>
+#include <sys/xattr.h>
+#include <unistd.h>
+
+#define CHECK(expression) do { if (!(expression)) { printf("failure line=%d errno=%d\n", __LINE__, errno); return 93; } } while (0)
+#define REFUSED(call) do { errno = 0; long refused_result = (long)(call); CHECK(refused_result == -1 && errno == EACCES); } while (0)
+
+/* Every route to the reserved directory but its exact path: each call that
+ * resolves to it, or creates, removes or executes a name below it. */
+static int refused_routes(const char *path, int directory, int is_link) {
+    char below[4096], buffer[256];
+    struct stat st;
+    struct statfs fs;
+    CHECK(snprintf(below, sizeof(below), "%s/new", path) < (int)sizeof(below));
+    REFUSED(statfs(path, &fs));
+    REFUSED(stat(path, &st));
+    REFUSED(open(path, O_RDONLY | O_DIRECTORY));
+    REFUSED(open(path, O_PATH | O_DIRECTORY));
+    REFUSED(openat(directory, path, O_RDONLY | O_DIRECTORY));
+    REFUSED(chdir(path));
+    REFUSED(getxattr(path, "user.reverie", buffer, sizeof(buffer)));
+    REFUSED(listxattr(path, buffer, sizeof(buffer)));
+    REFUSED(chmod(path, 0555));
+    REFUSED(utimes(path, NULL));
+    REFUSED(mkdir(below, 0700));
+    REFUSED(mkdirat(directory, below, 0700));
+    REFUSED(unlink(below));
+    REFUSED(open(below, O_CREAT | O_WRONLY, 0600));
+    REFUSED(truncate(path, 0));
+    REFUSED(access(path, W_OK));
+    REFUSED(access(path, R_OK | X_OK));
+    if (!is_link) REFUSED(readlink(path, buffer, sizeof(buffer)));
+    int watcher = inotify_init1(IN_NONBLOCK | IN_CLOEXEC);
+    CHECK(watcher >= 0);
+    REFUSED(inotify_add_watch(watcher, path, IN_ALL_EVENTS));
+    CHECK(close(watcher) == 0);
+    char *arguments[] = {below, NULL};
+    errno = 0;
+    CHECK(execve(below, arguments, environ) == -1 && errno == ENOENT);
+    return 0;
+}
+
+int main(int argc, char **argv) {
+    CHECK(argc == 3);
+    const char *exact = argv[2];
+    struct statfs fs;
+    if (strcmp(argv[1], "control") == 0) {
+        int fd = open("link", O_RDONLY | O_DIRECTORY);
+        CHECK(fd >= 0 && close(fd) == 0);
+        CHECK(statfs("reserved", &fs) == 0);
+        CHECK(mkdir("link/new", 0700) == 0 && rmdir("link/new") == 0);
+        puts("tool directory control PASS");
+        return 0;
+    }
+    CHECK(strcmp(argv[1], "reserved") == 0);
+    /* Its exact path opens as a directory and stats. */
+    int fd = open(exact, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+    CHECK(fd >= 0);
+    int path_fd = open(exact, O_PATH | O_DIRECTORY);
+    CHECK(path_fd >= 0);
+    struct stat by_path, by_descriptor;
+    CHECK(stat(exact, &by_path) == 0 && fstat(fd, &by_descriptor) == 0);
+    CHECK(S_ISDIR(by_descriptor.st_mode) && by_path.st_ino == by_descriptor.st_ino);
+    /* Its descriptor works as any other, but nothing is looked up from it
+     * that resolves to it or creates a name in it, and it is no working
+     * directory. */
+    char entries[512];
+    CHECK(syscall(SYS_getdents64, fd, entries, sizeof(entries)) > 0);
+    CHECK(fstatfs(fd, &fs) == 0);
+    REFUSED(fchdir(fd));
+    REFUSED(mkdirat(fd, "new", 0700));
+    REFUSED(openat(fd, ".", O_RDONLY | O_DIRECTORY));
+    REFUSED(openat(fd, "new", O_CREAT | O_RDWR, 0600));
+    /* Every other spelling of it is refused, and so is every other call by
+     * its exact path. */
+    int directory = open(".", O_RDONLY | O_DIRECTORY);
+    CHECK(directory >= 0);
+    CHECK(refused_routes("link", directory, 1) == 0);
+    CHECK(refused_routes("reserved", directory, 0) == 0);
+    CHECK(refused_routes("elsewhere/../reserved", directory, 0) == 0);
+    REFUSED(open(exact, O_RDONLY));
+    REFUSED(statfs(exact, &fs));
+    REFUSED(chdir(exact));
+    REFUSED(access(exact, R_OK));
+    /* The directory itself is neither removed, renamed nor replaced. */
+    REFUSED(rmdir("reserved"));
+    REFUSED(rmdir(exact));
+    REFUSED(rename("reserved", "elsewhere/moved"));
+    REFUSED(rename("elsewhere", "reserved"));
+    CHECK(stat("elsewhere", &by_path) == 0 && S_ISDIR(by_path.st_mode));
+    CHECK(close(directory) == 0 && close(path_fd) == 0 && close(fd) == 0);
+    puts("tool directory PASS");
+    return 0;
 }
 "#;
 
@@ -17475,9 +17157,11 @@ fn pipe_fionread_native_and_kvm_complete_contract() {
                 )
                 .unwrap();
                 let calls = log.calls.load(Ordering::SeqCst);
+                // The excluded objects' FIONREAD probes: two each, none for
+                // /proc, whose open the backend refuses.
                 let expected_calls = match mode {
                     "supported" => 54,
-                    "excluded" => 24,
+                    "excluded" => 22,
                     "capture" => 12,
                     _ => unreachable!(),
                 };
@@ -19957,17 +19641,19 @@ fn getdents64_consumes_low_descriptor_words_on_kvm() {
         common.push('\n');
     }
     common.push_str("getdents64 canonical-count boundary=16777216,16777217 guards=unchanged\n");
-    // The controlled directories have one common native/KVM oracle. Synthetic
-    // proc deliberately differs; require its exact policy row separately.
+    // The controlled directories have one common native/KVM oracle. The
+    // backend refuses its own procfs, /proc included, where Linux lists it;
+    // require each side's exact policy rows separately. The guest makes none
+    // of the 100 calls on /proc, so it makes 774 legacy calls to Linux's 874.
     let native_expected = format!(
         "{common}getdents64 policy=native-proc-opath open=success\n\
          getdents64 policy=native-proc rows=100 records-and-errors checked\n\
          getdents64 checked calls=874\n"
     );
     let guest_expected = format!(
-        "{common}getdents64 policy=synthetic-proc-opath open=EINVAL\n\
-         getdents64 policy=synthetic-proc rows=100 zero-before-buffer unchanged\n\
-         getdents64 checked calls=874\n"
+        "{common}getdents64 policy=procfs-opath open=EACCES\n\
+         getdents64 policy=procfs open=EACCES\n\
+         getdents64 checked calls=774\n"
     );
     // Retain the exact legacy prefix. The additive raw-count rows contain the
     // complete native arena and continuation bytes, not a digest or filtered
@@ -20130,13 +19816,13 @@ fn getdents64_consumes_low_descriptor_words_on_kvm() {
         if let Some(calls) = tool_calls {
             assert_eq!(
                 calls,
-                874 + 754,
+                774 + 754,
                 "legacy plus raw-count getdents64 Tool callbacks"
             );
         }
         eprintln!(
             "getdents64 tool_owned={tool_owned} repetition={repetition} \
-             calls=874 raw_count_calls=754 total=1628 tool_calls={tool_calls:?} seconds={} stdout={}",
+             calls=774 raw_count_calls=754 total=1528 tool_calls={tool_calls:?} seconds={} stdout={}",
             start.elapsed().as_secs_f64(),
             String::from_utf8_lossy(&stdout)
         );
@@ -21664,7 +21350,6 @@ fn fstat_and_fstatfs_consume_low_descriptor_words_on_kvm() {
                     "stderr",
                     "file",
                     "directory",
-                    "proc-root",
                     "proc-maps",
                     "fdinfo",
                 ][..],
@@ -21715,17 +21400,21 @@ fn fstat_and_fstatfs_consume_low_descriptor_words_on_kvm() {
         include_str!("fixtures/fstat_fd_width.c"),
         &["-std=c11", "-Wall", "-Wextra", "-Werror"],
     );
+    // The fixture's /proc row uses a /proc it inherits as its standard input:
+    // the backend refuses a guest's own open of procfs.
+    let proc_stdin = || std::fs::File::open("/proc").unwrap();
     let native = std::process::Command::new("timeout")
         .args(["--kill-after=2s", "10s"])
         .arg(&executable)
         .arg("native")
         .arg(directory.0.join("native-fstat-fd-width"))
         .current_dir(&directory.0)
+        .stdin(proc_stdin())
         .output()
         .unwrap();
     assert_eq!(native.status.code(), Some(0), "native fixture: {native:?}");
     let native_stdout = std::str::from_utf8(&native.stdout).unwrap();
-    assert_eq!(native_stdout.lines().count(), 161);
+    assert_eq!(native_stdout.lines().count(), 153);
     assert_eq!(native_stdout, expected_transcript(false));
     assert!(native.stderr.is_empty());
     let (native_common, _) = native_stdout.split_once("proc-policy\n").unwrap();
@@ -21737,7 +21426,8 @@ fn fstat_and_fstatfs_consume_low_descriptor_words_on_kvm() {
         let guest_path = directory
             .0
             .join(format!("guest-fstat-fd-width-{tool_owned}-{repetition}"));
-        let mut backend = KvmBackend::new(256 * 1024 * 1024).unwrap();
+        let mut backend =
+            KvmBackend::new_with_stdin(256 * 1024 * 1024, Some(proc_stdin())).unwrap();
         backend
             .install_static_elf_with_context(
                 &image,
@@ -21849,11 +21539,15 @@ fn fchdir_consumes_low_descriptor_words_on_kvm() {
     );
     let native_directory = directory.0.join("native-fchdir");
     std::fs::create_dir(&native_directory).unwrap();
+    // The fixture's /proc row uses a /proc it inherits as its standard input:
+    // the backend refuses a guest's own open of procfs.
+    let proc_stdin = || std::fs::File::open("/proc").unwrap();
     let native = std::process::Command::new("timeout")
         .args(["--kill-after=2s", "10s"])
         .arg(&executable)
         .arg("native")
         .current_dir(&native_directory)
+        .stdin(proc_stdin())
         .output()
         .unwrap();
     assert_eq!(native.status.code(), Some(0), "native fixture: {native:?}");
@@ -21874,7 +21568,8 @@ fn fchdir_consumes_low_descriptor_words_on_kvm() {
             .0
             .join(format!("guest-fchdir-{tool_owned}-{repetition}"));
         std::fs::create_dir(&guest_directory).unwrap();
-        let mut backend = KvmBackend::new(256 * 1024 * 1024).unwrap();
+        let mut backend =
+            KvmBackend::new_with_stdin(256 * 1024 * 1024, Some(proc_stdin())).unwrap();
         backend
             .install_static_elf_with_context(
                 &image,

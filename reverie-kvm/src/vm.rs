@@ -2604,6 +2604,38 @@ impl KvmBackend {
         Ok(())
     }
 
+    /// Reserve the host directory at the absolute path `path` for the Tool.
+    /// The executor reaches it for a guest path call only where the call
+    /// names exactly that path, as an `O_DIRECTORY` open that creates
+    /// nothing or as a stat call. Every other path call that resolves to it
+    /// (through a symbolic link, relative to the working directory or to a
+    /// descriptor, or by a `..`), every call that would create, remove,
+    /// rename or link a name in it or remove, rename or replace the
+    /// directory itself, and a working directory in it fail with `EACCES`,
+    /// as such calls fail for procfs objects. The descriptors
+    /// opened there work as any other descriptor: the calls that name them
+    /// are not refused.
+    ///
+    /// A Tool that keeps the exact path from the guest therefore keeps the
+    /// directory to itself, and a descriptor it opens there can stand for a
+    /// directory the Tool serves itself. The directory should be empty, as
+    /// an empty read-only mount is: the executor does not look below it for
+    /// other objects. The directory's identity is recorded now, in this
+    /// process's mount namespace, where the guest's file operations run.
+    /// Fork, clone and exec keep the reservation. Fails with
+    /// [`Error::HostIo`] where the path is relative, names no directory, or
+    /// names a procfs one, which the executor refuses whatever names it.
+    pub fn reserve_tool_directory(&mut self, path: &Path) -> Result<()> {
+        AbandonedRuns::admit(&self.abandoned_runs)?;
+        let reserved = crate::elf::ToolDirectory::open(path).map_err(Error::HostIo)?;
+        let loaded = self
+            .static_elf
+            .as_mut()
+            .ok_or(Error::StaticElfNotInstalled)?;
+        loaded.tool_directory = Some(reserved);
+        Ok(())
+    }
+
     /// Whether the installed image reports host metadata timestamps.
     fn host_metadata_timestamps_enabled(&self) -> bool {
         self.static_elf
