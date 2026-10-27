@@ -214,6 +214,7 @@ pub(super) unsafe fn initialize_fixed_arenas(control: *mut Control) -> Result<()
     Ok(())
 }
 
+#[inline(always)]
 fn published_metadata() -> Option<&'static FixedArenaMetadata> {
     // Do not expose REGION during the publication-to-READY interval or while
     // the ordinary initialization guard is still held. No guessed pointer is
@@ -228,19 +229,36 @@ fn published_metadata() -> Option<&'static FixedArenaMetadata> {
 }
 
 #[doc(hidden)]
+#[inline(never)]
 pub fn fixed_arena_backing() -> Option<&'static FixedArenaBacking> {
-    published_metadata()?;
-    // Return a pointer to immutable bounds, not a large aggregate whose copy
-    // can call the guest's interposable memcpy from the allocation path.
-    Some(&FIXED_BACKING)
+    let backing = published_metadata().map(|_| &FIXED_BACKING);
+    // Keep the complete scalar pointer result opaque, including None. A
+    // non-inlined getter alone need not hide its fixed successful return value.
+    // No large aggregate copy or interposable memory helper is needed here.
+    black_box(backing)
 }
 
+#[inline(never)]
+extern "C" fn fixed_tool_heap_metadata() -> *const c_void {
+    let metadata = match published_metadata() {
+        Some(metadata) => core::ptr::from_ref(&metadata.tool).cast::<c_void>(),
+        None => core::ptr::null(),
+    };
+    // Expose one scalar ABI, not a Rust Option<Span> whose fields may migrate
+    // into callers during interprocedural optimization. Both returns are opaque.
+    black_box(metadata)
+}
+
+#[inline(always)]
 pub(crate) fn fixed_tool_heap() -> Option<ToolHeapSpan<'static>> {
-    let metadata = published_metadata()?;
+    let metadata = fixed_tool_heap_metadata().cast::<ToolHeapMetadata>();
+    // SAFETY: the scalar getter returns null or the actual metadata only after
+    // completed arena setup and publication; that mapping lives until exit.
+    let metadata = unsafe { metadata.as_ref() }?;
     Some(ToolHeapSpan {
         base: TOOL_BOTTOM as *mut u8,
         bytes: ARENA_BYTES,
-        metadata: &metadata.tool,
+        metadata,
     })
 }
 
