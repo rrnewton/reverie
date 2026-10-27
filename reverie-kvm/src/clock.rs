@@ -51,6 +51,7 @@ use crate::entry::owner::OperationOrigin;
 use crate::error::ErrorExt;
 use crate::failure::FailureContext;
 use crate::memory::GuestMemory;
+use crate::preemption_timer::FirstStage;
 use crate::preemption_timer::KernelSigset;
 use crate::preemption_timer::TimerDue;
 use crate::preemption_timer::TimerEvent;
@@ -183,8 +184,38 @@ pub(crate) struct CountedVcpu {
     clock: GuestClock,
     image_is_elf: bool,
     initial_elf_ran: bool,
+    /// KVM's guest debugging setting, for a precise timer event's steps (see
+    /// `preemption_timer.rs`): what the last `KVM_SET_GUEST_DEBUG` set.
+    step_mode: StepMode,
+    /// What the next entry runs under; [`Self::run`] resets it to
+    /// [`StepMode::Off`], so an entry that asks for nothing runs unstepped.
+    next_step_mode: StepMode,
+    /// The trap flag that `step_mode` [`StepMode::Step`] put in the guest's
+    /// RFLAGS is still there. KVM drops it when a register write lands away
+    /// from the step's start (`KVM_SET_REGS`, `KVM_SET_SREGS` and the like,
+    /// all through [`Deref`], which clears this), so a later step issues
+    /// `KVM_SET_GUEST_DEBUG` again. No instruction that loads RFLAGS is
+    /// stepped (see `step_filter.rs`).
+    step_set: std::sync::atomic::AtomicBool,
+    /// The last entry ran a single step.
+    stepped: bool,
     #[cfg(test)]
     run_probe: Option<std::sync::Arc<RunProbe>>,
+}
+
+/// How an entry runs the guest under KVM's guest debugging (`KVM_SET_GUEST_DEBUG`).
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(crate) enum StepMode {
+    /// Not at all: the guest runs to its next exit.
+    #[default]
+    Off,
+    /// One instruction (`KVM_GUESTDBG_SINGLESTEP`): the entry ends at the
+    /// boundary right after it, with a `Debug` exit.
+    Step,
+    /// To the user instruction at this address: a hardware execution
+    /// breakpoint there (`KVM_GUESTDBG_USE_HW_BP`, DR0) ends the entry with a
+    /// `Debug` exit before it runs.
+    RunTo(u64),
 }
 
 impl Deref for CountedVcpu {
@@ -196,6 +227,8 @@ impl Deref for CountedVcpu {
             probe.prepare.increment(&probe.shared_fd_accesses);
         }
         self.synced_exit
+            .store(false, std::sync::atomic::Ordering::Relaxed);
+        self.step_set
             .store(false, std::sync::atomic::Ordering::Relaxed);
         &self.fd
     }
@@ -227,6 +260,10 @@ impl CountedVcpu {
             clock,
             image_is_elf: false,
             initial_elf_ran: false,
+            step_mode: StepMode::Off,
+            next_step_mode: StepMode::Off,
+            step_set: std::sync::atomic::AtomicBool::new(false),
+            stepped: false,
             #[cfg(test)]
             run_probe: None,
         })
@@ -429,21 +466,89 @@ impl CountedVcpu {
     /// Requests a timer event due when this thread's clock has advanced
     /// `ticks` RCBs from its value now, replacing any outstanding request.
     /// The next entry programs the timer event; this call issues no syscall.
-    /// A precise request is first programmed one PMU skid margin short of its
-    /// target, and is refused on a CPU with no PMU profile, whose margin is
-    /// unknown. An imprecise request has no margin: it is programmed at its
-    /// target, as reverie-ptrace programs one. Refused while the clock is not
-    /// tracking or is poisoned, for 0 RCBs, and for a target past the clock's
-    /// range. A refused request leaves the outstanding one in place.
+    /// A precise request is staged as reverie-ptrace stages one
+    /// ([`reverie::pmu_config::PmuConfig::stages`]): programmed one first
+    /// stage margin short of its target and then one second stage margin
+    /// short, or else one PMU skid margin short. It is refused on a CPU with
+    /// no PMU profile, whose margin is unknown. An imprecise request has no
+    /// margin: it is programmed at its target, as reverie-ptrace programs
+    /// one. Refused while the clock is not tracking or is poisoned, for 0
+    /// RCBs, and for a target past the clock's range. A refused request
+    /// leaves the outstanding one in place.
     pub(crate) fn request_timer(&mut self, ticks: u64, kind: TimerKind) -> Result<()> {
         let clock = self.clock.read()?;
-        let margin = match kind {
-            TimerKind::Precise => reverie::pmu_config::try_get_pmu_config()
-                .ok_or_else(|| failure("preemption timer: this CPU has no PMU profile"))?
-                .skid_margin(),
-            TimerKind::Imprecise => 0,
+        let (margin, first_stage) = match kind {
+            TimerKind::Precise => {
+                let config = reverie::pmu_config::try_get_pmu_config()
+                    .ok_or_else(|| failure("preemption timer: this CPU has no PMU profile"))?;
+                if config.stages(ticks) {
+                    let first_stage = FirstStage {
+                        requested_ns: crate::preemption_timer::monotonic_ns(),
+                        requested_clock: clock,
+                    };
+                    (config.first_stage_margin(), Some(first_stage))
+                } else {
+                    (config.skid_margin(), None)
+                }
+            }
+            TimerKind::Imprecise => (0, None),
         };
-        self.clock.timer = TimerState::request(clock, ticks, kind, margin)?;
+        self.clock.timer = TimerState::request(clock, ticks, kind, margin, first_stage)?;
+        Ok(())
+    }
+
+    /// Whether the next entry must single-step toward a precise request's
+    /// target (see [`TimerState::stepping`]).
+    pub(crate) fn timer_stepping(&self) -> bool {
+        self.clock.timer.stepping(self.clock.total)
+    }
+
+    /// Runs the next entry under `mode` (see [`StepMode`]); without a call,
+    /// it runs unstepped.
+    pub(crate) fn step_next_entry(&mut self, mode: StepMode) {
+        self.next_step_mode = mode;
+    }
+
+    /// The mode the last entry ran under, and whether it ran a single step.
+    pub(crate) fn last_step_mode(&self) -> (StepMode, bool) {
+        (self.step_mode, self.stepped)
+    }
+
+    /// Makes KVM's guest debugging `mode` for the next entry, with one
+    /// `KVM_SET_GUEST_DEBUG` when it changes, or when a step's trap flag may
+    /// have been dropped since it was set; none otherwise.
+    fn apply_step_mode(&mut self, mode: StepMode) -> Result<()> {
+        let set = self.step_set.load(std::sync::atomic::Ordering::Relaxed);
+        if mode == self.step_mode && (mode != StepMode::Step || set) {
+            return Ok(());
+        }
+        let mut debug = kvm_bindings::kvm_guest_debug::default();
+        match mode {
+            StepMode::Off => {}
+            StepMode::Step => {
+                debug.control =
+                    kvm_bindings::KVM_GUESTDBG_ENABLE | kvm_bindings::KVM_GUESTDBG_SINGLESTEP;
+            }
+            StepMode::RunTo(address) => {
+                debug.control =
+                    kvm_bindings::KVM_GUESTDBG_ENABLE | kvm_bindings::KVM_GUESTDBG_USE_HW_BP;
+                debug.arch.debugreg[0] = address;
+                // L0 enables DR0 for every privilege level; R/W0 and LEN0
+                // zero make it an execution breakpoint. Bit 10 is reserved
+                // and reads as one.
+                debug.arch.debugreg[7] = (1 << 10) | 1;
+            }
+        }
+        // An ambiguous failure leaves the setting unknown: set it again next.
+        self.step_mode = StepMode::Off;
+        self.step_set
+            .store(false, std::sync::atomic::Ordering::Relaxed);
+        self.fd
+            .set_guest_debug(&debug)
+            .map_err(|error| failure(format!("preemption timer: KVM_SET_GUEST_DEBUG: {error}")))?;
+        self.step_mode = mode;
+        self.step_set
+            .store(true, std::sync::atomic::Ordering::Relaxed);
         Ok(())
     }
 
@@ -492,6 +597,17 @@ impl CountedVcpu {
         // The synced copy describes the previous exit only until this entry.
         self.synced_exit
             .store(false, std::sync::atomic::Ordering::Relaxed);
+        // Only a counted entry steps: a timer needs the clock. Guest
+        // debugging touches no guest memory, so it is set before admission.
+        let mode = std::mem::take(&mut self.next_step_mode);
+        let mode = if self.clock.tracking {
+            mode
+        } else {
+            StepMode::Off
+        };
+        self.apply_step_mode(mode)?;
+        self.stepped = mode == StepMode::Step;
+        self.clock.stepping_entry = self.stepped;
         // Declare entry first: unwinding must retire the clock and restore CPU
         // affinity before entry withdraws its target and checks its signals.
         let Some(entry) = self
@@ -549,6 +665,13 @@ impl CountedVcpu {
         if exit.is_ok() && self.sync_regs {
             self.synced_exit
                 .store(true, std::sync::atomic::Ordering::Relaxed);
+        }
+        // A step that did not end with its `Debug` exit (a fault, a kick)
+        // may not have left its trap flag where the next step needs it: set
+        // stepping again before that step.
+        if self.stepped && !matches!(exit, Ok(VcpuExit::Debug(_))) {
+            self.step_set
+                .store(false, std::sync::atomic::Ordering::Relaxed);
         }
         exit.map(Some)
     }
@@ -779,6 +902,9 @@ struct GuestClock {
     poison: Option<String>,
     /// The thread's preemption timer request, decided from `total` alone.
     timer: TimerState,
+    /// The entry in progress, or the last one, ran a single step, so that a
+    /// precise request it makes due is on time (see `preemption_timer.rs`).
+    stepping_entry: bool,
     /// The vCPU this clock counts, for its signal mask. None only for a
     /// clock without a vCPU, which cannot open a timer event.
     vcpu: Option<std::os::fd::RawFd>,
@@ -885,7 +1011,7 @@ impl GuestClock {
         if let Some(timer) = self.binding.as_mut().and_then(|b| b.timer.as_mut()) {
             timer.observe_exit(clock);
         }
-        self.timer.observe_exit(clock);
+        self.timer.observe_exit(clock, self.stepping_entry);
     }
 
     fn read(&self) -> Result<u64> {

@@ -485,6 +485,29 @@ pub fn stage_process_syscall_return(
     Ok(())
 }
 
+/// Where the trampoline, stopped at its VMCALL, returns the guest to user
+/// mode, as the frame of `syscall_frame_address` holds it now: the IRET
+/// frame's RIP when a full return is staged, the SYSRET return RIP otherwise,
+/// for an execution breakpoint there. A full return's staged RFLAGS lose RF,
+/// which holds off an instruction breakpoint for the one instruction IRETQ
+/// returns to: with RF set (as in a frame a fault saved) that breakpoint would
+/// never fire. RF has no other effect, the processor clears it once that
+/// instruction completes, and SYSRET always clears it, so the guest sees no
+/// change.
+pub fn breakpoint_staged_return(memory: &GuestMemory, syscall_frame_address: u64) -> Result<u64> {
+    const RESUME_FLAG: u64 = 1 << 16;
+    let address = |word| frame_word_address_u64(syscall_frame_address, word);
+    if read_u64(memory, address(FULL_RETURN_WORD))? == 0 {
+        return read_u64(memory, address(RETURN_RIP_WORD));
+    }
+    let flags = read_u64(memory, address(IRET_FRAME_WORD + 2))?;
+    memory.write_raw(
+        address(IRET_FRAME_WORD + 2),
+        &(flags & !RESUME_FLAG).to_le_bytes(),
+    )?;
+    read_u64(memory, address(IRET_FRAME_WORD))
+}
+
 /// Stages the context `rt_sigreturn` restored. Linux restores every register
 /// from the signal frame, and returns with IRET whenever SYSRET could not
 /// reproduce it (RCX != RIP or R11 != RFLAGS). That is the normal case for a
