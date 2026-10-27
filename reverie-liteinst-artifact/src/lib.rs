@@ -993,8 +993,8 @@ const CONTENT_REVERIE_CATALOG: [(&str, u64, &str); 66] = [
     ),
     (
         "reverie-inguest/src/guest/rpc.rs",
-        15879,
-        "1460fddab8c4e764456995a34d87c8022aadfbd9145cfb4e90e3904c9d8119af",
+        16172,
+        "02147b80047fed98adb33e60b6710fa4bc20313a6c1e2a4bd7f8b3ed2f2fc576",
     ),
     (
         "reverie-inguest/src/guest/host.rs",
@@ -1048,8 +1048,8 @@ const CONTENT_REVERIE_CATALOG: [(&str, u64, &str); 66] = [
     ),
     (
         "reverie-inguest/src/guest/clock.rs",
-        24725,
-        "f09168cd1d1c09564876efcef73d89b84ed0000072788bf1f8da5668e3744aaa",
+        25871,
+        "d353ba4ec2ea2225de34e5e6fceed12ff864183fa35ba004a7e63bcfa0125907",
     ),
     (
         "reverie-inguest/src/lifecycle.rs",
