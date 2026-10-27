@@ -187,9 +187,12 @@ pub const SKID_LATENCY_BUDGET_ENV: &str = "REVERIE_SKID_LATENCY_BUDGET_NS";
 /// value is ignored (default retained).
 pub const HALVE_TIMER_STAGES_ENV: &str = "REVERIE_HALVE_TIMER_STAGES";
 
-/// A precise event's notification is programmed halfway while more than this
-/// many margins of its distance remain (see [`PmuConfig::halves`]).
-pub const HALVING_STOP_MARGINS: u64 = 4;
+/// A precise event's notification is programmed halfway while it is due
+/// more than its margin divided by this ahead (see [`PmuConfig::halves`]).
+/// The last, whole programming's period is then at most half its margin, so
+/// an overflow of it that the kernel absorbs notifies one period later, at
+/// most the whole margin from the programming, still short of the target.
+pub const HALVING_STOP_DIVISOR: u64 = 2;
 
 /// Whether precise event notifications are halved by default (see
 /// [`PmuConfig::halves`]): on aarch64 only. In an aarch64 KVM guest under
@@ -548,7 +551,8 @@ impl PmuConfig {
     /// Whether a precise event's notification, due `notification` RCBs from
     /// its programming and `margin` RCBs short of its target, is programmed
     /// halfway instead, at `notification / 2`. Its stop then programs the rest
-    /// the same way, until at most [`HALVING_STOP_MARGINS`] margins remain.
+    /// the same way, until the notification is due at most half its margin
+    /// ahead ([`HALVING_STOP_DIVISOR`]).
     ///
     /// The kernel can absorb an overflow without notifying it. A sampling
     /// counter that passed its period while its thread was switched in, but
@@ -561,8 +565,12 @@ impl PmuConfig {
     /// where one PMU interrupt in a few thousand arrived a whole period late.
     /// With the period halved, one absorbed overflow still notifies at the
     /// whole distance, `margin` short of the target, instead of a period past
-    /// it. Each halving adds one notification stop; the delivery point is
-    /// unchanged, as with staging (see [`Self::stages`]).
+    /// it. The last programming is whole, and its period is at most half the
+    /// margin, so one absorbed overflow of it notifies at most twice that
+    /// period from the programming: at least half the margin short of the
+    /// target, which leaves half the margin for the interrupt's skid. Each
+    /// halving adds one notification stop; the delivery point is unchanged,
+    /// as with staging (see [`Self::stages`]).
     ///
     /// No notification is halved under a skid margin override, as none is
     /// staged, nor one whose half an artificial notification would replace.
@@ -570,7 +578,7 @@ impl PmuConfig {
         self.halve_stages
             && self.skid_margin_override.is_none()
             && notification / 2 > SINGLESTEP_TIMEOUT_RCBS
-            && notification > HALVING_STOP_MARGINS.saturating_mul(margin.max(self.skid_margin()))
+            && notification.saturating_mul(HALVING_STOP_DIVISOR) > margin.max(self.skid_margin())
     }
 
     /// The margin of the second stage of a staged precise event (see

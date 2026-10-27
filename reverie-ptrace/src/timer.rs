@@ -5399,7 +5399,6 @@ mod tests {
     #[test]
     fn a_halved_notification_rearms_before_any_step_keeping_the_offset() {
         use reverie::Pid;
-        use reverie::pmu_config::HALVING_STOP_MARGINS;
 
         use super::ActiveEvent;
         use super::HALVED_STAGES_ARMED;
@@ -5417,13 +5416,13 @@ mod tests {
             ),
         };
         let config = super::get_pmu_config();
-        let staged = config.stages(20 * HALVING_STOP_MARGINS * config.first_stage_margin());
+        let staged = config.stages(80 * config.first_stage_margin());
         let margin = if staged {
             config.first_stage_margin()
         } else {
             config.skid_margin()
         };
-        let ticks = 20 * HALVING_STOP_MARGINS * margin;
+        let ticks = 80 * margin;
         if !super::halves(ticks - margin, margin) {
             eprintln!("skipping: no notification is halved under a skid margin override");
             return;
@@ -5473,7 +5472,6 @@ mod tests {
     #[test]
     fn a_halved_notification_at_the_margin_arms_the_second_stage() {
         use reverie::Pid;
-        use reverie::pmu_config::HALVING_STOP_MARGINS;
 
         use super::ActiveEvent;
         use super::FirstStage;
@@ -5501,7 +5499,7 @@ mod tests {
         // programming, the second stage is the skid margin short.
         let skid = config.skid_margin();
         let first = 4 * skid + SINGLESTEP_TIMEOUT_RCBS;
-        let ticks = 20 * HALVING_STOP_MARGINS * first;
+        let ticks = 80 * first;
         let requested = timer.read_clock();
         timer
             .request_event(TimerEventRequest::PreciseInstruction(ticks, 3))
@@ -5530,14 +5528,15 @@ mod tests {
     }
 
     // A notification far from its target is programmed halfway, and its stop
-    // programs the rest the same way until at most `HALVING_STOP_MARGINS`
-    // margins remain. If the kernel absorbs a halved overflow, the counter's
-    // next overflow, a period later, still comes no later than the whole
-    // notification would have, so no overshoot follows.
+    // programs the rest the same way until it is due at most half its margin
+    // ahead (`HALVING_STOP_DIVISOR`). If the kernel absorbs a halved overflow,
+    // the counter's next overflow, a period later, still comes no later than
+    // the whole notification would have, so no overshoot follows. One that it
+    // absorbs of the last, whole programming comes short of the target too.
     #[test]
     fn a_halved_notification_rearms_the_rest_and_survives_one_absorbed_overflow() {
         use reverie::Pid;
-        use reverie::pmu_config::HALVING_STOP_MARGINS;
+        use reverie::pmu_config::HALVING_STOP_DIVISOR;
 
         use super::ActiveEvent;
         use super::SINGLESTEP_TIMEOUT_RCBS;
@@ -5557,13 +5556,13 @@ mod tests {
         let config = super::get_pmu_config();
         // Where this PMU stages events, the event is staged and its first
         // stage halved; elsewhere its only programming is.
-        let staged = config.stages(20 * HALVING_STOP_MARGINS * config.first_stage_margin());
+        let staged = config.stages(80 * config.first_stage_margin());
         let margin = if staged {
             config.first_stage_margin()
         } else {
             config.skid_margin()
         };
-        let ticks = 20 * HALVING_STOP_MARGINS * margin;
+        let ticks = 80 * margin;
         if !super::halves(ticks - margin, margin) {
             eprintln!("skipping: no notification is halved under a skid margin override");
             return;
@@ -5600,8 +5599,14 @@ mod tests {
         }
         assert!(rearms >= 2, "{rearms} re-arms");
         assert!(
-            period <= HALVING_STOP_MARGINS * margin,
-            "the last programming is whole"
+            period * HALVING_STOP_DIVISOR <= margin,
+            "the last programming is whole, at most half its margin ahead"
+        );
+        // An overflow of it that the kernel absorbs notifies a period later,
+        // still at least half the margin short of the target.
+        assert!(
+            clock + 2 * period + margin / 2 <= clock_target,
+            "an absorbed overflow of the last programming comes short of the target"
         );
         // A whole first stage is measured for its second stage.
         assert_eq!(timer.first_stage.is_some(), staged);
