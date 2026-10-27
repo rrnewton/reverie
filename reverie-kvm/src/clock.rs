@@ -15,7 +15,9 @@
 //! bracketed by two reads and only that delta is added to this guest's clock.
 //! This module owns the only mutable VcpuFd and enforces that interval for
 //! every entry, including syscall-return parking. This is a clock, not a
-//! precise timer.
+//! precise timer. The preemption timer (`preemption_timer.rs`) is a second
+//! event in each binding, with the same identity and placement, that only
+//! kicks the vCPU out of `KVM_RUN`; its decisions read this clock at exits.
 //!
 //! On an AMD host with one core PMU the event follows its task across CPUs
 //! (`perf_event_open(tid, -1, ..)`); the kernel carries the count across
@@ -49,6 +51,10 @@ use crate::entry::owner::OperationOrigin;
 use crate::error::ErrorExt;
 use crate::failure::FailureContext;
 use crate::memory::GuestMemory;
+use crate::preemption_timer::TimerDue;
+use crate::preemption_timer::TimerEvent;
+use crate::preemption_timer::TimerKind;
+use crate::preemption_timer::TimerState;
 
 fn failure(message: impl Into<String>) -> Error {
     Error::GuestClock(message.into())
@@ -407,7 +413,53 @@ impl CountedVcpu {
     pub(crate) fn read_clock(&self) -> Result<u64> {
         self.clock.read()
     }
+}
 
+/// The guest thread's preemption timer (see `preemption_timer.rs`): one
+/// request at a time, decided at every exit from the clock read there.
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "only tests request a timer until KvmGuest's set_timer and set_timer_precise use it"
+    )
+)]
+impl CountedVcpu {
+    /// Requests a timer event due when this thread's clock has advanced
+    /// `ticks` RCBs from its value now, replacing any outstanding request.
+    /// The next entry programs the timer event; this call issues no syscall.
+    /// Refused while the clock is not tracking or is poisoned, for 0 RCBs,
+    /// for a target past the clock's range, and on a CPU with no PMU profile,
+    /// whose skid margin is unknown. A refused request leaves the outstanding
+    /// one in place.
+    pub(crate) fn request_timer(&mut self, ticks: u64, kind: TimerKind) -> Result<()> {
+        let clock = self.clock.read()?;
+        let margin = reverie::pmu_config::try_get_pmu_config()
+            .ok_or_else(|| failure("preemption timer: this CPU has no PMU profile"))?
+            .skid_margin();
+        self.clock.timer = TimerState::request(clock, ticks, kind, margin)?;
+        Ok(())
+    }
+
+    /// Withdraws the outstanding request, if any. The next entry quiets the
+    /// timer event if it could still overflow.
+    pub(crate) fn cancel_timer(&mut self) {
+        self.clock.timer = TimerState::Idle;
+    }
+
+    /// The target of the outstanding request, armed or due.
+    pub(crate) fn timer_target(&self) -> Option<u64> {
+        self.clock.timer.target()
+    }
+
+    /// The outstanding request once an exit reached its target: the target,
+    /// the clock read at that exit, and whether the exit was late for it.
+    pub(crate) fn timer_due(&self) -> Option<TimerDue> {
+        self.clock.timer.due()
+    }
+}
+
+impl CountedVcpu {
     /// None means admission was closed: no clock interval or KVM_RUN occurred.
     /// The caller retains its prepared continuation and waits outside this
     /// method, with no entry, CPU-affinity or borrowed-exit guard alive.
@@ -703,11 +755,25 @@ struct GuestClock {
     total: u64,
     binding: Option<CounterBinding>,
     poison: Option<String>,
+    /// The thread's preemption timer request, decided from `total` alone.
+    timer: TimerState,
     #[cfg(test)]
     run_probe: Option<std::sync::Arc<RunProbe>>,
 }
 
 impl GuestClock {
+    /// Decides the timer at the exit that ended the interval just finished,
+    /// from the clock read there: the timer event forgets an overflow the
+    /// clock has reached, and an armed request whose target it reached
+    /// becomes due. Issues no syscall.
+    fn observe_timer_exit(&mut self) {
+        let clock = self.total;
+        if let Some(timer) = self.binding.as_mut().and_then(|b| b.timer.as_mut()) {
+            timer.observe_exit(clock);
+        }
+        self.timer.observe_exit(clock);
+    }
+
     fn read(&self) -> Result<u64> {
         if let Some(reason) = &self.poison {
             return Err(failure(format!("clock cannot resume after: {reason}")));
@@ -773,7 +839,9 @@ impl GuestClock {
                 self.binding.take();
                 self.binding = Some(CounterBinding::open(identity)?);
             }
-            self.binding.as_mut().unwrap().start_interval()
+            let binding = self.binding.as_mut().unwrap();
+            binding.start_interval()?;
+            binding.prepare_timer(self.total, &self.timer)
         })();
         if let Err(error) = admission {
             // No guest instruction ran. Closing even an ambiguously enabled
@@ -1015,16 +1083,27 @@ impl CounterRead {
 /// [`CounterBinding::finish`].
 const RESIDENCY_RESAMPLES: usize = 3;
 
+/// The events of the one following binding left enabled on this host task.
+struct FollowingEvents {
+    clock: std::sync::Weak<OwnedFd>,
+    /// The binding's timer event, once it opened one.
+    timer: Option<std::sync::Weak<OwnedFd>>,
+    /// Tells the binding that another binding disabled its events.
+    displaced: std::sync::Arc<std::sync::atomic::AtomicBool>,
+}
+
 thread_local! {
-    /// The one event that follows this host task and was left enabled, with the
-    /// flag that tells its binding it was disabled by another binding. A pinned
-    /// per-task event occupies a hardware counter whenever its task runs, so
-    /// two enabled events on one task would hold two counters, and enough of
-    /// them would push later ones into the error state. A binding that enables
-    /// its event first disables the one recorded here.
-    static ENABLED_FOLLOWING_EVENT: std::cell::RefCell<
-        Option<(std::sync::Weak<OwnedFd>, std::sync::Arc<std::sync::atomic::AtomicBool>)>,
-    > = const { std::cell::RefCell::new(None) };
+    /// The one binding whose events follow this host task and were left
+    /// enabled. A pinned per-task event occupies a hardware counter whenever
+    /// its task runs, so two enabled events on one task would hold two
+    /// counters, and enough of them would push later ones into the error
+    /// state. A binding that enables its clock first disables the events
+    /// recorded here: the clock, and the timer too, because a timer left
+    /// enabled would count another guest's branches that its own clock never
+    /// counts, and then overflow at the wrong count. Only counted entries do
+    /// this; see the preemption timer's limits for an uncounted vCPU.
+    static ENABLED_FOLLOWING_EVENT: std::cell::RefCell<Option<FollowingEvents>> =
+        const { std::cell::RefCell::new(None) };
 }
 
 struct CounterBinding {
@@ -1039,6 +1118,10 @@ struct CounterBinding {
     displaced: std::sync::Arc<std::sync::atomic::AtomicBool>,
     /// The event's user page, when Linux maps one: reads then take no syscall.
     page: Option<UserPage>,
+    /// The preemption timer's event, which shares this binding's identity and
+    /// placement. Opened at the first entry with an armed request; a thread
+    /// that never arms one never has it.
+    timer: Option<TimerEvent>,
 }
 
 /// An event's first mmap page. While the event is on a hardware counter, Linux
@@ -1238,6 +1321,7 @@ impl CounterBinding {
             enabled: false,
             displaced: Default::default(),
             page: None,
+            timer: None,
         };
         binding.page = UserPage::map(&binding.fd);
         binding.previous = binding.read()?;
@@ -1259,10 +1343,13 @@ impl CounterBinding {
             .swap(false, std::sync::atomic::Ordering::Relaxed)
         {
             self.enabled = false;
+            if let Some(timer) = self.timer.as_mut() {
+                timer.mark_disabled();
+            }
         }
         if !self.enabled {
             if self.identity.cpu == FOLLOWS_TASK {
-                self.displace_other_following_event();
+                self.displace_other_following_event()?;
             }
             self.enable()?;
         }
@@ -1270,27 +1357,97 @@ impl CounterBinding {
         Ok(())
     }
 
-    /// Keeps at most one following event enabled on this host task (see
-    /// [`ENABLED_FOLLOWING_EVENT`]). The displaced binding is idle, because
-    /// entries on one host task never overlap; it re-enables at its next entry
-    /// and re-reads its baseline there, so no count is lost or misattributed.
-    fn displace_other_following_event(&self) {
+    /// Keeps at most one following binding's events enabled on this host task
+    /// (see [`ENABLED_FOLLOWING_EVENT`]). The displaced binding is idle,
+    /// because entries on one host task never overlap; it re-enables at its
+    /// next entry and re-reads its clock baseline there, so no count is lost
+    /// or misattributed. Its timer, disabled with its clock, counted nothing
+    /// meanwhile, so its pending overflow stays at the same clock value.
+    ///
+    /// The other binding's timer is disabled first, and a failure refuses
+    /// this entry before any guest instruction runs: a timer left enabled
+    /// would count this guest's branches, overflow early, reload a whole
+    /// period, and then kick its own guest late. The other binding then keeps
+    /// both events, enabled and recorded here. A clock that cannot be
+    /// disabled is tolerated, as before: it costs a counter but cannot
+    /// miscount, because a clock counts only guest mode and its own entries
+    /// re-read their baselines.
+    fn displace_other_following_event(&self) -> Result<()> {
         ENABLED_FOLLOWING_EVENT.with(|slot| {
             let mut slot = slot.borrow_mut();
-            if let Some((other, displaced)) = slot.take()
-                && !std::sync::Arc::ptr_eq(&displaced, &self.displaced)
+            if let Some(other) = slot.take()
+                && !std::sync::Arc::ptr_eq(&other.displaced, &self.displaced)
             {
-                if let Some(other) = other.upgrade() {
-                    // A failure leaves the other event enabled, which costs a
-                    // counter but cannot miscount: it counts only guest mode
-                    // and its own entries re-read their baselines.
+                if let Some(timer) = other.timer.as_ref().and_then(std::sync::Weak::upgrade)
                     // SAFETY: the descriptor is a live perf event.
-                    let _ = unsafe { ioctls::DISABLE(other.as_raw_fd(), 0) };
+                    && unsafe { ioctls::DISABLE(timer.as_raw_fd(), 0) } < 0
+                {
+                    let error = host_failure("disable another guest's preemption timer");
+                    *slot = Some(other);
+                    return Err(error);
                 }
-                displaced.store(true, std::sync::atomic::Ordering::Relaxed);
+                if let Some(clock) = other.clock.upgrade() {
+                    // SAFETY: the descriptor is a live perf event.
+                    let _ = unsafe { ioctls::DISABLE(clock.as_raw_fd(), 0) };
+                }
+                other
+                    .displaced
+                    .store(true, std::sync::atomic::Ordering::Relaxed);
             }
-            *slot = Some((std::sync::Arc::downgrade(&self.fd), self.displaced.clone()));
+            *slot = Some(FollowingEvents {
+                clock: std::sync::Arc::downgrade(&self.fd),
+                timer: self
+                    .timer
+                    .as_ref()
+                    .map(|timer| std::sync::Arc::downgrade(timer.fd())),
+                displaced: self.displaced.clone(),
+            });
+            Ok(())
+        })
+    }
+
+    /// Records this binding's timer event with its enabled clock, so that the
+    /// next binding to enable a clock on this host task disables both.
+    fn register_following_timer(&self) {
+        ENABLED_FOLLOWING_EVENT.with(|slot| {
+            if let Some(events) = slot.borrow_mut().as_mut()
+                && std::sync::Arc::ptr_eq(&events.displaced, &self.displaced)
+            {
+                events.timer = self
+                    .timer
+                    .as_ref()
+                    .map(|timer| std::sync::Arc::downgrade(timer.fd()));
+            }
         });
+    }
+
+    /// Prepares the timer event for an entry at `clock` under `state` (see
+    /// [`TimerEvent::prepare`]), opening it at the first entry with an armed
+    /// request. Without an event and without a request this issues no
+    /// syscall: an unarmed thread's entries cost nothing for the timer.
+    fn prepare_timer(&mut self, clock: u64, state: &TimerState) -> Result<()> {
+        let wanted = state.wanted_overflow(clock);
+        if self.timer.is_none() {
+            if wanted.is_none() {
+                return Ok(());
+            }
+            let cpu = if self.identity.cpu == FOLLOWS_TASK {
+                -1
+            } else {
+                self.identity.cpu as libc::c_int
+            };
+            let timer = TimerEvent::open(self.identity.tid, cpu, self.identity.raw_event)?;
+            #[cfg(test)]
+            let timer = timer.opened_at(clock);
+            self.timer = Some(timer);
+        }
+        let timer = self.timer.as_mut().unwrap();
+        let was_enabled = timer.enabled();
+        timer.prepare(clock, wanted)?;
+        if !was_enabled && timer.enabled() && self.identity.cpu == FOLLOWS_TASK {
+            self.register_following_timer();
+        }
+        Ok(())
     }
 
     fn enable(&mut self) -> Result<()> {
@@ -1344,6 +1501,9 @@ impl CounterBinding {
         if self.identity.cpu != FOLLOWS_TASK {
             // A CPU-bound event must not stay enabled once affinity is restored.
             self.disable()?;
+            if let Some(timer) = self.timer.as_mut() {
+                timer.disable()?;
+            }
         }
         let mut current = self.read()?;
         // Linux copies an event's enabled and running times one after the
@@ -1408,6 +1568,7 @@ impl CountInterval<'_> {
             return Err(self.clock.poison(errors.join("; ")));
         }
         self.clock.total = counted?;
+        self.clock.observe_timer_exit();
         Ok(())
     }
 }
@@ -1611,6 +1772,7 @@ mod tests {
             enabled: false,
             displaced: Default::default(),
             page: None,
+            timer: None,
         }
     }
 
@@ -2785,3 +2947,6 @@ mod tests {
 
 #[cfg(test)]
 mod entry_interrupt_tests;
+
+#[cfg(test)]
+mod preemption_timer_tests;
