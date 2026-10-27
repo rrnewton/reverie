@@ -1921,17 +1921,6 @@ fn staged_vectored_transfer<M: GuestMemoryAccess<Error = crate::Error> + Address
         staged_vectors.push(staged);
     }
 
-    // Inotify cookie virtualization restores an EFAULT read's partly written
-    // cookie from the first nonempty vector's prior contents.
-    let inotify_original = if inotify {
-        staged_vectors
-            .iter()
-            .find(|vector| vector.guest.length != 0)
-            .map(|vector| vector.accessible_slice(vector.accessible_length).to_vec())
-            .unwrap_or_default()
-    } else {
-        Vec::new()
-    };
     let mut host_iovecs = staged_host_iovecs(&mut staged_vectors);
     if !reading {
         let (written, sigpipe) =
@@ -1940,9 +1929,6 @@ fn staged_vectored_transfer<M: GuestMemoryAccess<Error = crate::Error> + Address
     }
 
     let result = invoke_vectored_read(number, host_fd, &mut host_iovecs, args);
-    if inotify {
-        virtualize_staged_inotify_cookies(&mut staged_vectors, result, &inotify_original, state);
-    }
     if result >= 0 {
         let mut remaining = result as usize;
         for vector in &staged_vectors {
