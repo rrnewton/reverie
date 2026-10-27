@@ -1121,12 +1121,8 @@ pub(super) fn pwrite64(memory: &GuestMemory, state: &LoadedStaticElf, args: &[u6
     let Some(file) = state.files.get(&fd) else {
         return negative_errno(libc::EBADF);
     };
-    if state
-        .proc_files
-        .get(&fd)
-        .is_some_and(|inode| !is_synthetic_proc_directory_inode(*inode))
-    {
-        // The remaining regular procfs files are seq_files, which Linux opens
+    if state.proc_files.contains_key(&fd) {
+        // The synthetic regular procfs files are seq_files, which Linux opens
         // without FMODE_PWRITE (ESPIPE). After the global signed-offset
         // check, O_PATH access precedes that refusal.
         return match file_status_flags(file) {
