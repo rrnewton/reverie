@@ -21,6 +21,7 @@ extern crate self as reverie_examples;
 
 /// Generic host helpers without a preload constructor or allocator.
 #[cfg(feature = "host")]
+#[path = "shared_host.rs"]
 pub mod host;
 
 // This legacy example cdylib also exports an rlib. Preserve its prior scoped
