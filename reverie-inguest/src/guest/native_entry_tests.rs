@@ -23,13 +23,15 @@ use super::super::native_test_support::Runtime;
 use super::super::native_test_support::Server;
 use super::*;
 
-#[derive(Default, Serialize, Deserialize)]
+#[derive(Clone, Default, Serialize, Deserialize)]
 struct State {
     seed: u64,
     starts: u64,
     posts: u64,
     syscalls: u64,
     order: Vec<u64>,
+    initialized_for: i32,
+    parent_seed: Option<u64>,
 }
 impl State {
     fn seeded() -> Self {
@@ -44,12 +46,43 @@ impl State {
 struct Probe {
     saved_stack: AtomicUsize,
     syscall_entries: AtomicUsize,
+    initializer_entries: AtomicUsize,
+    block_initializer: bool,
 }
 
 #[reverie::tool]
 impl Tool for Probe {
     type GlobalState = Remote;
     type ThreadState = State;
+
+    fn init_thread_state(
+        &self,
+        child: reverie::Tid,
+        parent: Option<(reverie::Tid, &State)>,
+    ) -> State {
+        assert_eq!(
+            child.as_raw(),
+            fixture::actual_pid(libc::SYS_gettid).as_raw()
+        );
+        self.initializer_entries.fetch_add(1, Ordering::SeqCst);
+        let request = if parent.is_some() {
+            311
+        } else if self.block_initializer {
+            100
+        } else {
+            310
+        };
+        assert_eq!(
+            super::super::installed_tool::blocking_global_rpc::<Remote>(Request(request)).unwrap(),
+            Reply(child.as_raw(), request),
+        );
+        State {
+            seed: 71,
+            initialized_for: child.as_raw(),
+            parent_seed: parent.map(|(_, state)| state.seed),
+            ..State::default()
+        }
+    }
 
     async fn handle_thread_start<G: Guest<Self>>(&self, guest: &mut G) -> Result<(), Error> {
         assert_eq!(
@@ -197,11 +230,17 @@ impl Tool for Probe {
 }
 
 fn make_host() -> (ToolHost<Probe, Runtime>, std::os::unix::net::UnixStream) {
+    make_host_with_probe(Probe::default())
+}
+
+fn make_host_with_probe(
+    probe: Probe,
+) -> (ToolHost<Probe, Runtime>, std::os::unix::net::UnixStream) {
     let (rpc, peer) = fixture::configured_rpc();
     let subscriptions = [Sysno::getpid].into_iter().collect();
     let host = unsafe {
         ToolHost::new_native(
-            Probe::default(),
+            probe,
             rpc,
             fixture::actual_pid(libc::SYS_getpid),
             subscriptions,
@@ -468,7 +507,9 @@ fn native_deferred_entry_retains_original_scratch_until_real_completion() {
         .tool
         .lock()
         .as_deref()
-        .unwrap().as_ref().unwrap()
+        .unwrap()
+        .as_ref()
+        .unwrap()
         .saved_stack
         .load(Ordering::SeqCst);
     assert_ne!(saved, 0);
@@ -494,6 +535,84 @@ fn native_deferred_entry_retains_original_scratch_until_real_completion() {
 }
 
 #[test]
+fn native_post_event_reuses_original_state_scratch_and_rpc_before_completion() {
+    let server = Server::new();
+    let (host, _peer) = make_host();
+    let rpc = NativeRpc::new(server.path.clone(), host.rpc.shared_config()).unwrap();
+    let callback = Callback::new(1);
+    let id = callback.identity();
+    let services = callback.services(None);
+    let handle = unsafe {
+        host.register_native_image_thread(id, State::seeded())
+            .unwrap()
+    };
+    let lease = unsafe { host.enter_native_callback(handle, id).unwrap() };
+    let deferred = match unsafe {
+        host.dispatch_native_syscall(lease, &services, &rpc, &mut event(7))
+            .unwrap()
+    } {
+        NativeCallResult::Deferred(deferred) => deferred,
+        NativeCallResult::Return(_) => panic!("original operation must remain deferred"),
+    };
+    let saved = host
+        .tool
+        .lock()
+        .as_deref()
+        .unwrap()
+        .as_ref()
+        .unwrap()
+        .saved_stack
+        .load(Ordering::SeqCst);
+    assert_ne!(saved, 0);
+    assert_eq!(unsafe { (saved as *const u64).read() }, 0x7197);
+    assert_eq!(callback.count(libc::SYS_getpid), 0);
+    let (number, args) = deferred.operation();
+    let kernel_answer = unsafe {
+        callback
+            .invocation()
+            .invoke(number, args, reverie::InjectionPurpose::Application)
+    };
+    assert_eq!(kernel_answer, i64::from(id.physical_pid().as_raw()));
+    let result = unsafe {
+        host.with_native_post_event(
+            deferred,
+            &services,
+            &rpc,
+            &mut event(0),
+            |_tool, guest, tail| {
+                assert_eq!(guest.thread_state().order, [1, 2, 3]);
+                assert_eq!(guest.thread_state().syscalls, 1);
+                assert_eq!((saved as *const u64).read(), 0x7197);
+                crate::tool_host::drive_native_callback(
+                    async {
+                        let Reply(from, answer) = guest.send_rpc(Request(300)).await;
+                        assert_eq!(from, id.tid().as_raw());
+                        assert_eq!(answer, 300);
+                        // The original arena survives actual post-event RPC,
+                        // not merely a copied marker or a manual map entry.
+                        assert_eq!((saved as *const u64).read(), 0x7197);
+                        guest.thread_state_mut().order.push(4);
+                        Ok(300_i64)
+                    },
+                    tail,
+                )
+            },
+        )
+        .unwrap()
+    };
+    assert_eq!(value(result), 300);
+    let state = unsafe { host.retire_native_thread(handle, id).unwrap() };
+    assert_eq!((state.starts, state.posts, state.syscalls), (1, 1, 1));
+    assert_eq!(state.order, [1, 2, 3, 4]);
+    assert_eq!(callback.count(libc::SYS_getpid), 1);
+    assert_eq!(
+        *server.global.seen.lock().unwrap(),
+        [(id.tid().as_raw(), 300)]
+    );
+    fixture::close_test_primary(&rpc, &callback);
+}
+
+#[test]
 fn native_single_handler_error_is_not_restarted_or_published_as_success() {
     let server = Server::new();
     let (host, _peer) = make_host();
@@ -515,7 +634,9 @@ fn native_single_handler_error_is_not_restarted_or_published_as_success() {
         host.tool
             .lock()
             .as_deref()
-            .unwrap().as_ref().unwrap()
+            .unwrap()
+            .as_ref()
+            .unwrap()
             .syscall_entries
             .load(Ordering::SeqCst),
         1,
@@ -534,6 +655,8 @@ fn native_single_handler_error_is_not_restarted_or_published_as_success() {
     assert_eq!(
         host.tool
             .lock()
+            .as_deref()
+            .unwrap()
             .as_ref()
             .unwrap()
             .syscall_entries
@@ -800,4 +923,420 @@ fn native_wrong_background_thread_and_active_process_exit_refuse_before_consumpt
         .unwrap()
     };
     fixture::close_test_primary(&rpc, &callback);
+}
+
+#[test]
+fn native_initializer_uses_original_tool_parent_snapshot_and_rpc_once() {
+    let server = Server::new();
+    let (host, _peer) = make_host_with_probe(Probe {
+        block_initializer: true,
+        ..Probe::default()
+    });
+    let rpc = NativeRpc::new(server.path.clone(), host.rpc.shared_config()).unwrap();
+    let (other, _other_peer) = make_host();
+    let other_rpc = NativeRpc::new(server.path.clone(), other.rpc.shared_config()).unwrap();
+    let callback = Callback::new(1);
+    let identity = callback.identity();
+    let services = callback.services(None);
+    let wrong_config = NativeRpc::new(server.path.clone(), Arc::new(71)).unwrap();
+    assert_eq!(
+        unsafe { host.initialize_native_image_thread(&services, &wrong_config, |_| Ok(())) }
+            .unwrap_err()
+            .raw_os_error(),
+        Some(libc::ESTALE),
+    );
+    assert_eq!(
+        host.tool
+            .lock()
+            .as_deref()
+            .unwrap()
+            .as_ref()
+            .unwrap()
+            .initializer_entries
+            .load(Ordering::SeqCst),
+        0
+    );
+
+    let (waiting_tx, waiting_rx) = std::sync::mpsc::channel();
+    *server.global.first_pending.lock().unwrap() = Some(waiting_tx);
+    std::thread::scope(|scope| {
+        // Root init is inside a real blocking global RPC. A second actual
+        // common Guest must still acquire its state/Tool and release that RPC.
+        // Holding either process guard across Tool init would fail this path.
+        let host_ref = &host;
+        let rpc_ref = &rpc;
+        let sibling = scope.spawn(move || {
+            let host = host_ref;
+            let rpc = rpc_ref;
+            waiting_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+            let callback = Callback::new(1);
+            let id = callback.identity();
+            let services = callback.services(None);
+            let handle = unsafe {
+                host.register_native_image_thread(id, State::seeded())
+                    .unwrap()
+            };
+            let lease = unsafe { host.enter_native_callback(handle, id).unwrap() };
+            assert_eq!(
+                value(unsafe {
+                    host.dispatch_native_syscall(lease, &services, rpc, &mut event(101))
+                        .unwrap()
+                }),
+                101
+            );
+            let state = unsafe { host.retire_native_thread(handle, id).unwrap() };
+            assert_eq!(state.order, [1, 2, 3]);
+        });
+        let handle = unsafe {
+            host.initialize_native_image_thread(&services, &rpc, |state| {
+                assert_eq!(state.initialized_for, identity.tid().as_raw());
+                assert_eq!(state.parent_seed, None);
+                assert!(
+                    host.tool.try_lock().is_some(),
+                    "Tool slot held across initializer"
+                );
+                Ok(())
+            })
+            .unwrap()
+        };
+        sibling.join().unwrap();
+        assert_eq!(
+            unsafe { host.initialize_native_image_thread(&services, &rpc, |_| Ok(())) }
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::AlreadyExists,
+        );
+        let lease = unsafe { host.enter_native_callback(handle, identity).unwrap() };
+        assert_eq!(
+            value(unsafe {
+                host.dispatch_native_syscall(lease, &services, &rpc, &mut event(1))
+                    .unwrap()
+            }),
+            i64::from(identity.physical_pid().as_raw())
+        );
+
+        let lease = unsafe { host.enter_native_callback(handle, identity).unwrap() };
+        let mut deferred = match unsafe {
+            host.dispatch_native_syscall(lease, &services, &rpc, &mut event(7))
+                .unwrap()
+        } {
+            NativeCallResult::Deferred(deferred) => deferred,
+            NativeCallResult::Return(_) => panic!("expected original native continuation"),
+        };
+        let (number, args) = deferred.operation();
+        assert_eq!(
+            unsafe {
+                callback
+                    .invocation()
+                    .invoke(number, args, reverie::InjectionPurpose::Application)
+            },
+            i64::from(identity.physical_pid().as_raw())
+        );
+
+        type Snapshot = native_state::NativeParentSnapshot<State>;
+        let (identity_tx, identity_rx) = std::sync::mpsc::channel();
+        let (snapshot_tx, snapshot_rx) =
+            std::sync::mpsc::channel::<(Snapshot, Snapshot, Snapshot)>();
+        let host_ref = &host;
+        let rpc_ref = &rpc;
+        let other_ref = &other;
+        let other_rpc_ref = &other_rpc;
+        let child = scope.spawn(move || {
+            let host = host_ref;
+            let rpc = rpc_ref;
+            let other = other_ref;
+            let other_rpc = other_rpc_ref;
+            let callback = Callback::new(1);
+            let id = callback.identity();
+            let services = callback.services(None);
+            identity_tx.send(id).unwrap();
+            let (foreign, parent, duplicate) =
+                snapshot_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+            assert_eq!(parent.child_identity(), id);
+            assert_eq!(parent.parent_identity(), identity);
+            assert_eq!(
+                unsafe {
+                    other.initialize_native_thread(&services, other_rpc, foreign, |_, _| Ok(()))
+                }
+                .unwrap_err()
+                .raw_os_error(),
+                Some(libc::ESTALE)
+            );
+            assert_eq!(
+                other
+                    .tool
+                    .lock()
+                    .as_deref()
+                    .unwrap()
+                    .as_ref()
+                    .unwrap()
+                    .initializer_entries
+                    .load(Ordering::SeqCst),
+                0
+            );
+            let handle = unsafe {
+                host.initialize_native_thread(&services, rpc, parent, |state, parent| {
+                    let (tid, snapshot) = parent.expect("actual parent snapshot");
+                    assert_eq!(tid.as_raw(), identity.tid().as_raw());
+                    assert_eq!(snapshot.seed, 79);
+                    assert_eq!(snapshot.order, [1, 2, 3, 3]);
+                    assert_eq!(state.initialized_for, id.tid().as_raw());
+                    assert_eq!(state.parent_seed, Some(79));
+                    assert!(host.tool.try_lock().is_some());
+                    Ok(())
+                })
+                .unwrap()
+            };
+            assert_eq!(
+                unsafe { host.initialize_native_thread(&services, rpc, duplicate, |_, _| Ok(())) }
+                    .unwrap_err()
+                    .kind(),
+                io::ErrorKind::AlreadyExists
+            );
+            let lease = unsafe { host.enter_native_callback(handle, id).unwrap() };
+            assert_eq!(
+                value(unsafe {
+                    host.dispatch_native_syscall(lease, &services, rpc, &mut event(1))
+                        .unwrap()
+                }),
+                i64::from(id.physical_pid().as_raw())
+            );
+            let state = unsafe { host.retire_native_thread(handle, id).unwrap() };
+            assert_eq!((state.starts, state.posts, state.syscalls), (1, 0, 1));
+            assert_eq!(state.order, [1, 3]);
+            assert_eq!(state.parent_seed, Some(79));
+        });
+        let child_id = identity_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        let stale_image = unsafe {
+            native_state::NativeThreadIdentity::from_admitted(
+                child_id.physical_pid(),
+                child_id.physical_tid(),
+                child_id.pid(),
+                child_id.tid(),
+                2,
+            )
+            .unwrap()
+        };
+        assert_eq!(
+            unsafe {
+                host.snapshot_native_parent(&mut deferred, &services, &rpc, stale_image, |_| Ok(()))
+            }
+            .err()
+            .expect("different image generation must refuse")
+            .raw_os_error(),
+            Some(libc::ESTALE)
+        );
+        let foreign = unsafe {
+            host.snapshot_native_parent(&mut deferred, &services, &rpc, child_id, |state| {
+                state.seed = 79;
+                Ok(())
+            })
+            .unwrap()
+        };
+        let parent = unsafe {
+            host.snapshot_native_parent(&mut deferred, &services, &rpc, child_id, |_| Ok(()))
+                .unwrap()
+        };
+        let duplicate = unsafe {
+            host.snapshot_native_parent(&mut deferred, &services, &rpc, child_id, |_| Ok(()))
+                .unwrap()
+        };
+        let post = unsafe {
+            host.with_native_post_event(deferred, &services, &rpc, &mut event(0), |_, guest, _| {
+                assert_eq!(guest.thread_state().seed, 79);
+                assert_eq!(
+                    super::super::installed_tool::blocking_global_rpc::<Remote>(Request(312))
+                        .unwrap(),
+                    Reply(identity.tid().as_raw(), 312)
+                );
+                guest.thread_state_mut().seed = 83;
+                NativeCallbackOutcome::Ready(Ok(()))
+            })
+            .unwrap()
+        };
+        assert!(matches!(post, NativeCallResult::Return(())));
+        let state = unsafe { host.retire_native_thread(handle, identity).unwrap() };
+        assert_eq!(state.seed, 83);
+        assert_eq!((state.starts, state.posts, state.syscalls), (1, 1, 2));
+        assert_eq!(state.order, [1, 2, 3, 3]);
+        // The genuine snapshot keeps its original parent generation even
+        // after normal parent retirement; it does not use the parent's newer
+        // state or manufacture a replacement state for a recycled TID.
+        snapshot_tx
+            .send((foreign, parent, duplicate))
+            .unwrap_or_else(|_| {
+                panic!("actual child stopped before receiving its parent snapshot")
+            });
+        child.join().unwrap();
+        assert_eq!(
+            host.tool
+                .lock()
+                .as_deref()
+                .unwrap()
+                .as_ref()
+                .unwrap()
+                .initializer_entries
+                .load(Ordering::SeqCst),
+            2
+        );
+    });
+    let seen = server.global.seen.lock().unwrap();
+    assert_eq!(
+        seen.iter().filter(|(_, request)| *request == 100).count(),
+        1
+    );
+    assert_eq!(
+        seen.iter().filter(|(_, request)| *request == 101).count(),
+        1
+    );
+    assert_eq!(
+        seen.iter().filter(|(_, request)| *request == 311).count(),
+        1
+    );
+    assert_eq!(
+        seen.iter().filter(|(_, request)| *request == 312).count(),
+        1
+    );
+    drop(seen);
+    fixture::close_test_primary(&rpc, &callback);
+}
+
+#[test]
+fn native_initializer_refuses_stale_post_context_without_reinitializing() {
+    use std::sync::atomic::AtomicBool;
+
+    use super::super::native_rpc::NativeInvocation;
+    use super::super::native_services::NativeEventFacts;
+    use super::super::native_services::NativeServiceTable;
+
+    struct Current {
+        callback: Callback,
+        live: AtomicBool,
+    }
+    unsafe extern "C" fn current(context: usize) -> i32 {
+        let owner = unsafe { &*(context as *const Current) };
+        i32::from(
+            owner.live.load(Ordering::SeqCst)
+                && owner.callback.invocation().ensure_current().is_ok(),
+        )
+    }
+    unsafe extern "C" fn invoke(
+        context: usize,
+        number: i64,
+        args: *const u64,
+        purpose: u32,
+    ) -> i64 {
+        let owner = unsafe { &*(context as *const Current) };
+        let purpose = if purpose == reverie::InjectionPurpose::Application as u32 {
+            reverie::InjectionPurpose::Application
+        } else {
+            assert_eq!(
+                purpose,
+                reverie::InjectionPurpose::Pselect6WrapperValidation as u32
+            );
+            reverie::InjectionPurpose::Pselect6WrapperValidation
+        };
+        unsafe {
+            owner
+                .callback
+                .invocation()
+                .invoke(number, args.cast::<[u64; 6]>().read(), purpose)
+        }
+    }
+    unsafe extern "C" fn read(context: usize, regs: *mut libc::user_regs_struct) -> i32 {
+        let owner = unsafe { &*(context as *const Current) };
+        unsafe { regs.write(*owner.callback.regs.lock().unwrap()) };
+        1
+    }
+    unsafe extern "C" fn write(context: usize, regs: *const libc::user_regs_struct) -> i32 {
+        let owner = unsafe { &*(context as *const Current) };
+        *owner.callback.regs.lock().unwrap() = unsafe { regs.read() };
+        1
+    }
+    let table = NativeServiceTable {
+        read_registers: read,
+        write_registers: write,
+        compare_exchange_u32: None,
+        controller_capture: None,
+        private_memory: None,
+        mapping_capture: None,
+        read_memory: None,
+    };
+    let server = Server::new();
+    let (host, _peer) = make_host();
+    let rpc = NativeRpc::new(server.path.clone(), host.rpc.shared_config()).unwrap();
+    let current_owner = Current {
+        callback: Callback::new(7),
+        live: AtomicBool::new(true),
+    };
+    let identity = current_owner.callback.identity();
+    let invocation = unsafe {
+        NativeInvocation::from_admitted(
+            &current_owner as *const Current as usize,
+            invoke,
+            current,
+            identity,
+        )
+    };
+    let services = unsafe {
+        NativeServices::from_admitted(
+            invocation,
+            &table,
+            NativeEventFacts {
+                parent: None,
+                branches: 17,
+                cpuid_interception: true,
+                pidfd_self_spelling: reverie::PidfdSelfSpelling::Unknown,
+                auxv: &[(libc::AT_NULL, 0)],
+                initial_stack: None,
+                signal_info: None,
+            },
+        )
+        .unwrap()
+    };
+    let error = unsafe {
+        host.initialize_native_image_thread(&services, &rpc, |state| {
+            assert_eq!(state.initialized_for, identity.tid().as_raw());
+            current_owner.live.store(false, Ordering::SeqCst);
+            Ok(())
+        })
+    }
+    .unwrap_err();
+    assert_eq!(error.raw_os_error(), Some(libc::ESTALE));
+    assert_eq!(
+        host.tool
+            .lock()
+            .as_deref()
+            .unwrap()
+            .as_ref()
+            .unwrap()
+            .initializer_entries
+            .load(Ordering::SeqCst),
+        1
+    );
+    current_owner.live.store(true, Ordering::SeqCst);
+    assert_eq!(
+        unsafe { host.initialize_native_image_thread(&services, &rpc, |_| Ok(())) }
+            .unwrap_err()
+            .kind(),
+        io::ErrorKind::AlreadyExists
+    );
+    assert_eq!(
+        unsafe { host.register_native_image_thread(identity, State::seeded()) }
+            .unwrap_err()
+            .kind(),
+        io::ErrorKind::AlreadyExists
+    );
+    assert_eq!(
+        host.tool
+            .lock()
+            .as_deref()
+            .unwrap()
+            .as_ref()
+            .unwrap()
+            .initializer_entries
+            .load(Ordering::SeqCst),
+        1
+    );
+    fixture::close_test_primary(&rpc, &current_owner.callback);
 }
