@@ -65,6 +65,8 @@ use crate::trap::raw_syscall6;
 #[path = "host_linux.rs"]
 mod host_linux;
 
+#[path = "native_copied.rs"]
+mod native_copied;
 #[path = "native_entry.rs"]
 mod native_entry;
 #[path = "native_initialize.rs"]
