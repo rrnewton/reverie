@@ -16,6 +16,7 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::MutexGuard;
+use std::sync::OnceLock;
 use std::sync::Weak;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
@@ -74,8 +75,13 @@ const FIX_EFLAGS: u64 = (1 << 18)
     | (1 << 2)
     | (1 << 0);
 pub const FIXED_XFEATURES: u64 = XFEATURE_X87 | XFEATURE_SSE | XFEATURE_YMM;
-const MXCSR_FEATURE_MASK: u32 = 0x0000_ffbf;
+/// The MXCSR feature mask Linux uses when the CPU's FXSAVE image reports none:
+/// every bit but DAZ (`fpu__init_system_mxcsr`, arch/x86/kernel/fpu/init.c).
+const DEFAULT_MXCSR_FEATURE_MASK: u32 = 0x0000_ffbf;
 
+const MXCSR_MASK_OFFSET: usize = 28;
+const XMM_OFFSET: usize = 160;
+const XMM_END: usize = XMM_OFFSET + 16 * 16;
 const FP_SW_RESERVED_OFFSET: usize = 464;
 const XSTATE_BV_OFFSET: usize = 512;
 const XCOMP_BV_OFFSET: usize = 520;
@@ -972,16 +978,52 @@ impl SignalFrameLayout {
     }
 }
 
+/// The MXCSR_MASK field of this CPU's FXSAVE image, read once. Linux's initial
+/// FPU state carries it (`setup_init_fpu_buf` takes the legacy area from an
+/// FXSAVE), XSAVE writes it into every signal frame, and a KVM guest's own
+/// FXSAVE reports it too.
+fn hardware_mxcsr_mask() -> u32 {
+    static MASK: OnceLock<u32> = OnceLock::new();
+    *MASK.get_or_init(|| {
+        #[repr(C, align(16))]
+        struct FxsaveArea([u8; LEGACY_FPSTATE_SIZE]);
+        let mut area = FxsaveArea([0; LEGACY_FPSTATE_SIZE]);
+        // SAFETY: FXSAVE writes exactly this 512-byte, 16-byte-aligned area,
+        // and FXSR is part of the x86-64 baseline.
+        unsafe { std::arch::x86_64::_fxsave64(area.0.as_mut_ptr()) };
+        read_u32(&area.0, MXCSR_MASK_OFFSET)
+    })
+}
+
+/// The MXCSR bits a signal frame may set: Linux's `mxcsr_feature_mask`, the
+/// hardware mask, which includes DAZ wherever the CPU supports it.
+fn mxcsr_feature_mask() -> u32 {
+    match hardware_mxcsr_mask() {
+        0 => DEFAULT_MXCSR_FEATURE_MASK,
+        mask => mask,
+    }
+}
+
 /// Fixed x87/SSE/YMM signal-frame representation of KVM's XSAVE state.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct XsaveImage([u8; XSAVE_SIGNAL_SIZE]);
 
 impl XsaveImage {
+    /// The signal-frame image of `xsave`. Its XSTATE_BV marks x87 and SSE
+    /// state present even when the vCPU had them in their initial state, as
+    /// Linux's `save_xstate_epilog` does, so that rt_sigreturn applies a
+    /// handler's edits to the saved control word, MXCSR or XMM registers.
     pub fn from_kvm(xsave: &kvm_xsave) -> Self {
         let mut bytes = [0; XSAVE_SIGNAL_SIZE];
         for (index, word) in xsave.region[..XSAVE_SIZE / 4].iter().copied().enumerate() {
             bytes[index * 4..index * 4 + 4].copy_from_slice(&word.to_le_bytes());
         }
+        let xstate_bv = read_u64(&bytes, XSTATE_BV_OFFSET);
+        write_u64(
+            &mut bytes,
+            XSTATE_BV_OFFSET,
+            xstate_bv | XFEATURE_X87 | XFEATURE_SSE,
+        );
 
         write_u32(&mut bytes, FP_SW_RESERVED_OFFSET, FP_XSTATE_MAGIC1);
         write_u32(
@@ -997,13 +1039,29 @@ impl XsaveImage {
         Self(bytes)
     }
 
+    /// Linux's initial user FPU state, which `fpu__clear_user_states`
+    /// installs for a signal handler and for an rt_sigreturn whose
+    /// uc_mcontext.fpregs is NULL: x87 control word 0x37f, an empty x87
+    /// stack, MXCSR 0x1f80, and zero x87, XMM and YMM registers, with the
+    /// CPU's MXCSR_MASK, which KVM then reports in the next signal frame.
+    ///
+    /// XSTATE_BV marks x87 and SSE state present with these values and leaves
+    /// YMM state initial, as the next frame Linux builds says: its header
+    /// marks x87 and SSE present (`save_xstate_epilog`) and YMM only once
+    /// used. KVM_SET_XSAVE copies a component only when its bit is set, and
+    /// copies MXCSR with any of x87, SSE or YMM (`copy_uabi_to_xstate`); the
+    /// vCPU initializes a component whose bit is clear. With x87 and SSE
+    /// clear too, the vCPU's previous MXCSR would stay in place, and a host
+    /// that keeps guest state in the standard (uncompacted) format, one with
+    /// neither XSAVEC nor XSAVES, would restore it: the standard form of
+    /// XRSTOR loads MXCSR whenever SSE or AVX state is requested, whatever
+    /// XSTATE_BV says (Intel SDM Vol. 1, Section 13.8.1).
     pub fn initialized_kvm() -> kvm_xsave {
         let mut xsave = kvm_xsave::default();
-        // Linux's fpu__clear_user_states installs the architectural init state
-        // when uc_mcontext.fpregs is NULL.
         xsave.region[0] = 0x037f;
         xsave.region[6] = 0x1f80;
-        xsave.region[7] = MXCSR_FEATURE_MASK;
+        xsave.region[MXCSR_MASK_OFFSET / 4] = hardware_mxcsr_mask();
+        xsave.region[XSTATE_BV_OFFSET / 4] = (XFEATURE_X87 | XFEATURE_SSE) as u32;
         xsave
     }
 
@@ -1027,14 +1085,34 @@ impl XsaveImage {
         }
     }
 
-    /// Restores either Linux's legacy FXSAVE image or a bounded standard-format
-    /// XSAVE image containing a supported x87/SSE/YMM feature subset.
+    /// Restores a signal frame's FP state as Linux's 64-bit rt_sigreturn
+    /// does: a bounded standard-format XSAVE image containing a supported
+    /// x87/SSE/YMM feature subset, or a legacy FXSAVE image, which Linux also
+    /// restores for an XSAVE frame without FP_XSTATE_MAGIC2 after its
+    /// xstate_size bytes (`check_xstate_in_sigframe`).
+    ///
+    /// For an XSAVE image Linux runs the standard form of XRSTOR with the
+    /// frame's software xfeatures as the requested features, and then
+    /// initializes the guest's other features (`__restore_fpregs_from_user`).
+    /// XRSTOR faults on an XSTATE_BV bit outside the guest's XCR0 and on
+    /// nonzero header bytes 8 to 23 (XCOMP_BV and the eight after it); it
+    /// loads each requested component that XSTATE_BV marks present and
+    /// initializes the other requested ones, whatever XSTATE_BV says about
+    /// the rest; and it loads MXCSR, faulting on a bit outside the CPU's
+    /// MXCSR_MASK (DAZ is inside it wherever the CPU has DAZ), whenever SSE or
+    /// YMM state is requested, also when XSTATE_BV leaves SSE initial (Intel
+    /// SDM Vol. 1, 13.8.1). Initializing SSE state afterwards sets MXCSR to
+    /// 0x1f80. The frame's MXCSR_MASK field is not state: XRSTOR ignores it,
+    /// and the CPU writes its own mask into the next frame.
+    ///
+    /// Some frames Linux accepts are refused
+    /// (<https://github.com/rrnewton/reverie/issues/1191>): those whose
+    /// metadata [`Self::restore_size`] refuses, and those with nonzero header
+    /// bytes 24 to 63, software xfeatures outside XCR0, or YMM requested in
+    /// fewer than 832 bytes.
     pub fn restore_from_signal(bytes: &[u8]) -> Result<kvm_xsave, SignalFrameError> {
         if bytes.len() < LEGACY_FPSTATE_SIZE {
             return Err(SignalFrameError::InvalidXsaveMetadata);
-        }
-        if read_u32(bytes, 24) & !MXCSR_FEATURE_MASK != 0 {
-            return Err(SignalFrameError::InvalidMxcsr);
         }
         let expected = Self::restore_size(
             bytes[..LEGACY_FPSTATE_SIZE]
@@ -1044,36 +1122,19 @@ impl XsaveImage {
         if bytes.len() != expected {
             return Err(SignalFrameError::InvalidXsaveMetadata);
         }
-        let mut xsave = Self::initialized_kvm();
-        if expected == LEGACY_FPSTATE_SIZE {
-            for (index, chunk) in bytes.as_chunks::<4>().0.iter().enumerate() {
-                xsave.region[index] = u32::from_le_bytes(*chunk);
-            }
-            for word in &mut xsave.region[FP_SW_RESERVED_OFFSET / 4..LEGACY_FPSTATE_SIZE / 4] {
-                *word = 0;
-            }
-            xsave.region[XSTATE_BV_OFFSET / 4] = (XFEATURE_X87 | XFEATURE_SSE) as u32;
-            return Ok(xsave);
+        let xstate_size = expected - 4;
+        if expected == LEGACY_FPSTATE_SIZE || read_u32(bytes, xstate_size) != FP_XSTATE_MAGIC2 {
+            return Self::restore_legacy(&bytes[..LEGACY_FPSTATE_SIZE]);
         }
 
-        let xstate_size = expected - 4;
         let xfeatures = read_u64(bytes, FP_SW_RESERVED_OFFSET + 8);
         if xfeatures & !FIXED_XFEATURES != 0
             || xfeatures & XFEATURE_YMM != 0 && xstate_size < XSAVE_SIZE
         {
             return Err(SignalFrameError::InvalidXsaveFeatures);
         }
-        if read_u32(bytes, expected - 4) != FP_XSTATE_MAGIC2 {
-            return Err(SignalFrameError::InvalidXsaveMetadata);
-        }
-        if bytes[FP_SW_RESERVED_OFFSET + 20..LEGACY_FPSTATE_SIZE]
-            .iter()
-            .any(|byte| *byte != 0)
-        {
-            return Err(SignalFrameError::InvalidXsaveReserved);
-        }
         let xstate_bv = read_u64(bytes, XSTATE_BV_OFFSET);
-        if xstate_bv & !xfeatures != 0 || xstate_bv & !FIXED_XFEATURES != 0 {
+        if xstate_bv & !FIXED_XFEATURES != 0 {
             return Err(SignalFrameError::InvalidXsaveFeatures);
         }
         if read_u64(bytes, XCOMP_BV_OFFSET) != 0
@@ -1083,12 +1144,49 @@ impl XsaveImage {
         {
             return Err(SignalFrameError::InvalidXsaveReserved);
         }
+        if xfeatures & (XFEATURE_SSE | XFEATURE_YMM) != 0
+            && read_u32(bytes, 24) & !mxcsr_feature_mask() != 0
+        {
+            return Err(SignalFrameError::InvalidMxcsr);
+        }
+        let mut xsave = Self::initialized_kvm();
         for (index, chunk) in bytes[..xstate_size].as_chunks::<4>().0.iter().enumerate() {
             xsave.region[index] = u32::from_le_bytes(*chunk);
         }
-        for word in &mut xsave.region[FP_SW_RESERVED_OFFSET / 4..LEGACY_FPSTATE_SIZE / 4] {
-            *word = 0;
+        xsave.region[FP_SW_RESERVED_OFFSET / 4..LEGACY_FPSTATE_SIZE / 4].fill(0);
+        // Only the requested components can come from the frame. Without
+        // SSE among them, Linux initializes SSE state after the XRSTOR; with
+        // SSE initial in XSTATE_BV, XRSTOR zeroes the XMM registers but loads
+        // MXCSR from the frame. KVM_SET_XSAVE leaves a component whose bit is
+        // clear to be initialized, which is right for the others, but copies
+        // MXCSR only with one of x87, SSE or YMM present, so mark SSE present
+        // with those values.
+        let present = xstate_bv & xfeatures;
+        if present & XFEATURE_SSE == 0 {
+            xsave.region[XMM_OFFSET / 4..XMM_END / 4].fill(0);
         }
+        if xfeatures & XFEATURE_SSE == 0 {
+            xsave.region[6] = 0x1f80;
+        }
+        xsave.region[XSTATE_BV_OFFSET / 4] = (present | XFEATURE_SSE) as u32;
+        xsave.region[MXCSR_MASK_OFFSET / 4] = hardware_mxcsr_mask();
+        Ok(xsave)
+    }
+
+    /// Linux's legacy restore: FXRSTOR of the 512-byte image, which loads x87
+    /// and SSE state and faults on an MXCSR bit outside the CPU's mask, and
+    /// then the initialization of YMM state.
+    fn restore_legacy(bytes: &[u8]) -> Result<kvm_xsave, SignalFrameError> {
+        if read_u32(bytes, 24) & !mxcsr_feature_mask() != 0 {
+            return Err(SignalFrameError::InvalidMxcsr);
+        }
+        let mut xsave = Self::initialized_kvm();
+        for (index, chunk) in bytes.as_chunks::<4>().0.iter().enumerate() {
+            xsave.region[index] = u32::from_le_bytes(*chunk);
+        }
+        xsave.region[FP_SW_RESERVED_OFFSET / 4..LEGACY_FPSTATE_SIZE / 4].fill(0);
+        xsave.region[XSTATE_BV_OFFSET / 4] = (XFEATURE_X87 | XFEATURE_SSE) as u32;
+        xsave.region[MXCSR_MASK_OFFSET / 4] = hardware_mxcsr_mask();
         Ok(xsave)
     }
 
@@ -1119,7 +1217,7 @@ impl XsaveImage {
         {
             return Err(SignalFrameError::InvalidXsaveReserved);
         }
-        if read_u32(&bytes, 24) & !MXCSR_FEATURE_MASK != 0 {
+        if read_u32(&bytes, 24) & !mxcsr_feature_mask() != 0 {
             return Err(SignalFrameError::InvalidMxcsr);
         }
         Ok(Self(bytes))
@@ -1658,6 +1756,249 @@ mod tests {
         );
         assert!(
             restored.region[XSAVE_SIZE / 4..]
+                .iter()
+                .all(|word| *word == 0)
+        );
+    }
+
+    #[test]
+    fn signal_frames_mark_x87_and_sse_present_as_linux_does() {
+        // KVM reports components in their initial state as absent; the frame
+        // marks x87 and SSE present anyway, so rt_sigreturn applies a
+        // handler's edits to them.
+        for (reported, framed) in [
+            (0, XFEATURE_X87 | XFEATURE_SSE),
+            (XFEATURE_YMM, FIXED_XFEATURES),
+            (FIXED_XFEATURES, FIXED_XFEATURES),
+        ] {
+            let mut raw = kvm_xsave::default();
+            raw.region[XSTATE_BV_OFFSET / 4] = reported as u32;
+            let bytes = *XsaveImage::from_kvm(&raw).bytes();
+            assert_eq!(read_u64(&bytes, XSTATE_BV_OFFSET), framed, "{reported:#x}");
+            let restored = XsaveImage::restore_from_signal(&bytes).unwrap();
+            assert_eq!(restored.region[XSTATE_BV_OFFSET / 4] as u64, framed);
+        }
+    }
+
+    #[test]
+    fn rt_sigreturn_takes_mxcsr_from_a_frame_whose_sse_state_is_initial() {
+        // XSTATE_BV without SSE: the XMM registers return to zero, and MXCSR
+        // comes from the frame, as the standard form of XRSTOR loads it.
+        let mut bytes = valid_xsave_bytes();
+        write_u32(&mut bytes, 24, 0x5f80);
+        write_u32(&mut bytes, XMM_OFFSET + 5 * 16, 0x5555_5555);
+        for header in [0, XFEATURE_X87, XFEATURE_YMM] {
+            write_u64(&mut bytes, XSTATE_BV_OFFSET, header);
+            let restored = XsaveImage::restore_from_signal(&bytes).unwrap();
+            assert_eq!(restored.region[6], 0x5f80, "{header:#x}");
+            assert!(
+                restored.region[XMM_OFFSET / 4..XMM_END / 4]
+                    .iter()
+                    .all(|word| *word == 0),
+                "{header:#x}"
+            );
+            assert_eq!(
+                restored.region[XSTATE_BV_OFFSET / 4] as u64,
+                header | XFEATURE_SSE
+            );
+        }
+        // A frame whose features leave SSE out gets SSE's initial MXCSR, as
+        // Linux initializes those features after the XRSTOR.
+        let mut x87_only = bytes[..XSTATE_RESERVED_END + 4].to_vec();
+        write_u32(
+            &mut x87_only,
+            FP_SW_RESERVED_OFFSET + 4,
+            (XSTATE_RESERVED_END + 4) as u32,
+        );
+        write_u64(&mut x87_only, FP_SW_RESERVED_OFFSET + 8, XFEATURE_X87);
+        write_u32(
+            &mut x87_only,
+            FP_SW_RESERVED_OFFSET + 16,
+            XSTATE_RESERVED_END as u32,
+        );
+        write_u64(&mut x87_only, XSTATE_BV_OFFSET, XFEATURE_X87);
+        write_u32(&mut x87_only, XSTATE_RESERVED_END, FP_XSTATE_MAGIC2);
+        let restored = XsaveImage::restore_from_signal(&x87_only).unwrap();
+        assert_eq!(restored.region[6], 0x1f80);
+    }
+
+    #[test]
+    fn rt_sigreturn_accepts_the_cpus_mxcsr_bits_and_reports_its_mask() {
+        let mask = hardware_mxcsr_mask();
+        let mut bytes = valid_xsave_bytes();
+        // DAZ (bit 6), which -ffast-math sets at startup, wherever the CPU
+        // has it; a bit outside the CPU's mask is refused, as XRSTOR faults.
+        write_u32(&mut bytes, 24, 0x1fc0);
+        write_u32(&mut bytes, MXCSR_MASK_OFFSET, 0xffbf);
+        let restored = XsaveImage::restore_from_signal(&bytes);
+        if mask & 0x40 != 0 {
+            let restored = restored.unwrap();
+            assert_eq!(restored.region[6], 0x1fc0);
+            assert_eq!(restored.region[MXCSR_MASK_OFFSET / 4], mask);
+        } else {
+            assert_eq!(restored.err(), Some(SignalFrameError::InvalidMxcsr));
+        }
+        write_u32(&mut bytes, 24, 0x1f80 | 1 << 31);
+        assert_eq!(
+            XsaveImage::restore_from_signal(&bytes).err(),
+            Some(SignalFrameError::InvalidMxcsr)
+        );
+        assert_eq!(
+            XsaveImage::initialized_kvm().region[MXCSR_MASK_OFFSET / 4],
+            mask
+        );
+    }
+
+    #[test]
+    fn the_initial_image_leaves_ymm_state_initial() {
+        // After fpu__clear_user_states, Linux's next frame marks x87 and SSE
+        // present and YMM absent; KVM reports the image's XSTATE_BV in the
+        // frame of a signal delivered before the guest runs again.
+        let image = XsaveImage::initialized_kvm();
+        assert_eq!(
+            image.region[XSTATE_BV_OFFSET / 4] as u64
+                | (image.region[XSTATE_BV_OFFSET / 4 + 1] as u64) << 32,
+            XFEATURE_X87 | XFEATURE_SSE
+        );
+        assert_eq!((image.region[0], image.region[6]), (0x037f, 0x1f80));
+        let bytes = *XsaveImage::from_kvm(&image).bytes();
+        assert_eq!(
+            read_u64(&bytes, XSTATE_BV_OFFSET),
+            XFEATURE_X87 | XFEATURE_SSE
+        );
+    }
+
+    /// [`valid_xsave_bytes`] with software xfeatures `features`, XSTATE_BV
+    /// `header`, MXCSR `mxcsr` and a nonzero XMM5.
+    fn xsave_frame(features: u64, header: u64, mxcsr: u32) -> [u8; XSAVE_SIGNAL_SIZE] {
+        let mut bytes = valid_xsave_bytes();
+        write_u64(&mut bytes, FP_SW_RESERVED_OFFSET + 8, features);
+        write_u64(&mut bytes, XSTATE_BV_OFFSET, header);
+        write_u32(&mut bytes, 24, mxcsr);
+        write_u32(&mut bytes, XMM_OFFSET + 5 * 16, 0x5555_5555);
+        bytes
+    }
+
+    fn xmm_registers_are_zero(xsave: &kvm_xsave) -> bool {
+        xsave.region[XMM_OFFSET / 4..XMM_END / 4]
+            .iter()
+            .all(|word| *word == 0)
+    }
+
+    #[test]
+    fn rt_sigreturn_checks_mxcsr_only_where_linux_loads_it() {
+        for reserved in [1 << 16, 1 << 31] {
+            let mxcsr = 0x1f80 | reserved;
+            // XRSTOR loads MXCSR only when the frame's features request SSE
+            // or YMM state. Without SSE among them, Linux then initializes
+            // SSE state: MXCSR 0x1f80 and zero XMM registers.
+            for features in [XFEATURE_X87, 0] {
+                let context = format!("features {features:#x}, MXCSR {mxcsr:#x}");
+                let restored =
+                    XsaveImage::restore_from_signal(&xsave_frame(features, features, mxcsr))
+                        .expect(&context);
+                assert_eq!(restored.region[6], 0x1f80, "{context}");
+                assert!(xmm_registers_are_zero(&restored), "{context}");
+                assert_eq!(
+                    restored.region[XSTATE_BV_OFFSET / 4] as u64,
+                    features | XFEATURE_SSE,
+                    "{context}"
+                );
+            }
+            for features in [XFEATURE_X87 | XFEATURE_YMM, XFEATURE_SSE, FIXED_XFEATURES] {
+                assert_eq!(
+                    XsaveImage::restore_from_signal(&xsave_frame(features, features, mxcsr)).err(),
+                    Some(SignalFrameError::InvalidMxcsr),
+                    "features {features:#x}, MXCSR {mxcsr:#x}"
+                );
+            }
+            // FXRSTOR always loads it.
+            let mut legacy = [0u8; LEGACY_FPSTATE_SIZE];
+            write_u32(&mut legacy, 24, mxcsr);
+            assert_eq!(
+                XsaveImage::restore_from_signal(&legacy).err(),
+                Some(SignalFrameError::InvalidMxcsr),
+                "legacy, MXCSR {mxcsr:#x}"
+            );
+        }
+    }
+
+    #[test]
+    fn rt_sigreturn_initializes_components_outside_the_frames_features() {
+        // An XSTATE_BV bit within XCR0 that the frame's features leave out is
+        // ignored by XRSTOR, and Linux initializes that component afterwards.
+        let restored = XsaveImage::restore_from_signal(&xsave_frame(
+            XFEATURE_X87 | XFEATURE_SSE,
+            FIXED_XFEATURES,
+            0x5f80,
+        ))
+        .unwrap();
+        assert_eq!(
+            restored.region[XSTATE_BV_OFFSET / 4] as u64,
+            XFEATURE_X87 | XFEATURE_SSE
+        );
+        assert_eq!(restored.region[6], 0x5f80);
+        assert_eq!(restored.region[(XMM_OFFSET + 5 * 16) / 4], 0x5555_5555);
+        let restored =
+            XsaveImage::restore_from_signal(&xsave_frame(XFEATURE_X87, FIXED_XFEATURES, 0x5f80))
+                .unwrap();
+        assert_eq!(
+            restored.region[XSTATE_BV_OFFSET / 4] as u64,
+            XFEATURE_X87 | XFEATURE_SSE
+        );
+        assert_eq!(restored.region[6], 0x1f80);
+        assert!(xmm_registers_are_zero(&restored));
+        // A bit outside XCR0 makes XRSTOR fault.
+        assert_eq!(
+            XsaveImage::restore_from_signal(&xsave_frame(
+                FIXED_XFEATURES,
+                FIXED_XFEATURES | 1 << 3,
+                0x1f80
+            ))
+            .err(),
+            Some(SignalFrameError::InvalidXsaveFeatures)
+        );
+    }
+
+    #[test]
+    fn rt_sigreturn_restores_a_frame_without_magic2_as_legacy_state() {
+        // check_xstate_in_sigframe: without FP_XSTATE_MAGIC2 after the frame's
+        // xstate_size bytes, Linux restores the legacy image with FXRSTOR,
+        // which loads x87 and SSE state and MXCSR, and initializes YMM state.
+        let mut bytes = xsave_frame(FIXED_XFEATURES, FIXED_XFEATURES, 0x5f80);
+        write_u32(&mut bytes, XSAVE_SIZE, 0);
+        let restored = XsaveImage::restore_from_signal(&bytes).unwrap();
+        assert_eq!(
+            restored.region[XSTATE_BV_OFFSET / 4] as u64,
+            XFEATURE_X87 | XFEATURE_SSE
+        );
+        assert_eq!((restored.region[0], restored.region[6]), (0x37f, 0x5f80));
+        assert_eq!(restored.region[(XMM_OFFSET + 5 * 16) / 4], 0x5555_5555);
+        assert!(
+            restored.region[XSTATE_RESERVED_END / 4..XSAVE_SIZE / 4]
+                .iter()
+                .all(|word| *word == 0)
+        );
+        write_u32(&mut bytes, 24, 0x1f80 | 1 << 31);
+        assert_eq!(
+            XsaveImage::restore_from_signal(&bytes).err(),
+            Some(SignalFrameError::InvalidMxcsr)
+        );
+    }
+
+    #[test]
+    fn rt_sigreturn_ignores_the_software_reserved_padding() {
+        // Linux reads magic1, extended_size, xfeatures and xstate_size from
+        // the software-reserved bytes and nothing after them.
+        let mut bytes = valid_xsave_bytes();
+        bytes[FP_SW_RESERVED_OFFSET + 20..LEGACY_FPSTATE_SIZE].fill(0xa5);
+        let restored = XsaveImage::restore_from_signal(&bytes).unwrap();
+        assert_eq!(
+            restored.region[XSTATE_BV_OFFSET / 4] as u64,
+            FIXED_XFEATURES
+        );
+        assert!(
+            restored.region[FP_SW_RESERVED_OFFSET / 4..LEGACY_FPSTATE_SIZE / 4]
                 .iter()
                 .all(|word| *word == 0)
         );
