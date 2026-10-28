@@ -1175,6 +1175,33 @@ pub trait Guest<T: Tool>: Send + GlobalRPC<T::GlobalState> {
     fn user_address_limit(&self) -> Result<crate::UserAddressLimit, crate::Error> {
         crate::user_address::host_user_address_limit()
     }
+
+    /// Returns the state of this thread's open descriptor `fd` that no
+    /// syscall reads without changing it: an eventfd's counter, a Unix domain
+    /// socket's queued `SCM_RIGHTS` descriptors, and the locks held through
+    /// the descriptor's open file description. Linux shows the same state in
+    /// `/proc/<pid>/fdinfo/<fd>`; see [`crate::DescriptorStatus`].
+    ///
+    /// `Err(FactError::Errno(EBADF))` means that `fd` is not open in this
+    /// thread's descriptor table. Other errnos come from the backend's own
+    /// read of the state. `Err(FactError::NotProvided)` means the backend
+    /// does not report this fact, for any descriptor or for this one; it is
+    /// the default, for a backend that states nothing.
+    ///
+    /// The answer describes the moment of the call, while this thread is
+    /// stopped in the callback. Any task that shares the descriptor's open
+    /// file description, or the socket's peer, can change it afterwards.
+    ///
+    /// A backend whose guest threads are host tasks the tool may read
+    /// ([`crate::BackendCapabilities::host_task_reads_reach_guest_threads`])
+    /// reads the thread's own `fdinfo`. A backend that runs the guest's
+    /// syscalls itself answers from the descriptor table it keeps, with the
+    /// differences from Linux that its documentation names. Any other backend
+    /// does not report it, because a host read there would describe another
+    /// task.
+    fn descriptor_status(&self, _fd: i32) -> Result<crate::DescriptorStatus, crate::FactError> {
+        Err(crate::FactError::NotProvided)
+    }
 }
 
 /// Wraps a `Guest<T>` such that it implements `Guest<U>`.
@@ -1488,5 +1515,9 @@ where
 
     fn user_address_limit(&self) -> Result<crate::UserAddressLimit, crate::Error> {
         self.inner.user_address_limit()
+    }
+
+    fn descriptor_status(&self, fd: i32) -> Result<crate::DescriptorStatus, crate::FactError> {
+        self.inner.descriptor_status(fd)
     }
 }

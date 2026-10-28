@@ -560,6 +560,32 @@ into procfs and procfs `statfs`/`fstatfs` return `EACCES`. Unlike Linux, this
 backend also continues to reject `fchdir` on ordinary `O_PATH` descriptors with
 `EBADF`. Ordinary readable-directory cwd operations remain supported.
 
+`Guest::descriptor_status` answers from the executor's descriptor table: for a
+guest descriptor backed by a host descriptor of the same open file description,
+it reports what the host kernel's `fdinfo` shows for that description (an
+eventfd's count, a Unix socket's queued `SCM_RIGHTS` descriptors, its locks). It
+reads that `fdinfo` while the table is locked and never duplicates or closes a
+descriptor of the guest's file, so a query releases no POSIX lock held by the
+process the Tool runs in. Two answers differ from Linux. A guest's `F_SETLK` or
+`F_SETLKW` record lock is held as an open file description lock on the host, so
+it is reported with class `OpenFileDescription` where Linux reports `Posix`. It
+also behaves as an open file description lock. Every process that holds a
+descriptor of its description, such as a forked child or a receiver through
+`SCM_RIGHTS`, shares it: the lock is reported for that descriptor, and an
+`F_SETLK` through it changes or releases the lock, where Linux lists a `POSIX`
+lock only through its owner's descriptor table and lets only its owner change
+it. And it outlives a close that releases a `POSIX` lock on Linux, any close of
+the file by the owning process, until the description's last descriptor is
+closed. The guest's own `flock(2)` is refused, so a flock lock is reported only
+for a description the guest received already locked, such as an inherited
+standard input. Objects the executor keeps itself are not provided, however the
+guest holds them, including through `SCM_RIGHTS`: signalfds, the executor's own
+memfds (such as synthetic `/proc` files), and with captured output the
+supervisor's standard output and error. The memfds are recognized by their
+reserved names and captured output by device and inode, so a guest memfd given a
+reserved name, or a guest's own descriptor of the file the supervisor's output
+goes to, is not provided either.
+
 A Tool can reserve one empty host directory on a read-only file system for its
 own use (`KvmBackend::reserve_tool_directory`): the executor hides it from the
 guest, answering `ENOENT` for every route to it but an `O_DIRECTORY` open or a
