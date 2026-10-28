@@ -151,15 +151,33 @@ struct State {
     primary: Primary,
 }
 
-/// One native image's configured primary connection owner.
+enum Destination<G: GlobalTool> {
+    Coordinator(PathBuf),
+    Local(Arc<G>),
+}
+
+impl<G: GlobalTool> Destination<G> {
+    fn coordinator(&self) -> io::Result<&Path> {
+        match self {
+            Self::Coordinator(path) => Ok(path),
+            Self::Local(_) => Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "the selected native RPC owner is an in-process GlobalTool",
+            )),
+        }
+    }
+}
+
+/// One native image's explicitly selected GlobalTool route.
 ///
 /// The caller supplies the already authenticated configuration and concrete
-/// path. No environment lookup, optional coordinator or local GlobalTool
-/// fallback is selected by application callbacks.
+/// path, or the actual in-process GlobalTool. No environment lookup or route
+/// fallback is selected by application callbacks. Local is a launch choice,
+/// never recovery from failed coordinator I/O.
 pub struct NativeRpc<G: GlobalTool> {
     state: SpinMutex<State>,
     descriptor: AtomicU64,
-    path: PathBuf,
+    destination: Destination<G>,
     config: Arc<G::Config>,
 }
 
@@ -167,7 +185,21 @@ impl<G: GlobalTool> NativeRpc<G> {
     /// Retain the concrete coordinator route and its authoritative config.
     pub fn new(path: PathBuf, config: Arc<G::Config>) -> io::Result<Self> {
         let _ = unix_address(&path)?;
-        Ok(Self {
+        Ok(Self::with_destination(
+            Destination::Coordinator(path),
+            config,
+        ))
+    }
+
+    /// The actual standalone image's existing in-process GlobalTool. Its async
+    /// receive_rpc is awaited directly; no request is encoded or sent through
+    /// an invented descriptor. The launch owner retains the same config Arc.
+    pub fn local(global: Arc<G>, config: Arc<G::Config>) -> Self {
+        Self::with_destination(Destination::Local(global), config)
+    }
+
+    fn with_destination(destination: Destination<G>, config: Arc<G::Config>) -> Self {
+        Self {
             state: SpinMutex::new(State {
                 next: 1,
                 primary: Primary::Available {
@@ -176,9 +208,9 @@ impl<G: GlobalTool> NativeRpc<G> {
                 },
             }),
             descriptor: AtomicU64::new(0),
-            path,
+            destination,
             config,
-        })
+        }
     }
 
     /// The same authoritative config allocation retained at construction.
@@ -273,6 +305,9 @@ impl<G: GlobalTool> NativeRpc<G> {
         &self,
         physical_pid: Pid,
     ) -> Result<MappingCapturePrimary<'_, G>, reverie::MappingCaptureError> {
+        if matches!(self.destination, Destination::Local(_)) {
+            return Err(reverie::MappingCaptureError::Connection);
+        }
         let mut lease = self
             .take_primary()
             .map_err(|_| reverie::MappingCaptureError::Connection)?
@@ -295,6 +330,10 @@ impl<G: GlobalTool> NativeRpc<G> {
     /// Prepare the primary before a real admitted Tool entry. If another
     /// callback owns it, preserve the existing independent exchange route.
     pub fn prepare(&self, invocation: NativeInvocation<'_>) -> io::Result<()> {
+        invocation.ensure_current()?;
+        if matches!(self.destination, Destination::Local(_)) {
+            return Ok(());
+        }
         let Some(mut primary) = self.take_primary()? else {
             return Ok(());
         };
@@ -325,7 +364,7 @@ impl<G: GlobalTool> PrimaryLease<'_, G> {
             ));
         }
         if self.recover || !self.connection.as_ref().is_some_and(|c| c.pid == pid) {
-            let mut replacement = connect(invocation, &self.owner.path)?;
+            let mut replacement = connect(invocation, self.owner.destination.coordinator()?)?;
             if let Some(old) = self.connection.as_ref() {
                 // Keep the published number occupied. The unique lease, not
                 // an owner mutex across I/O, excludes every primary user.
@@ -450,6 +489,7 @@ impl<G: GlobalTool> NativeApplicationRpc<'_, G> {
     /// connection before any response deserializer can reenter Tool code.
     pub fn exchange(&self, message: G::Request) -> Result<G::Response, RpcError> {
         self.invocation.ensure_current()?;
+        let path = self.owner.destination.coordinator()?;
         let request = RpcRequest::<G>::new(self.invocation.identity.tid(), message)?;
         let response = if let Some(mut primary) = self.owner.take_primary()? {
             primary.ensure(self.invocation)?;
@@ -461,7 +501,7 @@ impl<G: GlobalTool> NativeApplicationRpc<'_, G> {
             drop(primary);
             response
         } else {
-            let connection = connect(self.invocation, &self.owner.path)?;
+            let connection = connect(self.invocation, path)?;
             let response =
                 round_trip::<G>(self.invocation, connection.fd, &self.owner.config, request);
             close(self.invocation, connection.fd);
@@ -474,10 +514,28 @@ impl<G: GlobalTool> NativeApplicationRpc<'_, G> {
 #[reverie::tool]
 impl<G: GlobalTool> GlobalRPC<G> for NativeApplicationRpc<'_, G> {
     async fn send_rpc(&self, message: G::Request) -> G::Response {
-        self.exchange(message)
-            .expect("native coordinator round trip failed")
+        if let Destination::Local(global) = &self.owner.destination {
+            self.invocation
+                .ensure_current()
+                .expect("native local RPC task changed");
+            let response = global
+                .receive_rpc(self.invocation.identity.tid(), message)
+                .await;
+            self.invocation
+                .ensure_current()
+                .expect("native local RPC task changed");
+            response
+        } else {
+            self.exchange(message)
+                .expect("native coordinator round trip failed")
+        }
     }
     fn try_send_rpc_sync(&self, message: G::Request) -> Result<G::Response, G::Request> {
+        if matches!(self.owner.destination, Destination::Local(_)) {
+            // The maintained local GlobalTool route is asynchronous. Do not
+            // turn a possibly pending receive_rpc into a claimed sync reply.
+            return Err(message);
+        }
         Ok(self
             .exchange(message)
             .expect("native coordinator round trip failed"))
@@ -711,10 +769,42 @@ pub(super) fn dispatch_global<G: GlobalTool + 'static>(
     let result = match route.kind {
         RouteKind::Application => {
             let client = unsafe { &*route.client.cast::<NativeApplicationRpc<'_, G>>() };
+            if let Destination::Local(global) = &client.owner.destination {
+                let tail = unsafe { &*route.tail };
+                let result = (|| {
+                    client.invocation.ensure_current()?;
+                    let response = match crate::tool_host::drive_native_callback(
+                        global.receive_rpc(client.invocation.identity.tid(), request),
+                        tail,
+                    ) {
+                        crate::tool_host::NativeCallbackOutcome::Ready(response) => response,
+                        _ => {
+                            return Err(io::Error::new(
+                                io::ErrorKind::Unsupported,
+                                "native blocking global RPC cannot transfer a tail continuation",
+                            ));
+                        }
+                    };
+                    client.invocation.ensure_current()?;
+                    Ok(response)
+                })();
+                return NativeGlobalDispatch::Handled(result);
+            }
             client.exchange(request)
         }
         RouteKind::Background => {
             let client = unsafe { &*route.client.cast::<NativeBackgroundView<'_, G>>() };
+            if let Destination::Local(global) = &client.owner.destination {
+                let result = (|| {
+                    client.ensure_current()?;
+                    let response = crate::tool_host::drive_native_ready(
+                        global.receive_rpc(client.from, request),
+                    );
+                    client.ensure_current()?;
+                    Ok(response)
+                })();
+                return NativeGlobalDispatch::Handled(result);
+            }
             client.exchange(request)
         }
     };
@@ -732,7 +822,7 @@ struct BackgroundConnection {
 /// No application callback may select it as a fallback for failed native I/O.
 pub struct NativeBackgroundRpc<G: GlobalTool> {
     thread: std::thread::ThreadId,
-    path: PathBuf,
+    destination: Destination<G>,
     config: Arc<G::Config>,
     connection: std::sync::Mutex<Option<BackgroundConnection>>,
 }
@@ -751,10 +841,26 @@ impl<G: GlobalTool> NativeBackgroundRpc<G> {
         let _ = unix_address(&path)?;
         Ok(Self {
             thread: std::thread::current().id(),
-            path,
+            destination: Destination::Coordinator(path),
             config,
             connection: std::sync::Mutex::new(None),
         })
+    }
+
+    /// Select the same real in-process GlobalTool on its genuine background
+    /// thread. This has the same native entry/allocator/TLS obligations as
+    /// from_admitted; it supplies no ordinary/private entry authority.
+    ///
+    /// # Safety
+    /// The original native owner has established this background thread's
+    /// actual Rust entry context, and global/config are its retained owners.
+    pub unsafe fn local_from_admitted(global: Arc<G>, config: Arc<G::Config>) -> Self {
+        Self {
+            thread: std::thread::current().id(),
+            destination: Destination::Local(global),
+            config,
+            connection: std::sync::Mutex::new(None),
+        }
     }
 
     /// The same immutable launch configuration as the application owner.
@@ -806,6 +912,7 @@ impl<G: GlobalTool> NativeBackgroundView<'_, G> {
     /// a different background owner never waits on this connection's mutex.
     pub fn exchange(&self, request: G::Request) -> Result<G::Response, RpcError> {
         self.ensure_current()?;
+        let path = self.owner.destination.coordinator()?;
         let mut slot = match self.owner.connection.try_lock() {
             Ok(slot) => slot,
             Err(std::sync::TryLockError::Poisoned(poisoned)) => poisoned.into_inner(),
@@ -818,7 +925,7 @@ impl<G: GlobalTool> NativeBackgroundView<'_, G> {
             .as_ref()
             .is_some_and(|connection| connection.pid == pid)
         {
-            let mut stream = std::os::unix::net::UnixStream::connect(&self.owner.path)?;
+            let mut stream = std::os::unix::net::UnixStream::connect(path)?;
             let _config = read_config_frame(&mut stream)?;
             *slot = Some(BackgroundConnection { pid, stream });
         }
@@ -835,10 +942,22 @@ impl<G: GlobalTool> NativeBackgroundView<'_, G> {
 #[reverie::tool]
 impl<G: GlobalTool> GlobalRPC<G> for NativeBackgroundView<'_, G> {
     async fn send_rpc(&self, message: G::Request) -> G::Response {
-        self.exchange(message)
-            .expect("background coordinator round trip failed")
+        if let Destination::Local(global) = &self.owner.destination {
+            self.ensure_current()
+                .expect("native local background RPC task changed");
+            let response = global.receive_rpc(self.from, message).await;
+            self.ensure_current()
+                .expect("native local background RPC task changed");
+            response
+        } else {
+            self.exchange(message)
+                .expect("background coordinator round trip failed")
+        }
     }
     fn try_send_rpc_sync(&self, message: G::Request) -> Result<G::Response, G::Request> {
+        if matches!(self.owner.destination, Destination::Local(_)) {
+            return Err(message);
+        }
         Ok(self
             .exchange(message)
             .expect("background coordinator round trip failed"))

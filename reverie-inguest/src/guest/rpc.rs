@@ -111,7 +111,7 @@ impl<G: GlobalTool> ConnectionOwner<G> {
 pub struct CoordinatorRpc<G: GlobalTool> {
     connection: ConnectionOwner<G>,
     config: Arc<G::Config>,
-    path: PathBuf,
+    path: Option<PathBuf>,
     fd: AtomicI32,
     on_reconnect: ReconnectHook,
     #[cfg(feature = "exec-private-successor")]
@@ -145,12 +145,28 @@ impl<G: GlobalTool> CoordinatorRpc<G> {
         Ok(Self {
             connection: ConnectionOwner::NativeConfiguration,
             config,
-            path,
+            path: Some(path),
             fd: AtomicI32::new(-1),
             on_reconnect: |_, _| Err(io::Error::from_raw_os_error(libc::EPROTO)),
             #[cfg(feature = "exec-private-successor")]
             native_failed: AtomicBool::new(false),
         })
+    }
+
+    /// Retain an explicitly selected in-process native GlobalTool's config.
+    /// No path, descriptor, ordinary connection or coordinator fallback exists.
+    /// This is config storage only; the real native entry owner still supplies
+    /// the separate NativeRpc::local route and actual callback authority.
+    pub fn from_native_local_configuration(config: Arc<G::Config>) -> Self {
+        Self {
+            connection: ConnectionOwner::NativeConfiguration,
+            config,
+            path: None,
+            fd: AtomicI32::new(-1),
+            on_reconnect: |_, _| Err(io::Error::from_raw_os_error(libc::EPROTO)),
+            #[cfg(feature = "exec-private-successor")]
+            native_failed: AtomicBool::new(false),
+        }
     }
 
     /// Share the launch configuration cached by this connection owner.
@@ -238,7 +254,7 @@ impl<G: GlobalTool> CoordinatorRpc<G> {
         Ok(Self {
             connection: ConnectionOwner::Ordinary(SpinMutex::new(RpcConnection { pid, client })),
             config,
-            path: path.as_ref().to_path_buf(),
+            path: Some(path.as_ref().to_path_buf()),
             fd: AtomicI32::new(fd),
             on_reconnect,
             #[cfg(feature = "exec-private-successor")]
@@ -260,7 +276,7 @@ impl<G: GlobalTool> CoordinatorRpc<G> {
         Ok(Self {
             connection: ConnectionOwner::Ordinary(SpinMutex::new(RpcConnection { pid, client })),
             config,
-            path,
+            path: Some(path),
             fd: AtomicI32::new(fd),
             on_reconnect,
             #[cfg(feature = "exec-private-successor")]
@@ -317,7 +333,8 @@ impl<G: GlobalTool> CoordinatorRpc<G> {
                 // The new connection is recorded as the coordinator's
                 // before the placement unblocks signals, so a guest handler
                 // run then already finds it protected.
-                let client = connect_ordinary::<G>(&self.path, tid, |new_fd| {
+                let path = self.path.as_deref().unwrap_or_else(|| rpc_fatal(123));
+                let client = connect_ordinary::<G>(path, tid, |new_fd| {
                     let old_fd = self.fd.swap(new_fd, Ordering::AcqRel);
                     (self.on_reconnect)(old_fd, new_fd)
                 })
