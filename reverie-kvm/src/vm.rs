@@ -260,7 +260,9 @@ pub(crate) struct UserTrap {
     stack_segment: u16,
     vector: u8,
     error_code: u64,
-    /// The `sigcontext.cr2` value: CR2 for a page fault, otherwise zero.
+    /// CR2 for a page fault, otherwise zero. A page fault records it in the
+    /// thread's trap fields, which every later frame saves as
+    /// `sigcontext.cr2` (see [`UserTrap::prepare_delivery`]).
     address: u64,
     halted_registers: kvm_regs,
     special_registers: kvm_bindings::kvm_sregs,
@@ -379,7 +381,71 @@ impl UserTrap {
         }
         Ok(())
     }
+
+    /// What Linux's trap handler does in the thread before its signal is
+    /// selected: it records the exception in the thread's trap fields, which
+    /// this frame and every later one saves (a page fault's address only for a
+    /// page fault), and forces the signal past a block or an ignore
+    /// (`ElfExecutor::prepare_captured_trap`).
+    pub(crate) fn prepare_delivery(&self, executor: &mut ElfExecutor) {
+        executor.record_user_trap(
+            self.vector.into(),
+            self.error_code,
+            (self.vector == 14).then_some(self.address),
+        );
+        executor.prepare_captured_trap(self.event.signal());
+    }
 }
+
+/// How the guest enters the handler a signal frame is built for (see
+/// [`KvmBackend::deliver_selected_signal_at_boundary`]).
+#[derive(Clone, Copy)]
+pub(crate) enum HandlerEntry<'a> {
+    /// Through the syscall frame at this address, which the ring-zero
+    /// trampoline returns to user mode with: a syscall's return or
+    /// rt_sigreturn's.
+    SyscallFrame(u64),
+    /// By setting the vCPU's registers: the vCPU stands at a user instruction
+    /// boundary. That is an unstarted clone, a timer event's boundary, and a
+    /// fault's boundary once the fault's own frame has resumed the vCPU in
+    /// user mode at its handler.
+    UserBoundary,
+    /// Through the fault's exception: the fault's own frame, which saves the
+    /// FPU state and selectors captured with it.
+    Fault(&'a UserTrap),
+}
+
+impl HandlerEntry<'_> {
+    /// How the handler of a frame built on top of one entered this way is
+    /// entered: through the same syscall frame, or with the vCPU's registers
+    /// at the user boundary where the fault's frame left the vCPU.
+    fn stacked(self) -> Self {
+        match self {
+            Self::Fault(_) => Self::UserBoundary,
+            entry => entry,
+        }
+    }
+}
+
+/// The bound on the signals one return to user mode delivers. Linux selects
+/// again after every frame (`exit_to_user_mode_loop`) until no eligible signal
+/// is left, with no bound. Each selection takes one pending entry: LinuxEmu
+/// queues standard signals only, in two domains of at most 31 entries, so a
+/// return without a new send stays below this bound, and each frame for a
+/// signal without SA_NODEFER also blocks its number for the rest of the
+/// return. Only a sender that keeps queueing signals, another thread or a
+/// Tool's signal hook, can reach the bound, for example by signalling an
+/// SA_NODEFER handler again and again: Linux would keep building frames at
+/// that return, while here what is left stays pending for the next boundary.
+/// Real-time signals, which can queue many entries each, would need this
+/// bound revisited.
+///
+/// With no Tool, a return takes at most this many signals from the pending
+/// sets, to build their frames or to discard them; a fault's own signal is
+/// not among them. Under a Tool, a return builds at most this many frames,
+/// the first included, and each frame's selection may take the signals the
+/// hook suppresses before it, which `SIGNAL_SELECTIONS_PER_BOUNDARY` bounds.
+pub(crate) const SIGNAL_SELECTIONS_PER_RETURN: usize = 64;
 
 extern "C" fn interrupt_guest_worker(_signal: libc::c_int) {
     #[cfg(test)]
@@ -5451,7 +5517,7 @@ impl KvmBackend {
         executor: &mut ElfExecutor,
         syscall_frame_address: u64,
         result: i64,
-    ) -> Result<bool> {
+    ) -> Result<Option<kvm_regs>> {
         let interrupted = process_syscall_return_registers(
             &self.memory,
             self.vcpu.get_regs()?,
@@ -5462,32 +5528,64 @@ impl KvmBackend {
         self.deliver_pending_signal_from_registers(executor, syscall_frame_address, interrupted)
     }
 
+    /// Delivers every eligible pending signal at the return through the
+    /// syscall frame at `syscall_frame_address`, with `interrupted` as the
+    /// interrupted context, and returns the registers the last frame's
+    /// handler starts with. When none is delivered, a temporary-mask call's
+    /// saved mask is put back (`restore_saved_sigmask`).
     pub(crate) fn deliver_pending_signal_from_registers(
         &mut self,
         executor: &mut ElfExecutor,
         syscall_frame_address: u64,
         interrupted: kvm_bindings::kvm_regs,
-    ) -> Result<bool> {
-        let delivered = loop {
+    ) -> Result<Option<kvm_regs>> {
+        let delivered = self.deliver_pending_signals(
+            executor,
+            interrupted,
+            HandlerEntry::SyscallFrame(syscall_frame_address),
+        )?;
+        if delivered.is_none() {
+            executor.restore_saved_signal_mask();
+        }
+        Ok(delivered)
+    }
+
+    /// Linux's `exit_to_user_mode_loop` for a backend run with no Tool: while
+    /// a signal the mask leaves unblocked is pending, selects one, discards it
+    /// if it is ignored, and otherwise builds its frame (see
+    /// [`Self::deliver_selected_signal_at_boundary`]). Each frame goes on top
+    /// of the last: its interrupted context is the previous frame's handler
+    /// at its first instruction, and its selection sees the mask that
+    /// delivery left. Returns the registers the last frame's handler starts
+    /// with, or `None` when no frame was built. A signal whose default action
+    /// ends the thread or its group ends the loop with that exit pending.
+    pub(crate) fn deliver_pending_signals(
+        &mut self,
+        executor: &mut ElfExecutor,
+        mut interrupted: kvm_regs,
+        mut entry: HandlerEntry<'_>,
+    ) -> Result<Option<kvm_regs>> {
+        let mut delivered = None;
+        for _ in 0..SIGNAL_SELECTIONS_PER_RETURN {
+            if executor.has_pending_exit() {
+                break;
+            }
             let Some(pending) = executor
                 .take_pending_signal_for_delivery()
                 .map_err(|errno| Error::Reverie(errno.into()))?
             else {
-                break false;
+                break;
             };
-
             if executor.signal_disposition(pending.event.signal()) == SignalDisposition::Ignore {
                 continue;
             }
-            break self.deliver_selected_signal_from_registers(
-                executor,
-                syscall_frame_address,
-                interrupted,
-                pending,
-            )?;
-        };
-        if !delivered {
-            executor.restore_saved_signal_mask();
+            if let Some(handler) =
+                self.deliver_selected_signal_at_boundary(executor, interrupted, pending, entry)?
+            {
+                delivered = Some(handler);
+                interrupted = handler;
+                entry = entry.stacked();
+            }
         }
         Ok(delivered)
     }
@@ -5498,30 +5596,29 @@ impl KvmBackend {
         syscall_frame_address: u64,
         interrupted: kvm_bindings::kvm_regs,
         pending: crate::executor::PendingSignal,
-    ) -> Result<bool> {
+    ) -> Result<Option<kvm_regs>> {
         self.deliver_selected_signal_at_boundary(
             executor,
-            syscall_frame_address,
             interrupted,
             pending,
-            None,
-            false,
+            HandlerEntry::SyscallFrame(syscall_frame_address),
         )
     }
 
+    /// Builds the frame of a fault's own signal, which resumes the vCPU in
+    /// user mode at its handler; a frame built on top of it then enters its
+    /// handler at that user boundary ([`HandlerEntry::UserBoundary`]).
     pub(crate) fn deliver_user_trap(
         &mut self,
         executor: &mut ElfExecutor,
         fault: &UserTrap,
         pending: crate::executor::PendingSignal,
-    ) -> Result<bool> {
+    ) -> Result<Option<kvm_regs>> {
         self.deliver_selected_signal_at_boundary(
             executor,
-            self.syscall_frame_address,
             fault.registers,
             pending,
-            Some(fault),
-            false,
+            HandlerEntry::Fault(fault),
         )
     }
 
@@ -5533,20 +5630,25 @@ impl KvmBackend {
         executor: &mut ElfExecutor,
         interrupted: kvm_regs,
         pending: crate::executor::PendingSignal,
-    ) -> Result<bool> {
+    ) -> Result<Option<kvm_regs>> {
+        self.check_unstarted_clone()?;
+        self.deliver_selected_signal_at_boundary(
+            executor,
+            interrupted,
+            pending,
+            HandlerEntry::UserBoundary,
+        )
+    }
+
+    /// Fails unless this vCPU is an unstarted clone's, with a complete user
+    /// continuation (see [`Self::deliver_selected_signal_before_thread_entry`]).
+    fn check_unstarted_clone(&self) -> Result<()> {
         if !self.is_guest_thread || self.vcpu.get_sregs()?.cs.dpl != 3 {
             return Err(Error::UnexpectedVcpuExit(
                 "thread-entry signal requires an unstarted clone user continuation".to_owned(),
             ));
         }
-        self.deliver_selected_signal_at_boundary(
-            executor,
-            self.syscall_frame_address,
-            interrupted,
-            pending,
-            None,
-            true,
-        )
+        Ok(())
     }
 
     /// Whether a signal can be delivered where a timer event's callback found
@@ -5602,37 +5704,42 @@ impl KvmBackend {
         executor: &mut ElfExecutor,
         interrupted: kvm_regs,
         pending: crate::executor::PendingSignal,
-    ) -> Result<bool> {
+    ) -> Result<Option<kvm_regs>> {
         self.deliver_selected_signal_at_boundary(
             executor,
-            self.syscall_frame_address,
             interrupted,
             pending,
-            None,
-            true,
+            HandlerEntry::UserBoundary,
         )
     }
 
     /// Builds `pending`'s signal frame for `interrupted` and resumes the guest
-    /// at its handler: through `fault`'s exception frame, by setting the
-    /// vCPU's registers when `live_registers` (the vCPU stands at a user
-    /// instruction boundary), or else through the syscall frame the
-    /// trampoline returns with.
-    fn deliver_selected_signal_at_boundary(
+    /// at its handler as `entry` says, as Linux's `handle_signal` does.
+    /// Returns the registers the handler starts with, or `None` when the
+    /// signal is ignored or ends the thread group (its default action, or the
+    /// SIGSEGV Linux forces when it cannot build the frame), with that exit
+    /// pending.
+    ///
+    /// Every delivery point builds its frames here, one for each signal it
+    /// selects at the same return. A frame built on top of another has that
+    /// frame's handler at its first instruction as `interrupted`: rip the
+    /// handler, rsp its frame, its three arguments, rax 0 and the FPU state the
+    /// previous delivery installed. Nothing restarts there: Linux's next
+    /// `handle_signal` finds `regs->ax` 0, which `x64_setup_rt_frame` set, so
+    /// `syscall_get_error` reports no error.
+    pub(crate) fn deliver_selected_signal_at_boundary(
         &mut self,
         executor: &mut ElfExecutor,
-        syscall_frame_address: u64,
         interrupted: kvm_regs,
         pending: crate::executor::PendingSignal,
-        fault: Option<&UserTrap>,
-        live_registers: bool,
-    ) -> Result<bool> {
+        entry: HandlerEntry<'_>,
+    ) -> Result<Option<kvm_regs>> {
         let signal = pending.event.signal();
         match executor.signal_disposition(signal) {
-            SignalDisposition::Ignore => return Ok(false),
+            SignalDisposition::Ignore => return Ok(None),
             SignalDisposition::Terminate => {
                 executor.force_signal_exit(signal);
-                return Ok(false);
+                return Ok(None);
             }
             SignalDisposition::Stop => {
                 return Err(Error::UnexpectedVcpuExit(format!(
@@ -5646,29 +5753,29 @@ impl KvmBackend {
         if action.flags & SA_RESTORER == 0 || action.handler == 0 || action.handler >= (1_u64 << 47)
         {
             executor.force_signal_exit(libc::SIGSEGV);
-            return Ok(false);
+            return Ok(None);
         }
-        let altstack = executor.signal_altstack(interrupted.rsp);
-        let (stack_top, lower_bound, reserve_red_zone, autodisarm) =
+        let altstack = executor.signal_altstack();
+        let (stack_top, lower_bound, reserve_red_zone) =
             match executor.signal_stack_top(action, interrupted.rsp) {
                 Ok(stack) => stack,
                 Err(_) => {
                     executor.force_signal_exit(libc::SIGSEGV);
-                    return Ok(false);
+                    return Ok(None);
                 }
             };
         let layout = match SignalFrameLayout::below(stack_top, reserve_red_zone) {
             Ok(layout) => layout,
             Err(_) => {
                 executor.force_signal_exit(libc::SIGSEGV);
-                return Ok(false);
+                return Ok(None);
             }
         };
         if lower_bound.is_some_and(|lower_bound| !layout.fits_above(lower_bound)) {
             executor.force_signal_exit(libc::SIGSEGV);
-            return Ok(false);
+            return Ok(None);
         }
-        let xsave = if let Some(fault) = fault {
+        let xsave = if let HandlerEntry::Fault(fault) = entry {
             XsaveImage::from_kvm(&fault.xsave)
         } else {
             XsaveImage::from_kvm(&self.vcpu.get_xsave()?)
@@ -5676,12 +5783,15 @@ impl KvmBackend {
         // A temporary-mask call's saved mask, else the current one.
         let saved_mask = executor.frame_signal_mask();
         let mut mcontext = Sigcontext::from_kvm(interrupted, layout.xsave_address, saved_mask);
-        if let Some(fault) = fault {
+        // The thread's last trap, which every frame saves, not only the
+        // fault's own (see `SignalTrapFields`).
+        let trap = executor.signal_trap_fields();
+        mcontext.trapno = trap.trapno;
+        mcontext.err = trap.error_code;
+        mcontext.cr2 = trap.cr2;
+        if let HandlerEntry::Fault(fault) = entry {
             mcontext.cs = fault.code_segment;
             mcontext.ss = fault.stack_segment;
-            mcontext.err = fault.error_code;
-            mcontext.trapno = fault.vector.into();
-            mcontext.cr2 = fault.address;
         }
         let frame = RtSigframe {
             pretcode: action.restorer,
@@ -5706,7 +5816,7 @@ impl KvmBackend {
                 .is_err()
         {
             executor.force_signal_exit(libc::SIGSEGV);
-            return Ok(false);
+            return Ok(None);
         }
 
         let mut handler = interrupted;
@@ -5717,27 +5827,28 @@ impl KvmBackend {
         handler.rip = action.handler;
         handler.rsp = layout.frame_address;
         handler.rflags &= !((1 << 8) | (1 << 10) | (1 << 16));
-        if let Some(fault) = fault {
-            fault.resume_user(self, handler)?;
-        } else if live_registers {
-            self.vcpu.set_regs(&handler)?;
-        } else {
-            stage_process_syscall_return(
+        match entry {
+            HandlerEntry::Fault(fault) => fault.resume_user(self, handler)?,
+            HandlerEntry::UserBoundary => self.vcpu.set_regs(&handler)?,
+            HandlerEntry::SyscallFrame(syscall_frame_address) => stage_process_syscall_return(
                 &mut self.memory,
                 &self.vcpu,
                 syscall_frame_address,
                 handler,
-            )?;
+            )?,
         }
         // The frame holds the interrupted FPU state. As Linux's handle_signal
         // does with fpu__clear_user_states, the handler then starts in the
-        // initial state; rt_sigreturn restores the frame's. Every delivery
-        // point builds its frame here.
+        // initial state; rt_sigreturn restores the frame's. A frame built on
+        // top of this one saves that initial state.
         // SAFETY: the fixed KVM CPUID policy limits the vCPU's XSAVE state to
         // the x87, SSE and YMM components, which kvm_xsave holds.
         unsafe { self.vcpu.set_xsave(&XsaveImage::initialized_kvm())? };
-        executor.enter_signal_handler(pending, action, autodisarm);
-        Ok(true)
+        // The mask the handler runs under, which the next selection at this
+        // return sees, and the disarm of an SS_AUTODISARM stack after every
+        // delivery, which a frame on top sees.
+        executor.enter_signal_handler(pending, action);
+        Ok(Some(handler))
     }
 
     pub(crate) fn discard_process_clear_tid_at_signal_return(&self, executor: &mut ElfExecutor) {
@@ -6034,19 +6145,16 @@ impl KvmBackend {
         self.set_cpuid_interception(false)?;
         let registration = self.register_guest_thread()?;
         if self.is_guest_thread {
-            let entry_registers = self.vcpu.get_regs()?;
-            while let Some(pending) = executor
-                .take_pending_signal_for_delivery()
-                .map_err(|errno| Error::Reverie(errno.into()))?
-            {
-                if self.deliver_selected_signal_before_thread_entry(
+            // Every eligible signal gets its frame before the new thread's
+            // first instruction, each on top of the last.
+            if executor.has_eligible_pending_signal() {
+                self.check_unstarted_clone()?;
+                let entry_registers = self.vcpu.get_regs()?;
+                self.deliver_pending_signals(
                     executor,
                     entry_registers,
-                    pending,
-                )? || executor.has_pending_exit()
-                {
-                    break;
-                }
+                    HandlerEntry::UserBoundary,
+                )?;
             }
             if let Some(exit) = executor.take_exit() {
                 return self.finish_static_elf_thread(executor, exit).await;
@@ -6127,7 +6235,7 @@ impl KvmBackend {
                                 frame_address,
                                 restored,
                             )?;
-                            if !delivered {
+                            if delivered.is_none() {
                                 stage_process_signal_return(
                                     &mut self.memory,
                                     &self.vcpu,
@@ -6186,8 +6294,19 @@ impl KvmBackend {
                     let Some(fault) = self.capture_user_trap(executor)? else {
                         return Err(self.static_elf_halt_error()?);
                     };
-                    executor.prepare_captured_trap(fault.event.signal());
-                    self.deliver_user_trap(executor, &fault, fault.pending())?;
+                    fault.prepare_delivery(executor);
+                    // The fault's synchronous signal first, as Linux's
+                    // get_signal selects it, then every other eligible
+                    // signal on top of its frame.
+                    if let Some(handler) =
+                        self.deliver_user_trap(executor, &fault, fault.pending())?
+                    {
+                        self.deliver_pending_signals(
+                            executor,
+                            handler,
+                            HandlerEntry::UserBoundary,
+                        )?;
+                    }
                     if executor.has_pending_exit() {
                         self.publish_pending_group_exit(executor);
                         self.discard_process_clear_tid_at_signal_return(executor);

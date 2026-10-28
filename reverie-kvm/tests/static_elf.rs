@@ -6337,8 +6337,12 @@ fn static_elf_rt_sigreturn_accepts_null_and_redirected_fpstate() {
     }
 }
 
+/// SIGUSR1 and SIGUSR2 are pending when one call unblocks both. Linux builds
+/// SIGUSR1's frame at that call's return and SIGUSR2's on top of it, so
+/// SIGUSR2's handler runs first and returns to SIGUSR1's, and both run before
+/// the guest's next instruction; the same binary exits 0 natively and on KVM.
 #[test]
-fn static_elf_chains_pending_after_sigreturn_before_user_code() {
+fn static_elf_stacks_pending_signals_before_user_code() {
     if !kvm_available("pending-signal boundary test") {
         return;
     }
@@ -6357,13 +6361,13 @@ static volatile sig_atomic_t between;
 static volatile sig_atomic_t failure;
 
 static void first_handler(int signal) {
-  if (signal != SIGUSR1 || phase != 0 || between != 0) failure = 10;
-  phase = 1;
+  if (signal != SIGUSR1 || phase != 1 || between != 0) failure = 10;
+  phase = 2;
 }
 
 static void second_handler(int signal) {
-  if (signal != SIGUSR2 || phase != 1 || between != 0) failure = 11;
-  phase = 2;
+  if (signal != SIGUSR2 || phase != 0 || between != 0) failure = 11;
+  phase = 1;
 }
 
 static int install(int signal, void (*handler)(int)) {
@@ -6390,6 +6394,11 @@ int main(void) {
 }
 "#,
     );
+    let native = std::process::Command::new(&executable)
+        .current_dir(&directory.0)
+        .status()
+        .unwrap();
+    assert_eq!(native.code(), Some(0), "native: {native}");
     let executable = executable.to_str().unwrap();
     let image = std::fs::read(executable).unwrap();
     let mut backend = KvmBackend::new(256 * 1024 * 1024).unwrap();
@@ -12999,10 +13008,21 @@ static void caught(int signo) {
   else syscall(SYS_exit_group, 20);
 }
 
+static int install(int signo, int blocked) {
+  struct sigaction action = {0};
+  action.sa_handler = caught;
+  sigemptyset(&action.sa_mask);
+  if (blocked != 0) sigaddset(&action.sa_mask, blocked);
+  return sigaction(signo, &action, 0);
+}
+
 int main(void) {
   original_pid = getpid();
-  if (signal(SIGUSR1, caught) == SIG_ERR) return 21;
-  if (signal(SIGUSR2, caught) == SIG_ERR) return 22;
+  // SIGUSR1's handler blocks SIGUSR2, so SIGUSR2 is not delivered on top of
+  // SIGUSR1's frame at the unblocking call's return, as an unblocked one
+  // would be, but at that handler's rt_sigreturn.
+  if (install(SIGUSR1, SIGUSR2) != 0) return 21;
+  if (install(SIGUSR2, 0) != 0) return 22;
   sigset_t both;
   sigemptyset(&both);
   sigaddset(&both, SIGUSR1);
