@@ -572,6 +572,14 @@ already locked, such as an inherited standard input. Descriptors the executor
 keeps itself (synthetic `/proc` files, signalfds, captured standard output and
 error) are not provided.
 
+`Guest::signal_sets` answers from the executor's own signal state, for the
+asking thread or another live thread of its process: the thread's pending
+queue, the process's shared queue, the thread's mask (a temporary mask while one
+is installed), and the process's ignored and caught signals, as Linux shows them
+in `/proc/<pid>/task/<tid>/status`. A thread ID outside the process is `ESRCH`.
+Because the executor refuses real-time signals, no real-time signal is ever
+pending.
+
 A Tool can reserve one empty host directory on a read-only file system for its
 own use (`KvmBackend::reserve_tool_directory`): the executor hides it from the
 guest, answering `ENOENT` for every route to it but an `O_DIRECTORY` open or a

@@ -13703,6 +13703,13 @@ impl<L: Tool + 'static> Guest<L> for TracedTask<L> {
     fn descriptor_status(&self, fd: i32) -> Result<reverie::DescriptorStatus, reverie::FactError> {
         crate::descriptor_status::read(self.tid, fd)
     }
+
+    /// The signal lines of thread `tid`'s own `/proc/<tid>/status`, read by
+    /// the tracer while this thread is stopped, for a live thread of this
+    /// thread's process (`crate::signal_sets`).
+    fn signal_sets(&self, tid: Pid) -> Result<reverie::SignalSets, reverie::FactError> {
+        crate::signal_sets::read(self.pid, tid)
+    }
 }
 
 #[async_trait]

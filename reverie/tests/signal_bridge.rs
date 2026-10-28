@@ -185,6 +185,21 @@ fn descriptor_status_default_is_not_provided() {
     }
 }
 
+/// The same fake takes `Guest::signal_sets`'s default: a backend that states
+/// nothing does not provide the fact, for any thread ID, its own included.
+#[test]
+fn signal_sets_default_is_not_provided() {
+    let guest = TestGuest::default();
+    let own = <TestGuest as Guest<()>>::tid(&guest);
+    for tid in [own, Pid::from_raw(-1), Pid::from_raw(0), Pid::from_raw(1)] {
+        assert_eq!(
+            <TestGuest as Guest<()>>::signal_sets(&guest, tid),
+            Err(reverie::FactError::NotProvided),
+            "tid {tid}"
+        );
+    }
+}
+
 struct LegacyTool {
     response: Option<Signal>,
     calls: AtomicUsize,
