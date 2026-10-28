@@ -3502,37 +3502,62 @@ async fn a_sigtrap_repair_never_overwrites_the_guests_own_action() {
 /// operand-size prefix (`66 cc`), and behind REX prefixes that are not last
 /// (`48 48 cc`, `48 66 cc`), which the CPU ignores: each is an `int3` too.
 /// And an `int3` in an execute-only page, which `process_vm_readv` cannot
-/// read.
+/// read. TRACE instruction diagnostics must not turn that valid execution
+/// into a timer error (<https://github.com/rrnewton/reverie/issues/1201>).
+#[test_case::test_matrix(
+    ["cc", "66cc", "4848cc", "4866cc", "xo-cc"],
+    [2, 3, 4, 5],
+    [false, true]
+)]
 #[tokio::test(flavor = "current_thread")]
-async fn a_guest_int3_in_a_timer_window_takes_sigtraps_default_action() {
+async fn a_guest_int3_in_a_timer_window_takes_sigtraps_default_action(
+    encoding: &str,
+    c: i32,
+    tail: bool,
+) {
+    // Hold the subscriber while the current-thread runtime actually polls
+    // the tracer, including its local tasks, so this regression exercises
+    // diagnostic decoding independently of which other tests ran first.
+    let _trace = tracing::subscriber::set_default(
+        tracing_subscriber::fmt()
+            .with_env_filter("reverie=trace")
+            .finish(),
+    );
     if !crate::perf::is_perf_supported() {
         eprintln!("skipping: perf counters are not supported here");
         return;
     }
     let mut expected = Vec::new();
-    for encoding in ["cc", "66cc", "4848cc", "4866cc", "xo-cc"] {
-        for case in [
-            "handler-blocked-notimer",
-            "handler-blocked",
-            "ign",
-            "ign-blocked",
-        ] {
-            for c in 2..6 {
-                expected.push(format!("int3 {encoding} {case} c={c} signaled=1 sig=5"));
-            }
-        }
+    for case in [
+        "handler-blocked-notimer",
+        "handler-blocked",
+        "ign",
+        "ign-blocked",
+    ] {
+        expected.push(format!("int3 {encoding} {case} c={c} signaled=1 sig=5"));
     }
-    // 80 children per configuration: about 25 s quiet, and up to 85 s under
-    // a loaded host, so each run has 240 s rather than the default 60 s.
-    for run in run_both_configurations_within("sigtrap_int3_timer", Duration::from_secs(240)).await
-    {
-        let lines: Vec<&str> = run
-            .report
-            .lines()
-            .filter(|line| line.starts_with("int3 "))
-            .collect();
-        assert_eq!(lines, expected, "{}", run.report);
-    }
+    // The original 80 children/configuration share 240 s. Splitting its
+    // 20 encoding/clock pairs keeps all four signal states and gives each
+    // pair 12 s, preserving that total guard while bounding TRACE output.
+    let mode = format!("sigtrap_int3_timer:{encoding}:{c}");
+    let run = run_guest_options(
+        &mode,
+        GuestOptions {
+            tail,
+            deadline: Some(Duration::from_secs(240) / 20),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap_or_else(|error| panic!("regression fixture run {mode} tail={tail} failed: {error}"));
+    assert_eq!(run.status, ExitStatus::Exited(0), "{}", run.report);
+    assert!(run.report.ends_with("done\n"), "{}", run.report);
+    let lines: Vec<&str> = run
+        .report
+        .lines()
+        .filter(|line| line.starts_with("int3 "))
+        .collect();
+    assert_eq!(lines, expected, "{}", run.report);
 }
 
 /// A blocked SIGTRAP that is pending when Reverie must single-step the

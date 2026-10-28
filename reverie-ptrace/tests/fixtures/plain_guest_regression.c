@@ -2703,8 +2703,10 @@ static void mode_sigtrap_fork_then_sigaction(void) {
  * way, as a snippet (the encoding, then ret) called through a pointer chosen
  * before the counted loop, so that its int3 is the same number of branches
  * out, which the timer offsets c = 2 to 5 put inside the single-stepped
- * window. */
-static void mode_sigtrap_int3_timer(void) {
+ * window. A selected encoding/clock pair keeps all four signal states;
+ * NULL keeps the original complete mode. */
+static void mode_sigtrap_int3_timer(
+    const char* selected_encoding, int selected_clock) {
   warm();
   static const struct {
     const char* name;
@@ -2718,6 +2720,14 @@ static void mode_sigtrap_int3_timer(void) {
       {"xo-cc", "\xcc\xc3", 2},
   };
   enum { ENCODINGS = sizeof encodings / sizeof encodings[0] };
+  int selected = -1;
+  if (selected_encoding) {
+    for (unsigned e = 0; e < ENCODINGS; e++)
+      if (!strcmp(selected_encoding, encodings[e].name))
+        selected = e;
+    if (selected < 0 || selected_clock < 2 || selected_clock > 5)
+      die("invalid int3 timer selector");
+  }
   unsigned char* code =
       mmap(NULL, 8192, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
   if (code == MAP_FAILED)
@@ -2746,6 +2756,8 @@ static void mode_sigtrap_int3_timer(void) {
   for (unsigned e = 0; e < ENCODINGS; e++)
   for (unsigned i = 0; i < sizeof cases / sizeof cases[0]; i++) {
     for (int c = 2; c < 6; c++) {
+      if (selected >= 0 && ((int)e != selected || c != selected_clock))
+        continue;
       pid_t pid = fork();
       if (pid < 0)
         die("fork");
@@ -5112,7 +5124,14 @@ int main(int argc, char** argv) {
   else if (!strcmp(m, "sigtrap_fork_then_sigaction"))
     mode_sigtrap_fork_then_sigaction();
   else if (!strcmp(m, "sigtrap_int3_timer"))
-    mode_sigtrap_int3_timer();
+    mode_sigtrap_int3_timer(NULL, 0);
+  else if (!strncmp(m, "sigtrap_int3_timer:", 19)) {
+    char encoding[16], clock, extra;
+    if (sscanf(m + 19, "%15[^:]:%c%c", encoding, &clock, &extra) != 2 ||
+        clock < '2' || clock > '5')
+      die("invalid int3 timer selector");
+    mode_sigtrap_int3_timer(encoding, clock - '0');
+  }
   else if (!strcmp(m, "sigtrap_int3_in_the_other_windows"))
     mode_sigtrap_int3_in_the_other_windows();
   else if (!strcmp(m, "sigtrap_scratch_overlay"))

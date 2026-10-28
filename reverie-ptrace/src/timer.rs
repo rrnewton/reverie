@@ -3152,7 +3152,11 @@ impl TimerImpl {
             #[cfg(target_arch = "x86_64")]
             trace!(
                 "[instruction]\n{}\n{}",
-                crate::decoder::decode_instruction(&task)?,
+                // Diagnostics must not make execute-only text, or an
+                // instruction at a page boundary, a stepping error.
+                crate::decoder::decode_instruction(&task).unwrap_or_else(|error| {
+                    format!("cannot decode instruction at {:#x}: {error}", regs.rip)
+                }),
                 regs.display_with_options(RegDisplayOptions { multiline: true })
             );
             #[cfg(target_arch = "x86_64")]
