@@ -22,6 +22,7 @@ use super::super::native_test_support::Request;
 use super::super::native_test_support::Runtime;
 use super::super::native_test_support::Server;
 use super::*;
+use crate::tool_host::NativeCallbackOutcome;
 
 #[derive(Clone, Default, Serialize, Deserialize)]
 struct State {
