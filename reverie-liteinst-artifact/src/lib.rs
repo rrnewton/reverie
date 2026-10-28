@@ -1043,8 +1043,8 @@ const CONTENT_REVERIE_CATALOG: [(&str, u64, &str); 77] = [
     ),
     (
         "reverie/src/lib.rs",
-        6940,
-        "d72f87195bd6d6cf84f56d537f3bdcd3bca22649dbe1ffe73fbc8c19a897eaca",
+        6969,
+        "06cad10c97f3daca0410e6d4f01a3fc9f3d519545e61c73f94b246296d557469",
     ),
     (
         "reverie/src/perf.rs",
@@ -1083,8 +1083,8 @@ const CONTENT_REVERIE_CATALOG: [(&str, u64, &str); 77] = [
     ),
     (
         "reverie/src/guest.rs",
-        66645,
-        "db816c25e97df066ce521ba6e32ac85ef5261c1881f7ef4367aac99164df5421",
+        68386,
+        "33bb4b8f72e9b1b71bcc6175a17ebadc3a54c3d318f231f935eb49462c91d0f2",
     ),
     (
         "reverie/src/pidfd_self.rs",
