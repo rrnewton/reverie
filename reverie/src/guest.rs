@@ -1202,6 +1202,44 @@ pub trait Guest<T: Tool>: Send + GlobalRPC<T::GlobalState> {
     fn descriptor_status(&self, _fd: i32) -> Result<crate::DescriptorStatus, crate::FactError> {
         Err(crate::FactError::NotProvided)
     }
+
+    /// Returns the signal sets of thread `tid` of this thread's process:
+    /// what is pending for it and for its process, its mask, and its
+    /// process's ignored and caught signals. Linux shows the same sets in the
+    /// thread's `/proc/<pid>/task/<tid>/status` (`SigPnd`, `ShdPnd`, `SigBlk`,
+    /// `SigIgn` and `SigCgt`); see [`crate::SignalSets`]. `tid` may name this
+    /// thread or any other live thread of its process, numbered as
+    /// [`Guest::tid`] numbers this one.
+    ///
+    /// `Err(FactError::Errno(ESRCH))` means that `tid` names no live thread
+    /// of this thread's process: a thread of another process, a thread that
+    /// has exited, or a number no task has, zero and below included. It is
+    /// the errno Linux's `tgkill(2)` gives for a thread ID that is not in the
+    /// thread group it names. Other errnos come from the backend's own read
+    /// of the state. `Err(FactError::NotProvided)` means the backend does not
+    /// report this fact, for any thread or for this one; it is the default,
+    /// for a backend that states nothing.
+    ///
+    /// The answer describes the moment of the call, while this thread is
+    /// stopped in the callback. Another thread of the process can change it
+    /// afterwards, and so can a signal sent to the process; a tool that needs
+    /// a stable answer for another thread asks while that thread cannot run.
+    ///
+    /// A backend whose guest threads are host tasks the tool may read
+    /// ([`crate::BackendCapabilities::host_task_reads_reach_guest_threads`])
+    /// reads the kernel's sets for the thread, every bit as Linux shows it,
+    /// including any signal the backend reserves for its own use. A backend
+    /// that runs the guest's syscalls and delivers its signals itself
+    /// answers from the signal state it keeps, with the differences from
+    /// Linux that its documentation names. Any other backend does not report
+    /// it, because a host read there would describe another task.
+    ///
+    /// Like [`Guest::descriptor_status`], the call is synchronous: the
+    /// backend reads state it reaches without running the guest or injecting
+    /// anything, while this thread stays stopped.
+    fn signal_sets(&self, _tid: Pid) -> Result<crate::SignalSets, crate::FactError> {
+        Err(crate::FactError::NotProvided)
+    }
 }
 
 /// Wraps a `Guest<T>` such that it implements `Guest<U>`.
@@ -1519,5 +1557,9 @@ where
 
     fn descriptor_status(&self, fd: i32) -> Result<crate::DescriptorStatus, crate::FactError> {
         self.inner.descriptor_status(fd)
+    }
+
+    fn signal_sets(&self, tid: Pid) -> Result<crate::SignalSets, crate::FactError> {
+        self.inner.signal_sets(tid)
     }
 }
