@@ -6,335 +6,344 @@
  * LICENSE file in the root directory of this source tree.
  */
 
-//! LiteInst hosting support for the production Reverie example tools.
+//! Shared example host results, launch inputs, and native recorder reference.
+//! This module does not initialize an example preload or choose an external runtime.
 
-#![forbid(unsafe_op_in_unsafe_fn)]
-// The reused production tool sources each declare the same test-only KVM helper.
-#![allow(clippy::duplicate_mod)]
-
+use std::collections::BTreeMap;
+use std::ffi::CString;
+use std::ffi::OsStr;
+use std::ffi::OsString;
 use std::io;
+use std::os::unix::ffi::OsStrExt as _;
+use std::path::Path;
 use std::path::PathBuf;
-use std::process::Output;
 
-use reverie::process::Command;
-use reverie_liteinst::LiteinstBackend;
+use reverie::ExitStatus;
+use reverie::syscalls::Sysno;
+use reverie_util::CommonToolArguments;
 
-#[allow(dead_code)]
-#[path = "../chaos.rs"]
-mod chaos;
+use crate::tools::recorder_tool::Outcome;
+use crate::tools::recorder_tool::Report;
+use crate::tools::recorder_tool::report;
 
-// TODO-HUMAN-REVIEW(PR-157): Review the narrow chaos config re-export.
-pub(crate) use chaos::ChaosOpts;
-
-#[allow(dead_code)]
-#[path = "../chrome-trace/main.rs"]
-mod chrome_trace;
-
-#[allow(dead_code)]
-#[path = "../chunky_print.rs"]
-mod chunky_print;
-#[allow(dead_code)]
-#[path = "../counter1_tool.rs"]
-mod counter1;
-
-#[allow(dead_code)]
-#[path = "../counter2_tool.rs"]
-mod counter2;
-#[allow(dead_code)]
-#[path = "../debug.rs"]
-mod debug;
-#[allow(dead_code)]
-#[path = "../noop.rs"]
-mod noop;
-#[allow(dead_code)]
-#[path = "../strace/main.rs"]
-pub(crate) mod strace;
-#[allow(dead_code)]
-#[path = "../strace_minimal.rs"]
-mod strace_minimal;
-
-pub(crate) use strace::config;
-pub(crate) use strace::filter;
-pub(crate) use strace::global_state;
-
-// AUTONOMOUS-BOT-IMPLEMENTED
-// TODO-HUMAN-REVIEW(PR-139): Review the LiteInst example-tool selector.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, clap::ValueEnum)]
-/// Production example tool hosted by the LiteInst preload.
-pub(crate) enum ToolKind {
-    /// Introduce short reads and optional interrupted reads.
-    // TODO-HUMAN-REVIEW(PR-157): Review the chaos LiteInst selector extension.
-    Chaos,
-    /// Capture process lifecycle and syscall events as a Chrome trace.
-    // TODO-HUMAN-REVIEW(PR-159): Review the ChromeTrace LiteInst selector extension.
-    ChromeTrace,
-    /// Count every intercepted syscall through the shared global state.
-    Counter1,
-    /// Aggregate per-thread and per-process syscall counts in global state.
-    // TODO-HUMAN-REVIEW(PR-146): Review the counter2 LiteInst selector extension.
-    Counter2,
-    /// Buffer standard output and error writes by logical epochs.
-    // TODO-HUMAN-REVIEW(PR-152): Review the chunky_print LiteInst selector extension.
-    ChunkyPrint,
-    /// Run the ptrace-assisted GDB server used by the debug example.
-    // TODO-HUMAN-REVIEW(PR-193): Review the explicit ptrace debug fallback.
-    Debug,
-    /// Decode and print subscribed syscalls.
-    Strace,
-    /// Print every syscall before injecting it.
-    // TODO-HUMAN-REVIEW(PR-193): Review the minimal-strace LiteInst selector.
-    StraceMinimal,
-    /// Preserve guest behavior without subscribing to events.
-    Noop,
+/// A Reverie backend.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, clap::ValueEnum)]
+pub enum BackendKind {
+    /// reverie-ptrace: the tool runs in the tracer.
+    Ptrace,
+    /// reverie-kvm: the program runs in a KVM guest, the tool in the host.
+    Kvm,
+    /// reverie-liteinst: the tool runs in the program, through a preload.
+    Liteinst,
+    /// reverie-liteinst without site patching: every syscall traps.
+    InGuestTrap,
 }
 
-impl ToolKind {
-    fn as_str(self) -> &'static str {
+/// How a tool's run ended.
+pub struct Run<G> {
+    /// How the program ended, as `raise_or_exit` passes it on.
+    pub status: ExitStatus,
+    /// The program's exit code, or 128 plus the signal that ended it.
+    pub exit_code: i32,
+    /// The tool's global state at the end.
+    pub global_state: G,
+    /// What the program wrote to stdout and stderr, where the backend
+    /// captured it (the in-guest backends); otherwise the program wrote to
+    /// this process's own.
+    pub captured: Option<(Vec<u8>, Vec<u8>)>,
+}
+
+/// Why a tool did not run to completion.
+#[derive(Debug)]
+pub enum RunError {
+    /// The backend cannot host this tool; the text names why.
+    Refused(String),
+    /// The backend failed.
+    Failed(anyhow::Error),
+}
+
+impl std::fmt::Display for RunError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Chaos => "chaos",
-            Self::Counter1 => "counter1",
-            Self::ChromeTrace => "chrome-trace",
-            Self::Counter2 => "counter2",
-            Self::Debug => "debug",
-            Self::Strace => "strace",
-            Self::StraceMinimal => "strace-minimal",
-            Self::ChunkyPrint => "chunky-print",
-            Self::Noop => "noop",
+            RunError::Refused(reason) => write!(f, "REFUSED: {reason}"),
+            RunError::Failed(error) => write!(f, "{error:#}"),
         }
     }
 }
 
-// TODO-HUMAN-REVIEW(PR-146): Review the shared LiteInst counter result API.
-pub(crate) enum CounterSummary {
-    Counter1 {
-        total_syscalls: u64,
-    },
-    Counter2 {
-        total_syscalls: u64,
-        processes: u64,
-        threads: u64,
-    },
-}
-
-// AUTONOMOUS-BOT-IMPLEMENTED
-// TODO-HUMAN-REVIEW(PR-139): Review the LiteInst example-tool result.
-/// Captured result of a LiteInst example-tool run.
-pub(crate) struct RunOutput {
-    /// Guest process status and captured standard streams.
-    pub(crate) output: Output,
-    /// Serialized Chrome trace events; present only for `ChromeTrace`.
-    // TODO-HUMAN-REVIEW(PR-159): Review the ChromeTrace artifact result field.
-    pub(crate) chrome_trace: Option<Vec<u8>>,
-    /// Final structured result for counter tools; absent for other tools.
-    // TODO-HUMAN-REVIEW(PR-146): Review the typed counter result field.
-    pub(crate) counter_summary: Option<CounterSummary>,
-}
-
-// AUTONOMOUS-BOT-IMPLEMENTED
-// TODO-HUMAN-REVIEW(PR-139): Review the LiteInst example-tool launch boundary.
-/// Runs one production example tool through `LiteinstBackend`.
-///
-/// `filters` accepts strace syscall filters and must be empty for other tools.
-// TODO-HUMAN-REVIEW(PR-157): Review the chaos config extension to the host API.
-pub(crate) async fn run(
-    kind: ToolKind,
-    mut command: Command,
-    filters: Vec<String>,
-    chaos_options: ChaosOpts,
-    debug_port: u16,
-    preload: PathBuf,
-) -> Result<RunOutput, reverie::Error> {
-    if kind != ToolKind::Chaos && chaos_options != ChaosOpts::default() {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "chaos options require the chaos tool",
-        )
-        .into());
+impl<E: Into<anyhow::Error>> From<E> for RunError {
+    fn from(error: E) -> Self {
+        RunError::Failed(error.into())
     }
-    let filters = if kind == ToolKind::Strace {
-        filters
-            .into_iter()
-            .map(|filter| filter.parse())
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?
-    } else if filters.is_empty() {
-        Vec::new()
+}
+
+/// The exit code of `status`: its code, or 128 plus the signal that ended it.
+pub fn exit_code(status: ExitStatus) -> i32 {
+    match status {
+        ExitStatus::Exited(code) => code,
+        ExitStatus::Signaled(signal, _) => 128 + signal as i32,
+        ExitStatus::SignaledRaw(signal, _) => 128 + signal,
+    }
+}
+
+/// The guest environment: the host's, or only a PATH with `--no-host-envs`,
+/// plus each `--env`.
+pub fn guest_environment(args: &CommonToolArguments) -> anyhow::Result<BTreeMap<String, String>> {
+    let mut environment = if args.no_host_envs {
+        BTreeMap::from([("PATH".to_string(), "/bin:/usr/bin".to_string())])
     } else {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "strace filters require the strace tool",
-        )
-        .into());
-    };
-    let tool_data = kind.as_str().as_bytes().to_vec();
-    match kind {
-        // TODO-HUMAN-REVIEW(PR-157): Review the exact chaos LiteInst host path.
-        ToolKind::Chaos => {
-            let (output, _) =
-                LiteinstBackend::run_with_output_and_preload_data::<chaos::ChaosTool>(
-                    command,
-                    chaos_options,
-                    preload,
-                    tool_data,
+        let mut environment = BTreeMap::new();
+        for (key, value) in std::env::vars_os() {
+            let key = key.into_string().map_err(|_| {
+                anyhow::anyhow!("the KVM backend cannot pass a non-UTF-8 environment key")
+            })?;
+            let value = value.into_string().map_err(|_| {
+                anyhow::anyhow!(
+                    "the KVM backend cannot pass a non-UTF-8 environment value for {key:?}"
                 )
-                .await?;
-            Ok(RunOutput {
-                output,
-                chrome_trace: None,
-                counter_summary: None,
-            })
+            })?;
+            environment.insert(key, value);
         }
-        // TODO-HUMAN-REVIEW(PR-159): Review the exact ChromeTrace LiteInst host path.
-        ToolKind::ChromeTrace => {
-            let (output, global) = LiteinstBackend::run_with_output_and_preload_data::<
-                chrome_trace::ChromeTrace,
-            >(command, (), preload, tool_data)
-            .await?;
-            let mut trace = Vec::new();
-            global
-                .chrome_trace(&mut trace)
-                .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
-            Ok(RunOutput {
-                output,
-                chrome_trace: Some(trace),
-                counter_summary: None,
-            })
-        }
-        ToolKind::Counter1 => {
-            let (output, global) = LiteinstBackend::run_with_output_and_preload_data::<
-                counter1::CounterLocal,
-            >(command, (), preload, tool_data)
-            .await?;
-            Ok(RunOutput {
-                output,
-                chrome_trace: None,
-                counter_summary: Some(CounterSummary::Counter1 {
-                    total_syscalls: global.total(),
-                }),
-            })
-        }
-        // TODO-HUMAN-REVIEW(PR-146): Review the exact counter2 LiteInst host path.
-        ToolKind::Counter2 => {
-            let (output, global) = LiteinstBackend::run_with_output_and_preload_data::<
-                counter2::CounterLocal,
-            >(command, (), preload, tool_data)
-            .await?;
-            let counter_summary = {
-                let inner = global.inner.lock().unwrap();
-                CounterSummary::Counter2 {
-                    total_syscalls: inner.total_syscalls,
-                    processes: inner.exited_procs,
-                    threads: inner.exited_threads,
+        environment
+    };
+    environment.extend(args.envs.iter().cloned());
+    Ok(environment)
+}
+
+pub fn resolve_program(
+    program: &str,
+    environment: &BTreeMap<String, String>,
+    cwd: &Path,
+) -> io::Result<PathBuf> {
+    if program.contains('/') {
+        let path = Path::new(program);
+        let candidate = if path.is_absolute() {
+            path.to_path_buf()
+        } else {
+            cwd.join(path)
+        };
+        return require_executable(candidate.canonicalize()?);
+    }
+
+    let search_path = environment
+        .get("PATH")
+        .map(String::as_str)
+        .unwrap_or("/usr/local/bin:/usr/bin:/bin");
+    let mut permission_error = None;
+    for directory in std::env::split_paths(OsStr::new(search_path)) {
+        let directory = if directory.is_absolute() {
+            directory
+        } else {
+            cwd.join(directory)
+        };
+        let candidate = directory.join(program);
+        if candidate.is_file() {
+            match require_executable(candidate.canonicalize()?) {
+                Ok(candidate) => return Ok(candidate),
+                Err(error) if error.kind() == io::ErrorKind::PermissionDenied => {
+                    permission_error = Some(error);
                 }
-            };
-            Ok(RunOutput {
-                output,
-                chrome_trace: None,
-                counter_summary: Some(counter_summary),
-            })
+                Err(error) => return Err(error),
+            }
         }
-        // TODO-HUMAN-REVIEW(PR-152): Review the exact chunky_print LiteInst host path.
-        ToolKind::ChunkyPrint => {
-            let (output, global) = LiteinstBackend::run_with_inherited_stdio_and_preload_data::<
-                chunky_print::ChunkyPrintLocal,
-            >(command, (), preload, tool_data)
-            .await?;
-            let _ = global.flush();
-            Ok(RunOutput {
-                output,
-                chrome_trace: None,
-                counter_summary: None,
-            })
-        }
-        // The GDB remote protocol needs an out-of-process lifecycle and register
-        // controller. Keep this fallback explicit rather than presenting a
-        // no-op in-process Tool as debugger support.
-        ToolKind::Debug => {
-            command.stdout(reverie::process::Stdio::piped());
-            command.stderr(reverie::process::Stdio::piped());
-            eprintln!("Listening on port {debug_port} (ptrace-assisted)");
-            let tracer = reverie_ptrace::TracerBuilder::<debug::DebugTool>::new(command)
-                .gdbserver(debug_port)
-                .spawn()
-                .await?;
-            let (output, _) = tracer.wait_with_output().await?;
-            Ok(RunOutput {
-                output: Output {
-                    status: output.status.into(),
-                    stdout: output.stdout,
-                    stderr: output.stderr,
-                },
-                chrome_trace: None,
-                counter_summary: None,
-            })
-        }
-        ToolKind::Strace => {
-            let (output, _) = LiteinstBackend::run_with_output_and_preload_data::<strace::Strace>(
-                command,
-                strace::Config { filters },
-                preload,
-                tool_data,
-            )
-            .await?;
-            Ok(RunOutput {
-                output,
-                chrome_trace: None,
-                counter_summary: None,
-            })
-        }
-        ToolKind::StraceMinimal => {
-            let (output, _) = LiteinstBackend::run_with_output_and_preload_data::<
-                strace_minimal::StraceTool,
-            >(command, (), preload, tool_data)
-            .await?;
-            Ok(RunOutput {
-                output,
-                chrome_trace: None,
-                counter_summary: None,
-            })
-        }
-        ToolKind::Noop => {
-            let (output, _) = LiteinstBackend::run_with_output_and_preload_data::<noop::NoopTool>(
-                command,
-                (),
-                preload,
-                tool_data,
-            )
-            .await?;
-            Ok(RunOutput {
-                output,
-                chrome_trace: None,
-                counter_summary: None,
-            })
-        }
+    }
+
+    if let Some(error) = permission_error {
+        Err(error)
+    } else {
+        Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            format!("cannot resolve executable {program:?} in PATH"),
+        ))
     }
 }
 
-// AUTONOMOUS-BOT-IMPLEMENTED
-// TODO-HUMAN-REVIEW(PR-139): Review the example preload discovery API.
-/// Finds the package preload DSO beside the current executable.
-pub(crate) fn default_preload_path() -> io::Result<PathBuf> {
-    let executable = std::env::current_exe()?;
-    let parent = executable.parent().ok_or_else(|| {
-        io::Error::new(io::ErrorKind::NotFound, "launcher executable has no parent")
-    })?;
-    [
-        parent.join("libreverie_examples.so"),
-        parent.join("deps/libreverie_examples.so"),
-        parent
-            .parent()
-            .unwrap_or(parent)
-            .join("libreverie_examples.so"),
-    ]
-    .into_iter()
-    .find(|path| path.is_file())
-    .ok_or_else(|| {
+fn require_executable(path: PathBuf) -> io::Result<PathBuf> {
+    let metadata = path.metadata()?;
+    if !metadata.is_file() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("executable path is not a regular file: {}", path.display()),
+        ));
+    }
+    let path_bytes = CString::new(path.as_os_str().as_bytes()).map_err(|_| {
         io::Error::new(
-            io::ErrorKind::NotFound,
-            format!(
-                "cannot find libreverie_examples.so beside {}",
-                executable.display()
-            ),
+            io::ErrorKind::InvalidInput,
+            format!("executable path contains a NUL byte: {}", path.display()),
         )
-    })
+    })?;
+    let accessible = unsafe {
+        libc::faccessat(
+            libc::AT_FDCWD,
+            path_bytes.as_ptr(),
+            libc::X_OK,
+            libc::AT_EACCESS,
+        )
+    };
+    if accessible != 0 {
+        let error = io::Error::last_os_error();
+        return Err(io::Error::new(
+            error.kind(),
+            format!(
+                "executable path is not executable: {}: {error}",
+                path.display()
+            ),
+        ));
+    }
+    Ok(path)
+}
+
+/// Run `program` natively, observing its syscalls with plain ptrace (no
+/// Reverie): a syscall-stop at each entry and exit only reads registers, so
+/// the program gets the results Linux gives it.
+pub fn run_native(program: &Path, args: &[OsString]) -> anyhow::Result<Report> {
+    use std::collections::BTreeSet;
+    use std::ffi::CString;
+    use std::os::unix::ffi::OsStrExt;
+    use std::os::unix::ffi::OsStringExt;
+
+    use nix::sys::ptrace;
+    use nix::sys::signal::Signal;
+    use nix::sys::wait::WaitPidFlag;
+    use nix::sys::wait::WaitStatus;
+    use nix::sys::wait::waitpid;
+    use nix::unistd::ForkResult;
+    use nix::unistd::Pid as NixPid;
+
+    let argv = std::iter::once(program.as_os_str())
+        .chain(args.iter().map(OsString::as_os_str))
+        .map(|arg| CString::new(arg.as_bytes()))
+        .collect::<Result<Vec<_>, _>>()?;
+    let path = CString::new(program.as_os_str().as_bytes())?;
+    // The environment in name order, as reverie-process's `Command` passes
+    // it to a ptrace or KVM guest, so that the order, which a program can
+    // see, is not a difference between the launchers.
+    let mut environment = std::env::vars_os().collect::<Vec<_>>();
+    environment.sort();
+    let envp = environment
+        .into_iter()
+        .map(|(key, value)| {
+            let mut entry = key.into_vec();
+            entry.push(b'=');
+            entry.extend(value.into_vec());
+            CString::new(entry)
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    // SAFETY: the child only calls async-signal-safe functions before exec.
+    let child = match unsafe { nix::unistd::fork() }? {
+        ForkResult::Child => {
+            // The Rust runtime ignores SIGPIPE; a program starts with the
+            // default, as reverie-ptrace's and the shell's children do.
+            // SAFETY: resetting a disposition in the forked child.
+            let _ = unsafe {
+                nix::sys::signal::signal(Signal::SIGPIPE, nix::sys::signal::SigHandler::SigDfl)
+            };
+            // Without address-space randomization, as reverie-ptrace starts
+            // its guests: a randomized heap start changes how often a
+            // program grows its heap (brk), a difference no backend made.
+            // SAFETY: personality(2) in the forked child, before exec.
+            unsafe {
+                let current = libc::personality(0xffff_ffff);
+                if current != -1 {
+                    libc::personality((current as libc::c_ulong) | 0x0004_0000);
+                }
+            }
+            let _ = ptrace::traceme();
+            let _ = nix::sys::signal::raise(Signal::SIGSTOP);
+            let _ = nix::unistd::execve(&path, &argv, &envp);
+            // SAFETY: exiting the forked child without unwinding.
+            unsafe { libc::_exit(127) };
+        }
+        ForkResult::Parent { child } => child,
+    };
+    waitpid(child, None)?;
+    ptrace::setoptions(
+        child,
+        ptrace::Options::PTRACE_O_TRACESYSGOOD
+            | ptrace::Options::PTRACE_O_TRACEFORK
+            | ptrace::Options::PTRACE_O_TRACEVFORK
+            | ptrace::Options::PTRACE_O_TRACECLONE
+            | ptrace::Options::PTRACE_O_TRACEEXEC
+            | ptrace::Options::PTRACE_O_EXITKILL,
+    )?;
+    ptrace::syscall(child, None)?;
+
+    let mut events = Vec::new();
+    // The call each thread is in, from its entry stop to its exit stop.
+    let mut entered: BTreeMap<i32, i64> = BTreeMap::new();
+    // New threads, whose first stop is the SIGSTOP that starts them traced.
+    let mut starting: BTreeSet<i32> = BTreeSet::new();
+    let mut exit_code = -1;
+    loop {
+        let status = match waitpid(NixPid::from_raw(-1), Some(WaitPidFlag::__WALL)) {
+            Ok(status) => status,
+            Err(nix::errno::Errno::ECHILD) => break,
+            Err(error) => return Err(error.into()),
+        };
+        match status {
+            WaitStatus::PtraceSyscall(pid) => {
+                let tid = pid.as_raw();
+                let regs = ptrace::getregs(pid)?;
+                match entered.remove(&tid) {
+                    None => {
+                        let sysno = regs.orig_rax as i64;
+                        if sysno == libc::SYS_exit || sysno == libc::SYS_exit_group {
+                            events.push((tid, sysno, Outcome::NoReturn));
+                        } else {
+                            entered.insert(tid, sysno);
+                        }
+                    }
+                    Some(sysno) => {
+                        let value = regs.rax as i64;
+                        let outcome = if (-4095..0).contains(&value) {
+                            Outcome::Errno(-value as i32)
+                        } else {
+                            Outcome::Value(value)
+                        };
+                        events.push((tid, sysno, outcome));
+                    }
+                }
+                let _ = ptrace::syscall(pid, None);
+            }
+            WaitStatus::PtraceEvent(pid, _, event) => {
+                if (event == libc::PTRACE_EVENT_FORK
+                    || event == libc::PTRACE_EVENT_VFORK
+                    || event == libc::PTRACE_EVENT_CLONE)
+                    && let Ok(new) = ptrace::getevent(pid)
+                {
+                    starting.insert(new as i32);
+                }
+                let _ = ptrace::syscall(pid, None);
+            }
+            WaitStatus::Stopped(pid, signal) => {
+                let tid = pid.as_raw();
+                let deliver = if signal == Signal::SIGSTOP && starting.remove(&tid) {
+                    None
+                } else {
+                    Some(signal)
+                };
+                let _ = ptrace::syscall(pid, deliver);
+            }
+            WaitStatus::Exited(pid, code) => {
+                if let Some(sysno) = entered.remove(&pid.as_raw()) {
+                    events.push((pid.as_raw(), sysno, Outcome::NoReturn));
+                }
+                if pid == child {
+                    exit_code = code;
+                }
+            }
+            WaitStatus::Signaled(pid, signal, _) if pid == child => {
+                exit_code = 128 + signal as i32;
+            }
+            _ => {}
+        }
+    }
+    let events = events
+        .into_iter()
+        .map(|(tid, sysno, outcome)| {
+            let name = Sysno::from(sysno as i32).name().to_owned();
+            (tid, name, outcome)
+        })
+        .collect();
+    Ok(report(exit_code, events))
 }

@@ -334,22 +334,6 @@ rust_library(
     ],
 )
 
-# Hermit's SaBRe supervisor reads the statistics page through this crate.
-rust_library(
-    name = "reverie-sabre-stats",
-    srcs = glob(["experimental/reverie-sabre-stats/src/**/*.rs"]),
-    autocargo = {
-        "cargo_toml_config": {
-            "package": dict(_PUBLIC_CRATE_METADATA, documentation = "https://docs.rs/reverie-sabre-stats"),
-        },
-        "cargo_toml_dir": "experimental/reverie-sabre-stats",
-    },
-    deps = [
-        "fbsource//third-party/rust:libc",
-        ":reverie",
-    ],
-)
-
 rust_library(
     name = "reverie-loader",
     srcs = glob(["reverie-loader/src/**/*.rs"]),
@@ -584,6 +568,7 @@ rust_library(
     deps = [
         "fbsource//third-party/rust:futures",
         "fbsource//third-party/rust:goblin",
+        "fbsource//third-party/rust:iced-x86",
         "fbsource//third-party/rust:kvm-bindings",
         "fbsource//third-party/rust:kvm-ioctls",
         "fbsource//third-party/rust:libc",

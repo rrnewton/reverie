@@ -14,7 +14,7 @@ use reverie::syscalls::Syscall;
 
 // TODO-HUMAN-REVIEW(PR-193): Review reuse of the minimal strace tool in the LiteInst preload.
 #[derive(Default)]
-pub(crate) struct StraceTool {}
+pub struct StraceTool {}
 
 #[reverie::tool]
 impl Tool for StraceTool {
