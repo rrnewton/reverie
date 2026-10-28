@@ -547,7 +547,7 @@ fn native_post_event_reuses_original_state_scratch_and_rpc_before_completion() {
             .unwrap()
     };
     let lease = unsafe { host.enter_native_callback(handle, id).unwrap() };
-    let deferred = match unsafe {
+    let mut deferred = match unsafe {
         host.dispatch_native_syscall(lease, &services, &rpc, &mut event(7))
             .unwrap()
     } {
@@ -573,9 +573,9 @@ fn native_post_event_reuses_original_state_scratch_and_rpc_before_completion() {
             .invoke(number, args, reverie::InjectionPurpose::Application)
     };
     assert_eq!(kernel_answer, i64::from(id.physical_pid().as_raw()));
-    let result = unsafe {
-        host.with_native_post_event(
-            deferred,
+    let step_result = unsafe {
+        host.with_native_post_step(
+            &mut deferred,
             &services,
             &rpc,
             &mut event(0),
@@ -596,6 +596,28 @@ fn native_post_event_reuses_original_state_scratch_and_rpc_before_completion() {
                     },
                     tail,
                 )
+            },
+        )
+        .unwrap()
+    };
+    assert_eq!(step_result, 300);
+    // The real Tool/RPC post step returned, but the C owner still has work.
+    // It retains the SAME original scratch and unpublished thread state.
+    assert_eq!(unsafe { (saved as *const u64).read() }, 0x7197);
+    assert!(matches!(
+        unsafe { host.enter_native_callback(handle, id) },
+        Err(ref error) if error.kind() == io::ErrorKind::WouldBlock
+    ));
+    let result = unsafe {
+        host.with_native_post_event(
+            deferred,
+            &services,
+            &rpc,
+            &mut event(0),
+            |_tool, guest, _tail| {
+                assert_eq!(guest.thread_state().order, [1, 2, 3, 4]);
+                assert_eq!((saved as *const u64).read(), 0x7197);
+                crate::tool_host::NativeCallbackOutcome::Ready(Ok(step_result))
             },
         )
         .unwrap()
