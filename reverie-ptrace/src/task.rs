@@ -13697,6 +13697,12 @@ impl<L: Tool + 'static> Guest<L> for TracedTask<L> {
     fn injected_syscalls(&self) -> Option<u64> {
         Some(self.injected_syscalls)
     }
+
+    /// The thread's own `/proc/<tid>/fdinfo/<fd>`, read by the tracer while
+    /// the thread is stopped (`crate::descriptor_status`).
+    fn descriptor_status(&self, fd: i32) -> Result<reverie::DescriptorStatus, reverie::FactError> {
+        crate::descriptor_status::read(self.tid, fd)
+    }
 }
 
 #[async_trait]
