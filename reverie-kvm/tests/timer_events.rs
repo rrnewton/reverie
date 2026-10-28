@@ -2418,3 +2418,326 @@ fn a_signal_pending_at_an_rt_sigreturn_timer_event_follows_it() {
     assert_eq!(record.count, 1, "{context}");
     assert_eq!((record.rip, record.rax), (r.rip, r.rax), "{context}");
 }
+
+/// The x87, SSE and AVX state a guest of the FPU tests below reads: MXCSR
+/// (STMXCSR), the x87 control word (FNSTCW), the x87 status and tag words
+/// (FNSTENV, whose instruction and operand pointers are left out), and YMM5,
+/// whose low half is XMM5.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct FpuState {
+    mxcsr: u32,
+    control: u16,
+    status: u16,
+    tags: u16,
+    ymm5: [u64; 4],
+}
+
+impl FpuState {
+    /// Linux's initial state, which `handle_signal` gives a handler
+    /// (`fpu__clear_user_states`): MXCSR 0x1f80, x87 control word 0x37f, an
+    /// empty x87 stack (TOP 0, every register tagged empty) and zero vector
+    /// registers.
+    const INITIAL: Self = Self {
+        mxcsr: 0x1f80,
+        control: 0x37f,
+        status: 0,
+        tags: 0xffff,
+        ymm5: [0; 4],
+    };
+
+    /// The state [`FPU_LOAD`] leaves, with TOP 6 (bits 11 to 13) and no
+    /// other bit of the status word, whose condition codes FLD leaves
+    /// undefined.
+    const LOADED: Self = Self {
+        mxcsr: 0x7f80,
+        control: 0x027f,
+        status: 6 << 11,
+        tags: 0x0fff,
+        ymm5: FPU_YMM5,
+    };
+
+    /// The block [`fpu_save`] writes at the start of `bytes`.
+    fn read(bytes: &[u8]) -> Self {
+        let half = |at: usize| u16::from_ne_bytes(bytes[at..at + 2].try_into().unwrap());
+        let quad = |at: usize| u64::from_ne_bytes(bytes[at..at + 8].try_into().unwrap());
+        Self {
+            mxcsr: u32::from_ne_bytes(bytes[..4].try_into().unwrap()),
+            control: half(8),
+            // FNSTENV's 28-byte image: the control, status and tag words
+            // each fill four bytes.
+            status: half(20),
+            tags: half(24),
+            ymm5: [quad(48), quad(56), quad(64), quad(72)],
+        }
+    }
+}
+
+/// What a guest of the FPU tests below writes to stdout before it exits.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct FpuRecord {
+    /// The state at the handler's first instruction.
+    handler: FpuState,
+    /// How many times the handler ran.
+    entries: u64,
+    /// The interrupted rip in the handler's frame, and the frame's r12, where
+    /// the guest keeps the instruction at which the signal should come.
+    rip: u64,
+    r12: u64,
+    /// The state after the handler returned.
+    after: FpuState,
+    /// ST0 and ST1 after the handler returned, as FSTP m80 stores them.
+    stack: [[u8; 10]; 2],
+}
+
+impl FpuRecord {
+    fn read(stdout: &[u8]) -> Self {
+        assert_eq!(stdout.len(), FPU_RECORD_SIZE, "{stdout:?}");
+        let quad = |at: usize| u64::from_ne_bytes(stdout[at..at + 8].try_into().unwrap());
+        Self {
+            handler: FpuState::read(&stdout[..80]),
+            entries: quad(80),
+            rip: quad(88),
+            r12: quad(96),
+            after: FpuState::read(&stdout[104..184]),
+            stack: [
+                stdout[184..194].try_into().unwrap(),
+                stdout[200..210].try_into().unwrap(),
+            ],
+        }
+    }
+
+    /// Everything but the frame's rip and r12, which tell where the signal
+    /// came: natively, a sibling's signal comes wherever the guest then is.
+    fn fpu(&self) -> (FpuState, u64, FpuState, [[u8; 10]; 2]) {
+        (self.handler, self.entries, self.after, self.stack)
+    }
+}
+
+const FPU_RECORD_SIZE: usize = 216;
+
+/// MXCSR 0x7f80 (round toward zero), x87 control word 0x027f (double
+/// precision), 1.5 and then -3.25 on the x87 stack, and a nonzero YMM5: the
+/// interrupted state, which a handler must not see and which must be intact
+/// after it returns.
+const FPU_LOAD: &str = "ldmxcsr fpu_mxcsr(%rip)\nfldcw fpu_control(%rip)\nfldt fpu_first(%rip)\n\
+     fldt fpu_second(%rip)\nvmovdqu fpu_ymm5(%rip),%ymm5\n";
+
+/// The bytes of -3.25 and 1.5 as FSTP m80 stores them: ST0 and ST1 after
+/// [`FPU_LOAD`].
+const FPU_STACK: [[u8; 10]; 2] = [
+    [0, 0, 0, 0, 0, 0, 0, 0xd0, 0x00, 0xc0],
+    [0, 0, 0, 0, 0, 0, 0, 0xc0, 0xff, 0x3f],
+];
+
+const FPU_YMM5: [u64; 4] = [
+    0x1111_1111_1111_1111,
+    0x2222_2222_2222_2222,
+    0x3333_3333_3333_3333,
+    0x4444_4444_4444_4444,
+];
+
+/// Saves an [`FpuState`] at `offset` in `fpu_record`.
+fn fpu_save(offset: usize) -> String {
+    format!(
+        "stmxcsr fpu_record+{offset}(%rip)\nfnstcw fpu_record+{}(%rip)\n\
+         fnstenv fpu_record+{}(%rip)\nvmovdqu %ymm5,fpu_record+{}(%rip)\n",
+        offset + 8,
+        offset + 16,
+        offset + 48
+    )
+}
+
+/// After the handler returned: saves the state, pops ST0 and ST1 into the
+/// record, writes the record and exits with status 0.
+fn fpu_after() -> String {
+    format!(
+        "{}fstpt fpu_record+184(%rip)\nfstpt fpu_record+200(%rip)\n\
+         mov $1,%edi\nlea fpu_record(%rip),%rsi\nmov ${FPU_RECORD_SIZE},%edx\nmov $1,%eax\nsyscall\n\
+         xor %edi,%edi\nmov $231,%eax\nsyscall\nud2\n",
+        fpu_save(104)
+    )
+}
+
+/// Installs the handler of [`fpu_handler`] for `signal`, with the sigaction
+/// record `action`.
+fn fpu_install(signal: i32, action: &str) -> String {
+    format!(
+        "mov ${signal},%edi\nlea {action}(%rip),%rsi\nxor %edx,%edx\nmov $8,%r10d\nmov $13,%eax\nsyscall\n"
+    )
+}
+
+/// The handler, its restorer and the data. The handler saves the state it
+/// starts with, counts its entries, keeps its frame's rip and r12, runs
+/// `extra` and sets `flag`; `action` names its sigaction record. The data
+/// includes what [`SIBLING`] uses.
+fn fpu_handler(action: &str, extra: &str) -> String {
+    format!(
+        "fpu_handler:\n{}incq fpu_record+80(%rip)\nmov 168(%rdx),%rax\nmov %rax,fpu_record+88(%rip)\n\
+         mov 72(%rdx),%rax\nmov %rax,fpu_record+96(%rip)\n{extra}movb $1,flag(%rip)\nret\n\
+         restorer: mov $15,%eax\nsyscall\nud2\n\
+         .data\n.balign 8\n{action}: .quad fpu_handler, {HANDLER_FLAGS:#x}, restorer, 0\n\
+         pid: .quad 0\ntid: .quad 0\nflag: .byte 0\n\
+         fpu_mxcsr: .long 0x7f80\nfpu_control: .short 0x027f\n\
+         .balign 16\nfpu_first: .quad 0xc000000000000000\n.short 0x3fff\n\
+         .balign 16\nfpu_second: .quad 0xd000000000000000\n.short 0xc000\n\
+         .balign 32\nfpu_ymm5: .quad {:#x}, {:#x}, {:#x}, {:#x}\n\
+         .balign 64\nfpu_record: .zero {FPU_RECORD_SIZE}\n\
+         .bss\n.balign 16\nstack: .skip 65536\nstack_end:\n",
+        fpu_save(0),
+        FPU_YMM5[0],
+        FPU_YMM5[1],
+        FPU_YMM5[2],
+        FPU_YMM5[3],
+    )
+}
+
+/// Checks a record of a guest that loaded [`FPU_LOAD`] and then took one
+/// signal: its handler started in Linux's initial state, and the interrupted
+/// code found its own state again after the handler returned.
+fn check_fpu_record(record: &FpuRecord, context: &str) {
+    let context = format!("{context}: {record:x?}");
+    assert_eq!(record.entries, 1, "{context}");
+    assert_eq!(record.handler, FpuState::INITIAL, "{context}");
+    let after = FpuState {
+        status: record.after.status & 7 << 11,
+        ..record.after
+    };
+    assert_eq!(after, FpuState::LOADED, "{context}");
+    assert_eq!(record.stack, FPU_STACK, "{context}");
+}
+
+/// Runs `program` natively, the Linux reference, and returns its record.
+fn native_fpu_record(program: &Program) -> FpuRecord {
+    let output = std::process::Command::new("timeout")
+        .args(["--kill-after=2s", "30s"])
+        .arg(&program.executable)
+        .current_dir(&program.directory)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success() && output.stderr.is_empty(),
+        "native: {}: {}",
+        output.status,
+        String::from_utf8_lossy(&output.stderr)
+    );
+    FpuRecord::read(&output.stdout)
+}
+
+/// Runs `program` under the backend's own runtime, with no Tool, checks that
+/// it exits with status 0, and returns its record.
+fn direct_fpu_record(program: &Program) -> FpuRecord {
+    let mut backend = KvmBackend::new(MEMORY).unwrap();
+    backend
+        .install_static_elf_file_with_context(
+            std::fs::File::open(&program.executable).unwrap(),
+            &[program.executable.to_str().unwrap()],
+            &[],
+            &program.directory,
+        )
+        .unwrap();
+    let (code, stdout, stderr) = backend.run_static_elf_captured().unwrap();
+    assert_eq!((code, stderr), (0, vec![]));
+    FpuRecord::read(&stdout)
+}
+
+/// Runs `program` under a [`TimerTool`] following `plan`, checks that it
+/// exits with status 0, and returns the Tool's events and the record.
+fn tool_fpu_record(program: &Program, plan: Plan) -> (Vec<Event>, FpuRecord) {
+    let (events, ending) = run_ending(program, plan);
+    let (code, stdout, stderr) = ending.unwrap_or_else(|failure| panic!("{failure}: {events:?}"));
+    assert_eq!((code, stderr), (0, vec![]), "{events:?}");
+    (events, FpuRecord::read(&stdout))
+}
+
+/// Checks a guest whose signal comes at the instruction it marks in r12, in
+/// every run: natively, under the backend's runtime and under a Tool. Each
+/// run's handler starts in Linux's initial FPU state, the interrupted code's
+/// state is intact after it, and KVM's records equal the native one.
+fn fpu_state_matches_native_at_mark(program: &Program) {
+    let native = native_fpu_record(program);
+    check_fpu_record(&native, "native");
+    assert_eq!(native.rip, native.r12, "native: {native:x?}");
+    let plan = Plan {
+        deliver: true,
+        ..Plan::default()
+    };
+    for (name, record) in [
+        ("runtime", direct_fpu_record(program)),
+        ("tool", tool_fpu_record(program, plan).1),
+    ] {
+        check_fpu_record(&record, name);
+        assert_eq!(record.rip, record.r12, "{name}: {record:x?}");
+        assert_eq!(
+            record.fpu(),
+            native.fpu(),
+            "{name} {record:x?}, native {native:x?}"
+        );
+    }
+}
+
+#[test]
+fn a_handler_at_a_syscall_return_starts_with_linuxs_initial_fpu_state() {
+    if bounded("a_handler_at_a_syscall_return_starts_with_linuxs_initial_fpu_state") {
+        return;
+    }
+    // The guest loads its FPU state and sends SIGUSR1 to itself with tgkill,
+    // which is delivered at that call's return.
+    let program = Program::new(&format!(
+        "{}mov $39,%eax\nsyscall\nmov %rax,pid(%rip)\nmov $186,%eax\nsyscall\nmov %rax,tid(%rip)\n\
+         {FPU_LOAD}mov pid(%rip),%rdi\nmov tid(%rip),%rsi\nmov $10,%edx\nlea 1f(%rip),%r12\n\
+         mov $234,%eax\nsyscall\n1:\n{}{}",
+        fpu_install(libc::SIGUSR1, "usr1_action"),
+        fpu_after(),
+        fpu_handler("usr1_action", "")
+    ));
+    fpu_state_matches_native_at_mark(&program);
+}
+
+#[test]
+fn a_handler_at_a_user_trap_starts_with_linuxs_initial_fpu_state() {
+    if bounded("a_handler_at_a_user_trap_starts_with_linuxs_initial_fpu_state") {
+        return;
+    }
+    // The guest loads its FPU state and runs a ud2, whose SIGILL handler
+    // steps over it.
+    let program = Program::new(&format!(
+        "{}{FPU_LOAD}lea 1f(%rip),%r12\n1: ud2\n{}{}",
+        fpu_install(libc::SIGILL, "ill_action"),
+        fpu_after(),
+        fpu_handler("ill_action", "addq $2,168(%rdx)\n")
+    ));
+    fpu_state_matches_native_at_mark(&program);
+}
+
+#[test]
+fn a_handler_at_a_timer_boundary_starts_with_linuxs_initial_fpu_state() {
+    if bounded("a_handler_at_a_timer_boundary_starts_with_linuxs_initial_fpu_state") {
+        return;
+    }
+    // The spinner of `a_spinner_signalled_by_a_sibling_gets_its_handler_at_the_next_timer_boundary`,
+    // which loads its FPU state before it starts the sibling and spins until
+    // its handler has run. Natively, the sibling's SIGUSR1 comes wherever
+    // the guest then is; under the Tool, at the timer boundary at the loop's
+    // head.
+    let program = Program::new(&format!(
+        "{FPU_LOAD}{SIBLING}{GETPPID}lea 1f(%rip),%r12\nmov $2000000000,%rcx\n\
+         1: cmpb $0,flag(%rip)\njne 2f\ndec %rcx\njnz 1b\n2:\n{}{}",
+        fpu_after(),
+        fpu_handler("usr1_action", "")
+    ));
+    let native = native_fpu_record(&program);
+    check_fpu_record(&native, "native");
+    for _ in 0..REPEATS {
+        let (events, record) = tool_fpu_record(&program, spinner_plan());
+        let context = format!("{record:x?} {events:?}");
+        let (timer_at, timer_clock) = first_timer(&events);
+        let delivered = sigusr1_clocks(&events);
+        assert_eq!(delivered.len(), 1, "{context}");
+        assert!(delivered[0].0 > timer_at, "{context}");
+        assert_eq!(delivered[0].1, timer_clock, "{context}");
+        let r = registers_of(&events);
+        assert_eq!((record.rip, record.r12), (r.rip, r.rip), "{context}");
+        check_fpu_record(&record, "tool");
+        assert_eq!(record.fpu(), native.fpu(), "{context}, native {native:x?}");
+    }
+}
