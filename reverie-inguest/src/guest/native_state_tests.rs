@@ -102,6 +102,36 @@ fn identity(image: u64) -> NativeThreadIdentity {
 
 #[test]
 fn native_callback_entry_allows_a_sibling_and_retains_its_own_scratch() {
+    // Native state storage must not require an extra ordinary connection.
+    // This nonexistent path is retained as a fact, never opened here.
+    let config = Arc::new(71_u64);
+    let config_owner = CoordinatorRpc::<Remote>::from_native_configuration(
+        "/unused-native-config-owner-test",
+        Arc::clone(&config),
+    )
+    .unwrap();
+    assert!(Arc::ptr_eq(&config, &config_owner.shared_config()));
+    assert_eq!(config_owner.raw_fd(), -1);
+    assert!(config_owner.send_blocking_unless_in_flight(()).is_err());
+    let native_host = unsafe {
+        ToolHost::new_native(
+            Probe,
+            config_owner,
+            raw_pid(libc::SYS_getpid),
+            HashSet::new(),
+            false,
+            Runtime,
+        )
+    };
+    let id = identity(1);
+    let handle = unsafe { native_host.register_native_thread(id, 71).unwrap() };
+    let callback = unsafe { native_host.enter_native_callback(handle, id).unwrap() };
+    unsafe { callback.complete(id).unwrap() };
+    assert_eq!(
+        unsafe { native_host.retire_native_thread(handle, id).unwrap() },
+        71
+    );
+
     let (host, _peer) = make_host(true);
     let (entered_tx, entered_rx) = mpsc::channel();
     let (release_tx, release_rx) = mpsc::channel();
