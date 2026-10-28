@@ -499,9 +499,6 @@ fn exact_strace_tool_observes_filtered_write() {
     assert!(stderr.contains(" = 6"), "{stderr}");
 }
 
-
-
-
 #[test]
 fn exact_strace_minimal_tool_observes_write() {
     let output = run("strace-minimal", &[], &["/bin/echo", "hello"]);
