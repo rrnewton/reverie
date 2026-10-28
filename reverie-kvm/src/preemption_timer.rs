@@ -125,6 +125,22 @@
 //!   registers that call restores. Found due anywhere else (by a kick that
 //!   stopped the guest in ring 0), it is armed again at its target (see
 //!   `KvmBackend::timer_instruction_boundary`).
+//! - After the callback, a pending signal is selected at the same point and
+//!   delivered, as Linux delivers one on the return to user mode after a
+//!   preemption: `exit_to_user_mode_loop` (`kernel/entry/common.c`) calls
+//!   `schedule()` before `arch_do_signal_or_restart()`. So at each of the
+//!   three points the timer event comes first and the signal second. At a
+//!   user instruction boundary the signal's frame holds the live registers,
+//!   and nothing restarts, as after an interrupt (`orig_ax` -1, so
+//!   `handle_signal` in `arch/x86/kernel/signal.c` finds no syscall); a
+//!   boundary with no eligible pending signal makes no selection, and one
+//!   where KVM has yet to inject an exception (a host interrupt ended its
+//!   delivery) leaves the signal to that fault's boundary. At a syscall's
+//!   return the selection is the syscall's own, with its restart rules, and at
+//!   an `rt_sigreturn` it sees the registers and the mask that call restores.
+//!   Selection, masking, the Tool's signal hook and the frame are those of
+//!   every other boundary. A signal that another thread sends while the
+//!   callback runs counts.
 //! - The callback can inject syscalls that return, and exits. A process
 //!   action, a tail injection other than an exit, a signal that needs a
 //!   syscall return frame, or an `rt_sigprocmask` that would make a pending
@@ -238,8 +254,11 @@
 //!   and IRET just as racily (`arch/x86/kernel/step.c`). Before the
 //!   capability is set, decide whether a Tool that does not serialize
 //!   threads needs byte-stable stepping.
-//! - A timer event does not deliver the signals pending when it is handled:
-//!   they wait, as before, for the thread's next syscall or fault.
+//! - A signal sent to a running thread waits for that thread's next timer
+//!   event, syscall or fault; Linux interrupts the thread for it at once.
+//! - A timer event's callback cannot make a signal deliverable to its own
+//!   thread (see above), where reverie-ptrace delivers one that the callback
+//!   sends to the thread once the callback returns.
 //! - After a refused injection, the callback's own guest-memory and stack
 //!   writes, through handles it already holds, still reach memory until the
 //!   callback returns or suspends; the run then fails with the named reason.

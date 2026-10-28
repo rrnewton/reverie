@@ -762,7 +762,11 @@ enum ProcessExecutionContext<'a> {
     /// `Error::TimerCallbackInjectionUnsupported` rather than returning an
     /// errno the Tool could take for an ordinary failure.
     Timer,
-    ThreadEntrySignal,
+    /// A signal's callback at a user instruction boundary, where the vCPU has
+    /// live user registers and there is no syscall transport: before an
+    /// unstarted clone's first instruction, or after a timer event's callback
+    /// there (see `KvmBackend::deliver_signal_at_timer_boundary`).
+    UserInstructionSignal,
     SignalBoundary(&'a CompletedSyscallBoundary),
     FaultBoundary(Box<UserTrap>),
     SyscallBoundary(&'a CompletedSyscallBoundary),
@@ -777,7 +781,7 @@ impl ProcessExecutionContext<'_> {
             Self::SignalBoundary(_)
                 | Self::FaultBoundary(_)
                 | Self::SyscallBoundary(_)
-                | Self::ThreadEntrySignal
+                | Self::UserInstructionSignal
         )
     }
 
@@ -789,7 +793,7 @@ impl ProcessExecutionContext<'_> {
         }
         !matches!(
             self,
-            Self::SignalBoundary(_) | Self::FaultBoundary(_) | Self::ThreadEntrySignal
+            Self::SignalBoundary(_) | Self::FaultBoundary(_) | Self::UserInstructionSignal
         )
     }
 
@@ -801,7 +805,7 @@ impl ProcessExecutionContext<'_> {
         }
         if matches!(
             self,
-            Self::ThreadEntrySignal | Self::Instruction | Self::Timer
+            Self::UserInstructionSignal | Self::Instruction | Self::Timer
         ) {
             // There is a real user continuation, but no consumed syscall
             // transport to restore after an injected process action.
@@ -822,7 +826,7 @@ impl ProcessExecutionContext<'_> {
                 Self::SignalBoundary(_)
                     | Self::SyscallBoundary(_)
                     | Self::FaultBoundary(_)
-                    | Self::ThreadEntrySignal
+                    | Self::UserInstructionSignal
             )
     }
 
@@ -1730,10 +1734,12 @@ where
                                 .to_owned(),
                         ))
                     }
-                    ProcessExecutionContext::ThreadEntrySignal => Err(Error::UnexpectedVcpuExit(
-                        "process injection from a thread-entry signal hook is unsupported"
-                            .to_owned(),
-                    )),
+                    ProcessExecutionContext::UserInstructionSignal => {
+                        Err(Error::UnexpectedVcpuExit(
+                            "process injection from a user-boundary signal hook is unsupported"
+                                .to_owned(),
+                        ))
+                    }
                 }
             }
             .await;
@@ -6004,7 +6010,7 @@ impl KvmBackend {
         config: &<T::GlobalState as GlobalTool>::Config,
         subscriptions: &Subscription,
         stack_checked_out: &Arc<AtomicBool>,
-        thread_entry: bool,
+        user_instruction: bool,
         resume: SignalBoundaryResume,
     ) -> Result<CallbackOutcome<Option<PendingSignal>>>
     where
@@ -6035,7 +6041,7 @@ impl KvmBackend {
                 subscriptions,
                 stack_checked_out,
                 None,
-                thread_entry,
+                user_instruction,
                 selection_started,
             );
             #[cfg(test)]
@@ -6268,6 +6274,110 @@ impl KvmBackend {
         Ok(InstructionCallback::Resumed)
     }
 
+    /// After a timer event's callback at a user instruction boundary (see
+    /// `timer_instruction_boundary`), selects a pending signal there and
+    /// delivers it, as Linux does on the return to user mode after an
+    /// interrupt that preempted the thread: `exit_to_user_mode_loop` calls
+    /// `schedule()` before `arch_do_signal_or_restart()`, so the preemption
+    /// comes first, and with `orig_ax` -1 nothing restarts. A signal another
+    /// thread sent while the callback ran counts. Selection, masking, the
+    /// Tool's signal hook and the frame are those of every other boundary.
+    /// The vCPU's continuation is changed directly, as for an unstarted
+    /// clone. Returns the thread's exit when the signal or its hook ended the
+    /// thread or its group.
+    ///
+    /// A boundary with no eligible pending signal makes no selection, and so
+    /// no Tool callback, as an unstarted clone's makes none. Nor does one
+    /// where KVM has an exception still to inject (see
+    /// `timer_boundary_takes_signal`): the signal then waits for that fault's
+    /// own boundary.
+    #[allow(clippy::too_many_arguments)]
+    async fn deliver_signal_at_timer_boundary<T>(
+        &mut self,
+        executor: &mut ElfExecutor,
+        pid: Pid,
+        tid: Pid,
+        tool: &Arc<T>,
+        memory: &GuestMemory,
+        auxv: &[(libc::c_ulong, libc::c_ulong)],
+        thread_state: &mut T::ThreadState,
+        global_state: &Arc<T::GlobalState>,
+        config: &<T::GlobalState as GlobalTool>::Config,
+        subscriptions: &Subscription,
+        stack_checked_out: &Arc<AtomicBool>,
+    ) -> Result<Option<ToolProcessExit>>
+    where
+        T: Tool + 'static,
+        T::ThreadState: 'static,
+        T::GlobalState: 'static,
+        <T::GlobalState as GlobalTool>::Config: 'static,
+    {
+        if !executor.has_eligible_pending_signal() || !self.timer_boundary_takes_signal()? {
+            return Ok(None);
+        }
+        let interrupted = self.vcpu.get_regs()?;
+        executor.set_current_user_stack_pointer(interrupted.rsp);
+        let pending = match self
+            .filter_one_pending_signal_with_tool(
+                executor,
+                pid,
+                tid,
+                tool,
+                memory,
+                auxv,
+                interrupted,
+                u64::MAX,
+                self.syscall_frame_address,
+                thread_state,
+                global_state,
+                config,
+                subscriptions,
+                stack_checked_out,
+                true,
+                SignalBoundaryResume::Fresh,
+            )
+            .await?
+        {
+            CallbackOutcome::Completed(pending) => pending,
+            CallbackOutcome::GroupExit(status) => {
+                return self.wait_group_exit_status(executor, status).map(Some);
+            }
+            CallbackOutcome::ThreadCancelled => {
+                return Ok(Some(self.cancelled_tool_thread_status(executor)));
+            }
+            CallbackOutcome::ThreadRetired => {
+                return self.retired_tool_thread_status(executor).map(Some);
+            }
+        };
+        if let Some((segment, address)) = self.take_pending_segment() {
+            set_user_segment_base(&self.vcpu, segment, address)?;
+        }
+        let delivered = match pending {
+            Some(pending) if !executor.has_pending_exit() => {
+                self.deliver_selected_signal_at_timer_boundary(executor, interrupted, pending)?
+            }
+            _ => false,
+        };
+        let exit = executor.take_exit();
+        let outcome = if let Some(exit) = exit {
+            exit.signal_boundary_outcome()
+        } else if delivered {
+            reverie::SignalBoundaryOutcome::Caught
+        } else {
+            reverie::SignalBoundaryOutcome::NoHandler
+        };
+        self.finish_signal_boundary(executor, global_state.as_ref(), outcome)
+            .await?;
+        let Some(exit) = exit.or_else(|| executor.take_exit()) else {
+            return Ok(None);
+        };
+        self.discard_process_clear_tid_at_signal_return(executor);
+        if exit.group {
+            self.request_guest_thread_group_exit(exit.status);
+        }
+        Ok(Some(exit.into()))
+    }
+
     #[allow(clippy::too_many_arguments)]
     async fn filter_next_pending_signal_with_tool<T>(
         &mut self,
@@ -6286,7 +6396,7 @@ impl KvmBackend {
         subscriptions: &Subscription,
         stack_checked_out: &Arc<AtomicBool>,
         fault: Option<&UserTrap>,
-        thread_entry: bool,
+        user_instruction: bool,
         selection_started: bool,
     ) -> Result<CallbackOutcome<Option<PendingSignal>>>
     where
@@ -6346,8 +6456,8 @@ impl KvmBackend {
         let signal_boundary;
         let process_context = if let Some(fault) = fault {
             ProcessExecutionContext::FaultBoundary(Box::new(fault.clone()))
-        } else if thread_entry {
-            ProcessExecutionContext::ThreadEntrySignal
+        } else if user_instruction {
+            ProcessExecutionContext::UserInstructionSignal
         } else {
             let mut stop = pin!(wait_for_failure(
                 global_state.as_ref(),
@@ -6906,7 +7016,9 @@ impl KvmBackend {
                 }
                 // A timer request that the last exit made due is delivered
                 // before the guest runs on, if the vCPU stopped in user mode
-                // (see `timer_instruction_boundary`).
+                // (see `timer_instruction_boundary`), and then a pending
+                // signal, as Linux delivers one on the return to user mode
+                // after a preemption.
                 if let Some(boundary) = self.timer_instruction_boundary()? {
                     match self
                         .run_tool_instruction_callback(
@@ -6925,9 +7037,28 @@ impl KvmBackend {
                         )
                         .await?
                     {
-                        InstructionCallback::Resumed => continue,
+                        InstructionCallback::Resumed => {}
                         InstructionCallback::Finished(exit) => return Ok(exit),
                     }
+                    if let Some(exit) = self
+                        .deliver_signal_at_timer_boundary(
+                            executor,
+                            pid,
+                            tid,
+                            &tool,
+                            &memory,
+                            &auxv,
+                            &mut thread_state,
+                            &global_state,
+                            config,
+                            subscriptions,
+                            &stack_checked_out,
+                        )
+                        .await?
+                    {
+                        return Ok(exit);
+                    }
+                    continue;
                 }
                 // A precise request within its stepping window steps the
                 // guest to its target (see `prepare_timer_steps`).

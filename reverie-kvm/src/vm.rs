@@ -5530,6 +5530,54 @@ impl KvmBackend {
         )
     }
 
+    /// Whether a signal can be delivered where a timer event's callback found
+    /// the vCPU, at a user instruction boundary (see
+    /// [`Self::timer_instruction_boundary`]): still in user mode, with no
+    /// event that KVM has yet to inject. A host interrupt can end an entry
+    /// while the CPU delivers an exception to its stub; the guest then stands
+    /// at the faulting instruction, and the next entry delivers the exception.
+    /// Moving the guest to a handler there would deliver that exception at the
+    /// handler instead, so the signal waits for the fault's own boundary.
+    pub(crate) fn timer_boundary_takes_signal(&self) -> Result<bool> {
+        if self.vcpu.get_sregs()?.cs.dpl != 3 {
+            return Ok(false);
+        }
+        let events = self.vcpu.get_vcpu_events()?;
+        Ok(events.exception.injected == 0
+            && events.exception.pending == 0
+            && events.interrupt.injected == 0
+            && events.nmi.injected == 0
+            && events.nmi.pending == 0)
+    }
+
+    /// Delivers `pending` at the user instruction boundary where a timer
+    /// event's callback found the vCPU (see
+    /// [`Self::timer_boundary_takes_signal`]), with `interrupted`, the live
+    /// user registers, as the interrupted context. This is no syscall's
+    /// return, so nothing restarts: Linux delivers a signal on the return to
+    /// user mode after an interrupt with `orig_ax` -1. Like an unstarted
+    /// clone's, the vCPU's continuation is changed directly.
+    pub(crate) fn deliver_selected_signal_at_timer_boundary(
+        &mut self,
+        executor: &mut ElfExecutor,
+        interrupted: kvm_regs,
+        pending: crate::executor::PendingSignal,
+    ) -> Result<bool> {
+        self.deliver_selected_signal_at_boundary(
+            executor,
+            self.syscall_frame_address,
+            interrupted,
+            pending,
+            None,
+            true,
+        )
+    }
+
+    /// Builds `pending`'s signal frame for `interrupted` and resumes the guest
+    /// at its handler: through `fault`'s exception frame, by setting the
+    /// vCPU's registers when `live_registers` (the vCPU stands at a user
+    /// instruction boundary), or else through the syscall frame the
+    /// trampoline returns with.
     fn deliver_selected_signal_at_boundary(
         &mut self,
         executor: &mut ElfExecutor,
@@ -5537,7 +5585,7 @@ impl KvmBackend {
         interrupted: kvm_regs,
         pending: crate::executor::PendingSignal,
         fault: Option<&UserTrap>,
-        thread_entry: bool,
+        live_registers: bool,
     ) -> Result<bool> {
         let signal = pending.event.signal();
         match executor.signal_disposition(signal) {
@@ -5631,7 +5679,7 @@ impl KvmBackend {
         handler.rflags &= !((1 << 8) | (1 << 10) | (1 << 16));
         if let Some(fault) = fault {
             fault.resume_user(self, handler)?;
-        } else if thread_entry {
+        } else if live_registers {
             self.vcpu.set_regs(&handler)?;
         } else {
             stage_process_syscall_return(
