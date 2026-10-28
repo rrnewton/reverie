@@ -417,10 +417,10 @@ where
     }
 
     fn new_thread_state(&self, tool: &T, tid: Pid) -> T::ThreadState {
-        if tid == self.root_pid {
-            if let Some(state) = self.ordinary_root_state.lock().take() {
-                return state;
-            }
+        if tid == self.root_pid
+            && let Some(state) = self.ordinary_root_state.lock().take()
+        {
+            return state;
         }
         tool.init_thread_state(tid, None)
     }
