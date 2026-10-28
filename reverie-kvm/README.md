@@ -96,16 +96,14 @@ and one that makes no pending signal deliverable runs as usual.
 
 After the callback, one pending signal is selected at the same point and
 delivered. Linux's return to user mode after a preemption runs `schedule()`
-before signal delivery, so the timer event comes first, then the signal;
-Linux then delivers every other eligible signal on the same return, with
-stacked frames, where this backend delivers one per return, as at its other
-boundaries (https://github.com/rrnewton/reverie/issues/1188), and its handler
-starts with the interrupted FPU state, where Linux resets it
-(https://github.com/rrnewton/reverie/issues/1187). At a user instruction
+before signal delivery, so the timer event comes first, then the signal; Linux
+then delivers every other eligible signal on the same return, with stacked
+frames, where this backend delivers one per return, as at its other boundaries
+(https://github.com/rrnewton/reverie/issues/1188). At a user instruction
 boundary the signal's frame holds the live registers and nothing restarts, as
 after an interrupt, and the signal hook sees the timer event's complete
-registers; at a syscall's return the selection is that syscall's own, with
-its restart rules; at an `rt_sigreturn` it sees the registers and the mask the
+registers; at a syscall's return the selection is that syscall's own, with its
+restart rules; at an `rt_sigreturn` it sees the registers and the mask the
 call restores. A signal another thread sends while the callback runs counts,
 so a thread that spins without syscalls takes a signal at its next timer
 event. A boundary where KVM has yet to inject an exception defers the
@@ -361,11 +359,15 @@ paired-backend parity, and they do not create a scheduler or host-time producer.
 
 Handler entry supports the bounded x86-64 signal frame, alternate stacks
 including `SS_AUTODISARM`, and `rt_sigreturn` restoration of registers, masks,
-stack state and the supported XSAVE image. The KVM signal codec uses **832 bytes
-of XSAVE state** (512 legacy, 64 header, 256 YMM) and **836 bytes including the
-trailing `FP_XSTATE_MAGIC2` in the signal frame**. These are not the total signal
-frame size. Header, payload and malformed-frame checks are unchanged; this is
-not full native-frame byte equality or support for arbitrary extended CPU state.
+stack state and the supported XSAVE image. At every delivery point the frame
+holds the interrupted FPU state and the handler starts with Linux's initial
+one, as `handle_signal` gives it with `fpu__clear_user_states`: x87 control
+word 0x37f, an empty x87 stack, MXCSR 0x1f80, and zero XMM and YMM registers.
+The KVM signal codec uses **832 bytes of XSAVE state** (512 legacy, 64 header,
+256 YMM) and **836 bytes including the trailing `FP_XSTATE_MAGIC2` in the
+signal frame**. These are not the total signal frame size. Header, payload and
+malformed-frame checks are unchanged; this is not full native-frame byte
+equality or support for arbitrary extended CPU state.
 
 The captured page-zero context retains interrupted registers, stack/flags,
 selectors, trap/error and `CR2`; KVM selectors are not claimed byte-identical to

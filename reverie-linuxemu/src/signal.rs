@@ -997,13 +997,24 @@ impl XsaveImage {
         Self(bytes)
     }
 
+    /// Linux's initial user FPU state, which `fpu__clear_user_states`
+    /// installs for a signal handler and for an rt_sigreturn whose
+    /// uc_mcontext.fpregs is NULL: x87 control word 0x37f, an empty x87
+    /// stack, MXCSR 0x1f80, and zero x87, XMM and YMM registers.
+    ///
+    /// XSTATE_BV lists every component of `FIXED_XFEATURES` with these values,
+    /// so that KVM_SET_XSAVE copies each of them, MXCSR included. With those
+    /// bits clear, Linux's `copy_uabi_to_xstate` leaves the vCPU's previous
+    /// MXCSR in place, and a host that keeps guest state in the standard
+    /// (uncompacted) format, one with neither XSAVEC nor XSAVES, restores it:
+    /// the standard form of XRSTOR loads MXCSR whenever SSE or AVX state is
+    /// requested, whatever XSTATE_BV says (Intel SDM Vol. 1, Section 13.8.1).
     pub fn initialized_kvm() -> kvm_xsave {
         let mut xsave = kvm_xsave::default();
-        // Linux's fpu__clear_user_states installs the architectural init state
-        // when uc_mcontext.fpregs is NULL.
         xsave.region[0] = 0x037f;
         xsave.region[6] = 0x1f80;
         xsave.region[7] = MXCSR_FEATURE_MASK;
+        xsave.region[XSTATE_BV_OFFSET / 4] = FIXED_XFEATURES as u32;
         xsave
     }
 
