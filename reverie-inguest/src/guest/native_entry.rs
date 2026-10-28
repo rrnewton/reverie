@@ -156,14 +156,6 @@ where
         // above has ended before any continuation/state owner is returned.
         invocation.ensure_current()?;
         match outcome {
-            NativeCallbackOutcome::Ready(Err(Error::Errno(errno))) => {
-                // The maintained native owner returns Linux errno to the
-                // guest. That completed handler does not abandon its state or
-                // enter the local ERESTARTSYS retry loop. Tool/Io failures in
-                // the following arm still poison the abandoned callback.
-                unsafe { callback.complete(identity)? };
-                Err(Error::Errno(errno))
-            }
             NativeCallbackOutcome::Ready(value) => {
                 let value = value?;
                 unsafe { callback.complete(identity)? };
@@ -231,6 +223,13 @@ where
                         drive_native_callback(tool.handle_syscall_event(guest, syscall), tail);
                     guest.in_syscall_handler = false;
                     match outcome {
+                        NativeCallbackOutcome::Ready(Err(Error::Errno(errno))) => {
+                            // Only the maintained syscall owner turns Linux
+                            // errno into the negative guest return. Do not
+                            // enter the local restart loop or poison completed
+                            // state. Instruction/signal errors remain fatal.
+                            NativeCallbackOutcome::Ready(Ok(-i64::from(errno.into_raw())))
+                        }
                         NativeCallbackOutcome::Deferred { number, args } => {
                             // Close/close_range still reached the Tool for accounting;
                             // the actual forwarded/deferred operation spares the same
