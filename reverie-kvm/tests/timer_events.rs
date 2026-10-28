@@ -47,6 +47,8 @@ use reverie::Subscription;
 use reverie::TimerSchedule;
 use reverie::Tool;
 use reverie::syscalls::Addr;
+use reverie::syscalls::ArchPrctl;
+use reverie::syscalls::ArchPrctlCmd;
 use reverie::syscalls::Errno;
 use reverie::syscalls::Execve;
 use reverie::syscalls::ExitGroup;
@@ -317,6 +319,25 @@ struct Plan {
     signal_registers: bool,
     /// Hold a new thread's start until another thread's `tgkill` has run.
     hold_thread_start: bool,
+    /// How many `tgkill`s must have run before [`Gate::Sent`] opens, under
+    /// [`Plan::rendezvous`] or [`Plan::hold_thread_start`]: 0 means 1.
+    sends: u32,
+    /// Take the backend's signal control and grant a delivery permit at every
+    /// boundary that has something to select, as a scheduler that runs one
+    /// thread at a time does, logging each permit and its receipt.
+    permits: bool,
+    /// From SIGUSR1's callback, set the first segment base to the address in
+    /// r13, and from SIGUSR2's, the second to the address in r14, each with an
+    /// injected `arch_prctl`.
+    bases_at_signals: Option<[SegmentBase; 2]>,
+}
+
+/// A segment base that a signal's callback sets under
+/// [`Plan::bases_at_signals`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+enum SegmentBase {
+    Fs,
+    Gs,
 }
 
 /// The two points a [`Plan::rendezvous`] orders.
@@ -348,6 +369,13 @@ enum Event {
     Open(Gate),
     /// Waits until a gate is open (not logged).
     Wait(Gate),
+    /// One more `tgkill` has run; [`Gate::Sent`] opens once this many have
+    /// (not logged).
+    Sent(u32),
+    /// A delivery permit granted under [`Plan::permits`], by its sequence.
+    Permit(u64),
+    /// The receipt that settled a permit: its sequence and its outcome.
+    Receipt(u64, String),
     Rdtsc,
     Cpuid,
     /// An attempt of the marker's callback.
@@ -397,6 +425,13 @@ struct Log {
     events: Mutex<Vec<Event>>,
     timer: Latch,
     sent: Latch,
+    /// The `tgkill`s [`Event::Sent`] has counted.
+    sends: std::sync::atomic::AtomicU32,
+    /// [`Plan::permits`], and the signal control it takes.
+    permits: bool,
+    control: Mutex<Option<reverie::BackendSignalControl>>,
+    /// The last permit's sequence.
+    permit: AtomicU64,
 }
 
 /// A gate that opens once and stays open.
@@ -429,6 +464,58 @@ impl GlobalTool for Log {
     type Request = Event;
     type Response = ();
 
+    async fn init_global_state(plan: &Plan) -> Self {
+        Self {
+            permits: plan.permits,
+            ..Self::default()
+        }
+    }
+
+    fn install_backend_signal_control(
+        &self,
+        control: Option<reverie::BackendSignalControl>,
+    ) -> Result<reverie::BackendSignalControlMode, reverie::Error> {
+        if !self.permits {
+            return Ok(reverie::BackendSignalControlMode::Unchanged);
+        }
+        *self.control.lock().unwrap() = Some(control.ok_or(Errno::ENOSYS)?);
+        Ok(reverie::BackendSignalControlMode::ToolControlled)
+    }
+
+    fn skip_empty_signal_boundaries(&self) -> bool {
+        self.permits
+    }
+
+    fn authorize_backend_signal_boundary(
+        &self,
+        task: reverie::SignalTaskIdentity,
+    ) -> Result<Option<reverie::SignalDeliveryPermit>, reverie::Error> {
+        let Some(control) = self.control.lock().unwrap().clone() else {
+            return Ok(None);
+        };
+        let sequence = self.permit.fetch_add(1, Ordering::SeqCst) + 1;
+        let permit = reverie::SignalDeliveryPermit {
+            task,
+            sequence,
+            site: None,
+        };
+        control.process.reserve_delivery(permit)?;
+        self.events.lock().unwrap().push(Event::Permit(sequence));
+        Ok(Some(permit))
+    }
+
+    async fn on_backend_signal_boundary(
+        &self,
+        receipt: reverie::SignalBoundaryReceipt,
+    ) -> Result<(), reverie::Error> {
+        let outcome = format!("{:?}", receipt.outcome);
+        self.events
+            .lock()
+            .unwrap()
+            .push(Event::Receipt(receipt.permit.sequence, outcome));
+        Ok(())
+    }
+
     async fn receive_rpc(&self, _from: Pid, event: Event) {
         let latch = |gate| match gate {
             Gate::Timer => &self.timer,
@@ -437,6 +524,11 @@ impl GlobalTool for Log {
         match event {
             Event::Open(gate) => latch(gate).open(),
             Event::Wait(gate) => latch(gate).wait().await,
+            Event::Sent(needed) => {
+                if self.sends.fetch_add(1, Ordering::SeqCst) + 1 >= needed {
+                    self.sent.open();
+                }
+            }
             event => self.events.lock().unwrap().push(event),
         }
     }
@@ -639,7 +731,7 @@ impl Tool for TimerTool {
                     guest.send_rpc(Event::Wait(Gate::Timer)).await;
                 }
                 let sent = guest.inject(syscall).await;
-                guest.send_rpc(Event::Open(Gate::Sent)).await;
+                guest.send_rpc(Event::Sent(plan.sends.max(1))).await;
                 return Ok(sent?);
             }
             (_, Sysno::getpid) if plan.rearm_at_getpid.is_some() => {
@@ -665,6 +757,22 @@ impl Tool for TimerTool {
         }
         if plan.signal_registers {
             report_registers(guest).await;
+        }
+        if let Some(bases) = plan.bases_at_signals {
+            let registers = guest.regs().await;
+            let set = match signal {
+                Signal::SIGUSR1 => Some((bases[0], registers.r13)),
+                Signal::SIGUSR2 => Some((bases[1], registers.r14)),
+                _ => None,
+            };
+            if let Some((base, address)) = set {
+                let command = match base {
+                    SegmentBase::Fs => ArchPrctlCmd::ARCH_SET_FS(address),
+                    SegmentBase::Gs => ArchPrctlCmd::ARCH_SET_GS(address),
+                };
+                let set = guest.inject(ArchPrctl::new().with_cmd(command)).await;
+                assert_eq!(set, Ok(0), "{base:?} {address:#x}");
+            }
         }
         if plan.self_signal_at_fault && signal == Signal::SIGSEGV {
             let (pid, tid) = (guest.pid().as_raw(), guest.tid().as_raw());
@@ -3338,4 +3446,1937 @@ fn a_frame_after_a_null_fpregs_return_carries_the_cpus_mxcsr_mask() {
             "{name}: {record:x?}, native {native:x?}"
         );
     }
+}
+
+// Every eligible signal at one return to user mode
+// (<https://github.com/rrnewton/reverie/issues/1188>).
+//
+// Linux's `exit_to_user_mode_loop` calls `arch_do_signal_or_restart` again
+// while a signal is pending that the mask leaves unblocked: each frame goes on
+// top of the last, so the handler of the last signal selected runs first, and
+// its frame saves the handler of the frame below at its first instruction. The
+// guests below make two or more signals eligible at one return, at each of the
+// backend's delivery points, and log what every handler finds at its first
+// instruction. Each log is compared with the same binary's natively, run under
+// a minimal ptrace tracer (see [`traced_native`]), which stops the guest where a
+// Tool's signal hook runs.
+
+/// Quads in one entry of a stacked-signal guest's log (see [`record_entry`]);
+/// [`q`] names them.
+const ENTRY_QUADS: usize = 40;
+/// Entries a stacked-signal guest's log holds.
+const MAX_ENTRIES: usize = 8;
+/// Quads before the entries: their count, the signal mask and the alternate
+/// stack (sp, flags, size) once the handlers have returned, the alternate
+/// stack as [`QUERY_STACK`] found it, if the guest ran it (zeros otherwise),
+/// and [`RESULTS`] syscall results the guest kept with [`keep_result`].
+const HEADER_QUADS: usize = 8 + RESULTS;
+/// The syscall results a stacked-signal guest can keep in its header.
+const RESULTS: usize = 4;
+/// The bytes a stacked-signal guest writes to stdout before it exits.
+const LOG_BYTES: usize = 8 * (HEADER_QUADS + MAX_ENTRIES * ENTRY_QUADS);
+
+/// The quads of a log entry: what the handler's registers held at its first
+/// instruction (rdi, rsp, rsi, rdx, rflags and its own address), and then what
+/// its siginfo and ucontext hold.
+mod q {
+    pub const SIGNAL: usize = 0;
+    pub const ENTRY_RSP: usize = 1;
+    pub const ENTRY_RSI: usize = 2;
+    pub const ENTRY_RDX: usize = 3;
+    pub const ENTRY_RFLAGS: usize = 4;
+    pub const HANDLER: usize = 5;
+    pub const SI_SIGNO: usize = 6;
+    pub const SI_CODE: usize = 7;
+    pub const UC_FLAGS: usize = 8;
+    pub const UC_LINK: usize = 9;
+    pub const SS_SP: usize = 10;
+    pub const SS_FLAGS: usize = 11;
+    pub const SS_SIZE: usize = 12;
+    pub const RDI: usize = 13;
+    pub const RSI: usize = 14;
+    pub const RBP: usize = 15;
+    pub const RBX: usize = 16;
+    pub const RDX: usize = 17;
+    pub const RAX: usize = 18;
+    pub const RCX: usize = 19;
+    pub const RSP: usize = 20;
+    pub const RIP: usize = 21;
+    pub const EFLAGS: usize = 22;
+    pub const ERR: usize = 23;
+    pub const TRAPNO: usize = 24;
+    pub const OLDMASK: usize = 25;
+    pub const CR2: usize = 26;
+    pub const SIGMASK: usize = 27;
+    pub const R12: usize = 28;
+    pub const MXCSR: usize = 29;
+    /// The x87 control word, then the status word at bit 16 and the
+    /// abridged tag word at bit 32.
+    pub const X87: usize = 30;
+    pub const XSTATE_BV: usize = 31;
+    /// The low quad of XMM5.
+    pub const XMM5: usize = 32;
+}
+
+/// Every logged quad a stacked-signal test compares between runs, by name.
+/// The handler's rsp, rsi and rdx at its first instruction are addresses that
+/// the run's signal-frame size decides, so they are compared only through the
+/// frames that saved them (see [`comparable`]).
+const COMPARED: [(&str, usize); 30] = [
+    ("signal", q::SIGNAL),
+    ("entry rflags", q::ENTRY_RFLAGS),
+    ("handler", q::HANDLER),
+    ("si_signo", q::SI_SIGNO),
+    ("si_code", q::SI_CODE),
+    ("uc_flags", q::UC_FLAGS),
+    ("uc_link", q::UC_LINK),
+    ("ss_sp", q::SS_SP),
+    ("ss_flags", q::SS_FLAGS),
+    ("ss_size", q::SS_SIZE),
+    ("rdi", q::RDI),
+    ("rsi", q::RSI),
+    ("rbp", q::RBP),
+    ("rbx", q::RBX),
+    ("rdx", q::RDX),
+    ("rax", q::RAX),
+    ("rcx", q::RCX),
+    ("rsp", q::RSP),
+    ("rip", q::RIP),
+    ("eflags", q::EFLAGS),
+    ("err", q::ERR),
+    ("trapno", q::TRAPNO),
+    ("oldmask", q::OLDMASK),
+    ("cr2", q::CR2),
+    ("uc_sigmask", q::SIGMASK),
+    ("r12", q::R12),
+    ("mxcsr", q::MXCSR),
+    ("x87", q::X87),
+    ("xstate_bv", q::XSTATE_BV),
+    ("xmm5", q::XMM5),
+];
+
+/// Assembly, at the first instruction of the handler for `signal`, that
+/// appends an entry to `log` and counts it in the first header quad. It reads
+/// rflags first, before any instruction that sets flags, and uses rax, rcx,
+/// r8 to r11 and the stack below rsp, all free in a handler that returns
+/// through rt_sigreturn.
+fn record_entry(signal: i32) -> String {
+    let at = |quad: usize| 8 * quad;
+    let mut code = format!(
+        "pushfq\npop %r8\n\
+         mov header(%rip),%r11\ncmp ${MAX_ENTRIES},%r11\njae 8f\nlea 1(%r11),%r10\nmov %r10,header(%rip)\n\
+         imul ${},%r11,%r9\nlea log(%rip),%r10\nadd %r10,%r9\nmov %r8,{}(%r9)\n\
+         mov %rdi,{}(%r9)\nmov %rsp,{}(%r9)\nmov %rsi,{}(%r9)\nmov %rdx,{}(%r9)\n\
+         lea handler_{signal}(%rip),%rax\nmov %rax,{}(%r9)\n",
+        8 * ENTRY_QUADS,
+        at(q::ENTRY_RFLAGS),
+        at(q::SIGNAL),
+        at(q::ENTRY_RSP),
+        at(q::ENTRY_RSI),
+        at(q::ENTRY_RDX),
+        at(q::HANDLER),
+    );
+    // Quads of the siginfo (rsi) and the ucontext (rdx). The 32-bit fields
+    // are read alone: Linux leaves the padding after them unwritten.
+    let quads = [
+        ("0(%rsi)", q::SI_SIGNO),
+        ("0(%rdx)", q::UC_FLAGS),
+        ("8(%rdx)", q::UC_LINK),
+        ("16(%rdx)", q::SS_SP),
+        ("32(%rdx)", q::SS_SIZE),
+        ("104(%rdx)", q::RDI),
+        ("112(%rdx)", q::RSI),
+        ("120(%rdx)", q::RBP),
+        ("128(%rdx)", q::RBX),
+        ("136(%rdx)", q::RDX),
+        ("144(%rdx)", q::RAX),
+        ("152(%rdx)", q::RCX),
+        ("160(%rdx)", q::RSP),
+        ("168(%rdx)", q::RIP),
+        ("176(%rdx)", q::EFLAGS),
+        ("192(%rdx)", q::ERR),
+        ("200(%rdx)", q::TRAPNO),
+        ("208(%rdx)", q::OLDMASK),
+        ("216(%rdx)", q::CR2),
+        ("296(%rdx)", q::SIGMASK),
+        ("72(%rdx)", q::R12),
+    ];
+    for (source, quad) in quads {
+        code += &format!("mov {source},%rax\nmov %rax,{}(%r9)\n", at(quad));
+    }
+    for (source, quad) in [("8(%rsi)", q::SI_CODE), ("24(%rdx)", q::SS_FLAGS)] {
+        code += &format!("movl {source},%eax\nmov %rax,{}(%r9)\n", at(quad));
+    }
+    // The frame's FPU state, which uc_mcontext.fpregs points to.
+    code += &format!(
+        "mov 224(%rdx),%r8\nmovl 24(%r8),%eax\nmov %rax,{}(%r9)\n\
+         movzwl 0(%r8),%eax\nmovzwl 2(%r8),%ecx\nshl $16,%rcx\nor %rcx,%rax\n\
+         movzbl 4(%r8),%ecx\nshl $32,%rcx\nor %rcx,%rax\nmov %rax,{}(%r9)\n\
+         mov 512(%r8),%rax\nmov %rax,{}(%r9)\nmov 240(%r8),%rax\nmov %rax,{}(%r9)\n8:\n",
+        at(q::MXCSR),
+        at(q::X87),
+        at(q::XSTATE_BV),
+        at(q::XMM5),
+    );
+    code
+}
+
+/// A signal handler of a stacked-signal guest.
+struct Handler {
+    signal: i32,
+    /// sigaction flags besides SA_SIGINFO and SA_RESTORER.
+    flags: u64,
+    /// sa_mask.
+    mask: u64,
+    /// What the handler runs after it logs its entry, before it returns.
+    actions: String,
+}
+
+impl Handler {
+    fn new(signal: i32) -> Self {
+        Self {
+            signal,
+            flags: 0,
+            mask: 0,
+            actions: String::new(),
+        }
+    }
+
+    fn flags(self, flags: u64) -> Self {
+        Self { flags, ..self }
+    }
+
+    fn mask(self, mask: u64) -> Self {
+        Self { mask, ..self }
+    }
+
+    fn actions(self, actions: &str) -> Self {
+        Self {
+            actions: actions.to_owned(),
+            ..self
+        }
+    }
+}
+
+const SA_ONSTACK: u64 = 0x0800_0000;
+const SA_NODEFER: u64 = 0x4000_0000;
+const SS_AUTODISARM: u64 = 1 << 31;
+const SS_DISABLE: u64 = 2;
+
+/// The bit of `signal` in a signal mask.
+const fn bit(signal: i32) -> u64 {
+    1 << (signal - 1)
+}
+
+/// Values the stacked-signal guests keep in rbx and rbp, which their frames
+/// then save.
+const RBX: u64 = 0x0123_4567_89ab_cdef;
+const RBP: u64 = 0x1122_3344_5566_7788;
+
+/// The MXCSR and XMM5 low quad a stacked-signal guest loads with
+/// [`LOAD_FPU`]: the interrupted state that the first frame saves.
+const LOADED_MXCSR: u64 = 0x7f80;
+const LOADED_XMM5: u64 = 0x1111_1111_1111_1111;
+const LOAD_FPU: &str = "ldmxcsr loaded_mxcsr(%rip)\nmovdqu loaded_xmm5(%rip),%xmm5\n";
+
+/// A static guest that keeps its argument count in `argc`, switches to its own
+/// stack, sets rbx and rbp to [`RBX`] and [`RBP`], disables the alternate stack
+/// (unless it has arguments: an image the guest itself executed), installs
+/// `handlers` (exiting with status 1 if that or an install fails), keeps its
+/// pid and tid in `pid` and `tid`, runs `body`, writes its log ([`StackedLog`])
+/// to stdout and exits with status 0. `data` adds to its data, and `bss` to its
+/// zeroed memory.
+///
+/// The guest disables the alternate stack itself because a frame's uc_stack
+/// saves the stack's flags as the task holds them, and exec clears only the
+/// stack's address and size (`begin_new_exec` in fs/exec.c): natively a guest
+/// would otherwise keep its launcher's flags (0 from a Rust test thread, which
+/// has an alternate stack of its own), while KVM starts every guest with
+/// Linux's initial SS_DISABLE.
+fn stacked_program(handlers: &[Handler], body: &str, data: &str, bss: &str) -> Program {
+    let install: String = handlers
+        .iter()
+        .map(|handler| {
+            format!(
+                "mov ${s},%edi\nlea action_{s}(%rip),%rsi\nxor %edx,%edx\nmov $8,%r10d\nmov $13,%eax\n\
+                 syscall\ntest %rax,%rax\njnz 99f\n",
+                s = handler.signal
+            )
+        })
+        .collect();
+    let code: String = handlers
+        .iter()
+        .map(|handler| {
+            format!(
+                "handler_{}:\n{}{}ret\n",
+                handler.signal,
+                record_entry(handler.signal),
+                handler.actions
+            )
+        })
+        .collect();
+    let actions: String = handlers
+        .iter()
+        .map(|handler| {
+            format!(
+                "action_{s}: .quad handler_{s}, {:#x}, restorer, {:#x}\n",
+                HANDLER_FLAGS | handler.flags,
+                handler.mask,
+                s = handler.signal
+            )
+        })
+        .collect();
+    Program::new(&format!(
+        "mov (%rsp),%rax\nmov %rax,argc(%rip)\n\
+         lea stack_end(%rip),%rsp\nmovabs ${RBX:#x},%rbx\nmovabs ${RBP:#x},%rbp\n\
+         cmpq $1,argc(%rip)\njne 97f\n\
+         lea no_altstack(%rip),%rdi\nxor %esi,%esi\nmov $131,%eax\nsyscall\ntest %rax,%rax\njnz 99f\n\
+         97:\n{install}\
+         mov $39,%eax\nsyscall\nmov %rax,pid(%rip)\nmov $186,%eax\nsyscall\nmov %rax,tid(%rip)\n\
+         {body}\
+         xor %edi,%edi\nxor %esi,%esi\nlea header+8(%rip),%rdx\nmov $8,%r10d\nmov $14,%eax\nsyscall\n\
+         xor %edi,%edi\nlea header+16(%rip),%rsi\nmov $131,%eax\nsyscall\n\
+         mov $1,%edi\nlea header(%rip),%rsi\nmov ${LOG_BYTES},%edx\nmov $1,%eax\nsyscall\n\
+         xor %edi,%edi\nmov $231,%eax\nsyscall\nud2\n\
+         99: mov $1,%edi\nmov $231,%eax\nsyscall\nud2\n\
+         {code}\
+         restorer: mov $15,%eax\nsyscall\nud2\n\
+         .data\n.balign 8\n{actions}pid: .quad 0\ntid: .quad 0\nargc: .quad 0\n\
+         no_altstack: .quad 0\n.long {SS_DISABLE}, 0\n.quad 0\n\
+         loaded_mxcsr: .long {LOADED_MXCSR:#x}\n.balign 16\nloaded_xmm5: .quad {LOADED_XMM5:#x}, 0\n\
+         {data}\n.balign 64\nheader: .zero {}\nlog: .zero {}\n\
+         .bss\n.balign 64\nstack: .skip 65536\nstack_end:\n{bss}\n",
+        8 * HEADER_QUADS,
+        8 * MAX_ENTRIES * ENTRY_QUADS,
+    ))
+}
+
+/// rt_sigprocmask(`how`, the mask at label `mask`, NULL, 8).
+fn sigprocmask(how: i32, mask: &str) -> String {
+    format!(
+        "mov ${how},%edi\nlea {mask}(%rip),%rsi\nxor %edx,%edx\nmov $8,%r10d\nmov $14,%eax\nsyscall\n"
+    )
+}
+
+/// tgkill of `signal` to the guest's main thread.
+fn tgkill_self(signal: i32) -> String {
+    format!("mov pid(%rip),%rdi\nmov tid(%rip),%rsi\nmov ${signal},%edx\nmov $234,%eax\nsyscall\n")
+}
+
+/// kill of `signal` to the guest's process.
+fn kill_self(signal: i32) -> String {
+    format!("mov pid(%rip),%rdi\nmov ${signal},%esi\nmov $62,%eax\nsyscall\n")
+}
+
+/// Loads [`LOAD_FPU`], blocks the signals at label `pending`, makes them
+/// pending with `sends`, and unblocks them with an rt_sigprocmask whose return
+/// r12 marks.
+fn unblocked_at_syscall_return(sends: &str) -> String {
+    format!(
+        "{LOAD_FPU}{}{sends}lea 1f(%rip),%r12\n{}1:\n",
+        sigprocmask(libc::SIG_BLOCK, "pending"),
+        sigprocmask(libc::SIG_UNBLOCK, "pending")
+    )
+}
+
+/// sigaltstack(NULL, the header's last three quads): the alternate stack as
+/// the guest finds it there, which [`StackedLog::queried_stack`] reads.
+const QUERY_STACK: &str = "xor %edi,%edi\nlea header+40(%rip),%rsi\nmov $131,%eax\nsyscall\n";
+
+/// Keeps rax, a syscall's result, as result `index` of the guest's header
+/// ([`StackedLog::results`]).
+fn keep_result(index: usize) -> String {
+    assert!(index < RESULTS);
+    format!("mov %rax,header+{}(%rip)\n", 8 * (8 + index))
+}
+
+/// sigaltstack(the stack_t at `label`, NULL), its result kept as result
+/// `index`.
+fn set_altstack(label: &str, index: usize) -> String {
+    format!(
+        "lea {label}(%rip),%rdi\nxor %esi,%esi\nmov $131,%eax\nsyscall\n{}",
+        keep_result(index)
+    )
+}
+
+/// A stack_t at `label`: `sp` (an address or label), `flags` and `size`.
+fn stack_t(label: &str, sp: &str, flags: u64, size: u64) -> String {
+    format!("{label}: .quad {sp}\n.long {flags:#x}, 0\n.quad {size}\n")
+}
+
+/// Installs the alternate stack that [`altstack_data`] describes, exiting with
+/// status 1 if that fails.
+const ARM_ALTSTACK: &str = "lea altstack_desc(%rip),%rdi\nxor %esi,%esi\nmov $131,%eax\nsyscall\n\
+     test %rax,%rax\njnz 99f\n";
+
+/// The stack_t of a 64 KiB alternate stack at [`ALTSTACK`] with `flags`.
+fn altstack_data(flags: u64) -> String {
+    format!("altstack_desc: .quad altstack\n.long {flags:#x}, 0\n.quad 65536\n")
+}
+
+/// The memory of the alternate stack of [`altstack_data`].
+const ALTSTACK: &str = ".balign 64\naltstack: .skip 65536\n";
+
+/// One handler's entry in a stacked-signal guest's log.
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct LoggedEntry([u64; ENTRY_QUADS]);
+
+impl std::fmt::Debug for LoggedEntry {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut map = f.debug_map();
+        for (name, quad) in [
+            ("entry rsp", q::ENTRY_RSP),
+            ("entry rsi", q::ENTRY_RSI),
+            ("entry rdx", q::ENTRY_RDX),
+        ]
+        .into_iter()
+        .chain(COMPARED)
+        {
+            map.entry(&name, &format_args!("{:#x}", self.0[quad]));
+        }
+        map.finish()
+    }
+}
+
+/// What a stacked-signal guest writes to stdout before it exits.
+#[derive(Debug)]
+struct StackedLog {
+    entries: Vec<LoggedEntry>,
+    /// The signal mask once every handler has returned.
+    final_mask: u64,
+    /// The alternate stack then: sp, flags and size.
+    final_stack: [u64; 3],
+    /// The alternate stack where the guest ran [`QUERY_STACK`]: sp, flags
+    /// and size, or zeros.
+    queried_stack: [u64; 3],
+    /// The syscall results the guest kept with [`keep_result`], or zeros.
+    results: [u64; RESULTS],
+}
+
+impl StackedLog {
+    fn read(stdout: &[u8]) -> Self {
+        assert_eq!(stdout.len(), LOG_BYTES, "{stdout:?}");
+        let quad = |i: usize| u64::from_ne_bytes(stdout[8 * i..8 * i + 8].try_into().unwrap());
+        let count = usize::try_from(quad(0)).unwrap();
+        assert!(count <= MAX_ENTRIES, "{count} entries");
+        let entries = (0..count)
+            .map(|entry| {
+                let first = HEADER_QUADS + entry * ENTRY_QUADS;
+                LoggedEntry(std::array::from_fn(|i| quad(first + i)))
+            })
+            .collect();
+        Self {
+            entries,
+            final_mask: quad(1),
+            final_stack: [quad(2), quad(3) & u64::from(u32::MAX), quad(4)],
+            queried_stack: [quad(5), quad(6) & u64::from(u32::MAX), quad(7)],
+            results: std::array::from_fn(|i| quad(8 + i)),
+        }
+    }
+
+    /// The signal of each entry, in the order the handlers ran.
+    fn signals(&self) -> Vec<i32> {
+        self.entries
+            .iter()
+            .map(|entry| entry.0[q::SIGNAL] as i32)
+            .collect()
+    }
+
+    fn entry(&self, index: usize) -> &[u64; ENTRY_QUADS] {
+        &self.entries[index].0
+    }
+}
+
+/// A logged quad, as the runs compare it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Seen {
+    Value(u64),
+    /// The value the handler of this entry found in this register at its
+    /// first instruction: an address that the run's frame size decides.
+    EntryOf(usize, &'static str),
+    /// Left out of the comparison: where an interrupt landed.
+    Varies,
+}
+
+/// The entries of `log` as the runs compare them: every [`COMPARED`] quad,
+/// with a saved rsp, rsi or rdx that some handler found in that register at
+/// its first instruction written as that entry, XSTATE_BV cut to the x87, SSE
+/// and AVX bits (the native frame adds what the host has, such as PKRU), and
+/// the quads `varies` names left out. Every interrupted context the guests
+/// compare is a call that takes no pid or tid, which differ between runs.
+fn comparable(
+    log: &StackedLog,
+    varies: &dyn Fn(usize, usize) -> bool,
+) -> Vec<Vec<(&'static str, Seen)>> {
+    let entry_of = |value: u64, register: usize| {
+        let (name, at) = match register {
+            q::RSP => ("rsp", q::ENTRY_RSP),
+            q::RSI => ("rsi", q::ENTRY_RSI),
+            q::RDX => ("rdx", q::ENTRY_RDX),
+            _ => return None,
+        };
+        log.entries
+            .iter()
+            .position(|entry| entry.0[at] == value)
+            .map(|index| Seen::EntryOf(index, name))
+    };
+    log.entries
+        .iter()
+        .enumerate()
+        .map(|(index, entry)| {
+            COMPARED
+                .iter()
+                .map(|&(name, quad)| {
+                    let value = entry.0[quad];
+                    let seen = if varies(index, quad) {
+                        Seen::Varies
+                    } else if quad == q::XSTATE_BV {
+                        Seen::Value(value & 0b111)
+                    } else {
+                        entry_of(value, quad).unwrap_or(Seen::Value(value))
+                    };
+                    (name, seen)
+                })
+                .collect()
+        })
+        .collect()
+}
+
+/// Checks that the frame of entry `top` went on top of entry `below`'s at the
+/// same return, as Linux builds it: it saved `below`'s handler at its first
+/// instruction (rip the handler, rsp its frame, rdi, rsi and rdx its
+/// arguments, rax 0, its rflags) and the FPU state the delivery below
+/// installed, Linux's initial state, and it lies below that frame and its red
+/// zone.
+fn assert_stacked_on(log: &StackedLog, top: usize, below: usize, context: &str) {
+    let (t, b) = (log.entry(top), log.entry(below));
+    let context = format!("{context}: entry {top} on entry {below}: {log:#x?}");
+    assert_eq!(
+        [
+            t[q::RIP],
+            t[q::RSP],
+            t[q::RDI],
+            t[q::RSI],
+            t[q::RDX],
+            t[q::RAX],
+            t[q::EFLAGS]
+        ],
+        [
+            b[q::HANDLER],
+            b[q::ENTRY_RSP],
+            b[q::SIGNAL],
+            b[q::ENTRY_RSI],
+            b[q::ENTRY_RDX],
+            0,
+            b[q::ENTRY_RFLAGS]
+        ],
+        "{context}"
+    );
+    assert_eq!(
+        [t[q::MXCSR], t[q::X87], t[q::XSTATE_BV] & 0b111, t[q::XMM5]],
+        [0x1f80, 0x037f, 0b011, 0],
+        "{context}"
+    );
+    assert!(t[q::ENTRY_RSP] + 128 < b[q::ENTRY_RSP], "{context}");
+}
+
+/// Checks that entry `index` saved the interrupted code that loaded
+/// [`LOAD_FPU`], at the instruction r12 marks, with rbx and rbp intact.
+fn assert_interrupted_at_mark(log: &StackedLog, index: usize, context: &str) {
+    let e = log.entry(index);
+    let context = format!("{context}: entry {index}: {log:#x?}");
+    assert_eq!(e[q::RIP], e[q::R12], "{context}");
+    assert_eq!([e[q::RBX], e[q::RBP]], [RBX, RBP], "{context}");
+    assert_eq!(
+        [e[q::MXCSR], e[q::XMM5], e[q::XSTATE_BV] & 0b111],
+        [LOADED_MXCSR, LOADED_XMM5, 0b011],
+        "{context}"
+    );
+}
+
+/// How [`traced_native`] answers a stop of the native guest. A Tool's signal
+/// hook runs where ptrace stops a guest for a signal, so the tracer can put a
+/// native run in the state a Tool's callbacks or the backend's own delivery
+/// points put a KVM run in, without depending on the host scheduler.
+#[derive(Clone, Copy, Debug)]
+enum Tracing {
+    /// Delivers each signal at its stop.
+    Deliver,
+    /// At the main thread's first stop for `first`, waits until `then` is
+    /// pending for it as well, and delivers `first`: as a Tool's timer
+    /// callback holds a thread while a sibling sends it both.
+    HoldUntilPending { first: i32, then: i32 },
+    /// Suppresses `deferred` at the main thread's stops until it stops for
+    /// `fault`, then sends `deferred` to it again and delivers `fault`, so
+    /// that `deferred` is pending at the fault's return: as when a sibling
+    /// sends it to a thread that runs no syscall until it faults, under a
+    /// backend with no preemption.
+    DeferUntil { deferred: i32, fault: i32 },
+    /// Holds each new thread at its first stop, before its first
+    /// instruction, until both `signals` have reached it (pending, or the
+    /// one that stop dequeued): as a Tool that holds a new thread's start
+    /// until another thread has sent them.
+    HoldNewThread { signals: [i32; 2] },
+}
+
+/// A native run under [`traced_native`]: its stdout, and the signals the
+/// tracer delivered, in the order of their stops.
+struct TracedRun {
+    stdout: Vec<u8>,
+    delivered: Vec<i32>,
+    /// The synthetic SIGSTOPs of new threads that the tracer suppressed.
+    synthetic_stops: usize,
+}
+
+/// What PTRACE_GETSIGINFO shows for a stop that is not a ptrace event.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum StopInfo {
+    /// A signal-delivery stop: the signal, its si_code and its si_pid.
+    Signal { signo: i32, code: i32, sender: i32 },
+    /// A group-stop report, which has no siginfo (EINVAL).
+    GroupStop,
+}
+
+/// Reads the siginfo of thread `tid`'s stop.
+fn stop_info(tid: libc::pid_t) -> StopInfo {
+    // SAFETY: an all-zero siginfo_t is valid, and PTRACE_GETSIGINFO writes
+    // one siginfo_t into it.
+    let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
+    let got = unsafe {
+        libc::ptrace(
+            libc::PTRACE_GETSIGINFO,
+            tid,
+            0,
+            &mut info as *mut libc::siginfo_t,
+        )
+    };
+    if got == 0 {
+        StopInfo::Signal {
+            signo: info.si_signo,
+            code: info.si_code,
+            // SAFETY: the kill, tkill and queue layouts, the only ones
+            // classify_sigstop accepts a sender from, hold si_pid here.
+            sender: unsafe { info.si_pid() },
+        }
+    } else {
+        let error = std::io::Error::last_os_error();
+        assert_eq!(
+            error.raw_os_error(),
+            Some(libc::EINVAL),
+            "PTRACE_GETSIGINFO of thread {tid}: {error}"
+        );
+        StopInfo::GroupStop
+    }
+}
+
+/// What the native tracer does with a SIGSTOP stop.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SigstopAction {
+    /// Suppresses the SIGSTOP the tracer's own PTRACE_O_TRACECLONE queued for
+    /// a new thread, which no guest sent.
+    SuppressSynthetic,
+    /// Forwards a SIGSTOP that a task sent, as any other signal.
+    Forward,
+}
+
+/// Classifies a SIGSTOP stop of thread `tid` of process `pid` by where the
+/// signal came from, its si_code and si_pid. PTRACE_O_TRACECLONE adds SIGSTOP
+/// to a new thread's pending set with no siginfo (`ptrace_init_task`,
+/// <https://github.com/gregkh/linux/blob/v7.1.3/include/linux/ptrace.h#L200-L216>),
+/// and `collect_signal` reports a signal with no siginfo as SI_USER from pid
+/// 0 (<https://github.com/gregkh/linux/blob/v7.1.3/kernel/signal.c#L588-L600>),
+/// whenever the thread dequeues it; a signal that a task sent with kill,
+/// tkill, tgkill or rt_sigqueueinfo carries the sender's pid. So the
+/// synthetic stop is known by its provenance, not by being a thread's first
+/// SIGSTOP, and a sent SIGSTOP is forwarded even when it is. Anything else is
+/// refused, as is a second synthetic stop or one for the main thread, which
+/// the tracer never gets one for. A SIGSTOP a task sends while a new thread's
+/// synthetic one is still pending merges into it (`legacy_queue`,
+/// <https://github.com/gregkh/linux/blob/v7.1.3/kernel/signal.c#L1035-L1038>),
+/// so the kernel itself keeps no trace of that send.
+fn classify_sigstop(
+    tid: libc::pid_t,
+    pid: libc::pid_t,
+    code: i32,
+    sender: libc::pid_t,
+    synthetic: &[libc::pid_t],
+) -> Result<SigstopAction, String> {
+    match (code, sender) {
+        (libc::SI_USER, 0) if tid != pid && !synthetic.contains(&tid) => {
+            Ok(SigstopAction::SuppressSynthetic)
+        }
+        (libc::SI_USER, 0) if tid == pid => {
+            Err("SI_USER from pid 0 for the main thread".to_owned())
+        }
+        (libc::SI_USER, 0) => Err("a second SI_USER stop from pid 0".to_owned()),
+        (libc::SI_USER | libc::SI_TKILL | libc::SI_QUEUE, sender) if sender > 0 => {
+            Ok(SigstopAction::Forward)
+        }
+        (code, sender) => Err(format!("si_code {code} from pid {sender}")),
+    }
+}
+
+/// Waits until every one of `signals` is pending for thread `tid` of process
+/// `pid`, thread-directed or process-wide.
+fn wait_pending(pid: libc::pid_t, tid: libc::pid_t, signals: &[i32]) {
+    let path = format!("/proc/{pid}/task/{tid}/status");
+    let wanted = signals.iter().fold(0, |mask, &signal| mask | bit(signal));
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    loop {
+        let status = std::fs::read_to_string(&path).unwrap();
+        let pending = ["SigPnd:", "ShdPnd:"]
+            .iter()
+            .map(|key| {
+                let line = status.lines().find(|line| line.starts_with(key)).unwrap();
+                u64::from_str_radix(line[key.len()..].trim(), 16).unwrap()
+            })
+            .fold(0, |all, set| all | set);
+        if pending & wanted == wanted {
+            return;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "{signals:?} never became pending: {pending:#x}"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+}
+
+/// Runs `program` natively, the Linux reference, under a ptrace tracer that
+/// answers its stops as `tracing` says, follows its threads, and checks that it
+/// exits with status 0 and writes nothing to stderr. A tracer changes no frame
+/// Linux builds: it only decides, at each signal's stop, whether and when the
+/// signal is delivered.
+fn traced_native(program: &Program, tracing: Tracing) -> TracedRun {
+    use std::io::Read;
+    use std::os::unix::process::CommandExt;
+    let mut command = std::process::Command::new(&program.executable);
+    command
+        .current_dir(&program.directory)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+    // SAFETY: ptrace(PTRACE_TRACEME) is async-signal-safe and touches no
+    // memory the parent shares.
+    unsafe {
+        command.pre_exec(|| match libc::ptrace(libc::PTRACE_TRACEME, 0, 0, 0) {
+            0 => Ok(()),
+            _ => Err(std::io::Error::last_os_error()),
+        });
+    }
+    let mut child = command.spawn().unwrap();
+    let pid = child.id() as libc::pid_t;
+    let mut status = 0;
+    // SAFETY: plain wait and ptrace calls on this test's own tracee.
+    let resume = |tid: libc::pid_t, signal: i32| {
+        let resumed = unsafe { libc::ptrace(libc::PTRACE_CONT, tid, 0, signal as libc::c_long) };
+        assert_eq!(resumed, 0, "{}", std::io::Error::last_os_error());
+    };
+    // The stop at exec.
+    assert_eq!(
+        unsafe { libc::waitpid(pid, &mut status, libc::__WALL) },
+        pid
+    );
+    assert!(
+        libc::WIFSTOPPED(status) && libc::WSTOPSIG(status) == libc::SIGTRAP,
+        "{status:#x}"
+    );
+    // An exec of the guest's own stops as an event, not as a SIGTRAP to
+    // deliver.
+    let options = libc::PTRACE_O_TRACECLONE | libc::PTRACE_O_TRACEEXEC | libc::PTRACE_O_EXITKILL;
+    assert_eq!(
+        unsafe { libc::ptrace(libc::PTRACE_SETOPTIONS, pid, 0, options) },
+        0
+    );
+    resume(pid, 0);
+    let mut threads = vec![pid];
+    // The cloned threads whose synthetic SIGSTOP the tracer has suppressed.
+    let mut synthetic = Vec::new();
+    // Whether the tracer has forwarded a stop signal, which group-stop
+    // reports then follow.
+    let mut stop_forwarded = false;
+    let mut delivered = Vec::new();
+    let (mut held, mut faulted) = (false, false);
+    let ending = loop {
+        let tid = unsafe { libc::waitpid(-1, &mut status, libc::__WALL) };
+        assert!(tid > 0, "waitpid: {}", std::io::Error::last_os_error());
+        if libc::WIFEXITED(status) || libc::WIFSIGNALED(status) {
+            if tid == pid {
+                break status;
+            }
+            continue;
+        }
+        assert!(libc::WIFSTOPPED(status), "{status:#x}");
+        let signal = libc::WSTOPSIG(status);
+        if !threads.contains(&tid) {
+            threads.push(tid);
+            // A new thread's first stop, before its first instruction.
+            if let Tracing::HoldNewThread { signals } = tracing {
+                // This stop dequeued its signal; the others must be pending.
+                let others: Vec<i32> = signals.into_iter().filter(|&s| s != signal).collect();
+                wait_pending(pid, tid, &others);
+            }
+        }
+        // A clone or exec event stop has no siginfo of its own to read.
+        let info = (status >> 16 == 0).then(|| stop_info(tid));
+        let deliver = if info.is_none() {
+            // A clone or exec event stop.
+            0
+        } else if let Some(StopInfo::GroupStop) = info {
+            // A group-stop report: it delivers nothing, and resuming from it
+            // continues the thread.
+            assert!(
+                stop_forwarded,
+                "a group-stop of thread {tid} with no stop signal forwarded"
+            );
+            0
+        } else if let Some(StopInfo::Signal {
+            signo,
+            code,
+            sender,
+        }) = info
+            && signal == libc::SIGSTOP
+        {
+            assert_eq!(signo, signal, "thread {tid}'s siginfo");
+            match classify_sigstop(tid, pid, code, sender, &synthetic) {
+                Ok(SigstopAction::SuppressSynthetic) => {
+                    synthetic.push(tid);
+                    0
+                }
+                Ok(SigstopAction::Forward) => {
+                    stop_forwarded = true;
+                    signal
+                }
+                Err(why) => panic!("an unclassifiable SIGSTOP stop of thread {tid}: {why}"),
+            }
+        } else {
+            if [libc::SIGTSTP, libc::SIGTTIN, libc::SIGTTOU].contains(&signal) {
+                stop_forwarded = true;
+            }
+            match tracing {
+                Tracing::HoldUntilPending { first, then }
+                    if tid == pid && signal == first && !held =>
+                {
+                    held = true;
+                    wait_pending(pid, tid, &[then]);
+                    signal
+                }
+                Tracing::DeferUntil { deferred, .. }
+                    if tid == pid && signal == deferred && !faulted =>
+                {
+                    0
+                }
+                Tracing::DeferUntil { deferred, fault } if tid == pid && signal == fault => {
+                    faulted = true;
+                    let sent = unsafe { libc::syscall(libc::SYS_tgkill, pid, tid, deferred) };
+                    assert_eq!(sent, 0, "{}", std::io::Error::last_os_error());
+                    signal
+                }
+                _ => signal,
+            }
+        };
+        if deliver != 0 {
+            delivered.push(deliver);
+        }
+        resume(tid, deliver);
+    };
+    let mut stdout = Vec::new();
+    child
+        .stdout
+        .take()
+        .unwrap()
+        .read_to_end(&mut stdout)
+        .unwrap();
+    let mut stderr = Vec::new();
+    child
+        .stderr
+        .take()
+        .unwrap()
+        .read_to_end(&mut stderr)
+        .unwrap();
+    // The tracer has reaped the child: its handle must not wait for it.
+    std::mem::forget(child);
+    assert!(
+        libc::WIFEXITED(ending) && libc::WEXITSTATUS(ending) == 0 && stderr.is_empty(),
+        "native: status {ending:#x}: {}",
+        String::from_utf8_lossy(&stderr)
+    );
+    TracedRun {
+        stdout,
+        delivered,
+        synthetic_stops: synthetic.len(),
+    }
+}
+
+/// The order of the Tool's signal hooks in a run's events.
+fn signal_hooks(events: &[Event]) -> Vec<i32> {
+    events
+        .iter()
+        .filter_map(|event| match event {
+            Event::Signalled { signal, .. } => Some(*signal),
+            _ => None,
+        })
+        .collect()
+}
+
+/// The runs [`stacked_matches_native`] compared.
+struct StackedRuns {
+    /// The native log, for the caller's checks of Linux's frames.
+    native: StackedLog,
+    /// The log under the Tool, and the Tool's events.
+    tool: StackedLog,
+    events: Vec<Event>,
+}
+
+/// Runs `program` natively under `tracing` and on KVM, under the backend's
+/// own runtime when `direct` and under a Tool following `plan` (whose
+/// `deliver` delivers every signal), and checks every KVM log against the
+/// native one ([`comparable`], with `varies`), and the order of the Tool's
+/// signal hooks against the order of the tracer's deliveries.
+fn stacked_matches_native(
+    program: &Program,
+    tracing: Tracing,
+    direct: bool,
+    plan: Plan,
+    varies: &dyn Fn(usize, usize) -> bool,
+) -> StackedRuns {
+    let native = traced_native(program, tracing);
+    let native_log = StackedLog::read(&native.stdout);
+    let expected = comparable(&native_log, varies);
+    if direct {
+        let log = StackedLog::read(&direct_stdout(program));
+        assert_eq!(
+            comparable(&log, varies),
+            expected,
+            "runtime {log:#x?}, native {native_log:#x?}"
+        );
+        assert_eq!(
+            (
+                log.final_mask,
+                log.final_stack,
+                log.queried_stack,
+                log.results
+            ),
+            (
+                native_log.final_mask,
+                native_log.final_stack,
+                native_log.queried_stack,
+                native_log.results
+            ),
+            "runtime"
+        );
+    }
+    let plan = Plan {
+        deliver: true,
+        ..plan
+    };
+    let (events, stdout) = tool_stdout(program, plan);
+    let log = StackedLog::read(&stdout);
+    assert_eq!(
+        comparable(&log, varies),
+        expected,
+        "tool {log:#x?}, native {native_log:#x?}, {events:?}"
+    );
+    assert_eq!(
+        (
+            log.final_mask,
+            log.final_stack,
+            log.queried_stack,
+            log.results
+        ),
+        (
+            native_log.final_mask,
+            native_log.final_stack,
+            native_log.queried_stack,
+            native_log.results
+        ),
+        "tool"
+    );
+    assert_eq!(
+        signal_hooks(&events),
+        native.delivered,
+        "tool hooks against the native tracer's deliveries: {events:?}"
+    );
+    StackedRuns {
+        native: native_log,
+        tool: log,
+        events,
+    }
+}
+
+/// [`stacked_matches_native`] for a guest whose signals all come at syscall
+/// returns: natively, its tracer delivers each signal as it comes, and the
+/// run without a tracer writes the same log; on KVM, under both runtimes.
+/// Returns the native log.
+fn stacked_at_syscall_returns_matches_native(program: &Program) -> StackedLog {
+    let untraced = native_stdout(program);
+    let runs = stacked_matches_native(program, Tracing::Deliver, true, Plan::default(), &|_, _| {
+        false
+    });
+    assert_eq!(
+        StackedLog::read(&untraced).entries,
+        runs.native.entries,
+        "native runs with and without the tracer"
+    );
+    runs.native
+}
+
+const SIGUSR1: i32 = libc::SIGUSR1;
+const SIGUSR2: i32 = libc::SIGUSR2;
+const SIGWINCH: i32 = libc::SIGWINCH;
+
+/// A guest whose SIGUSR1 and SIGUSR2 are pending and blocked when it unblocks
+/// both, with an rt_sigprocmask whose return r12 marks.
+fn pending_pair_program() -> Program {
+    stacked_program(
+        &[Handler::new(SIGUSR1), Handler::new(SIGUSR2)],
+        &unblocked_at_syscall_return(&(tgkill_self(SIGUSR1) + &tgkill_self(SIGUSR2))),
+        &format!("pending: .quad {:#x}\n", bit(SIGUSR1) | bit(SIGUSR2)),
+        "",
+    )
+}
+
+#[test]
+fn two_signals_pending_at_a_syscall_return_stack_their_frames() {
+    if bounded("two_signals_pending_at_a_syscall_return_stack_their_frames") {
+        return;
+    }
+    // SIGUSR1 and SIGUSR2 are pending and blocked; the guest unblocks both.
+    // Linux builds SIGUSR1's frame at that call's return, then SIGUSR2's on
+    // top, under the mask SIGUSR1's delivery left: SIGUSR2's handler runs
+    // first and returns to SIGUSR1's, which returns to the guest.
+    let log = stacked_at_syscall_returns_matches_native(&pending_pair_program());
+    let context = "native";
+    assert_eq!(log.signals(), [SIGUSR2, SIGUSR1], "{log:#x?}");
+    assert_stacked_on(&log, 0, 1, context);
+    assert_interrupted_at_mark(&log, 1, context);
+    let (top, below) = (log.entry(0), log.entry(1));
+    // SIGUSR1's frame saves the mask its call left, none; SIGUSR2's, the
+    // mask SIGUSR1's handler runs under.
+    assert_eq!(
+        [below[q::SIGMASK], top[q::SIGMASK], below[q::RAX]],
+        [0, bit(SIGUSR1), 0],
+        "{log:#x?}"
+    );
+    assert_eq!(log.final_mask, 0, "{log:#x?}");
+}
+
+#[test]
+fn each_stacked_signal_has_its_own_permit_hook_and_receipt() {
+    if bounded("each_stacked_signal_has_its_own_permit_hook_and_receipt") {
+        return;
+    }
+    // The guest of `two_signals_pending_at_a_syscall_return_stack_their_frames`,
+    // under a Tool that controls signal delivery with permits and lets the
+    // backend skip empty boundaries, as a scheduler that runs one thread at a
+    // time does. Each signal at the unblocking call's return is a boundary of
+    // its own, as each signal has its own stop under ptrace: a permit, the
+    // signal's hook, which sees that call as orig_rax, and the permit's
+    // Caught receipt, SIGUSR1's before SIGUSR2's.
+    let plan = Plan {
+        permits: true,
+        signal_registers: true,
+        ..Plan::default()
+    };
+    let runs = stacked_matches_native(
+        &pending_pair_program(),
+        Tracing::Deliver,
+        false,
+        plan,
+        &|_, _| false,
+    );
+    assert_eq!(runs.native.signals(), [SIGUSR2, SIGUSR1]);
+    let boundaries: Vec<String> = runs
+        .events
+        .iter()
+        .filter_map(|event| match event {
+            Event::Permit(sequence) => Some(format!("permit {sequence}")),
+            Event::Signalled { signal, .. } => Some(format!("hook {signal}")),
+            Event::Registers(r) => Some(format!("orig_rax {}", r.orig_rax)),
+            Event::Receipt(sequence, outcome) => Some(format!("receipt {sequence} {outcome}")),
+            _ => None,
+        })
+        .collect();
+    let unblock = libc::SYS_rt_sigprocmask;
+    assert_eq!(
+        boundaries,
+        [
+            "permit 1".to_owned(),
+            format!("hook {SIGUSR1}"),
+            format!("orig_rax {unblock}"),
+            "receipt 1 Caught".to_owned(),
+            "permit 2".to_owned(),
+            format!("hook {SIGUSR2}"),
+            format!("orig_rax {unblock}"),
+            "receipt 2 Caught".to_owned(),
+        ],
+        "{:?}",
+        runs.events
+    );
+}
+
+#[test]
+fn two_signals_pending_at_rt_sigsuspend_stack_their_frames() {
+    if bounded("two_signals_pending_at_rt_sigsuspend_stack_their_frames") {
+        return;
+    }
+    // The same pending pair, released by an rt_sigsuspend with an empty
+    // mask. SIGUSR1's frame saves the mask rt_sigsuspend saved, which blocks
+    // both; SIGUSR2's frame saves the temporary mask with SIGUSR1 added, so
+    // SIGUSR2 is delivered at the same return. Delivering one frame per
+    // return would leave SIGUSR2 pending, and blocked again once SIGUSR1's
+    // handler returned.
+    let program = stacked_program(
+        &[Handler::new(SIGUSR1), Handler::new(SIGUSR2)],
+        &format!(
+            "{LOAD_FPU}{}{}{}lea 1f(%rip),%r12\nlea empty(%rip),%rdi\nmov $8,%esi\nmov $130,%eax\nsyscall\n1:\n",
+            sigprocmask(libc::SIG_BLOCK, "pending"),
+            tgkill_self(SIGUSR1),
+            tgkill_self(SIGUSR2)
+        ),
+        &format!(
+            "pending: .quad {:#x}\nempty: .quad 0\n",
+            bit(SIGUSR1) | bit(SIGUSR2)
+        ),
+        "",
+    );
+    let log = stacked_at_syscall_returns_matches_native(&program);
+    let context = "native";
+    assert_eq!(log.signals(), [SIGUSR2, SIGUSR1], "{log:#x?}");
+    assert_stacked_on(&log, 0, 1, context);
+    assert_interrupted_at_mark(&log, 1, context);
+    let (top, below) = (log.entry(0), log.entry(1));
+    let both = bit(SIGUSR1) | bit(SIGUSR2);
+    assert_eq!(
+        [below[q::SIGMASK], top[q::SIGMASK], below[q::RAX]],
+        [both, bit(SIGUSR1), -i64::from(libc::EINTR) as u64],
+        "{log:#x?}"
+    );
+    assert_eq!(log.final_mask, both, "{log:#x?}");
+}
+
+#[test]
+fn a_signal_the_first_handlers_mask_blocks_waits_for_its_rt_sigreturn() {
+    if bounded("a_signal_the_first_handlers_mask_blocks_waits_for_its_rt_sigreturn") {
+        return;
+    }
+    // SIGUSR1, SIGUSR2 and SIGWINCH are released at one return. SIGUSR1's
+    // sa_mask blocks SIGUSR2, so SIGWINCH's frame goes on top of SIGUSR1's,
+    // and SIGUSR2 waits for SIGUSR1's rt_sigreturn, whose return delivers it
+    // with the guest's context restored.
+    let program = stacked_program(
+        &[
+            Handler::new(SIGUSR1).mask(bit(SIGUSR2)),
+            Handler::new(SIGUSR2),
+            Handler::new(SIGWINCH),
+        ],
+        &unblocked_at_syscall_return(
+            &(tgkill_self(SIGUSR1) + &tgkill_self(SIGUSR2) + &tgkill_self(SIGWINCH)),
+        ),
+        &format!(
+            "pending: .quad {:#x}\n",
+            bit(SIGUSR1) | bit(SIGUSR2) | bit(SIGWINCH)
+        ),
+        "",
+    );
+    let log = stacked_at_syscall_returns_matches_native(&program);
+    let context = "native";
+    assert_eq!(log.signals(), [SIGWINCH, SIGUSR1, SIGUSR2], "{log:#x?}");
+    assert_stacked_on(&log, 0, 1, context);
+    assert_interrupted_at_mark(&log, 1, context);
+    assert_interrupted_at_mark(&log, 2, context);
+    assert_eq!(
+        log.entry(0)[q::SIGMASK],
+        bit(SIGUSR1) | bit(SIGUSR2),
+        "{log:#x?}"
+    );
+}
+
+#[test]
+fn sa_nodefer_stacks_a_second_instance_of_the_same_signal() {
+    if bounded("sa_nodefer_stacks_a_second_instance_of_the_same_signal") {
+        return;
+    }
+    // SIGUSR1 is pending twice, for the thread (tgkill, SI_TKILL) and for
+    // the process (kill, SI_USER). With SA_NODEFER its delivery does not
+    // block it, so the process instance's frame goes on top of the thread
+    // instance's at the same return. Without SA_NODEFER the second instance
+    // waits for the first handler's rt_sigreturn.
+    for nodefer in [true, false] {
+        let program = stacked_program(
+            &[Handler::new(SIGUSR1).flags(if nodefer { SA_NODEFER } else { 0 })],
+            &unblocked_at_syscall_return(&(tgkill_self(SIGUSR1) + &kill_self(SIGUSR1))),
+            &format!("pending: .quad {:#x}\n", bit(SIGUSR1)),
+            "",
+        );
+        let log = stacked_at_syscall_returns_matches_native(&program);
+        let context = format!("native, SA_NODEFER {nodefer}");
+        assert_eq!(log.signals(), [SIGUSR1, SIGUSR1], "{context}: {log:#x?}");
+        let codes = [log.entry(0)[q::SI_CODE], log.entry(1)[q::SI_CODE]];
+        let (tkill, user) = (libc::SI_TKILL as u32 as u64, libc::SI_USER as u32 as u64);
+        if nodefer {
+            assert_eq!(codes, [user, tkill], "{context}: {log:#x?}");
+            assert_stacked_on(&log, 0, 1, &context);
+            assert_interrupted_at_mark(&log, 1, &context);
+            assert_eq!(log.entry(0)[q::SIGMASK], 0, "{context}: {log:#x?}");
+        } else {
+            assert_eq!(codes, [tkill, user], "{context}: {log:#x?}");
+            assert_interrupted_at_mark(&log, 0, &context);
+            assert_interrupted_at_mark(&log, 1, &context);
+        }
+    }
+}
+
+#[test]
+fn frames_stacked_on_an_alternate_stack_nest_on_it() {
+    if bounded("frames_stacked_on_an_alternate_stack_nest_on_it") {
+        return;
+    }
+    // Both handlers are SA_ONSTACK. SIGUSR1's frame switches to the top of
+    // the alternate stack; SIGUSR2's goes below it, past its red zone, on
+    // the same stack. Each frame's uc_stack holds the stack's own flags:
+    // with SS_AUTODISARM, SIGUSR1's delivery disarms the stack, so SIGUSR2's
+    // frame saves none, and SIGUSR1's rt_sigreturn arms it again.
+    for (flags, top_saved) in [(0, None), (SS_AUTODISARM, Some([0, SS_DISABLE, 0]))] {
+        let program = stacked_program(
+            &[
+                Handler::new(SIGUSR1).flags(SA_ONSTACK),
+                Handler::new(SIGUSR2).flags(SA_ONSTACK),
+            ],
+            &format!(
+                "{ARM_ALTSTACK}{}",
+                unblocked_at_syscall_return(&(tgkill_self(SIGUSR1) + &tgkill_self(SIGUSR2)))
+            ),
+            &format!(
+                "pending: .quad {:#x}\n{}",
+                bit(SIGUSR1) | bit(SIGUSR2),
+                altstack_data(flags)
+            ),
+            ALTSTACK,
+        );
+        let log = stacked_at_syscall_returns_matches_native(&program);
+        let context = format!("native, ss_flags {flags:#x}");
+        assert_eq!(log.signals(), [SIGUSR2, SIGUSR1], "{context}: {log:#x?}");
+        assert_stacked_on(&log, 0, 1, &context);
+        assert_interrupted_at_mark(&log, 1, &context);
+        let (top, below) = (log.entry(0), log.entry(1));
+        let armed = [below[q::SS_SP], flags, 65536];
+        assert_eq!(
+            [below[q::SS_SP], below[q::SS_FLAGS], below[q::SS_SIZE]],
+            armed,
+            "{context}: {log:#x?}"
+        );
+        assert_eq!(
+            [top[q::SS_SP], top[q::SS_FLAGS], top[q::SS_SIZE]],
+            top_saved.unwrap_or(armed),
+            "{context}: {log:#x?}"
+        );
+        // Both frames lie on the alternate stack.
+        let stack = armed[0]..armed[0] + 65536;
+        assert!(
+            stack.contains(&below[q::ENTRY_RSP]) && stack.contains(&top[q::ENTRY_RSP]),
+            "{context}: {log:#x?}"
+        );
+        assert_eq!(log.final_stack, armed, "{context}: {log:#x?}");
+    }
+}
+
+#[test]
+fn two_signals_pending_at_rt_sigreturn_stack_their_frames() {
+    if bounded("two_signals_pending_at_rt_sigreturn_stack_their_frames") {
+        return;
+    }
+    // SIGUSR1's handler, whose sa_mask blocks SIGUSR2 and SIGWINCH, sends
+    // both to the thread and returns. Its rt_sigreturn restores the guest's
+    // mask, which blocks neither: SIGUSR2's frame, with the guest's restored
+    // context, and SIGWINCH's on top of it, at that call's return. SIGUSR1
+    // itself comes at the return of the call that unblocks it.
+    let program = stacked_program(
+        &[
+            Handler::new(SIGUSR1)
+                .mask(bit(SIGUSR2) | bit(SIGWINCH))
+                .actions(&(tgkill_self(SIGUSR2) + &tgkill_self(SIGWINCH))),
+            Handler::new(SIGUSR2),
+            Handler::new(SIGWINCH),
+        ],
+        &unblocked_at_syscall_return(&tgkill_self(SIGUSR1)),
+        &format!("pending: .quad {:#x}\n", bit(SIGUSR1)),
+        "",
+    );
+    let log = stacked_at_syscall_returns_matches_native(&program);
+    let context = "native";
+    assert_eq!(log.signals(), [SIGUSR1, SIGWINCH, SIGUSR2], "{log:#x?}");
+    assert_interrupted_at_mark(&log, 0, context);
+    assert_stacked_on(&log, 1, 2, context);
+    assert_interrupted_at_mark(&log, 2, context);
+}
+
+#[test]
+fn a_fatal_signal_selected_after_a_frame_ends_the_group_before_its_handler_runs() {
+    if bounded("a_fatal_signal_selected_after_a_frame_ends_the_group_before_its_handler_runs") {
+        return;
+    }
+    // SIGUSR1 has a handler, which writes a byte; SIGUSR2 has none. Linux
+    // builds SIGUSR1's frame, then selects SIGUSR2 at the same return, whose
+    // default action ends the thread group before any handler runs: no byte.
+    let program = stacked_program(
+        &[Handler::new(SIGUSR1)
+            .actions("mov $1,%edi\nlea byte(%rip),%rsi\nmov $1,%edx\nmov $1,%eax\nsyscall\n")],
+        &unblocked_at_syscall_return(&(tgkill_self(SIGUSR1) + &tgkill_self(SIGUSR2))),
+        &format!(
+            "pending: .quad {:#x}\nbyte: .ascii \"x\"\n",
+            bit(SIGUSR1) | bit(SIGUSR2)
+        ),
+        "",
+    );
+    let killed = (128 + SIGUSR2, vec![], vec![]);
+    use std::os::unix::process::ExitStatusExt;
+    let native = native_output(&program);
+    assert_eq!(
+        (native.status.signal(), native.stdout, native.stderr),
+        (Some(SIGUSR2), vec![], vec![]),
+        "native: {}",
+        native.status
+    );
+    let mut backend = KvmBackend::new(program.memory).unwrap();
+    backend
+        .install_static_elf_file_with_context(
+            std::fs::File::open(&program.executable).unwrap(),
+            &[program.executable.to_str().unwrap()],
+            &[],
+            &program.directory,
+        )
+        .unwrap();
+    assert_eq!(
+        backend.run_static_elf_captured().unwrap(),
+        killed,
+        "runtime"
+    );
+    let plan = Plan {
+        deliver: true,
+        ..Plan::default()
+    };
+    let (events, ending) = run_ending(&program, plan);
+    assert_eq!(ending, Ok(killed), "tool: {events:?}");
+    assert_eq!(signal_hooks(&events), [SIGUSR1, SIGUSR2], "{events:?}");
+}
+
+#[test]
+fn a_frame_that_overflows_the_alternate_stack_ends_the_group_with_sigsegv() {
+    if bounded("a_frame_that_overflows_the_alternate_stack_ends_the_group_with_sigsegv") {
+        return;
+    }
+    // The guest measures one SA_ONSTACK frame on a large alternate stack
+    // (SIGUSR1 sent to itself), then installs an alternate stack with room
+    // for one such frame and not two, at least MINSIGSTKSZ (2048) bytes, and
+    // releases SIGUSR1 and SIGUSR2 at one return. SIGUSR1's frame fits, 384
+    // bytes or more above the stack's base, so that SIGUSR2's goes below it
+    // past its red zone (Linux switches to the top of the stack again when
+    // the red zone reaches below the base); SIGUSR2's frame does not fit, and
+    // Linux forces SIGSEGV, whose default action ends the group before either
+    // handler runs.
+    let size = "mov log+8(%rip),%rax\nlea altstack_end(%rip),%rcx\nsub %rax,%rcx\nadd $384,%rcx\n\
+                cmp $2048,%rcx\njae 2f\nmov $2048,%ecx\n2: mov %rcx,small_desc+16(%rip)\n\
+                lea small_end(%rip),%rax\nsub %rcx,%rax\nmov %rax,small_desc(%rip)\n";
+    let program = stacked_program(
+        &[
+            Handler::new(SIGUSR1).flags(SA_ONSTACK),
+            Handler::new(SIGUSR2).flags(SA_ONSTACK),
+        ],
+        &format!(
+            "lea altstack_desc(%rip),%rdi\nxor %esi,%esi\nmov $131,%eax\nsyscall\ntest %rax,%rax\njnz 99f\n\
+             {}{size}lea small_desc(%rip),%rdi\nxor %esi,%esi\nmov $131,%eax\nsyscall\ntest %rax,%rax\njnz 99f\n{}",
+            tgkill_self(SIGUSR1),
+            unblocked_at_syscall_return(&(tgkill_self(SIGUSR1) + &tgkill_self(SIGUSR2)))
+        ),
+        &format!(
+            "pending: .quad {:#x}\naltstack_desc: .quad altstack\n.long 0, 0\n.quad 65536\n\
+             small_desc: .quad 0\n.long 0, 0\n.quad 0\n",
+            bit(SIGUSR1) | bit(SIGUSR2)
+        ),
+        ".balign 64\naltstack: .skip 65536\naltstack_end:\n.balign 64\nsmall: .skip 65536\nsmall_end:\n",
+    );
+    segfaults_natively_and_on_kvm(&program);
+}
+
+/// Creates a sibling thread, on the stack ending at `sibling_stack_end`, that
+/// runs `body` and exits.
+fn sibling(body: &str) -> String {
+    format!(
+        "mov $0x50f00,%edi\nlea sibling_stack_end(%rip),%rsi\nxor %edx,%edx\nxor %r10d,%r10d\n\
+         xor %r8d,%r8d\nmov $56,%eax\nsyscall\ntest %rax,%rax\njnz 6f\n{body}\
+         xor %edi,%edi\nmov $60,%eax\nsyscall\nud2\n6:\n"
+    )
+}
+
+const SIBLING_STACK: &str = ".balign 64\nsibling_stack: .skip 65536\nsibling_stack_end:\n";
+
+#[test]
+fn a_user_trap_and_a_pending_signal_stack_their_frames() {
+    if bounded("a_user_trap_and_a_pending_signal_stack_their_frames") {
+        return;
+    }
+    // A sibling sends SIGUSR1 to the main thread and then sets `flag`; the
+    // main thread spins without a syscall until it sees the flag, and then
+    // reads page zero. With no preemption, KVM has SIGUSR1 pending at the
+    // fault, as the native tracer arranges by deferring it to the fault's
+    // stop. Linux selects the fault's SIGSEGV first, as a synchronous
+    // signal, then SIGUSR1, whose frame goes on top: its handler runs first,
+    // and the frame saves the thread's last trap, the page fault, as every
+    // frame does. SIGSEGV's handler steps over the read.
+    let program = stacked_program(
+        &[
+            Handler::new(libc::SIGSEGV).actions("addq $8,168(%rdx)\n"),
+            Handler::new(SIGUSR1),
+        ],
+        &format!(
+            "{LOAD_FPU}{}5: cmpb $0,flag(%rip)\nje 5b\nmov $0x77,%eax\nxor %ecx,%ecx\nlea 2f(%rip),%r12\n\
+             2: movq 0x10,%rax\n",
+            sibling(&(tgkill_self(SIGUSR1) + "movb $1,flag(%rip)\n"))
+        ),
+        "flag: .byte 0\n",
+        SIBLING_STACK,
+    );
+    let log = stacked_matches_native(
+        &program,
+        Tracing::DeferUntil {
+            deferred: SIGUSR1,
+            fault: libc::SIGSEGV,
+        },
+        true,
+        Plan::default(),
+        &|_, _| false,
+    )
+    .native;
+    let context = "native";
+    assert_eq!(log.signals(), [SIGUSR1, libc::SIGSEGV], "{log:#x?}");
+    assert_stacked_on(&log, 0, 1, context);
+    assert_interrupted_at_mark(&log, 1, context);
+    // Read, user mode, page not present, at address 0x10, in both frames.
+    let trap = [14, 4, 0x10];
+    for index in [0, 1] {
+        let e = log.entry(index);
+        assert_eq!([e[q::TRAPNO], e[q::ERR], e[q::CR2]], trap, "{log:#x?}");
+    }
+}
+
+#[test]
+fn two_signals_pending_at_a_new_threads_first_instruction_stack_their_frames() {
+    if bounded("two_signals_pending_at_a_new_threads_first_instruction_stack_their_frames") {
+        return;
+    }
+    // The guest clones a thread and sends it SIGUSR1 and SIGUSR2, which the
+    // Tool (holding the thread's start) and the native tracer (holding its
+    // first stop) make pending before its first instruction. Both frames
+    // are built there, SIGUSR2's on top; SIGUSR1's saves the thread's first
+    // instruction, with rax 0 and its stack. The thread then sets `done`.
+    let program = stacked_program(
+        &[Handler::new(SIGUSR1), Handler::new(SIGUSR2)],
+        "lea 9f(%rip),%r12\nmov $0x50f00,%edi\nlea sibling_stack_end(%rip),%rsi\nxor %edx,%edx\n\
+         xor %r10d,%r10d\nxor %r8d,%r8d\nmov $56,%eax\nsyscall\n\
+         9: test %rax,%rax\njz 7f\nmov %rax,child(%rip)\n\
+         mov pid(%rip),%rdi\nmov child(%rip),%rsi\nmov $10,%edx\nmov $234,%eax\nsyscall\n\
+         mov pid(%rip),%rdi\nmov child(%rip),%rsi\nmov $12,%edx\nmov $234,%eax\nsyscall\n\
+         5: cmpb $0,done(%rip)\nje 5b\njmp 4f\n\
+         7: movb $1,done(%rip)\nxor %edi,%edi\nmov $60,%eax\nsyscall\nud2\n4:\n",
+        "child: .quad 0\ndone: .byte 0\n",
+        SIBLING_STACK,
+    );
+    let plan = Plan {
+        hold_thread_start: true,
+        sends: 2,
+        ..Plan::default()
+    };
+    let log = stacked_matches_native(
+        &program,
+        Tracing::HoldNewThread {
+            signals: [SIGUSR1, SIGUSR2],
+        },
+        false,
+        plan,
+        &|_, _| false,
+    )
+    .native;
+    let context = "native";
+    assert_eq!(log.signals(), [SIGUSR2, SIGUSR1], "{log:#x?}");
+    assert_stacked_on(&log, 0, 1, context);
+    let first = log.entry(1);
+    assert_eq!(first[q::RIP], first[q::R12], "{log:#x?}");
+    assert_eq!(first[q::RAX], 0, "{log:#x?}");
+}
+
+#[test]
+fn two_signals_pending_at_a_timer_boundary_stack_their_frames() {
+    if bounded("two_signals_pending_at_a_timer_boundary_stack_their_frames") {
+        return;
+    }
+    // A sibling waits until the main thread spins, without a syscall, and
+    // sends it SIGUSR1 and then SIGUSR2. The Tool's precise timer event
+    // lands in the spin and holds the thread until both are sent; the native
+    // tracer holds SIGUSR1's stop, at the interrupt that brought it, until
+    // SIGUSR2 is pending too. Both frames are built at that boundary,
+    // SIGUSR2's on top. Where the interrupt landed differs between the runs:
+    // the first frame's rip, rcx and flags, and so the flags and rcx its
+    // handler starts with, which the second frame saves.
+    let program = stacked_program(
+        &[Handler::new(SIGUSR1), Handler::new(SIGUSR2)],
+        &format!(
+            "{LOAD_FPU}{}{GETPPID}movb $1,spinning(%rip)\nxor %eax,%eax\nlea 1f(%rip),%r12\n\
+             mov $2000000000,%rcx\n\
+             1: cmpq $2,header(%rip)\njae 2f\ndec %rcx\njnz 1b\n2:\n",
+            sibling(&format!(
+                "5: cmpb $0,spinning(%rip)\nje 5b\n{}{}",
+                tgkill_self(SIGUSR1),
+                tgkill_self(SIGUSR2)
+            )),
+        ),
+        "spinning: .byte 0\n",
+        SIBLING_STACK,
+    );
+    let plan = Plan {
+        sends: 2,
+        ..spinner_plan()
+    };
+    let varies =
+        |_: usize, quad: usize| [q::RIP, q::RCX, q::EFLAGS, q::ENTRY_RFLAGS].contains(&quad);
+    let runs = stacked_matches_native(
+        &program,
+        Tracing::HoldUntilPending {
+            first: SIGUSR1,
+            then: SIGUSR2,
+        },
+        false,
+        plan,
+        &varies,
+    );
+    let (log, events) = (&runs.native, &runs.events);
+    let context = "native";
+    assert_eq!(log.signals(), [SIGUSR2, SIGUSR1], "{log:#x?}");
+    assert_stacked_on(log, 0, 1, context);
+    assert_stacked_on(&runs.tool, 0, 1, "tool");
+    // On KVM both signals come at the timer event's boundary, whose
+    // registers the first frame saves.
+    let first = runs.tool.entry(1);
+    let r = registers_of(events);
+    assert_eq!(
+        [
+            first[q::RIP],
+            first[q::RCX],
+            first[q::EFLAGS],
+            first[q::R12]
+        ],
+        [r.rip, r.rcx, r.eflags, r.r12],
+        "{:#x?}",
+        runs.tool
+    );
+    let (timer_at, timer_clock) = first_timer(events);
+    let delivered: Vec<(usize, u64)> = events
+        .iter()
+        .enumerate()
+        .filter_map(|(at, event)| match event {
+            Event::Signalled { clock, .. } => Some((at, *clock)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(delivered.len(), 2, "{events:?}");
+    for (at, clock) in delivered {
+        assert!(at > timer_at && clock == timer_clock, "{events:?}");
+    }
+}
+
+/// What the thread of
+/// [`hooks_before_a_new_threads_first_instruction_set_both_segment_bases`]
+/// can read through its FS and GS bases: the targets that the two signal
+/// callbacks set, and the bases it inherits.
+const FIRST_TARGET: u64 = 0x5151_5151_5151_5151;
+const SECOND_TARGET: u64 = 0x5252_5252_5252_5252;
+const OLD_FS: u64 = 0x0f0f_0f0f_0f0f_0f0f;
+const OLD_GS: u64 = 0x6767_6767_6767_6767;
+
+#[test]
+fn hooks_before_a_new_threads_first_instruction_set_both_segment_bases() {
+    if bounded("hooks_before_a_new_threads_first_instruction_set_both_segment_bases") {
+        return;
+    }
+    // The guest points its own FS and GS bases at `old_fs` and `old_gs`,
+    // keeps the addresses of `first` and `second` in r13 and r14, and clones
+    // a thread, which inherits all four. It sends the thread SIGUSR1 and
+    // SIGUSR2 while the Tool holds its start, so both frames are built before
+    // its first instruction, SIGUSR2's on top. SIGUSR1's callback sets one
+    // base to `first` with arch_prctl, and SIGUSR2's sets the other to
+    // `second`. Once both handlers have returned, the thread reads through
+    // each base and keeps what it read in the header's last quads. The
+    // backend stages one base at a time for the vCPU, and SIGUSR2's callback
+    // reads the vCPU's registers: SIGUSR1's base must reach the vCPU first.
+    for bases in [
+        [SegmentBase::Gs, SegmentBase::Fs],
+        [SegmentBase::Fs, SegmentBase::Gs],
+    ] {
+        let program = stacked_program(
+            &[Handler::new(SIGUSR1), Handler::new(SIGUSR2)],
+            "lea old_fs(%rip),%rsi\nmov $0x1002,%edi\nmov $158,%eax\nsyscall\ntest %rax,%rax\njnz 99f\n\
+             lea old_gs(%rip),%rsi\nmov $0x1001,%edi\nmov $158,%eax\nsyscall\ntest %rax,%rax\njnz 99f\n\
+             lea first(%rip),%r13\nlea second(%rip),%r14\n\
+             mov $0x50f00,%edi\nlea sibling_stack_end(%rip),%rsi\nxor %edx,%edx\n\
+             xor %r10d,%r10d\nxor %r8d,%r8d\nmov $56,%eax\nsyscall\n\
+             test %rax,%rax\njz 7f\nmov %rax,child(%rip)\n\
+             mov pid(%rip),%rdi\nmov child(%rip),%rsi\nmov $10,%edx\nmov $234,%eax\nsyscall\n\
+             mov pid(%rip),%rdi\nmov child(%rip),%rsi\nmov $12,%edx\nmov $234,%eax\nsyscall\n\
+             5: cmpb $0,done(%rip)\nje 5b\njmp 4f\n\
+             7: mov %fs:0,%rax\nmov %rax,header+40(%rip)\nmov %gs:0,%rax\nmov %rax,header+48(%rip)\n\
+             movb $1,done(%rip)\nxor %edi,%edi\nmov $60,%eax\nsyscall\nud2\n4:\n",
+            &format!(
+                "child: .quad 0\ndone: .byte 0\n.balign 8\nfirst: .quad {FIRST_TARGET:#x}\n\
+                 second: .quad {SECOND_TARGET:#x}\nold_fs: .quad {OLD_FS:#x}\nold_gs: .quad {OLD_GS:#x}\n"
+            ),
+            SIBLING_STACK,
+        );
+        let plan = Plan {
+            hold_thread_start: true,
+            sends: 2,
+            deliver: true,
+            bases_at_signals: Some(bases),
+            ..Plan::default()
+        };
+        let (events, stdout) = tool_stdout(&program, plan);
+        let log = StackedLog::read(&stdout);
+        let context = format!("{bases:?}: {log:#x?} {events:?}");
+        assert_eq!(signal_hooks(&events), [SIGUSR1, SIGUSR2], "{context}");
+        assert_eq!(log.signals(), [SIGUSR2, SIGUSR1], "{context}");
+        assert_stacked_on(&log, 0, 1, &context);
+        let quad = |i: usize| u64::from_ne_bytes(stdout[8 * i..8 * i + 8].try_into().unwrap());
+        // What the thread read through FS, then through GS.
+        let expected = match bases {
+            [SegmentBase::Gs, SegmentBase::Fs] => [SECOND_TARGET, FIRST_TARGET],
+            _ => [FIRST_TARGET, SECOND_TARGET],
+        };
+        assert_eq!([quad(5), quad(6)], expected, "{context}");
+    }
+}
+
+#[test]
+fn a_delivery_off_an_autodisarm_stack_disarms_it_for_the_next_frame() {
+    if bounded("a_delivery_off_an_autodisarm_stack_disarms_it_for_the_next_frame") {
+        return;
+    }
+    // The alternate stack is armed with SS_AUTODISARM; SIGUSR1's handler is
+    // not SA_ONSTACK, and SIGUSR2's is. Linux's signal_delivered disarms such
+    // a stack after every delivery: SIGUSR1's frame goes on the ordinary
+    // stack and saves the stack armed, and SIGUSR2's frame then finds no
+    // stack, goes below SIGUSR1's on the ordinary stack and saves none. Each
+    // rt_sigreturn restores the stack its frame saved: armed at the end.
+    let program = stacked_program(
+        &[
+            Handler::new(SIGUSR1),
+            Handler::new(SIGUSR2).flags(SA_ONSTACK),
+        ],
+        &format!(
+            "{ARM_ALTSTACK}{}",
+            unblocked_at_syscall_return(&(tgkill_self(SIGUSR1) + &tgkill_self(SIGUSR2)))
+        ),
+        &format!(
+            "pending: .quad {:#x}\n{}",
+            bit(SIGUSR1) | bit(SIGUSR2),
+            altstack_data(SS_AUTODISARM)
+        ),
+        ALTSTACK,
+    );
+    let log = stacked_at_syscall_returns_matches_native(&program);
+    let context = "native";
+    assert_eq!(log.signals(), [SIGUSR2, SIGUSR1], "{log:#x?}");
+    assert_stacked_on(&log, 0, 1, context);
+    assert_interrupted_at_mark(&log, 1, context);
+    let (top, below) = (log.entry(0), log.entry(1));
+    let armed = [below[q::SS_SP], SS_AUTODISARM, 65536];
+    assert_ne!(armed[0], 0, "{log:#x?}");
+    assert_eq!(
+        [below[q::SS_SP], below[q::SS_FLAGS], below[q::SS_SIZE]],
+        armed,
+        "{log:#x?}"
+    );
+    assert_eq!(
+        [top[q::SS_SP], top[q::SS_FLAGS], top[q::SS_SIZE]],
+        [0, SS_DISABLE, 0],
+        "{log:#x?}"
+    );
+    // Neither frame lies on the alternate stack.
+    let stack = armed[0]..armed[0] + 65536;
+    assert!(
+        !stack.contains(&below[q::ENTRY_RSP]) && !stack.contains(&top[q::ENTRY_RSP]),
+        "{log:#x?}"
+    );
+    assert_eq!(log.final_stack, armed, "{log:#x?}");
+}
+
+#[test]
+fn a_handler_off_an_autodisarm_stack_finds_it_disarmed() {
+    if bounded("a_handler_off_an_autodisarm_stack_finds_it_disarmed") {
+        return;
+    }
+    // The alternate stack is armed with SS_AUTODISARM, and SIGUSR1's handler,
+    // which is not SA_ONSTACK, queries it. Linux disarms the stack at the
+    // delivery, so the handler finds none; its frame saved the stack armed,
+    // and its rt_sigreturn arms it again.
+    let program = stacked_program(
+        &[Handler::new(SIGUSR1).actions(QUERY_STACK)],
+        &format!(
+            "{ARM_ALTSTACK}{}",
+            unblocked_at_syscall_return(&tgkill_self(SIGUSR1))
+        ),
+        &format!(
+            "pending: .quad {:#x}\n{}",
+            bit(SIGUSR1),
+            altstack_data(SS_AUTODISARM)
+        ),
+        ALTSTACK,
+    );
+    let log = stacked_at_syscall_returns_matches_native(&program);
+    assert_eq!(log.signals(), [SIGUSR1], "{log:#x?}");
+    assert_interrupted_at_mark(&log, 0, "native");
+    let entry = log.entry(0);
+    let armed = [entry[q::SS_SP], SS_AUTODISARM, 65536];
+    assert_ne!(armed[0], 0, "{log:#x?}");
+    assert_eq!(
+        [entry[q::SS_SP], entry[q::SS_FLAGS], entry[q::SS_SIZE]],
+        armed,
+        "{log:#x?}"
+    );
+    assert!(
+        !(armed[0]..armed[0] + 65536).contains(&entry[q::ENTRY_RSP]),
+        "{log:#x?}"
+    );
+    assert_eq!(log.queried_stack, [0, SS_DISABLE, 0], "{log:#x?}");
+    assert_eq!(log.final_stack, armed, "{log:#x?}");
+}
+
+#[test]
+fn exec_keeps_the_alternate_stacks_flags_for_later_frames() {
+    if bounded("exec_keeps_the_alternate_stacks_flags_for_later_frames") {
+        return;
+    }
+    // The guest arms an alternate stack with `flags` and executes itself; the
+    // new image (argc 2) keeps what exec left of the stack. Linux's
+    // begin_new_exec clears the stack's address and size and keeps its flags:
+    // sigaltstack then reports SS_DISABLE with the stored SS_AUTODISARM, and
+    // a frame's uc_stack holds no stack and the flags themselves. With
+    // SS_AUTODISARM, the delivery resets the stack to SS_DISABLE.
+    for flags in [0, SS_AUTODISARM] {
+        let program = stacked_program(
+            &[Handler::new(SIGUSR1)],
+            &format!(
+                "cmpq $1,argc(%rip)\njne 3f\n{ARM_ALTSTACK}\
+                 lea self_exe(%rip),%rdi\nlea exec_argv(%rip),%rsi\nlea exec_envp(%rip),%rdx\n\
+                 mov $59,%eax\nsyscall\njmp 99f\n3:\n{QUERY_STACK}{}",
+                unblocked_at_syscall_return(&tgkill_self(SIGUSR1))
+            ),
+            &format!(
+                "pending: .quad {:#x}\n{}self_exe: .asciz \"/proc/self/exe\"\nexec_arg: .asciz \"x\"\n\
+                 .balign 8\nexec_argv: .quad self_exe, exec_arg, 0\nexec_envp: .quad 0\n",
+                bit(SIGUSR1),
+                altstack_data(flags)
+            ),
+            ALTSTACK,
+        );
+        let log = stacked_at_syscall_returns_matches_native(&program);
+        let context = format!("native, ss_flags {flags:#x}: {log:#x?}");
+        assert_eq!(log.signals(), [SIGUSR1], "{context}");
+        let entry = log.entry(0);
+        assert_eq!(
+            [entry[q::SS_SP], entry[q::SS_FLAGS], entry[q::SS_SIZE]],
+            [0, flags, 0],
+            "{context}"
+        );
+        assert_eq!(log.queried_stack, [0, SS_DISABLE | flags, 0], "{context}");
+        assert_eq!(log.final_stack, [0, SS_DISABLE, 0], "{context}");
+    }
+}
+
+#[test]
+fn sigaltstack_takes_back_what_it_reports_for_the_stack_exec_leaves() {
+    if bounded("sigaltstack_takes_back_what_it_reports_for_the_stack_exec_leaves") {
+        return;
+    }
+    // The guest arms an alternate stack with `flags` and executes itself;
+    // exec keeps the flags and clears the address and size. The new image
+    // then, comparing each result with Linux's do_sigaltstack:
+    // - asks for that stack unchanged, which returns 0 before any size check;
+    // - queries it (SS_DISABLE, with any SS_AUTODISARM) and gives back what
+    //   the query reported, which a disabling mode keeps as given;
+    // - asks for a stack with an invalid mode (EINVAL) and queries again;
+    // - takes SIGUSR1, whose frame saves the stack as held.
+    let einval = (-i64::from(libc::EINVAL)) as u64;
+    for flags in [0, SS_AUTODISARM] {
+        let program = stacked_program(
+            &[Handler::new(SIGUSR1)],
+            &format!(
+                "cmpq $1,argc(%rip)\njne 3f\n{ARM_ALTSTACK}\
+                 lea self_exe(%rip),%rdi\nlea exec_argv(%rip),%rsi\nlea exec_envp(%rip),%rdx\n\
+                 mov $59,%eax\nsyscall\njmp 99f\n3:\n{}{QUERY_STACK}{}{}\
+                 xor %edi,%edi\nlea second_query(%rip),%rsi\nmov $131,%eax\nsyscall\n\
+                 mov second_query+8(%rip),%eax\n{}{}",
+                set_altstack("unchanged", 0),
+                set_altstack("header+40", 1),
+                set_altstack("bad_mode", 2),
+                keep_result(3),
+                unblocked_at_syscall_return(&tgkill_self(SIGUSR1))
+            ),
+            &format!(
+                "pending: .quad {:#x}\n{}{}{}self_exe: .asciz \"/proc/self/exe\"\n\
+                 exec_arg: .asciz \"x\"\n.balign 8\nexec_argv: .quad self_exe, exec_arg, 0\n\
+                 exec_envp: .quad 0\nsecond_query: .zero 24\n",
+                bit(SIGUSR1),
+                altstack_data(flags),
+                stack_t("unchanged", "0", flags, 0),
+                stack_t("bad_mode", "0", 4, 0),
+            ),
+            ALTSTACK,
+        );
+        let log = stacked_at_syscall_returns_matches_native(&program);
+        let context = format!("native, ss_flags {flags:#x}: {log:#x?}");
+        let reported = [0, SS_DISABLE | flags, 0];
+        assert_eq!(log.signals(), [SIGUSR1], "{context}");
+        assert_eq!(log.queried_stack, reported, "{context}");
+        assert_eq!(log.results, [0, 0, einval, SS_DISABLE | flags], "{context}");
+        let entry = log.entry(0);
+        assert_eq!(
+            [entry[q::SS_SP], entry[q::SS_FLAGS], entry[q::SS_SIZE]],
+            reported,
+            "{context}"
+        );
+        assert_eq!(log.final_stack, reported, "{context}");
+    }
+}
+
+#[test]
+fn sigaltstack_takes_ss_onstack_as_an_input_mode() {
+    if bounded("sigaltstack_takes_ss_onstack_as_an_input_mode") {
+        return;
+    }
+    // The guest asks for an alternate stack with SS_ONSTACK as its mode,
+    // which Linux's do_sigaltstack takes as it takes 0 and stores as given,
+    // then for one with an invalid mode (EINVAL) and for one below
+    // MINSIGSTKSZ (ENOMEM), which leave the stack as it is. SIGUSR1's handler
+    // is SA_ONSTACK: its frame goes on the stack and saves the flags as
+    // given; on the stack, the handler queries it (SS_ONSTACK, which the
+    // report shows while the caller runs on it) and asks for another (EPERM).
+    let errno = |value: i32| (-i64::from(value)) as u64;
+    let ss_onstack = libc::SS_ONSTACK as u64;
+    let program = stacked_program(
+        &[Handler::new(SIGUSR1)
+            .flags(SA_ONSTACK)
+            .actions(&format!("{QUERY_STACK}{}", set_altstack("plain", 3)))],
+        &format!(
+            "{}{}{}{}",
+            set_altstack("onstack_mode", 0),
+            set_altstack("bad_mode", 1),
+            set_altstack("too_small", 2),
+            unblocked_at_syscall_return(&tgkill_self(SIGUSR1))
+        ),
+        &format!(
+            "pending: .quad {:#x}\n{}{}{}{}",
+            bit(SIGUSR1),
+            stack_t("onstack_mode", "altstack", ss_onstack, 65536),
+            stack_t("bad_mode", "altstack", 4, 65536),
+            stack_t("too_small", "altstack", 0, 1024),
+            stack_t("plain", "altstack", 0, 65536),
+        ),
+        ALTSTACK,
+    );
+    let log = stacked_at_syscall_returns_matches_native(&program);
+    assert_eq!(log.signals(), [SIGUSR1], "{log:#x?}");
+    assert_interrupted_at_mark(&log, 0, "native");
+    let entry = log.entry(0);
+    let sp = entry[q::SS_SP];
+    assert_ne!(sp, 0, "{log:#x?}");
+    assert_eq!(
+        [entry[q::SS_SP], entry[q::SS_FLAGS], entry[q::SS_SIZE]],
+        [sp, ss_onstack, 65536],
+        "{log:#x?}"
+    );
+    assert!((sp..sp + 65536).contains(&entry[q::ENTRY_RSP]), "{log:#x?}");
+    assert_eq!(log.queried_stack, [sp, ss_onstack, 65536], "{log:#x?}");
+    assert_eq!(
+        log.results,
+        [
+            0,
+            errno(libc::EINVAL),
+            errno(libc::ENOMEM),
+            errno(libc::EPERM)
+        ],
+        "{log:#x?}"
+    );
+    assert_eq!(log.final_stack, [sp, 0, 65536], "{log:#x?}");
+}
+
+#[test]
+fn the_native_tracer_classifies_sigstop_by_provenance() {
+    // What PTRACE_GETSIGINFO shows decides, not the order of the stops: the
+    // synthetic SIGSTOP of a new thread is suppressed wherever it comes, once,
+    // and a sent SIGSTOP is forwarded, also as a thread's first SIGSTOP (as
+    // when SIGCONT cleared the synthetic one before the thread dequeued it).
+    let (pid, child) = (100, 101);
+    use SigstopAction::*;
+    assert_eq!(
+        classify_sigstop(child, pid, libc::SI_USER, 0, &[]),
+        Ok(SuppressSynthetic)
+    );
+    for (code, synthetic) in [
+        (libc::SI_TKILL, &[][..]),
+        (libc::SI_TKILL, &[child][..]),
+        (libc::SI_USER, &[][..]),
+        (libc::SI_QUEUE, &[child][..]),
+    ] {
+        assert_eq!(
+            classify_sigstop(child, pid, code, pid, synthetic),
+            Ok(Forward),
+            "si_code {code}"
+        );
+    }
+    assert_eq!(
+        classify_sigstop(pid, pid, libc::SI_TKILL, pid, &[]),
+        Ok(Forward)
+    );
+    // Refused: a second synthetic stop, one for the main thread, a send with
+    // no sender, and any other provenance.
+    for (tid, code, sender, synthetic) in [
+        (child, libc::SI_USER, 0, &[child][..]),
+        (pid, libc::SI_USER, 0, &[][..]),
+        (child, libc::SI_TKILL, 0, &[][..]),
+        (child, libc::SI_KERNEL, 0, &[][..]),
+        (child, libc::SI_KERNEL, pid, &[][..]),
+    ] {
+        assert!(
+            classify_sigstop(tid, pid, code, sender, synthetic).is_err(),
+            "tid {tid} si_code {code} from {sender}"
+        );
+    }
+}
+
+#[test]
+fn the_native_tracer_forwards_a_sent_sigstop_and_suppresses_only_the_synthetic_one() {
+    if bounded("the_native_tracer_forwards_a_sent_sigstop_and_suppresses_only_the_synthetic_one") {
+        return;
+    }
+    // Native only: KVM supports no stopped state, so a stop signal a guest
+    // sends ends a KVM run. The guest clones a thread, which sends itself
+    // SIGSTOP with tgkill and then lets the main thread finish. The tracer
+    // suppresses the thread's synthetic SIGSTOP (SI_USER from pid 0), forwards
+    // the sent one (SI_TKILL from the guest), which stops the whole process,
+    // and resumes each thread from the group-stop that follows, which
+    // delivers nothing.
+    let program = stacked_program(
+        &[],
+        "mov $0x50f00,%edi\nlea sibling_stack_end(%rip),%rsi\nxor %edx,%edx\n\
+         xor %r10d,%r10d\nxor %r8d,%r8d\nmov $56,%eax\nsyscall\n\
+         test %rax,%rax\njz 7f\n\
+         5: cmpb $0,done(%rip)\nje 5b\njmp 4f\n\
+         7: mov $186,%eax\nsyscall\nmov pid(%rip),%rdi\nmov %rax,%rsi\nmov $19,%edx\n\
+         mov $234,%eax\nsyscall\nmovb $1,done(%rip)\nxor %edi,%edi\nmov $60,%eax\nsyscall\nud2\n\
+         4:\n",
+        "done: .byte 0\n",
+        SIBLING_STACK,
+    );
+    let native = traced_native(&program, Tracing::Deliver);
+    assert_eq!(native.delivered, [libc::SIGSTOP]);
+    assert_eq!(native.synthetic_stops, 1);
 }
