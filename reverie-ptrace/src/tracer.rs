@@ -2634,7 +2634,9 @@ pub(crate) fn newborn_own_process_parent(child: Pid) -> std::io::Result<Option<P
     Ok(Some(status_pid(&status, "PPid:")?))
 }
 
-fn tracer_is_current(tracer_tid: Pid) -> bool {
+/// Whether `tracer_tid`, a tracee's `TracerPid`, names a thread of this
+/// process: a tracer of ours traces the tracee.
+pub(crate) fn tracer_is_current(tracer_tid: Pid) -> bool {
     tracer_tid.as_raw() > 0
         && std::path::Path::new(&format!("/proc/self/task/{tracer_tid}")).exists()
 }
