@@ -374,8 +374,11 @@ where
     /// # Safety
     /// The caller owns the live native image, thread admission, allocator/TLS,
     /// service table and lifecycle. No local dispatch may run in this process
-    /// concurrently. The ordinary coordinator connection/configuration must
-    /// be authentic; this constructor grants no private-image authority.
+    /// concurrently. The coordinator configuration must be authentic. A
+    /// native initializer may use CoordinatorRpc::from_native_configuration
+    /// after closing its temporary config connection; callbacks use their
+    /// separately owned native RPC route, never an ordinary fallback. This
+    /// constructor grants no private-image authority.
     pub unsafe fn new_native(
         tool: T,
         rpc: CoordinatorRpc<T::GlobalState>,

@@ -277,7 +277,7 @@ unsafe extern "C" fn invoke(context: usize, number: i64, args: *const u64, purpo
     assert_eq!(unsafe { current(context) }, 1);
     assert!(
         purpose == reverie::InjectionPurpose::Application as u32
-            || purpose == reverie::InjectionPurpose::Validation as u32
+            || purpose == reverie::InjectionPurpose::Pselect6WrapperValidation as u32
     );
     let callback = unsafe { &*(context as *const Callback) };
     let mut args = unsafe { args.cast::<[u64; 6]>().read() };

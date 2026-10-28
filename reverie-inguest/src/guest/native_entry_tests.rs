@@ -86,7 +86,7 @@ impl Tool for Probe {
         let (_, args) = call.into_parts();
         match args.arg0 as u64 {
             7 => {
-                let mut stack = guest.stack().await?;
+                let mut stack = guest.stack().await;
                 let saved = stack.push(0x7197_u64).as_raw();
                 self.saved_stack.store(saved, Ordering::SeqCst);
                 drop(stack.commit()?);
