@@ -23,7 +23,6 @@ use std::ffi::OsStr;
 use std::os::fd::FromRawFd;
 use std::path::Path;
 use std::path::PathBuf;
-use std::sync::Arc;
 
 use reverie::ExitStatus;
 use reverie::GlobalTool;

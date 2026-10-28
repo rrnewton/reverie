@@ -181,7 +181,7 @@ fn ordinary_root_handoff_preserves_first_event_and_normal_fields() {
         }
         let tool = host.tool.lock();
         assert_eq!(
-            *tool.as_ref().unwrap().events.lock().unwrap(),
+            *tool.as_deref().unwrap().as_ref().unwrap().events.lock().unwrap(),
             [
                 ("thread-start", root.as_raw(), 97),
                 ("post-exec", root.as_raw(), 97),
@@ -233,9 +233,7 @@ fn ordinary_root_preparation_is_one_use_and_does_not_reseed_other_threads() {
     assert!(host.ordinary_root_state.lock().is_none());
     // The unchanged real fork path derives state from its parent, never from
     // the initializer or a fresh root. These are modeled identities only.
-    let child_tool = host
-        .process_configuration
-        .new_process(Pid::from_raw(41), host.rpc());
+    let child_tool = tool.new_process(Pid::from_raw(41), host.rpc().config());
     let child = child_tool.init_thread_state(Pid::from_raw(43), Some((Pid::from_raw(31), &parent)));
     assert_eq!(child, (43, 98));
 }
