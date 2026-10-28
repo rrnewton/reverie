@@ -236,6 +236,27 @@ impl GuestStack {
     }
 }
 
+/// The trap fields of a thread's signal frames: the number, error code and
+/// fault address of the last CPU exception that raised a signal in the
+/// thread. Linux keeps them in the task (`thread.trap_nr`,
+/// `thread.error_code` and `thread.cr2`), sets them when a trap handler
+/// raises its signal (`do_trap_no_signal` in arch/x86/kernel/traps.c,
+/// `set_signal_archinfo` in arch/x86/mm/fault.c; only a page fault sets
+/// `cr2`), and writes them into the `sigcontext` of every frame it builds
+/// afterwards (`__unsafe_setup_sigcontext` in arch/x86/kernel/signal_64.c),
+/// whatever signal the frame is for. Nothing clears them: fork and clone copy
+/// them with the task (`arch_dup_task_struct`), and exec keeps them
+/// (`flush_thread`).
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct SignalTrapFields {
+    /// `sigcontext.trapno`: the exception vector.
+    pub trapno: u64,
+    /// `sigcontext.err`: the exception's error code.
+    pub error_code: u64,
+    /// `sigcontext.cr2`: the address of the last page fault.
+    pub cr2: u64,
+}
+
 const PENDING_SIGNAL_GENERATION_COUNT: usize = 65;
 pub(crate) type PendingSignalGenerations = [u64; PENDING_SIGNAL_GENERATION_COUNT];
 
@@ -610,6 +631,8 @@ pub(crate) struct ThreadSignalState {
     /// Set only while this thread waits in a host poll that includes
     /// signalfds; a sender that queues a covered signal for it wakes it.
     pub(crate) signalfd_waiter: Option<SignalFdWaiter>,
+    /// The trap fields every signal frame of this thread saves.
+    pub(crate) trap: SignalTrapFields,
 }
 
 impl ThreadSignalState {
@@ -623,6 +646,7 @@ impl ThreadSignalState {
             dequeue_identity: None,
             dequeue_wake: SignalDequeueWake::default(),
             signalfd_waiter: None,
+            trap: self.trap,
         }
     }
 
@@ -636,6 +660,7 @@ impl ThreadSignalState {
             dequeue_identity: None,
             dequeue_wake: SignalDequeueWake::default(),
             signalfd_waiter: None,
+            trap: self.trap,
         }
     }
 
@@ -649,6 +674,7 @@ impl ThreadSignalState {
             dequeue_identity: self.dequeue_identity,
             dequeue_wake: self.dequeue_wake.clone(),
             signalfd_waiter: None,
+            trap: self.trap,
         }
     }
 }
@@ -1640,6 +1666,16 @@ mod tests {
             size: 0x2000,
         });
         thread.pending.enqueue(event, 7).unwrap();
+        // The last trap's fields live in the task: fork and clone copy them,
+        // and exec keeps them.
+        thread.trap = SignalTrapFields {
+            trapno: 14,
+            error_code: 6,
+            cr2: 0x10,
+        };
+        assert_eq!(thread.for_fork().trap, thread.trap);
+        assert_eq!(thread.for_clone_thread().trap, thread.trap);
+        assert_eq!(thread.after_exec().trap, thread.trap);
         let forked = thread.for_fork();
         assert_eq!(forked.blocked, thread.blocked);
         assert_eq!(forked.altstack, thread.altstack);
