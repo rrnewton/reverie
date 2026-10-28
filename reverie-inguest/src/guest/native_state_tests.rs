@@ -146,7 +146,10 @@ fn native_callback_entry_allows_a_sibling_and_retains_its_own_scratch() {
                     .tool
                     .try_lock()
                     .expect("Tool guard released at entry");
-                assert!(std::ptr::eq(callback.parts().0, tool.as_deref().unwrap()));
+                assert!(std::ptr::eq(
+                    callback.parts().0,
+                    tool.as_deref().unwrap().as_ref().unwrap()
+                ));
             }
             assert!(host_ref.states.try_lock().is_some());
             assert_eq!(*callback.parts().1, 71);
