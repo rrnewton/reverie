@@ -224,6 +224,8 @@ impl HostRuntime for Runtime {
 #[cfg(feature = "rcb-clock")]
 #[test]
 fn retained_configuration_preflight_failure_never_constructs_the_tool() {
+    use std::os::fd::AsRawFd;
+
     use super::super::tool_install::PatchHost;
     use super::super::tool_install::install_tool_with;
     use crate::guest::runtime_seam::PatcherRef;
@@ -257,11 +259,12 @@ fn retained_configuration_preflight_failure_never_constructs_the_tool() {
                 }
                 std::thread::sleep(std::time::Duration::from_millis(10));
             }
-            let socket_path =
-                std::env::temp_dir().join(format!("reverie-config-preflight-{}.sock", child.id()));
+            let socket_directory =
+                std::env::temp_dir().join(format!("reverie-config-preflight-{}", child.id()));
             let output = child.wait_with_output().unwrap();
-            if socket_path.exists() {
-                std::fs::remove_file(socket_path).unwrap();
+            if socket_directory.exists() {
+                std::fs::remove_file(socket_directory.join("socket")).unwrap();
+                std::fs::remove_dir(socket_directory).unwrap();
             }
             let mut events = Vec::new();
             witness.read_to_end(&mut events).unwrap();
@@ -348,9 +351,14 @@ fn retained_configuration_preflight_failure_never_constructs_the_tool() {
         }
     }
     let early = phase == "before-selection";
-    let path = std::env::temp_dir().join(format!(
-        "reverie-config-preflight-{}.sock",
-        std::process::id()
+    let directory =
+        std::env::temp_dir().join(format!("reverie-config-preflight-{}", std::process::id()));
+    std::fs::create_dir(&directory).unwrap();
+    let directory_owner = std::fs::File::open(&directory).unwrap();
+    // Keep the socket inside the owned TMPDIR while using a bounded sun_path.
+    let path = std::path::PathBuf::from(format!(
+        "/proc/self/fd/{}/socket",
+        directory_owner.as_raw_fd()
     ));
     let server = if early {
         None
@@ -372,4 +380,6 @@ fn retained_configuration_preflight_failure_never_constructs_the_tool() {
         server.join().unwrap();
         std::fs::remove_file(path).unwrap();
     }
+    drop(directory_owner);
+    std::fs::remove_dir(directory).unwrap();
 }
