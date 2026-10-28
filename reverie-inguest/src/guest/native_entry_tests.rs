@@ -1431,3 +1431,176 @@ fn native_local_tool_entry_keeps_physical_guest_pid_and_virtual_rpc_identity() {
 
 #[path = "native_copied_tests.rs"]
 mod native_copied_tests;
+
+struct ExitOutcomeProbe {
+    exits: Arc<AtomicUsize>,
+}
+
+#[reverie::tool]
+impl Tool for ExitOutcomeProbe {
+    type GlobalState = Remote;
+    type ThreadState = u64;
+
+    async fn handle_thread_start<G: Guest<Self>>(&self, guest: &mut G) -> Result<(), Error> {
+        assert_eq!(*guest.thread_state(), 71);
+        *guest.thread_state_mut() = 72;
+        Ok(())
+    }
+
+    async fn on_exit_thread<G: GlobalRPC<Remote>>(
+        &self,
+        tid: Pid,
+        global: &G,
+        state: u64,
+        status: reverie::ExitStatus,
+    ) -> Result<(), Error> {
+        assert_eq!(state, 72, "exit did not consume the actual started state");
+        assert_eq!(status, reverie::ExitStatus::SUCCESS);
+        assert_eq!(global.config(), &71);
+        assert_eq!(
+            global.send_rpc(Request(301)).await,
+            Reply(tid.as_raw(), 301)
+        );
+        self.exits.fetch_add(1, Ordering::SeqCst);
+        Err(io::Error::other("returned exit control error").into())
+    }
+}
+
+#[test]
+fn native_exit_outcome_distinguishes_completed_tool_error_from_owner_refusal() {
+    for (index, (deferred, strict)) in [(false, false), (true, false), (false, true), (true, true)]
+        .into_iter()
+        .enumerate()
+    {
+        let server = Server::new();
+        let (cache, _peer) = fixture::configured_rpc();
+        let exits = Arc::new(AtomicUsize::new(0));
+        let host = unsafe {
+            ToolHost::new_native(
+                ExitOutcomeProbe {
+                    exits: Arc::clone(&exits),
+                },
+                cache,
+                fixture::actual_pid(libc::SYS_getpid),
+                [Sysno::getpid].into_iter().collect(),
+                true,
+                Runtime,
+            )
+        };
+        let rpc = NativeRpc::new(server.path.clone(), host.rpc.shared_config()).unwrap();
+        let callback = Callback::new(120 + index as u64);
+        let identity = callback.identity();
+        let services = callback.services(None);
+        let handle = unsafe { host.register_native_thread(identity, 71).unwrap() };
+        let lease = unsafe { host.enter_native_callback(handle, identity).unwrap() };
+        let mut call = event(0);
+        let entered = unsafe {
+            host.with_native_guest(lease, &services, &rpc, &mut call, |_tool, _guest, _| {
+                if deferred {
+                    NativeCallbackOutcome::<Result<(), Error>>::Deferred {
+                        number: libc::SYS_exit,
+                        args: [0; 6],
+                    }
+                } else {
+                    NativeCallbackOutcome::Ready(Ok(()))
+                }
+            })
+            .unwrap()
+        };
+        let pending = match entered {
+            NativeCallResult::Return(()) => {
+                assert!(!deferred);
+                None
+            }
+            NativeCallResult::Deferred(owner) => {
+                assert!(deferred);
+                Some(owner)
+            }
+        };
+        if !deferred {
+            let wrong = Callback::new(220 + index as u64);
+            let refused = unsafe {
+                host.dispatch_native_thread_exit_outcome(
+                    handle,
+                    wrong.identity(),
+                    NativeExitRpc::Application(rpc.application(callback.invocation())),
+                    reverie::ExitStatus::SUCCESS,
+                )
+            };
+            assert!(
+                refused.is_err(),
+                "wrong identity reached a completed Tool result"
+            );
+            assert_eq!(exits.load(Ordering::SeqCst), 0);
+        }
+        let result = if let Some(owner) = pending {
+            if strict {
+                unsafe {
+                    host.dispatch_native_deferred_thread_exit(
+                        owner,
+                        identity,
+                        NativeExitRpc::Application(rpc.application(callback.invocation())),
+                        reverie::ExitStatus::SUCCESS,
+                    )
+                }
+                .map(|()| NativeCallbackOutcome::Ready(Ok(())))
+            } else {
+                unsafe {
+                    host.dispatch_native_deferred_thread_exit_outcome(
+                        owner,
+                        identity,
+                        NativeExitRpc::Application(rpc.application(callback.invocation())),
+                        reverie::ExitStatus::SUCCESS,
+                    )
+                }
+            }
+        } else if strict {
+            unsafe {
+                host.dispatch_native_thread_exit(
+                    handle,
+                    identity,
+                    NativeExitRpc::Application(rpc.application(callback.invocation())),
+                    reverie::ExitStatus::SUCCESS,
+                )
+            }
+            .map(|()| NativeCallbackOutcome::Ready(Ok(())))
+        } else {
+            unsafe {
+                host.dispatch_native_thread_exit_outcome(
+                    handle,
+                    identity,
+                    NativeExitRpc::Application(rpc.application(callback.invocation())),
+                    reverie::ExitStatus::SUCCESS,
+                )
+            }
+        };
+        if strict {
+            assert!(
+                matches!(&result, Err(error)
+                if error.to_string().contains("returned exit control error")),
+                "the original strict API stopped propagating the actual Tool error"
+            );
+        } else {
+            assert!(
+                matches!(&result, Ok(NativeCallbackOutcome::Ready(Err(error)))
+                if error.to_string().contains("returned exit control error")),
+                "completed Tool failure was merged with mechanism/owner failure"
+            );
+        }
+        assert_eq!(exits.load(Ordering::SeqCst), 1);
+        assert!(
+            unsafe {
+                host.dispatch_native_thread_exit_outcome(
+                    handle,
+                    identity,
+                    NativeExitRpc::Application(rpc.application(callback.invocation())),
+                    reverie::ExitStatus::SUCCESS,
+                )
+            }
+            .is_err(),
+            "consumed lifecycle was admitted twice"
+        );
+        assert_eq!(exits.load(Ordering::SeqCst), 1);
+        fixture::close_test_primary(&rpc, &callback);
+    }
+}

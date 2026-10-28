@@ -650,6 +650,15 @@ pub struct CopiedNativeParent<T: Tool> {
     _same_thread: PhantomData<*mut ()>,
 }
 
+/// The original copied-parent record after its actual child-side post-event
+/// has stopped using the deferred operation and scratch. It still owns the
+/// same Tool, state and arenas until the later real child initialization and
+/// thread-start. No public constructor, Clone or serialized flag can create
+/// this witness; shared-VM children cannot obtain its prerequisite parent.
+pub struct PostCompletedCopiedNativeParent<T: Tool> {
+    pub(super) parent: CopiedNativeParent<T>,
+}
+
 impl<T: Tool> CopiedNativeParent<T> {
     pub(super) fn parent_identity(&self) -> NativeThreadIdentity {
         self.parent

@@ -406,3 +406,273 @@ fn native_copy_actual_child_keeps_tool_scratch_rpc_and_lifecycle() {
     }
     fixture::close_test_primary(&rpc, &callback);
 }
+
+#[test]
+fn native_copy_real_post_precedes_later_initializer_and_thread_start() {
+    const CHILD: &str = "REVERIE_NATIVE_COPIED_POST_BEFORE_INIT_CONTROL";
+    if std::env::var_os(CHILD).is_none() {
+        let path = module_path!()
+            .split_once("::")
+            .expect("crate-qualified test module")
+            .1;
+        let name =
+            format!("{path}::native_copy_real_post_precedes_later_initializer_and_thread_start");
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", &name, "--nocapture", "--test-threads=1"])
+            .env(CHILD, "1")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "isolated delayed initializer failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(
+            String::from_utf8_lossy(&output.stdout).contains("1 passed; 0 failed"),
+            "isolated delayed initializer did not run its one actual test"
+        );
+        return;
+    }
+
+    let server = Server::new();
+    let (host, _peer) = make_host();
+    let callback = Callback::new(91);
+    let rpc = NativeRpc::new(server.path.clone(), host.rpc.shared_config()).unwrap();
+    let mut original = Some(prepare_copy(&host, &callback, &rpc));
+    let drop_order = Arc::new(DropOrder::default());
+    original
+        .as_mut()
+        .unwrap()
+        .callback_mut()
+        .parts()
+        .1
+        .copied_parent_drop = Some(ParentDrop(Arc::clone(&drop_order)));
+    // Both actual inherited locks remain held in the COW child. Neither the
+    // transfer nor its early post-completion may reacquire them.
+    let mut inherited_primary = rpc
+        .borrow_mapping_capture_primary(callback.identity().physical_pid())
+        .unwrap();
+    let inherited_slot = host.tool.lock();
+    let original_tool = Arc::as_ptr(inherited_slot.as_ref().unwrap()) as usize;
+    let saved = inherited_slot
+        .as_deref()
+        .unwrap()
+        .as_ref()
+        .unwrap()
+        .saved_stack
+        .load(Ordering::SeqCst);
+    let child = unsafe { libc::fork() };
+    assert!(child >= 0);
+    if child == 0 {
+        unsafe {
+            libc::alarm(10);
+        }
+        let passed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let callback = Callback::new(91);
+            let services = callback.services(None);
+            let copied = unsafe {
+                host.rebind_copied_native_process(&mut original, &services, &rpc, Runtime)
+                    .unwrap()
+            };
+            let child_host = copied.host;
+            let child_rpc = copied.rpc;
+            let mut parent = Some(copied.parent);
+            assert!(original.is_none());
+            assert_eq!(unsafe { *(saved as *const u64) }, 0x7197);
+            let stale = Callback::new(92);
+            assert_eq!(
+                unsafe {
+                    child_host.complete_copied_native_post(
+                        &stale.services(None),
+                        &child_rpc,
+                        &mut parent,
+                    )
+                }
+                .err()
+                .expect("wrong image consumed copied post owner")
+                .raw_os_error(),
+                Some(libc::ESTALE)
+            );
+            assert!(parent.is_some(), "refusal consumed original copied record");
+            // This is the actual child's final post boundary. A later API
+            // call cannot authorize it by supplying a serialized bool.
+            let completed = unsafe {
+                child_host
+                    .complete_copied_native_post(&services, &child_rpc, &mut parent)
+                    .unwrap()
+            };
+            assert!(parent.is_none());
+            assert_eq!(
+                unsafe {
+                    child_host.complete_copied_native_post(&services, &child_rpc, &mut parent)
+                }
+                .err()
+                .expect("copied post owner completed twice")
+                .raw_os_error(),
+                Some(libc::ESTALE)
+            );
+            assert_eq!(callback.count(libc::SYS_socket), 0);
+            assert_eq!(callback.count(libc::SYS_dup3), 0);
+            assert_eq!(
+                child_rpc.descriptor(callback.identity().physical_pid()),
+                None
+            );
+            assert_eq!(drop_order.parent_drops.load(Ordering::SeqCst), 0);
+            assert!(!drop_order.child_start_completed.load(Ordering::SeqCst));
+            assert_eq!(unsafe { *(saved as *const u64) }, 0x7197);
+            {
+                let slot = child_host
+                    .tool
+                    .try_lock()
+                    .expect("fresh Tool slot unlocked at post");
+                assert_eq!(Arc::as_ptr(slot.as_ref().unwrap()) as usize, original_tool);
+                assert_eq!(
+                    slot.as_deref()
+                        .unwrap()
+                        .as_ref()
+                        .unwrap()
+                        .initializer_entries
+                        .load(Ordering::SeqCst),
+                    0
+                );
+            }
+            // The native owner now reaches the maintained later initializer.
+            // It still has the same Tool, original parent and live scratch.
+            let handle = unsafe {
+                child_host
+                    .initialize_postcompleted_copied_native_thread(
+                        &services,
+                        &child_rpc,
+                        completed,
+                        |parent| {
+                            assert_eq!((parent.starts, parent.posts, parent.seed), (1, 1, 71));
+                            parent.seed = 79;
+                            Ok(())
+                        },
+                        |state, parent| {
+                            assert_eq!(parent.seed, 79);
+                            assert_eq!(state.parent_seed, Some(79));
+                            assert_eq!(state.initialized_for, callback.identity().tid().as_raw());
+                            assert_eq!(drop_order.parent_drops.load(Ordering::SeqCst), 0);
+                            state.copied_child_order = Some(Arc::clone(&drop_order));
+                            Ok(())
+                        },
+                    )
+                    .unwrap()
+            };
+            assert_eq!(callback.count(libc::SYS_socket), 1);
+            assert_eq!(callback.count(libc::SYS_dup3), 1);
+            assert_eq!(drop_order.parent_drops.load(Ordering::SeqCst), 0);
+            assert!(!drop_order.child_start_completed.load(Ordering::SeqCst));
+            assert_eq!(unsafe { *(saved as *const u64) }, 0x7197);
+            // Real common entry must run the child's actual thread-start once
+            // before dropping its original parent, without a synthetic exec.
+            let lease = unsafe {
+                child_host
+                    .enter_native_callback(handle, callback.identity())
+                    .unwrap()
+            };
+            let mut first = event(0);
+            unsafe {
+                child_host
+                    .with_native_guest(
+                        lease,
+                        &services,
+                        &child_rpc,
+                        &mut first,
+                        |tool, guest, _| {
+                            assert_eq!(tool.initializer_entries.load(Ordering::SeqCst), 1);
+                            assert_eq!(
+                                (guest.thread_state().starts, guest.thread_state().posts),
+                                (1, 0)
+                            );
+                            assert_eq!(guest.thread_state().order, [1]);
+                            assert_eq!(drop_order.parent_drops.load(Ordering::SeqCst), 1);
+                            assert!(drop_order.retired_after_start.load(Ordering::SeqCst));
+                            assert_eq!(
+                                crate::tool_host::drive_native_ready(guest.send_rpc(Request(314))),
+                                Reply(callback.identity().tid().as_raw(), 314)
+                            );
+                            NativeCallbackOutcome::Ready(Ok(()))
+                        },
+                    )
+                    .unwrap();
+            }
+            let lease = unsafe {
+                child_host
+                    .enter_native_callback(handle, callback.identity())
+                    .unwrap()
+            };
+            unsafe {
+                child_host
+                    .with_native_guest(
+                        lease,
+                        &services,
+                        &child_rpc,
+                        &mut first,
+                        |tool, guest, _| {
+                            assert_eq!(tool.initializer_entries.load(Ordering::SeqCst), 1);
+                            assert_eq!(
+                                (guest.thread_state().starts, guest.thread_state().posts),
+                                (1, 0)
+                            );
+                            assert_eq!(drop_order.parent_drops.load(Ordering::SeqCst), 1);
+                            NativeCallbackOutcome::Ready(Ok(()))
+                        },
+                    )
+                    .unwrap();
+            }
+        }))
+        .is_ok();
+        // Never run inherited guards/registries' parent cleanup in the child.
+        unsafe {
+            libc::_exit(if passed { 0 } else { 101 });
+        }
+    }
+    drop(inherited_slot);
+    let deadline = std::time::Instant::now() + Duration::from_secs(15);
+    let mut status = 0;
+    loop {
+        let waited = unsafe { libc::waitpid(child, &mut status, libc::WNOHANG) };
+        if waited == child {
+            break;
+        }
+        assert_eq!(waited, 0);
+        if std::time::Instant::now() >= deadline {
+            unsafe {
+                libc::kill(child, libc::SIGKILL);
+                libc::waitpid(child, &mut status, 0);
+            }
+            panic!("delayed copied initializer locked an inherited owner or failed to complete");
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert!(libc::WIFEXITED(status));
+    assert_eq!(libc::WEXITSTATUS(status), 0);
+    inherited_primary.release(true);
+    assert_eq!(
+        rpc.application(callback.invocation())
+            .exchange(Request(315))
+            .unwrap(),
+        Reply(callback.identity().tid().as_raw(), 315)
+    );
+    assert_eq!(
+        host.tool
+            .lock()
+            .as_deref()
+            .unwrap()
+            .as_ref()
+            .unwrap()
+            .initializer_entries
+            .load(Ordering::SeqCst),
+        0
+    );
+    unsafe {
+        original
+            .take()
+            .unwrap()
+            .complete(callback.invocation())
+            .unwrap();
+    }
+    fixture::close_test_primary(&rpc, &callback);
+}
