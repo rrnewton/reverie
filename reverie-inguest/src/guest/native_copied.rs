@@ -16,6 +16,17 @@ use super::native_state::NativeThreadHandle;
 use super::native_state::NativeThreads;
 use super::*;
 
+/// The fresh process storage/connection owner and its actual one-use parent.
+/// Moving these fields does not grant admission or consume the continuation.
+pub struct CopiedNativeProcess<T: Tool, R: HostRuntime> {
+    /// Fresh registry/runtime storage retaining the original Tool/config.
+    pub host: ToolHost<T, R>,
+    /// Fresh RPC storage retaining the actual inherited protected FD fact.
+    pub rpc: NativeRpc<T::GlobalState>,
+    /// The consumed original parent's state, scratch and deferred operation.
+    pub parent: CopiedNativeParent<T>,
+}
+
 impl<T: Tool + 'static, R: HostRuntime> ToolHost<T, R>
 where
     T::GlobalState: 'static,
@@ -36,19 +47,20 @@ where
     /// and lifecycle, retain all existing copied-process restrictions, and
     /// supply the same live image with its actual child leader identity.
     /// No Rust Guest/future or native use of the original scratch may be live
-    /// concurrently. `rpc`, `native_rpc`, and `runtime` must be fresh owners
-    /// for this process using the same authentic configuration, not copied
-    /// locked connection/runtime storage. Local consuming-fork policy is not
+    /// concurrently. `inherited_rpc` must be the original callback's actual
+    /// connection owner, and `runtime` must be a fresh process-owned runtime.
+    /// Its immutable authenticated route/config and published descriptor fact
+    /// construct new RPC storage without entering its copied lock. No inherited
+    /// connection frame is reused. Local consuming-fork policy is not
     /// selected by this native storage transfer. This grants no image or
     /// private-phase authority.
     pub unsafe fn rebind_copied_native_process(
         &self,
         deferred: &mut Option<DeferredNative<'_, T>>,
         services: &NativeServices<'_>,
-        native_rpc: &NativeRpc<T::GlobalState>,
-        rpc: CoordinatorRpc<T::GlobalState>,
+        inherited_rpc: &NativeRpc<T::GlobalState>,
         runtime: R,
-    ) -> io::Result<(Self, CopiedNativeParent<T>)> {
+    ) -> io::Result<CopiedNativeProcess<T, R>> {
         let invocation = services.invocation();
         invocation.ensure_current()?;
         let child = invocation.identity();
@@ -69,9 +81,7 @@ where
             return Err(io::Error::from_raw_os_error(libc::ESTALE));
         }
         let config = self.rpc.shared_config();
-        if !Arc::ptr_eq(&config, &rpc.shared_config())
-            || !Arc::ptr_eq(&config, native_rpc.shared_config())
-        {
+        if !Arc::ptr_eq(&config, inherited_rpc.shared_config()) {
             return Err(io::Error::from_raw_os_error(libc::ESTALE));
         }
         // Existing native hosts adopt a legacy Tool once; selected ordinary
@@ -80,6 +90,7 @@ where
         if original.callback_tool().selected_configuration().is_some() {
             return Err(io::Error::from(io::ErrorKind::Unsupported));
         }
+        let (native_rpc, rpc) = inherited_rpc.for_copied_coordinator(parent, invocation)?;
         invocation.ensure_current()?;
         let parent = deferred
             .take()
@@ -100,7 +111,11 @@ where
             #[cfg(feature = "exec-native-injection")]
             native_exec_driver: None,
         };
-        Ok((host, parent))
+        Ok(CopiedNativeProcess {
+            host,
+            rpc: native_rpc,
+            parent,
+        })
     }
 
     /// Initialize the admitted copied child from the consumed original parent.
