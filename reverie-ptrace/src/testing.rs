@@ -96,6 +96,32 @@ pub fn precise_timer_halved_stages_armed() -> u64 {
     crate::timer::HALVED_STAGES_ARMED.load(std::sync::atomic::Ordering::Relaxed)
 }
 
+pub use crate::timer::HalvedTimerRearm;
+
+/// Successful re-arms of lost halved notifications at disregarded guest
+/// stops while kept-programming checks were enabled. This excludes initial
+/// programming, PMU-notification stops, unsuccessful re-arms and cancelled
+/// events. These stops change the programming, so they are not unchanged
+/// keeps checked by [`KeptTimerProgrammingChecks`].
+///
+/// The count and records are process global; a test must own them while it
+/// runs. Compare the count's change with the records' length to detect a
+/// truncated list.
+pub fn precise_timer_halved_rearms_at_disregarded_stops() -> u64 {
+    crate::timer::HALVED_REARMS_AT_DISREGARDED_STOPS.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Takes the first 1024 records of
+/// [`precise_timer_halved_rearms_at_disregarded_stops`] since the last call.
+/// A test must check the total count too, so truncation fails closed.
+pub fn take_precise_timer_halved_rearms_at_disregarded_stops() -> Vec<HalvedTimerRearm> {
+    std::mem::take(
+        &mut *crate::timer::HALVED_REARMS_AT_DISREGARDED_STOPS_EVENTS
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()),
+    )
+}
+
 /// The steps this process's timers have taken toward precise event targets,
 /// and the lookups in their block bound caches, so far.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -160,6 +186,9 @@ pub use crate::timer::KeptProgramming;
 /// which the request programmed it to, the target less the margin the request
 /// programmed for a precise event (see [`crate::PmuConfig::stages`]). A staged
 /// event's second stage is checked as the programming its re-arm made. The check reads both counters once per such stop.
+/// A stop that instead re-arms a lost halved notification changes the
+/// programming and is counted separately by
+/// [`precise_timer_halved_rearms_at_disregarded_stops`].
 ///
 /// A stop whose check passes and that hands nothing on is checked again at
 /// the thread's next stop, or at the event's next request, cancellation or
