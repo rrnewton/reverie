@@ -139,11 +139,7 @@ where
                 injected_syscalls: 0,
             };
             match enter_tool_callbacks(tool, &mut guest, lifecycle) {
-                Ok(()) => work(
-                    tool.as_ref().expect("pinned live Tool"),
-                    &mut guest,
-                    &tail,
-                ),
+                Ok(()) => work(tool.as_ref().expect("pinned live Tool"), &mut guest, &tail),
                 Err(EntryFailure::Tool(error)) => return Err(error),
                 Err(EntryFailure::Ending(_)) => {
                     return Err(native_callback_error(
@@ -166,6 +162,45 @@ where
             )),
             NativeCallbackOutcome::Unsupported(reason) => Err(native_callback_error(reason)),
         }
+    }
+
+    /// Continue the original deferred callback for the native owner's real
+    /// returning post-event Tool work. In particular, parent-side child
+    /// registration and failed-exec cancellation must keep the original state
+    /// and scratch instead of completing it and entering a fresh callback.
+    /// No registry/Tool-slot lock survives into the supplied work or its RPC.
+    ///
+    /// # Safety
+    /// The actual original operation has returned on this same task/image,
+    /// with its native continuation, selected services and original scratch
+    /// still live. `work` is its real post-event bookkeeping, not another
+    /// syscall delivery. It must end every original scratch use and commit
+    /// its register/clone/exec/signal bookkeeping before returning Ready. A
+    /// Deferred result must stay with the corresponding real native owner;
+    /// a nonreturning exit must use the consuming exit API instead.
+    pub unsafe fn with_native_post_event<'owner, V>(
+        &self,
+        deferred: DeferredNative<'owner, T>,
+        services: &NativeServices<'_>,
+        native_rpc: &NativeRpc<T::GlobalState>,
+        event: &mut SyscallEvent,
+        work: impl FnOnce(
+            &T,
+            &mut InGuest<'_, T, R>,
+            &TailResult,
+        ) -> NativeCallbackOutcome<Result<V, Error>>,
+    ) -> Result<NativeCallResult<'owner, T, V>, Error> {
+        let owner = self
+            .native_threads
+            .as_ref()
+            .ok_or_else(|| io::Error::from(io::ErrorKind::Unsupported))?;
+        if !deferred.owned_by(owner) {
+            return Err(io::Error::from_raw_os_error(libc::ESTALE).into());
+        }
+        let callback = unsafe { deferred.into_post_event(services.invocation())? };
+        // Reuse rather than NativeThreads::enter: that entry resets completed
+        // scratch for the NEXT operation, which this post-event is not.
+        unsafe { self.with_native_guest(callback, services, native_rpc, event, work) }
     }
 
     /// Enter the actual subscribed syscall handler once. Native error/restart

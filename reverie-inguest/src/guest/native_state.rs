@@ -99,6 +99,37 @@ pub struct NativeThreadHandle {
     sequence: u64,
 }
 
+/// A one-use clone of the actual parent's state, bound to this registry's
+/// original parent sequence/image and the exact admitted child. There is no
+/// public constructor or Clone implementation: copied numeric IDs do not
+/// manufacture a parent snapshot.
+pub struct NativeParentSnapshot<S> {
+    owner: u64,
+    parent_handle: NativeThreadHandle,
+    parent: NativeThreadIdentity,
+    child: NativeThreadIdentity,
+    state: S,
+}
+
+impl<S> NativeParentSnapshot<S> {
+    /// Admitted facts retained at the actual parent's clone boundary.
+    pub fn parent_identity(&self) -> NativeThreadIdentity {
+        self.parent
+    }
+
+    /// The one admitted child for which this snapshot was prepared.
+    pub fn child_identity(&self) -> NativeThreadIdentity {
+        self.child
+    }
+
+    pub(super) fn parts(&self) -> (reverie::Tid, &S) {
+        (
+            reverie::Tid::from_raw(self.parent.tid().as_raw()),
+            &self.state,
+        )
+    }
+}
+
 /// Scratch retained by one actual callback/continuation, never by a process
 /// global reset. Committed stack guards keep this same owner alive.
 #[derive(Clone)]
@@ -131,6 +162,8 @@ struct Record<S> {
 }
 
 enum Phase<S> {
+    Initializing,
+    InitializationFailed,
     Available(Box<Record<S>>),
     Active,
     // Keep the original state after an abandoned callback. Re-entry cannot
@@ -224,6 +257,72 @@ impl<S> NativeThreads<S> {
         })
     }
 
+    /// Reserve before Tool initialization, so neither a failed initializer nor
+    /// a second caller can initialize the same admitted task/image twice.
+    pub(super) fn reserve(
+        &self,
+        identity: NativeThreadIdentity,
+    ) -> io::Result<NativeInitialization<'_, S>> {
+        let mut registry = self
+            .registry
+            .try_lock()
+            .ok_or_else(|| io::Error::from(io::ErrorKind::WouldBlock))?;
+        if registry.slots.values().any(|slot| {
+            slot.identity == identity
+                || (!matches!(slot.phase, Phase::Retired)
+                    && slot.identity.physical_pid == identity.physical_pid
+                    && slot.identity.physical_tid == identity.physical_tid)
+        }) {
+            return Err(io::Error::from(io::ErrorKind::AlreadyExists));
+        }
+        let sequence = registry.next;
+        registry.next = sequence
+            .checked_add(1)
+            .ok_or_else(|| io::Error::from_raw_os_error(libc::EOVERFLOW))?;
+        registry.slots.insert(
+            sequence,
+            Slot {
+                identity,
+                phase: Phase::Initializing,
+            },
+        );
+        Ok(NativeInitialization {
+            owner: self,
+            handle: NativeThreadHandle {
+                owner: self.owner,
+                sequence,
+            },
+            identity,
+            published: false,
+        })
+    }
+
+    pub(super) fn check_parent(
+        &self,
+        parent: &NativeParentSnapshot<S>,
+        child: NativeThreadIdentity,
+    ) -> io::Result<()> {
+        if parent.owner != self.owner || parent.child != child || parent.parent.image != child.image
+        {
+            return Err(io::Error::from_raw_os_error(libc::ESTALE));
+        }
+        let mut registry = self
+            .registry
+            .try_lock()
+            .ok_or_else(|| io::Error::from(io::ErrorKind::WouldBlock))?;
+        let slot = self.checked_slot(&mut registry, parent.parent_handle, parent.parent)?;
+        match &slot.phase {
+            // A genuine snapshot may outlive its parent's normal retirement.
+            // The original sequence/image remains in this registry; no new
+            // state or authority is reconstructed from a reused physical TID.
+            Phase::Available(_) | Phase::Active | Phase::Retired => Ok(()),
+            Phase::Initializing => Err(io::Error::from(io::ErrorKind::WouldBlock)),
+            Phase::InitializationFailed | Phase::Poisoned { .. } => {
+                Err(io::Error::from_raw_os_error(libc::EIO))
+            }
+        }
+    }
+
     fn checked_slot<'a>(
         &self,
         registry: &'a mut Registry<S>,
@@ -255,7 +354,10 @@ impl<S> NativeThreads<S> {
         let slot = self.checked_slot(&mut registry, handle, identity)?;
         match &slot.phase {
             Phase::Available(_) => {}
-            Phase::Active => return Err(io::Error::from(io::ErrorKind::WouldBlock)),
+            Phase::Active | Phase::Initializing => {
+                return Err(io::Error::from(io::ErrorKind::WouldBlock));
+            }
+            Phase::InitializationFailed => return Err(io::Error::from_raw_os_error(libc::EIO)),
             Phase::Poisoned { .. } => return Err(io::Error::from_raw_os_error(libc::EIO)),
             Phase::Retired => return Err(io::Error::from_raw_os_error(libc::ESTALE)),
         }
@@ -283,8 +385,10 @@ impl<S> NativeThreads<S> {
         for slot in registry.slots.values() {
             match &slot.phase {
                 Phase::Retired => {}
-                Phase::Poisoned { .. } => return Err(io::Error::from_raw_os_error(libc::EIO)),
-                Phase::Available(_) | Phase::Active => {
+                Phase::Poisoned { .. } | Phase::InitializationFailed => {
+                    return Err(io::Error::from_raw_os_error(libc::EIO));
+                }
+                Phase::Available(_) | Phase::Active | Phase::Initializing => {
                     return Err(io::Error::from(io::ErrorKind::WouldBlock));
                 }
             }
@@ -304,7 +408,10 @@ impl<S> NativeThreads<S> {
         let slot = self.checked_slot(&mut registry, handle, identity)?;
         match &slot.phase {
             Phase::Available(_) => {}
-            Phase::Active => return Err(io::Error::from(io::ErrorKind::WouldBlock)),
+            Phase::Active | Phase::Initializing => {
+                return Err(io::Error::from(io::ErrorKind::WouldBlock));
+            }
+            Phase::InitializationFailed => return Err(io::Error::from_raw_os_error(libc::EIO)),
             Phase::Poisoned { .. } => return Err(io::Error::from_raw_os_error(libc::EIO)),
             Phase::Retired => return Err(io::Error::from_raw_os_error(libc::ESTALE)),
         }
@@ -312,6 +419,51 @@ impl<S> NativeThreads<S> {
             unreachable!("available phase checked under the same registry guard")
         };
         Ok(record.state)
+    }
+}
+
+pub(super) struct NativeInitialization<'owner, S> {
+    owner: &'owner NativeThreads<S>,
+    handle: NativeThreadHandle,
+    identity: NativeThreadIdentity,
+    published: bool,
+}
+
+impl<S> NativeInitialization<'_, S> {
+    pub(super) fn publish(
+        mut self,
+        state: S,
+        lifecycle: CallbackLifecycle,
+    ) -> io::Result<NativeThreadHandle> {
+        let mut registry = self.owner.registry.lock();
+        let slot = self
+            .owner
+            .checked_slot(&mut registry, self.handle, self.identity)?;
+        if !matches!(slot.phase, Phase::Initializing) {
+            return Err(io::Error::from_raw_os_error(libc::ESTALE));
+        }
+        slot.phase = Phase::Available(Box::new(Record {
+            state,
+            scratch: CallbackScratch::new(),
+            lifecycle,
+        }));
+        self.published = true;
+        Ok(self.handle)
+    }
+}
+
+impl<S> Drop for NativeInitialization<'_, S> {
+    fn drop(&mut self) {
+        if !self.published {
+            let mut registry = self.owner.registry.lock();
+            let slot = registry
+                .slots
+                .get_mut(&self.handle.sequence)
+                .expect("reserved native initializer slot");
+            // Failure is terminal for this exact admitted identity. A later
+            // caller cannot silently manufacture a default or rerun Tool init.
+            slot.phase = Phase::InitializationFailed;
+        }
     }
 }
 
@@ -402,6 +554,32 @@ impl<'owner, T: Tool> NativeCallbackLease<'owner, T> {
         std::ptr::eq(self.state.owner, owner)
     }
 
+    pub(super) fn snapshot_child(
+        &mut self,
+        child: NativeThreadIdentity,
+        prepare: impl FnOnce(&mut T::ThreadState) -> io::Result<()>,
+    ) -> io::Result<NativeParentSnapshot<T::ThreadState>>
+    where
+        T::ThreadState: Clone,
+    {
+        if child.image != self.state.identity.image {
+            return Err(io::Error::from_raw_os_error(libc::ESTALE));
+        }
+        let record = self
+            .state
+            .record
+            .as_mut()
+            .expect("live parent callback record");
+        prepare(&mut record.state)?;
+        Ok(NativeParentSnapshot {
+            owner: self.state.owner.owner,
+            parent_handle: self.state.handle,
+            parent: self.state.identity,
+            child,
+            state: record.state.clone(),
+        })
+    }
+
     pub(super) fn dispatch_parts(
         &mut self,
     ) -> (
@@ -467,6 +645,10 @@ impl<'owner, T: Tool> DeferredNative<'owner, T> {
         }
     }
 
+    pub(super) fn callback_mut(&mut self) -> &mut NativeCallbackLease<'owner, T> {
+        &mut self.callback
+    }
+
     /// Exact operation to apply through the native owner's existing deferred
     /// path, not a second raw-syscall implementation.
     pub fn operation(&self) -> (i64, [u64; 6]) {
@@ -475,6 +657,25 @@ impl<'owner, T: Tool> DeferredNative<'owner, T> {
 
     pub(super) fn owned_by(&self, owner: &NativeThreads<T::ThreadState>) -> bool {
         self.callback.owned_by(owner)
+    }
+
+    /// Reuse this exact active state and scratch during its genuine returning
+    /// post-event. This does not open a new callback or clear its arenas.
+    ///
+    /// # Safety
+    /// The original native operation has returned and the real post-event
+    /// owner now needs Tool work for its child/failed-exec bookkeeping. The
+    /// same task/image/context and all original scratch storage remain live.
+    /// No replacement event or serialized completion flag is authority.
+    pub(super) unsafe fn into_post_event(
+        self,
+        invocation: NativeInvocation<'_>,
+    ) -> io::Result<NativeCallbackLease<'owner, T>> {
+        invocation.ensure_current()?;
+        if invocation.identity() != self.callback.identity() {
+            return Err(io::Error::from_raw_os_error(libc::ESTALE));
+        }
+        Ok(self.callback)
     }
 
     /// Publish the original state only after the native operation and its

@@ -67,6 +67,8 @@ mod host_linux;
 
 #[path = "native_entry.rs"]
 mod native_entry;
+#[path = "native_initialize.rs"]
+mod native_initialize;
 /// Exclusive state and scratch owners for live native callbacks.
 #[path = "native_state.rs"]
 pub mod native_state;
@@ -4647,7 +4649,10 @@ mod process_owner_tests {
             ]
         );
         assert_eq!(owner.as_deref().unwrap().as_ref().unwrap().pid, child_pid);
-        assert_eq!(owner.as_deref().unwrap().selected_configuration().is_some(), mode == "selected");
+        assert_eq!(
+            owner.as_deref().unwrap().selected_configuration().is_some(),
+            mode == "selected"
+        );
         assert_eq!(states.len(), 1);
         assert_eq!(states.get(&child_tid).unwrap().pid, child_pid);
     }
