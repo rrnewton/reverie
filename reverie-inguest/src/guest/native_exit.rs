@@ -103,24 +103,21 @@ where
             .ok_or_else(|| io::Error::from_raw_os_error(libc::ESTALE))
     }
 
-    fn finish_native_exit_state(
+    fn drive_native_exit_state(
         &self,
         tool: Arc<ToolProcess<T>>,
         state: T::ThreadState,
         tid: Pid,
         rpc: NativeExitRpc<'_, T::GlobalState>,
         status: reverie::ExitStatus,
-    ) -> Result<(), Error> {
+    ) -> NativeCallbackOutcome<Result<(), Error>> {
         // No Tool-slot or registry guard survives into any lifecycle callback
         // or blocking RPC. The original state is consumed exactly once.
         let _allocation = super::super::alloc::enter_dispatch();
         let _active = super::super::support::ToolCallbackGuard::enter();
         let tail = TailResult::default();
         let _route = rpc.enter(&tail);
-        completed_exit(drive_native_callback(
-            tool.on_exit_thread(tid, &rpc, state, status),
-            &tail,
-        ))
+        drive_native_callback(tool.on_exit_thread(tid, &rpc, state, status), &tail)
     }
 
     /// Retire the original available state and drive its real thread-exit hook.
@@ -138,10 +135,30 @@ where
         rpc: NativeExitRpc<'_, T::GlobalState>,
         status: reverie::ExitStatus,
     ) -> Result<(), Error> {
+        completed_exit(unsafe {
+            self.dispatch_native_thread_exit_outcome(handle, identity, rpc, status)
+        }?)
+    }
+
+    /// The same consuming exit, exposing the actual completed Tool result
+    /// separately from identity, RPC preparation and state-retirement failure.
+    /// The caller owns the native protocol's treatment of a returned Tool
+    /// error; Deferred/Unsupported are not successful lifecycle completion.
+    ///
+    /// # Safety
+    /// All contracts of `dispatch_native_thread_exit` apply unchanged. This
+    /// does not grant a retry or a replacement state after consumption.
+    pub unsafe fn dispatch_native_thread_exit_outcome(
+        &self,
+        handle: NativeThreadHandle,
+        identity: NativeThreadIdentity,
+        rpc: NativeExitRpc<'_, T::GlobalState>,
+        status: reverie::ExitStatus,
+    ) -> Result<NativeCallbackOutcome<Result<(), Error>>, Error> {
         rpc.prepare(identity, &self.rpc.shared_config())?;
         let tool = self.native_exit_tool()?;
         let state = unsafe { self.retire_native_thread(handle, identity)? };
-        self.finish_native_exit_state(tool, state, identity.tid(), rpc, status)
+        Ok(self.drive_native_exit_state(tool, state, identity.tid(), rpc, status))
     }
 
     /// Consume the original active deferred lease at its actual nonreturning
@@ -158,6 +175,24 @@ where
         rpc: NativeExitRpc<'_, T::GlobalState>,
         status: reverie::ExitStatus,
     ) -> Result<(), Error> {
+        completed_exit(unsafe {
+            self.dispatch_native_deferred_thread_exit_outcome(deferred, identity, rpc, status)
+        }?)
+    }
+
+    /// Deferred counterpart of `dispatch_native_thread_exit_outcome`.
+    /// It consumes the exact original callback/scratch owner, never a newly
+    /// authenticated available-state lease.
+    ///
+    /// # Safety
+    /// All contracts of `dispatch_native_deferred_thread_exit` apply unchanged.
+    pub unsafe fn dispatch_native_deferred_thread_exit_outcome(
+        &self,
+        deferred: DeferredNative<'_, T>,
+        identity: NativeThreadIdentity,
+        rpc: NativeExitRpc<'_, T::GlobalState>,
+        status: reverie::ExitStatus,
+    ) -> Result<NativeCallbackOutcome<Result<(), Error>>, Error> {
         rpc.prepare(identity, &self.rpc.shared_config())?;
         let owner = self
             .native_threads
@@ -167,7 +202,7 @@ where
             return Err(io::Error::from_raw_os_error(libc::ESTALE).into());
         }
         let (tool, state) = unsafe { deferred.retire(identity)? };
-        self.finish_native_exit_state(tool, state, identity.tid(), rpc, status)
+        Ok(self.drive_native_exit_state(tool, state, identity.tid(), rpc, status))
     }
 
     /// Consume the same existing Tool only after its actual native thread
