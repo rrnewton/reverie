@@ -54,7 +54,7 @@ type LogicalTime = u64;
 
 #[derive(Debug, Default)]
 // TODO-HUMAN-REVIEW(PR-152): Review crate-local LiteInst hosting visibility.
-pub(crate) struct ChunkyPrintGlobal(Mutex<Inner>);
+pub struct ChunkyPrintGlobal(Mutex<Inner>);
 
 #[derive(Debug, Default)]
 struct Inner {
@@ -90,7 +90,7 @@ impl GlobalTool for ChunkyPrintGlobal {
 
 impl ChunkyPrintGlobal {
     // TODO-HUMAN-REVIEW(PR-152): Review the shared final-output flush boundary.
-    pub(crate) fn flush(&self) -> io::Result<()> {
+    pub fn flush(&self) -> io::Result<()> {
         self.0.lock().unwrap().flush_messages()
     }
 }
@@ -168,7 +168,7 @@ impl Inner {
 
 #[derive(Debug, Default)]
 // TODO-HUMAN-REVIEW(PR-152): Review crate-local LiteInst hosting visibility.
-pub(crate) struct ChunkyPrintLocal {
+pub struct ChunkyPrintLocal {
     stdout_disconnected: AtomicBool,
     stderr_disconnected: AtomicBool,
 }
