@@ -156,6 +156,14 @@ where
         // above has ended before any continuation/state owner is returned.
         invocation.ensure_current()?;
         match outcome {
+            NativeCallbackOutcome::Ready(Err(Error::Errno(errno))) => {
+                // The maintained native owner returns Linux errno to the
+                // guest. That completed handler does not abandon its state or
+                // enter the local ERESTARTSYS retry loop. Tool/Io failures in
+                // the following arm still poison the abandoned callback.
+                unsafe { callback.complete(identity)? };
+                Err(Error::Errno(errno))
+            }
             NativeCallbackOutcome::Ready(value) => {
                 let value = value?;
                 unsafe { callback.complete(identity)? };

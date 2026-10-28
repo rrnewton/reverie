@@ -25,9 +25,9 @@ use reverie::syscalls::Errno;
 use reverie::syscalls::Syscall;
 use reverie::syscalls::SyscallInfo;
 
+use super::GlobalState;
 use crate::config::Config;
-use crate::global_state::GlobalState;
-use crate::global_state::OutputEvent;
+use super::OutputEvent;
 
 async fn send_output<G: GlobalRPC<GlobalState>>(
     global: &G,
