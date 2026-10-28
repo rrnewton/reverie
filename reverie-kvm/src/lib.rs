@@ -29,6 +29,7 @@
 mod clock;
 mod cpuid_instruction;
 mod entry_driver;
+mod host_xss;
 mod preemption_timer;
 mod runtime;
 mod stats;
