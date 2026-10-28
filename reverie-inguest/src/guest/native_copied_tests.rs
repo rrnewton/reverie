@@ -71,16 +71,8 @@ fn native_copy_refuses_same_process_without_consuming_the_original() {
     let config = host.rpc.shared_config();
     let rpc = NativeRpc::new(server.path.clone(), Arc::clone(&config)).unwrap();
     let mut original = Some(prepare_copy(&host, &callback, &rpc));
-    let child_rpc = NativeRpc::new(server.path.clone(), Arc::clone(&config)).unwrap();
-    let cache = CoordinatorRpc::from_native_configuration(&server.path, config).unwrap();
     let error = unsafe {
-        host.rebind_copied_native_process(
-            &mut original,
-            &callback.services(None),
-            &child_rpc,
-            cache,
-            Runtime,
-        )
+        host.rebind_copied_native_process(&mut original, &callback.services(None), &rpc, Runtime)
     }
     .err()
     .expect("the current parent is not its copied child");
@@ -104,6 +96,7 @@ fn native_copy_refuses_same_process_without_consuming_the_original() {
             .complete(callback.invocation())
             .unwrap();
     }
+    fixture::close_test_primary(&rpc, &callback);
 }
 
 #[test]
@@ -150,6 +143,18 @@ fn native_copy_actual_child_keeps_tool_scratch_rpc_and_lifecycle() {
         .parts()
         .1
         .copied_parent_drop = Some(ParentDrop(Arc::clone(&drop_order)));
+    let inherited_fd = rpc.descriptor(callback.identity().physical_pid()).unwrap();
+    let mut inherited_metadata = std::mem::MaybeUninit::<libc::stat>::uninit();
+    assert_eq!(
+        unsafe { libc::fstat(inherited_fd, inherited_metadata.as_mut_ptr()) },
+        0
+    );
+    let inherited_metadata = unsafe { inherited_metadata.assume_init() };
+    // The child must not reacquire even an inherited leased primary. Its
+    // original published number is the actual owner fact, not a requested FD.
+    let mut inherited_primary = rpc
+        .borrow_mapping_capture_primary(callback.identity().physical_pid())
+        .unwrap();
     let inherited_slot = host.tool.lock();
     let original_tool = Arc::as_ptr(inherited_slot.as_ref().unwrap()) as usize;
     let child = unsafe { libc::fork() };
@@ -161,19 +166,14 @@ fn native_copy_actual_child_keeps_tool_scratch_rpc_and_lifecycle() {
         let passed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             let callback = Callback::new(91);
             let services = callback.services(None);
-            let rpc = NativeRpc::new(server.path.clone(), Arc::clone(&config)).unwrap();
             // An actual child with the wrong image must not consume its real
             // copied continuation or initialize anything.
             let stale = Callback::new(92);
-            let cache =
-                CoordinatorRpc::from_native_configuration(&server.path, Arc::clone(&config))
-                    .unwrap();
             let refused = unsafe {
                 host.rebind_copied_native_process(
                     &mut original,
                     &stale.services(None),
                     &rpc,
-                    cache,
                     Runtime,
                 )
             }
@@ -181,17 +181,41 @@ fn native_copy_actual_child_keeps_tool_scratch_rpc_and_lifecycle() {
             .expect("a different image reused the copied continuation");
             assert_eq!(refused.raw_os_error(), Some(libc::ESTALE));
             assert!(original.is_some());
-            let cache = CoordinatorRpc::from_native_configuration(&server.path, config).unwrap();
-            let (child_host, parent) = unsafe {
-                host.rebind_copied_native_process(&mut original, &services, &rpc, cache, Runtime)
+            let local = NativeRpc::local(Arc::new(Remote::default()), Arc::clone(&config));
+            assert_eq!(
+                unsafe {
+                    host.rebind_copied_native_process(&mut original, &services, &local, Runtime)
+                }
+                .err()
+                .expect("copied local route acquired a fake coordinator")
+                .kind(),
+                io::ErrorKind::Unsupported
+            );
+            assert!(original.is_some());
+            let copied = unsafe {
+                host.rebind_copied_native_process(&mut original, &services, &rpc, Runtime)
                     .unwrap()
             };
+            let child_host = copied.host;
+            let child_rpc = copied.rpc;
+            let parent = copied.parent;
             assert!(original.is_none());
+            assert_eq!(
+                child_rpc.descriptor(callback.identity().physical_pid()),
+                None
+            );
+            assert_eq!(
+                child_rpc
+                    .borrow_mapping_capture_primary(callback.identity().physical_pid())
+                    .err()
+                    .unwrap(),
+                reverie::MappingCaptureError::Connection
+            );
             let (handle, mut pending) = unsafe {
                 child_host
                     .initialize_copied_native_thread(
                         &services,
-                        &rpc,
+                        &child_rpc,
                         parent,
                         |parent| {
                             assert_eq!((parent.starts, parent.posts, parent.seed), (1, 1, 71));
@@ -209,6 +233,41 @@ fn native_copy_actual_child_keeps_tool_scratch_rpc_and_lifecycle() {
                     )
                     .unwrap()
             };
+            assert_eq!(
+                child_rpc.descriptor(callback.identity().physical_pid()),
+                Some(inherited_fd)
+            );
+            assert_eq!(
+                rpc.descriptor(callback.identity().physical_pid()),
+                None,
+                "the inherited owner was relabelled as a child connection"
+            );
+            assert_eq!(callback.count(libc::SYS_dup3), 1);
+            assert_eq!(callback.count(libc::SYS_socket), 1);
+            let mut child_metadata = std::mem::MaybeUninit::<libc::stat>::uninit();
+            assert_eq!(
+                unsafe { libc::fstat(inherited_fd, child_metadata.as_mut_ptr()) },
+                0
+            );
+            let child_metadata = unsafe { child_metadata.assume_init() };
+            assert_ne!(
+                (child_metadata.st_dev, child_metadata.st_ino),
+                (inherited_metadata.st_dev, inherited_metadata.st_ino),
+                "child retained the parent's actual socket instead of replacing it"
+            );
+            assert_eq!(
+                unsafe { libc::fcntl(inherited_fd, libc::F_GETFD) },
+                libc::FD_CLOEXEC
+            );
+            assert_eq!(
+                child_rpc.protect_operation(
+                    callback.invocation(),
+                    libc::SYS_close,
+                    &[inherited_fd as u64, 0, 0, 0, 0, 0],
+                    false
+                ),
+                Some(-i64::from(libc::EBADF))
+            );
             assert_eq!(pending.operation(), (libc::SYS_fork, [0; 6]));
             assert_eq!(drop_order.parent_drops.load(Ordering::SeqCst), 0);
             assert!(!drop_order.child_start_completed.load(Ordering::SeqCst));
@@ -218,7 +277,7 @@ fn native_copy_actual_child_keeps_tool_scratch_rpc_and_lifecycle() {
                     .with_native_post_step(
                         &mut pending,
                         &services,
-                        &rpc,
+                        &child_rpc,
                         &mut post,
                         |tool, guest, _| {
                             let slot = child_host
@@ -267,7 +326,7 @@ fn native_copy_actual_child_keeps_tool_scratch_rpc_and_lifecycle() {
             };
             unsafe {
                 child_host
-                    .with_native_guest(next, &services, &rpc, &mut post, |_tool, guest, _| {
+                    .with_native_guest(next, &services, &child_rpc, &mut post, |_tool, guest, _| {
                         assert_eq!(
                             (guest.thread_state().starts, guest.thread_state().posts),
                             (1, 0)
@@ -304,6 +363,27 @@ fn native_copy_actual_child_keeps_tool_scratch_rpc_and_lifecycle() {
     }
     assert!(libc::WIFEXITED(status));
     assert_eq!(libc::WEXITSTATUS(status), 0);
+    inherited_primary.release(true);
+    assert_eq!(
+        rpc.descriptor(callback.identity().physical_pid()),
+        Some(inherited_fd)
+    );
+    let mut parent_metadata = std::mem::MaybeUninit::<libc::stat>::uninit();
+    assert_eq!(
+        unsafe { libc::fstat(inherited_fd, parent_metadata.as_mut_ptr()) },
+        0
+    );
+    let parent_metadata = unsafe { parent_metadata.assume_init() };
+    assert_eq!(
+        (parent_metadata.st_dev, parent_metadata.st_ino),
+        (inherited_metadata.st_dev, inherited_metadata.st_ino)
+    );
+    assert_eq!(
+        rpc.application(callback.invocation())
+            .exchange(Request(313))
+            .unwrap(),
+        Reply(callback.identity().tid().as_raw(), 313)
+    );
     assert_eq!(
         host.tool
             .lock()
@@ -324,4 +404,5 @@ fn native_copy_actual_child_keeps_tool_scratch_rpc_and_lifecycle() {
             .complete(callback.invocation())
             .unwrap();
     }
+    fixture::close_test_primary(&rpc, &callback);
 }
