@@ -311,27 +311,48 @@ fn qualify_runtime() -> Result<QualifiedRuntime, String> {
             target_source: artifact::real_file(&leaf.join("src/lib.rs"))?,
         };
         let features = vec!["allocator-fixture".to_owned()];
+        // The standalone image is qualified in the release profile, the same
+        // profile Hermit's standalone producer and consumer require.
         let profile = serde_json::json!({
-            "opt_level": "0", "debuginfo": 2, "debug_assertions": true,
-            "overflow_checks": true, "test": false,
+            "opt_level": "3", "debuginfo": 0, "debug_assertions": false,
+            "overflow_checks": false, "test": false,
         });
         let oracle_sha256 = BTreeMap::from([
             ("rust_exports".to_owned(), RUST_ORACLE_SHA256.to_owned()),
             ("c_workload".to_owned(), C_ORACLE_SHA256.to_owned()),
         ]);
-        let expectation = artifact::ConsumerExpectation {
-            compiled_sources: None,
-            package: &package,
-            features: &features,
-            profile_name: "dev",
-            profile: &profile,
-            initializer: artifact::STANDALONE_ROOT,
-            source_head: &source.head,
-            source_tree: &source.tree,
-            source_lock_sha256: &source.lock.sha256,
-            oracle_sha256: &oracle_sha256,
-        };
-        let receipt = artifact::verify_runtime_receipt(&receipt_path, &path, &expectation)?;
+        // Compiled source filenames are resolved here from the current
+        // worktree, independently of the receipt being accepted.
+        let mut runner = artifact::Runner::new(
+            evidence.join("compiled-sources"),
+            std::time::Duration::from_secs(60),
+            64 * 1024 * 1024,
+        )?;
+        let (receipt, _) = artifact::VerifiedCompiledSources::with_resolved(
+            &artifact::CompiledSourceExpectation {
+                layout: artifact::CompiledSourceLayout::ReverieWorkspace,
+                image_kind: artifact::FixedImageKind::Standalone,
+                workspace_root: &source.root,
+                manifest: &source.root.join("Cargo.toml"),
+                reverie_pin: &source.head,
+            },
+            &mut runner,
+            |compiled_sources| {
+                let expectation = artifact::ConsumerExpectation {
+                    compiled_sources: Some(compiled_sources),
+                    package: &package,
+                    features: &features,
+                    profile_name: "release",
+                    profile: &profile,
+                    initializer: artifact::STANDALONE_ROOT,
+                    source_head: &source.head,
+                    source_tree: &source.tree,
+                    source_lock_sha256: &source.lock.sha256,
+                    oracle_sha256: &oracle_sha256,
+                };
+                artifact::verify_runtime_receipt(&receipt_path, &path, &expectation)
+            },
+        )?;
         if receipt.source_before != source || receipt.source_after != source {
             return Err("receipt source root/lock/oracle paths differ from the exact current source snapshot".into());
         }

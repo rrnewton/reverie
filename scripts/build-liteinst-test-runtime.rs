@@ -53,8 +53,8 @@ struct Config {
     oracle_sha256: BTreeMap<String, String>,
     /// The leaf has exactly allocator-fixture; no default feature exists.
     expected_features: Vec<String>,
-    /// The standalone RV producer requires the ordinary dev profile.
-    /// H can reuse m1_artifact directly for its independent release producer.
+    /// The standalone image is qualified in the release profile, the same
+    /// profile Hermit's independent standalone producer builds and requires.
     profile_name: String,
     expected_cargo_profile: Value,
     deadline_seconds: u64,
@@ -82,9 +82,9 @@ fn oracle_hashes() -> BTreeMap<String, String> {
     ])
 }
 
-fn dev_profile() -> Value {
-    serde_json::json!({"opt_level":"0", "debuginfo":2, "debug_assertions":true,
-                       "overflow_checks":true, "test":false})
+fn release_profile() -> Value {
+    serde_json::json!({"opt_level":"3", "debuginfo":0, "debug_assertions":false,
+                       "overflow_checks":false, "test":false})
 }
 
 fn ci_config(generation: PathBuf) -> Result<Config> {
@@ -123,8 +123,8 @@ fn ci_config(generation: PathBuf) -> Result<Config> {
         c_workload,
         oracle_sha256: oracle_hashes(),
         expected_features: vec!["allocator-fixture".to_owned()],
-        profile_name: "dev".to_owned(),
-        expected_cargo_profile: dev_profile(),
+        profile_name: "release".to_owned(),
+        expected_cargo_profile: release_profile(),
         deadline_seconds: 540,
         max_command_stream_bytes: 64 << 20,
     };
@@ -347,9 +347,9 @@ fn produce(
     )?;
     check(
         config.expected_features == ["allocator-fixture"]
-            && config.profile_name == "dev"
-            && config.expected_cargo_profile == dev_profile(),
-        "RV diagnostic leaf requires independent singleton fixture features and the ordinary dev profile",
+            && config.profile_name == "release"
+            && config.expected_cargo_profile == release_profile(),
+        "RV diagnostic leaf requires independent singleton fixture features and the release profile",
     )?;
     check(
         config.oracle_sha256 == oracle_hashes(),
@@ -487,8 +487,24 @@ fn produce(
         artifact.sha256 == current.sha256,
         "staged/current artifact hashes differ",
     )?;
-    let qualification =
-        m1_artifact::qualify_elf(&stage, m1_artifact::STANDALONE_ROOT, &mut runner)?;
+    // Qualification of the scalar publication recipes needs the compiled source
+    // filenames, resolved from this exact clean Reverie worktree.
+    let compiled_sources = m1_artifact::VerifiedCompiledSources::resolve(
+        &m1_artifact::CompiledSourceExpectation {
+            layout: m1_artifact::CompiledSourceLayout::ReverieWorkspace,
+            image_kind: m1_artifact::FixedImageKind::Standalone,
+            workspace_root: &root,
+            manifest: &root.join("Cargo.toml"),
+            reverie_pin: &before.head,
+        },
+        &mut runner,
+    )?;
+    let qualification = m1_artifact::qualify_elf_with_sources(
+        &stage,
+        m1_artifact::STANDALONE_ROOT,
+        &mut runner,
+        &compiled_sources,
+    )?;
     let compiler = std::env::var("CC").unwrap_or_else(|_| "cc".to_owned());
     let compiler_version = runner.text(&compiler, &["--version"], &root)?;
     let guest_path = bundle.join("m1_allocator_guest");
@@ -540,7 +556,7 @@ fn produce(
     current.verify()?;
     artifact.verify()?;
     let receipt = RuntimeReceipt {
-        compiled_sources: None,
+        compiled_sources: Some(compiled_sources.record().clone()),
         schema_version: m1_artifact::SCHEMA,
         source_before: before,
         source_after: after,
