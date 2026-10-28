@@ -2359,6 +2359,16 @@ struct FatalGroup {
     identity: crate::tracer::TraceeIdentity,
 }
 
+/// The `/proc/<tid>` directory the session retained for one task it traces:
+/// see [`FatalSession::traced_directories`].
+pub(crate) struct TracedDirectory(Arc<FatalGroup>);
+
+impl std::os::fd::AsFd for TracedDirectory {
+    fn as_fd(&self) -> std::os::fd::BorrowedFd<'_> {
+        self.0.identity.proc_dir()
+    }
+}
+
 /// Only subscribe_group constructs this after successful same-generation capture.
 /// Weak expiry therefore means that this session completed that owner, rather
 /// than that an unknown or failed capture may be treated as retired.
@@ -2879,6 +2889,53 @@ impl FatalSession {
             .unwrap()
             .retain(|group| !group.terminal.same_generation(terminal));
         self.changed.notify_waiters();
+    }
+
+    /// The `/proc/<tid>` directories this session retained for the tasks it
+    /// traces as `tid` now, newest first: a task whose owner runs (from
+    /// `register` until `finished`, after its final status), or a child
+    /// captured at its parent's clone, fork or vfork event that no owner has
+    /// taken yet. Each directory was opened while its task was certainly
+    /// traced here (`capture`, `capture_root`) and names that task until it is
+    /// reaped, and no task after, so a file read through it is never that of
+    /// a task that took the number over while the session still held it.
+    /// Empty for a number the session does not trace: a task of another
+    /// session or of none, a host task.
+    pub(crate) fn traced_directories(&self, tid: Pid) -> Vec<TracedDirectory> {
+        enum Record {
+            Task(Arc<FatalTaskStop>),
+            Newborn(Arc<safeptrace::TerminalCleanup>),
+        }
+        let records: Vec<Record> = {
+            let tree = self.tree.lock().unwrap();
+            tree.tasks
+                .iter()
+                .filter(|task| task.tid == tid)
+                .map(|task| Record::Task(task.clone()))
+                .chain(
+                    tree.newborns
+                        .iter()
+                        .filter(|newborn| newborn.tid == tid)
+                        .map(|newborn| Record::Newborn(newborn.terminal.clone())),
+                )
+                .collect()
+        };
+        let groups = self.groups.lock().unwrap();
+        records
+            .iter()
+            .rev()
+            .filter_map(|record| {
+                let terminal = match record {
+                    Record::Task(task) => &task.terminal,
+                    Record::Newborn(terminal) => terminal.as_ref(),
+                };
+                groups
+                    .iter()
+                    .find(|group| group.terminal.same_generation(terminal))
+                    .cloned()
+                    .map(TracedDirectory)
+            })
+            .collect()
     }
 
     pub(crate) fn subscribe_group(
@@ -13702,6 +13759,15 @@ impl<L: Tool + 'static> Guest<L> for TracedTask<L> {
     /// the thread is stopped (`crate::descriptor_status`).
     fn descriptor_status(&self, fd: i32) -> Result<reverie::DescriptorStatus, reverie::FactError> {
         crate::descriptor_status::read(self.tid, fd)
+    }
+
+    /// The signal lines of thread `tid`'s own `status`, read by the tracer
+    /// while this thread is stopped, for a live thread this session traces,
+    /// in any of its processes, through the `/proc/<tid>` directory the
+    /// session retained for it (`crate::signal_sets`).
+    fn signal_sets(&self, tid: Pid) -> Result<reverie::SignalSets, reverie::FactError> {
+        let session = &self.global_state.fatal_session;
+        crate::signal_sets::read(tid, |tid| session.traced_directories(tid))
     }
 }
 
