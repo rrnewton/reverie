@@ -383,6 +383,59 @@ fn exact_hex_02(text: &str, max: u32) -> Option<u32> {
     (format!("{value:02x}") == text).then_some(value)
 }
 
+/// The five signal sets Linux reports for one thread in its `status` file
+/// (`/proc/<pid>/task/<tid>/status`; `task_sig` in Linux's
+/// `fs/proc/array.c`), in the order Linux prints them. A tool gets them for
+/// any live guest thread, whatever its process; see
+/// [`Guest::signal_sets`](crate::Guest::signal_sets).
+///
+/// Each set holds signal `n`, from 1 to 64, at bit `n - 1`, as the `status`
+/// line shows it: sixteen hexadecimal digits, highest-numbered signals
+/// first, so the line's digits read as a hexadecimal number are the set. A
+/// real-time signal queued more than once is one bit, as in Linux's sets.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash, Serialize, Deserialize)]
+#[non_exhaustive]
+pub struct SignalSets {
+    /// `SigPnd`: the signals pending for this thread alone
+    /// (`task->pending`), such as one sent to it with `tgkill(2)`, that it
+    /// has not taken yet.
+    pub pending: u64,
+    /// `ShdPnd`: the signals pending for its whole thread group
+    /// (`signal->shared_pending`), such as one sent with `kill(2)`, that no
+    /// thread has taken yet. Every thread of a process has the same set.
+    pub shared_pending: u64,
+    /// `SigBlk`: the thread's signal mask (`task->blocked`). While a call
+    /// that replaces the mask for its duration runs (`rt_sigsuspend`, or
+    /// `ppoll`, `pselect6` or `epoll_pwait` given a mask), it is that call's
+    /// mask, and while `rt_sigtimedwait` waits, the mask without the signals
+    /// it waits for; while a handler runs, it includes the handler's
+    /// `sa_mask` and, without `SA_NODEFER`, the handler's own signal. Never
+    /// `SIGKILL` or `SIGSTOP`.
+    pub blocked: u64,
+    /// `SigIgn`: the signals whose action is `SIG_IGN`. A signal that is
+    /// ignored only by default, such as `SIGCHLD` under `SIG_DFL`, is not in
+    /// it. Never `SIGKILL` or `SIGSTOP`, whose action cannot be changed.
+    pub ignored: u64,
+    /// `SigCgt`: the signals with a handler, an action that is neither
+    /// `SIG_DFL` nor `SIG_IGN`. Never `SIGKILL` or `SIGSTOP`, and never a
+    /// signal in [`ignored`](Self::ignored).
+    pub caught: u64,
+}
+
+impl SignalSets {
+    /// The sets in the order Linux prints them: `SigPnd`, `ShdPnd`, `SigBlk`,
+    /// `SigIgn` and `SigCgt`.
+    pub fn new(pending: u64, shared_pending: u64, blocked: u64, ignored: u64, caught: u64) -> Self {
+        Self {
+            pending,
+            shared_pending,
+            blocked,
+            ignored,
+            caught,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -897,5 +950,35 @@ mod tests {
         assert_eq!(status.eventfd_count, None);
         assert_eq!(status.scm_fds, None);
         assert!(status.locks.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod signal_sets_tests {
+    use super::*;
+
+    /// The bit of signal `signal` in a set.
+    fn bit(signal: i32) -> u64 {
+        1 << (signal - 1)
+    }
+
+    /// The constructor takes the sets in the order Linux prints them, and a
+    /// tool passing the fact through its RPC gets the same value back.
+    #[test]
+    fn the_sets_keep_their_order_and_their_value() {
+        let sets = SignalSets::new(
+            bit(libc::SIGUSR1),
+            bit(libc::SIGUSR2),
+            bit(libc::SIGINT) | bit(64),
+            bit(libc::SIGHUP),
+            bit(libc::SIGTERM) | bit(libc::SIGRTMIN()),
+        );
+        assert_eq!(sets.pending, 0x200);
+        assert_eq!(sets.shared_pending, 0x800);
+        assert_eq!(sets.blocked, 0x8000_0000_0000_0002);
+        assert_eq!(sets.ignored, 0x1);
+        assert_eq!(sets.caught, bit(libc::SIGTERM) | bit(libc::SIGRTMIN()));
+        let text = serde_json::to_string(&sets).unwrap();
+        assert_eq!(serde_json::from_str::<SignalSets>(&text).unwrap(), sets);
     }
 }
