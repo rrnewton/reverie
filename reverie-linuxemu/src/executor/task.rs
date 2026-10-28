@@ -600,6 +600,15 @@ impl ChildCompletionSlot {
     }
 }
 
+#[cfg(test)]
+std::thread_local! {
+    /// Runs in `replace_after_exec` on this thread after the exec has
+    /// replaced the thread's signal state and before it rebinds the
+    /// process's: the window a reader of another process may find it in.
+    pub(super) static EXEC_WINDOW_TEST_HOOK: std::cell::RefCell<Option<Box<dyn FnMut()>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
 impl ElfExecutor {
     /// Retain an unpolled child consumer. The outer owner must publish the
     /// parent failure before taking and polling these futures outside callbacks.
@@ -2249,6 +2258,12 @@ impl ElfExecutor {
         let transaction = self.state.signal_transaction.clone();
         let _transaction = transaction.lock().unwrap_or_else(|p| p.into_inner());
         let previous = std::mem::replace(&mut self.state, state);
+        // The run's record of this process's signal state
+        // (`ParentDeathState::signals`) names the replaced image's state until
+        // the rebind below names the new one. Keep that state alive until
+        // then, so that a reader that finds this live thread through the
+        // record gets the process as the exec found it, never nothing.
+        let replaced_signals = previous.process_signals.clone();
         let retired = self.state.inherit_process_state_locked(previous);
         self.state.file_retirement.retire(retired);
         let identity = self
@@ -2266,7 +2281,14 @@ impl ElfExecutor {
         files
             .update_from_elf(&self.state)
             .expect("clone post-exec KVM file table");
+        #[cfg(test)]
+        EXEC_WINDOW_TEST_HOOK.with(|hook| {
+            if let Some(hook) = hook.borrow_mut().as_mut() {
+                hook();
+            }
+        });
         self.signal_binding.rebind(&self.state, &file_table);
+        drop(replaced_signals);
         self.state.children = ChildWaitContext::bind(
             self.signal_registry.clone(),
             self.admitted_signal_identity(),

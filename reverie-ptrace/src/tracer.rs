@@ -157,10 +157,12 @@ struct TraceeSnapshot {
 pub(crate) struct TraceeIdentity {
     tid: Pid,
     snapshot: TraceeSnapshot,
-    /// Only test assertions (`same_process`) read the retained procfs handle
-    /// and inode; production still captures them as before.
-    #[cfg_attr(not(test), allow(dead_code))]
+    /// The task's `/proc/<tid>` directory, opened while the task was
+    /// certainly traced here (`capture` checks before and after the open).
+    /// It names that task until the task is reaped, and no task after.
     proc_dir: OwnedFd,
+    /// Only test assertions (`same_process`) read the inode; production still
+    /// captures it as before.
     #[cfg_attr(not(test), allow(dead_code))]
     proc_inode: u64,
     pidfd: Option<OwnedFd>,
@@ -2505,6 +2507,13 @@ impl TraceeIdentity {
         })
     }
 
+    /// The task's retained `/proc/<tid>` directory: a file opened through it
+    /// is this task's, never that of a task that took its number over, and
+    /// none once this task is reaped (`ENOENT`).
+    pub(crate) fn proc_dir(&self) -> BorrowedFd<'_> {
+        std::os::fd::AsFd::as_fd(&self.proc_dir)
+    }
+
     pub(crate) fn signal_owned_process_group(&self) -> Result<(), Errno> {
         if self.tid != self.snapshot.tgid || self.pidfd.is_none() {
             return Err(Errno::EINVAL);
@@ -2634,7 +2643,9 @@ pub(crate) fn newborn_own_process_parent(child: Pid) -> std::io::Result<Option<P
     Ok(Some(status_pid(&status, "PPid:")?))
 }
 
-fn tracer_is_current(tracer_tid: Pid) -> bool {
+/// Whether `tracer_tid`, a tracee's `TracerPid`, names a thread of this
+/// process: a tracer of ours traces the tracee.
+pub(crate) fn tracer_is_current(tracer_tid: Pid) -> bool {
     tracer_tid.as_raw() > 0
         && std::path::Path::new(&format!("/proc/self/task/{tracer_tid}")).exists()
 }
@@ -4573,6 +4584,7 @@ mod tests {
     include!("tracer/fatal_capacity_tests.rs");
     include!("tracer/fatal_group_lifetime_tests.rs");
     include!("tracer/fatal_dead_exec_tests.rs");
+    include!("tracer/signal_sets_session_tests.rs");
     #[tokio::test(flavor = "current_thread")]
     async fn unsupported_injected_completion_returns_original_pipes_and_usable_tracer() {
         let mut command = Command::new("/bin/sh");
