@@ -11,7 +11,7 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use std::process::Command;
 
-use reverie_dbt::DbtRunner;
+use super::bounded_fixture_runner;
 
 #[test]
 #[ignore = "requires a built DynamoRIO native client and python3; run explicitly with --ignored"]
@@ -75,11 +75,11 @@ sys.exit(result)
     let client = std::env::var_os("REVERIE_DBT_CLIENT")
         .expect("REVERIE_DBT_CLIENT must point to the built native client");
     let mut guest = Command::new(&fixture);
-    guest.arg("dbt").env("HERMIT_DBT_NOOP", "1").env(
-        "REVERIE_DBT_TEST_PROGRAM",
-        reverie_dbt::bundled_drrun_path(),
-    );
-    let output = DbtRunner::new(launcher, client)
+    guest
+        .arg("dbt")
+        .env("HERMIT_DBT_NOOP", "1")
+        .env("REVERIE_DBT_TEST_PROGRAM", crate::bundled_drrun_path());
+    let output = bounded_fixture_runner(launcher, client)
         .expect("create bounded native runner")
         .private_environment_key("HERMIT_DBT_NOOP")
         .expect("configure private Noop control")

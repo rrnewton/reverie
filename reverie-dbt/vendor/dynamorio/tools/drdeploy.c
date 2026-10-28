@@ -284,6 +284,15 @@ const char *options_list_str =
     "Note: please use the drnudgeunix tool to nudge processes on Unix.\n";
 #    endif /* !WINDOWS */
 #else      /* DRCONFIG */
+#    if defined(DRRUN) && defined(LINUX)
+    "       -app_path <path>   Select a literal readable ELF image; no PATH search.\n"
+    "                          Consume the required path argument literally.\n"
+    "                          The application token after -- remains argv[0].\n"
+    "                          No execute-access check is made; the caller must check.\n"
+    "                          Use fewer than 512 path bytes; do not truncate the path.\n"
+    "                          Put this before DR/client options. Not valid with\n"
+    "                          -attach or a tool's native frontend.\n"
+#    endif
     "       -no_wait           Return immediately: do not wait for application exit.\n"
     "       -s <seconds>       Kill the application if it runs longer than the\n"
     "                          specified number of seconds.\n"
@@ -1219,6 +1228,9 @@ _tmain(int argc, TCHAR *targv[])
 #    endif
     process_id_t attach_pid = 0;
     char *app_name = NULL;
+#    if defined(DRRUN) && defined(LINUX)
+    char *app_path = NULL;
+#    endif
     char full_app_name[MAXIMUM_PATH];
     const char **app_argv;
     int errcode;
@@ -1275,6 +1287,16 @@ _tmain(int argc, TCHAR *targv[])
 
     /* Quick pass to set verbose for info() logs before main parsing. */
     for (i = 1; i < argc; i++) {
+#if defined(DRRUN) && defined(LINUX)
+        /* The required path is data in every parsing pass, even "-v" or "--".
+         * Leave missing/empty argument diagnostics to the main parser.
+         */
+        if (strcmp(argv[i], "-app_path") == 0) {
+            if (i + 1 < argc)
+                i++;
+            continue;
+        }
+#endif
         if (strcmp(argv[i], "-verbose") == 0 || strcmp(argv[i], "-v") == 0) {
             verbose = true;
             break;
@@ -1447,6 +1469,21 @@ _tmain(int argc, TCHAR *targv[])
 #    endif /* UNIX */
         else if (strcmp(argv[i], "-exit0") == 0) {
             exit0 = true;
+            continue;
+        }
+#endif
+#if defined(DRRUN) && defined(LINUX)
+        else if (strcmp(argv[i], "-app_path") == 0) {
+            if (app_path != NULL)
+                usage(false, "-app_path specified more than once; "
+                             "provide one target path");
+            if (i + 1 >= argc || argv[i + 1][0] == '\0')
+                usage(false, "-app_path requires a nonempty path argument; provide "
+                             "the literal image path and an application token after --");
+            app_path = argv[++i];
+            if (strlen(app_path) >= MAXIMUM_PATH)
+                usage(false, "-app_path exceeds the supported path length; use fewer "
+                             "than 512 bytes without truncating the selected spelling");
             continue;
         }
 #endif
@@ -1643,6 +1680,11 @@ _tmain(int argc, TCHAR *targv[])
         else if (argv[i][0] == '-') {
             bool expect_extra_double_dash = false;
             while (i < argc) {
+#    if defined(DRRUN) && defined(LINUX)
+                if (strcmp(argv[i], "-app_path") == 0)
+                    usage(false, "-app_path must precede DR runtime options; move it "
+                                 "before the first forwarded DR option");
+#    endif
                 if (strcmp(argv[i], "-c") == 0 || strcmp(argv[i], "-t") == 0 ||
                     strcmp(argv[i], "-c32") == 0 || strcmp(argv[i], "-c64") == 0 ||
                     strcmp(argv[i], "--") == 0) {
@@ -1739,6 +1781,24 @@ done_with_options:
 #endif
 
 #if defined(DRRUN) || defined(DRINJECT)
+#    if defined(DRRUN) && defined(LINUX)
+    if (app_path != NULL && (attach_pid != 0 || native_tool[0] != '\0'))
+        usage(false, "-app_path is for launching an application; remove it when "
+                     "using -attach or a tool's native frontend");
+    if (app_path != NULL) {
+        bool is_64;
+        struct stat app_stat;
+        /* Refuse ordinary FIFOs/devices before the header helper opens them.
+         * This preflight does not bind the inode against replacement.
+         */
+        if (stat(app_path, &app_stat) != 0 || !S_ISREG(app_stat.st_mode))
+            usage(false, "-app_path must name a regular readable ELF image; "
+                         "select a regular image file, not a pipe or device");
+        if (drfront_is_64bit_app(app_path, &is_64, NULL) != DRFRONT_SUCCESS)
+            usage(false, "-app_path must name a readable ELF image; check the path "
+                         "and file format, or select the script's ELF interpreter");
+    }
+#    endif
 #    ifdef DRRUN
     if (attach_pid != 0) {
         ssize_t size = 0;
@@ -1766,24 +1826,33 @@ done_with_options:
         if (i >= argc)
             usage(false, "%s", "no app specified");
         app_name = argv[i++];
-        search_env(app_name, "PATH", full_app_name, BUFFER_SIZE_ELEMENTS(full_app_name));
-        NULL_TERMINATE_BUFFER(full_app_name);
-        if (full_app_name[0] == '\0') {
-            /* may need to append .exe, XXX : other executable types */
-            char tmp_buf[MAXIMUM_PATH];
-            _snprintf(tmp_buf, BUFFER_SIZE_ELEMENTS(tmp_buf), "%s%s", app_name, ".exe");
-            NULL_TERMINATE_BUFFER(tmp_buf);
-            search_env(tmp_buf, "PATH", full_app_name,
+#    if defined(DRRUN) && defined(LINUX)
+        if (app_path != NULL)
+            app_name = app_path;
+        else
+#    endif
+        {
+            search_env(app_name, "PATH", full_app_name,
                        BUFFER_SIZE_ELEMENTS(full_app_name));
-        }
-        if (full_app_name[0] == '\0') {
-            /* last try */
-            get_absolute_path(app_name, full_app_name,
-                              BUFFER_SIZE_ELEMENTS(full_app_name));
             NULL_TERMINATE_BUFFER(full_app_name);
+            if (full_app_name[0] == '\0') {
+                /* may need to append .exe, XXX : other executable types */
+                char tmp_buf[MAXIMUM_PATH];
+                _snprintf(tmp_buf, BUFFER_SIZE_ELEMENTS(tmp_buf), "%s%s",
+                          app_name, ".exe");
+                NULL_TERMINATE_BUFFER(tmp_buf);
+                search_env(tmp_buf, "PATH", full_app_name,
+                           BUFFER_SIZE_ELEMENTS(full_app_name));
+            }
+            if (full_app_name[0] == '\0') {
+                /* last try */
+                get_absolute_path(app_name, full_app_name,
+                                  BUFFER_SIZE_ELEMENTS(full_app_name));
+                NULL_TERMINATE_BUFFER(full_app_name);
+            }
+            if (full_app_name[0] != '\0')
+                app_name = full_app_name;
         }
-        if (full_app_name[0] != '\0')
-            app_name = full_app_name;
         info("targeting application: \"%s\"", app_name);
 #    ifdef DRRUN
     }

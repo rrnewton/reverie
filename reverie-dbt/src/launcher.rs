@@ -8,6 +8,8 @@
 
 use std::collections::BTreeMap;
 use std::env;
+use std::ffi::CStr;
+use std::ffi::CString;
 use std::ffi::OsStr;
 use std::ffi::OsString;
 use std::fmt;
@@ -18,7 +20,6 @@ use std::io::Read;
 use std::os::fd::AsRawFd;
 use std::os::fd::FromRawFd;
 use std::os::unix::ffi::OsStrExt;
-use std::os::unix::fs::PermissionsExt;
 use std::os::unix::process::CommandExt;
 use std::path::Path;
 use std::path::PathBuf;
@@ -35,6 +36,8 @@ use std::sync::atomic::Ordering;
 use reverie::BackendStatsRequest;
 use reverie::GlobalTool;
 use reverie_rpc_transport::RpcServer;
+use sha2::Digest;
+use sha2::Sha256;
 
 use crate::backend_stats::DbtBackendStatsSource;
 use crate::backend_stats::DbtStatsCapture;
@@ -86,7 +89,10 @@ pub enum DbtPrivatePlacement {
 /// `reverie-dbt/scripts/build-client.sh`. Set [`REVERIE_DBT_CLIENT`] to that
 /// script's output, or build it in this Reverie workspace's default target
 /// directory. [`DYNAMORIO_HOME`] must identify a built DynamoRIO source tree,
-/// build directory, or install directory. Set `REVERIE_DBT_SUMMARY=1` to print
+/// build directory, or install directory containing the frontend selected when
+/// this crate was built. Relocated identical frontend bytes are accepted;
+/// independently built frontends require a matching consuming-crate build.
+/// Set `REVERIE_DBT_SUMMARY=1` to print
 /// instrumentation totals after the guest exits.
 ///
 /// [`REVERIE_DBT_CLIENT`]: https://github.com/rrnewton/reverie/tree/main/reverie-dbt
@@ -152,6 +158,9 @@ impl DbtRunner {
     }
 
     /// Resolves DynamoRIO and the Reverie DBT client from the environment.
+    ///
+    /// The selected frontend must match this crate's attested build, as for
+    /// [`Self::new`]; discovery does not permit an older or independent frontend.
     pub fn from_env() -> io::Result<Self> {
         let dynamorio_home = env::var_os(DYNAMORIO_ENV)
             .or_else(|| env::var_os(DYNAMORIO_DIR_ENV))
@@ -171,10 +180,32 @@ impl DbtRunner {
     }
 
     /// Creates a runner from explicit `drrun` and native-client paths.
+    ///
+    /// The frontend must have the exact bytes selected and attested when this
+    /// crate was built. Relocation is allowed; independently built frontends
+    /// require rebuilding the consuming crate against that maintained SDK.
+    /// A relative frontend is bound to the constructor's current directory.
+    /// This is a compatibility preflight, not an inode pin: the caller must keep
+    /// the selected SDK immutable until execution, including its shared libraries.
     pub fn new(drrun: impl Into<PathBuf>, client: impl Into<PathBuf>) -> io::Result<Self> {
         let drrun = drrun.into();
+        let drrun = if drrun.is_absolute() {
+            drrun
+        } else {
+            env::current_dir()?.join(drrun)
+        };
         let client = client.into();
         require_file(&drrun, "DynamoRIO launcher")?;
+        let expected = option_env!("REVERIE_DBT_DRRUN_SHA256").unwrap_or_default();
+        let actual = format!("{:x}", Sha256::digest(std::fs::read(&drrun)?));
+        if expected.is_empty() || actual != expected {
+            return Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "incompatible DynamoRIO frontend: use the SDK selected by this crate, \
+                 or rebuild the consuming crate against the matching maintained SDK; \
+                 only relocated byte-identical frontends are supported",
+            ));
+        }
         require_file(&client, "Reverie DBT client")?;
         Ok(Self {
             drrun,
@@ -326,6 +357,7 @@ impl DbtRunner {
     ///
     /// One configured collector is valid for exactly one run. Clones share that
     /// same run; a later run requires a new runner and a new empty file.
+    /// A preparation refusal also consumes that attempt without publication.
     pub fn evidence_file(self, file: &File) -> io::Result<Self> {
         self.configure_evidence_file(file, None)
     }
@@ -425,7 +457,7 @@ impl DbtRunner {
 
     /// Runs `guest` with inherited standard streams and waits for it to exit.
     pub fn status(&self, guest: &Command) -> io::Result<ExitStatus> {
-        let child = self.spawn_command(&mut self.command(guest, None))?;
+        let child = self.spawn_command(&mut self.command(guest, None)?)?;
         self.wait_for_status(child, None)
     }
 
@@ -435,14 +467,14 @@ impl DbtRunner {
         guest: &Command,
         environment: &BTreeMap<OsString, OsString>,
     ) -> io::Result<ExitStatus> {
-        let child = self.spawn_command(&mut self.command(guest, Some(environment)))?;
+        let child = self.spawn_command(&mut self.command(guest, Some(environment))?)?;
         self.wait_for_status(child, None)
     }
 
     /// Runs `guest` and captures its standard output and standard error.
     pub fn output(&self, guest: &Command) -> io::Result<Output> {
         let child = self.spawn_command(
-            self.command(guest, None)
+            self.command(guest, None)?
                 .stdin(Stdio::null())
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped()),
@@ -453,7 +485,7 @@ impl DbtRunner {
     /// Captures guest output while preserving an inherited terminal stdin.
     pub fn output_with_inherited_stdin(&self, guest: &Command) -> io::Result<Output> {
         let child = self.spawn_command(
-            self.command(guest, None)
+            self.command(guest, None)?
                 .stdin(Stdio::inherit())
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped()),
@@ -472,7 +504,7 @@ impl DbtRunner {
         R: Read + Send,
     {
         let mut child = self.spawn_command(
-            self.command(guest, None)
+            self.command(guest, None)?
                 .stdin(Stdio::piped())
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped()),
@@ -514,7 +546,7 @@ impl DbtRunner {
         R: Read + Send + 'static,
     {
         let child = self.spawn_command(
-            self.command(guest, None)
+            self.command(guest, None)?
                 .stdin(Stdio::piped())
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped()),
@@ -529,7 +561,7 @@ impl DbtRunner {
         environment: &BTreeMap<OsString, OsString>,
     ) -> io::Result<Output> {
         let child = self.spawn_command(
-            self.command(guest, Some(environment))
+            self.command(guest, Some(environment))?
                 .stdin(Stdio::null())
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped()),
@@ -875,7 +907,7 @@ impl DbtRunner {
         } else {
             None
         };
-        let mut command = runner.command(guest, environment);
+        let mut command = runner.command(guest, environment)?;
         command.env(crate::sync_rpc::RPC_SOCKET_ENV, &socket);
         let mut input_writer = None;
         match &input {
@@ -1015,7 +1047,15 @@ impl DbtRunner {
             Ok(child) => child,
             Err(error) => {
                 let _ = self.finish_evidence(false);
-                return Err(error);
+                return Err(if error.raw_os_error() == Some(libc::EOPNOTSUPP) {
+                    io::Error::new(
+                        io::ErrorKind::Unsupported,
+                        "required execute-access query/launch operation unavailable; \
+                         check kernel and sandbox support",
+                    )
+                } else {
+                    error
+                });
             }
         };
         if let Some(evidence) = &self.evidence
@@ -1315,9 +1355,38 @@ impl DbtRunner {
         &self,
         guest: &Command,
         environment: Option<&BTreeMap<OsString, OsString>>,
-    ) -> Command {
+    ) -> io::Result<Command> {
+        match self.prepare_command(guest, environment) {
+            Ok(command) => Ok(command),
+            Err(error) => {
+                if let Some(evidence) = &self.evidence {
+                    if let Err(claim) = evidence.claim_run() {
+                        return Err(io::Error::new(
+                            claim.kind(),
+                            format!("{claim}; launch preparation failed: {error}"),
+                        ));
+                    }
+                    // A refused preparation consumes its own one-shot attempt,
+                    // closes pending evidence resources and cannot publish success.
+                    let _ = evidence.finish(false);
+                }
+                Err(error)
+            }
+        }
+    }
+
+    fn prepare_command(
+        &self,
+        guest: &Command,
+        environment: Option<&BTreeMap<OsString, OsString>>,
+    ) -> io::Result<Command> {
+        let prepared = prepare_program(guest, environment)?;
         let mut command = Command::new(&self.drrun);
-        command.arg("-quiet").arg("-disable_rseq");
+        command
+            .arg("-quiet")
+            .arg("-app_path")
+            .arg(&prepared.image)
+            .arg("-disable_rseq");
         if self.private_placement == DbtPrivatePlacement::NoRandomOffset {
             // DynamoRIO parses address options as hexadecimal.
             command.args(["-vm_max_offset", "0x0"]);
@@ -1354,18 +1423,7 @@ impl DbtRunner {
         }
         command.arg("--");
 
-        let resolved_program = resolve_program(guest, environment);
-        let inspected_program = resolved_program
-            .as_deref()
-            .unwrap_or_else(|| Path::new(guest.get_program()));
-        if let Some((interpreter, interpreter_args)) = shebang(inspected_program.as_os_str()) {
-            command
-                .arg(interpreter)
-                .args(interpreter_args)
-                .arg(inspected_program);
-        } else {
-            command.arg(guest.get_program());
-        }
+        command.args(&prepared.arguments);
         command.args(guest.get_args());
 
         if let Some(directory) = guest.get_current_dir() {
@@ -1401,11 +1459,19 @@ impl DbtRunner {
         }
 
         let diagnostic_file = self.diagnostic_file.clone();
-        // SAFETY: personality(2), dup2(2), and fcntl(2) are async-signal-safe.
+        let execute_paths = prepared.execute_paths;
+        // SAFETY: the access paths were allocated in the parent. The child only
+        // issues raw faccessat2, personality, dup2 and fcntl operations; it does
+        // not allocate, search PATH or inspect environment state.
         // Process-group isolation is configured above through
         // CommandExt::process_group; all settings survive drrun and guest execs.
         unsafe {
             command.pre_exec(move || {
+                for path in &execute_paths {
+                    if let Err(error) = query_execute_access(path) {
+                        return Err(child_execute_access_error(error));
+                    }
+                }
                 let diagnostic_source = diagnostic_file
                     .as_ref()
                     .map_or(libc::STDERR_FILENO, |file| file.as_raw_fd());
@@ -1422,7 +1488,7 @@ impl DbtRunner {
                 Ok(())
             });
         }
-        command
+        Ok(command)
     }
 }
 
@@ -1704,49 +1770,184 @@ where
 
 // AUTONOMOUS-BOT-IMPLEMENTED
 // TODO-HUMAN-REVIEW(#57): Confirm PATH lookup matches Command/execvp semantics.
-fn resolve_program(
+#[derive(Debug)]
+struct PreparedProgram {
+    image: PathBuf,
+    arguments: Vec<OsString>,
+    execute_paths: Vec<CString>,
+}
+
+fn prepare_program(
     guest: &Command,
     environment: Option<&BTreeMap<OsString, OsString>>,
-) -> Option<PathBuf> {
+) -> io::Result<PreparedProgram> {
     let program = guest.get_program();
+    if program.is_empty() {
+        return Err(io::Error::from_raw_os_error(libc::ENOENT));
+    }
     if program.as_bytes().contains(&b'/') {
-        return None;
+        return prepare_candidate(guest, PathBuf::from(program));
     }
 
     let path = if let Some(environment) = environment {
         environment.get(OsStr::new(PATH_ENV)).cloned()
     } else {
-        let mut command_path = None;
-        let mut path_overridden = false;
-        for (key, value) in guest.get_envs() {
-            if key == OsStr::new(PATH_ENV) {
-                path_overridden = true;
-                command_path = value.map(OsStr::to_os_string);
-                break;
-            }
+        guest
+            .get_envs()
+            .find(|(key, _)| *key == OsStr::new(PATH_ENV))
+            .map_or_else(
+                || env::var_os(PATH_ENV),
+                |(_, value)| value.map(OsStr::to_os_string),
+            )
+    };
+    let path = match path {
+        Some(path) => path,
+        None => default_search_path()?,
+    };
+    let mut denied = false;
+    let mut last = io::Error::from_raw_os_error(libc::ENOENT);
+    // Path::join normalizes empty/trailing components. Keep the exact spelling
+    // execvp selects, including bare names and a component's trailing slash.
+    for directory in path.as_bytes().split(|byte| *byte == b':') {
+        let mut spelling = directory.to_vec();
+        if !directory.is_empty() {
+            spelling.push(b'/');
         }
-        if path_overridden {
-            command_path
-        } else {
-            env::var_os(PATH_ENV)
+        spelling.extend_from_slice(program.as_bytes());
+        let candidate = PathBuf::from(OsStr::from_bytes(&spelling));
+        match prepare_candidate(guest, candidate) {
+            Ok(prepared) => return Ok(prepared),
+            Err(error) => match error.raw_os_error() {
+                Some(libc::EACCES) => {
+                    denied = true;
+                    last = error;
+                }
+                Some(
+                    libc::ENOENT | libc::ENOTDIR | libc::ESTALE | libc::ENODEV | libc::ETIMEDOUT,
+                ) => {
+                    last = error;
+                }
+                _ => return Err(error),
+            },
         }
-    }?;
-
-    let current_dir = guest.get_current_dir();
-    env::split_paths(&path)
-        .map(|directory| {
-            let directory = match current_dir {
-                Some(current_dir) if directory.is_relative() => current_dir.join(directory),
-                _ => directory,
-            };
-            directory.join(program)
-        })
-        .find(|candidate| is_executable_file(candidate))
+    }
+    Err(if denied {
+        io::Error::from_raw_os_error(libc::EACCES)
+    } else {
+        last
+    })
 }
 
-fn is_executable_file(path: &Path) -> bool {
-    path.metadata()
-        .is_ok_and(|metadata| metadata.is_file() && metadata.permissions().mode() & 0o111 != 0)
+fn default_search_path() -> io::Result<OsString> {
+    // confstr includes the terminating NUL in the required size.
+    let size = unsafe { libc::confstr(libc::_CS_PATH, std::ptr::null_mut(), 0) };
+    if size == 0 {
+        return Err(io::Error::other(
+            "cannot obtain the system executable search path",
+        ));
+    }
+    let mut bytes = vec![0u8; size];
+    let written = unsafe { libc::confstr(libc::_CS_PATH, bytes.as_mut_ptr().cast(), bytes.len()) };
+    if written != size || bytes.last() != Some(&0) {
+        return Err(io::Error::other(
+            "system executable search path changed while reading",
+        ));
+    }
+    bytes.pop();
+    Ok(OsString::from(OsStr::from_bytes(&bytes)))
+}
+
+fn inspection_path(guest: &Command, selected: &Path) -> PathBuf {
+    match guest.get_current_dir() {
+        Some(directory) if selected.is_relative() => directory.join(selected),
+        _ => selected.to_path_buf(),
+    }
+}
+
+fn execute_path(path: &Path) -> io::Result<CString> {
+    CString::new(path.as_os_str().as_bytes()).map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "executable path contains a NUL byte",
+        )
+    })
+}
+
+fn require_executable_file(path: &Path) -> io::Result<()> {
+    if !path.metadata()?.is_file() {
+        return Err(io::Error::from_raw_os_error(libc::EACCES));
+    }
+    query_execute_access(&execute_path(path)?).map_err(parent_execute_access_error)
+}
+
+fn prepare_candidate(guest: &Command, selected: PathBuf) -> io::Result<PreparedProgram> {
+    let inspected = inspection_path(guest, &selected);
+    require_executable_file(&inspected)?;
+    let mut execute_paths = vec![execute_path(&selected)?];
+    let (image, arguments) = match shebang(inspected.as_os_str())? {
+        Some((interpreter, optional_arguments)) => {
+            require_executable_file(&inspection_path(guest, &interpreter))?;
+            execute_paths.push(execute_path(&interpreter)?);
+            let mut arguments = vec![interpreter.as_os_str().to_os_string()];
+            arguments.extend(optional_arguments);
+            arguments.push(selected.into_os_string());
+            (interpreter, arguments)
+        }
+        None => (selected, vec![guest.get_program().to_os_string()]),
+    };
+    Ok(PreparedProgram {
+        image,
+        arguments,
+        execute_paths,
+    })
+}
+
+/// Ask the kernel with the effective IDs; never substitute mode-bit policy.
+fn query_execute_access(path: &CStr) -> io::Result<()> {
+    let result = unsafe {
+        libc::syscall(
+            libc::SYS_faccessat2,
+            libc::AT_FDCWD,
+            path.as_ptr(),
+            libc::X_OK,
+            libc::AT_EACCESS,
+        )
+    };
+    if result == 0 {
+        Ok(())
+    } else {
+        Err(io::Error::last_os_error())
+    }
+}
+
+fn execute_access_unavailable(error: &io::Error) -> bool {
+    matches!(
+        error.raw_os_error(),
+        Some(libc::EPERM | libc::ENOSYS | libc::EINVAL)
+    )
+}
+
+fn parent_execute_access_error(error: io::Error) -> io::Error {
+    if execute_access_unavailable(&error) {
+        io::Error::new(
+            io::ErrorKind::Unsupported,
+            format!(
+                "kernel execute-access query unavailable ({error}); check kernel and sandbox support"
+            ),
+        )
+    } else {
+        error
+    }
+}
+
+fn child_execute_access_error(error: io::Error) -> io::Error {
+    // Command's child error channel carries only errno. This sentinel does not
+    // claim the lost original errno or distinguish every possible spawn failure.
+    if execute_access_unavailable(&error) {
+        io::Error::from_raw_os_error(libc::EOPNOTSUPP)
+    } else {
+        error
+    }
 }
 
 /// Caller mode currently requires no inherited seccomp restriction. A prctl
@@ -2121,19 +2322,19 @@ fn wait_for_process_group_no_live_members_until(
     }
 }
 
-fn shebang(program: &OsStr) -> Option<(PathBuf, Vec<OsString>)> {
+fn shebang(program: &OsStr) -> io::Result<Option<(PathBuf, Vec<OsString>)>> {
     let mut bytes = Vec::new();
-    File::open(Path::new(program))
-        .ok()?
+    File::open(Path::new(program))?
         .take(BINPRM_BUF_SIZE as u64)
-        .read_to_end(&mut bytes)
-        .ok()?;
+        .read_to_end(&mut bytes)?;
     if !bytes.starts_with(b"#!") {
-        return None;
+        return Ok(None);
     }
 
     let body = &bytes[2..];
-    let start = body.iter().position(|byte| !matches!(byte, b' ' | b'\t'))?;
+    let Some(start) = body.iter().position(|byte| !matches!(byte, b' ' | b'\t')) else {
+        return Ok(None);
+    };
     let end = body[start..]
         .iter()
         .position(|byte| *byte == b'\n')
@@ -2141,11 +2342,14 @@ fn shebang(program: &OsStr) -> Option<(PathBuf, Vec<OsString>)> {
     let mut fields = body[start..end]
         .split(|byte| matches!(byte, b' ' | b'\t' | b'\r'))
         .filter(|field| !field.is_empty());
-    let interpreter = PathBuf::from(OsStr::from_bytes(fields.next()?));
+    let Some(interpreter) = fields.next() else {
+        return Ok(None);
+    };
+    let interpreter = PathBuf::from(OsStr::from_bytes(interpreter));
     let arguments = fields
         .map(|field| OsString::from(OsStr::from_bytes(field)))
         .collect();
-    Some((interpreter, arguments))
+    Ok(Some((interpreter, arguments)))
 }
 
 fn resolve_drrun(home: &Path) -> io::Result<PathBuf> {
@@ -2262,11 +2466,16 @@ fn duplicate_to_diagnostic_fd(source: libc::c_int) -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     mod caller_transport_failure;
+    mod fcntl_owner_identity_live;
     mod inherited_input;
     mod namespace_cleanup;
+    mod pidfd_identity_live;
+    mod queued_signal_identity_live;
     mod startup_failure;
     mod stats_capture;
+    mod thread_start_live;
     use std::io::Seek as _;
+    use std::os::unix::fs::PermissionsExt as _;
     use std::os::unix::process::ExitStatusExt as _;
 
     use super::*;
@@ -2403,6 +2612,33 @@ mod tests {
         }
     }
 
+    // These stand-ins exercise I/O/lifecycle behavior, not public frontend
+    // compatibility. The public constructor is never relaxed under cfg(test).
+    fn fixture_runner(drrun: PathBuf, client: PathBuf) -> io::Result<DbtRunner> {
+        require_file(&drrun, "fixture launcher")?;
+        require_file(&client, "fixture client")?;
+        Ok(DbtRunner {
+            drrun,
+            client,
+            ..runner()
+        })
+    }
+
+    // Live fixture wrappers retain their original timeout/session/PID-namespace
+    // topology and output lifecycle. Validate the real maintained frontend first,
+    // then substitute only the fixed wrapper created by the calling private test.
+    // This gives no public-constructor wrapper-support or selection credit.
+    fn bounded_fixture_runner(
+        wrapper: impl Into<PathBuf>,
+        client: impl Into<PathBuf>,
+    ) -> io::Result<DbtRunner> {
+        let mut runner = DbtRunner::new(crate::bundled_drrun_path(), client)?;
+        let wrapper = wrapper.into();
+        require_file(&wrapper, "owned fixture supervisor")?;
+        runner.drrun = wrapper;
+        Ok(runner)
+    }
+
     #[test]
     fn cancelled_launch_setup_reaps_the_owned_child() {
         for (capture, process_group) in [(false, false), (true, false), (false, true), (true, true)]
@@ -2460,7 +2696,7 @@ mod tests {
         guest
             .arg("application-started")
             .env("HERMIT_DBT_COUNTER2", "1");
-        let mut command = runner.command(&guest, None);
+        let mut command = runner.command(&guest, None).unwrap();
         command
             .env(crate::sync_rpc::RPC_SOCKET_ENV, &socket)
             .stdin(Stdio::null())
@@ -2583,7 +2819,8 @@ mod tests {
 
         let cleanup_only = runner()
             .terminate_process_group_on_exit(true)
-            .command(&Command::new("/bin/true"), None);
+            .command(&Command::new("/bin/true"), None)
+            .unwrap();
         assert!(
             !cleanup_only
                 .get_args()
@@ -2606,6 +2843,8 @@ mod tests {
         let guest = Command::new("/bin/true");
         let expected = [
             "-quiet",
+            "-app_path",
+            "/bin/true",
             "-disable_rseq",
             "-vm_max_offset",
             "0x0",
@@ -2622,6 +2861,7 @@ mod tests {
         assert_eq!(
             configured
                 .command(&guest, None)
+                .unwrap()
                 .get_args()
                 .collect::<Vec<_>>(),
             expected
@@ -2630,14 +2870,19 @@ mod tests {
             configured
                 .clone()
                 .command(&guest, None)
+                .unwrap()
                 .get_args()
                 .collect::<Vec<_>>(),
             expected
         );
         let reset = configured.private_placement(DbtPrivatePlacement::SdkDefault);
-        let default = runner().command(&guest, None);
+        let default = runner().command(&guest, None).unwrap();
         assert_eq!(
-            reset.command(&guest, None).get_args().collect::<Vec<_>>(),
+            reset
+                .command(&guest, None)
+                .unwrap()
+                .get_args()
+                .collect::<Vec<_>>(),
             default.get_args().collect::<Vec<_>>()
         );
     }
@@ -2647,11 +2892,14 @@ mod tests {
         let wrapped = runner()
             .client_argument("-panic-on-unsupported-syscalls")
             .isolated_process_group(true)
-            .command(&Command::new("/bin/true"), None);
+            .command(&Command::new("/bin/true"), None)
+            .unwrap();
         assert_eq!(
             wrapped.get_args().collect::<Vec<_>>(),
             [
                 "-quiet",
+                "-app_path",
+                "/bin/true",
                 "-disable_rseq",
                 "-stack_size",
                 "2M",
@@ -2678,7 +2926,7 @@ mod tests {
             .env("EXPLICIT", "value")
             .env_remove("REMOVED");
 
-        let wrapped = runner().command(&guest, None);
+        let wrapped = runner().command(&guest, None).unwrap();
         assert_eq!(
             wrapped.get_program(),
             OsStr::new("/opt/dynamorio/bin64/drrun")
@@ -2687,6 +2935,8 @@ mod tests {
             wrapped.get_args().collect::<Vec<_>>(),
             [
                 "-quiet",
+                "-app_path",
+                "/bin/echo",
                 "-disable_rseq",
                 "-stack_size",
                 "2M",
@@ -2713,18 +2963,301 @@ mod tests {
     }
 
     #[test]
+    fn rejects_nonexecutable_shebang_before_starting_launcher() {
+        let directory = tempfile::tempdir().unwrap();
+        let script = directory.path().join("guest-script");
+        std::fs::write(&script, b"#!/bin/sh\nexit 0\n").unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o600)).unwrap();
+        let link = directory.path().join("guest-link");
+        std::os::unix::fs::symlink(&script, &link).unwrap();
+        let marker = directory.path().join("launcher-started");
+        let drrun = directory.path().join("drrun");
+        write_executable_script(
+            &drrun,
+            b"#!/bin/sh\nprintf started > \"$DBT_LAUNCH_WITNESS\"\nexit 0\n",
+        );
+        let runner = DbtRunner { drrun, ..runner() };
+
+        for program in [
+            script.as_os_str(),
+            OsStr::new("./guest-script"),
+            OsStr::new("guest-script"),
+            link.as_os_str(),
+        ] {
+            let mut guest = Command::new(program);
+            guest
+                .current_dir(directory.path())
+                .env(PATH_ENV, directory.path())
+                .env("DBT_LAUNCH_WITNESS", &marker);
+            let error = runner
+                .output(&guest)
+                .expect_err("a non-executable script must refuse before starting the launcher");
+            assert_eq!(error.kind(), io::ErrorKind::PermissionDenied, "{error}");
+            assert!(
+                !marker.exists(),
+                "the launcher ran before permission refusal"
+            );
+
+            std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).unwrap();
+            let output = runner.output(&guest).unwrap();
+            assert!(output.status.success(), "{output:?}");
+            assert_eq!(std::fs::read(&marker).unwrap(), b"started");
+            std::fs::remove_file(&marker).unwrap();
+            std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o600)).unwrap();
+        }
+    }
+
+    fn marker_runner(directory: &Path) -> (DbtRunner, PathBuf) {
+        let marker = directory.join("launcher-started");
+        let drrun = directory.join("marker-drrun");
+        write_executable_script(
+            &drrun,
+            b"#!/bin/sh\nprintf started > \"$DBT_LAUNCH_WITNESS\"\nexit 0\n",
+        );
+        (DbtRunner { drrun, ..runner() }, marker)
+    }
+
+    #[test]
+    fn child_execute_access_recheck_refuses_permission_change() {
+        for deny_interpreter in [false, true] {
+            let directory = tempfile::tempdir().unwrap();
+            let interpreter = directory.path().join("interpreter");
+            write_executable_script(&interpreter, b"#!/bin/sh\nexit 0\n");
+            let script = directory.path().join("script");
+            write_executable_script(
+                &script,
+                format!("#!{}\nexit 0\n", interpreter.display()).as_bytes(),
+            );
+            let (runner, marker) = marker_runner(directory.path());
+            let mut guest = Command::new("./script");
+            guest
+                .current_dir(directory.path())
+                .env("DBT_LAUNCH_WITNESS", &marker);
+            let mut prepared = runner.command(&guest, None).unwrap();
+            let denied = if deny_interpreter {
+                &interpreter
+            } else {
+                &script
+            };
+            std::fs::set_permissions(denied, std::fs::Permissions::from_mode(0o600)).unwrap();
+            let error = runner.spawn_command(&mut prepared).unwrap_err();
+            assert_eq!(error.kind(), io::ErrorKind::PermissionDenied, "{error}");
+            assert!(!marker.exists());
+            std::fs::set_permissions(denied, std::fs::Permissions::from_mode(0o700)).unwrap();
+            assert!(runner.output(&guest).unwrap().status.success());
+            assert_eq!(std::fs::read(&marker).unwrap(), b"started");
+        }
+    }
+
+    #[test]
+    fn preparation_refusal_finishes_evidence_without_publication() {
+        let directory = tempfile::tempdir().unwrap();
+        let denied = directory.path().join("denied");
+        std::fs::write(&denied, b"#!/bin/sh\nexit 0\n").unwrap();
+        std::fs::set_permissions(&denied, std::fs::Permissions::from_mode(0o600)).unwrap();
+        let (runner, marker) = marker_runner(directory.path());
+        let output = tempfile::tempfile().unwrap();
+        let runner = runner.evidence_file(&output).unwrap();
+        let mut guest = Command::new(&denied);
+        guest.env("DBT_LAUNCH_WITNESS", &marker);
+        let error = runner.output(&guest).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
+        assert!(!marker.exists());
+        assert_eq!(output.metadata().unwrap().len(), 0);
+        let evidence = runner.evidence.as_ref().unwrap();
+        assert_eq!(
+            evidence.claim_run().unwrap_err().kind(),
+            io::ErrorKind::AlreadyExists
+        );
+        let first = evidence.finish(false).unwrap_err().to_string();
+        assert!(first.contains("never started"), "{first}");
+        assert_eq!(evidence.finish(false).unwrap_err().to_string(), first);
+    }
+
+    #[test]
+    fn refused_preparation_preserves_an_already_claimed_evidence_attempt() {
+        let directory = tempfile::tempdir().unwrap();
+        let missing = directory.path().join("missing");
+        let file = tempfile::tempfile().unwrap();
+        let runner = runner().evidence_file(&file).unwrap();
+        let evidence = runner.evidence.as_ref().unwrap();
+        evidence.claim_run().unwrap();
+        let primary = std::fs::metadata(&missing).unwrap_err().to_string();
+        let error = runner.command(&Command::new(&missing), None).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::AlreadyExists);
+        assert!(error.to_string().contains(&primary), "{error}");
+        assert!(error.to_string().contains("one-shot"), "{error}");
+        // Publication still requires RUNNING: the refused second attempt did
+        // not finalize the first one's state or consume its root slot.
+        evidence.publish_root(std::process::id()).unwrap();
+        assert!(
+            evidence
+                .finish(false)
+                .unwrap_err()
+                .to_string()
+                .contains("never started")
+        );
+        assert_eq!(file.metadata().unwrap().len(), 0);
+    }
+
+    #[test]
+    fn execute_access_query_unavailable_is_not_guest_permission_denial() {
+        for errno in [libc::EPERM, libc::ENOSYS, libc::EINVAL] {
+            let error = parent_execute_access_error(io::Error::from_raw_os_error(errno));
+            assert_eq!(error.kind(), io::ErrorKind::Unsupported);
+            assert!(
+                error
+                    .to_string()
+                    .contains("kernel execute-access query unavailable")
+            );
+            assert!(
+                error
+                    .to_string()
+                    .contains(&io::Error::from_raw_os_error(errno).to_string())
+            );
+            assert_eq!(
+                child_execute_access_error(io::Error::from_raw_os_error(errno)).raw_os_error(),
+                Some(libc::EOPNOTSUPP),
+            );
+        }
+        for errno in [libc::EACCES, libc::ENOENT] {
+            assert_eq!(
+                parent_execute_access_error(io::Error::from_raw_os_error(errno)).raw_os_error(),
+                Some(errno),
+            );
+            assert_eq!(
+                child_execute_access_error(io::Error::from_raw_os_error(errno)).raw_os_error(),
+                Some(errno),
+            );
+        }
+        let mut command = runner().command(&Command::new("/bin/true"), None).unwrap();
+        // This independent operation runs after the access query. A raw EPERM
+        // here must not be attributed to the query or normalized.
+        unsafe {
+            command.pre_exec(|| Err(io::Error::from_raw_os_error(libc::EPERM)));
+        }
+        let error = runner().spawn_command(&mut command).unwrap_err();
+        assert_eq!(error.raw_os_error(), Some(libc::EPERM));
+        assert!(!error.to_string().contains("query"));
+    }
+
+    #[test]
+    fn path_candidates_preserve_execvp_failure_precedence() {
+        let directory = tempfile::tempdir().unwrap();
+        let bad = directory.path().join("bad");
+        let good = directory.path().join("good");
+        let missing = directory.path().join("missing");
+        std::fs::create_dir(&bad).unwrap();
+        std::fs::create_dir(&good).unwrap();
+        let candidate = bad.join("probe");
+        let valid = good.join("probe");
+        std::fs::copy("/bin/true", &valid).unwrap();
+        std::fs::set_permissions(&valid, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let denied_interpreter = directory.path().join("denied-interpreter");
+        std::fs::write(&denied_interpreter, b"\x7fELF").unwrap();
+        std::fs::set_permissions(&denied_interpreter, std::fs::Permissions::from_mode(0o600))
+            .unwrap();
+        for (name, bytes, errno) in [
+            ("directory", None, libc::EACCES),
+            ("denied", Some(b"\x7fELF".to_vec()), libc::EACCES),
+            (
+                "missing-interpreter",
+                Some(format!("#!{}\n", missing.display()).into_bytes()),
+                libc::ENOENT,
+            ),
+            (
+                "denied-interpreter",
+                Some(format!("#!{}\n", denied_interpreter.display()).into_bytes()),
+                libc::EACCES,
+            ),
+        ] {
+            match bytes {
+                None => std::fs::create_dir(&candidate).unwrap(),
+                Some(bytes) => {
+                    std::fs::write(&candidate, bytes).unwrap();
+                    let mode = if name == "denied" { 0o600 } else { 0o700 };
+                    std::fs::set_permissions(&candidate, std::fs::Permissions::from_mode(mode))
+                        .unwrap();
+                }
+            }
+            let mut guest = Command::new("probe");
+            guest.env(PATH_ENV, env::join_paths([&bad, &good]).unwrap());
+            assert_eq!(prepare_program(&guest, None).unwrap().image, valid);
+            assert!(guest.output().unwrap().status.success(), "native {name}");
+            guest.env(PATH_ENV, env::join_paths([&bad, &missing]).unwrap());
+            assert_eq!(
+                prepare_program(&guest, None).unwrap_err().raw_os_error(),
+                Some(errno),
+                "{name}"
+            );
+            assert_eq!(
+                guest.output().unwrap_err().raw_os_error(),
+                Some(errno),
+                "native {name}"
+            );
+            if candidate.is_dir() {
+                std::fs::remove_dir(&candidate).unwrap();
+            } else {
+                std::fs::remove_file(&candidate).unwrap();
+            }
+        }
+    }
+
+    #[test]
+    fn public_constructor_requires_attested_frontend() {
+        let selected = crate::bundled_drrun_path();
+        assert!(DbtRunner::new(selected, fake_client()).is_ok());
+        let directory = tempfile::tempdir().unwrap();
+        let copied = directory.path().join("relocated-drrun");
+        std::fs::copy(selected, &copied).unwrap();
+        assert!(DbtRunner::new(&copied, fake_client()).is_ok());
+        let mut bytes = std::fs::read(&copied).unwrap();
+        let at = bytes.len() - 1;
+        bytes[at] ^= 1;
+        std::fs::write(&copied, bytes).unwrap();
+        for frontend in [&copied, &fake_drrun(directory.path())] {
+            let error = DbtRunner::new(frontend, fake_client()).unwrap_err();
+            assert_eq!(error.kind(), io::ErrorKind::Unsupported);
+            assert!(
+                error
+                    .to_string()
+                    .contains("incompatible DynamoRIO frontend")
+            );
+            assert!(error.to_string().contains("rebuild the consuming crate"));
+        }
+        let cwd = env::current_dir().unwrap();
+        let mut relative = PathBuf::new();
+        for _ in cwd.components().skip(1) {
+            relative.push("..");
+        }
+        relative.push(selected.strip_prefix("/").unwrap());
+        let runner = DbtRunner::new(&relative, fake_client()).unwrap();
+        let mut guest = Command::new("/bin/true");
+        guest.current_dir(directory.path());
+        let command = runner.command(&guest, None).unwrap();
+        assert_eq!(command.get_program(), cwd.join(relative).as_os_str());
+        assert!(Path::new(command.get_program()).is_absolute());
+        assert_eq!(
+            Sha256::digest(std::fs::read(command.get_program()).unwrap()),
+            Sha256::digest(std::fs::read(selected).unwrap()),
+        );
+    }
+
+    #[test]
     fn wraps_shebang_program_with_its_interpreter() {
         let root = tempfile::tempdir().unwrap();
         let script = root.path().join("guest-script");
-        std::fs::write(&script, b"#!/usr/bin/env bash\necho guest\n").unwrap();
+        write_executable_script(&script, b"#!/usr/bin/env bash\necho guest\n");
         let mut guest = Command::new(&script);
         guest.arg("argument");
 
-        let wrapped = runner().command(&guest, None);
+        let wrapped = runner().command(&guest, None).unwrap();
         assert_eq!(
             wrapped.get_args().collect::<Vec<_>>(),
             [
                 OsStr::new("-quiet"),
+                OsStr::new("-app_path"),
+                OsStr::new("/usr/bin/env"),
                 OsStr::new("-disable_rseq"),
                 OsStr::new("-stack_size"),
                 OsStr::new("2M"),
@@ -2752,11 +3285,13 @@ mod tests {
         let mut guest = Command::new("guest-script");
         guest.env(PATH_ENV, &bin).arg("argument");
 
-        let wrapped = runner().command(&guest, None);
+        let wrapped = runner().command(&guest, None).unwrap();
         assert_eq!(
             wrapped.get_args().collect::<Vec<_>>(),
             [
                 OsStr::new("-quiet"),
+                OsStr::new("-app_path"),
+                OsStr::new("/bin/sh"),
                 OsStr::new("-disable_rseq"),
                 OsStr::new("-stack_size"),
                 OsStr::new("2M"),
@@ -2784,11 +3319,13 @@ mod tests {
         let mut guest = Command::new("guest-script");
         guest.arg("argument");
 
-        let wrapped = runner().command(&guest, Some(&environment));
+        let wrapped = runner().command(&guest, Some(&environment)).unwrap();
         assert_eq!(
             wrapped.get_args().collect::<Vec<_>>(),
             [
                 OsStr::new("-quiet"),
+                OsStr::new("-app_path"),
+                OsStr::new("/usr/bin/env"),
                 OsStr::new("-disable_rseq"),
                 OsStr::new("-stack_size"),
                 OsStr::new("2M"),
@@ -2816,10 +3353,12 @@ mod tests {
         let mut guest = Command::new("guest-script");
         guest.current_dir(root.path()).env(PATH_ENV, "bin");
 
-        let wrapped = runner().command(&guest, None);
+        let wrapped = runner().command(&guest, None).unwrap();
         let args = wrapped.get_args().collect::<Vec<_>>();
-        assert_eq!(args[9], OsStr::new("/bin/sh"));
-        assert_eq!(args[10], script.as_os_str());
+        assert_eq!(args[11], OsStr::new("/bin/sh"));
+        assert_eq!(args[12], OsStr::new("bin/guest-script"));
+        assert_eq!(args[1], OsStr::new("-app_path"));
+        assert_eq!(args[2], OsStr::new("/bin/sh"));
         assert_eq!(wrapped.get_current_dir(), Some(root.path()));
     }
 
@@ -2836,10 +3375,10 @@ mod tests {
         let mut guest = Command::new("guest-wrapper");
         guest.env(PATH_ENV, &bin);
 
-        let wrapped = runner().command(&guest, None);
+        let wrapped = runner().command(&guest, None).unwrap();
         let args = wrapped.get_args().collect::<Vec<_>>();
-        assert_eq!(args[9], OsStr::new("/bin/sh"));
-        assert_eq!(args[10], wrapper.as_os_str());
+        assert_eq!(args[11], OsStr::new("/bin/sh"));
+        assert_eq!(args[12], wrapper.as_os_str());
     }
 
     #[test]
@@ -2853,10 +3392,12 @@ mod tests {
         let mut guest = Command::new("guest-elf");
         guest.env(PATH_ENV, &bin).arg("argument");
 
-        let wrapped = runner().command(&guest, None);
+        let wrapped = runner().command(&guest, None).unwrap();
         let args = wrapped.get_args().collect::<Vec<_>>();
-        assert_eq!(args[9], OsStr::new("guest-elf"));
-        assert_eq!(args[10], OsStr::new("argument"));
+        assert_eq!(args[1], OsStr::new("-app_path"));
+        assert_eq!(args[2], executable.as_os_str());
+        assert_eq!(args[11], OsStr::new("guest-elf"));
+        assert_eq!(args[12], OsStr::new("argument"));
     }
 
     #[test]
@@ -2864,7 +3405,7 @@ mod tests {
         let guest = Command::new("/usr/bin/env");
         let environment = BTreeMap::from([(OsString::from("ONLY"), OsString::from("guest"))]);
 
-        let wrapped = runner().command(&guest, Some(&environment));
+        let wrapped = runner().command(&guest, Some(&environment)).unwrap();
         // drrun also receives the bundled DynamoRIO's prefix list, a
         // `DYNAMORIO_*` variable DynamoRIO removes from the guest's environment
         // with the prefixed ones (tests/guest_environment_live.rs).
@@ -2950,6 +3491,7 @@ mod tests {
                 assert_eq!(
                     selected
                         .command(guest, environment)
+                        .unwrap()
                         .get_envs()
                         .find(|(key, _)| *key == HIDE_ENV_PREFIXES_ENV)
                         .unwrap()
@@ -3018,7 +3560,7 @@ mod tests {
         // for a moment after it is written (ETXTBSY).
         let mut attempts = 0;
         let output = loop {
-            match runner.command(guest, environment).output() {
+            match runner.command(guest, environment).unwrap().output() {
                 Err(error) if error.raw_os_error() == Some(libc::ETXTBSY) && attempts < 50 => {
                     attempts += 1;
                     std::thread::sleep(std::time::Duration::from_millis(20));
@@ -3204,7 +3746,7 @@ mod tests {
     #[test]
     fn supplies_captured_standard_input() {
         let root = tempfile::tempdir().unwrap();
-        let runner = DbtRunner::new(fake_drrun(root.path()), fake_client()).unwrap();
+        let runner = fixture_runner(fake_drrun(root.path()), fake_client()).unwrap();
         let output = runner
             .output_with_input(&Command::new("/bin/cat"), b"hello from stdin\n")
             .unwrap();
@@ -3319,7 +3861,7 @@ mod tests {
         let mut guest = Command::new("/bin/bash");
         guest.args(["-c", &script]);
 
-        let output = DbtRunner::new(fake_drrun(root.path()), fake_client())
+        let output = fixture_runner(fake_drrun(root.path()), fake_client())
             .unwrap()
             .output(&guest)
             .unwrap();
@@ -3342,7 +3884,7 @@ mod tests {
             .env(TEST_DRRUN_STDERR, "drrun-stderr")
             .env(TEST_DRRUN_DIAGNOSTIC, "drrun-diagnostic");
 
-        let runner = DbtRunner::new(fake_drrun(root.path()), fake_client())
+        let runner = fixture_runner(fake_drrun(root.path()), fake_client())
             .unwrap()
             .diagnostic_file(&diagnostics)
             .unwrap();
@@ -3375,7 +3917,7 @@ mod tests {
             .env(TEST_DRRUN_STDERR, "drrun-stderr")
             .env(TEST_DRRUN_DIAGNOSTIC, "drrun-diagnostic");
 
-        let output = DbtRunner::new(fake_drrun(root.path()), fake_client())
+        let output = fixture_runner(fake_drrun(root.path()), fake_client())
             .unwrap()
             .output(&guest)
             .unwrap();
@@ -3451,7 +3993,7 @@ mod tests {
     fn diagnostic_file_preserves_process_group_cleanup_and_exit_status() {
         let root = tempfile::tempdir().unwrap();
         let mut diagnostics = tempfile::tempfile().unwrap();
-        let runner = DbtRunner::new(fake_drrun(root.path()), fake_client())
+        let runner = fixture_runner(fake_drrun(root.path()), fake_client())
             .unwrap()
             .diagnostic_file(&diagnostics)
             .unwrap()
@@ -3836,7 +4378,7 @@ mod tests {
     async fn caller_activation_failure_retains_the_reaped_child_output() {
         let directory = tempfile::tempdir().unwrap();
         let pid_file = directory.path().join("child-pid");
-        let runner = DbtRunner::new(fake_drrun(directory.path()), fake_client())
+        let runner = fixture_runner(fake_drrun(directory.path()), fake_client())
             .unwrap()
             .terminate_process_group_on_exit(true);
         let mut guest = Command::new("/bin/bash");
@@ -3938,7 +4480,7 @@ mod tests {
     #[test]
     fn returns_when_child_exits_while_input_source_is_blocked() {
         let root = tempfile::tempdir().unwrap();
-        let runner = DbtRunner::new(fake_drrun(root.path()), fake_client()).unwrap();
+        let runner = fixture_runner(fake_drrun(root.path()), fake_client()).unwrap();
         let (sender, receiver) = std::sync::mpsc::channel();
         let started = std::time::Instant::now();
 
@@ -4170,7 +4712,7 @@ mod tests {
         let mut guest = Command::new(fixture);
         disclose_evidence_credentials(&runner, &mut guest);
 
-        let mut command = runner.command(&guest, None);
+        let mut command = runner.command(&guest, None).unwrap();
         command
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
@@ -4222,7 +4764,7 @@ mod tests {
             .client_argument("-test-wait-for-background");
         let mut guest = Command::new("/bin/sleep");
         guest.arg("30");
-        let mut command = runner.command(&guest, None);
+        let mut command = runner.command(&guest, None).unwrap();
         command
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
@@ -4274,7 +4816,7 @@ mod tests {
             .unwrap()
             .drop_next_acknowledgement();
         let guest = Command::new("/bin/true");
-        let mut command = runner.command(&guest, None);
+        let mut command = runner.command(&guest, None).unwrap();
         command
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
@@ -4320,7 +4862,7 @@ mod tests {
             .client_argument("-test-kill-announced-child");
         let mut guest = Command::new(fixture);
         guest.env("EVIDENCE_FORGE_MODE", "killed-child");
-        let mut command = runner.command(&guest, None);
+        let mut command = runner.command(&guest, None).unwrap();
         command
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
@@ -4362,7 +4904,7 @@ mod tests {
             .unwrap()
             .client_argument("-test-direct-evidence-entry");
         let guest = Command::new("/bin/true");
-        let mut command = runner.command(&guest, None);
+        let mut command = runner.command(&guest, None).unwrap();
         command
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
@@ -4404,7 +4946,7 @@ mod tests {
                 .unwrap()
                 .client_argument(argument);
             let guest = Command::new("/bin/true");
-            let mut command = runner.command(&guest, None);
+            let mut command = runner.command(&guest, None).unwrap();
             command
                 .stdin(Stdio::null())
                 .stdout(Stdio::piped())

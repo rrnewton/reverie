@@ -19,7 +19,7 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use std::process::Command;
 
-use reverie_dbt::DbtRunner;
+use super::bounded_fixture_runner;
 
 fn compile_fixture(output: &Path) {
     let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/pidfd_identity.c");
@@ -53,13 +53,13 @@ fn pidfd_open_targets_virtual_self_and_foreign_child_identities() {
         .expect("make bounded launcher executable");
     let client = std::env::var_os("REVERIE_DBT_CLIENT")
         .expect("REVERIE_DBT_CLIENT must point to the built native client");
-    let runner = DbtRunner::new(launcher, client)
+    let runner = bounded_fixture_runner(launcher, client)
         .expect("create bounded native runner")
         .private_environment_key("HERMIT_DBT_NOOP")
         .expect("configure private Noop control")
         .client_argument("-test-wait-for-background");
     let mut guest = Command::new(fixture);
-    guest.env("REVERIE_DBT_TEST_DRRUN", reverie_dbt::bundled_drrun_path());
+    guest.env("REVERIE_DBT_TEST_DRRUN", crate::bundled_drrun_path());
     guest.env("HERMIT_DBT_NOOP", "1");
     let output = runner
         .output(&guest)

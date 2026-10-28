@@ -12,7 +12,7 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use std::process::Command;
 
-use reverie_dbt::DbtRunner;
+use super::bounded_fixture_runner;
 
 /// How the launcher places the program in a process group.
 #[derive(Clone, Copy)]
@@ -158,12 +158,9 @@ sys.exit(result)
     let mut guest = Command::new(&fixture);
     guest
         .env("HERMIT_DBT_NOOP", "1")
-        .env(
-            "REVERIE_DBT_TEST_PROGRAM",
-            reverie_dbt::bundled_drrun_path(),
-        )
+        .env("REVERIE_DBT_TEST_PROGRAM", crate::bundled_drrun_path())
         .env("REVERIE_DBT_TEST_GROUP", group_mode);
-    let output = DbtRunner::new(launcher, client)
+    let output = bounded_fixture_runner(launcher, client)
         .expect("create bounded native runner")
         .private_environment_key("HERMIT_DBT_NOOP")
         .expect("configure private Noop control")

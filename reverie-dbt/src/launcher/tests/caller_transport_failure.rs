@@ -169,7 +169,7 @@ async fn native_case(point: DisconnectPoint, guest: &Path) {
 
     let mut guest_command = Command::new(guest);
     guest_command.args([point.guest_argument(), "231", "23"]);
-    let mut command = runner.command(&guest_command, None);
+    let mut command = runner.command(&guest_command, None).unwrap();
     command
         .env(crate::sync_rpc::RPC_SOCKET_ENV, &socket)
         .stdin(Stdio::null())

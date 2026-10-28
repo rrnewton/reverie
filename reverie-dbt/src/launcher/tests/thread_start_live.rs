@@ -13,7 +13,7 @@ use std::path::PathBuf;
 use std::process::Command;
 use std::process::Output;
 
-use reverie_dbt::DbtRunner;
+use super::bounded_fixture_runner;
 
 fn compile_fixture(directory: &Path, name: &str) -> PathBuf {
     let source = Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -76,9 +76,9 @@ fn run_fixture_under(
     let client = std::env::var_os("REVERIE_DBT_CLIENT")
         .expect("REVERIE_DBT_CLIENT must point to the built native client");
     let mut guest = Command::new(fixture);
-    guest.env("REVERIE_DBT_TEST_DRRUN", reverie_dbt::bundled_drrun_path());
+    guest.env("REVERIE_DBT_TEST_DRRUN", crate::bundled_drrun_path());
     guest.envs(env.iter().copied());
-    let mut runner = DbtRunner::new(launcher, client)
+    let mut runner = bounded_fixture_runner(launcher, client)
         .expect("create bounded native runner")
         .client_argument(client_argument);
     for key in [
@@ -463,10 +463,10 @@ fn admitted_branch_owner_survives_a_sibling_clone_reservation() {
     for enabled in [true, false] {
         let name = if enabled { "enabled" } else { "disabled" };
         let mut command = Command::new(&guest);
-        command.env("REVERIE_DBT_TEST_DRRUN", reverie_dbt::bundled_drrun_path());
+        command.env("REVERIE_DBT_TEST_DRRUN", crate::bundled_drrun_path());
         command.env("DYNAMORIO_CONFIGDIR", directory.join(name));
         std::fs::create_dir(directory.join(name)).unwrap();
-        let mut runner = DbtRunner::new(
+        let mut runner = bounded_fixture_runner(
             &launcher,
             std::env::var_os("REVERIE_DBT_CLIENT").expect("built native client"),
         )

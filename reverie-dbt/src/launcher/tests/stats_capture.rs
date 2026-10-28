@@ -209,7 +209,7 @@ fn stats_capture_keeps_read_failure_distinct_from_malformed_records() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn reader_capture_keeps_output_and_global_when_stats_are_malformed() {
     let directory = tempfile::tempdir().unwrap();
-    let runner = DbtRunner::new(fake_drrun(directory.path()), fake_client()).unwrap();
+    let runner = fixture_runner(fake_drrun(directory.path()), fake_client()).unwrap();
     let sink = DbtStatsSink::new().unwrap();
     let stats_directory = sink.path.parent().unwrap().to_owned();
     let mut guest = Command::new("/bin/sh");
@@ -249,7 +249,7 @@ async fn reader_capture_keeps_output_and_global_when_stats_are_malformed() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn inherited_input_capture_keeps_output_and_global_when_stats_are_missing() {
     let directory = tempfile::tempdir().unwrap();
-    let runner = DbtRunner::new(fake_drrun(directory.path()), fake_client()).unwrap();
+    let runner = fixture_runner(fake_drrun(directory.path()), fake_client()).unwrap();
     let sink = DbtStatsSink::new().unwrap();
     let stats_directory = sink.path.parent().unwrap().to_owned();
     let mut guest = Command::new("/bin/sh");
@@ -280,7 +280,7 @@ async fn inherited_input_capture_keeps_output_and_global_when_stats_are_missing(
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn status_capture_keeps_read_failure_after_physical_completion() {
     let directory = tempfile::tempdir().unwrap();
-    let runner = DbtRunner::new(fake_drrun(directory.path()), fake_client()).unwrap();
+    let runner = fixture_runner(fake_drrun(directory.path()), fake_client()).unwrap();
     let sink = DbtStatsSink::new().unwrap();
     let stats_directory = sink.path.parent().unwrap().to_owned();
     let mut guest = Command::new("/bin/sh");
