@@ -46,6 +46,8 @@ use super::event::SyscallDispatch;
 use super::event::SyscallEvent;
 use super::native_rpc::NativeApplicationRpc;
 use super::native_rpc::NativeRpc;
+use super::native_services::NativeEntryObservation;
+use super::native_services::NativeEntryStage;
 use super::native_services::NativeServices;
 use super::rpc::CoordinatorRpc;
 use super::signal::core_dump_expected;
@@ -103,6 +105,14 @@ pub trait HostRuntime: Send + Sync + 'static {
     fn fork_child_rebind(&self);
     /// Reports a lifecycle stage on the backend's diagnostic stream, if any.
     fn emit_stage(&self, stage: &[u8]);
+    /// Optional read-only diagnostics at the actual native callback boundary.
+    /// The borrowed view cannot alter Tool state, registers, memory or admission.
+    fn observe_native_entry(
+        &self,
+        _stage: NativeEntryStage,
+        _observation: NativeEntryObservation<'_, '_>,
+    ) {
+    }
     /// In a forked child, after the Tool and thread state are replaced: reset
     /// the inherited observability and statistics, and account the child's
     /// first event (`event`) to the path that entered it.
@@ -1989,8 +1999,12 @@ fn enter_tool_callbacks<T: Tool, R: HostRuntime>(
     let tail = guest.tail;
     let native = guest.native.is_some();
     if lifecycle.start_pending {
+        #[cfg(feature = "native-entry-observer")]
+        guest.observe_native_entry(NativeEntryStage::StartEnter);
         drive_entry_callback(tool.handle_thread_start(guest), tail, native)?
             .map_err(EntryFailure::Tool)?;
+        #[cfg(feature = "native-entry-observer")]
+        guest.observe_native_entry(NativeEntryStage::StartComplete);
         lifecycle.start_pending = false;
         if let Some(native) = &guest.native {
             native.services.acknowledge_tool_admission();
@@ -2000,14 +2014,28 @@ fn enter_tool_callbacks<T: Tool, R: HostRuntime>(
         }
     }
     if lifecycle.post_exec_pending {
+        #[cfg(feature = "native-entry-observer")]
+        guest.observe_native_entry(NativeEntryStage::PostExecEnter);
         drive_entry_callback(tool.handle_post_exec(guest), tail, native)?
             .map_err(|e| EntryFailure::Tool(e.into()))?;
+        #[cfg(feature = "native-entry-observer")]
+        guest.observe_native_entry(NativeEntryStage::PostExecComplete);
         lifecycle.post_exec_pending = false;
     }
     if let Some(ending) = deliver_staged_signals(tool, guest) {
         return Err(EntryFailure::Ending(ending));
     }
     Ok(())
+}
+
+#[cfg(feature = "native-entry-observer")]
+impl<T: Tool, R: HostRuntime> InGuest<'_, T, R> {
+    fn observe_native_entry(&self, stage: NativeEntryStage) {
+        if let Some(native) = &self.native {
+            self.runtime
+                .observe_native_entry(stage, NativeEntryObservation::new(native.services));
+        }
+    }
 }
 
 struct NativeGuestView<'callback, G: GlobalTool> {
