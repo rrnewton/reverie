@@ -47,8 +47,12 @@
 //!
 //! ```text
 //! DYNAMORIO_HOME=<...> REVERIE_DBT_CLIENT=<...>/libreverie_dbt_client.so \
-//!   cargo test -p reverie-dbt --test guest_environment_live -- --ignored --nocapture
+//!   cargo test -p reverie-dbt --test guest_environment_live -- --ignored --nocapture \
+//!     --skip executable_frontend::supervised_launch_worker --test-threads=1
 //! ```
+//!
+//! Only the private self-exec worker is excluded; it is not an assurance case.
+//! Its owned-specification assertions still apply when the tests invoke it.
 
 use std::collections::BTreeMap;
 use std::ffi::OsString;
@@ -290,6 +294,7 @@ mod executable_frontend {
     struct Observation {
         errno: Option<i32>,
         error: Option<String>,
+        error_kind: Option<String>,
         status: Option<i32>,
         signal: Option<i32>,
         stdout: Vec<u8>,
@@ -486,6 +491,7 @@ mod executable_frontend {
         let mut observed = Observation {
             errno: None,
             error: None,
+            error_kind: None,
             status: None,
             signal: None,
             stdout: Vec::new(),
@@ -503,6 +509,7 @@ mod executable_frontend {
             }
             Err(error) => {
                 observed.errno = error.raw_os_error();
+                observed.error_kind = Some(format!("{:?}", error.kind()));
                 observed.error = Some(error.to_string());
             }
         }
@@ -782,6 +789,127 @@ mod executable_frontend {
             } else {
                 std::fs::remove_file(&candidate).unwrap();
             }
+        }
+    }
+
+    #[test]
+    #[ignore = "requires the current attested SDK and actual prototype client"]
+    fn invalid_cwd_precedes_executable_access_errors() {
+        let root = tempfile::tempdir().unwrap();
+        let target = root.path().join("denied-script");
+        script(&target, Path::new("/bin/echo"), 0o600);
+        let non_directory = root.path().join("not-a-directory");
+        std::fs::write(&non_directory, b"not a directory").unwrap();
+        // Collect all actual outcomes before checking parity, so one mismatch
+        // does not hide the other cwd cases from the retained observations.
+        let observations: Vec<_> = [
+            ("missing-cwd", root.path().join("missing"), libc::ENOENT),
+            ("non-directory-cwd", non_directory, libc::ENOTDIR),
+            ("valid-cwd", root.path().to_path_buf(), libc::EACCES),
+        ]
+        .into_iter()
+        .map(|(name, cwd, errno)| {
+            let mut case = spec(name, &target, &cwd, None);
+            let native = run(&case);
+            case.mode = "dbt".into();
+            (name, errno, native, run(&case))
+        })
+        .collect();
+        for (name, errno, native, dbt) in observations {
+            assert_eq!(native.errno, Some(errno), "{name}: {native:?}");
+            assert_eq!(dbt.errno, native.errno, "{name}: {dbt:?}");
+            for observed in [native, dbt] {
+                assert_eq!(observed.status, None);
+                assert_eq!(observed.signal, None);
+                assert!(observed.stdout.is_empty());
+                assert!(observed.stderr.is_empty());
+                assert!(observed.tool_diagnostics.is_empty());
+                assert_eq!(observed.processes, None);
+                assert!(observed.reaped);
+            }
+        }
+    }
+
+    #[test]
+    #[ignore = "requires non-root without DAC read override, current SDK and actual prototype client"]
+    fn unreadable_executable_is_a_terminal_named_refusal() {
+        assert_ne!(
+            unsafe { libc::geteuid() },
+            0,
+            "execute-only regression requires non-root execution; root is not coverage"
+        );
+        let root = tempfile::tempdir().unwrap();
+        let image17 = fixture(root.path(), 17);
+        let image23 = fixture(root.path(), 23);
+        let first = root.path().join("first");
+        let later = root.path().join("later");
+        std::fs::create_dir(&first).unwrap();
+        std::fs::create_dir(&later).unwrap();
+        let candidate = first.join("probe");
+        copy(&image17, &candidate, 0o111);
+        copy(&image23, &later.join("probe"), 0o700);
+        assert_eq!(
+            File::open(&candidate).unwrap_err().raw_os_error(),
+            Some(libc::EACCES),
+            "execute-only regression requires actual read denial, not DAC override"
+        );
+        println!(
+            "EXECUTE_ONLY_DOMAIN:euid={};read_errno={}",
+            unsafe { libc::geteuid() },
+            libc::EACCES
+        );
+        let observations: Vec<_> = [
+            spec(
+                "execute-only-PATH",
+                "probe",
+                root.path(),
+                Some(OsStr::new("first:later")),
+            ),
+            spec("execute-only-explicit", &candidate, root.path(), None),
+        ]
+        .into_iter()
+        .map(|mut case| {
+            let native = run(&case);
+            case.mode = "dbt".into();
+            let dbt = run(&case);
+            (case, native, dbt)
+        })
+        .collect();
+        for (case, native, dbt) in observations {
+            assert_eq!(native.status, Some(17), "{}: {native:?}", case.name);
+            assert_eq!(native.errno, None);
+            let selected = if case.path.is_some() {
+                OsStr::new("first/probe")
+            } else {
+                candidate.as_os_str()
+            };
+            identity(&native, 17, OsStr::from_bytes(&case.program), selected);
+            assert_eq!(
+                dbt.error_kind.as_deref(),
+                Some("Unsupported"),
+                "{}: {dbt:?}",
+                case.name
+            );
+            let error = dbt.error.as_deref().unwrap();
+            assert!(
+                error.contains("DBT requires a readable executable image"),
+                "{error}"
+            );
+            assert!(
+                error.contains("Permission denied"),
+                "truthful read failure: {error}"
+            );
+            assert_eq!(dbt.errno, None, "read denial is not execute denial");
+            assert_eq!(dbt.status, None, "must not launch the later image");
+            assert_eq!(dbt.signal, None);
+            assert!(dbt.stdout.is_empty());
+            assert!(dbt.stderr.is_empty());
+            assert!(
+                dbt.tool_diagnostics.is_empty(),
+                "refused before client entry"
+            );
+            assert_eq!(dbt.processes, None, "no Tool process report");
+            assert!(dbt.reaped);
         }
     }
 

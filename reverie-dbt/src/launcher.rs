@@ -90,8 +90,10 @@ pub enum DbtPrivatePlacement {
 /// script's output, or build it in this Reverie workspace's default target
 /// directory. [`DYNAMORIO_HOME`] must identify a built DynamoRIO source tree,
 /// build directory, or install directory containing the frontend selected when
-/// this crate was built. Relocated identical frontend bytes are accepted;
-/// independently built frontends require a matching consuming-crate build.
+/// this crate was built. The constructor checks frontend bytes, not SDK layout.
+/// Relocated identical bytes are accepted by that check, but execution requires
+/// an intact SDK layout. Independently built frontends require a matching
+/// consuming-crate build.
 /// Set `REVERIE_DBT_SUMMARY=1` to print
 /// instrumentation totals after the guest exits.
 ///
@@ -161,6 +163,8 @@ impl DbtRunner {
     ///
     /// The selected frontend must match this crate's attested build, as for
     /// [`Self::new`]; discovery does not permit an older or independent frontend.
+    /// Execution still requires an intact SDK layout; frontend validation does
+    /// not verify that layout.
     pub fn from_env() -> io::Result<Self> {
         let dynamorio_home = env::var_os(DYNAMORIO_ENV)
             .or_else(|| env::var_os(DYNAMORIO_DIR_ENV))
@@ -182,8 +186,10 @@ impl DbtRunner {
     /// Creates a runner from explicit `drrun` and native-client paths.
     ///
     /// The frontend must have the exact bytes selected and attested when this
-    /// crate was built. Relocation is allowed; independently built frontends
-    /// require rebuilding the consuming crate against that maintained SDK.
+    /// crate was built. This validates frontend bytes, not SDK layout. Relocated
+    /// identical bytes pass this check, but execution requires an intact SDK
+    /// layout. Independently built frontends require rebuilding the consuming
+    /// crate against that maintained SDK.
     /// A relative frontend is bound to the constructor's current directory.
     /// This is a compatibility preflight, not an inode pin: the caller must keep
     /// the selected SDK immutable until execution, including its shared libraries.
@@ -1781,6 +1787,15 @@ fn prepare_program(
     guest: &Command,
     environment: Option<&BTreeMap<OsString, OsString>>,
 ) -> io::Result<PreparedProgram> {
+    if let Some(directory) = guest.get_current_dir() {
+        // Command applies chdir before attempting exec. Preserve that ordering
+        // before our parent-side image inspection, without changing parent cwd.
+        // The child chdir remains authoritative if the directory changes later.
+        if !directory.metadata()?.is_dir() {
+            return Err(io::Error::from_raw_os_error(libc::ENOTDIR));
+        }
+        query_execute_access(&execute_path(directory)?).map_err(parent_execute_access_error)?;
+    }
     let program = guest.get_program();
     if program.is_empty() {
         return Err(io::Error::from_raw_os_error(libc::ENOENT));
@@ -1884,7 +1899,18 @@ fn prepare_candidate(guest: &Command, selected: PathBuf) -> io::Result<PreparedP
     let inspected = inspection_path(guest, &selected);
     require_executable_file(&inspected)?;
     let mut execute_paths = vec![execute_path(&selected)?];
-    let (image, arguments) = match shebang(inspected.as_os_str())? {
+    let header = shebang(inspected.as_os_str()).map_err(|error| {
+        // Execute access succeeded. A read failure is an unsupported image,
+        // not an execvp EACCES that permits trying a different PATH candidate.
+        io::Error::new(
+            io::ErrorKind::Unsupported,
+            format!(
+                "DBT requires a readable executable image; cannot inspect {}: {error}",
+                inspected.display()
+            ),
+        )
+    })?;
+    let (image, arguments) = match header {
         Some((interpreter, optional_arguments)) => {
             require_executable_file(&inspection_path(guest, &interpreter))?;
             execute_paths.push(execute_path(&interpreter)?);
@@ -3051,27 +3077,40 @@ mod tests {
 
     #[test]
     fn preparation_refusal_finishes_evidence_without_publication() {
-        let directory = tempfile::tempdir().unwrap();
-        let denied = directory.path().join("denied");
-        std::fs::write(&denied, b"#!/bin/sh\nexit 0\n").unwrap();
-        std::fs::set_permissions(&denied, std::fs::Permissions::from_mode(0o600)).unwrap();
-        let (runner, marker) = marker_runner(directory.path());
-        let output = tempfile::tempfile().unwrap();
-        let runner = runner.evidence_file(&output).unwrap();
-        let mut guest = Command::new(&denied);
-        guest.env("DBT_LAUNCH_WITNESS", &marker);
-        let error = runner.output(&guest).unwrap_err();
-        assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
-        assert!(!marker.exists());
-        assert_eq!(output.metadata().unwrap().len(), 0);
-        let evidence = runner.evidence.as_ref().unwrap();
-        assert_eq!(
-            evidence.claim_run().unwrap_err().kind(),
-            io::ErrorKind::AlreadyExists
-        );
-        let first = evidence.finish(false).unwrap_err().to_string();
-        assert!(first.contains("never started"), "{first}");
-        assert_eq!(evidence.finish(false).unwrap_err().to_string(), first);
+        for cwd_case in ["unchanged", "missing", "non-directory"] {
+            let directory = tempfile::tempdir().unwrap();
+            let denied = directory.path().join("denied");
+            std::fs::write(&denied, b"#!/bin/sh\nexit 0\n").unwrap();
+            std::fs::set_permissions(&denied, std::fs::Permissions::from_mode(0o600)).unwrap();
+            let (runner, marker) = marker_runner(directory.path());
+            let output = tempfile::tempfile().unwrap();
+            let runner = runner.evidence_file(&output).unwrap();
+            let mut guest = Command::new(&denied);
+            guest.env("DBT_LAUNCH_WITNESS", &marker);
+            let expected_errno = match cwd_case {
+                "missing" => {
+                    guest.current_dir(directory.path().join("missing"));
+                    libc::ENOENT
+                }
+                "non-directory" => {
+                    guest.current_dir(&denied);
+                    libc::ENOTDIR
+                }
+                _ => libc::EACCES,
+            };
+            let error = runner.output(&guest).unwrap_err();
+            assert_eq!(error.raw_os_error(), Some(expected_errno));
+            assert!(!marker.exists());
+            assert_eq!(output.metadata().unwrap().len(), 0);
+            let evidence = runner.evidence.as_ref().unwrap();
+            assert_eq!(
+                evidence.claim_run().unwrap_err().kind(),
+                io::ErrorKind::AlreadyExists
+            );
+            let first = evidence.finish(false).unwrap_err().to_string();
+            assert!(first.contains("never started"), "{first}");
+            assert_eq!(evidence.finish(false).unwrap_err().to_string(), first);
+        }
     }
 
     #[test]
