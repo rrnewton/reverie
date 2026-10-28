@@ -499,9 +499,6 @@ fn exact_strace_tool_observes_filtered_write() {
     assert!(stderr.contains(" = 6"), "{stderr}");
 }
 
-
-
-
 #[test]
 fn ptrace_strace_reports_exit_after_echo_closes_stdio() {
     // GNU echo closes stdout and stderr before exit. Keep the original write
