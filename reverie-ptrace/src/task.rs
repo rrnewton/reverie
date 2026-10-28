@@ -2881,6 +2881,16 @@ impl FatalSession {
         self.changed.notify_waiters();
     }
 
+    /// Whether this session traces a task numbered `tid` now: one whose owner
+    /// runs (from `register` until `finished`, after its final status), or a
+    /// child captured at its parent's clone, fork or vfork event that no owner
+    /// has taken yet. A task of another session or none, a host task, is not.
+    pub(crate) fn traces(&self, tid: Pid) -> bool {
+        let tree = self.tree.lock().unwrap();
+        tree.tasks.iter().any(|task| task.tid == tid)
+            || tree.newborns.iter().any(|newborn| newborn.tid == tid)
+    }
+
     pub(crate) fn subscribe_group(
         self: &Arc<Self>,
         terminal: &safeptrace::TerminalCleanup,
@@ -13702,6 +13712,14 @@ impl<L: Tool + 'static> Guest<L> for TracedTask<L> {
     /// the thread is stopped (`crate::descriptor_status`).
     fn descriptor_status(&self, fd: i32) -> Result<reverie::DescriptorStatus, reverie::FactError> {
         crate::descriptor_status::read(self.tid, fd)
+    }
+
+    /// The signal lines of thread `tid`'s own `/proc/<tid>/status`, read by
+    /// the tracer while this thread is stopped, for a live thread this
+    /// session traces, in any of its processes (`crate::signal_sets`).
+    fn signal_sets(&self, tid: Pid) -> Result<reverie::SignalSets, reverie::FactError> {
+        let session = &self.global_state.fatal_session;
+        crate::signal_sets::read(tid, |tid| session.traces(tid))
     }
 }
 
