@@ -527,6 +527,14 @@ impl<S> Drop for StateLease<'_, S> {
     }
 }
 
+type NativeDispatchParts<'a, T> = (
+    &'a ToolProcess<T>,
+    &'a mut <T as Tool>::ThreadState,
+    &'a mut CallbackLifecycle,
+    CallbackScratch,
+    &'a mut Option<Box<Record<<T as Tool>::ThreadState>>>,
+);
+
 /// The one Tool pin and exclusive thread state held by a native callback.
 /// No process registry or Tool-slot guard lives in this value.
 pub struct NativeCallbackLease<'owner, T: Tool> {
@@ -591,15 +599,7 @@ impl<'owner, T: Tool> NativeCallbackLease<'owner, T> {
         })
     }
 
-    pub(super) fn dispatch_parts(
-        &mut self,
-    ) -> (
-        &ToolProcess<T>,
-        &mut T::ThreadState,
-        &mut CallbackLifecycle,
-        CallbackScratch,
-        &mut Option<Box<Record<T::ThreadState>>>,
-    ) {
+    pub(super) fn dispatch_parts(&mut self) -> NativeDispatchParts<'_, T> {
         let record = self.state.record.as_mut().expect("live callback record");
         (
             &self.tool,
