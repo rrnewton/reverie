@@ -2158,20 +2158,41 @@ impl ElfExecutor {
         }
     }
 
-    pub fn signal_altstack(&self, stack_pointer: u64) -> GuestStack {
-        match self.state.thread_signals.lock().altstack {
-            Some(mut stack) => {
-                if stack.contains(stack_pointer) {
-                    stack.flags |= libc::SS_ONSTACK;
-                }
-                stack
-            }
-            None => GuestStack {
+    /// Records a CPU exception that raises a signal in this thread's trap
+    /// fields, as Linux's trap handlers do before they raise it: the vector
+    /// and error code always, and `fault_address`, a page fault's CR2, only
+    /// when there is one. Every later frame of the thread saves them; see
+    /// [`SignalTrapFields`].
+    pub fn record_user_trap(&mut self, trapno: u64, error_code: u64, fault_address: Option<u64>) {
+        let mut thread_signals = self.state.thread_signals.lock();
+        thread_signals.trap.trapno = trapno;
+        thread_signals.trap.error_code = error_code;
+        if let Some(address) = fault_address {
+            thread_signals.trap.cr2 = address;
+        }
+    }
+
+    /// The trap fields this thread's next signal frame saves.
+    pub fn signal_trap_fields(&self) -> SignalTrapFields {
+        self.state.thread_signals.lock().trap
+    }
+
+    /// The `uc_stack` a signal frame saves: the alternate stack as
+    /// `sigaltstack` installed it, with the flags it was given, or
+    /// `SS_DISABLE` and no stack when there is none. Linux writes the task's
+    /// own `sas_ss_flags` there (`unsafe_save_altstack`, include/linux/signal.h),
+    /// never `SS_ONSTACK`, which only `sigaltstack`'s old-stack output adds,
+    /// also when the interrupted code runs on that stack.
+    pub fn signal_altstack(&self) -> GuestStack {
+        self.state
+            .thread_signals
+            .lock()
+            .altstack
+            .unwrap_or(GuestStack {
                 sp: 0,
                 flags: libc::SS_DISABLE,
                 size: 0,
-            },
-        }
+            })
     }
 
     pub fn signal_stack_top(
