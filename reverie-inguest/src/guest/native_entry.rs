@@ -331,6 +331,39 @@ where
         services: &NativeServices<'_>,
         native_rpc: &NativeRpc<T::GlobalState>,
     ) -> NativeCallbackOutcome<Result<i64, Error>> {
+        unsafe {
+            self.dispatch_native_syscall_in_guest_with(
+                tool,
+                guest,
+                tail,
+                services,
+                native_rpc,
+                |_, outcome| outcome,
+            )
+        }
+    }
+
+    /// Run concrete Tool postprocessing inside the same admitted Guest,
+    /// after its actual handler completes and before the unchanged native
+    /// errno/forwarded-operation classification. The ordinary entry uses the
+    /// identity postprocessor and retains its existing behavior.
+    ///
+    /// # Safety
+    /// All dispatch_native_syscall_in_guest contracts apply. The postprocessor
+    /// borrows only this callback's actual Guest; no future or borrowed state
+    /// may escape it. It does not complete or replace the original lease.
+    pub unsafe fn dispatch_native_syscall_in_guest_with(
+        &self,
+        tool: &T,
+        guest: &mut InGuest<'_, T, R>,
+        tail: &TailResult,
+        services: &NativeServices<'_>,
+        native_rpc: &NativeRpc<T::GlobalState>,
+        postprocess: impl FnOnce(
+            &mut InGuest<'_, T, R>,
+            NativeCallbackOutcome<Result<i64, Error>>,
+        ) -> NativeCallbackOutcome<Result<i64, Error>>,
+    ) -> NativeCallbackOutcome<Result<i64, Error>> {
         let invocation = services.invocation();
         if let Some(result) =
             native_rpc.protect_operation(invocation, guest.event.number, &guest.event.args, true)
@@ -360,6 +393,7 @@ where
         guest.in_syscall_handler = true;
         let outcome = drive_native_callback(tool.handle_syscall_event(guest, syscall), tail);
         guest.in_syscall_handler = false;
+        let outcome = postprocess(guest, outcome);
         match outcome {
             NativeCallbackOutcome::Ready(Err(Error::Errno(errno))) => {
                 // Only the maintained syscall owner turns Linux
