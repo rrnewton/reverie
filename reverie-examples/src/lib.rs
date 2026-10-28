@@ -73,7 +73,6 @@ pub mod strace_minimal;
 
 pub(crate) use strace::config;
 pub(crate) use strace::filter;
-pub(crate) use strace::global_state;
 
 #[path = "../debug.rs"]
 pub mod debug;

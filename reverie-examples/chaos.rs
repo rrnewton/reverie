@@ -44,7 +44,6 @@ pub struct ChaosOpts {
 
 impl ChaosOpts {
     // TODO-HUMAN-REVIEW(PR-157): Review the narrow LiteInst config constructor API.
-    #[allow(dead_code)]
     pub fn new(skip: Option<u64>, no_read: bool, no_recv: bool, no_interrupt: bool) -> Self {
         Self {
             skip: skip.unwrap_or_default(),
@@ -54,7 +53,7 @@ impl ChaosOpts {
         }
     }
 
-    pub(crate) fn for_liteinst(
+    pub fn for_liteinst(
         skip: Option<u64>,
         no_read: bool,
         no_recv: bool,

@@ -27,7 +27,9 @@ pub use global_state::OutputEvent;
 use reverie_util::CommonToolArguments;
 pub use tool::Strace;
 #[cfg(any(test, feature = "test-support"))]
-pub use tool::take_handled_syscalls;
+pub fn take_handled_syscalls() -> usize {
+    tool::take_handled_syscalls()
+}
 
 /// A tool to trace system calls.
 #[cfg(feature = "host")]

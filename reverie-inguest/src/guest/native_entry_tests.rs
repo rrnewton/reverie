@@ -93,6 +93,7 @@ impl Tool for Probe {
                 guest.tail_inject(call).await
             }
             8 => Err(Errno::ERESTARTSYS.into()),
+            9 => Err(io::Error::other("native fixture fatal Tool I/O failure").into()),
             value @ (100 | 101 | 500) => {
                 let Reply(from, answer) = guest.send_rpc(Request(value)).await;
                 assert_eq!(from, guest.tid().as_raw());
@@ -520,6 +521,27 @@ fn native_single_handler_error_is_not_restarted_or_published_as_success() {
         "native single-handler errors must not enter the local restart loop"
     );
     assert_eq!(callback.admitted.load(Ordering::SeqCst), 1);
+    assert_eq!(callback.count(libc::SYS_getpid), 0);
+    // A Linux errno is a completed guest operation, not an abandoned native
+    // callback. Reenter the actual same host/state; lifecycle callbacks must
+    // not run again and the previous ERESTARTSYS must not be retried.
+    let lease = unsafe { host.enter_native_callback(handle, id).unwrap() };
+    let fatal = unsafe { host.dispatch_native_syscall(lease, &services, &rpc, &mut event(9)) }
+        .err()
+        .unwrap();
+    assert!(matches!(fatal, Error::Io(_)));
+    assert_eq!(
+        host.tool
+            .lock()
+            .as_ref()
+            .unwrap()
+            .syscall_entries
+            .load(Ordering::SeqCst),
+        2,
+        "one additional explicit operation must enter exactly one handler"
+    );
+    // Preserve the fatal failure refusal: a real non-guest I/O error leaves
+    // the callback poisoned and must not be converted into guest success/EIO.
     assert_eq!(
         unsafe { host.enter_native_callback(handle, id) }
             .err()
