@@ -46402,6 +46402,68 @@ mod tests {
         native_no_scope_test_put(&mut non_tls_alias, 0x4000 + 34 * 24 + 4, 1, sym::STT_OBJECT as u64);
         native_no_scope_test_put(&mut non_tls_alias, 0x8000 + 2 * 64 + 32, 8, 35 * 24);
         reject(&non_tls_alias, "same canonical TLS identity under another symbol type");
+        // A new canonical identity isolates cardinality from duplicate-name
+        // refusal. The zero-size LOCAL TLS symbol cannot overlap a critical cell.
+        let mut unique_tls = good.clone();
+        let unique_name = "_RNvCs1_7foreign5EXTRA";
+        let unique_canonical = canonical_rust_symbol(unique_name).unwrap();
+        assert!(NATIVE130_OWNER138_TLS_POPULATION
+            .iter()
+            .all(|entry| entry.0 != unique_canonical));
+        let unique_name_offset = native130_test_static_name(&mut unique_tls, unique_name);
+        let unique_row = 0x4000 + 34 * 24;
+        for (field, width, value) in [
+            (0, 4, unique_name_offset),
+            (4, 1, ((sym::STB_LOCAL << 4) | sym::STT_TLS) as u64),
+            (5, 1, sym::STV_DEFAULT as u64),
+            (6, 2, 13),
+            (8, 8, 0x1bf),
+            (16, 8, 0),
+        ] {
+            native_no_scope_test_put(&mut unique_tls, unique_row + field, width, value);
+        }
+        native_no_scope_test_put(&mut unique_tls, 0x8000 + 2 * 64 + 32, 8, 35 * 24);
+        let unique_elf = Elf::parse(&unique_tls).unwrap();
+        authenticate_loader_metadata(&unique_elf, &unique_tls).unwrap();
+        assert_eq!(unique_elf.syms.iter().filter(|symbol| symbol.st_type() == sym::STT_TLS).count(), 30);
+        let unique_error = native130_test_selected(&unique_tls)
+            .err()
+            .expect("a uniquely named thirtieth TLS symbol must refuse");
+        assert!(unique_error.contains("native130 requires the exact complete static TLS population"),
+            "{unique_error}");
+
+        // An empty, unreferenced TLS section changes neither the valid segment
+        // template nor any symbol, but must still enter the physical census.
+        let mut extra_tls_section = good.clone();
+        let section_names_size_at = 0x8000 + 11 * 64 + 32;
+        let section_name_offset = native_no_scope_test_word(&extra_tls_section, section_names_size_at);
+        let extra_section_name = b".tbss.extra\0";
+        let name_at = 0x5500 + section_name_offset as usize;
+        extra_tls_section[name_at..name_at + extra_section_name.len()]
+            .copy_from_slice(extra_section_name);
+        native_no_scope_test_put(&mut extra_tls_section, section_names_size_at, 8,
+            section_name_offset + extra_section_name.len() as u64);
+        for (field, width, value) in [
+            (0, 4, section_name_offset),
+            (4, 4, section_header::SHT_NOBITS as u64),
+            (8, 8, u64::from(section_header::SHF_ALLOC | section_header::SHF_WRITE | section_header::SHF_TLS)),
+            (16, 8, 0x37c0),
+            (24, 8, 0x37c0),
+            (32, 8, 0),
+            (48, 8, 8),
+        ] {
+            native_no_scope_test_put(&mut extra_tls_section, 0x8000 + 16 * 64 + field, width, value);
+        }
+        native_no_scope_test_put(&mut extra_tls_section, 60, 2, 17);
+        let extra_section_elf = Elf::parse(&extra_tls_section).unwrap();
+        authenticate_loader_metadata(&extra_section_elf, &extra_tls_section).unwrap();
+        assert_eq!(extra_section_elf.syms.iter().filter(|symbol| symbol.st_type() == sym::STT_TLS).count(), 29);
+        let section_error = native130_test_selected(&extra_tls_section)
+            .err()
+            .expect("an unreferenced extra TLS section must refuse");
+        assert!(section_error.contains("native130 complete TLS section census differs"),
+            "{section_error}");
+
         for index in 0..4 {
             for byte in 0..22 {
                 let mut bad = good.clone();
@@ -46727,6 +46789,53 @@ mod tests {
             validate_no_installation_scope_evidence(&backing, candidate, FixedImageKind::Detcore)
         };
         check(&proof).unwrap();
+        // Nonzero indices pass the measured tuple gate, isolating the
+        // section-alias and exact physical-population membership predicates.
+        let mut split_section = proof.clone();
+        let split_payload = split_section.native_tls_layout130_owner138.as_mut().unwrap();
+        let split_kind = split_payload.tls_population[0].section_type;
+        assert!(split_payload.tls_population.iter()
+            .filter(|cell| cell.section_type == split_kind).count() > 1);
+        split_payload.tls_population[0].section_index += 17;
+        let split_error = check(&split_section).unwrap_err();
+        assert!(split_error.contains("native130 population splits one TLS section across aliases"),
+            "{split_error}");
+
+        let mut shared_section = proof.clone();
+        let shared_payload = shared_section.native_tls_layout130_owner138.as_mut().unwrap();
+        let shared_index = shared_payload.tls_population[0].section_index;
+        assert_ne!(shared_index, 0);
+        for cell in &mut shared_payload.tls_population {
+            cell.section_index = shared_index;
+        }
+        for cell in &mut shared_payload.layout.cells {
+            cell.section_index = shared_index;
+        }
+        assert!(shared_payload.layout.cells.iter()
+            .all(|critical| shared_payload.tls_population.contains(critical)));
+        let shared_error = check(&shared_section).unwrap_err();
+        assert!(shared_error.contains("native130 critical cells do not join the complete physical TLS population"),
+            "{shared_error}");
+
+        let mut raw_identity = proof.clone();
+        let raw_payload = raw_identity.native_tls_layout130_owner138.as_mut().unwrap();
+        let original_raw_name = raw_payload.layout.cells[0].symbol.name.clone();
+        assert!(original_raw_name.contains("Cs1_"));
+        raw_payload.layout.cells[0].symbol.name = original_raw_name.replace("Cs1_", "Cs2_");
+        assert_ne!(raw_payload.layout.cells[0].symbol.name, original_raw_name);
+        assert_eq!(canonical_rust_symbol(&raw_payload.layout.cells[0].symbol.name),
+            canonical_rust_symbol(&original_raw_name));
+        let raw_error = check(&raw_identity).unwrap_err();
+        assert!(raw_error.contains("native130 critical cells do not join the complete physical TLS population"),
+            "{raw_error}");
+
+        let mut critical_section = proof.clone();
+        let critical_payload = critical_section.native_tls_layout130_owner138.as_mut().unwrap();
+        critical_payload.layout.cells[0].section_index += 17;
+        let critical_error = check(&critical_section).unwrap_err();
+        assert!(critical_error.contains("native130 critical cells do not join the complete physical TLS population"),
+            "{critical_error}");
+
         let encoded = serde_json::to_vec(&proof).unwrap();
         assert_eq!(encoded, serde_json::to_vec(&AllocatorInstallationEvidence::NoInstallationScope(
             Box::new(proof.clone()))).unwrap());
