@@ -97,14 +97,6 @@ jobs:
       run: |
         rustc scripts/check-skill-discovery.rs -o "$RUNNER_TEMP/check-skill-discovery"
         "$RUNNER_TEMP/check-skill-discovery"
-    # reverie-dbt/build.rs compiles the vendored DynamoRIO source on first use.
-    # Cache the content-addressed install tree; both the Actions key and the
-    # restored directory require the exact vendored source + recipe content.
-    - name: Cache DynamoRIO build
-      uses: actions/cache@v4
-      with:
-        path: target/*/reverie-dbt-native-cache/dynamorio-install-*
-        key: dynamorio-${{ runner.os }}-${{ hashFiles('reverie-dbt/vendor/dynamorio/**', 'reverie-dbt/build.rs') }}
     - name: Build
       run: cargo build --workspace --all-features
     - name: LiteInst allocator fixtures
@@ -115,35 +107,6 @@ jobs:
         generation="$RUNNER_TEMP/liteinst-allocator-$GITHUB_JOB-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
         scripts/build-liteinst-test-runtime.rs --for-ci "$generation"
         cat "$generation/bundle/github.env" >> "$GITHUB_ENV"
-    - name: DBT virtual identity and pidfd_open policy
-      run: reverie-dbt/scripts/test-identity-policy.sh
-    - name: DBT Strace caller artifact and standalone gates
-      timeout-minutes: 15
-      env:
-        CARGO_BUILD_JOBS: "8"
-        CARGO_INCREMENTAL: "0"
-      run: >-
-        reverie-dbt/scripts/build-client.sh
-        --caller-manifest reverie-examples/strace-dbt-runtime/Cargo.toml
-        --profile debug --jobs 8 --check
-    - name: DBT Counter1 caller artifact and standalone gates
-      timeout-minutes: 15
-      env:
-        CARGO_BUILD_JOBS: "8"
-        CARGO_INCREMENTAL: "0"
-      run: >-
-        reverie-dbt/scripts/build-client.sh
-        --caller-manifest reverie-examples/counter1-dbt-runtime/Cargo.toml
-        --profile debug --jobs 8 --check
-    - name: DBT lifecycle caller artifact and standalone gates
-      timeout-minutes: 15
-      env:
-        CARGO_BUILD_JOBS: "8"
-        CARGO_INCREMENTAL: "0"
-      run: >-
-        reverie-dbt/scripts/build-client.sh
-        --caller-manifest reverie-dbt/tests/fixtures/caller-lifecycle-runtime/Cargo.toml
-        --profile debug --jobs 8 --check
     - name: Test regular workspace cases
       run: >-
         cargo test --workspace --exclude reverie-kvm --exclude reverie-kvm-core --exclude reverie-linuxemu --exclude reverie-inguest --all-features --no-fail-fast --
@@ -178,7 +141,7 @@ jobs:
     # runner's environment has no ledger, so its verdicts are reported, not
     # judged (reverie-examples/e2e/README.md).
     - name: Reverie-layer cross-backend e2e (no device)
-      run: reverie-examples/e2e/run.sh --backends ptrace,liteinst,in-guest-trap,e9patch,dbt,sabre
+      run: reverie-examples/e2e/run.sh --backends ptrace,liteinst,in-guest-trap
     - name: Restore hosted-runner namespace restriction
       if: ${{ always() && steps.userns.outputs.restore_required == 'true' }}
       timeout-minutes: 1
@@ -237,7 +200,7 @@ jobs:
     #
     # This 10-minute budget assumes the WARM self-hosted cache (incremental build
     # + ~2min tests) that is the steady state on a persistent runner. A COLD
-    # DynamoRIO/workspace build can exceed 10 min; per policy that overflow is a
+    # A workspace build can exceed 10 min; per policy that overflow is a
     # surfaced FINDING, not a reason to pre-emptively raise the bound -- the
     # informative watchdog below attributes exactly which step overran and for how
     # long, so a cold-build overflow is diagnosable rather than a bare timeout.
@@ -287,8 +250,6 @@ jobs:
         fi
     - name: Rust toolchain
       uses: dtolnay/rust-toolchain@nightly
-      with:
-        components: clippy, rustfmt
     - name: Build
       run: cargo build --workspace --all-features
     - name: LiteInst allocator fixtures
@@ -299,34 +260,6 @@ jobs:
         generation="$RUNNER_TEMP/liteinst-allocator-$GITHUB_JOB-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
         scripts/build-liteinst-test-runtime.rs --for-ci "$generation"
         cat "$generation/bundle/github.env" >> "$GITHUB_ENV"
-    - name: DBT native client
-      run: reverie-dbt/scripts/build-client.sh
-    - name: DBT Strace caller artifact and standalone gates
-      env:
-        CARGO_BUILD_JOBS: "8"
-        CARGO_INCREMENTAL: "0"
-      run: >-
-        reverie-dbt/scripts/build-client.sh
-        --caller-manifest reverie-examples/strace-dbt-runtime/Cargo.toml
-        --profile debug --jobs 8 --check
-    - name: DBT Counter1 caller artifact and standalone gates
-      timeout-minutes: 15
-      env:
-        CARGO_BUILD_JOBS: "8"
-        CARGO_INCREMENTAL: "0"
-      run: >-
-        reverie-dbt/scripts/build-client.sh
-        --caller-manifest reverie-examples/counter1-dbt-runtime/Cargo.toml
-        --profile debug --jobs 8 --check
-    - name: DBT lifecycle caller artifact and standalone gates
-      timeout-minutes: 15
-      env:
-        CARGO_BUILD_JOBS: "8"
-        CARGO_INCREMENTAL: "0"
-      run: >-
-        reverie-dbt/scripts/build-client.sh
-        --caller-manifest reverie-dbt/tests/fixtures/caller-lifecycle-runtime/Cargo.toml
-        --profile debug --jobs 8 --check
     - name: Host-dependent workspace tests
       env:
         REVERIE_REQUIRE_KVM: "1"
