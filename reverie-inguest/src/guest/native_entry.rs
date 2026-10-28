@@ -83,6 +83,36 @@ where
             &TailResult,
         ) -> NativeCallbackOutcome<Result<V, Error>>,
     ) -> Result<NativeCallResult<'owner, T, V>, Error> {
+        let identity = callback.identity();
+        let outcome =
+            unsafe { self.drive_native_guest(&mut callback, services, native_rpc, event, work)? };
+        match outcome {
+            NativeCallbackOutcome::Ready(value) => {
+                let value = value?;
+                unsafe { callback.complete(identity)? };
+                Ok(NativeCallResult::Return(value))
+            }
+            NativeCallbackOutcome::Deferred { number, args } => Ok(NativeCallResult::Deferred(
+                DeferredNative::new(callback, number, args),
+            )),
+            NativeCallbackOutcome::Unsupported(reason) => Err(native_callback_error(reason)),
+        }
+    }
+
+    // One common callback/Guest/RPC/scoping body for consuming events and
+    // intermediate native post steps. No registry entry or scratch reset.
+    unsafe fn drive_native_guest<V>(
+        &self,
+        callback: &mut NativeCallbackLease<'_, T>,
+        services: &NativeServices<'_>,
+        native_rpc: &NativeRpc<T::GlobalState>,
+        event: &mut SyscallEvent,
+        work: impl FnOnce(
+            &T,
+            &mut InGuest<'_, T, R>,
+            &TailResult,
+        ) -> NativeCallbackOutcome<Result<V, Error>>,
+    ) -> Result<NativeCallbackOutcome<Result<V, Error>>, Error> {
         let owner = self
             .native_threads
             .as_ref()
@@ -151,17 +181,7 @@ where
         // Every Tool future, Guest, global-route borrow and allocation scope
         // above has ended before any continuation/state owner is returned.
         invocation.ensure_current()?;
-        match outcome {
-            NativeCallbackOutcome::Ready(value) => {
-                let value = value?;
-                unsafe { callback.complete(identity)? };
-                Ok(NativeCallResult::Return(value))
-            }
-            NativeCallbackOutcome::Deferred { number, args } => Ok(NativeCallResult::Deferred(
-                DeferredNative::new(callback, number, args),
-            )),
-            NativeCallbackOutcome::Unsupported(reason) => Err(native_callback_error(reason)),
-        }
+        Ok(outcome)
     }
 
     /// Continue the original deferred callback for the native owner's real
@@ -201,6 +221,55 @@ where
         // Reuse rather than NativeThreads::enter: that entry resets completed
         // scratch for the NEXT operation, which this post-event is not.
         unsafe { self.with_native_guest(callback, services, native_rpc, event, work) }
+    }
+
+    /// Drive one real returning post-event Tool step while the original
+    /// deferred owner still retains its state and every scratch arena.
+    ///
+    /// Child registration and failed-exec cancellation can precede remaining
+    /// C register/FD/evidence bookkeeping. They must not publish the callback
+    /// early. This method neither completes nor replaces `deferred`; its real
+    /// native owner must eventually call complete or a consuming exit API.
+    ///
+    /// # Safety
+    /// The original operation has returned on this same task/image, with no
+    /// Guest/future alive and all original scratch still owned by `deferred`.
+    /// `work` is real post-event work from that invocation, not a new syscall.
+    /// It must return a completed owned result, never initiate another native
+    /// deferred operation. On error the native owner must fail the run and
+    /// abandon/poison the original owner, not resume or retry its Guest.
+    pub unsafe fn with_native_post_step<V>(
+        &self,
+        deferred: &mut DeferredNative<'_, T>,
+        services: &NativeServices<'_>,
+        native_rpc: &NativeRpc<T::GlobalState>,
+        event: &mut SyscallEvent,
+        work: impl FnOnce(
+            &T,
+            &mut InGuest<'_, T, R>,
+            &TailResult,
+        ) -> NativeCallbackOutcome<Result<V, Error>>,
+    ) -> Result<V, Error> {
+        let owner = self
+            .native_threads
+            .as_ref()
+            .ok_or_else(|| io::Error::from(io::ErrorKind::Unsupported))?;
+        if !deferred.owned_by(owner) {
+            return Err(io::Error::from_raw_os_error(libc::ESTALE).into());
+        }
+        // drive_native_guest repeats current/config/Tool-owner checks before
+        // and current-context validation after actual Tool/RPC work. Borrow
+        // the original lease; do not consume it through into_post_event.
+        let outcome = unsafe {
+            self.drive_native_guest(deferred.callback_mut(), services, native_rpc, event, work)?
+        };
+        match outcome {
+            NativeCallbackOutcome::Ready(result) => result,
+            NativeCallbackOutcome::Deferred { .. } => Err(native_callback_error(
+                "native post-event step requested a second deferred operation",
+            )),
+            NativeCallbackOutcome::Unsupported(reason) => Err(native_callback_error(reason)),
+        }
     }
 
     /// Enter the actual subscribed syscall handler once. Native error/restart
