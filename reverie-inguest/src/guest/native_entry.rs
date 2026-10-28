@@ -144,7 +144,10 @@ where
             let mut guest = InGuest {
                 event,
                 tid: identity.tid(),
-                pid: identity.pid(),
+                // Native Guest::pid addresses the real host process (procfs,
+                // memory/descriptor mechanisms). The Tool's virtual process
+                // identity remains in its state and the native identity owner.
+                pid: identity.physical_pid(),
                 ppid: services.facts().parent,
                 state,
                 rpc: &self.rpc,

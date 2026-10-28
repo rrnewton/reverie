@@ -1362,3 +1362,58 @@ fn native_initializer_refuses_stale_post_context_without_reinitializing() {
     );
     fixture::close_test_primary(&rpc, &current_owner.callback);
 }
+
+#[test]
+fn native_local_tool_entry_keeps_physical_guest_pid_and_virtual_rpc_identity() {
+    let config = Arc::new(71);
+    let global = Arc::new(Remote::default());
+    let rpc = NativeRpc::local(Arc::clone(&global), Arc::clone(&config));
+    let cached = CoordinatorRpc::from_native_local_configuration(config);
+    assert_eq!(cached.raw_fd(), -1);
+    let callback = Callback::with_tool_identity(1, Pid::from_raw(3), Pid::from_raw(71));
+    let identity = callback.identity();
+    let host = unsafe {
+        ToolHost::new_native(
+            Probe::default(),
+            cached,
+            Pid::from_raw(3),
+            [Sysno::getpid].into_iter().collect(),
+            true,
+            Runtime,
+        )
+    };
+    let handle = unsafe {
+        host.register_native_image_thread(identity, State::seeded())
+            .unwrap()
+    };
+    let services = callback.services(None);
+    let lease = unsafe { host.enter_native_callback(handle, identity).unwrap() };
+    let mut first = event(0);
+    assert_eq!(
+        value(unsafe {
+            host.with_native_guest(lease, &services, &rpc, &mut first, |_tool, guest, _tail| {
+                assert_eq!(guest.pid(), identity.physical_pid());
+                assert_eq!(guest.tid(), identity.tid());
+                assert_ne!(guest.pid(), identity.pid());
+                assert_eq!(guest.thread_state().order, [1, 2]);
+                NativeCallbackOutcome::Ready(Ok(37))
+            })
+            .unwrap()
+        }),
+        37
+    );
+    let lease = unsafe { host.enter_native_callback(handle, identity).unwrap() };
+    assert_eq!(
+        value(unsafe {
+            host.dispatch_native_syscall(lease, &services, &rpc, &mut event(101))
+                .unwrap()
+        }),
+        101
+    );
+    assert_eq!(
+        *global.seen.lock().unwrap(),
+        [(identity.tid().as_raw(), 101)]
+    );
+    assert!(callback.calls.lock().unwrap().is_empty());
+    assert_eq!(rpc.descriptor(identity.physical_pid()), None);
+}
