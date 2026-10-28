@@ -2210,7 +2210,9 @@ impl KvmBackend {
         // reads this table: every guest CPUID faults to the Tool, whose answer
         // is the guest's (Detcore's machine description under Hermit, the
         // host's by Reverie's default).
-        let cpuid = vcpu_cpuid(kvm.get_supported_cpuid(KVM_MAX_CPUID_ENTRIES)?)?;
+        let supported = kvm.get_supported_cpuid(KVM_MAX_CPUID_ENTRIES)?;
+        let supported_xsave = crate::host_xss::XsaveSubleaf::of_table(&supported);
+        let cpuid = vcpu_cpuid(supported)?;
         // TODO-HUMAN-REVIEW(PR-129): Review host-selected private hypercall transport.
         let hypercall_instruction = supported_hypercall_instruction(&cpuid)?;
         let cap = kvm_enable_cap {
@@ -2235,6 +2237,9 @@ impl KvmBackend {
 
         let vcpu = vm.create_vcpu(0)?;
         vcpu.set_cpuid2(&cpuid)?;
+        // Once, before the first KVM_RUN: with the host's IA32_XSS, KVM no
+        // longer writes the MSR around every guest entry.
+        crate::host_xss::match_host_xss(&vcpu, supported_xsave, &cpuid)?;
         let wanted = kvm_bindings::KVM_SYNC_X86_REGS | kvm_bindings::KVM_SYNC_X86_SREGS;
         // A negative result is a failed probe, not a mask.
         let offered = vm.check_extension_int(Cap::SyncRegs);
@@ -6961,10 +6966,13 @@ pub(crate) fn clear_tid_and_wake(memory: &mut GuestMemory, address: Option<u64>)
 /// - leaf 0xd, whose extended state is limited to `signal::FIXED_XFEATURES`,
 ///   the x87, SSE and YMM components the backend's signal frames carry; KVM
 ///   sizes the guest's XSAVE state from this leaf, so with more it would save
-///   state (AVX-512, PKRU) that no frame can hold.
+///   state (AVX-512, PKRU) that no frame can hold. Its subleaf 1 keeps the
+///   host's IA32_XSS components, which `host_xss` relies on: KVM accepts a
+///   vCPU IA32_XSS value only within them.
 ///
 /// KVM still computes the fields that describe the vCPU itself (OSXSAVE from
-/// the guest's CR4, the XSAVE sizes from its XCR0) when the guest reads them.
+/// the guest's CR4, the XSAVE sizes from its XCR0 and IA32_XSS) when the guest
+/// reads them.
 pub(crate) fn vcpu_cpuid(supported: CpuId) -> Result<CpuId> {
     let fixed = crate::signal::FIXED_XFEATURES;
     let entries = supported
