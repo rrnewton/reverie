@@ -157,7 +157,7 @@ pub(super) struct NativeThreads<S> {
 impl<S> NativeThreads<S> {
     pub(super) fn new() -> Self {
         let owner = NEXT_OWNER
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |next| {
+            .try_update(Ordering::Relaxed, Ordering::Relaxed, |next| {
                 next.checked_add(1)
             })
             .expect("native callback owner sequence exhausted");
