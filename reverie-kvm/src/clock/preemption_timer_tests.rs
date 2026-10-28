@@ -2011,3 +2011,24 @@ fn single_steps_take_a_precise_request_exactly_to_its_target() {
         stepping,
     );
 }
+
+/// A host interrupt can end an entry while the CPU delivers an exception to
+/// its stub, leaving the guest at the faulting instruction with the exception
+/// for KVM to inject at the next entry. A timer event found due there is
+/// delivered, but no signal: moving the guest to a handler would deliver the
+/// exception at the handler instead. KVM_SET_VCPU_EVENTS stands in for the
+/// interrupt here.
+#[test]
+fn a_timer_boundary_with_an_exception_to_inject_takes_no_signal() {
+    // ud2
+    let backend = counted_backend(&[0x0f, 0x0b], CounterPlacement::default());
+    assert!(backend.timer_boundary_takes_signal().unwrap());
+    let mut events = backend.vcpu.get_vcpu_events().unwrap();
+    events.exception.injected = 1;
+    events.exception.nr = 6;
+    backend.vcpu.set_vcpu_events(&events).unwrap();
+    assert!(!backend.timer_boundary_takes_signal().unwrap());
+    events.exception.injected = 0;
+    backend.vcpu.set_vcpu_events(&events).unwrap();
+    assert!(backend.timer_boundary_takes_signal().unwrap());
+}

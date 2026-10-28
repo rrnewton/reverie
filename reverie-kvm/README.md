@@ -92,9 +92,26 @@ outcome: an injection the callback makes afterwards, having dropped the refused
 one, never runs, and a later exit or retirement does not replace it. Its writes
 to guest memory are not held back (see the limits below). An
 `rt_sigprocmask` with invalid arguments still returns its `EINVAL` or `EFAULT`,
-and one that makes no pending signal deliverable runs as usual. Signals
-pending at a timer event wait, as before, for the thread's next syscall or
-fault.
+and one that makes no pending signal deliverable runs as usual.
+
+After the callback, one pending signal is selected at the same point and
+delivered. Linux's return to user mode after a preemption runs `schedule()`
+before signal delivery, so the timer event comes first, then the signal;
+Linux then delivers every other eligible signal on the same return, with
+stacked frames, where this backend delivers one per return, as at its other
+boundaries (https://github.com/rrnewton/reverie/issues/1188), and its handler
+starts with the interrupted FPU state, where Linux resets it
+(https://github.com/rrnewton/reverie/issues/1187). At a user instruction
+boundary the signal's frame holds the live registers and nothing restarts, as
+after an interrupt, and the signal hook sees the timer event's complete
+registers; at a syscall's return the selection is that syscall's own, with
+its restart rules; at an `rt_sigreturn` it sees the registers and the mask the
+call restores. A signal another thread sends while the callback runs counts,
+so a thread that spins without syscalls takes a signal at its next timer
+event. A boundary where KVM has yet to inject an exception defers the
+selection to the first user boundary with no event left to inject: after a
+fault's signal, whose frame the signal's then goes on top of, or after an
+intercepted CPUID or RDTSC's callback.
 
 `Guest::set_timer_precise` requests a precise timer event, delivered exactly
 when the clock reaches its target, at the instruction boundary right after the
@@ -152,7 +169,9 @@ CPU-bound events). Opening the timer adds one `KVM_SET_SIGNAL_MASK` to its
 event's setup, an `EINTR` exit adds the one `rt_sigtimedwait`, and composing
 the mask again adds one `rt_sigprocmask` and one `KVM_SET_SIGNAL_MASK`. A due
 request adds at most one `KVM_GET_SREGS`; delivering it at a kick adds one
-`KVM_GET_REGS`, and arming it again at most one `PERF_EVENT_IOC_PERIOD`.
+`KVM_GET_REGS`, and arming it again at most one `PERF_EVENT_IOC_PERIOD`. A
+pending signal delivered after it at a user instruction boundary adds one
+`KVM_GET_VCPU_EVENTS` before the delivery's own register reads and writes.
 
 The timer's remaining limits must be addressed before that capability is set.
 Nothing checks that the timer event is resident on a counter; an uncounted
@@ -160,7 +179,9 @@ vCPU on the same host task advances an armed timer, which then kicks late;
 nothing refuses PREEMPT_RT kernels or nested virtualization; the parent's
 request survives an unsubscribed fork, clone or vfork, where
 reverie-ptrace cancels it; and code that unblocks `SIGSTKFLT` on a vCPU thread
-lets a late kick interrupt a host call again. After a refused injection, the
+lets a late kick interrupt a host call again. A timer callback cannot make a
+signal deliverable to its own thread, where reverie-ptrace delivers one that
+the callback sends once it returns. After a refused injection, the
 timer callback's own guest-memory and stack writes, through handles it already
 holds, still reach memory until the callback returns or suspends; the run then
 fails with the named reason. A precise event is late when the interrupt behind
