@@ -252,6 +252,9 @@ pub struct ToolHost<T: Tool, R: HostRuntime> {
     subscriptions: HashSet<Sysno>,
     cpuid_interception: bool,
     states: SpinMutex<HashMap<i32, T::ThreadState>>,
+    // Prepared only by the ordinary installer, before publication. Keeping it
+    // outside `states` preserves the real first-event lifecycle callbacks.
+    ordinary_root_state: SpinMutex<Option<T::ThreadState>>,
     runtime: R,
     #[cfg(feature = "exec-private-successor")]
     prepared_exec: SpinMutex<Option<PreparedExecState<T>>>,
@@ -377,12 +380,49 @@ where
             subscriptions,
             cpuid_interception,
             states: SpinMutex::new(HashMap::new()),
+            ordinary_root_state: SpinMutex::new(None),
             runtime,
             #[cfg(feature = "exec-private-successor")]
             prepared_exec: SpinMutex::new(None),
             #[cfg(feature = "exec-native-injection")]
             native_exec_driver: None,
         }
+    }
+
+    /// Prepare an ordinary root before this newly constructed host is published.
+    /// The initializer has config/state only, no RPC or lifecycle authority.
+    /// Errors return to installation; they cannot become a fresh default state.
+    pub(crate) fn prepare_ordinary_root_state<F>(&mut self, initialize: F) -> io::Result<()>
+    where
+        F: FnOnce(
+            &<T::GlobalState as GlobalTool>::Config,
+            Pid,
+            &mut T::ThreadState,
+        ) -> io::Result<()>,
+    {
+        if !self.states.lock().is_empty() || self.ordinary_root_state.lock().is_some() {
+            return Err(io::Error::new(
+                io::ErrorKind::AlreadyExists,
+                "ordinary root preparation follows state creation",
+            ));
+        }
+        let tool_slot = self.tool.lock();
+        let tool = tool_slot
+            .as_ref()
+            .ok_or_else(|| io::Error::other("ordinary root Tool is absent"))?;
+        let mut state = tool.init_thread_state(self.root_pid, None);
+        initialize(self.rpc.config(), self.root_pid, &mut state)?;
+        *self.ordinary_root_state.lock() = Some(state);
+        Ok(())
+    }
+
+    fn new_thread_state(&self, tool: &T, tid: Pid) -> T::ThreadState {
+        if tid == self.root_pid {
+            if let Some(state) = self.ordinary_root_state.lock().take() {
+                return state;
+            }
+        }
+        tool.init_thread_state(tid, None)
     }
 
     /// Install the inactive native exec driver exactly once, before dispatch.
@@ -732,7 +772,7 @@ where
         let is_new = !states.contains_key(&tid.as_raw());
         let state = states
             .entry(tid.as_raw())
-            .or_insert_with(|| tool.init_thread_state(tid, None));
+            .or_insert_with(|| self.new_thread_state(tool, tid));
         let tail = TailResult::default();
         let mut guest = InGuest::<T, R> {
             event,
@@ -1104,7 +1144,7 @@ where
         let is_new = !states.contains_key(&tid.as_raw());
         let state = states
             .entry(tid.as_raw())
-            .or_insert_with(|| tool.init_thread_state(tid, None));
+            .or_insert_with(|| self.new_thread_state(tool, tid));
         let tail = TailResult::default();
         let mut event = SyscallEvent {
             number: -1,
@@ -4144,6 +4184,9 @@ mod process_owner_tests {
         assert_eq!(states.get(&child_tid).unwrap().pid, child_pid);
     }
 }
+#[cfg(test)]
+#[path = "ordinary_root_tests.rs"]
+mod ordinary_root_tests;
 
 #[cfg(test)]
 mod tests {
