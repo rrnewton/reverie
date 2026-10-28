@@ -8,10 +8,10 @@
 
 //! End-to-end checks for the exact example `Tool` types on LiteInst, with
 //! Counter1 allocator coverage through the shared backend launcher.
-//! The DBT cases require `reverie-dbt/scripts/build-client.sh` for the same
-//! Cargo profile, or a client explicitly selected by `REVERIE_DBT_CLIENT`.
-//! The external Strace caller cases additionally require the explicit caller
-//! producer for that profile; they use its standard manifest layout.
+//! DBT Counter1 and Strace require their explicit caller producers for the
+//! same Cargo profile; they use the standard manifest layout. The separate
+//! Counter1 local-Global case requires the no-argument prototype producer
+//! `reverie-dbt/scripts/build-client.sh`, or `REVERIE_DBT_CLIENT`.
 
 use std::fs::File;
 use std::os::fd::AsRawFd;
@@ -334,6 +334,70 @@ fn exact_counter1_tool_reports_its_local_global_without_a_coordinator() {
         .arg(env!("CARGO_BIN_EXE_reverie-liteinst-env-guest"))
         .arg("exercise-allocator");
     assert_one_counter1_allocator_summary(&output_with_timeout(&mut command));
+}
+
+#[test]
+fn dbt_counter1_explicit_caller_selection_bypasses_prototype_client() {
+    let manifest = Path::new(env!("CARGO_BIN_EXE_counter1"))
+        .parent()
+        .unwrap()
+        .join("reverie-dbt-callers/counter1/manifest.json");
+    // A valid, current pair is a prerequisite; a missing caller cannot prove
+    // that the CLI selected the actual shared Tool through the caller owner.
+    reverie_dbt::CallerArtifact::load(&manifest).unwrap();
+    let directory = tempfile::tempdir().unwrap();
+    let missing_prototype = directory.path().join("missing-prototype-client.so");
+    assert!(!missing_prototype.exists());
+    let mut command = Command::new(env!("CARGO_BIN_EXE_counter1"));
+    command
+        .env("REVERIE_DBT_CALLER_ARTIFACT", &manifest)
+        .env("REVERIE_DBT_CLIENT", &missing_prototype)
+        .env(
+            STRADDLER_STALENESS_TICKS_ENV,
+            TEST_STRADDLER_STALENESS_TICKS,
+        )
+        .args(["--backend", "dbt", "--preload"])
+        .arg(preload())
+        .arg("--")
+        .arg(env!("CARGO_BIN_EXE_reverie-liteinst-env-guest"))
+        .arg("exercise-allocator");
+    assert_one_counter1_allocator_summary(&output_with_timeout(&mut command));
+}
+
+#[test]
+fn dbt_counter1_bad_override_never_uses_the_valid_default_pair() {
+    let default = Path::new(env!("CARGO_BIN_EXE_counter1"))
+        .parent()
+        .unwrap()
+        .join("reverie-dbt-callers/counter1/manifest.json");
+    reverie_dbt::CallerArtifact::load(&default).unwrap();
+    let directory = tempfile::tempdir().unwrap();
+    let malformed = directory.path().join("malformed.json");
+    std::fs::write(&malformed, b"{}").unwrap();
+    for path in [directory.path().join("absent.json"), malformed] {
+        for via_environment in [false, true] {
+            let mut command = Command::new(env!("CARGO_BIN_EXE_counter1"));
+            command
+                .env_remove("REVERIE_DBT_CALLER_ARTIFACT")
+                .args(["--backend", "dbt"]);
+            if via_environment {
+                command.env("REVERIE_DBT_CALLER_ARTIFACT", &path);
+            } else {
+                command.arg("--dbt-artifact").arg(&path);
+            }
+            command
+                .arg("--")
+                .arg(env!("CARGO_BIN_EXE_reverie-liteinst-env-guest"))
+                .arg("exercise-allocator");
+            let output = output_with_timeout(&mut command);
+            assert!(!output.status.success(), "{output:?}");
+            assert!(output.stdout.is_empty(), "{output:?}");
+            assert!(
+                String::from_utf8_lossy(&output.stderr).contains("cannot load DBT caller artifact"),
+                "{output:?}"
+            );
+        }
+    }
 }
 
 #[test]

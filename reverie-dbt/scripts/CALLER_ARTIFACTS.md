@@ -6,6 +6,13 @@ The Strace DBT caller compiles the original
 the complete caller ABI through `export_caller_tool!`. It does not link the
 example preload or an in-guest constructor.
 
+The Counter1 DBT caller compiles the unchanged
+`reverie-examples/counter1_tool.rs` through the same export. It uses the actual
+`CounterLocal` and returns its `CounterGlobal` to the CLI, which prints the
+single `counter1-global syscalls=` summary. Its configuration is explicitly
+`()`, as defined by the shared Tool. The separate no-coordinator Counter1
+control still uses the prototype runtime and its local GlobalState.
+
 The caller is a standalone Cargo workspace with its own lockfile. The parent
 workspace explicitly excludes it so an unrelated `--all-features` build cannot
 unify prototype exports into the caller. This is a separate validation boundary:
@@ -38,6 +45,12 @@ CARGO_INCREMENTAL=0 CARGO_BUILD_JOBS=8 \
   --caller-manifest reverie-examples/strace-dbt-runtime/Cargo.toml \
   --profile debug --jobs 8 --check
 target/debug/strace --backend dbt --trace write -- /bin/echo hello
+
+CARGO_INCREMENTAL=0 CARGO_BUILD_JOBS=8 \
+  reverie-dbt/scripts/build-client.sh \
+  --caller-manifest reverie-examples/counter1-dbt-runtime/Cargo.toml \
+  --profile debug --jobs 8 --check
+target/debug/counter1 --backend dbt -- /bin/echo hello
 ```
 
 `CARGO_TARGET_DIR` selects the existing shared target directory; otherwise it is
@@ -94,7 +107,7 @@ the small standard descriptor. Failed production leaves earlier descriptors
 and image bytes intact; it never silently reuses an older pair. Generation
 cleanup belongs to the normal target-directory lifecycle.
 
-Strace selects `--dbt-artifact PATH` first, then
+Counter1 and Strace select `--dbt-artifact PATH` first, then
 `REVERIE_DBT_CALLER_ARTIFACT`, then the standard descriptor beside the launcher.
 A missing, stale, or malformed explicit selection refuses; it cannot fall back
 to the default. For an explicitly staged pair:
@@ -117,7 +130,8 @@ path, NUL, lowercase SHA256, and newline. Inputs include:
 - Every regular file beneath Cargo's resolved local production package roots,
   including their manifests, build scripts, new modules, and the caller lock.
 - Explicit caller `package.metadata.reverie-dbt.input-roots` directories for
-  modules included outside their package. Strace declares `../strace`.
+  modules included outside their package. Strace declares `../strace`;
+  Counter1 declares `..` to include the shared Tool in the examples directory.
 - The parent manifest, lock, toolchain selection, and Cargo configuration.
 - Native client/CMake sources, the maintained SDK recipe and vendored inputs,
   producer sources, and the validated SDK install's inventory and provenance.
@@ -168,3 +182,10 @@ first requires a valid default pair, then checks absent/malformed descriptors
 and stale source/runtime hashes through both public override forms. These
 tests must execute against the real native caller path; source review or a
 standalone compilation is not evidence that they passed.
+
+Counter1 retains the original allocator-growth output, nonzero Global count,
+exactly-one-summary assertion, and ten-second helper across DBT, ptrace, and
+trap. Its caller-selection regression supplies a valid caller descriptor and
+an absent prototype client, so success requires the caller route. The override
+control checks absent and malformed descriptors through both public override
+forms with a valid default pair present; neither may fall back to that pair.

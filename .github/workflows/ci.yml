@@ -102,6 +102,15 @@ jobs:
         reverie-dbt/scripts/build-client.sh
         --caller-manifest reverie-examples/strace-dbt-runtime/Cargo.toml
         --profile debug --jobs 8 --check
+    - name: DBT Counter1 caller artifact and standalone gates
+      timeout-minutes: 15
+      env:
+        CARGO_BUILD_JOBS: "8"
+        CARGO_INCREMENTAL: "0"
+      run: >-
+        reverie-dbt/scripts/build-client.sh
+        --caller-manifest reverie-examples/counter1-dbt-runtime/Cargo.toml
+        --profile debug --jobs 8 --check
     - name: DBT lifecycle caller artifact and standalone gates
       timeout-minutes: 15
       env:
@@ -273,6 +282,15 @@ jobs:
       run: >-
         reverie-dbt/scripts/build-client.sh
         --caller-manifest reverie-examples/strace-dbt-runtime/Cargo.toml
+        --profile debug --jobs 8 --check
+    - name: DBT Counter1 caller artifact and standalone gates
+      timeout-minutes: 15
+      env:
+        CARGO_BUILD_JOBS: "8"
+        CARGO_INCREMENTAL: "0"
+      run: >-
+        reverie-dbt/scripts/build-client.sh
+        --caller-manifest reverie-examples/counter1-dbt-runtime/Cargo.toml
         --profile debug --jobs 8 --check
     - name: DBT lifecycle caller artifact and standalone gates
       timeout-minutes: 15

@@ -14,9 +14,12 @@
 //! The in-guest backends (LiteInst, in-guest-trap, e9patch) host a tool
 //! through a preload that compiles it in: the example preload,
 //! `libreverie_examples.so` (`src/lib.rs`), selects the tool by the name the
-//! caller passes. DBT's prototype runtime (reverie-dbt) selects a tool it
-//! compiles in by the same name (`reverie_dbt::TOOL_ENV`), and the tool's
-//! GlobalState lives here, served over DBT's coordinator socket. SaBRe's
+//! caller passes. Counter1 and Strace select verified external DBT caller
+//! artifacts through `run_blocking_with_caller`, with the tool's GlobalState
+//! served here by the caller owner. Other examples use DBT's prototype runtime
+//! (reverie-dbt), which selects a compiled-in tool by the same name
+//! (`reverie_dbt::TOOL_ENV`) and serves its GlobalState here over DBT's
+//! coordinator socket. SaBRe's
 //! plugin for the example tools (experimental/reverie-sabre-strace) selects a
 //! tool by the same name, and its GlobalState lives here too
 //! (`reverie_host::run_with_global_state`).
