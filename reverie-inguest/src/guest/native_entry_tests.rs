@@ -33,6 +33,10 @@ struct State {
     order: Vec<u64>,
     initialized_for: i32,
     parent_seed: Option<u64>,
+    #[serde(skip)]
+    copied_parent_drop: Option<native_copied_tests::ParentDrop>,
+    #[serde(skip)]
+    copied_child_order: Option<std::sync::Arc<native_copied_tests::DropOrder>>,
 }
 impl State {
     fn seeded() -> Self {
@@ -86,6 +90,9 @@ impl Tool for Probe {
     }
 
     async fn handle_thread_start<G: Guest<Self>>(&self, guest: &mut G) -> Result<(), Error> {
+        if let Some(order) = &guest.thread_state().copied_child_order {
+            assert_eq!(order.parent_drops.load(Ordering::SeqCst), 0);
+        }
         assert_eq!(
             guest.thread_state().seed,
             71,
@@ -99,6 +106,9 @@ impl Tool for Probe {
         assert!(guest.has_cpuid_interception());
         guest.thread_state_mut().starts += 1;
         guest.thread_state_mut().order.push(1);
+        if let Some(order) = &guest.thread_state().copied_child_order {
+            order.child_start_completed.store(true, Ordering::SeqCst);
+        }
         Ok(())
     }
     async fn handle_post_exec<G: Guest<Self>>(&self, guest: &mut G) -> Result<(), Errno> {
@@ -1418,3 +1428,6 @@ fn native_local_tool_entry_keeps_physical_guest_pid_and_virtual_rpc_identity() {
     assert!(callback.calls.lock().unwrap().is_empty());
     assert_eq!(rpc.descriptor(identity.physical_pid()), None);
 }
+
+#[path = "native_copied_tests.rs"]
+mod native_copied_tests;

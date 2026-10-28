@@ -50,6 +50,10 @@ fn inputs() -> &'static [(&'static str, &'static [u8])] {
             include_bytes!("guest/native_capture.rs"),
         ),
         (
+            "rv/guest/native_copied.rs",
+            include_bytes!("guest/native_copied.rs"),
+        ),
+        (
             "rv/guest/native_entry.rs",
             include_bytes!("guest/native_entry.rs"),
         ),
@@ -269,6 +273,10 @@ mod tests {
             (
                 "rv/guest/native_capture.rs",
                 include_bytes!("guest/native_capture.rs").as_slice(),
+            ),
+            (
+                "rv/guest/native_copied.rs",
+                include_bytes!("guest/native_copied.rs").as_slice(),
             ),
             (
                 "rv/guest/native_entry.rs",

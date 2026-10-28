@@ -80,6 +80,10 @@ impl NativeThreadIdentity {
         self.tid
     }
 
+    pub(super) fn same_image(self, other: Self) -> bool {
+        self.image == other.image
+    }
+
     /// The actual native process owning the callback, not a Tool-visible ID.
     pub fn physical_pid(self) -> Pid {
         self.physical_pid
@@ -155,10 +159,15 @@ impl CallbackScratch {
     }
 }
 
-struct Record<S> {
+pub(super) struct Record<S> {
     state: S,
     scratch: CallbackScratch,
     lifecycle: CallbackLifecycle,
+    // The maintained copied-child initializer keeps its actual inherited
+    // parent alive until the child's real lifecycle entry returns. Keeping
+    // the whole record also retains the original scratch owner. It contains
+    // no inherited registry guard or owner pointer.
+    copied_parent: Option<Box<Record<S>>>,
 }
 
 enum Phase<S> {
@@ -248,6 +257,7 @@ impl<S> NativeThreads<S> {
                     state,
                     scratch: CallbackScratch::new(),
                     lifecycle,
+                    copied_parent: None,
                 })),
             },
         );
@@ -446,6 +456,7 @@ impl<S> NativeInitialization<'_, S> {
             state,
             scratch: CallbackScratch::new(),
             lifecycle,
+            copied_parent: None,
         }));
         self.published = true;
         Ok(self.handle)
@@ -587,6 +598,7 @@ impl<'owner, T: Tool> NativeCallbackLease<'owner, T> {
         &mut T::ThreadState,
         &mut CallbackLifecycle,
         CallbackScratch,
+        &mut Option<Box<Record<T::ThreadState>>>,
     ) {
         let record = self.state.record.as_mut().expect("live callback record");
         (
@@ -594,6 +606,7 @@ impl<'owner, T: Tool> NativeCallbackLease<'owner, T> {
             &mut record.state,
             &mut record.lifecycle,
             record.scratch.clone(),
+            &mut record.copied_parent,
         )
     }
 
@@ -620,6 +633,82 @@ impl<'owner, T: Tool> NativeCallbackLease<'owner, T> {
     /// storage. Merely returning from the Rust Tool is insufficient.
     pub unsafe fn complete(self, identity: NativeThreadIdentity) -> io::Result<()> {
         self.state.complete(identity)
+    }
+}
+
+/// The original copied-address-space continuation, detached without locking
+/// an inherited registry. No public constructor or Clone exists. The real
+/// copied-child owner must initialize and publish it into one fresh registry;
+/// it is not a parent snapshot for a requested or unrelated task.
+pub struct CopiedNativeParent<T: Tool> {
+    pub(super) tool: Arc<ToolProcess<T>>,
+    parent: NativeThreadIdentity,
+    child: NativeThreadIdentity,
+    record: Box<Record<T::ThreadState>>,
+    number: i64,
+    args: [u64; 6],
+    _same_thread: PhantomData<*mut ()>,
+}
+
+impl<T: Tool> CopiedNativeParent<T> {
+    pub(super) fn parent_identity(&self) -> NativeThreadIdentity {
+        self.parent
+    }
+
+    pub(super) fn child_identity(&self) -> NativeThreadIdentity {
+        self.child
+    }
+
+    pub(super) fn parent_state(&mut self) -> &mut T::ThreadState {
+        &mut self.record.state
+    }
+}
+
+impl<'owner, S> NativeInitialization<'owner, S> {
+    pub(super) fn publish_copied<T: Tool<ThreadState = S>>(
+        mut self,
+        state: S,
+        parent: CopiedNativeParent<T>,
+    ) -> io::Result<(NativeThreadHandle, DeferredNative<'owner, T>)> {
+        if self.identity != parent.child {
+            return Err(io::Error::from_raw_os_error(libc::ESTALE));
+        }
+        let mut registry = self.owner.registry.lock();
+        let slot = self
+            .owner
+            .checked_slot(&mut registry, self.handle, self.identity)?;
+        if !matches!(slot.phase, Phase::Initializing) {
+            return Err(io::Error::from_raw_os_error(libc::ESTALE));
+        }
+        // Its original native operation already returned in this real child,
+        // but still owns scratch through clone/exec/register bookkeeping. Do
+        // not publish Available or call enter(), which would reset scratch.
+        slot.phase = Phase::Active;
+        drop(registry);
+        self.published = true;
+        let CopiedNativeParent {
+            tool,
+            record,
+            number,
+            args,
+            ..
+        } = parent;
+        let callback = NativeCallbackLease {
+            tool,
+            state: StateLease {
+                owner: self.owner,
+                handle: self.handle,
+                identity: self.identity,
+                record: Some(Box::new(Record {
+                    state,
+                    scratch: record.scratch.clone(),
+                    lifecycle: CallbackLifecycle::new(true, false),
+                    copied_parent: Some(record),
+                })),
+                _same_thread: PhantomData,
+            },
+        };
+        Ok((self.handle, DeferredNative::new(callback, number, args)))
     }
 }
 
@@ -657,6 +746,33 @@ impl<'owner, T: Tool> DeferredNative<'owner, T> {
 
     pub(super) fn owned_by(&self, owner: &NativeThreads<T::ThreadState>) -> bool {
         self.callback.owned_by(owner)
+    }
+
+    pub(super) fn identity(&self) -> NativeThreadIdentity {
+        self.callback.identity()
+    }
+
+    pub(super) fn callback_tool(&self) -> &ToolProcess<T> {
+        &self.callback.tool
+    }
+
+    // Only the checked copied-address-space constructor may detach this
+    // original active record. Taking it makes StateLease::drop a no-op; the
+    // inherited registry may contain a lock held by a vanished sibling.
+    pub(super) fn into_copied_parent(self, child: NativeThreadIdentity) -> CopiedNativeParent<T> {
+        let NativeCallbackLease { tool, mut state } = self.callback;
+        CopiedNativeParent {
+            tool,
+            parent: state.identity,
+            child,
+            record: state
+                .record
+                .take()
+                .expect("original copied callback record"),
+            number: self.number,
+            args: self.args,
+            _same_thread: PhantomData,
+        }
     }
 
     /// Reuse this exact active state and scratch during its genuine returning
