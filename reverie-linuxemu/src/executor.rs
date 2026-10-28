@@ -67,6 +67,7 @@ use crate::signal::SIGINFO_SIZE;
 use crate::signal::SS_AUTODISARM;
 #[cfg(any(test, feature = "test-support", feature = "native-test-support"))]
 use crate::signal::SharedThreadSignalState;
+use crate::signal::SignalTrapFields;
 use crate::signal::event_for_process;
 use crate::signal::event_for_thread;
 #[cfg(test)]
@@ -32704,7 +32705,7 @@ mod tests {
             .expect("the admitted signal is selected under the temporary mask");
         assert_eq!(pending.event.signal(), libc::SIGUSR1);
         let action = executor.signal_action(libc::SIGUSR1);
-        executor.enter_signal_handler(pending, action, false);
+        executor.enter_signal_handler(pending, action);
         {
             let thread_signals = executor.state.thread_signals.lock();
             assert_eq!(
@@ -37610,7 +37611,15 @@ mod tests {
             Some(canonical_ignored)
         );
         assert_eq!(test_signal_action(&replacement, libc::SIGUSR2), None);
-        assert!(replacement.thread_signals.lock().altstack.is_none());
+        assert_eq!(
+            replacement.thread_signals.lock().altstack,
+            Some(GuestStack {
+                sp: 0,
+                flags: 0,
+                size: 0,
+            }),
+            "exec clears the alternate stack's address and size and keeps its flags",
+        );
         assert_eq!(replacement.pgid, 55, "exec preserves the process group");
         assert_eq!(
             replacement
@@ -37746,7 +37755,6 @@ mod tests {
                 overflowing.sp.wrapping_add(overflowing.size),
                 Some(overflowing.sp),
                 false,
-                false,
             )),
         );
     }
@@ -37769,15 +37777,19 @@ mod tests {
         for current in [stack.sp + 1, top] {
             assert_eq!(
                 executor.signal_stack_top(action, current),
-                Ok((current, Some(stack.sp), true, false)),
+                Ok((current, Some(stack.sp), true)),
                 "an rsp in (base, top] is nested",
             );
         }
         assert_eq!(
             executor.signal_stack_top(action, stack.sp),
-            Ok((top, Some(stack.sp), false, false)),
+            Ok((top, Some(stack.sp), false)),
             "an rsp at base is off-stack and starts a fresh altstack frame",
         );
+        // A frame saves the stack's own flags, as Linux's
+        // unsafe_save_altstack does, never SS_ONSTACK: a frame nested on the
+        // stack saves the same uc_stack as the frame that switched to it.
+        assert_eq!(executor.signal_altstack(), stack);
 
         let autodisarm = GuestStack {
             flags: SS_AUTODISARM,
@@ -37786,10 +37798,307 @@ mod tests {
         executor.state.thread_signals.lock().altstack = Some(autodisarm);
         assert_eq!(
             executor.signal_stack_top(action, stack.sp + 1),
-            Ok((top, Some(stack.sp), false, true)),
+            Ok((top, Some(stack.sp), false)),
             "an armed SS_AUTODISARM stack is treated as off-stack",
         );
-        assert_eq!(executor.signal_altstack(stack.sp + 1).flags, SS_AUTODISARM,);
+        assert_eq!(executor.signal_altstack(), autodisarm);
+
+        // After an exec the stack has no address or size and keeps its
+        // flags: it is disabled, and a frame saves it as the task holds it.
+        for flags in [0, SS_AUTODISARM] {
+            let after_exec = GuestStack {
+                sp: 0,
+                flags,
+                size: 0,
+            };
+            executor.state.thread_signals.lock().altstack = Some(after_exec);
+            assert_eq!(
+                executor.signal_stack_top(action, stack.sp + 1),
+                Ok((stack.sp + 1, None, true)),
+                "a stack with no size is disabled, flags {flags:#x}",
+            );
+            assert_eq!(executor.signal_altstack(), after_exec);
+        }
+
+        executor.state.thread_signals.lock().altstack = None;
+        assert_eq!(
+            executor.signal_altstack(),
+            GuestStack {
+                sp: 0,
+                flags: libc::SS_DISABLE,
+                size: 0,
+            },
+            "no stack, or one SS_AUTODISARM disarmed, saves SS_DISABLE",
+        );
+    }
+
+    #[test]
+    fn signal_frames_keep_the_last_traps_fields() {
+        let root = TestDir::new();
+        let mut executor = ElfExecutor::new(test_state(&root.0), false);
+        assert_eq!(executor.signal_trap_fields(), SignalTrapFields::default());
+        // A page fault sets all three fields.
+        executor.record_user_trap(14, 6, Some(0x10));
+        let fault = SignalTrapFields {
+            trapno: 14,
+            error_code: 6,
+            cr2: 0x10,
+        };
+        assert_eq!(executor.signal_trap_fields(), fault);
+        // A later #UD sets the vector and error code and, as on Linux, keeps
+        // the page fault's address.
+        executor.record_user_trap(6, 0, None);
+        assert_eq!(
+            executor.signal_trap_fields(),
+            SignalTrapFields {
+                trapno: 6,
+                error_code: 0,
+                cr2: 0x10,
+            },
+        );
+    }
+
+    #[test]
+    fn every_delivery_disarms_an_autodisarm_stack() {
+        // Linux's signal_delivered resets an SS_AUTODISARM stack after every
+        // delivery (sas_ss_reset), also for a handler that does not run on it
+        // and for a stack exec left without a size; a stack without the flag
+        // stays as it was.
+        let stack = GuestStack {
+            sp: 0x8000,
+            flags: 0,
+            size: libc::MINSIGSTKSZ as u64,
+        };
+        let autodisarm = GuestStack {
+            flags: SS_AUTODISARM,
+            ..stack
+        };
+        let after_exec = GuestStack {
+            sp: 0,
+            flags: SS_AUTODISARM,
+            size: 0,
+        };
+        for (before, after) in [(stack, Some(stack)), (autodisarm, None), (after_exec, None)] {
+            let root = TestDir::new();
+            let mut state = test_state(&root.0);
+            let (pid, tid) = (state.pid, state.tid);
+            let mut memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
+            test_catch_signal(&state, libc::SIGUSR1);
+            state.thread_signals.lock().altstack = Some(before);
+            assert_eq!(
+                syscall_result(
+                    &mut memory,
+                    &mut state,
+                    libc::SYS_tgkill,
+                    [pid as u64, tid as u64, libc::SIGUSR1 as u64, 0, 0, 0],
+                ),
+                0
+            );
+            let mut executor = ElfExecutor::new(state, false);
+            let pending = executor
+                .take_pending_signal_for_delivery()
+                .unwrap()
+                .expect("SIGUSR1 is pending");
+            let action = executor.signal_action(libc::SIGUSR1);
+            assert_eq!(action.flags & libc::SA_ONSTACK as u64, 0);
+            assert_eq!(
+                executor.signal_altstack(),
+                before,
+                "the frame saves it first"
+            );
+            executor.enter_signal_handler(pending, action);
+            assert_eq!(
+                executor.state.thread_signals.lock().altstack,
+                after,
+                "{before:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn sigaltstack_reports_a_stack_exec_left_as_disabled_with_its_autodisarm() {
+        // Linux reports sas_ss_flags, SS_DISABLE for a stack with no size,
+        // with the stored SS_AUTODISARM: exec keeps the flags and clears the
+        // address and size.
+        const OLD: u64 = 0x180;
+        for flags in [0, SS_AUTODISARM] {
+            let root = TestDir::new();
+            let mut state = test_state(&root.0);
+            let mut memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
+            state.thread_signals.lock().altstack = Some(GuestStack {
+                sp: 0,
+                flags,
+                size: 0,
+            });
+            assert_eq!(
+                sigaltstack(&mut memory, &mut state, Some(0x4000), &[0, OLD, 0, 0, 0, 0]),
+                0,
+            );
+            assert_eq!(
+                GuestStack::decode(read_guest_bytes::<24>(&ProviderMemory(&memory), OLD).unwrap()),
+                GuestStack {
+                    sp: 0,
+                    flags: libc::SS_DISABLE | flags,
+                    size: 0,
+                },
+                "flags {flags:#x}",
+            );
+        }
+    }
+
+    #[test]
+    fn sigaltstack_follows_do_sigaltstack() {
+        // Linux's do_sigaltstack (kernel/signal.c), in its order: EPERM while
+        // running on the stack, EINVAL for a mode other than 0, SS_ONSTACK or
+        // SS_DISABLE (SS_AUTODISARM aside), no change for a request equal to
+        // the stack held, SS_DISABLE keeping the flags as given, and ENOMEM
+        // only when enabling a stack below MINSIGSTKSZ.
+        const REQUEST: u64 = 0x100;
+        const OLD: u64 = 0x180;
+        let enabled = GuestStack {
+            sp: 0x8000,
+            flags: 0,
+            size: libc::MINSIGSTKSZ as u64,
+        };
+        let disabled_autodisarm = GuestStack {
+            sp: 0,
+            flags: libc::SS_DISABLE | SS_AUTODISARM,
+            size: 0,
+        };
+        let call = |state: &mut LoadedStaticElf,
+                    memory: &mut GuestMemory,
+                    stack_pointer: u64,
+                    requested: Option<GuestStack>| {
+            if let Some(requested) = requested {
+                memory.write(REQUEST, &requested.encode()).unwrap();
+            }
+            let request = if requested.is_some() { REQUEST } else { 0 };
+            let result = sigaltstack(
+                memory,
+                state,
+                Some(stack_pointer),
+                &[request, OLD, 0, 0, 0, 0],
+            );
+            let old =
+                GuestStack::decode(read_guest_bytes::<24>(&ProviderMemory(memory), OLD).unwrap());
+            (result, old)
+        };
+        let root = TestDir::new();
+        let mut state = test_state(&root.0);
+        let mut memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
+
+        // SS_DISABLE with SS_AUTODISARM is a valid request: the stack keeps
+        // those flags with no address or size, and reports and saves them.
+        state.thread_signals.lock().altstack = Some(enabled);
+        assert_eq!(
+            call(&mut state, &mut memory, 0x4000, Some(disabled_autodisarm)).0,
+            0
+        );
+        assert_eq!(
+            state.thread_signals.lock().altstack,
+            Some(disabled_autodisarm)
+        );
+        assert_eq!(
+            call(&mut state, &mut memory, 0x4000, None),
+            (0, disabled_autodisarm)
+        );
+        // A frame saves it as held.
+        let saved = test_state(&root.0);
+        saved.thread_signals.lock().altstack = Some(disabled_autodisarm);
+        assert_eq!(
+            ElfExecutor::new(saved, false).signal_altstack(),
+            disabled_autodisarm
+        );
+
+        // A request equal to the stack held changes nothing, before the size
+        // check: here the stack exec leaves, with no address or size.
+        for flags in [0, SS_AUTODISARM] {
+            let after_exec = GuestStack {
+                sp: 0,
+                flags,
+                size: 0,
+            };
+            state.thread_signals.lock().altstack = Some(after_exec);
+            assert_eq!(
+                call(&mut state, &mut memory, 0x4000, Some(after_exec)).0,
+                0,
+                "{flags:#x}"
+            );
+            assert_eq!(state.thread_signals.lock().altstack, Some(after_exec));
+            // What a query then reports can be given back: SS_DISABLE with the
+            // stored SS_AUTODISARM.
+            let (result, reported) = call(&mut state, &mut memory, 0x4000, None);
+            assert_eq!(result, 0);
+            assert_eq!(
+                reported,
+                GuestStack {
+                    sp: 0,
+                    flags: libc::SS_DISABLE | flags,
+                    size: 0,
+                }
+            );
+            assert_eq!(
+                call(&mut state, &mut memory, 0x4000, Some(reported)).0,
+                0,
+                "{flags:#x}"
+            );
+            let held = (flags != 0).then_some(disabled_autodisarm);
+            assert_eq!(state.thread_signals.lock().altstack, held, "{flags:#x}");
+        }
+
+        // SS_ONSTACK is an input mode, stored as given; the report shows
+        // SS_ONSTACK only while the caller runs on the stack.
+        state.thread_signals.lock().altstack = None;
+        let onstack = GuestStack {
+            flags: libc::SS_ONSTACK,
+            ..enabled
+        };
+        assert_eq!(call(&mut state, &mut memory, 0x4000, Some(onstack)).0, 0);
+        assert_eq!(state.thread_signals.lock().altstack, Some(onstack));
+        assert_eq!(call(&mut state, &mut memory, 0x4000, None).1, enabled);
+        assert_eq!(
+            call(&mut state, &mut memory, enabled.sp + 1, None).1,
+            onstack
+        );
+        // EPERM on the stack comes before the no-change return.
+        assert_eq!(
+            call(&mut state, &mut memory, enabled.sp + 1, Some(onstack)).0,
+            negative_errno(libc::EPERM)
+        );
+
+        // Any other mode is EINVAL, and the stack stays.
+        for flags in [
+            libc::SS_ONSTACK | libc::SS_DISABLE,
+            4,
+            0x1234,
+            libc::SS_ONSTACK | libc::SS_DISABLE | SS_AUTODISARM,
+        ] {
+            let request = GuestStack { flags, ..enabled };
+            assert_eq!(
+                call(&mut state, &mut memory, 0x4000, Some(request)).0,
+                negative_errno(libc::EINVAL),
+                "{flags:#x}"
+            );
+            assert_eq!(state.thread_signals.lock().altstack, Some(onstack));
+        }
+
+        // ENOMEM only when enabling below MINSIGSTKSZ; disabling ignores the
+        // size and the address.
+        let small = GuestStack {
+            size: libc::MINSIGSTKSZ as u64 - 1,
+            ..enabled
+        };
+        assert_eq!(
+            call(&mut state, &mut memory, 0x4000, Some(small)).0,
+            negative_errno(libc::ENOMEM)
+        );
+        assert_eq!(state.thread_signals.lock().altstack, Some(onstack));
+        let disable = GuestStack {
+            flags: libc::SS_DISABLE,
+            ..small
+        };
+        assert_eq!(call(&mut state, &mut memory, 0x4000, Some(disable)).0, 0);
+        assert_eq!(state.thread_signals.lock().altstack, None);
     }
 
     #[test]
@@ -37881,7 +38190,9 @@ mod tests {
     }
 
     #[test]
-    fn rt_sigreturn_ignores_ss_onstack_altstack_input() {
+    fn rt_sigreturn_restores_an_ss_onstack_altstack_input() {
+        // Linux's do_sigaltstack takes SS_ONSTACK as an input mode, as 0, and
+        // stores the flags as given; restore_altstack goes through it too.
         let root = TestDir::new();
         let mut executor = ElfExecutor::new(test_state(&root.0), false);
         let original_stack = GuestStack {
@@ -37892,15 +38203,15 @@ mod tests {
         executor.state.thread_signals.lock().altstack = Some(original_stack);
         let mut restored_mask = KernelSigset::default();
         restored_mask.insert(libc::SIGUSR2);
-        let invalid_stack = GuestStack {
+        let onstack_input = GuestStack {
             sp: 0x20_000,
             flags: libc::SS_ONSTACK,
             size: libc::MINSIGSTKSZ as u64,
         };
-        executor.restore_signal_thread_state(restored_mask, invalid_stack, original_stack.sp);
+        executor.restore_signal_thread_state(restored_mask, onstack_input, original_stack.sp);
         assert_eq!(
             executor.state.thread_signals.lock().altstack,
-            Some(original_stack)
+            Some(onstack_input)
         );
 
         assert!(
@@ -41883,7 +42194,7 @@ mod tests {
 
         assert_eq!(pending.event.signal(), libc::SIGUSR2);
         assert_eq!(executor.signal_action(pending.event.signal()), replacement);
-        executor.enter_signal_handler(pending, replacement, false);
+        executor.enter_signal_handler(pending, replacement);
         assert!(
             executor
                 .state
