@@ -133,8 +133,13 @@ where
         let outcome = {
             let _allocation = super::super::alloc::enter_dispatch();
             let _active = super::super::support::ToolCallbackGuard::enter();
+            let (tool, state, lifecycle, scratch, copied_parent) = callback.dispatch_parts();
+            // Move the actual inherited record into this callback's scopes,
+            // not into a registry drop. If preparation or lifecycle entry
+            // fails, its normal destructor still runs while these allocation
+            // and Tool scopes are live, as in the native initializer.
+            let copied_parent = copied_parent.take();
             native_rpc.prepare(invocation)?;
-            let (tool, state, lifecycle, scratch) = callback.dispatch_parts();
             let tail = TailResult::default();
             // Keep this route as a separate stable stack borrow: the Guest is
             // mutably borrowed by Tool handlers while sync global RPC borrows
@@ -171,7 +176,13 @@ where
                 unsupported_refusal: None,
                 injected_syscalls: 0,
             };
-            match enter_tool_callbacks(tool, &mut guest, lifecycle) {
+            let entry = enter_tool_callbacks(tool, &mut guest, lifecycle);
+            // The inherited-parent branch runs one real thread-start and no
+            // synthetic post-exec. Preserve its parent's lifetime through the
+            // real lifecycle return (including failure), then destroy it
+            // outside all registry/Tool-slot locks before the event handler.
+            drop(copied_parent);
+            match entry {
                 Ok(()) => work(tool.as_ref().expect("pinned live Tool"), &mut guest, &tail),
                 Err(EntryFailure::Tool(error)) => return Err(error),
                 Err(EntryFailure::Ending(_)) => {

@@ -14,15 +14,20 @@ use super::native_state::NativeThreadIdentity;
 use super::native_state::NativeThreads;
 use super::*;
 
+type NativeInitializerOwner<'a, T> = (
+    &'a NativeThreads<<T as Tool>::ThreadState>,
+    Arc<ToolProcess<T>>,
+);
+
 impl<T: Tool, R: HostRuntime> ToolHost<T, R>
 where
     T::GlobalState: 'static,
 {
-    fn native_initializer_owner(
+    pub(super) fn native_initializer_owner(
         &self,
         services: &NativeServices<'_>,
         native_rpc: &NativeRpc<T::GlobalState>,
-    ) -> io::Result<(&NativeThreads<T::ThreadState>, Arc<ToolProcess<T>>)> {
+    ) -> io::Result<NativeInitializerOwner<'_, T>> {
         services.invocation().ensure_current()?;
         let owner = self
             .native_threads
