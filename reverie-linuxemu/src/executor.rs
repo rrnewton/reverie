@@ -121,6 +121,7 @@ mod file;
 pub use file::*;
 mod event_fds;
 use event_fds::*;
+mod facts;
 mod pidfd;
 use pidfd::*;
 mod socket;

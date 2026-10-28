@@ -171,6 +171,20 @@ fn tool_syscall_default_preserves_native_success_and_errno() {
     }
 }
 
+/// The same fake takes `Guest::descriptor_status`'s default: a backend that
+/// states nothing does not provide the fact, for any descriptor.
+#[test]
+fn descriptor_status_default_is_not_provided() {
+    let guest = TestGuest::default();
+    for fd in [-1, 0, 1, 2, 1000] {
+        assert_eq!(
+            <TestGuest as Guest<()>>::descriptor_status(&guest, fd),
+            Err(reverie::FactError::NotProvided),
+            "fd {fd}"
+        );
+    }
+}
+
 struct LegacyTool {
     response: Option<Signal>,
     calls: AtomicUsize,

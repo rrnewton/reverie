@@ -617,9 +617,9 @@ pub(crate) struct ToolContext<'a, T: Tool> {
 /// provider trait: the vCPU clock and its preemption timer, CPUID
 /// interception, the run's failure subscription, the adapter's signal guard,
 /// the two injection admission checks, the traced-parent query behind
-/// `Guest::ppid`, and the completion of process actions. The trait is generic
-/// over the Tool only because `complete_injection` starts child Tool
-/// instances.
+/// `Guest::ppid`, the descriptor fact behind `Guest::descriptor_status`, and
+/// the completion of process actions. The trait is generic over the Tool only
+/// because `complete_injection` starts child Tool instances.
 trait GuestSyscallExecutor<T: Tool>:
     LinuxProvider<Context = GuestMemory, Plan = StagedProcessAction, Error = Error>
     + LinuxEmuSignalControl
@@ -707,6 +707,16 @@ trait GuestSyscallExecutor<T: Tool>:
     /// that loaded no image.
     fn initial_stack_pointer(&self) -> Option<u64> {
         None
+    }
+
+    /// The issuing task's `Guest::descriptor_status(fd)`. An adapter whose
+    /// provider keeps no descriptor table of its own, such as a
+    /// caller-supplied executor, does not provide it.
+    fn descriptor_status(
+        &self,
+        _fd: i32,
+    ) -> std::result::Result<reverie::DescriptorStatus, reverie::FactError> {
+        Err(reverie::FactError::NotProvided)
     }
 
     /// [`Self::complete_injection`]'s answer, when it is known at once without
@@ -1650,6 +1660,13 @@ where
     // (`Guest::initial_stack_pointer`).
     fn initial_stack_pointer(&self) -> Option<u64> {
         Some(self.executor.initial_stack_pointer())
+    }
+
+    fn descriptor_status(
+        &self,
+        fd: i32,
+    ) -> std::result::Result<reverie::DescriptorStatus, reverie::FactError> {
+        self.executor.descriptor_status(fd)
     }
 
     fn ordinary_injection_allowed(&self, request: &SyscallRequest) -> bool {
@@ -2790,6 +2807,19 @@ impl<T: Tool> Guest<T> for KvmGuest<'_, T> {
         // shortens a lone vector to MAX_RW_COUNT before the check, as Linux
         // 6.4 and later do, whatever the host kernel does.
         Ok(crate::executor::GUEST_USER_ADDRESS_LIMIT)
+    }
+
+    fn descriptor_status(
+        &self,
+        fd: i32,
+    ) -> std::result::Result<reverie::DescriptorStatus, reverie::FactError> {
+        // `pid()` and `tid()` name no host task whose `fdinfo` is the
+        // guest's. The executor answers from the descriptor table the task's
+        // syscalls use, through the host descriptors behind it; its gaps (a
+        // record lock reported as the OFD lock it is held as, refused flock,
+        // descriptions it keeps itself) are documented on the executor's
+        // facts module.
+        self.executor.descriptor_status(fd)
     }
 }
 
@@ -9896,6 +9926,10 @@ mod process_alarm_tests;
 #[cfg(test)]
 #[path = "captured_write_runtime_tests.rs"]
 mod captured_write_tests;
+
+#[cfg(test)]
+#[path = "descriptor_status_runtime_tests.rs"]
+mod descriptor_status_tests;
 
 #[cfg(test)]
 mod callback_completion_tests;

@@ -67,6 +67,7 @@ mod backtrace;
 mod capabilities;
 mod dispatch_stats;
 mod error;
+mod facts;
 #[cfg(all(target_os = "linux", target_env = "gnu"))]
 pub mod glibc_symbol;
 mod guest;
@@ -111,6 +112,7 @@ pub use backtrace::*;
 pub use capabilities::*;
 pub use dispatch_stats::*;
 pub use error::*;
+pub use facts::*;
 pub use guest::*;
 pub use inherited_input::*;
 pub use mapping_capture::*;
