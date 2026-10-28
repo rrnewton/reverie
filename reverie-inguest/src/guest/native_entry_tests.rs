@@ -104,7 +104,7 @@ impl Tool for Probe {
                 // from the synchronous socket-progress control below.
                 let (sender, receiver) = std::sync::mpsc::channel();
                 let mut worker = None;
-                let value = std::future::poll_fn(|context| {
+                let (value, worker) = std::future::poll_fn(move |context| {
                     if worker.is_none() {
                         let sender = sender.clone();
                         let waker = context.waker().clone();
@@ -115,13 +115,13 @@ impl Tool for Probe {
                         return std::task::Poll::Pending;
                     }
                     match receiver.try_recv() {
-                        Ok(value) => std::task::Poll::Ready(value),
+                        Ok(value) => std::task::Poll::Ready((value, worker.take().unwrap())),
                         Err(std::sync::mpsc::TryRecvError::Empty) => std::task::Poll::Pending,
                         Err(error) => panic!("wake worker failed: {error}"),
                     }
                 })
                 .await;
-                worker.unwrap().join().unwrap();
+                worker.join().unwrap();
                 Ok(value)
             }
             _ => Ok(guest.inject(call).await?),
