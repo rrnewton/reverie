@@ -2264,6 +2264,7 @@ mod tests {
     mod caller_transport_failure;
     mod inherited_input;
     mod namespace_cleanup;
+    mod startup_failure;
     mod stats_capture;
     use std::io::Seek as _;
     use std::os::unix::process::ExitStatusExt as _;

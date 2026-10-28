@@ -333,22 +333,69 @@ fn descriptor_identity_precedes_instrumentation_without_translation_waits() {
 
 #[test]
 fn ready_and_real_start_ack_hold_the_existing_first_instruction_gate() {
+    let inspection = between(
+        NATIVE,
+        "static runtime_readiness_t inspect_runtime_readiness(void) {",
+        "static bool runtime_ready_for_image(void) {",
+    );
+    ordered(
+        inspection,
+        &[
+            "background == RUNTIME_BACKGROUND_FAILED",
+            "return RUNTIME_READINESS_FAILED;",
+            "reverie_dbt_runtime_ready(image, &snapshot)",
+            "background == RUNTIME_BACKGROUND_FAILED",
+            "return RUNTIME_READINESS_FAILED;",
+            "if (status == 0)",
+            "return RUNTIME_READINESS_PENDING;",
+            "status != 1",
+            "snapshot.size != sizeof(snapshot)",
+            "snapshot.owner_generation != image",
+            "snapshot.selected_event_bits != 0",
+            "return RUNTIME_READINESS_INVALID;",
+            "return RUNTIME_READINESS_READY;",
+        ],
+    );
+    for forbidden in [
+        "exit_runtime_tree(",
+        "dr_fprintf(",
+        "dr_sleep(",
+        "atomic_store",
+    ] {
+        assert!(!inspection.contains(forbidden));
+    }
     let ready = between(
         NATIVE,
         "static bool runtime_ready_for_image(void) {",
-        "static bool caller_live_context(",
+        "static bool wait_for_runtime_ready(",
     );
     ordered(
         ready,
         &[
-            "reverie_dbt_runtime_ready(image, &snapshot)",
-            "if (status == 0)",
-            "return false;",
-            "status != 1",
-            "snapshot.owner_generation != image",
-            "snapshot.selected_event_bits != 0",
+            "inspect_runtime_readiness()",
+            "readiness == RUNTIME_READINESS_FAILED",
+            "exit_runtime_tree(CLIENT_THREAD_START_FAILURE_EXIT_CODE);",
+            "readiness == RUNTIME_READINESS_INVALID",
             "exit_runtime_tree(101);",
+            "readiness != RUNTIME_READINESS_READY",
+            "return false;",
+            "&runtime_readiness_observed, true, memory_order_release",
             "return true;",
+        ],
+    );
+    let wait = between(
+        NATIVE,
+        "static bool wait_for_runtime_ready(",
+        "static bool caller_live_context(",
+    );
+    ordered(
+        wait,
+        &[
+            "bool ready = runtime_ready_for_image();",
+            "if (ready && (!require_background_finished ||",
+            "&runtime_background_state, memory_order_acquire) == 3",
+            "return true;",
+            "dr_sleep(1);",
         ],
     );
     let start = between(
@@ -396,8 +443,8 @@ fn ready_and_real_start_ack_hold_the_existing_first_instruction_gate() {
         gate,
         &[
             "ensure_runtime_background();",
-            "if (!caller_mode())",
-            "while (!runtime_ready_for_image())",
+            "if (!caller_mode() && !wait_for_runtime_ready(false))",
+            "return;",
             "counters->admission_pc = pc;",
             "admit_pending_thread();",
         ],

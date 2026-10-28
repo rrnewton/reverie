@@ -3282,9 +3282,56 @@ mod tests {
         assert!(background_runtime < background_callback_leave);
         assert!(background_callback_leave < startup_refusal);
         assert!(startup_refusal < background_final);
+        assert!(background[startup_refusal..background_final].contains(
+            "finish_failed_runtime_background(CLIENT_THREAD_START_FAILURE_EXIT_CODE);\n    return;"
+        ));
+        let failed_background = source
+            .split_once("static void finish_failed_runtime_background(int exit_code) {")
+            .unwrap()
+            .1
+            .split_once("static void runtime_background_init(void* argument)")
+            .unwrap()
+            .0;
+        let immediate_fatal = failed_background
+            .find("exit_runtime_tree(exit_code);")
+            .unwrap();
+        let sticky_failure = failed_background.find("mark_backend_failure();").unwrap();
+        let failure_final = failed_background
+            .find("bool finalized = evidence_flush(EVIDENCE_FRAME_FINAL);")
+            .unwrap();
+        let final_acknowledgment = failed_background.find("if (finalized)").unwrap();
+        let helper_epoch = failed_background.find("finished_helper_epoch").unwrap();
+        let failed_publication = failed_background
+            .find("&runtime_background_state, RUNTIME_BACKGROUND_FAILED, memory_order_release")
+            .unwrap();
         assert!(
-            background[startup_refusal..background_final]
-                .contains("exit_runtime_tree(CLIENT_THREAD_START_FAILURE_EXIT_CODE);")
+            failed_background[..immediate_fatal].contains("runtime_process_group != 0 &&")
+                && failed_background[..immediate_fatal]
+                    .contains("runtime_process_group != dr_get_process_id()")
+        );
+        assert!(immediate_fatal < sticky_failure);
+        assert!(sticky_failure < failure_final);
+        assert!(failure_final < final_acknowledgment);
+        assert!(final_acknowledgment < helper_epoch);
+        assert!(helper_epoch < failed_publication);
+        assert!(!failed_background.contains("&runtime_background_state, 3"));
+        let application_readiness = source
+            .split_once("static bool runtime_ready_for_image(void) {")
+            .unwrap()
+            .1
+            .split_once("static bool wait_for_runtime_ready(")
+            .unwrap()
+            .0;
+        let failed_readiness = application_readiness
+            .split_once("if (readiness == RUNTIME_READINESS_FAILED) {")
+            .unwrap()
+            .1
+            .split_once("if (readiness == RUNTIME_READINESS_INVALID)")
+            .unwrap()
+            .0;
+        assert!(failed_readiness.contains("runtime background initialization failed"));
+        assert!(
+            failed_readiness.contains("exit_runtime_tree(CLIENT_THREAD_START_FAILURE_EXIT_CODE);")
         );
         assert!(background_callback_leave < background_final);
         assert!(background_final < background_quiescent);
