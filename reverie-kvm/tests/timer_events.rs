@@ -286,6 +286,29 @@ struct Plan {
     /// callback, after the request; the attempt that follows requests again
     /// only if this is `Some(true)`.
     restart: Option<bool>,
+    /// Hold the first timer event's callback until another thread's `tgkill`
+    /// has run, and hold that `tgkill` until the callback has begun, as a
+    /// Tool that runs one thread at a time would (see [`Gate`]).
+    rendezvous: bool,
+    /// Deliver every signal, and report the clock at its callback.
+    deliver: bool,
+    /// Subscribe to `tgkill` alone.
+    only_tgkill: bool,
+    /// From SIGSEGV's callback, send SIGUSR1 to the thread itself.
+    self_signal_at_fault: bool,
+    /// Report the registers each signal's callback sees.
+    signal_registers: bool,
+    /// Hold a new thread's start until another thread's `tgkill` has run.
+    hold_thread_start: bool,
+}
+
+/// The two points a [`Plan::rendezvous`] orders.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+enum Gate {
+    /// The first timer event's callback has begun.
+    Timer,
+    /// The other thread's `tgkill` has run.
+    Sent,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -299,6 +322,15 @@ enum Event {
         clock: u64,
     },
     Signal(i32),
+    /// A signal's callback under [`Plan::deliver`], and the clock there.
+    Signalled {
+        signal: i32,
+        clock: u64,
+    },
+    /// Opens a gate (not logged).
+    Open(Gate),
+    /// Waits until a gate is open (not logged).
+    Wait(Gate),
     Rdtsc,
     Cpuid,
     /// An attempt of the marker's callback.
@@ -344,7 +376,35 @@ struct Registers {
 }
 
 #[derive(Default)]
-struct Log(Mutex<Vec<Event>>);
+struct Log {
+    events: Mutex<Vec<Event>>,
+    timer: Latch,
+    sent: Latch,
+}
+
+/// A gate that opens once and stays open.
+#[derive(Default)]
+struct Latch(Mutex<(bool, Vec<std::task::Waker>)>);
+
+impl Latch {
+    fn open(&self) {
+        let mut latch = self.0.lock().unwrap();
+        latch.0 = true;
+        latch.1.drain(..).for_each(std::task::Waker::wake);
+    }
+
+    async fn wait(&self) {
+        futures::future::poll_fn(|context| {
+            let mut latch = self.0.lock().unwrap();
+            if latch.0 {
+                return std::task::Poll::Ready(());
+            }
+            latch.1.push(context.waker().clone());
+            std::task::Poll::Pending
+        })
+        .await
+    }
+}
 
 #[reverie::global_tool]
 impl GlobalTool for Log {
@@ -353,7 +413,15 @@ impl GlobalTool for Log {
     type Response = ();
 
     async fn receive_rpc(&self, _from: Pid, event: Event) {
-        self.0.lock().unwrap().push(event);
+        let latch = |gate| match gate {
+            Gate::Timer => &self.timer,
+            Gate::Sent => &self.sent,
+        };
+        match event {
+            Event::Open(gate) => latch(gate).open(),
+            Event::Wait(gate) => latch(gate).wait().await,
+            event => self.events.lock().unwrap().push(event),
+        }
     }
 }
 
@@ -396,6 +464,42 @@ async fn inject_refused<G: Guest<TimerTool>>(
         }
         Refused::Tail => guest.tail_inject(Getpid::new()).await,
     }
+}
+
+/// Reports the user registers and the pid a callback sees.
+async fn report_registers<G: Guest<TimerTool>>(guest: &mut G) {
+    let r = guest.regs().await;
+    let registers = Registers {
+        pid: guest.pid().as_raw() as u64,
+        rip: r.rip,
+        rax: r.rax,
+        orig_rax: r.orig_rax,
+        rcx: r.rcx,
+        r11: r.r11,
+        eflags: r.eflags,
+        rdi: r.rdi,
+        rsi: r.rsi,
+        rdx: r.rdx,
+        r10: r.r10,
+        r8: r.r8,
+        r9: r.r9,
+        r12: r.r12,
+        r13: r.r13,
+        r14: r.r14,
+        rsp: r.rsp,
+        rbx: r.rbx,
+        rbp: r.rbp,
+        r15: r.r15,
+        cs: r.cs,
+        ss: r.ss,
+        ds: r.ds,
+        es: r.es,
+        fs: r.fs,
+        gs: r.gs,
+        fs_base: r.fs_base,
+        gs_base: r.gs_base,
+    };
+    guest.send_rpc(Event::Registers(registers)).await;
 }
 
 /// Requests a timer event `ticks` RCBs on, precise if the plan says so.
@@ -452,6 +556,10 @@ impl Tool for TimerTool {
         if plan.quiet_tgkill {
             subscription.disable_syscall(Sysno::tgkill);
         }
+        if plan.only_tgkill {
+            subscription = Subscription::none();
+            subscription.syscall(Sysno::tgkill);
+        }
         subscription
     }
 
@@ -461,6 +569,9 @@ impl Tool for TimerTool {
     ) -> Result<(), reverie::Error> {
         if guest.config().arm == Arm::ThreadStart {
             request(guest).await;
+        }
+        if guest.config().hold_thread_start && guest.tid() != guest.pid() {
+            guest.send_rpc(Event::Wait(Gate::Sent)).await;
         }
         Ok(())
     }
@@ -506,6 +617,14 @@ impl Tool for TimerTool {
                 }
             }
             (Arm::Execve, Sysno::execve) => request(guest).await,
+            (_, Sysno::tgkill) if plan.rendezvous || plan.hold_thread_start => {
+                if plan.rendezvous {
+                    guest.send_rpc(Event::Wait(Gate::Timer)).await;
+                }
+                let sent = guest.inject(syscall).await;
+                guest.send_rpc(Event::Open(Gate::Sent)).await;
+                return Ok(sent?);
+            }
             (_, Sysno::getpid) if plan.rearm_at_getpid.is_some() => {
                 arm(guest, plan.rearm_at_getpid.unwrap()).await
             }
@@ -519,11 +638,30 @@ impl Tool for TimerTool {
         guest: &mut G,
         signal: Signal,
     ) -> Result<Option<Signal>, Errno> {
-        guest.send_rpc(Event::Signal(signal as i32)).await;
-        if let Some(ticks) = guest.config().rearm_at_signal {
+        let plan = guest.config().clone();
+        if plan.deliver {
+            let clock = guest.read_clock().unwrap();
+            let signal = signal as i32;
+            guest.send_rpc(Event::Signalled { signal, clock }).await;
+        } else {
+            guest.send_rpc(Event::Signal(signal as i32)).await;
+        }
+        if plan.signal_registers {
+            report_registers(guest).await;
+        }
+        if plan.self_signal_at_fault && signal == Signal::SIGSEGV {
+            let (pid, tid) = (guest.pid().as_raw(), guest.tid().as_raw());
+            let sent = Tgkill::new()
+                .with_tgid(pid)
+                .with_tid(tid)
+                .with_sig(libc::SIGUSR1);
+            assert_eq!(guest.inject(sent).await, Ok(0));
+        }
+        if let Some(ticks) = plan.rearm_at_signal {
             arm(guest, ticks).await;
         }
-        Ok((signal != Signal::SIGUSR1 && signal != Signal::SIGALRM).then_some(signal))
+        let suppressed = signal == Signal::SIGUSR1 || signal == Signal::SIGALRM;
+        Ok((plan.deliver || !suppressed).then_some(signal))
     }
 
     async fn handle_rdtsc_event<G: Guest<Self>>(
@@ -556,38 +694,11 @@ impl Tool for TimerTool {
         guest.send_rpc(Event::Timer { clock }).await;
         let plan = guest.config().clone();
         if plan.registers {
-            let r = guest.regs().await;
-            let registers = Registers {
-                pid: guest.pid().as_raw() as u64,
-                rip: r.rip,
-                rax: r.rax,
-                orig_rax: r.orig_rax,
-                rcx: r.rcx,
-                r11: r.r11,
-                eflags: r.eflags,
-                rdi: r.rdi,
-                rsi: r.rsi,
-                rdx: r.rdx,
-                r10: r.r10,
-                r8: r.r8,
-                r9: r.r9,
-                r12: r.r12,
-                r13: r.r13,
-                r14: r.r14,
-                rsp: r.rsp,
-                rbx: r.rbx,
-                rbp: r.rbp,
-                r15: r.r15,
-                cs: r.cs,
-                ss: r.ss,
-                ds: r.ds,
-                es: r.es,
-                fs: r.fs,
-                gs: r.gs,
-                fs_base: r.fs_base,
-                gs_base: r.gs_base,
-            };
-            guest.send_rpc(Event::Registers(registers)).await;
+            report_registers(guest).await;
+        }
+        if plan.rendezvous && guest.thread_state().delivered == 0 {
+            guest.send_rpc(Event::Open(Gate::Timer)).await;
+            guest.send_rpc(Event::Wait(Gate::Sent)).await;
         }
         if let Some(change) = plan.mask_change {
             let masks = guest.regs().await.r14;
@@ -659,7 +770,7 @@ fn run_ending(program: &Program, plan: Plan) -> (Vec<Event>, Ending) {
         backend.run_static_elf_with_tool_completion::<TimerTool>(plan, true),
     )
     .unwrap();
-    let events = completion.global_state.0.into_inner().unwrap();
+    let events = completion.global_state.events.into_inner().unwrap();
     WINDOW_ENTRIES.store(
         backend.backend_stats().timer_window_entries(),
         Ordering::Relaxed,
@@ -1910,4 +2021,400 @@ fn a_replaced_or_stale_precise_request_still_lands_exactly() {
     );
     // The control: without the getpid, the first request lands exactly.
     lands_exactly(&program(""), plan, 3_000, |r| after_branch(r, 2_990), true);
+}
+
+/// Where the guests of the signal tests below keep their SIGUSR1 handler's
+/// record, which they write to stdout before they exit: the interrupted
+/// context in the handler's frame (rip, rax, rbx, rcx, eflags, r12, r14 and
+/// r15), then how many times the handler ran.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Record {
+    rip: u64,
+    rax: u64,
+    rbx: u64,
+    rcx: u64,
+    eflags: u64,
+    r12: u64,
+    r14: u64,
+    r15: u64,
+    count: u64,
+}
+
+impl Record {
+    fn read(stdout: &[u8]) -> Self {
+        assert_eq!(stdout.len(), 72, "{stdout:?}");
+        let quad = |i: usize| u64::from_ne_bytes(stdout[8 * i..8 * i + 8].try_into().unwrap());
+        Self {
+            rip: quad(0),
+            rax: quad(1),
+            rbx: quad(2),
+            rcx: quad(3),
+            eflags: quad(4),
+            r12: quad(5),
+            r14: quad(6),
+            r15: quad(7),
+            count: quad(8),
+        }
+    }
+}
+
+/// SA_RESTORER and SA_SIGINFO.
+const HANDLER_FLAGS: u64 = 0x0400_0004;
+
+/// The SIGUSR1 handler that fills the [`Record`] from its frame's ucontext
+/// (in rdx) and sets `flag`, its restorer, and the data both use. `actions`
+/// adds sigaction records before `usr1_action`.
+fn signal_record(flags: u64, actions: &str) -> String {
+    let save: String = [168, 144, 128, 152, 176, 72, 88, 96]
+        .iter()
+        .enumerate()
+        .map(|(i, at)| format!("mov {at}(%rdx),%rax\nmov %rax,record+{}(%rip)\n", 8 * i))
+        .collect();
+    format!(
+        "usr1:\nincq record+64(%rip)\n{save}movb $1,flag(%rip)\nret\n\
+         restorer: mov $15,%eax\nsyscall\nud2\n\
+         .data\n.balign 8\n{actions}usr1_action: .quad usr1, {flags:#x}, restorer, 0\n\
+         record: .quad 0,0,0,0,0,0,0,0,0\npid: .quad 0\ntid: .quad 0\nmask: .quad 0x200\n\
+         flag: .byte 0\n.bss\n.balign 16\nstack: .skip 65536\nstack_end:\n"
+    )
+}
+
+/// Writes the [`Record`] and exits with status 0.
+const WRITE_RECORD: &str = "mov $1,%edi\nlea record(%rip),%rsi\nmov $72,%edx\nmov $1,%eax\nsyscall\n\
+     xor %edi,%edi\nmov $231,%eax\nsyscall\nud2\n";
+
+/// Installs the SIGUSR1 handler of [`signal_record`] and starts a sibling
+/// thread that sends SIGUSR1 to this one, with a `tgkill`, and exits.
+const SIBLING: &str = "mov $10,%edi\nlea usr1_action(%rip),%rsi\nxor %edx,%edx\nmov $8,%r10d\n\
+     mov $13,%eax\nsyscall\nmov $39,%eax\nsyscall\nmov %rax,pid(%rip)\n\
+     mov $186,%eax\nsyscall\nmov %rax,tid(%rip)\n\
+     mov $0x50f00,%edi\nlea stack_end(%rip),%rsi\nxor %edx,%edx\nxor %r10d,%r10d\n\
+     xor %r8d,%r8d\nmov $56,%eax\nsyscall\ntest %rax,%rax\njnz 8f\n\
+     mov pid(%rip),%rdi\nmov tid(%rip),%rsi\nmov $10,%edx\nmov $234,%eax\nsyscall\n\
+     xor %edi,%edi\nmov $60,%eax\nsyscall\nud2\n8:\n";
+
+/// How many iterations the spinner of [`spinner`] runs at most.
+const SPINS: u64 = 1_000_000;
+
+/// A guest whose sibling sends it SIGUSR1 (see [`SIBLING`]), which then
+/// reaches the marker and spins without a syscall, 2 RCBs an iteration, with
+/// rax at -ERESTARTSYS and r12 at the loop's head, until its handler has run
+/// or for [`SPINS`] iterations. With `blocked`, SIGUSR1 is blocked before the
+/// marker and unblocked after the loop, with r12 at that call's return.
+fn spinner(flags: u64, blocked: bool) -> Program {
+    spinner_after(flags, blocked, "")
+}
+
+/// [`spinner`], running `prefix` right before the marker.
+fn spinner_after(flags: u64, blocked: bool, prefix: &str) -> Program {
+    let mask = |how: u32| {
+        format!(
+            "mov ${how},%edi\nlea mask(%rip),%rsi\nxor %edx,%edx\nmov $8,%r10d\nmov $14,%eax\nsyscall\n"
+        )
+    };
+    let (block, unblock) = if blocked {
+        (mask(0), format!("lea 3f(%rip),%r12\n{}3:\n", mask(1)))
+    } else {
+        (String::new(), String::new())
+    };
+    Program::new(&format!(
+        "{SIBLING}{block}{prefix}{GETPPID}lea 1f(%rip),%r12\nmov $-512,%rax\nxor %ebx,%ebx\nmov ${SPINS},%rcx\n\
+         1: inc %rbx\ncmpb $0,flag(%rip)\njne 2f\ndec %rcx\njnz 1b\n2:\n{unblock}{WRITE_RECORD}{}",
+        signal_record(flags, "")
+    ))
+}
+
+/// A precise request for this many RCBs at the marker: stepped from the
+/// marker on, so it is never late.
+const SPIN_TICKS: u64 = 1_000;
+
+fn spinner_plan() -> Plan {
+    Plan {
+        arm: Arm::Marker,
+        requests: vec![SPIN_TICKS],
+        precise: true,
+        registers: true,
+        rendezvous: true,
+        deliver: true,
+        ..Plan::default()
+    }
+}
+
+/// Runs `program`, checks that it exits with status 0, and returns the
+/// Tool's events and the guest's [`Record`].
+fn run_recorded(program: &Program, plan: Plan) -> (Vec<Event>, Record) {
+    let (events, ending) = run_ending(program, plan);
+    let (code, stdout, stderr) = ending.unwrap_or_else(|failure| panic!("{failure}: {events:?}"));
+    assert_eq!((code, stderr), (0, vec![]), "{events:?}");
+    (events, Record::read(&stdout))
+}
+
+/// The clock at the callback of each delivered SIGUSR1, and the index of
+/// its event.
+fn sigusr1_clocks(events: &[Event]) -> Vec<(usize, u64)> {
+    events
+        .iter()
+        .enumerate()
+        .filter_map(|(at, event)| match event {
+            Event::Signalled { signal, clock } if *signal == libc::SIGUSR1 => Some((at, *clock)),
+            _ => None,
+        })
+        .collect()
+}
+
+/// The index of the first timer event, and its clock.
+fn first_timer(events: &[Event]) -> (usize, u64) {
+    events
+        .iter()
+        .enumerate()
+        .find_map(|(at, event)| match event {
+            Event::Timer { clock } => Some((at, *clock)),
+            _ => None,
+        })
+        .expect("a timer event")
+}
+
+#[test]
+fn a_spinner_signalled_by_a_sibling_gets_its_handler_at_the_next_timer_boundary() {
+    if bounded("a_spinner_signalled_by_a_sibling_gets_its_handler_at_the_next_timer_boundary") {
+        return;
+    }
+    // The sibling's tgkill runs while the timer event's callback waits for
+    // it, so SIGUSR1 is pending when the callback returns, at the boundary
+    // right after branch 1,000. It is delivered there, before the guest runs
+    // on: the handler's frame holds the registers the timer event saw, and
+    // the loop's head, its 500 iterations and rax as the loop left it. That
+    // rax is -ERESTARTSYS changes nothing, with SA_RESTART or without: no
+    // syscall is interrupted there, so nothing restarts.
+    let mut first = None;
+    for flags in [HANDLER_FLAGS, HANDLER_FLAGS | libc::SA_RESTART as u64] {
+        let program = spinner(flags, false);
+        for _ in 0..REPEATS {
+            let (events, record) = run_recorded(&program, spinner_plan());
+            let context = format!("{flags:#x}: {record:x?} {events:?}");
+            let (requested_at, _) = last_request(&events);
+            let target = requested_at + SPIN_TICKS;
+            let (timer_at, timer_clock) = first_timer(&events);
+            assert_eq!(timer_clocks(&events), [target], "{context}");
+            let delivered = sigusr1_clocks(&events);
+            assert_eq!(delivered.len(), 1, "{context}");
+            assert!(delivered[0].0 > timer_at, "{context}");
+            assert_eq!(delivered[0].1, timer_clock, "{context}");
+            let r = registers_of(&events);
+            assert_eq!(record.count, 1, "{context}");
+            assert_eq!(
+                (
+                    record.rip,
+                    record.rax,
+                    record.rbx,
+                    record.rcx,
+                    record.eflags
+                ),
+                (r.rip, r.rax, r.rbx, r.rcx, r.eflags),
+                "{context}"
+            );
+            assert_eq!(record.rip, record.r12, "{context}");
+            assert_eq!(record.rax, -512_i64 as u64, "{context}");
+            assert_eq!(record.rbx, SPIN_TICKS / 2, "{context}");
+            assert_eq!(record.rcx, SPINS - SPIN_TICKS / 2, "{context}");
+            assert_eq!(*first.get_or_insert(record), record, "{context}");
+        }
+    }
+    println!("delivered at the timer boundary with {first:x?}");
+}
+
+/// Sets the FS base to the address of `record`, kept in r13, and the GS base
+/// to that of `pid`, kept in r15 (arch_prctl ARCH_SET_FS and ARCH_SET_GS).
+const SET_BASES: &str = "lea record(%rip),%r13\nmov $0x1002,%edi\nmov %r13,%rsi\nmov $158,%eax\nsyscall\n\
+     lea pid(%rip),%r15\nmov $0x1001,%edi\nmov %r15,%rsi\nmov $158,%eax\nsyscall\n";
+
+#[test]
+fn a_signal_hook_at_a_timer_boundary_sees_the_timer_events_registers() {
+    if bounded("a_signal_hook_at_a_timer_boundary_sees_the_timer_events_registers") {
+        return;
+    }
+    // With the FS and GS bases set, the signal's callback at the timer
+    // boundary sees the complete user registers the timer event's callback
+    // saw there: the general registers, orig_rax -1, the segment selectors
+    // and both bases.
+    let plan = Plan {
+        signal_registers: true,
+        ..spinner_plan()
+    };
+    let (events, record) = run_recorded(&spinner_after(HANDLER_FLAGS, false, SET_BASES), plan);
+    let context = format!("{record:x?} {events:?}");
+    assert_eq!(record.count, 1, "{context}");
+    let seen: Vec<&Registers> = events
+        .iter()
+        .filter_map(|event| match event {
+            Event::Registers(registers) => Some(registers),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(seen.len(), 2, "{context}");
+    assert_eq!(seen[0], seen[1], "{context}");
+    let r = seen[1];
+    assert_ne!((r.r13, r.r15), (0, 0), "{context}");
+    assert_eq!((r.fs_base, r.gs_base), (r.r13, r.r15), "{context}");
+    assert_eq!(
+        (r.orig_rax, r.cs & 3, r.ss & 3),
+        (u64::MAX, 3, 3),
+        "{context}"
+    );
+}
+
+#[test]
+fn a_signal_hook_before_a_new_threads_first_instruction_sees_its_registers() {
+    if bounded("a_signal_hook_before_a_new_threads_first_instruction_sees_its_registers") {
+        return;
+    }
+    // The user boundary of a new thread shares the timer boundary's signal
+    // hook context. The guest clones a thread whose TLS (the FS base) is
+    // `record`, and sends it SIGUSR1 while the Tool holds its start; the
+    // thread takes it before its first instruction, and the signal's
+    // callback sees its complete registers: the FS base it was given (also
+    // in r8, the clone's TLS argument), user segment selectors, orig_rax -1.
+    let program = Program::new(&format!(
+        "mov $10,%edi\nlea usr1_action(%rip),%rsi\nxor %edx,%edx\nmov $8,%r10d\nmov $13,%eax\nsyscall\n\
+         mov $39,%eax\nsyscall\nmov %rax,pid(%rip)\n\
+         mov $0xd0f00,%edi\nlea stack_end(%rip),%rsi\nxor %edx,%edx\nxor %r10d,%r10d\n\
+         lea record(%rip),%r8\nmov $56,%eax\nsyscall\ntest %rax,%rax\njz 8f\n\
+         mov pid(%rip),%rdi\nmov %rax,%rsi\nmov $10,%edx\nmov $234,%eax\nsyscall\n\
+         mov $2000000000,%ecx\n9: cmpb $0,flag(%rip)\njne 7f\ndec %rcx\njnz 9b\n7:\n{WRITE_RECORD}\
+         8: xor %edi,%edi\nmov $60,%eax\nsyscall\nud2\n{}",
+        signal_record(HANDLER_FLAGS, "")
+    ));
+    let plan = Plan {
+        hold_thread_start: true,
+        signal_registers: true,
+        deliver: true,
+        ..Plan::default()
+    };
+    let (events, record) = run_recorded(&program, plan);
+    let context = format!("{record:x?} {events:?}");
+    assert_eq!(record.count, 1, "{context}");
+    let r = registers_of(&events);
+    assert_ne!(r.r8, 0, "{context}");
+    assert_eq!(r.fs_base, r.r8, "{context}");
+    assert_eq!(
+        (r.orig_rax, r.rax, r.cs & 3, r.ss & 3),
+        (u64::MAX, 0, 3, 3),
+        "{context}"
+    );
+    assert_eq!(record.rip, r.rip, "{context}");
+}
+
+#[test]
+fn a_blocked_signal_waits_at_the_timer_boundary_for_its_unblock() {
+    if bounded("a_blocked_signal_waits_at_the_timer_boundary_for_its_unblock") {
+        return;
+    }
+    // SIGUSR1 is blocked, so the timer boundary leaves it pending: the loop
+    // runs to its end, and the unblock's return delivers it, with the
+    // handler's frame at that call's return (where SYSCALL left rcx).
+    let (events, record) = run_recorded(&spinner(HANDLER_FLAGS, true), spinner_plan());
+    let context = format!("{record:x?} {events:?}");
+    let (requested_at, _) = last_request(&events);
+    assert_eq!(
+        timer_clocks(&events),
+        [requested_at + SPIN_TICKS],
+        "{context}"
+    );
+    assert_eq!(record.count, 1, "{context}");
+    assert_eq!((record.rip, record.rax), (record.r12, 0), "{context}");
+    assert_eq!((record.rbx, record.rcx), (SPINS, record.rip), "{context}");
+    let delivered = sigusr1_clocks(&events);
+    assert_eq!(delivered.len(), 1, "{context}");
+    assert_eq!(delivered[0].1, requested_at + 2 * SPINS, "{context}");
+}
+
+#[test]
+fn a_signal_pending_at_a_syscall_return_timer_event_follows_it() {
+    if bounded("a_signal_pending_at_a_syscall_return_timer_event_follows_it") {
+        return;
+    }
+    // The guest of
+    // `a_timer_event_reaches_a_guest_making_syscalls_the_tool_does_not_see`,
+    // with the sibling: its tgkill is the only syscall the Tool sees, and it
+    // runs while the timer event's callback, at the return of a getpid,
+    // waits for it. The signal is delivered at that same return, after the
+    // callback, as the getpid's own: the handler's frame holds the registers
+    // the timer event saw, with getpid's result and the loop's count.
+    let program = Program::new(&format!(
+        "{SIBLING}lea 7f(%rip),%r14\nmov $50000,%r15\n4: mov $3,%rbx\n5: dec %rbx\njnz 5b\n\
+         mov $39,%eax\nsyscall\n7: dec %r15\njnz 4b\n{WRITE_RECORD}{}",
+        signal_record(HANDLER_FLAGS, "")
+    ));
+    let plan = Plan {
+        requests: vec![100_000],
+        only_tgkill: true,
+        registers: true,
+        rendezvous: true,
+        deliver: true,
+        ..Plan::default()
+    };
+    let (events, record) = run_recorded(&program, plan);
+    let context = format!("{record:x?} {events:?}");
+    let (timer_at, timer_clock) = first_timer(&events);
+    assert_eq!(timer_clocks(&events).len(), 1, "{context}");
+    let delivered = sigusr1_clocks(&events);
+    assert_eq!(delivered.len(), 1, "{context}");
+    assert!(delivered[0].0 > timer_at, "{context}");
+    assert_eq!(delivered[0].1, timer_clock, "{context}");
+    let r = registers_of(&events);
+    assert_eq!(
+        r.rip, r.r14,
+        "the timer event at a getpid's return: {context}"
+    );
+    assert_eq!(record.count, 1, "{context}");
+    assert_eq!(
+        (record.rip, record.rax, record.rbx, record.r14, record.r15),
+        (r.rip, r.rax, r.rbx, r.r14, r.r15),
+        "{context}"
+    );
+}
+
+#[test]
+fn a_signal_pending_at_an_rt_sigreturn_timer_event_follows_it() {
+    if bounded("a_signal_pending_at_an_rt_sigreturn_timer_event_follows_it") {
+        return;
+    }
+    // The guest of
+    // `a_request_due_at_rt_sigreturn_is_delivered_with_the_registers_it_restores`,
+    // with SIGUSR1 blocked by the SIGSEGV handler's mask. SIGSEGV's callback
+    // sends SIGUSR1 to the thread, which stays pending through the handler,
+    // and requests 1 RCB, which comes due at the handler's rt_sigreturn. The
+    // mask that call restores unblocks SIGUSR1, which is delivered at its
+    // return, after the timer event, with the registers it restores.
+    let program = Program::new(&format!(
+        "lea 9f(%rip),%r12\nmov $11,%edi\nlea segv_action(%rip),%rsi\nxor %edx,%edx\n\
+         mov $8,%r10d\nmov $13,%eax\nsyscall\nmov $10,%edi\nlea usr1_action(%rip),%rsi\n\
+         xor %edx,%edx\nmov $8,%r10d\nmov $13,%eax\nsyscall\nmovq 0x10,%rax\n\
+         9: mov ${SPINS},%rcx\n1: cmpb $0,flag(%rip)\njne 2f\ndec %rcx\njnz 1b\n2:\n{WRITE_RECORD}\
+         segv: addq $8,168(%rdx)\nadd $8,%rsp\nmov $15,%eax\nxor %ecx,%ecx\njz 7f\n7: syscall\nud2\n\
+         {}",
+        signal_record(
+            HANDLER_FLAGS,
+            &format!("segv_action: .quad segv, {HANDLER_FLAGS:#x}, restorer, 0x200\n")
+        )
+    ));
+    let plan = Plan {
+        requests: vec![],
+        rearm_at_signal: Some(1),
+        registers: true,
+        deliver: true,
+        self_signal_at_fault: true,
+        ..Plan::default()
+    };
+    let (events, record) = run_recorded(&program, plan);
+    let context = format!("{record:x?} {events:?}");
+    let (timer_at, timer_clock) = first_timer(&events);
+    let delivered = sigusr1_clocks(&events);
+    assert_eq!(delivered.len(), 1, "{context}");
+    assert!(delivered[0].0 > timer_at, "{context}");
+    assert_eq!(delivered[0].1, timer_clock, "{context}");
+    let r = registers_of(&events);
+    assert_eq!(r.rip, r.r12, "the timer event at rt_sigreturn: {context}");
+    assert_eq!(record.count, 1, "{context}");
+    assert_eq!((record.rip, record.rax), (r.rip, r.rax), "{context}");
 }
