@@ -480,11 +480,14 @@ fn launch_during_status_read(guest: fn(), tighten_nofile: bool) -> Outcome {
     *HELD_TARGET.lock().unwrap() = None;
     RELEASED.store(false, Ordering::SeqCst);
     FIRST_PIPE.store(PIPE_NOT_YET, Ordering::SeqCst);
-    HOLD_NEXT_STATUS_OPEN.store(true, Ordering::SeqCst);
 
     let tracer_a = std::thread::spawn(|| {
         run_tokio_test(async {
             let tracer = spawn_fn_with_config::<(), _>(take_a_signal, (), false).await?;
+            // Startup's long-lived perf descriptors are open, and the guest
+            // first runs in wait(). Hold its signal-stop status read rather
+            // than a constructor read.
+            HOLD_NEXT_STATUS_OPEN.store(true, Ordering::SeqCst);
             tracer.wait().await
         })
     });
