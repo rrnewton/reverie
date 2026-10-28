@@ -560,6 +560,18 @@ into procfs and procfs `statfs`/`fstatfs` return `EACCES`. Unlike Linux, this
 backend also continues to reject `fchdir` on ordinary `O_PATH` descriptors with
 `EBADF`. Ordinary readable-directory cwd operations remain supported.
 
+`Guest::descriptor_status` answers from the executor's descriptor table: for a
+guest descriptor backed by a host descriptor of the same open file description,
+it reports what the host kernel's `fdinfo` shows for that description (an
+eventfd's count, a Unix socket's queued `SCM_RIGHTS` descriptors, its locks).
+Two answers differ from Linux. A guest's `F_SETLK` or `F_SETLKW` record lock is
+held as an open file description lock on the host, so it is reported with class
+`OpenFileDescription` where Linux reports `Posix`. The guest's own `flock(2)` is
+refused, so a flock lock is reported only for a description the guest received
+already locked, such as an inherited standard input. Descriptors the executor
+keeps itself (synthetic `/proc` files, signalfds, captured standard output and
+error) are not provided.
+
 A Tool can reserve one empty host directory on a read-only file system for its
 own use (`KvmBackend::reserve_tool_directory`): the executor hides it from the
 guest, answering `ENOENT` for every route to it but an `O_DIRECTORY` open or a

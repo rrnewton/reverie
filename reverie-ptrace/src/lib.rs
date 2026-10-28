@@ -47,6 +47,7 @@ mod cp;
 mod debug;
 #[cfg(target_arch = "x86_64")]
 pub mod decoder;
+mod descriptor_status;
 mod error;
 mod failure;
 mod gdbstub;
