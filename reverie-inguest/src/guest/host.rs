@@ -4557,6 +4557,8 @@ mod process_owner_tests {
                     .env(MODE, mode)
                     .env(PARENT, &identities)
                     .process_group(0)
+                    .stdout(std::process::Stdio::piped())
+                    .stderr(std::process::Stdio::piped())
                     .spawn()
                     .unwrap();
                 let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
@@ -4574,7 +4576,25 @@ mod process_owner_tests {
                     }
                     std::thread::sleep(std::time::Duration::from_millis(10));
                 };
-                assert!(status.success(), "{mode}: {status}");
+                let output = child.wait_with_output().unwrap();
+                assert!(status.success(), "{mode}: {status}; {output:?}");
+                assert_eq!(output.status, status);
+                let stdout = String::from_utf8(output.stdout).unwrap();
+                let summaries: Vec<_> = stdout
+                    .lines()
+                    .filter(|line| line.starts_with("test result: "))
+                    .collect();
+                assert!(
+                    matches!(summaries.as_slice(), [summary] if summary.starts_with(
+                        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; "
+                    )),
+                    "expected exactly one completed {mode} child test: {stdout}"
+                );
+                assert!(
+                    stdout
+                        .lines()
+                        .any(|line| line == format!("test {TEST} ... ok"))
+                );
             }
             return;
         };
