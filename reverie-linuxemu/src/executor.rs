@@ -67,6 +67,7 @@ use crate::signal::SIGINFO_SIZE;
 use crate::signal::SS_AUTODISARM;
 #[cfg(any(test, feature = "test-support", feature = "native-test-support"))]
 use crate::signal::SharedThreadSignalState;
+use crate::signal::SignalTrapFields;
 use crate::signal::event_for_process;
 use crate::signal::event_for_thread;
 #[cfg(test)]
@@ -37778,6 +37779,10 @@ mod tests {
             Ok((top, Some(stack.sp), false, false)),
             "an rsp at base is off-stack and starts a fresh altstack frame",
         );
+        // A frame saves the stack's own flags, as Linux's
+        // unsafe_save_altstack does, never SS_ONSTACK: a frame nested on the
+        // stack saves the same uc_stack as the frame that switched to it.
+        assert_eq!(executor.signal_altstack(), stack);
 
         let autodisarm = GuestStack {
             flags: SS_AUTODISARM,
@@ -37789,7 +37794,44 @@ mod tests {
             Ok((top, Some(stack.sp), false, true)),
             "an armed SS_AUTODISARM stack is treated as off-stack",
         );
-        assert_eq!(executor.signal_altstack(stack.sp + 1).flags, SS_AUTODISARM,);
+        assert_eq!(executor.signal_altstack(), autodisarm);
+
+        executor.state.thread_signals.lock().altstack = None;
+        assert_eq!(
+            executor.signal_altstack(),
+            GuestStack {
+                sp: 0,
+                flags: libc::SS_DISABLE,
+                size: 0,
+            },
+            "no stack, or one SS_AUTODISARM disarmed, saves SS_DISABLE",
+        );
+    }
+
+    #[test]
+    fn signal_frames_keep_the_last_traps_fields() {
+        let root = TestDir::new();
+        let mut executor = ElfExecutor::new(test_state(&root.0), false);
+        assert_eq!(executor.signal_trap_fields(), SignalTrapFields::default());
+        // A page fault sets all three fields.
+        executor.record_user_trap(14, 6, Some(0x10));
+        let fault = SignalTrapFields {
+            trapno: 14,
+            error_code: 6,
+            cr2: 0x10,
+        };
+        assert_eq!(executor.signal_trap_fields(), fault);
+        // A later #UD sets the vector and error code and, as on Linux, keeps
+        // the page fault's address.
+        executor.record_user_trap(6, 0, None);
+        assert_eq!(
+            executor.signal_trap_fields(),
+            SignalTrapFields {
+                trapno: 6,
+                error_code: 0,
+                cr2: 0x10,
+            },
+        );
     }
 
     #[test]
