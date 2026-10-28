@@ -586,6 +586,21 @@ reserved names and captured output by device and inode, so a guest memfd given a
 reserved name, or a guest's own descriptor of the file the supervisor's output
 goes to, is not provided either.
 
+`Guest::signal_sets` answers from the executor's own signal state, for any live
+thread of the run, in any of its processes: the thread's pending queue, its
+process's shared queue, the thread's mask (a temporary mask while one is
+installed), and its process's ignored and caught signals, as Linux shows them in
+`/proc/<pid>/task/<tid>/status`. A thread ID that names no live thread of the
+run (an exited thread, reaped or not, or a number no task has) is `ESRCH`, and
+so is a thread caught between the steps of its process's fork; across an exec
+the answer is the process before it or after it, never `ESRCH`. Two differences
+from Linux follow from the executor's limits. Because it refuses real-time
+signals, no real-time signal is ever pending. And because it keeps no waiting
+state (it answers `rt_sigtimedwait` and a masked `ppoll` or `pselect6` at once,
+and refuses an `rt_sigsuspend` that would wait), a thread waiting in one of
+those calls shows its own mask, where Linux shows the call's mask, or for
+`rt_sigtimedwait` the thread's mask without the signals it waits for.
+
 A Tool can reserve one empty host directory on a read-only file system for its
 own use (`KvmBackend::reserve_tool_directory`): the executor hides it from the
 guest, answering `ENOENT` for every route to it but an `O_DIRECTORY` open or a

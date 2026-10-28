@@ -10,6 +10,14 @@
 
 use super::*;
 
+#[cfg(test)]
+std::thread_local! {
+    /// Runs in `prepare_captured_trap` on this thread between its two changes,
+    /// the signal unblocked and its action not yet reset.
+    pub(super) static CAPTURED_TRAP_TEST_HOOK: std::cell::RefCell<Option<Box<dyn FnMut()>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
 impl ElfExecutor {
     // TODO-HUMAN-REVIEW(PR-132): Review cooperative KVM thread context updates.
     /// Queues a backend-neutral event selected for this exact guest task.
@@ -2079,6 +2087,7 @@ impl ElfExecutor {
         installed_signal_action(&self.state, signal).unwrap_or_default()
     }
 
+    #[cfg(test)]
     pub(crate) fn signal_mask(&self) -> KernelSigset {
         self.state.thread_signals.lock().blocked
     }
@@ -2145,16 +2154,29 @@ impl ElfExecutor {
     pub fn prepare_captured_trap(&mut self, signal: libc::c_int) {
         let transaction = self.state.signal_transaction.clone();
         let _transaction = transaction.lock().unwrap_or_else(|p| p.into_inner());
-        if self.signal_mask().contains(signal)
-            || self.signal_disposition(signal) == SignalDisposition::Ignore
+        // Linux unblocks the signal and resets its action under one siglock
+        // (`force_sig_info_to_task`), which a reader of the thread's signal
+        // state holds too (`task_sig`). Hold the process's and the thread's
+        // signal locks together, in the order every signal path takes them,
+        // so that no reader sees one change without the other.
+        let mut process_signals = self
+            .state
+            .process_signals
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut thread_signals = self.state.thread_signals.lock();
+        let action = process_signals.dispositions.get(&signal).copied();
+        if thread_signals.blocked.contains(signal)
+            || signal_disposition_with_action(action, signal) == SignalDisposition::Ignore
         {
-            self.state.thread_signals.lock().blocked.remove(signal);
-            self.state
-                .process_signals
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .dispositions
-                .remove(&signal);
+            thread_signals.blocked.remove(signal);
+            #[cfg(test)]
+            CAPTURED_TRAP_TEST_HOOK.with(|hook| {
+                if let Some(hook) = hook.borrow_mut().as_mut() {
+                    hook();
+                }
+            });
+            process_signals.dispositions.remove(&signal);
         }
     }
 
