@@ -292,8 +292,8 @@ fn process_alarm_signal_transport_contexts_match_resumable_boundaries() {
         ),
         ("lifecycle", ProcessExecutionContext::Lifecycle, false),
         (
-            "thread entry signal",
-            ProcessExecutionContext::ThreadEntrySignal,
+            "user instruction signal",
+            ProcessExecutionContext::UserInstructionSignal,
             true,
         ),
         (
