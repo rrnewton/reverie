@@ -112,14 +112,36 @@ fn bounded_with(test: &str, env: &[(&str, &str)]) -> bool {
     true
 }
 
-/// A static guest assembled from `body`, as in read_clock.rs.
+/// A static guest assembled from `body`, as in read_clock.rs, or a guest
+/// compiled from C, and the guest memory it runs in.
 struct Program {
     directory: PathBuf,
     executable: PathBuf,
+    memory: usize,
 }
 
 impl Program {
     fn new(body: &str) -> Self {
+        Self::build(
+            "guest.S",
+            &format!(".global _start\n.text\n_start:\n{body}\n"),
+            &["-nostdlib", "-static", "-Wl,--build-id=none"],
+            MEMORY,
+        )
+    }
+
+    /// A dynamically linked guest compiled from the C `source` with `flags`,
+    /// with room for its loader and libraries.
+    fn c(source: &str, flags: &[&str]) -> Self {
+        Self::build(
+            "guest.c",
+            source,
+            &[&["-O2"], flags].concat(),
+            256 * 1024 * 1024,
+        )
+    }
+
+    fn build(name: &str, text: &str, flags: &[&str], memory: usize) -> Self {
         static NEXT: AtomicU64 = AtomicU64::new(0);
         let directory = std::env::temp_dir().join(format!(
             "reverie-kvm-timer-{}-{}",
@@ -127,18 +149,12 @@ impl Program {
             NEXT.fetch_add(1, Ordering::Relaxed)
         ));
         std::fs::create_dir(&directory).unwrap();
-        let source = directory.join("guest.S");
+        let source = directory.join(name);
         let executable = directory.join("guest");
-        std::fs::write(&source, format!(".global _start\n.text\n_start:\n{body}\n")).unwrap();
+        std::fs::write(&source, text).unwrap();
         let output = std::process::Command::new("timeout")
-            .args([
-                "--kill-after=2s",
-                "10s",
-                "/usr/bin/gcc",
-                "-nostdlib",
-                "-static",
-                "-Wl,--build-id=none",
-            ])
+            .args(["--kill-after=2s", "10s", "/usr/bin/gcc"])
+            .args(flags)
             .arg(&source)
             .arg("-o")
             .arg(&executable)
@@ -152,6 +168,7 @@ impl Program {
         Self {
             directory,
             executable,
+            memory,
         }
     }
 }
@@ -756,7 +773,7 @@ type Ending = Result<(i32, Vec<u8>, Vec<u8>), String>;
 static WINDOW_ENTRIES: AtomicU64 = AtomicU64::new(0);
 
 fn run_ending(program: &Program, plan: Plan) -> (Vec<Event>, Ending) {
-    let mut backend = KvmBackend::new(MEMORY).unwrap();
+    let mut backend = KvmBackend::new(program.memory).unwrap();
     backend.set_backend_stats_request(BackendStatsRequest::ENABLED);
     backend
         .install_static_elf_file_with_context(
@@ -2417,4 +2434,908 @@ fn a_signal_pending_at_an_rt_sigreturn_timer_event_follows_it() {
     assert_eq!(r.rip, r.r12, "the timer event at rt_sigreturn: {context}");
     assert_eq!(record.count, 1, "{context}");
     assert_eq!((record.rip, record.rax), (r.rip, r.rax), "{context}");
+}
+
+/// The x87, SSE and AVX state a guest of the FPU tests below reads: MXCSR
+/// (STMXCSR), the x87 control word (FNSTCW), the x87 status and tag words
+/// (FNSTENV, whose instruction and operand pointers are left out), and YMM5,
+/// whose low half is XMM5.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct FpuState {
+    mxcsr: u32,
+    control: u16,
+    status: u16,
+    tags: u16,
+    ymm5: [u64; 4],
+}
+
+impl FpuState {
+    /// Linux's initial state, which `handle_signal` gives a handler
+    /// (`fpu__clear_user_states`): MXCSR 0x1f80, x87 control word 0x37f, an
+    /// empty x87 stack (TOP 0, every register tagged empty) and zero vector
+    /// registers.
+    const INITIAL: Self = Self {
+        mxcsr: 0x1f80,
+        control: 0x37f,
+        status: 0,
+        tags: 0xffff,
+        ymm5: [0; 4],
+    };
+
+    /// The state [`FPU_LOAD`] leaves, with TOP 6 (bits 11 to 13) and no
+    /// other bit of the status word, whose condition codes FLD leaves
+    /// undefined.
+    const LOADED: Self = Self {
+        mxcsr: 0x7f80,
+        control: 0x027f,
+        status: 6 << 11,
+        tags: 0x0fff,
+        ymm5: FPU_YMM5,
+    };
+
+    /// The block [`fpu_save`] writes at the start of `bytes`.
+    fn read(bytes: &[u8]) -> Self {
+        let half = |at: usize| u16::from_ne_bytes(bytes[at..at + 2].try_into().unwrap());
+        let quad = |at: usize| u64::from_ne_bytes(bytes[at..at + 8].try_into().unwrap());
+        Self {
+            mxcsr: u32::from_ne_bytes(bytes[..4].try_into().unwrap()),
+            control: half(8),
+            // FNSTENV's 28-byte image: the control, status and tag words
+            // each fill four bytes.
+            status: half(20),
+            tags: half(24),
+            ymm5: [quad(48), quad(56), quad(64), quad(72)],
+        }
+    }
+}
+
+/// What a guest of the FPU tests below writes to stdout before it exits.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct FpuRecord {
+    /// The state at the handler's first instruction.
+    handler: FpuState,
+    /// How many times the handler ran.
+    entries: u64,
+    /// The interrupted rip in the handler's frame, and the frame's r12, where
+    /// the guest keeps the instruction at which the signal should come.
+    rip: u64,
+    r12: u64,
+    /// The state after the handler returned.
+    after: FpuState,
+    /// ST0 and ST1 after the handler returned, as FSTP m80 stores them.
+    stack: [[u8; 10]; 2],
+}
+
+impl FpuRecord {
+    fn read(stdout: &[u8]) -> Self {
+        assert_eq!(stdout.len(), FPU_RECORD_SIZE, "{stdout:?}");
+        let quad = |at: usize| u64::from_ne_bytes(stdout[at..at + 8].try_into().unwrap());
+        Self {
+            handler: FpuState::read(&stdout[..80]),
+            entries: quad(80),
+            rip: quad(88),
+            r12: quad(96),
+            after: FpuState::read(&stdout[104..184]),
+            stack: [
+                stdout[184..194].try_into().unwrap(),
+                stdout[200..210].try_into().unwrap(),
+            ],
+        }
+    }
+
+    /// Everything but the frame's rip and r12, which tell where the signal
+    /// came: natively, a sibling's signal comes wherever the guest then is.
+    fn fpu(&self) -> (FpuState, u64, FpuState, [[u8; 10]; 2]) {
+        (self.handler, self.entries, self.after, self.stack)
+    }
+}
+
+const FPU_RECORD_SIZE: usize = 216;
+
+/// MXCSR 0x7f80 (round toward zero), x87 control word 0x027f (double
+/// precision), 1.5 and then -3.25 on the x87 stack, and a nonzero YMM5: the
+/// interrupted state, which a handler must not see and which must be intact
+/// after it returns.
+const FPU_LOAD: &str = "ldmxcsr fpu_mxcsr(%rip)\nfldcw fpu_control(%rip)\nfldt fpu_first(%rip)\n\
+     fldt fpu_second(%rip)\nvmovdqu fpu_ymm5(%rip),%ymm5\n";
+
+/// The bytes of -3.25 and 1.5 as FSTP m80 stores them: ST0 and ST1 after
+/// [`FPU_LOAD`].
+const FPU_STACK: [[u8; 10]; 2] = [
+    [0, 0, 0, 0, 0, 0, 0, 0xd0, 0x00, 0xc0],
+    [0, 0, 0, 0, 0, 0, 0, 0xc0, 0xff, 0x3f],
+];
+
+const FPU_YMM5: [u64; 4] = [
+    0x1111_1111_1111_1111,
+    0x2222_2222_2222_2222,
+    0x3333_3333_3333_3333,
+    0x4444_4444_4444_4444,
+];
+
+/// Saves an [`FpuState`] at `offset` in `fpu_record`.
+fn fpu_save(offset: usize) -> String {
+    format!(
+        "stmxcsr fpu_record+{offset}(%rip)\nfnstcw fpu_record+{}(%rip)\n\
+         fnstenv fpu_record+{}(%rip)\nvmovdqu %ymm5,fpu_record+{}(%rip)\n",
+        offset + 8,
+        offset + 16,
+        offset + 48
+    )
+}
+
+/// After the handler returned: saves the state, pops ST0 and ST1 into the
+/// record, writes the record and exits with status 0.
+fn fpu_after() -> String {
+    format!(
+        "{}fstpt fpu_record+184(%rip)\nfstpt fpu_record+200(%rip)\n\
+         mov $1,%edi\nlea fpu_record(%rip),%rsi\nmov ${FPU_RECORD_SIZE},%edx\nmov $1,%eax\nsyscall\n\
+         xor %edi,%edi\nmov $231,%eax\nsyscall\nud2\n",
+        fpu_save(104)
+    )
+}
+
+/// Installs the handler of [`fpu_handler`] for `signal`, with the sigaction
+/// record `action`.
+fn fpu_install(signal: i32, action: &str) -> String {
+    format!(
+        "mov ${signal},%edi\nlea {action}(%rip),%rsi\nxor %edx,%edx\nmov $8,%r10d\nmov $13,%eax\nsyscall\n"
+    )
+}
+
+/// The handler, its restorer and the data. The handler saves the state it
+/// starts with, counts its entries, keeps its frame's rip and r12, runs
+/// `extra` and sets `flag`; `action` names its sigaction record. The data
+/// includes what [`SIBLING`] uses.
+fn fpu_handler(action: &str, extra: &str) -> String {
+    fpu_handler_loading(action, extra, 0x7f80)
+}
+
+/// [`fpu_handler`], with [`FPU_LOAD`] loading `mxcsr` as MXCSR.
+fn fpu_handler_loading(action: &str, extra: &str, mxcsr: u32) -> String {
+    format!(
+        "fpu_handler:\n{}incq fpu_record+80(%rip)\nmov 168(%rdx),%rax\nmov %rax,fpu_record+88(%rip)\n\
+         mov 72(%rdx),%rax\nmov %rax,fpu_record+96(%rip)\n{extra}movb $1,flag(%rip)\nret\n\
+         restorer: mov $15,%eax\nsyscall\nud2\n\
+         .data\n.balign 8\n{action}: .quad fpu_handler, {HANDLER_FLAGS:#x}, restorer, 0\n\
+         pid: .quad 0\ntid: .quad 0\nflag: .byte 0\n\
+         fpu_mxcsr: .long {mxcsr:#x}\nfpu_control: .short 0x027f\n\
+         .balign 16\nfpu_first: .quad 0xc000000000000000\n.short 0x3fff\n\
+         .balign 16\nfpu_second: .quad 0xd000000000000000\n.short 0xc000\n\
+         .balign 32\nfpu_ymm5: .quad {:#x}, {:#x}, {:#x}, {:#x}\n\
+         .balign 64\nfpu_record: .zero {FPU_RECORD_SIZE}\n\
+         .bss\n.balign 16\nstack: .skip 65536\nstack_end:\n",
+        fpu_save(0),
+        FPU_YMM5[0],
+        FPU_YMM5[1],
+        FPU_YMM5[2],
+        FPU_YMM5[3],
+    )
+}
+
+/// Checks a record of a guest that loaded [`FPU_LOAD`] and then took one
+/// signal: its handler started in Linux's initial state, and the interrupted
+/// code found its own state again after the handler returned.
+fn check_fpu_record(record: &FpuRecord, context: &str) {
+    check_loaded_fpu_record(record, context, 0x7f80);
+}
+
+/// [`check_fpu_record`], where the interrupted code finds MXCSR `mxcsr`
+/// after the handler returned.
+fn check_loaded_fpu_record(record: &FpuRecord, context: &str, mxcsr: u32) {
+    let context = format!("{context}: {record:x?}");
+    assert_eq!(record.entries, 1, "{context}");
+    assert_eq!(record.handler, FpuState::INITIAL, "{context}");
+    let after = FpuState {
+        status: record.after.status & 7 << 11,
+        ..record.after
+    };
+    let loaded = FpuState {
+        mxcsr,
+        ..FpuState::LOADED
+    };
+    assert_eq!(after, loaded, "{context}");
+    assert_eq!(record.stack, FPU_STACK, "{context}");
+}
+
+/// Runs `program` natively, the Linux reference, checks that it exits with
+/// status 0 and writes nothing to stderr, and returns its stdout.
+fn native_stdout(program: &Program) -> Vec<u8> {
+    let output = std::process::Command::new("timeout")
+        .args(["--kill-after=2s", "30s"])
+        .arg(&program.executable)
+        .current_dir(&program.directory)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success() && output.stderr.is_empty(),
+        "native: {}: {}",
+        output.status,
+        String::from_utf8_lossy(&output.stderr)
+    );
+    output.stdout
+}
+
+/// Runs `program` natively and returns its record.
+fn native_fpu_record(program: &Program) -> FpuRecord {
+    FpuRecord::read(&native_stdout(program))
+}
+
+/// Runs `program` under the backend's own runtime, with no Tool, checks that
+/// it exits with status 0 and writes nothing to stderr, and returns its
+/// stdout.
+fn direct_stdout(program: &Program) -> Vec<u8> {
+    let mut backend = KvmBackend::new(program.memory).unwrap();
+    backend
+        .install_static_elf_file_with_context(
+            std::fs::File::open(&program.executable).unwrap(),
+            &[program.executable.to_str().unwrap()],
+            &[],
+            &program.directory,
+        )
+        .unwrap();
+    let (code, stdout, stderr) = backend.run_static_elf_captured().unwrap();
+    assert_eq!((code, stderr), (0, vec![]));
+    stdout
+}
+
+/// Runs `program` under the backend's own runtime and returns its record.
+fn direct_fpu_record(program: &Program) -> FpuRecord {
+    FpuRecord::read(&direct_stdout(program))
+}
+
+/// Runs `program` under a [`TimerTool`] following `plan`, checks that it
+/// exits with status 0 and writes nothing to stderr, and returns the Tool's
+/// events and its stdout.
+fn tool_stdout(program: &Program, plan: Plan) -> (Vec<Event>, Vec<u8>) {
+    let (events, ending) = run_ending(program, plan);
+    let (code, stdout, stderr) = ending.unwrap_or_else(|failure| panic!("{failure}: {events:?}"));
+    assert_eq!((code, stderr), (0, vec![]), "{events:?}");
+    (events, stdout)
+}
+
+/// Runs `program` under a [`TimerTool`] following `plan` and returns the
+/// Tool's events and the record.
+fn tool_fpu_record(program: &Program, plan: Plan) -> (Vec<Event>, FpuRecord) {
+    let (events, stdout) = tool_stdout(program, plan);
+    (events, FpuRecord::read(&stdout))
+}
+
+/// The stdout of `program` under the backend's own runtime and under a Tool
+/// that delivers every signal.
+fn kvm_stdouts(program: &Program) -> [(&'static str, Vec<u8>); 2] {
+    let plan = Plan {
+        deliver: true,
+        ..Plan::default()
+    };
+    [
+        ("runtime", direct_stdout(program)),
+        ("tool", tool_stdout(program, plan).1),
+    ]
+}
+
+/// Checks a guest whose signal comes at the instruction it marks in r12, in
+/// every run: natively, under the backend's runtime and under a Tool. Each
+/// run's handler starts in Linux's initial FPU state, the interrupted code's
+/// state is intact after it, and KVM's records equal the native one.
+fn fpu_state_matches_native_at_mark(program: &Program) {
+    fpu_matches_native_at_mark(program, check_fpu_record);
+}
+
+/// [`fpu_state_matches_native_at_mark`], with `check` for each record.
+fn fpu_matches_native_at_mark(program: &Program, check: impl Fn(&FpuRecord, &str)) {
+    let native = native_fpu_record(program);
+    check(&native, "native");
+    assert_eq!(native.rip, native.r12, "native: {native:x?}");
+    let plan = Plan {
+        deliver: true,
+        ..Plan::default()
+    };
+    for (name, record) in [
+        ("runtime", direct_fpu_record(program)),
+        ("tool", tool_fpu_record(program, plan).1),
+    ] {
+        check(&record, name);
+        assert_eq!(record.rip, record.r12, "{name}: {record:x?}");
+        assert_eq!(
+            record.fpu(),
+            native.fpu(),
+            "{name} {record:x?}, native {native:x?}"
+        );
+    }
+}
+
+#[test]
+fn a_handler_at_a_syscall_return_starts_with_linuxs_initial_fpu_state() {
+    if bounded("a_handler_at_a_syscall_return_starts_with_linuxs_initial_fpu_state") {
+        return;
+    }
+    // The guest loads its FPU state and sends SIGUSR1 to itself with tgkill,
+    // which is delivered at that call's return.
+    let program = fpu_at_syscall_return(FPU_LOAD, &fpu_handler("usr1_action", ""));
+    fpu_state_matches_native_at_mark(&program);
+}
+
+/// A guest that runs `load` and sends SIGUSR1 to itself with tgkill, marking
+/// that call's return in r12, and installs `handler` (an [`fpu_handler`])
+/// for it.
+fn fpu_at_syscall_return(load: &str, handler: &str) -> Program {
+    Program::new(&format!(
+        "{}mov $39,%eax\nsyscall\nmov %rax,pid(%rip)\nmov $186,%eax\nsyscall\nmov %rax,tid(%rip)\n\
+         {load}mov pid(%rip),%rdi\nmov tid(%rip),%rsi\nmov $10,%edx\nlea 1f(%rip),%r12\n\
+         mov $234,%eax\nsyscall\n1:\n{}{handler}",
+        fpu_install(libc::SIGUSR1, "usr1_action"),
+        fpu_after(),
+    ))
+}
+
+#[test]
+fn a_handler_at_a_user_trap_starts_with_linuxs_initial_fpu_state() {
+    if bounded("a_handler_at_a_user_trap_starts_with_linuxs_initial_fpu_state") {
+        return;
+    }
+    // The guest loads its FPU state and runs a ud2, whose SIGILL handler
+    // steps over it.
+    let program = Program::new(&format!(
+        "{}{FPU_LOAD}lea 1f(%rip),%r12\n1: ud2\n{}{}",
+        fpu_install(libc::SIGILL, "ill_action"),
+        fpu_after(),
+        fpu_handler("ill_action", "addq $2,168(%rdx)\n")
+    ));
+    fpu_state_matches_native_at_mark(&program);
+}
+
+#[test]
+fn a_handler_at_a_timer_boundary_starts_with_linuxs_initial_fpu_state() {
+    if bounded("a_handler_at_a_timer_boundary_starts_with_linuxs_initial_fpu_state") {
+        return;
+    }
+    // The spinner of `a_spinner_signalled_by_a_sibling_gets_its_handler_at_the_next_timer_boundary`,
+    // which loads its FPU state before it starts the sibling and spins until
+    // its handler has run. Natively, the sibling's SIGUSR1 comes wherever
+    // the guest then is; under the Tool, at the timer boundary at the loop's
+    // head.
+    let program = Program::new(&format!(
+        "{FPU_LOAD}{SIBLING}{GETPPID}lea 1f(%rip),%r12\nmov $2000000000,%rcx\n\
+         1: cmpb $0,flag(%rip)\njne 2f\ndec %rcx\njnz 1b\n2:\n{}{}",
+        fpu_after(),
+        fpu_handler("usr1_action", "")
+    ));
+    let native = native_fpu_record(&program);
+    check_fpu_record(&native, "native");
+    for _ in 0..REPEATS {
+        let (events, record) = tool_fpu_record(&program, spinner_plan());
+        let context = format!("{record:x?} {events:?}");
+        let (timer_at, timer_clock) = first_timer(&events);
+        let delivered = sigusr1_clocks(&events);
+        assert_eq!(delivered.len(), 1, "{context}");
+        assert!(delivered[0].0 > timer_at, "{context}");
+        assert_eq!(delivered[0].1, timer_clock, "{context}");
+        let r = registers_of(&events);
+        assert_eq!((record.rip, record.r12), (r.rip, r.rip), "{context}");
+        check_fpu_record(&record, "tool");
+        assert_eq!(record.fpu(), native.fpu(), "{context}, native {native:x?}");
+    }
+}
+
+/// The MXCSR_MASK field of an FXSAVE image taken on this CPU, which Linux
+/// writes into every signal frame.
+fn cpu_mxcsr_mask() -> u32 {
+    #[repr(C, align(16))]
+    struct FxsaveArea([u8; 512]);
+    let mut area = FxsaveArea([0; 512]);
+    // SAFETY: FXSAVE writes exactly this 512-byte, 16-byte-aligned area.
+    unsafe { std::arch::x86_64::_fxsave64(area.0.as_mut_ptr()) };
+    u32::from_ne_bytes(area.0[28..32].try_into().unwrap())
+}
+
+/// DAZ, MXCSR bit 6: denormal operands are read as zero.
+const DAZ: u32 = 1 << 6;
+
+#[test]
+fn an_interrupted_mxcsr_with_daz_survives_a_signal_handler() {
+    if bounded("an_interrupted_mxcsr_with_daz_survives_a_signal_handler") {
+        return;
+    }
+    assert_ne!(cpu_mxcsr_mask() & DAZ, 0, "this CPU has no DAZ");
+    // The guest loads MXCSR 0x1fc0, with DAZ, as -ffast-math startup code
+    // does; Linux saves it in the frame and restores it at rt_sigreturn.
+    let program = fpu_at_syscall_return(FPU_LOAD, &fpu_handler_loading("usr1_action", "", 0x1fc0));
+    fpu_matches_native_at_mark(&program, |record, context| {
+        check_loaded_fpu_record(record, context, 0x1fc0)
+    });
+}
+
+#[test]
+fn a_handler_may_set_daz_in_its_frames_mxcsr() {
+    if bounded("a_handler_may_set_daz_in_its_frames_mxcsr") {
+        return;
+    }
+    assert_ne!(cpu_mxcsr_mask() & DAZ, 0, "this CPU has no DAZ");
+    // The handler writes MXCSR 0x5fc0 (DAZ, rounding up) into its frame, and
+    // the interrupted code resumes with it.
+    let edit = "mov 224(%rdx),%rax\nmovl $0x5fc0,24(%rax)\n";
+    let program = fpu_at_syscall_return(FPU_LOAD, &fpu_handler("usr1_action", edit));
+    fpu_matches_native_at_mark(&program, |record, context| {
+        check_loaded_fpu_record(record, context, 0x5fc0)
+    });
+}
+
+/// A C program built with -ffast-math, whose startup code sets DAZ and FTZ,
+/// that takes a signal and returns from its handler.
+const FAST_MATH_GUEST: &str = r#"#include <signal.h>
+#include <stdio.h>
+#include <string.h>
+#include <xmmintrin.h>
+
+static volatile sig_atomic_t entries;
+static volatile unsigned int handler_mxcsr;
+
+static void handler(int signal) {
+  (void)signal;
+  handler_mxcsr = _mm_getcsr();
+  entries++;
+}
+
+int main(void) {
+  struct sigaction action;
+  memset(&action, 0, sizeof action);
+  action.sa_handler = handler;
+  sigemptyset(&action.sa_mask);
+  if (sigaction(SIGUSR1, &action, NULL) != 0)
+    return 1;
+  unsigned int before = _mm_getcsr();
+  if (raise(SIGUSR1) != 0)
+    return 2;
+  unsigned int after = _mm_getcsr();
+  volatile float tiny = 1e-40f;
+  volatile float sum = tiny + 0.0f;
+  printf("mxcsr %#x before, %#x in the handler, %#x after; %d handler entries; subnormal + 0 is %s\n",
+         before, handler_mxcsr, after, (int)entries, sum == 0.0f ? "zero" : "subnormal");
+  return 0;
+}
+"#;
+
+#[test]
+fn a_fast_math_program_returns_from_a_signal_handler() {
+    if bounded("a_fast_math_program_returns_from_a_signal_handler") {
+        return;
+    }
+    let program = Program::c(FAST_MATH_GUEST, &["-ffast-math"]);
+    let native = native_stdout(&program);
+    assert_eq!(
+        String::from_utf8_lossy(&native),
+        "mxcsr 0x9fc0 before, 0x1f80 in the handler, 0x9fc0 after; 1 handler entries; \
+         subnormal + 0 is zero\n",
+        "native"
+    );
+    for (name, stdout) in kvm_stdouts(&program) {
+        assert_eq!(
+            String::from_utf8_lossy(&stdout),
+            String::from_utf8_lossy(&native),
+            "{name}"
+        );
+    }
+}
+
+#[test]
+fn a_handlers_edits_to_fpu_state_the_interrupted_code_never_used_take_effect() {
+    if bounded("a_handlers_edits_to_fpu_state_the_interrupted_code_never_used_take_effect") {
+        return;
+    }
+    // The guest uses no x87, SSE or AVX instruction before its signal, so
+    // that state is initial. Its handler sets the frame's x87 control word to
+    // 0x027f, MXCSR to 0x5f80 and XMM5 to a pattern; Linux marks x87 and SSE
+    // present in every frame, so rt_sigreturn applies the three edits.
+    let edit = "mov 224(%rdx),%rax\nmovw $0x027f,(%rax)\nmovl $0x5f80,24(%rax)\n\
+                movabs $0x5555555555555555,%rcx\nmov %rcx,240(%rax)\nmov %rcx,248(%rax)\n";
+    let program = fpu_at_syscall_return("", &fpu_handler("usr1_action", edit));
+    fpu_matches_native_at_mark(&program, |record, context| {
+        let context = format!("{context}: {record:x?}");
+        assert_eq!(record.entries, 1, "{context}");
+        assert_eq!(record.handler, FpuState::INITIAL, "{context}");
+        let pattern = 0x5555_5555_5555_5555;
+        assert_eq!(
+            (record.after.control, record.after.mxcsr, record.after.ymm5),
+            (0x027f, 0x5f80, [pattern, pattern, 0, 0]),
+            "{context}"
+        );
+    });
+}
+
+#[test]
+fn rt_sigreturn_takes_mxcsr_from_a_frame_whose_header_leaves_sse_initial() {
+    if bounded("rt_sigreturn_takes_mxcsr_from_a_frame_whose_header_leaves_sse_initial") {
+        return;
+    }
+    // The handler sets its frame's MXCSR to 0x5f80 and clears the SSE and YMM
+    // bits of its XSTATE_BV, keeping the x87 bit or clearing it too. Linux's
+    // XRSTOR then zeroes XMM5 and YMM5 but still loads MXCSR from the frame.
+    for header in [1, 0] {
+        let edit = format!("mov 224(%rdx),%rax\nmovl $0x5f80,24(%rax)\nmovq ${header},512(%rax)\n");
+        let program = fpu_at_syscall_return(FPU_LOAD, &fpu_handler("usr1_action", &edit));
+        fpu_matches_native_at_mark(&program, |record, context| {
+            let context = format!("{context}, XSTATE_BV {header}: {record:x?}");
+            assert_eq!(record.entries, 1, "{context}");
+            assert_eq!(
+                (record.after.mxcsr, record.after.ymm5),
+                (0x5f80, [0; 4]),
+                "{context}"
+            );
+        });
+    }
+}
+
+/// Runs `program` natively, with no core dump, and returns how it ended.
+fn native_output(program: &Program) -> std::process::Output {
+    use std::os::unix::process::CommandExt;
+    let mut command = std::process::Command::new("timeout");
+    command
+        .args(["--kill-after=2s", "30s"])
+        .arg(&program.executable)
+        .current_dir(&program.directory);
+    // SAFETY: setrlimit is async-signal-safe and touches no memory the
+    // parent shares.
+    unsafe {
+        command.pre_exec(|| {
+            // A core_pattern that pipes core dumps to a program ignores
+            // RLIMIT_CORE except for the value 1, with which the kernel
+            // skips the dump.
+            let one = libc::rlimit {
+                rlim_cur: 1,
+                rlim_max: 1,
+            };
+            match libc::setrlimit(libc::RLIMIT_CORE, &one) {
+                0 => Ok(()),
+                _ => Err(std::io::Error::last_os_error()),
+            }
+        });
+    }
+    command.output().unwrap()
+}
+
+/// Checks that `program` ends with SIGSEGV and writes nothing, natively,
+/// under the backend's own runtime and under a Tool that delivers every
+/// signal.
+fn segfaults_natively_and_on_kvm(program: &Program) {
+    use std::os::unix::process::ExitStatusExt;
+    let output = native_output(program);
+    // timeout ends itself with the signal that ended its child.
+    assert_eq!(
+        (output.status.signal(), output.stdout, output.stderr),
+        (Some(libc::SIGSEGV), vec![], vec![]),
+        "native: {}",
+        output.status
+    );
+    let mut backend = KvmBackend::new(program.memory).unwrap();
+    backend
+        .install_static_elf_file_with_context(
+            std::fs::File::open(&program.executable).unwrap(),
+            &[program.executable.to_str().unwrap()],
+            &[],
+            &program.directory,
+        )
+        .unwrap();
+    assert_eq!(
+        backend.run_static_elf_captured().unwrap(),
+        (128 + libc::SIGSEGV, vec![], vec![]),
+        "runtime"
+    );
+    let plan = Plan {
+        deliver: true,
+        ..Plan::default()
+    };
+    let (events, ending) = run_ending(program, plan);
+    assert_eq!(
+        ending,
+        Ok((128 + libc::SIGSEGV, vec![], vec![])),
+        "tool: {events:?}"
+    );
+}
+
+#[test]
+fn rt_sigreturn_ignores_mxcsr_where_linux_does_not_load_it() {
+    if bounded("rt_sigreturn_ignores_mxcsr_where_linux_does_not_load_it") {
+        return;
+    }
+    // The handler sets a reserved MXCSR bit in its frame, and the frame's
+    // software xfeatures and XSTATE_BV to x87 alone or to nothing. XRSTOR
+    // loads, and so checks, MXCSR only for requested SSE or YMM state, and
+    // Linux initializes SSE and YMM state afterwards: MXCSR 0x1f80 and zero
+    // YMM5. x87 state comes from the frame when it is requested, and is
+    // initialized otherwise, which leaves FSTP an empty stack to store.
+    for bit in [16, 31] {
+        let reserved = 1u32 << bit;
+        for features in [1, 0] {
+            let edit = format!(
+                "mov 224(%rdx),%rax\norl ${reserved:#x},24(%rax)\nmovq ${features},472(%rax)\n\
+                 movq ${features},512(%rax)\n"
+            );
+            let program = fpu_at_syscall_return(FPU_LOAD, &fpu_handler("usr1_action", &edit));
+            fpu_matches_native_at_mark(&program, |record, context| {
+                let context =
+                    format!("{context}, MXCSR bit {bit}, features {features}: {record:x?}");
+                assert_eq!(record.entries, 1, "{context}");
+                assert_eq!(record.handler, FpuState::INITIAL, "{context}");
+                assert_eq!(
+                    (record.after.mxcsr, record.after.ymm5),
+                    (0x1f80, [0; 4]),
+                    "{context}"
+                );
+                if features == 1 {
+                    assert_eq!(
+                        (record.after.control, record.after.tags, record.stack),
+                        (0x027f, FpuState::LOADED.tags, FPU_STACK),
+                        "{context}"
+                    );
+                } else {
+                    assert_eq!(
+                        (record.after.control, record.after.status, record.after.tags),
+                        (0x037f, 0, 0xffff),
+                        "{context}"
+                    );
+                }
+            });
+        }
+        // With SSE requested, as in the frame as built, the bit faults.
+        let edit = format!("mov 224(%rdx),%rax\norl ${reserved:#x},24(%rax)\n");
+        let program = fpu_at_syscall_return(FPU_LOAD, &fpu_handler("usr1_action", &edit));
+        segfaults_natively_and_on_kvm(&program);
+    }
+}
+
+#[test]
+fn rt_sigreturn_initializes_ymm_state_the_frames_features_leave_out() {
+    if bounded("rt_sigreturn_initializes_ymm_state_the_frames_features_leave_out") {
+        return;
+    }
+    // The handler sets its frame's software xfeatures to x87 and SSE,
+    // leaving XSTATE_BV marking YMM present. XRSTOR ignores that bit, and
+    // Linux initializes YMM state afterwards: YMM5's upper half is zero,
+    // and the rest comes from the frame, MXCSR 0x7f80 included where the
+    // host's format keeps it.
+    let edit = "mov 224(%rdx),%rax\nmovq $3,472(%rax)\n";
+    let program = fpu_at_syscall_return(FPU_LOAD, &fpu_handler("usr1_action", edit));
+    fpu_matches_native_but_mxcsr_at_mark(&program, 0x7f80, |record, context| {
+        let context = format!("{context}: {record:x?}");
+        assert_eq!(record.entries, 1, "{context}");
+        assert_eq!(
+            (record.after.control, record.stack),
+            (0x027f, FPU_STACK),
+            "{context}"
+        );
+        assert_eq!(
+            record.after.ymm5,
+            [FPU_YMM5[0], FPU_YMM5[1], 0, 0],
+            "{context}"
+        );
+    });
+}
+
+#[test]
+fn rt_sigreturn_restores_a_frame_without_magic2_as_legacy_state() {
+    if bounded("rt_sigreturn_restores_a_frame_without_magic2_as_legacy_state") {
+        return;
+    }
+    // The handler sets its frame's MXCSR to 0x5f80 and XMM5 to a pattern,
+    // and clears FP_XSTATE_MAGIC2 after the frame's xstate_size bytes.
+    // Linux then restores the frame's legacy FXSAVE image, the edits
+    // included (MXCSR where the host's format keeps it), and initializes
+    // YMM state.
+    let edit = "mov 224(%rdx),%rax\nmovl $0x5f80,24(%rax)\nmovabs $0x5555555555555555,%rcx\n\
+                mov %rcx,240(%rax)\nmov %rcx,248(%rax)\nmov 480(%rax),%ecx\nmovl $0,(%rax,%rcx)\n";
+    let program = fpu_at_syscall_return(FPU_LOAD, &fpu_handler("usr1_action", edit));
+    fpu_matches_native_but_mxcsr_at_mark(&program, 0x5f80, |record, context| {
+        let context = format!("{context}: {record:x?}");
+        assert_eq!(record.entries, 1, "{context}");
+        let pattern = 0x5555_5555_5555_5555;
+        assert_eq!(
+            (record.after.control, record.stack),
+            (0x027f, FPU_STACK),
+            "{context}"
+        );
+        assert_eq!(record.after.ymm5, [pattern, pattern, 0, 0], "{context}");
+    });
+}
+
+/// Whether this host's Linux keeps FPU state in the compacted format, as it
+/// does when it uses XSAVEC or XSAVES (`fpu__init_system_xstate`); the
+/// kernel lists the features it uses in /proc/cpuinfo.
+fn linux_uses_compacted_xstate() -> bool {
+    let cpuinfo = std::fs::read_to_string("/proc/cpuinfo").unwrap();
+    let flags = cpuinfo
+        .lines()
+        .find(|line| line.starts_with("flags"))
+        .expect("a flags line in /proc/cpuinfo");
+    flags
+        .split_whitespace()
+        .any(|flag| flag == "xsavec" || flag == "xsaves")
+}
+
+/// [`fpu_matches_native_at_mark`] for a frame whose features include SSE but
+/// not YMM, or that Linux restores as a legacy FXSAVE image. Linux then
+/// initializes YMM state with an XRSTOR of its initial state, which on a
+/// host whose kernel keeps FPU state in the standard format also loads that
+/// state's MXCSR, 0x1f80; with the compacted format MXCSR stays `restored`,
+/// the frame's. So natively MXCSR must be Linux's answer for this host;
+/// under KVM it must be `restored`, the backend's answer on every host; and
+/// every other field must equal the native one.
+fn fpu_matches_native_but_mxcsr_at_mark(
+    program: &Program,
+    restored: u32,
+    check: impl Fn(&FpuRecord, &str),
+) {
+    let native = native_fpu_record(program);
+    let native_mxcsr = if linux_uses_compacted_xstate() {
+        restored
+    } else {
+        0x1f80
+    };
+    assert_eq!(native.after.mxcsr, native_mxcsr, "native: {native:x?}");
+    check(&native, "native");
+    assert_eq!(native.rip, native.r12, "native: {native:x?}");
+    // Everything but the MXCSR the guest finds after the return.
+    let rest = |record: &FpuRecord| {
+        let mut fpu = record.fpu();
+        fpu.2.mxcsr = 0;
+        fpu
+    };
+    let plan = Plan {
+        deliver: true,
+        ..Plan::default()
+    };
+    for (name, record) in [
+        ("runtime", direct_fpu_record(program)),
+        ("tool", tool_fpu_record(program, plan).1),
+    ] {
+        assert_eq!(record.after.mxcsr, restored, "{name}: {record:x?}");
+        check(&record, name);
+        assert_eq!(record.rip, record.r12, "{name}: {record:x?}");
+        assert_eq!(
+            rest(&record),
+            rest(&native),
+            "{name} {record:x?}, native {native:x?}"
+        );
+    }
+}
+
+#[test]
+fn rt_sigreturn_ignores_the_software_reserved_padding() {
+    if bounded("rt_sigreturn_ignores_the_software_reserved_padding") {
+        return;
+    }
+    // The handler sets its frame's MXCSR to 0x5f80 and a padding byte of
+    // the software-reserved bytes, which Linux never reads.
+    let edit = "mov 224(%rdx),%rax\nmovl $0x5f80,24(%rax)\nmovb $0xa5,490(%rax)\n";
+    let program = fpu_at_syscall_return(FPU_LOAD, &fpu_handler("usr1_action", edit));
+    fpu_matches_native_at_mark(&program, |record, context| {
+        check_loaded_fpu_record(record, context, 0x5f80)
+    });
+}
+
+/// What the guest of
+/// `a_frame_after_a_null_fpregs_return_carries_the_cpus_mxcsr_mask` writes:
+/// how many times each handler ran; the MXCSR_MASK and MXCSR in SIGUSR2's
+/// frame; MXCSR as SIGUSR2's handler starts; the bits of a subnormal plus
+/// zero there, computed with DAZ when that frame's mask offers it; the
+/// frame's rip and r12; MXCSR once both handlers have returned; the frame's
+/// XSTATE_BV; and YMM5 once both handlers have returned.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct QueuedRecord {
+    first_entries: u64,
+    second_entries: u64,
+    frame_mask: u32,
+    frame_mxcsr: u32,
+    handler_mxcsr: u32,
+    sum: u32,
+    rip: u64,
+    r12: u64,
+    after_mxcsr: u32,
+    frame_xstate_bv: u64,
+    after_ymm5: [u64; 4],
+}
+
+impl QueuedRecord {
+    fn read(stdout: &[u8]) -> Self {
+        assert_eq!(stdout.len(), 112, "{stdout:?}");
+        let quad = |i: usize| u64::from_ne_bytes(stdout[8 * i..8 * i + 8].try_into().unwrap());
+        Self {
+            first_entries: quad(0),
+            second_entries: quad(1),
+            frame_mask: quad(2) as u32,
+            frame_mxcsr: quad(3) as u32,
+            handler_mxcsr: quad(4) as u32,
+            sum: quad(5) as u32,
+            rip: quad(6),
+            r12: quad(7),
+            after_mxcsr: quad(8) as u32,
+            frame_xstate_bv: quad(9),
+            after_ymm5: [quad(10), quad(11), quad(12), quad(13)],
+        }
+    }
+
+    /// The record without what may differ from the native one: the frame's
+    /// rip and r12, and its XSTATE_BV bit for PKRU, which the guest lacks.
+    fn comparable(self) -> Self {
+        const PKRU: u64 = 1 << 9;
+        Self {
+            rip: 0,
+            r12: 0,
+            frame_xstate_bv: self.frame_xstate_bv & !PKRU,
+            ..self
+        }
+    }
+}
+
+#[test]
+fn a_frame_after_a_null_fpregs_return_carries_the_cpus_mxcsr_mask() {
+    if bounded("a_frame_after_a_null_fpregs_return_carries_the_cpus_mxcsr_mask") {
+        return;
+    }
+    // The guest loads MXCSR 0x7f80 and a nonzero YMM5 and sends itself
+    // SIGUSR1, whose handler blocks SIGUSR2 (its sa_mask), sends it, sets
+    // uc_mcontext.fpregs to NULL and returns. rt_sigreturn installs the
+    // initial FPU state and unblocks SIGUSR2, which is delivered at once, at
+    // the same return; its frame records that state with the CPU's
+    // MXCSR_MASK, and with x87 and SSE state present and YMM state absent.
+    // Its handler sets DAZ when that mask offers it, as a program probing
+    // for DAZ does, and adds zero to a subnormal; it also writes the upper
+    // half of YMM5 in its frame without marking YMM present, an edit
+    // rt_sigreturn ignores.
+    let program = Program::new(
+        "mov $10,%edi\nlea usr1_action(%rip),%rsi\nxor %edx,%edx\nmov $8,%r10d\nmov $13,%eax\nsyscall\n\
+         mov $12,%edi\nlea usr2_action(%rip),%rsi\nxor %edx,%edx\nmov $8,%r10d\nmov $13,%eax\nsyscall\n\
+         mov $39,%eax\nsyscall\nmov %rax,pid(%rip)\nmov $186,%eax\nsyscall\nmov %rax,tid(%rip)\n\
+         ldmxcsr loaded(%rip)\nvmovdqu loaded_ymm5(%rip),%ymm5\n\
+         mov pid(%rip),%rdi\nmov tid(%rip),%rsi\nmov $10,%edx\nlea 1f(%rip),%r12\n\
+         mov $234,%eax\nsyscall\n1: stmxcsr rec+64(%rip)\nvmovdqu %ymm5,rec+80(%rip)\n\
+         mov $1,%edi\nlea rec(%rip),%rsi\nmov $112,%edx\nmov $1,%eax\nsyscall\n\
+         xor %edi,%edi\nmov $231,%eax\nsyscall\nud2\n\
+         first: mov %rdx,%r9\nmov pid(%rip),%rdi\nmov tid(%rip),%rsi\nmov $12,%edx\nmov $234,%eax\nsyscall\n\
+         movq $0,224(%r9)\nincq rec(%rip)\nret\n\
+         second: mov 224(%rdx),%r8\nmov 28(%r8),%eax\nmov %rax,rec+16(%rip)\n\
+         mov 24(%r8),%eax\nmov %rax,rec+24(%rip)\nstmxcsr rec+32(%rip)\n\
+         mov 168(%rdx),%rax\nmov %rax,rec+48(%rip)\nmov 72(%rdx),%rax\nmov %rax,rec+56(%rip)\n\
+         mov 512(%r8),%rax\nmov %rax,rec+72(%rip)\n\
+         movabs $0x6666666666666666,%rax\nmov %rax,656(%r8)\nmov %rax,664(%r8)\n\
+         testl $0x40,28(%r8)\njz 2f\nldmxcsr daz(%rip)\n\
+         2: movss subnormal(%rip),%xmm0\naddss zero(%rip),%xmm0\nmovd %xmm0,%eax\nmov %rax,rec+40(%rip)\n\
+         incq rec+8(%rip)\nret\n\
+         restorer: mov $15,%eax\nsyscall\nud2\n\
+         .data\n.balign 8\nusr1_action: .quad first, 0x4000004, restorer, 0x800\n\
+         usr2_action: .quad second, 0x4000004, restorer, 0\npid: .quad 0\ntid: .quad 0\n\
+         loaded: .long 0x7f80\ndaz: .long 0x1fc0\nsubnormal: .long 1\nzero: .long 0\n\
+         .balign 32\nloaded_ymm5: .quad 0x1111111111111111, 0x2222222222222222, \
+         0x3333333333333333, 0x4444444444444444\n\
+         .balign 8\nrec: .zero 112\n",
+    );
+    let native = QueuedRecord::read(&native_stdout(&program));
+    let mask = cpu_mxcsr_mask();
+    let expected = QueuedRecord {
+        first_entries: 1,
+        second_entries: 1,
+        frame_mask: mask,
+        frame_mxcsr: 0x1f80,
+        handler_mxcsr: 0x1f80,
+        sum: if mask & DAZ != 0 { 0 } else { 1 },
+        after_mxcsr: 0x1f80,
+        after_ymm5: [0; 4],
+        ..native
+    };
+    assert_eq!(native, expected, "native");
+    assert_eq!(native.rip, native.r12, "native: {native:x?}");
+    assert_eq!(
+        native.comparable().frame_xstate_bv,
+        0b011,
+        "native: {native:x?}"
+    );
+    for (name, stdout) in kvm_stdouts(&program) {
+        let record = QueuedRecord::read(&stdout);
+        assert_eq!(record.rip, record.r12, "{name}: {record:x?}");
+        assert_eq!(
+            record.comparable(),
+            native.comparable(),
+            "{name}: {record:x?}, native {native:x?}"
+        );
+    }
 }
