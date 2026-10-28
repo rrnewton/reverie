@@ -390,6 +390,8 @@ where
         // Like the maintained native driver, every event reaching
         // this entry invokes Tool, independent of local hooks'
         // subscription table. Only Tool may request deferral here.
+        #[cfg(feature = "native-entry-observer")]
+        guest.observe_native_entry(NativeEntryStage::Syscall);
         guest.in_syscall_handler = true;
         let outcome = drive_native_callback(tool.handle_syscall_event(guest, syscall), tail);
         guest.in_syscall_handler = false;

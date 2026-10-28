@@ -62,6 +62,53 @@ pub struct NativeEventFacts<'callback> {
     pub signal_info: Option<[u8; reverie::SIGNAL_INFO_SIZE]>,
 }
 
+/// An observation point in the actual native Tool callback path.
+/// These names carry no callback, lifecycle or image-entry permission.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum NativeEntryStage {
+    /// Immediately before the real thread-start hook.
+    StartEnter,
+    /// After that hook completed successfully.
+    StartComplete,
+    /// Immediately before the real post-exec hook.
+    PostExecEnter,
+    /// After that hook completed successfully.
+    PostExecComplete,
+    /// Immediately before an actual native syscall Tool handler.
+    Syscall,
+}
+
+/// Read-only inspection of this exact admitted native callback.
+/// No writer, invoker, Tool/state reference or continuation escapes this view.
+pub struct NativeEntryObservation<'observation, 'callback> {
+    services: &'observation NativeServices<'callback>,
+}
+
+impl<'observation, 'callback> NativeEntryObservation<'observation, 'callback> {
+    #[cfg(feature = "native-entry-observer")]
+    pub(super) fn new(services: &'observation NativeServices<'callback>) -> Self {
+        Self { services }
+    }
+
+    /// Preserve the actual native reader's status and sampled registers.
+    pub fn read_registers(&self, registers: &mut libc::user_regs_struct) -> Result<i32, Errno> {
+        self.services
+            .invocation
+            .ensure_current()
+            .map_err(|_| Errno::ESTALE)?;
+        Ok(unsafe {
+            (self.services.table.read_registers)(self.services.invocation.context(), registers)
+        })
+    }
+
+    /// Use the current callback's existing fault-aware memory implementation.
+    /// Original short counts and errors are retained; no direct guest dereference.
+    pub fn read_memory(&self, address: usize, output: &mut [u8]) -> Result<usize, Errno> {
+        let address = Addr::from_raw(address).ok_or(Errno::EFAULT)?;
+        self.services.memory().read(address, output)
+    }
+}
+
 /// A live native callback's borrowed mechanisms and actual sampled facts.
 pub struct NativeServices<'callback> {
     invocation: NativeInvocation<'callback>,
