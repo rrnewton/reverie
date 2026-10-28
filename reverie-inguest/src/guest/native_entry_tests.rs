@@ -506,10 +506,11 @@ fn native_single_handler_error_is_not_restarted_or_published_as_success() {
             .unwrap()
     };
     let lease = unsafe { host.enter_native_callback(handle, id).unwrap() };
-    let error = unsafe { host.dispatch_native_syscall(lease, &services, &rpc, &mut event(8)) }
-        .err()
-        .unwrap();
-    assert!(matches!(error, Error::Errno(Errno::ERESTARTSYS)));
+    let error_result = value(unsafe {
+        host.dispatch_native_syscall(lease, &services, &rpc, &mut event(8))
+            .unwrap()
+    });
+    assert_eq!(error_result, -i64::from(Errno::ERESTARTSYS.into_raw()));
     assert_eq!(
         host.tool
             .lock()
