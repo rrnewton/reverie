@@ -307,60 +307,77 @@ where
                 native_rpc,
                 event,
                 |tool, guest, tail| {
-                    let invocation = services.invocation();
-                    if let Some(result) = native_rpc.protect_operation(
-                        invocation,
-                        guest.event.number,
-                        &guest.event.args,
-                        true,
-                    ) {
-                        return NativeCallbackOutcome::Ready(Ok(result));
-                    }
-                    // Preserve the maintained native callback's conversion and
-                    // invalid-number refusal. A malformed native event is not a
-                    // guest syscall result and must not synthesize -ENOSYS.
-                    let number = Sysno::from(guest.event.number as i32);
-                    let args = guest.event.args;
-                    let syscall = Syscall::from_raw(
-                        number,
-                        SyscallArgs::new(
-                            args[0] as usize,
-                            args[1] as usize,
-                            args[2] as usize,
-                            args[3] as usize,
-                            args[4] as usize,
-                            args[5] as usize,
-                        ),
-                    );
-                    // Native interception is selected by its actual C owner.
-                    // Like the maintained native driver, every event reaching
-                    // this entry invokes Tool, independent of local hooks'
-                    // subscription table. Only Tool may request deferral here.
-                    guest.in_syscall_handler = true;
-                    let outcome =
-                        drive_native_callback(tool.handle_syscall_event(guest, syscall), tail);
-                    guest.in_syscall_handler = false;
-                    match outcome {
-                        NativeCallbackOutcome::Ready(Err(Error::Errno(errno))) => {
-                            // Only the maintained syscall owner turns Linux
-                            // errno into the negative guest return. Do not
-                            // enter the local restart loop or poison completed
-                            // state. Instruction/signal errors remain fatal.
-                            NativeCallbackOutcome::Ready(Ok(-i64::from(errno.into_raw())))
-                        }
-                        NativeCallbackOutcome::Deferred { number, args } => {
-                            // Close/close_range still reached the Tool for accounting;
-                            // the actual forwarded/deferred operation spares the same
-                            // reserved primary descriptor, as before this factoring.
-                            match native_rpc.protect_operation(invocation, number, &args, false) {
-                                Some(result) => NativeCallbackOutcome::Ready(Ok(result)),
-                                None => NativeCallbackOutcome::Deferred { number, args },
-                            }
-                        }
-                        other => other,
-                    }
+                    self.dispatch_native_syscall_in_guest(tool, guest, tail, services, native_rpc)
                 },
             )
+        }
+    }
+
+    /// Run the existing native syscall dispatch inside this callback's one
+    /// common Guest. Concrete Tool glue may prepare/finish its owned state
+    /// around this call without completing/reentering the native lease.
+    /// This does not drive lifecycle entry or publish/consume that lease.
+    ///
+    /// # Safety
+    /// Call only from this same host's with_native_guest work closure, using
+    /// its actual borrowed Tool, Guest, tail, selected services and RPC owner.
+    /// No Guest/future may escape. The outer callback alone retains/completes
+    /// any Deferred result after the real native operation/bookkeeping.
+    pub unsafe fn dispatch_native_syscall_in_guest(
+        &self,
+        tool: &T,
+        guest: &mut InGuest<'_, T, R>,
+        tail: &TailResult,
+        services: &NativeServices<'_>,
+        native_rpc: &NativeRpc<T::GlobalState>,
+    ) -> NativeCallbackOutcome<Result<i64, Error>> {
+        let invocation = services.invocation();
+        if let Some(result) =
+            native_rpc.protect_operation(invocation, guest.event.number, &guest.event.args, true)
+        {
+            return NativeCallbackOutcome::Ready(Ok(result));
+        }
+        // Preserve the maintained native callback's conversion and
+        // invalid-number refusal. A malformed native event is not a
+        // guest syscall result and must not synthesize -ENOSYS.
+        let number = Sysno::from(guest.event.number as i32);
+        let args = guest.event.args;
+        let syscall = Syscall::from_raw(
+            number,
+            SyscallArgs::new(
+                args[0] as usize,
+                args[1] as usize,
+                args[2] as usize,
+                args[3] as usize,
+                args[4] as usize,
+                args[5] as usize,
+            ),
+        );
+        // Native interception is selected by its actual C owner.
+        // Like the maintained native driver, every event reaching
+        // this entry invokes Tool, independent of local hooks'
+        // subscription table. Only Tool may request deferral here.
+        guest.in_syscall_handler = true;
+        let outcome = drive_native_callback(tool.handle_syscall_event(guest, syscall), tail);
+        guest.in_syscall_handler = false;
+        match outcome {
+            NativeCallbackOutcome::Ready(Err(Error::Errno(errno))) => {
+                // Only the maintained syscall owner turns Linux
+                // errno into the negative guest return. Do not
+                // enter the local restart loop or poison completed
+                // state. Instruction/signal errors remain fatal.
+                NativeCallbackOutcome::Ready(Ok(-i64::from(errno.into_raw())))
+            }
+            NativeCallbackOutcome::Deferred { number, args } => {
+                // Close/close_range still reached the Tool for accounting;
+                // the actual forwarded/deferred operation spares the same
+                // reserved primary descriptor, as before this factoring.
+                match native_rpc.protect_operation(invocation, number, &args, false) {
+                    Some(result) => NativeCallbackOutcome::Ready(Ok(result)),
+                    None => NativeCallbackOutcome::Deferred { number, args },
+                }
+            }
+            other => other,
         }
     }
 
