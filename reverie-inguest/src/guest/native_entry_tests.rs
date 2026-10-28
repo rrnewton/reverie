@@ -1432,6 +1432,7 @@ fn native_local_tool_entry_keeps_physical_guest_pid_and_virtual_rpc_identity() {
 #[path = "native_copied_tests.rs"]
 mod native_copied_tests;
 
+#[derive(Default)]
 struct ExitOutcomeProbe {
     exits: Arc<AtomicUsize>,
 }
