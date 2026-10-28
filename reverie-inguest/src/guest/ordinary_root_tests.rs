@@ -181,7 +181,14 @@ fn ordinary_root_handoff_preserves_first_event_and_normal_fields() {
         }
         let tool = host.tool.lock();
         assert_eq!(
-            *tool.as_deref().unwrap().as_ref().unwrap().events.lock().unwrap(),
+            *tool
+                .as_deref()
+                .unwrap()
+                .as_ref()
+                .unwrap()
+                .events
+                .lock()
+                .unwrap(),
             [
                 ("thread-start", root.as_raw(), 97),
                 ("post-exec", root.as_raw(), 97),
