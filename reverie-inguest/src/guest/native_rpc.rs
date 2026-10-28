@@ -218,6 +218,65 @@ impl<G: GlobalTool> NativeRpc<G> {
         &self.config
     }
 
+    /// Fresh connection storage for the checked independent copied process.
+    /// The caller owns the actual affine returning operation and has checked
+    /// its admitted child against `parent`; numeric identities alone do not
+    /// establish that boundary. Never acquire the inherited primary lock.
+    ///
+    /// The original published number remains occupied. The existing prepare
+    /// path connects/reads the real configuration frame and dup3-replaces the
+    /// inherited stream there before any child Tool callback. It never reads
+    /// inherited framing or lets an old Drop close the replacement socket.
+    pub(super) fn for_copied_coordinator(
+        &self,
+        parent: NativeThreadIdentity,
+        invocation: NativeInvocation<'_>,
+    ) -> io::Result<(Self, super::rpc::CoordinatorRpc<G>)> {
+        invocation.ensure_current()?;
+        let child = invocation.identity();
+        if child.physical_pid() == parent.physical_pid()
+            || child.physical_pid() != child.physical_tid()
+        {
+            return Err(io::Error::from_raw_os_error(libc::ESTALE));
+        }
+        // A copied in-process GlobalTool may itself contain inherited locks.
+        // It keeps its maintained closed copied-operation path, not a new
+        // GlobalTool or a fabricated coordinator fallback.
+        let path = self.destination.coordinator()?.to_path_buf();
+        let fact = self.descriptor.load(Ordering::Acquire);
+        let connection = if fact == 0 {
+            None
+        } else {
+            let fd = fact as u32 as i32;
+            if fact >> 32 != parent.physical_pid().as_raw() as u64 || fd < 1024 {
+                return Err(io::Error::from_raw_os_error(libc::ESTALE));
+            }
+            Some(Connection {
+                pid: parent.physical_pid(),
+                fd,
+                // No old framing is usable in the child. Its different
+                // actual PID drives the existing authenticated reconnect.
+                usable: false,
+            })
+        };
+        let cache =
+            super::rpc::CoordinatorRpc::from_native_configuration(&path, Arc::clone(&self.config))?;
+        let owner = Self {
+            state: SpinMutex::new(State {
+                next: 1,
+                primary: Primary::Available {
+                    connection,
+                    recover: false,
+                },
+            }),
+            descriptor: AtomicU64::new(fact),
+            destination: Destination::Coordinator(path),
+            config: Arc::clone(&self.config),
+        };
+        invocation.ensure_current()?;
+        Ok((owner, cache))
+    }
+
     /// The protected live numeric descriptor fact, including while leased.
     pub fn descriptor(&self, physical_pid: Pid) -> Option<i32> {
         let fact = self.descriptor.load(Ordering::Acquire);
