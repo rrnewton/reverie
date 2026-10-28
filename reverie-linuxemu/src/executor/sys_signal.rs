@@ -2158,52 +2158,75 @@ impl ElfExecutor {
         }
     }
 
-    pub fn signal_altstack(&self, stack_pointer: u64) -> GuestStack {
-        match self.state.thread_signals.lock().altstack {
-            Some(mut stack) => {
-                if stack.contains(stack_pointer) {
-                    stack.flags |= libc::SS_ONSTACK;
-                }
-                stack
-            }
-            None => GuestStack {
-                sp: 0,
-                flags: libc::SS_DISABLE,
-                size: 0,
-            },
+    /// Records a CPU exception that raises a signal in this thread's trap
+    /// fields, as Linux's trap handlers do before they raise it: the vector
+    /// and error code always, and `fault_address`, a page fault's CR2, only
+    /// when there is one. Every later frame of the thread saves them; see
+    /// [`SignalTrapFields`].
+    pub fn record_user_trap(&mut self, trapno: u64, error_code: u64, fault_address: Option<u64>) {
+        let mut thread_signals = self.state.thread_signals.lock();
+        thread_signals.trap.trapno = trapno;
+        thread_signals.trap.error_code = error_code;
+        if let Some(address) = fault_address {
+            thread_signals.trap.cr2 = address;
         }
+    }
+
+    /// The trap fields this thread's next signal frame saves.
+    pub fn signal_trap_fields(&self) -> SignalTrapFields {
+        self.state.thread_signals.lock().trap
+    }
+
+    /// The `uc_stack` a signal frame saves: the alternate stack as
+    /// `sigaltstack` installed it, with the flags it was given (after an exec,
+    /// or SS_DISABLE with SS_AUTODISARM, with no address or size and those
+    /// flags), or `SS_DISABLE` and no stack when there is none. Linux writes
+    /// the task's own `sas_ss_flags` there (`unsafe_save_altstack`,
+    /// include/linux/signal.h): SS_ONSTACK only when a caller gave it as the
+    /// mode, never for running on the stack, which only `sigaltstack`'s report
+    /// adds.
+    pub fn signal_altstack(&self) -> GuestStack {
+        self.state
+            .thread_signals
+            .lock()
+            .altstack
+            .unwrap_or(DISABLED_ALTSTACK)
     }
 
     pub fn signal_stack_top(
         &self,
         action: KernelSigaction,
         stack_pointer: u64,
-    ) -> Result<(u64, Option<u64>, bool, bool), reverie::syscalls::Errno> {
-        let Some(stack) = self.state.thread_signals.lock().altstack else {
-            return Ok((stack_pointer, None, true, false));
+    ) -> Result<(u64, Option<u64>, bool), reverie::syscalls::Errno> {
+        // A stack with no size, as exec or SS_DISABLE with SS_AUTODISARM
+        // leaves one, is disabled: Linux's sas_ss_flags reports SS_DISABLE
+        // for it, whatever its flags.
+        let Some(stack) = self
+            .state
+            .thread_signals
+            .lock()
+            .altstack
+            .filter(|stack| stack.size != 0)
+        else {
+            return Ok((stack_pointer, None, true));
         };
         if stack.contains(stack_pointer) {
             // Nested delivery stays on the alternate stack and preserves the
             // interrupted handler's red zone. The frame must not underflow the
             // configured lower bound even when adjacent memory is mapped.
-            return Ok((stack_pointer, Some(stack.sp), true, false));
+            return Ok((stack_pointer, Some(stack.sp), true));
         }
         if action.flags & libc::SA_ONSTACK as u64 == 0 {
-            return Ok((stack_pointer, None, true, false));
+            return Ok((stack_pointer, None, true));
         }
         let top = stack.sp.wrapping_add(stack.size);
         // Linux switches to the top of a fresh alternate stack after applying
         // the interrupted stack's red-zone adjustment, so no red zone is
         // subtracted from this new stack.
-        Ok((top, Some(stack.sp), false, stack.flags & SS_AUTODISARM != 0))
+        Ok((top, Some(stack.sp), false))
     }
 
-    pub fn enter_signal_handler(
-        &mut self,
-        pending: PendingSignal,
-        action: KernelSigaction,
-        autodisarm: bool,
-    ) {
+    pub fn enter_signal_handler(&mut self, pending: PendingSignal, action: KernelSigaction) {
         let transaction = self.state.signal_transaction.clone();
         let _transaction = transaction.lock().unwrap_or_else(|p| p.into_inner());
         let signal = pending.event.signal();
@@ -2225,7 +2248,14 @@ impl ElfExecutor {
         if action.flags & libc::SA_RESETHAND as u64 != 0 {
             process_signals.dispositions.remove(&signal);
         }
-        if autodisarm {
+        // Linux's signal_delivered disarms an SS_AUTODISARM stack after every
+        // delivery (sas_ss_reset), whichever stack the frame went on, so a
+        // handler that does not run on it finds it disabled too. The frame
+        // already saved the stack as it was.
+        if thread_signals
+            .altstack
+            .is_some_and(|stack| stack.flags & SS_AUTODISARM != 0)
+        {
             thread_signals.altstack = None;
         }
     }
@@ -3174,6 +3204,22 @@ fn signal_is_blocked(state: &LoadedStaticElf, signal: libc::c_int) -> bool {
     state.thread_signals.lock().blocked.contains(signal)
 }
 
+/// The alternate stack a thread holds when it has none: Linux's initial and
+/// reset state (`sas_ss_reset`), which `ThreadSignalState::altstack` stores as
+/// `None`.
+const DISABLED_ALTSTACK: GuestStack = GuestStack {
+    sp: 0,
+    flags: libc::SS_DISABLE,
+    size: 0,
+};
+
+/// The stack a thread holds after asking for `requested`, as Linux's
+/// `do_sigaltstack` (kernel/signal.c) decides it, in its order: EPERM while
+/// `current_stack_pointer` runs on the current stack; EINVAL unless the mode,
+/// the flags without SS_AUTODISARM, is 0, SS_ONSTACK or SS_DISABLE; no change
+/// for a request equal to the stack held; for SS_DISABLE, no address and size
+/// and the flags as given; otherwise ENOMEM below MINSIGSTKSZ bytes, else the
+/// request as given, flags included.
 fn validate_altstack_update(
     current: Option<GuestStack>,
     current_stack_pointer: Option<u64>,
@@ -3184,23 +3230,25 @@ fn validate_altstack_update(
     }) {
         return Err(negative_errno(libc::EPERM));
     }
-    let allowed_flags = libc::SS_DISABLE | SS_AUTODISARM;
-    let disabled = requested.flags & libc::SS_DISABLE != 0;
-    if requested.flags & !allowed_flags != 0 || disabled && requested.flags & SS_AUTODISARM != 0 {
-        // SS_ONSTACK is status-only and is never valid as input.
+    let mode = requested.flags & !SS_AUTODISARM;
+    if mode != 0 && mode != libc::SS_ONSTACK && mode != libc::SS_DISABLE {
         return Err(negative_errno(libc::EINVAL));
     }
-    if !disabled && requested.size < libc::MINSIGSTKSZ as u64 {
+    if requested == current.unwrap_or(DISABLED_ALTSTACK) {
+        return Ok(current);
+    }
+    if mode == libc::SS_DISABLE {
+        let disabled = GuestStack {
+            sp: 0,
+            size: 0,
+            ..requested
+        };
+        return Ok((disabled != DISABLED_ALTSTACK).then_some(disabled));
+    }
+    if requested.size < libc::MINSIGSTKSZ as u64 {
         return Err(negative_errno(libc::ENOMEM));
     }
-    Ok(if disabled {
-        None
-    } else {
-        Some(GuestStack {
-            flags: requested.flags & SS_AUTODISARM,
-            ..requested
-        })
-    })
+    Ok(Some(requested))
 }
 
 pub(super) fn sigaltstack(
@@ -3233,20 +3281,24 @@ pub(super) fn sigaltstack(
     }
     if args[1] != 0 {
         if let Some(mut previous) = previous {
-            if on_stack {
-                previous.flags |= libc::SS_ONSTACK;
-            }
+            // As Linux's do_sigaltstack reports it: sas_ss_flags (SS_DISABLE
+            // for a stack with no size, as exec or SS_DISABLE with
+            // SS_AUTODISARM leaves one, SS_ONSTACK while the caller runs on
+            // it) with the stored SS_AUTODISARM.
+            let status = if previous.size == 0 {
+                libc::SS_DISABLE
+            } else if on_stack {
+                libc::SS_ONSTACK
+            } else {
+                0
+            };
+            previous.flags = status | (previous.flags & SS_AUTODISARM);
             return write_bytes(&mut ProviderMemory(memory), args[1], &previous.encode());
         }
         return write_bytes(
             &mut ProviderMemory(memory),
             args[1],
-            &GuestStack {
-                sp: 0,
-                flags: libc::SS_DISABLE,
-                size: 0,
-            }
-            .encode(),
+            &DISABLED_ALTSTACK.encode(),
         );
     }
     0
