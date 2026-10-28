@@ -7139,7 +7139,10 @@ impl KvmBackend {
                         )
                         .await?
                     {
-                        UserBoundarySignal::Settled => {}
+                        // This boundary's own selection supersedes an earlier
+                        // deferred one, which must not select again at the
+                        // next loop top.
+                        UserBoundarySignal::Settled => signal_deferred = false,
                         UserBoundarySignal::Deferred => signal_deferred = true,
                         UserBoundarySignal::Finished(exit) => return Ok(exit),
                     }
