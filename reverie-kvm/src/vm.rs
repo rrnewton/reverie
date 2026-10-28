@@ -5729,6 +5729,13 @@ impl KvmBackend {
                 handler,
             )?;
         }
+        // The frame holds the interrupted FPU state. As Linux's handle_signal
+        // does with fpu__clear_user_states, the handler then starts in the
+        // initial state; rt_sigreturn restores the frame's. Every delivery
+        // point builds its frame here.
+        // SAFETY: the fixed KVM CPUID policy limits the vCPU's XSAVE state to
+        // the x87, SSE and YMM components, which kvm_xsave holds.
+        unsafe { self.vcpu.set_xsave(&XsaveImage::initialized_kvm())? };
         executor.enter_signal_handler(pending, action, autodisarm);
         Ok(true)
     }
@@ -13291,3 +13298,7 @@ mod group_exit_order_tests;
 #[cfg(test)]
 #[path = "vm/group_exit_injection_loop_tests.rs"]
 mod group_exit_injection_loop_tests;
+
+#[cfg(test)]
+#[path = "vm/initial_fpu_state_tests.rs"]
+mod initial_fpu_state_tests;
