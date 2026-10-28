@@ -207,8 +207,14 @@ impl Callback {
     pub(crate) fn new(image: u64) -> Self {
         let pid = actual_pid(libc::SYS_getpid);
         let tid = actual_pid(libc::SYS_gettid);
-        let identity =
-            unsafe { NativeThreadIdentity::from_admitted(pid, tid, pid, tid, image).unwrap() };
+        Self::with_tool_identity(image, pid, tid)
+    }
+    pub(crate) fn with_tool_identity(image: u64, tool_pid: Pid, tool_tid: Pid) -> Self {
+        let pid = actual_pid(libc::SYS_getpid);
+        let tid = actual_pid(libc::SYS_gettid);
+        let identity = unsafe {
+            NativeThreadIdentity::from_admitted(pid, tid, tool_pid, tool_tid, image).unwrap()
+        };
         let mut regs: libc::user_regs_struct = unsafe { std::mem::zeroed() };
         regs.rip = 0x1234;
         Self {

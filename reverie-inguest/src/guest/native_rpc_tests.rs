@@ -256,3 +256,73 @@ fn native_rpc_wrong_current_owner_refuses_before_descriptor_or_request() {
     );
     assert!(server.global.seen.lock().unwrap().is_empty());
 }
+
+#[test]
+fn native_local_rpc_awaits_the_real_global_without_socket_or_sync_fallback() {
+    let global = Arc::new(Remote::default());
+    let (entered, receiving) = std::sync::mpsc::channel();
+    *global.first_pending.lock().unwrap() = Some(entered);
+    let config = Arc::new(71);
+    let owner = Arc::new(NativeRpc::local(Arc::clone(&global), Arc::clone(&config)));
+    let worker_owner = Arc::clone(&owner);
+    let worker = std::thread::spawn(move || {
+        let callback = Callback::new(1);
+        worker_owner.prepare(callback.invocation()).unwrap();
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let answer = runtime.block_on(
+            worker_owner
+                .application(callback.invocation())
+                .send_rpc(Request(100)),
+        );
+        assert_eq!(answer, Reply(callback.identity().tid().as_raw(), 100));
+        assert!(callback.calls.lock().unwrap().is_empty());
+    });
+    receiving
+        .recv_timeout(std::time::Duration::from_secs(5))
+        .unwrap();
+    let callback = Callback::new(1);
+    let application = owner.application(callback.invocation());
+    assert!(matches!(
+        application.try_send_rpc_sync(Request(17)),
+        Err(Request(17))
+    ));
+    assert!(application.exchange(Request(18)).is_err());
+    assert_eq!(
+        crate::tool_host::drive_native_ready(application.send_rpc(Request(101))),
+        Reply(callback.identity().tid().as_raw(), 101)
+    );
+    worker.join().unwrap();
+    assert!(Arc::ptr_eq(owner.shared_config(), &config));
+    assert_eq!(owner.descriptor(callback.identity().physical_pid()), None);
+    assert!(
+        owner
+            .borrow_mapping_capture_primary(callback.identity().physical_pid())
+            .is_err()
+    );
+    assert!(callback.calls.lock().unwrap().is_empty());
+    assert_eq!(
+        global
+            .seen
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|(_, n)| *n)
+            .collect::<Vec<_>>(),
+        [100, 101]
+    );
+    let background =
+        unsafe { NativeBackgroundRpc::local_from_admitted(Arc::clone(&global), config) };
+    let view = background.for_thread(callback.identity().tid()).unwrap();
+    assert!(matches!(
+        view.try_send_rpc_sync(Request(19)),
+        Err(Request(19))
+    ));
+    assert!(view.exchange(Request(20)).is_err());
+    assert_eq!(
+        crate::tool_host::drive_native_ready(view.send_rpc(Request(21))),
+        Reply(callback.identity().tid().as_raw(), 21)
+    );
+}
