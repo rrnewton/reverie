@@ -78,6 +78,138 @@ pub(super) fn flock_refusal(
     })
 }
 
+/// Diagnostic carried by this backend's typed refusal of a clone that would
+/// make a new process sharing its parent's memory.
+pub(crate) const SHARED_MEMORY_PROCESS_REFUSAL: &str =
+    "KVM cannot create a process that shares its parent's memory: CLONE_VM without CLONE_VFORK";
+
+/// Diagnostic carried by this backend's typed refusal of a clone that would
+/// make a thread with a working directory or descriptor table of its own.
+pub(crate) const UNSHARED_THREAD_REFUSAL: &str = "KVM cannot create a thread with a working \
+     directory or descriptor table of its own: CLONE_THREAD without CLONE_FS or CLONE_FILES";
+
+/// Why this backend refuses a clone's flags: the errno it answers with, and,
+/// where Linux allows the sharing the flags ask for but this backend cannot
+/// give it to the child, the diagnostic of the typed refusal the answer
+/// carries (`UnsupportedOperation::CloneSharing`).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) struct CloneFlagsRefused {
+    errno: libc::c_int,
+    sharing: Option<&'static str>,
+}
+
+impl CloneFlagsRefused {
+    /// Refused with `errno`, an answer Linux also gives for such flags or
+    /// one that carries no typed refusal.
+    pub(super) const fn errno(errno: libc::c_int) -> Self {
+        Self {
+            errno,
+            sharing: None,
+        }
+    }
+
+    /// Refused with `errno` for sharing Linux allows and this backend cannot
+    /// give the child, which `diagnostic` names.
+    pub(super) const fn sharing(errno: libc::c_int, diagnostic: &'static str) -> Self {
+        Self {
+            errno,
+            sharing: Some(diagnostic),
+        }
+    }
+
+    /// The clone's answer.
+    pub(super) const fn result(self) -> i64 {
+        negative_errno(self.errno)
+    }
+
+    /// The typed refusal the answer carries, if any.
+    pub(super) fn refusal(self) -> Option<reverie::UnsupportedRefusal> {
+        self.sharing.map(|diagnostic| {
+            reverie::UnsupportedRefusal::new(
+                reverie::UnsupportedOperation::CloneSharing,
+                reverie::Errno::new(self.errno),
+                diagnostic,
+            )
+        })
+    }
+}
+
+/// Diagnostic carried by this backend's typed refusal of the protection-key
+/// calls.
+pub(crate) const PROTECTION_KEY_REFUSAL: &str =
+    "KVM does not implement memory protection keys (pkey_alloc, pkey_mprotect, pkey_free)";
+
+/// The typed refusal, if any, that a `pkey_alloc`, `pkey_mprotect` or
+/// `pkey_free` result carries. This executor forwards none of them and
+/// answers each with ENOSYS before any effect, so every ENOSYS answer to one
+/// is its own refusal; every other result carries none.
+pub(super) fn protection_key_refusal(
+    request: &SyscallRequest,
+    result: i64,
+) -> Option<reverie::UnsupportedRefusal> {
+    (matches!(
+        request.number(),
+        n if n == libc::SYS_pkey_alloc as u64
+            || n == libc::SYS_pkey_mprotect as u64
+            || n == libc::SYS_pkey_free as u64
+    ) && result == negative_errno(libc::ENOSYS))
+    .then(|| {
+        reverie::UnsupportedRefusal::new(
+            reverie::UnsupportedOperation::ProtectionKeys,
+            reverie::Errno::ENOSYS,
+            PROTECTION_KEY_REFUSAL,
+        )
+    })
+}
+
+/// Diagnostic carried by this backend's typed refusal of `userfaultfd`.
+pub(crate) const USERFAULTFD_REFUSAL: &str = "KVM does not implement userfaultfd";
+
+/// The typed refusal, if any, that a `userfaultfd` result carries. This
+/// executor does not forward it and answers it with ENOSYS before any
+/// effect, so every ENOSYS answer is its own refusal; every other result
+/// carries none.
+pub(super) fn userfaultfd_refusal(
+    request: &SyscallRequest,
+    result: i64,
+) -> Option<reverie::UnsupportedRefusal> {
+    (request.number() == libc::SYS_userfaultfd as u64 && result == negative_errno(libc::ENOSYS))
+        .then(|| {
+            reverie::UnsupportedRefusal::new(
+                reverie::UnsupportedOperation::Userfaultfd,
+                reverie::Errno::ENOSYS,
+                USERFAULTFD_REFUSAL,
+            )
+        })
+}
+
+/// Diagnostic carried by this backend's typed refusal of a masked `ppoll`
+/// that would wait.
+pub(crate) const MASKED_PPOLL_REFUSAL: &str = "KVM does not wait in a ppoll with a temporary \
+     signal mask: nothing was ready, and the mask cannot stay in place across a wait";
+
+/// The typed refusal, if any, that a `ppoll` result carries. This executor
+/// answers a ppoll that names a signal mask with ENOSYS exactly when nothing
+/// is ready, before it waits, installs the mask or dequeues a signal (see
+/// `poll::ppoll`), and Linux's ppoll never fails with ENOSYS, so every ENOSYS
+/// answer to a masked one is this backend's own refusal; every other result
+/// carries none.
+pub(super) fn masked_wait_refusal(
+    request: &SyscallRequest,
+    result: i64,
+) -> Option<reverie::UnsupportedRefusal> {
+    (request.number() == libc::SYS_ppoll as u64
+        && request.args()[3] != 0
+        && result == negative_errno(libc::ENOSYS))
+    .then(|| {
+        reverie::UnsupportedRefusal::new(
+            reverie::UnsupportedOperation::MaskedWait,
+            reverie::Errno::ENOSYS,
+            MASKED_PPOLL_REFUSAL,
+        )
+    })
+}
+
 /// The typed refusal for a signal syscall the backend refused (`reason`, set
 /// by `refuse_signal`) when it answered ENOSYS. Linux's signal syscalls
 /// never return ENOSYS, so the answer cannot be mistaken for a kernel one.

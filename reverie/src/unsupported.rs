@@ -84,6 +84,27 @@ pub enum UnsupportedOperation {
     /// signal, created nothing and registered nothing; the refusal's
     /// diagnostic names the operation.
     Signalfd,
+    /// `clone` or `clone3` asking for sharing that Linux allows and the
+    /// backend cannot give the child: `CLONE_VM` for a new process without
+    /// `CLONE_VFORK`, a process that goes on sharing its parent's memory
+    /// after the call returns; or `CLONE_THREAD` without `CLONE_FS` or
+    /// without `CLONE_FILES`, a thread with a working directory, root and
+    /// umask, or a descriptor table, of its own. A backend that refuses one
+    /// created no child and the caller runs on unchanged; the refusal's
+    /// diagnostic names the case.
+    CloneSharing,
+    /// `pkey_alloc`, `pkey_mprotect` or `pkey_free`, on a backend that does
+    /// not implement memory protection keys. A backend that refuses one
+    /// allocated, applied and freed no key and changed no mapping.
+    ProtectionKeys,
+    /// `userfaultfd(2)`, on a backend that does not implement it. A backend
+    /// that refuses it created no descriptor.
+    Userfaultfd,
+    /// A `ppoll` with a temporary signal mask that would wait, nothing being
+    /// ready, on a backend that cannot keep a temporary mask in place across
+    /// a wait. A backend that refuses it waited for nothing, installed no
+    /// mask and dequeued no signal.
+    MaskedWait,
 }
 
 /// A backend's refusal of an injected syscall, or of a `Guest` operation,
