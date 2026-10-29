@@ -463,6 +463,7 @@ pub fn native_loaded_state(cwd: &std::path::Path) -> LoadedStaticElf {
     LoadedStaticElf {
         entry_point: 0,
         stack_pointer: 0,
+        stack_executable: false,
         heap_base: BOOT_RESERVED_END,
         min_break: BOOT_RESERVED_END,
         program_break: BOOT_RESERVED_END,

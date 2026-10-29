@@ -1083,8 +1083,8 @@ const CONTENT_REVERIE_CATALOG: [(&str, u64, &str); 77] = [
     ),
     (
         "reverie/src/guest.rs",
-        78346,
-        "dfc009d75db709661f898eefa39dfbedde190d9f91b60552bbdcafcd74c85749",
+        81497,
+        "bfeab1970fdfeb9853cbf15299ce009b9e611e53382188e5285b578504efa156",
     ),
     (
         "reverie/src/pidfd_self.rs",

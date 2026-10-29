@@ -621,9 +621,9 @@ pub(crate) struct ToolContext<'a, T: Tool> {
 /// the two injection admission checks, the traced-parent query behind
 /// `Guest::ppid`, the descriptor fact behind `Guest::descriptor_status`, the
 /// signal fact behind `Guest::signal_sets`, the link fact behind
-/// `Guest::link_path`, and the completion of process actions. The trait is
-/// generic over the Tool only because `complete_injection` starts child Tool
-/// instances.
+/// `Guest::link_path`, the map fact behind `Guest::memory_map`, and the
+/// completion of process actions. The trait is generic over the Tool only
+/// because `complete_injection` starts child Tool instances.
 trait GuestSyscallExecutor<T: Tool>:
     LinuxProvider<Context = GuestMemory, Plan = StagedProcessAction, Error = Error>
     + LinuxEmuSignalControl
@@ -741,6 +741,13 @@ trait GuestSyscallExecutor<T: Tool>:
         _tid: Pid,
         _link: reverie::PathLink,
     ) -> std::result::Result<reverie::LinkPath, reverie::FactError> {
+        Err(reverie::FactError::NotProvided)
+    }
+
+    /// The issuing task's `Guest::memory_map(tid)`. An adapter whose provider
+    /// keeps no record of the address space, such as a caller-supplied
+    /// executor, does not provide it.
+    fn memory_map(&self, _tid: Pid) -> std::result::Result<reverie::MemoryMap, reverie::FactError> {
         Err(reverie::FactError::NotProvided)
     }
 
@@ -1760,6 +1767,10 @@ where
         link: reverie::PathLink,
     ) -> std::result::Result<reverie::LinkPath, reverie::FactError> {
         self.executor.link_path(tid.as_raw(), link)
+    }
+
+    fn memory_map(&self, tid: Pid) -> std::result::Result<reverie::MemoryMap, reverie::FactError> {
+        self.executor.memory_map(&self.memory, tid.as_raw())
     }
 
     fn ordinary_injection_allowed(&self, request: &SyscallRequest) -> bool {
@@ -2936,6 +2947,16 @@ impl<T: Tool> Guest<T> for KvmGuest<'_, T> {
         // image and working directory handles, for the asking thread's
         // process; its limits are documented on the executor's facts module.
         self.executor.link_path(tid, link)
+    }
+
+    fn memory_map(&self, tid: Pid) -> std::result::Result<reverie::MemoryMap, reverie::FactError> {
+        // `pid()` is the host VMM process, whose `/proc/<pid>/maps` describes
+        // host addresses, and no host task has the guest's address space. The
+        // executor lists the mappings it can establish exactly (the stack,
+        // while nothing has changed the stack window) for the asking thread's
+        // process, and marks the list incomplete; its limits are documented
+        // on the executor's facts module.
+        self.executor.memory_map(tid)
     }
 }
 
@@ -10427,6 +10448,10 @@ mod signal_sets_tests;
 #[cfg(test)]
 #[path = "link_path_runtime_tests.rs"]
 mod link_path_tests;
+
+#[cfg(test)]
+#[path = "memory_map_runtime_tests.rs"]
+mod memory_map_tests;
 
 #[cfg(test)]
 mod callback_completion_tests;

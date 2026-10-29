@@ -1044,6 +1044,59 @@ pub(super) const MADVISE_KNOWN: [libc::c_int; 27] = [
     103, // MADV_GUARD_REMOVE
 ];
 
+/// Advice that never changes the flags Linux keeps on a mapping (`vm_flags`),
+/// so never splits a mapping or merges two: Linux acts on the pages
+/// (`madvise_vma_behavior` in `mm/madvise.c`) without `madvise_update_vma`.
+/// Every other advice this backend accepts (the access-pattern, KSM and
+/// huge-page advice) sets or clears such a flag on Linux, which this backend
+/// does not keep: [`madvise_flag_change`] names its range.
+pub(super) const MADVISE_KEEPS_MAPPING_FLAGS: [libc::c_int; 5] = [
+    libc::MADV_WILLNEED,
+    libc::MADV_DONTNEED,
+    libc::MADV_FREE,
+    libc::MADV_COLD,
+    libc::MADV_PAGEOUT,
+];
+
+/// Linux's argument checks for madvise(2) (mm/madvise.c): an advice outside
+/// [`MADVISE_KNOWN`] is EINVAL, the start must be page aligned, the length is
+/// rounded up to whole pages, and a length that rounds to zero or a range
+/// that wraps is EINVAL. `Err` holds the refusal, `Ok(None)` stands for a zero
+/// length, which succeeds, and otherwise the advice and the rounded range.
+fn madvise_arguments(args: &[u64; 6]) -> Result<Option<(libc::c_int, u64, u64)>, i64> {
+    let advice = args[2] as libc::c_int;
+    if !MADVISE_KNOWN.contains(&advice) {
+        return Err(negative_errno(libc::EINVAL));
+    }
+    let start = args[0];
+    if !start.is_multiple_of(PAGE_SIZE) {
+        return Err(negative_errno(libc::EINVAL));
+    }
+    let length = args[1].wrapping_add(PAGE_SIZE - 1) & !(PAGE_SIZE - 1);
+    if args[1] != 0 && length == 0 {
+        return Err(negative_errno(libc::EINVAL));
+    }
+    if start.checked_add(length).is_none() {
+        return Err(negative_errno(libc::EINVAL));
+    }
+    if length == 0 {
+        return Ok(None);
+    }
+    Ok(Some((advice, start, length)))
+}
+
+/// The range, rounded as Linux rounds it, of a madvise(2) call that this
+/// backend accepts as a hint and that changes the flags Linux keeps on the
+/// mappings it covers: advice outside [`MADVISE_KEEPS_MAPPING_FLAGS`] and
+/// [`MADVISE_UNIMPLEMENTED`], with arguments Linux accepts. Linux applies it
+/// to the mapped part of the range even when it reports a hole. `None` for
+/// any other call.
+pub(super) fn madvise_flag_change(args: &[u64; 6]) -> Option<(u64, u64)> {
+    let (advice, start, length) = madvise_arguments(args).ok().flatten()?;
+    (!MADVISE_UNIMPLEMENTED.contains(&advice) && !MADVISE_KEEPS_MAPPING_FLAGS.contains(&advice))
+        .then_some((start, length))
+}
+
 /// madvise(2). `MADV_DONTNEED` drops the range's private anonymous pages,
 /// which then read as zeros, and leaves shared pages (shared anonymous memory
 /// and shared file views) as they are, as Linux keeps their contents. A private
@@ -1061,26 +1114,11 @@ pub(super) const MADVISE_KNOWN: [libc::c_int; 27] = [
 /// aligned, the length is rounded up to whole pages, and a zero length
 /// succeeds.
 pub(super) fn madvise<M: AddressSpace>(memory: &M, args: &[u64; 6]) -> i64 {
-    let advice = args[2] as libc::c_int;
-    if !MADVISE_KNOWN.contains(&advice) {
-        return negative_errno(libc::EINVAL);
-    }
-    let start = args[0];
-    if !start.is_multiple_of(PAGE_SIZE) {
-        return negative_errno(libc::EINVAL);
-    }
-    // Linux rounds the length up to whole pages: a length that rounds to zero
-    // or a range that wraps is EINVAL, and a zero length succeeds.
-    let length = args[1].wrapping_add(PAGE_SIZE - 1) & !(PAGE_SIZE - 1);
-    if args[1] != 0 && length == 0 {
-        return negative_errno(libc::EINVAL);
-    }
-    if start.checked_add(length).is_none() {
-        return negative_errno(libc::EINVAL);
-    }
-    if length == 0 {
-        return 0;
-    }
+    let (advice, start, length) = match madvise_arguments(args) {
+        Ok(Some(call)) => call,
+        Ok(None) => return 0,
+        Err(error) => return error,
+    };
     if MADVISE_UNIMPLEMENTED.contains(&advice) {
         return negative_errno(libc::ENOSYS);
     }
@@ -1103,18 +1141,23 @@ pub(super) fn madvise<M: AddressSpace>(memory: &M, args: &[u64; 6]) -> i64 {
 
 // TODO-HUMAN-REVIEW(PR-145): Review flat guest-memory munlock validation semantics.
 pub(super) fn munlock_guest_range<M: AddressSpace>(memory: &M, address: u64, length: u64) -> i64 {
-    let page_start = address & !(PAGE_SIZE - 1);
-    let page_offset = address - page_start;
-    let page_length =
-        length.wrapping_add(page_offset).wrapping_add(PAGE_SIZE - 1) & !(PAGE_SIZE - 1);
-    let page_end = page_start.wrapping_add(page_length);
-    if page_end < page_start {
+    let Some((page_start, page_length)) = munlock_range(address, length) else {
         return negative_errno(libc::EINVAL);
-    }
+    };
     if page_length != 0 && !range_is_valid(memory, page_start, page_length) {
         return negative_errno(libc::ENOMEM);
     }
     0
+}
+
+/// The whole pages munlock(2) of `[address, address + length)` covers, as
+/// Linux rounds them (the start down, the end up), or `None` when they wrap.
+pub(super) fn munlock_range(address: u64, length: u64) -> Option<(u64, u64)> {
+    let page_start = address & !(PAGE_SIZE - 1);
+    let page_offset = address - page_start;
+    let page_length =
+        length.wrapping_add(page_offset).wrapping_add(PAGE_SIZE - 1) & !(PAGE_SIZE - 1);
+    (page_start.wrapping_add(page_length) >= page_start).then_some((page_start, page_length))
 }
 
 pub(super) fn mincore<M: GuestMemoryAccess<Error = crate::Error> + AddressSpace>(

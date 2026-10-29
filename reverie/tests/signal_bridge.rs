@@ -222,6 +222,21 @@ fn link_path_default_is_not_provided() {
     }
 }
 
+/// The same fake takes `Guest::memory_map`'s default: a backend that states
+/// nothing does not provide the fact, for any thread ID.
+#[test]
+fn memory_map_default_is_not_provided() {
+    let guest = TestGuest::default();
+    let own = <TestGuest as Guest<()>>::tid(&guest);
+    for tid in [own, Pid::from_raw(-1), Pid::from_raw(0), Pid::from_raw(1)] {
+        assert_eq!(
+            <TestGuest as Guest<()>>::memory_map(&guest, tid),
+            Err(reverie::FactError::NotProvided),
+            "tid {tid}"
+        );
+    }
+}
+
 struct LegacyTool {
     response: Option<Signal>,
     calls: AtomicUsize,
