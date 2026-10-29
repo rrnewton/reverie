@@ -190,6 +190,14 @@ impl AddressSpace for ProviderMemory<'_> {
         length: u64,
         protection: libc::c_int,
     ) -> std::result::Result<(), MapError> {
+        // The pages' states hold access and write only: a change to the read
+        // or execute permission Linux keeps on the mapping leaves them as they
+        // are, so the change is recorded here whether or not they change. It
+        // is recorded before any refusal below: Linux applies mprotect(2) one
+        // mapping at a time and keeps what it applied when it then fails
+        // (ENOMEM at a hole, EACCES at a mapping it may not change), where
+        // this refuses the whole range first.
+        self.0.note_user_mapping_change(address, length);
         let Some(address) = self.0.user_range_to_guest(address, length) else {
             return Err(MapError::Unaddressable);
         };
