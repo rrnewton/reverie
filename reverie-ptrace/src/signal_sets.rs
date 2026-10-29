@@ -39,13 +39,13 @@ use reverie::SignalSets;
 /// The most `status` text read for one thread. Its `Groups:` line lists
 /// every supplementary group, up to 65,536 of them, so the text has no small
 /// fixed bound; a longer one is not provided.
-const STATUS_LIMIT: u64 = 1024 * 1024;
+pub(crate) const STATUS_LIMIT: u64 = 1024 * 1024;
 
 /// What [`parse`] answers for text that is not Linux's `status` format.
 const MALFORMED: FactError = FactError::Errno(Errno::EIO);
 
 /// What a thread ID that names no live thread this session traces answers.
-const NO_THREAD: FactError = FactError::Errno(Errno::ESRCH);
+pub(crate) const NO_THREAD: FactError = FactError::Errno(Errno::ESRCH);
 
 /// Linux's `PID_MAX_LIMIT` on a 64-bit kernel (`include/linux/threads.h`):
 /// every task number is below it.
@@ -88,18 +88,18 @@ const FIELDS: [(&[u8], Field); 7] = [
 
 /// What [`parse`] reads of a thread's `status`.
 #[derive(Debug, PartialEq)]
-struct ThreadStatus {
+pub(crate) struct ThreadStatus {
     sets: SignalSets,
     /// The letter of the `State:` line.
     state: u8,
     /// The `TracerPid:` line: the task that traces the thread, 0 for none.
-    tracer: u32,
+    pub(crate) tracer: u32,
 }
 
 impl ThreadStatus {
     /// Whether the thread has exited, though its file is still there: a
     /// zombie (`Z`) or a task being released (`X`).
-    fn exited(&self) -> bool {
+    pub(crate) fn exited(&self) -> bool {
         matches!(self.state, b'Z' | b'X')
     }
 }
@@ -144,7 +144,7 @@ pub(crate) fn read<D: AsFd>(
 /// Opens `status` read-only in the task directory `directory`: the file of
 /// the task the directory was opened for, whatever task holds its number
 /// now. `ENOENT` once that task has been reaped.
-fn open_status(directory: BorrowedFd<'_>) -> std::io::Result<std::fs::File> {
+pub(crate) fn open_status(directory: BorrowedFd<'_>) -> std::io::Result<std::fs::File> {
     const STATUS: &CStr = c"status";
     // SAFETY: the directory descriptor is open for the call, and the name is
     // a NUL-terminated string.
@@ -163,7 +163,7 @@ fn open_status(directory: BorrowedFd<'_>) -> std::io::Result<std::fs::File> {
 }
 
 /// The whole of `file`, or `None` when it is longer than `limit` bytes.
-fn read_bounded(file: std::fs::File, limit: u64) -> std::io::Result<Option<Vec<u8>>> {
+pub(crate) fn read_bounded(file: std::fs::File, limit: u64) -> std::io::Result<Option<Vec<u8>>> {
     let mut text = Vec::new();
     file.take(limit + 1).read_to_end(&mut text)?;
     Ok((text.len() as u64 <= limit).then_some(text))
@@ -174,7 +174,7 @@ fn read_bounded(file: std::fs::File, limit: u64) -> std::io::Result<Option<Vec<u
 /// `ESRCH` at the read for a task released since the open; both mean that
 /// the task no longer lives. Any other error is the kernel's answer to the
 /// tracer's read.
-fn read_errno(error: &std::io::Error) -> Errno {
+pub(crate) fn read_errno(error: &std::io::Error) -> Errno {
     match error.raw_os_error() {
         Some(libc::ENOENT | libc::ESRCH) => Errno::ESRCH,
         Some(errno) => Errno::new(errno),
@@ -194,7 +194,7 @@ fn read_errno(error: &std::io::Error) -> Errno {
 /// digits (`render_sigset_t`, `hex_asc`); there is no `SIGKILL` or `SIGSTOP`
 /// in the mask, ignored or caught sets, and no signal both ignored and
 /// caught. Lines with other keys are skipped.
-fn parse(text: &[u8]) -> Result<ThreadStatus, FactError> {
+pub(crate) fn parse(text: &[u8]) -> Result<ThreadStatus, FactError> {
     let body = text.strip_suffix(b"\n").ok_or(MALFORMED)?;
     let mut state = None;
     let mut tracer = None;

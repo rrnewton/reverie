@@ -601,6 +601,29 @@ and refuses an `rt_sigsuspend` that would wait), a thread waiting in one of
 those calls shows its own mask, where Linux shows the call's mask, or for
 `rt_sigtimedwait` the thread's mask without the signals it waits for.
 
+`Guest::link_path` answers with the name Linux's `readlink(2)` gives a thread's
+`fd/<fd>`, `exe` or `cwd` link, from the executor's own state: for a guest
+descriptor backed by a host descriptor of the same open file description, the
+host kernel's name for that description (a file's path, with ` (deleted)` once
+it is unlinked, or an object's name such as `pipe:[<inode>]`), read while the
+descriptor table is locked and without opening or closing anything of the file;
+and the names of the executor's own handles of the process's image and the
+thread's working directory, walked at the call. Captured standard output and
+error, and descriptors the guest made of them, are named as the pipes their
+`fstat` describes, and a signalfd as `anon_inode:[signalfd]`. Objects the
+executor keeps itself are not provided, judged as for `Guest::descriptor_status`:
+the executor's own memfds (such as synthetic `/proc` files, where Linux names
+the `/proc` file), and with captured output the supervisor's standard output
+and error however the guest holds them. A closed descriptor is `EBADF`, and a
+thread ID that names no live thread of the run is `ESRCH`. The executor keeps a
+process's descriptor table, image and each thread's working directory in that
+process's own executors, so the fact answers for the asking thread's process
+only: the descriptor table and the image for any live thread of it, and the
+working directory for the asking thread alone, since the executor keeps one per
+thread where Linux shares it between threads created with `CLONE_FS`. A live
+thread of another process, and another thread's working directory, are not
+provided, where Linux shows them to a reader it lets read them.
+
 A Tool can reserve one empty host directory on a read-only file system for its
 own use (`KvmBackend::reserve_tool_directory`): the executor hides it from the
 guest, answering `ENOENT` for every route to it but an `O_DIRECTORY` open or a
