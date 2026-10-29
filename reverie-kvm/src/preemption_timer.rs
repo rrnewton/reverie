@@ -278,10 +278,33 @@
 //!   (late, if it is precise).
 //! - Nothing refuses a PREEMPT_RT kernel or nested virtualization, where the
 //!   kick's latency has not been measured.
-//! - A precise request is late when the PMU interrupt behind its last kick
-//!   comes after the margin, from the hardware's interrupt latency: at the
-//!   2,000 RCB margin on an EPYC 9D85, about one kick in a thousand on an
-//!   idle host, and up to about one in a hundred on a busy one.
+//! - A precise request is late when the last kick before its stepping window
+//!   comes past the target. On an EPYC 9D85 a kick's exit now and then comes
+//!   tens of microseconds after its overflow point while the guest runs on, and
+//!   more often the longer the guest ran before it. The supported hypothesis is
+//!   that the host holds the PMU interrupt behind the kick (it can hold one
+//!   across several exits, see above), and that a hold is likelier the longer
+//!   the guest has run since the kick was programmed, at the entry after the
+//!   previous exit. That is not established: the measurements see the overflow
+//!   point the backend programmed, the clock read at the exit and the drained
+//!   kick, not the hardware overflow or the interrupt, and they cannot tell the
+//!   time since the last exit from the time since the programming. In one
+//!   experiment on one host, at a load average of 41 to 48 with eight guests at
+//!   a time (a two-thread spinner whose Tool requests a precise event every
+//!   20,000,000 RCBs), kicks more than 2,000 RCBs late numbered 5 in 10,000
+//!   after about 1.5 microseconds of running, 19 in 10,000 after about 43, and
+//!   23 in 10,000 after a whole request. A staged request's first stage kick
+//!   follows the guest's whole run, and one more than the first stage margin of
+//!   10,000 RCBs late makes the request late (13 of the 14 measured were 21,000
+//!   to 92,000 RCBs late); its second stage kick comes a few thousand RCBs
+//!   after the first stage's exit and was rarely late. In that experiment,
+//!   programming the first stage farther short of the target did not reduce
+//!   late requests: the second stage's run grew with it, and its kick came late
+//!   about as often. In 7,900 events per first stage margin, margins of 10,000,
+//!   32,768, 131,072 and 524,288 RCBs left 15, 12, 11 and 13 requests late, 14,
+//!   8, 1 and 0 of them by the first stage's kick. The cause, and what to do
+//!   about these late requests, are open:
+//!   <https://github.com/rrnewton/reverie/issues/1214>.
 //! - Every other instruction in the stepping window is a step of its own,
 //!   with no block steps yet. In a release build a step costs about 3.3
 //!   microseconds under following placement, and about 17 under pinned
