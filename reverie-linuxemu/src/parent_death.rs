@@ -199,6 +199,27 @@ impl TaskLifecycleTable {
         Ok(())
     }
 
+    /// Whether an exec by another thread of this task's process froze the
+    /// death of this still-live task (`prepare_parent_death_exec`) while no
+    /// group exit has committed for the process. Only an exec can: a group
+    /// exit's death set commits the group exit, and a thread's own death set
+    /// removes the thread, each under the same lifecycle lock as the freeze.
+    /// An exited task, or another generation of its tid, is not this task.
+    pub(crate) fn exec_froze_live_task(&self, task: SignalTaskIdentity) -> bool {
+        let Some(&live) = self.tasks.get(&task.tid.as_raw()) else {
+            return false;
+        };
+        identity(task.tid.as_raw(), live) == task
+            && self
+                .parent_death
+                .dead
+                .contains(&(task.tid.as_raw(), task.task_generation))
+            && self
+                .process_exits
+                .get(&(live.tgid, live.process_generation))
+                .is_none_or(|exit| exit.group.is_none())
+    }
+
     pub(crate) fn parent_death_enrolled(&self, process: SignalProcessId) -> bool {
         self.parent_death
             .enrolled

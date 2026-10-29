@@ -1009,8 +1009,15 @@ impl SignalFrameLayout {
         })
     }
 
+    /// Whether the frame lies on an alternate stack whose base is
+    /// `lower_bound`. Linux's get_sigframe refuses a frame on, or switched
+    /// to, the alternate stack unless `__on_sig_stack` holds for it, which
+    /// for a stack that grows down means strictly above the base: the stack
+    /// is (base, base + size]
+    /// (<https://github.com/gregkh/linux/blob/v7.1.3/arch/x86/kernel/signal.c#L150-L158>,
+    /// <https://github.com/gregkh/linux/blob/v7.1.3/include/linux/sched/signal.h#L574-L583>).
     pub fn fits_above(self, lower_bound: u64) -> bool {
-        self.frame_address >= lower_bound
+        self.frame_address > lower_bound
     }
 }
 
@@ -1461,15 +1468,23 @@ mod tests {
         );
         assert!(fresh.xsave_address + XSAVE_SIGNAL_SIZE as u64 <= stack_top);
 
-        let exact_lower_bound = fresh.frame_address;
-        assert!(fresh.fits_above(exact_lower_bound));
+        // Linux's __on_sig_stack puts a stack's base outside it: a frame fits
+        // on an alternate stack only strictly above its base, so the lowest
+        // base that holds the frame is one byte below it.
+        let lowest_base = fresh.frame_address - 1;
+        assert!(fresh.fits_above(lowest_base));
         assert!(
-            !fresh.fits_above(exact_lower_bound + 1),
+            !fresh.fits_above(fresh.frame_address),
+            "a frame that starts exactly at the alternate stack's base is off the stack",
+        );
+        assert!(
+            !fresh.fits_above(fresh.frame_address + 1),
             "one-byte alternate-stack underflow must be rejected even when adjacent memory is mapped",
         );
         let nested = SignalFrameLayout::below(stack_top, true).unwrap();
         assert!(nested.frame_address < fresh.frame_address);
-        assert!(nested.fits_above(nested.frame_address));
+        assert!(nested.fits_above(nested.frame_address - 1));
+        assert!(!nested.fits_above(nested.frame_address));
         assert!(!nested.fits_above(nested.frame_address + 1));
     }
 

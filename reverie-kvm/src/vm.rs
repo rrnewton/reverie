@@ -6560,7 +6560,44 @@ impl KvmBackend {
         self.thread_group.exit_status()
     }
 
+    /// Whether this thread must select no more signals: its thread group has
+    /// begun to exit, as this backend published it or as LinuxEmu committed
+    /// it, or the group cancelled this worker (a group exit, the root's exec,
+    /// or a peer's failure). Linux's get_signal takes a group exit, or
+    /// another thread's exec, before every dequeue (SIGNAL_GROUP_EXIT and
+    /// group_exec_task, at the top of its loop). A group exit that LinuxEmu
+    /// has committed and this backend has yet to publish (the exiting thread
+    /// publishes it only after its own bookkeeping) is published here, see
+    /// [`Self::publish_committed_group_exit`].
+    pub(crate) fn guest_thread_takes_no_signal(&self, executor: &ElfExecutor) -> bool {
+        if self.guest_thread_group_exit_status().is_some() || self.guest_thread_is_cancelled() {
+            return true;
+        }
+        match executor.committed_group_exit_status() {
+            Some(status) => {
+                self.publish_committed_group_exit(status);
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Publishes a group exit that LinuxEmu has committed, which this thread
+    /// found before the exiting thread published it. The run loop checks the
+    /// published exit at the top of each iteration, before any entry into the
+    /// guest, so a thread that found the commit ends there and runs no
+    /// further guest instruction, as Linux's get_signal takes a group exit at
+    /// the next return to user mode. The status is the committed winner,
+    /// which the exiting thread then publishes again.
+    pub(crate) fn publish_committed_group_exit(&self, status: ExitStatus) {
+        self.thread_group.request_exit_group(status);
+    }
+
     pub(crate) fn request_guest_thread_group_exit(&self, status: ExitStatus) {
+        #[cfg(test)]
+        group_exit_publication_gap::hold(self.is_guest_thread, || {
+            self.thread_group.exit_status().is_some()
+        });
         self.thread_group.request_exit_group(status);
     }
 
@@ -6588,6 +6625,8 @@ impl KvmBackend {
         mut stop: Pin<&mut (dyn Future<Output = ()> + Send + '_)>,
     ) -> Result<()> {
         self.thread_group.cancel_workers();
+        #[cfg(test)]
+        exec_cancellation_observation::cancelled();
         let watch = self.entry_driver_watch();
         watch.check()?;
         // Preserve the existing worker-Exec rejection in exec_process; a
@@ -13424,9 +13463,187 @@ static DELAY_AFTER_CLEAR_TID_WAKE_MS: std::sync::atomic::AtomicU64 =
 #[path = "vm/group_exit_order_tests.rs"]
 mod group_exit_order_tests;
 
+/// A test hold in the gap between a worker's committed group exit and its
+/// publication (`KvmBackend::request_guest_thread_group_exit`), process-wide,
+/// for the tests of what another thread does in that gap. Once armed, the
+/// first worker to publish a group exit waits there, before publishing it,
+/// until another thread has published it or a deadline passes.
+#[cfg(test)]
+pub(crate) mod group_exit_publication_gap {
+    use std::sync::atomic::AtomicBool;
+    use std::sync::atomic::Ordering;
+    use std::time::Duration;
+    use std::time::Instant;
+
+    static ARMED: AtomicBool = AtomicBool::new(false);
+    static HELD: AtomicBool = AtomicBool::new(false);
+    static RELEASED_BY_PUBLICATION: AtomicBool = AtomicBool::new(false);
+
+    /// How long a held worker waits for another thread's publication.
+    pub(crate) const DEADLINE: Duration = Duration::from_secs(3);
+
+    /// Arms the hold for the next worker that publishes a group exit.
+    pub(crate) fn arm() {
+        HELD.store(false, Ordering::SeqCst);
+        RELEASED_BY_PUBLICATION.store(false, Ordering::SeqCst);
+        ARMED.store(true, Ordering::SeqCst);
+    }
+
+    /// Holds the first worker to publish a group exit after [`arm`] until
+    /// another thread has published one (`published`) or [`DEADLINE`]
+    /// passes; every other caller passes through.
+    pub(crate) fn hold(is_worker: bool, published: impl Fn() -> bool) {
+        if !is_worker || !ARMED.swap(false, Ordering::SeqCst) {
+            return;
+        }
+        HELD.store(true, Ordering::SeqCst);
+        let deadline = Instant::now() + DEADLINE;
+        while !published() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        RELEASED_BY_PUBLICATION.store(published(), Ordering::SeqCst);
+    }
+
+    /// Waits until a worker is held in the gap, for at most `limit`.
+    pub(crate) fn wait_held(limit: Duration) -> bool {
+        let deadline = Instant::now() + limit;
+        while !HELD.load(Ordering::SeqCst) {
+            if Instant::now() >= deadline {
+                return false;
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        true
+    }
+
+    /// Whether the held worker found the exit published by another thread
+    /// before its deadline.
+    pub(crate) fn released_by_publication() -> bool {
+        RELEASED_BY_PUBLICATION.load(Ordering::SeqCst)
+    }
+
+    /// Whether a worker is held in the gap now, or was.
+    pub(crate) fn is_held() -> bool {
+        HELD.load(Ordering::SeqCst)
+    }
+}
+
+/// A test record of what the guarded signal selections found
+/// (`KvmBackend::filter_next_pending_signal_with_tool` and the parked
+/// observation's dequeue), process-wide, and a hold of a thread whose
+/// captured fault has reached its admission.
+#[cfg(test)]
+pub(crate) mod guarded_selection_observation {
+    use std::sync::Mutex;
+    use std::sync::atomic::AtomicBool;
+    use std::sync::atomic::Ordering;
+    use std::time::Duration;
+    use std::time::Instant;
+
+    /// Where a guarded selection found a committed group exit.
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    pub(crate) enum Site {
+        /// A boundary's dequeue, and whether a signal was then eligible.
+        Dequeue { eligible: bool },
+        /// A captured fault's admission.
+        FaultAdmission,
+        /// A parked syscall's signal observation.
+        ParkedObservation,
+    }
+
+    static FOUND: Mutex<Vec<Site>> = Mutex::new(Vec::new());
+    static FAULT_ADMISSIONS: Mutex<Vec<bool>> = Mutex::new(Vec::new());
+    static FAULT_HOLD_ARMED: AtomicBool = AtomicBool::new(false);
+    static FAULT_REACHED: AtomicBool = AtomicBool::new(false);
+
+    pub(crate) fn found_group_exit(site: Site) {
+        FOUND.lock().unwrap().push(site);
+    }
+
+    /// Every committed group exit a guarded selection found, in order.
+    pub(crate) fn found() -> Vec<Site> {
+        FOUND.lock().unwrap().clone()
+    }
+
+    pub(crate) fn fault_admitted(found_group_exit: bool) {
+        FAULT_ADMISSIONS.lock().unwrap().push(found_group_exit);
+    }
+
+    /// Every captured fault's admission, in order: whether it found a
+    /// committed group exit.
+    pub(crate) fn fault_admissions() -> Vec<bool> {
+        FAULT_ADMISSIONS.lock().unwrap().clone()
+    }
+
+    /// Arms the hold for the next captured fault to reach its admission.
+    pub(crate) fn arm_fault_hold() {
+        FAULT_REACHED.store(false, Ordering::SeqCst);
+        FAULT_HOLD_ARMED.store(true, Ordering::SeqCst);
+    }
+
+    /// Holds the first captured fault to reach its admission after
+    /// [`arm_fault_hold`] until `release` holds or the publication gap's
+    /// deadline passes; every other fault passes through.
+    pub(crate) fn hold_fault(release: impl Fn() -> bool) {
+        if !FAULT_HOLD_ARMED.swap(false, Ordering::SeqCst) {
+            return;
+        }
+        FAULT_REACHED.store(true, Ordering::SeqCst);
+        let deadline = Instant::now() + super::group_exit_publication_gap::DEADLINE;
+        while !release() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    }
+
+    /// Waits until a captured fault is held at its admission, for at most
+    /// `limit`.
+    pub(crate) fn wait_fault_reached(limit: Duration) -> bool {
+        let deadline = Instant::now() + limit;
+        while !FAULT_REACHED.load(Ordering::SeqCst) {
+            if Instant::now() >= deadline {
+                return false;
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        true
+    }
+}
+
+/// A test observation of an exec's cancellation of its sibling workers
+/// (`KvmBackend::cancel_guest_threads_for_exec`), process-wide.
+#[cfg(test)]
+pub(crate) mod exec_cancellation_observation {
+    use std::sync::atomic::AtomicBool;
+    use std::sync::atomic::Ordering;
+    use std::time::Duration;
+    use std::time::Instant;
+
+    static CANCELLED: AtomicBool = AtomicBool::new(false);
+
+    pub(crate) fn cancelled() {
+        CANCELLED.store(true, Ordering::SeqCst);
+    }
+
+    /// Waits until an exec has cancelled its workers, for at most `limit`.
+    pub(crate) fn wait_cancelled(limit: Duration) -> bool {
+        let deadline = Instant::now() + limit;
+        while !CANCELLED.load(Ordering::SeqCst) {
+            if Instant::now() >= deadline {
+                return false;
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        true
+    }
+}
+
 #[cfg(test)]
 #[path = "vm/group_exit_injection_loop_tests.rs"]
 mod group_exit_injection_loop_tests;
+
+#[cfg(test)]
+#[path = "vm/group_exit_gap_tests.rs"]
+mod group_exit_gap_tests;
 
 #[cfg(test)]
 #[path = "vm/initial_fpu_state_tests.rs"]
