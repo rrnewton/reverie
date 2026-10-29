@@ -279,6 +279,34 @@ pub(crate) static KEPT_PROGRAMMINGS_CHANGED_EVENTS: std::sync::Mutex<Vec<KeptPro
 /// How many checks [`KEPT_PROGRAMMINGS_CHANGED_EVENTS`] keeps.
 const KEPT_PROGRAMMINGS_CHANGED_KEPT: usize = 1024;
 
+/// Successful re-arms of lost halved notifications at disregarded guest
+/// stops, for tests. These change the programming and are not unchanged
+/// keeps counted by [`KEPT_PROGRAMMINGS_CHECKED`].
+pub(crate) static HALVED_REARMS_AT_DISREGARDED_STOPS: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+
+/// The first 1024 re-arms counted by [`HALVED_REARMS_AT_DISREGARDED_STOPS`]
+/// since the list was last taken. Tests must compare the total with the list
+/// length rather than accept a truncated list as complete.
+pub(crate) static HALVED_REARMS_AT_DISREGARDED_STOPS_EVENTS: std::sync::Mutex<
+    Vec<HalvedTimerRearm>,
+> = std::sync::Mutex::new(Vec::new());
+
+/// A lost halved notification successfully re-armed at a disregarded guest
+/// stop, rather than at its own PMU-notification stop. The event keeps its
+/// original target and instruction offset; only its programming changes.
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub struct HalvedTimerRearm {
+    /// The guest thread whose disregarded stop re-armed the event.
+    pub guest_tid: Tid,
+    /// The original absolute target clock of the precise event.
+    pub clock_target: u64,
+    /// The event's original instruction offset past its target branch.
+    pub offset: u64,
+    /// The guest's clock at the stop that successfully re-armed the event.
+    pub clock: u64,
+}
+
 /// What a check of a kept event's programming found (see
 /// `TimerImpl::check_kept_programming` and
 /// `TimerImpl::recheck_kept_programming`). The programming is unchanged
@@ -793,9 +821,9 @@ impl Timer {
     /// passed its period and every stop during the single steps, cancels the
     /// event as any stop does, and returns `None`.
     ///
-    /// A stop that keeps a scheduled event leaves its PMU programming as the
-    /// request made it, so that the notification still comes a skid margin
-    /// before the target. Once a test has called
+    /// A stop that keeps a scheduled event without re-arming a lost halved
+    /// notification leaves its PMU programming as the request made it. Once
+    /// a test has called
     /// [`crate::testing::check_kept_timer_programming`], and always in this
     /// crate's unit tests, each such stop checks and counts that (see
     /// [`TimerImpl::check_kept_programming`]), and, if it hands nothing on,
@@ -2459,6 +2487,26 @@ impl TimerImpl {
         {
             let clock = self.read_clock();
             if self.rearm_halved(halved, clock)? {
+                if kept_programming_checks()
+                    && let ActiveEvent::Precise {
+                        clock_target,
+                        offset,
+                    } = self.event
+                {
+                    HALVED_REARMS_AT_DISREGARDED_STOPS
+                        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    let mut events = HALVED_REARMS_AT_DISREGARDED_STOPS_EVENTS
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner());
+                    if events.len() < 1024 {
+                        events.push(HalvedTimerRearm {
+                            guest_tid: self.guest_tid,
+                            clock_target,
+                            offset,
+                            clock,
+                        });
+                    }
+                }
                 return Ok(None);
             }
         }
@@ -4086,6 +4134,16 @@ mod tests {
     #[cfg(target_arch = "x86_64")]
     use super::PmuConfig;
 
+    fn halved_rearms_for(guest_tid: reverie::Tid) -> Vec<super::HalvedTimerRearm> {
+        super::HALVED_REARMS_AT_DISREGARDED_STOPS_EVENTS
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .iter()
+            .filter(|event| event.guest_tid == guest_tid)
+            .copied()
+            .collect()
+    }
+
     /// The controller's marker reads as its own PID in a shared PID
     /// namespace, as 0 from a descendant one, and as its own PID on a kernel
     /// without PID namespaces, which has only one.
@@ -4901,6 +4959,7 @@ mod tests {
                 eprintln!("skipping: no notification is halved under a skid margin override");
                 return;
             }
+            let rearms_before = halved_rearms_for(guest.tid).len();
             timer
                 .request_event(TimerEventRequest::Precise(ticks))
                 .unwrap();
@@ -4908,6 +4967,11 @@ mod tests {
                 panic!("a precise event")
             };
             assert_eq!(timer.halved.is_some(), halve);
+            assert_eq!(
+                halved_rearms_for(guest.tid).len(),
+                rearms_before,
+                "initial programming is not a disregarded-stop re-arm"
+            );
             let period = timer.overflow_period.expect("a programmed notification");
             // Raising the hardware period makes the counter pass its period
             // without an overflow, as the kernel's absorption does.
@@ -4920,8 +4984,19 @@ mod tests {
             assert!(!halve || timer.read_clock() + 10 * margin < clock_target);
             assert_eq!(timer.notification_lost(), Ok(true));
             timer.tick_observed();
+            let clock = timer.read_clock();
             let unfinished = timer.disregard_stop().unwrap();
             if halve {
+                assert_eq!(
+                    &halved_rearms_for(guest.tid)[rearms_before..],
+                    &[super::HalvedTimerRearm {
+                        guest_tid: guest.tid,
+                        clock_target,
+                        offset: 0,
+                        clock,
+                    }],
+                    "one successful guest-stop re-arm of the original event"
+                );
                 assert!(unfinished.is_none(), "re-armed, not handed on");
                 assert_eq!(timer.timer_status, EventStatus::Scheduled);
                 let remaining = clock_target - timer.read_clock();
@@ -4933,8 +5008,19 @@ mod tests {
                 };
                 assert_eq!(timer.overflow_period, Some(expected));
                 assert_eq!(timer.notification_lost(), Ok(false));
+                assert!(timer.disregard_stop().unwrap().is_none());
+                assert_eq!(
+                    halved_rearms_for(guest.tid).len(),
+                    rearms_before + 1,
+                    "the observed stop is consumed only once"
+                );
             } else {
                 assert!(matches!(unfinished, Some(Unfinished::Notification)));
+                assert_eq!(
+                    halved_rearms_for(guest.tid).len(),
+                    rearms_before,
+                    "a whole notification is handed on, not re-armed halfway"
+                );
             }
             let ActiveEvent::Precise {
                 clock_target: after,
@@ -4949,6 +5035,7 @@ mod tests {
 
         // A cancelled event stays cancelled, halved programming or not.
         let _halving = HalvingForTest::set(true);
+        let rearms_before = halved_rearms_for(guest.tid).len();
         timer
             .request_event(TimerEventRequest::Precise(ticks))
             .unwrap();
@@ -4963,6 +5050,32 @@ mod tests {
         timer.tick_observed();
         let _ = timer.disregard_stop().unwrap();
         assert_eq!(timer.timer_status, EventStatus::Cancelled);
+        assert_eq!(
+            halved_rearms_for(guest.tid).len(),
+            rearms_before,
+            "a cancelled event is not re-armed"
+        );
+        timer.disable_timer_before_stepping();
+
+        // A programming error is not a successful re-arm either.
+        timer
+            .request_event(TimerEventRequest::Precise(ticks))
+            .unwrap();
+        let period = timer.overflow_period.expect("a programmed notification");
+        assert!(timer.halved.is_some());
+        timer
+            .timer
+            .set_period(PerfCounter::DISABLE_SAMPLE_PERIOD)
+            .unwrap();
+        guest.run(period);
+        timer.tick_observed();
+        timer.fail_next_notification = Some(reverie::Errno::EIO);
+        assert!(matches!(timer.disregard_stop(), Err(reverie::Errno::EIO)));
+        assert_eq!(
+            halved_rearms_for(guest.tid).len(),
+            rearms_before,
+            "a failed re-arm is not counted"
+        );
         timer.disable_timer_before_stepping();
         assert!(take_timer_signal_now().is_none());
     }
@@ -5480,7 +5593,6 @@ mod tests {
     #[test]
     fn a_halved_notification_rearms_before_any_step_keeping_the_offset() {
         use reverie::Pid;
-        use reverie::pmu_config::HALVING_STOP_MARGINS;
 
         use super::ActiveEvent;
         use super::HALVED_STAGES_ARMED;
@@ -5491,6 +5603,7 @@ mod tests {
         block_timer_signal();
         let _halving = HalvingForTest::set(true);
         let guest = BranchThread::spawn();
+        let guest_stop_rearms = halved_rearms_for(guest.tid).len();
         let pid = Pid::from_raw(unsafe { libc::getpid() });
         let mut timer = Timer {
             inner: Some(
@@ -5498,13 +5611,13 @@ mod tests {
             ),
         };
         let config = super::get_pmu_config();
-        let staged = config.stages(20 * HALVING_STOP_MARGINS * config.first_stage_margin());
+        let staged = config.stages(80 * config.first_stage_margin());
         let margin = if staged {
             config.first_stage_margin()
         } else {
             config.skid_margin()
         };
-        let ticks = 20 * HALVING_STOP_MARGINS * margin;
+        let ticks = 80 * margin;
         if !super::halves(ticks - margin, margin) {
             eprintln!("skipping: no notification is halved under a skid margin override");
             return;
@@ -5541,6 +5654,11 @@ mod tests {
         let period = timer.overflow_period.expect("re-armed");
         assert_eq!(timer.overflow_point, Some(clock + period));
         assert_eq!(timer.event_margin, margin);
+        assert_eq!(
+            halved_rearms_for(guest.tid).len(),
+            guest_stop_rearms,
+            "a PMU-notification stop is not a disregarded guest stop"
+        );
     }
 
     // A halved notification is no spurious wakeup even within the margin of
@@ -5554,7 +5672,6 @@ mod tests {
     #[test]
     fn a_halved_notification_at_the_margin_arms_the_second_stage() {
         use reverie::Pid;
-        use reverie::pmu_config::HALVING_STOP_MARGINS;
 
         use super::ActiveEvent;
         use super::FirstStage;
@@ -5582,7 +5699,7 @@ mod tests {
         // programming, the second stage is the skid margin short.
         let skid = config.skid_margin();
         let first = 4 * skid + SINGLESTEP_TIMEOUT_RCBS;
-        let ticks = 20 * HALVING_STOP_MARGINS * first;
+        let ticks = 80 * first;
         let requested = timer.read_clock();
         timer
             .request_event(TimerEventRequest::PreciseInstruction(ticks, 3))
@@ -5611,14 +5728,15 @@ mod tests {
     }
 
     // A notification far from its target is programmed halfway, and its stop
-    // programs the rest the same way until at most `HALVING_STOP_MARGINS`
-    // margins remain. If the kernel absorbs a halved overflow, the counter's
-    // next overflow, a period later, still comes no later than the whole
-    // notification would have, so no overshoot follows.
+    // programs the rest the same way until it is due at most half its margin
+    // ahead (`HALVING_STOP_DIVISOR`). If the kernel absorbs a halved overflow,
+    // the counter's next overflow, a period later, still comes no later than
+    // the whole notification would have, so no overshoot follows. One that it
+    // absorbs of the last, whole programming comes short of the target too.
     #[test]
     fn a_halved_notification_rearms_the_rest_and_survives_one_absorbed_overflow() {
         use reverie::Pid;
-        use reverie::pmu_config::HALVING_STOP_MARGINS;
+        use reverie::pmu_config::HALVING_STOP_DIVISOR;
 
         use super::ActiveEvent;
         use super::SINGLESTEP_TIMEOUT_RCBS;
@@ -5638,13 +5756,13 @@ mod tests {
         let config = super::get_pmu_config();
         // Where this PMU stages events, the event is staged and its first
         // stage halved; elsewhere its only programming is.
-        let staged = config.stages(20 * HALVING_STOP_MARGINS * config.first_stage_margin());
+        let staged = config.stages(80 * config.first_stage_margin());
         let margin = if staged {
             config.first_stage_margin()
         } else {
             config.skid_margin()
         };
-        let ticks = 20 * HALVING_STOP_MARGINS * margin;
+        let ticks = 80 * margin;
         if !super::halves(ticks - margin, margin) {
             eprintln!("skipping: no notification is halved under a skid margin override");
             return;
@@ -5681,8 +5799,14 @@ mod tests {
         }
         assert!(rearms >= 2, "{rearms} re-arms");
         assert!(
-            period <= HALVING_STOP_MARGINS * margin,
-            "the last programming is whole"
+            period * HALVING_STOP_DIVISOR <= margin,
+            "the last programming is whole, at most half its margin ahead"
+        );
+        // An overflow of it that the kernel absorbs notifies a period later,
+        // still at least half the margin short of the target.
+        assert!(
+            clock + 2 * period + margin / 2 <= clock_target,
+            "an absorbed overflow of the last programming comes short of the target"
         );
         // A whole first stage is measured for its second stage.
         assert_eq!(timer.first_stage.is_some(), staged);

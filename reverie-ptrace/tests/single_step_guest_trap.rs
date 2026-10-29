@@ -56,9 +56,12 @@ use reverie::syscalls::SyscallInfo;
 use reverie::syscalls::Sysno;
 use reverie_ptrace::PmuConfig;
 use reverie_ptrace::ret_without_perf;
+use reverie_ptrace::testing::HalvedTimerRearm;
 use reverie_ptrace::testing::KeptTimerProgrammingChecks;
 use reverie_ptrace::testing::assert_at_target_unless_witnessed;
 use reverie_ptrace::testing::check_fn_with_config;
+use reverie_ptrace::testing::precise_timer_halved_rearms_at_disregarded_stops;
+use reverie_ptrace::testing::take_precise_timer_halved_rearms_at_disregarded_stops;
 use serde::Deserialize;
 use serde::Serialize;
 use test_case::test_case;
@@ -77,7 +80,7 @@ const LESS_RCBS: u64 = 15;
 /// The clock from the request to each timer event, and where each timer
 /// event found the guest.
 #[derive(Debug, Default)]
-struct TimerEvents(Mutex<Vec<u64>>, Mutex<Vec<Place>>);
+struct TimerEvents(Mutex<Vec<u64>>, Mutex<Vec<Place>>, Mutex<Vec<(Pid, u64)>>);
 
 /// The guest's instruction pointer at a timer event, and the address of the
 /// branch at which the guests that `between_loops!` runs expect it.
@@ -89,13 +92,18 @@ struct Place {
 
 #[reverie::global_tool]
 impl GlobalTool for TimerEvents {
-    type Request = (u64, Place);
+    type Request = (u64, Place, Pid, u64);
     type Response = ();
     type Config = Schedule;
 
-    async fn receive_rpc(&self, _from: Pid, (clock, place): (u64, Place)) {
+    async fn receive_rpc(
+        &self,
+        _from: Pid,
+        (clock, place, tid, request_clock): (u64, Place, Pid, u64),
+    ) {
         self.0.lock().unwrap().push(clock);
         self.1.lock().unwrap().push(place);
+        self.2.lock().unwrap().push((tid, request_clock));
     }
 }
 
@@ -168,6 +176,8 @@ impl Tool for PreciseTimerTool {
                     rip,
                     second_loop_branch,
                 },
+                guest.tid(),
+                request_clock,
             ))
             .await;
     }
@@ -282,6 +292,11 @@ struct Run {
     /// The traps of `keeps` that handed the event on, having found its
     /// notification lost, to single steps.
     handed_on: u64,
+    /// Successful lost-halved-notification re-arms at disregarded traps.
+    /// These changed the programming and are separate from `keeps`.
+    halved_rearms: Vec<HalvedTimerRearm>,
+    /// The actual guest thread and request clock reported by each callback.
+    requests: Vec<(Pid, u64)>,
 }
 
 impl Run {
@@ -291,6 +306,11 @@ impl Run {
             (self.keeps, self.handed_on),
             (keeps, 0),
             "traps that kept the event, and of them handed it on"
+        );
+        assert!(
+            self.halved_rearms.is_empty(),
+            "no trap re-armed a lost halved notification: {:?}",
+            self.halved_rearms
         );
     }
 
@@ -322,15 +342,25 @@ fn run(guest: impl FnOnce() + Send + 'static, schedule: Schedule) -> Run {
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     let _ = reverie::take_skid_overshoot_count();
+    let _ = take_precise_timer_halved_rearms_at_disregarded_stops();
+    let halved_before = precise_timer_halved_rearms_at_disregarded_stops();
     let checks = KeptTimerProgrammingChecks::start();
     let events = check_fn_with_config::<PreciseTimerTool, _>(guest, schedule, true);
     let (keeps, handed_on) = checks.keeps_and_handed_on();
+    let halved_rearms = take_precise_timer_halved_rearms_at_disregarded_stops();
+    assert_eq!(
+        precise_timer_halved_rearms_at_disregarded_stops() - halved_before,
+        halved_rearms.len() as u64,
+        "the retained re-arm records must be complete"
+    );
     Run {
         clocks: events.0.into_inner().unwrap(),
         places: events.1.into_inner().unwrap(),
         witnesses: reverie::take_skid_overshoot_count(),
         keeps,
         handed_on,
+        halved_rearms,
+        requests: events.2.into_inner().unwrap(),
     }
 }
 
@@ -465,7 +495,8 @@ fn the_timer_fires_in_a_loop_that_traps_in_every_round(rcbs: u64) {
         run.assert_kept(0);
     } else {
         // Every trap from the request's clock up to the period, the skid
-        // margin short of the target, keeps the event. The trap at the
+        // margin short of the target, either keeps the programming unchanged
+        // or re-arms a lost halved notification. The trap at the
         // period keeps it too unless the notification stopped the guest
         // first, and, if it finds the notification not yet queued, hands the
         // event on as lost; the steps then begin there. A staged event (see
@@ -477,9 +508,38 @@ fn the_timer_fires_in_a_loop_that_traps_in_every_round(rcbs: u64) {
         let config = PmuConfig::new().expect("this host has a PMU profile");
         let period = rcbs - config.skid_margin();
         let periods = if config.stages(rcbs) { 2 } else { 1 };
+        assert_eq!(
+            run.requests.len(),
+            1,
+            "one callback for the original request"
+        );
+        let (tid, request_clock) = run.requests[0];
+        for rearm in &run.halved_rearms {
+            assert_eq!(
+                (rearm.guest_tid, rearm.clock_target, rearm.offset),
+                (tid, request_clock + rcbs, 0),
+                "every re-arm belongs to this thread's original event"
+            );
+            assert!(
+                (request_clock..request_clock + period).contains(&rearm.clock),
+                "a re-arm precedes the last whole period: {rearm:?}"
+            );
+        }
         assert!(
-            (period..=period + 1).contains(&run.keeps) && run.handed_on <= periods,
-            "{} traps kept the event, and {} handed it on, with the last of {periods} periods at {period}",
+            run.halved_rearms
+                .windows(2)
+                .all(|pair| pair[0].clock < pair[1].clock),
+            "each re-arm is at a different guest trap, in branch order: {:?}",
+            run.halved_rearms
+        );
+        let rearmed = run.halved_rearms.len() as u64;
+        eprintln!(
+            "traps before the final period: {} unchanged programmings and {rearmed} halved re-arms",
+            run.keeps
+        );
+        assert!(
+            (period..=period + 1).contains(&(run.keeps + rearmed)) && run.handed_on <= periods,
+            "{} traps kept the programming and {rearmed} re-armed it, and {} handed it on, with the last of {periods} periods at {period}",
             run.keeps,
             run.handed_on
         );
