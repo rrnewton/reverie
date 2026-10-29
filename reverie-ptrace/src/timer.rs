@@ -5729,10 +5729,10 @@ mod tests {
 
     // A notification far from its target is programmed halfway, and its stop
     // programs the rest the same way until it is due at most half its margin
-    // ahead (`HALVING_STOP_DIVISOR`). If the kernel absorbs a halved overflow,
-    // the counter's next overflow, a period later, still comes no later than
-    // the whole notification would have, so no overshoot follows. One that it
-    // absorbs of the last, whole programming comes short of the target too.
+    // ahead (`HALVING_STOP_DIVISOR`), subject to the artificial-notification cutoff.
+    // After one absorbed overflow, the second overflow is at `2 * P` for period
+    // `P`. This test checks the programmed distance; notification and delivery
+    // remain conditional on the configured skid and interrupt-latency assumptions.
     #[test]
     fn a_halved_notification_rearms_the_rest_and_survives_one_absorbed_overflow() {
         use reverie::Pid;

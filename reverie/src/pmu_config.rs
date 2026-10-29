@@ -189,9 +189,10 @@ pub const HALVE_TIMER_STAGES_ENV: &str = "REVERIE_HALVE_TIMER_STAGES";
 
 /// A precise event's notification is programmed halfway while it is due
 /// more than its margin divided by this ahead (see [`PmuConfig::halves`]).
-/// The last, whole programming's period is then at most half its margin, so
-/// an overflow of it that the kernel absorbs notifies one period later, at
-/// most the whole margin from the programming, still short of the target.
+/// When halving applies with the configured margin profiles, its last whole
+/// period `P` is at most half the margin. After one absorbed overflow, the
+/// second overflow is at `2 * P` from programming. Notification and delivery
+/// remain conditional on the configured skid and interrupt-latency assumptions.
 pub const HALVING_STOP_DIVISOR: u64 = 2;
 
 /// Whether precise event notifications are halved by default (see
@@ -563,14 +564,13 @@ impl PmuConfig {
     /// period setter returns. The counter's next overflow comes one period
     /// later. A late interrupt widens the window, as in a virtual machine,
     /// where one PMU interrupt in a few thousand arrived a whole period late.
-    /// With the period halved, one absorbed overflow still notifies at the
-    /// whole distance, `margin` short of the target, instead of a period past
-    /// it. The last programming is whole, and its period is at most half the
-    /// margin, so one absorbed overflow of it notifies at most twice that
-    /// period from the programming: at least half the margin short of the
-    /// target, which leaves half the margin for the interrupt's skid. Each
-    /// halving adds one notification stop; the delivery point is unchanged,
-    /// as with staging (see [`Self::stages`]).
+    /// With a halved period `P`, the second overflow after one absorbed overflow
+    /// is at `2 * P` from programming, no later than the unhalved overflow point.
+    /// When the last whole period `P` is at most half the margin, that second
+    /// overflow is at least half the margin short of the target. Notification
+    /// and delivery remain conditional on the configured skid and interrupt-
+    /// latency assumptions. Each halving adds one notification stop; the
+    /// delivery point is unchanged, as with staging (see [`Self::stages`]).
     ///
     /// No notification is halved under a skid margin override, as none is
     /// staged, nor one whose half an artificial notification would replace.
