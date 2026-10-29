@@ -271,7 +271,7 @@ impl ChildThread {
 
     #[cfg(any(test, feature = "test-support"))]
     pub fn spawn(run: impl FnOnce() -> crate::Result<()> + Send + 'static) -> Self {
-        match Self::spawn_owned(std::thread::Builder::new(), (), move |()| run()) {
+        match Self::spawn_owned(crate::supervisor_thread::builder(), (), move |()| run()) {
             Ok(thread) => thread,
             Err((error, ())) => panic!("failed to spawn KVM child test thread: {error}"),
         }
@@ -2725,7 +2725,7 @@ impl DroppedRunReaper {
         let shared = Arc::new(ReaperShared::default());
         shared.lock().handles = 1;
         let reaping = crate::failure::spawn_owned(
-            std::thread::Builder::new().name("reverie-kvm-reaper".into()),
+            crate::supervisor_thread::builder().name("reverie-kvm-reaper".into()),
             shared.clone(),
             Self::reap,
         )

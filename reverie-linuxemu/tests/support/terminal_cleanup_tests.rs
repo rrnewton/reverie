@@ -9,7 +9,141 @@ fn dropped_waiter_keeps_native_wait_and_owned_service_alive() {
     dropped_waiter_keeps_native_wait_and_owned_service_alive_body(client);
 }
 
+#[test]
+fn a_cancelled_waiters_waker_is_dropped_on_the_file_exit_thread_without_rust_min_stack() {
+    const TEST: &str = concat!(
+        "terminal_cleanup::tests::",
+        "a_cancelled_waiters_waker_is_dropped_on_the_file_exit_thread_without_rust_min_stack"
+    );
+    // The child runs without RUST_MIN_STACK, as a production process does, so
+    // the service thread has exactly the stack it was spawned with.
+    let Some(client) = crate::broker_library_tests::selected_child_without(TEST, &["RUST_MIN_STACK"])
+    else {
+        return;
+    };
+    a_cancelled_waiters_waker_is_dropped_on_the_file_exit_thread_body(client);
+}
+
 use super::*;
+
+/// The stack the waker's state needs to drop: more than Rust's 2 MiB default
+/// for a spawned thread, as an executor's task, or the Tool state that a task
+/// owns, could need.
+const DEEP_DROP_STACK_BYTES: usize = 4 << 20;
+
+/// Which threads woke a [`DeepWaker`] and dropped its state.
+#[derive(Default)]
+struct WakerEvents {
+    woken_on: Option<String>,
+    dropped_on: Option<String>,
+}
+
+fn thread_name() -> Option<String> {
+    Some(std::thread::current().name().unwrap_or_default().to_owned())
+}
+
+/// A waiter's waker whose state needs [`DEEP_DROP_STACK_BYTES`] of stack to
+/// drop. It records which thread woke it and which dropped it.
+struct DeepWaker(Arc<Mutex<WakerEvents>>);
+
+impl std::task::Wake for DeepWaker {
+    fn wake(self: Arc<Self>) {
+        self.0.lock().unwrap().woken_on = thread_name();
+    }
+}
+
+impl Drop for DeepWaker {
+    fn drop(&mut self) {
+        std::hint::black_box(use_stack(DEEP_DROP_STACK_BYTES));
+        self.0.lock().unwrap().dropped_on = thread_name();
+    }
+}
+
+/// Uses `bytes` of stack through a chain of 64 KiB frames.
+#[inline(never)]
+fn use_stack(bytes: usize) -> u8 {
+    const FRAME: usize = 64 * 1024;
+    let mut frame = [0u8; FRAME];
+    std::hint::black_box(&mut frame);
+    let below = if bytes > FRAME {
+        use_stack(bytes - FRAME)
+    } else {
+        0
+    };
+    std::hint::black_box(frame[usize::from(below) % FRAME]) ^ below
+}
+
+// The guest's waiter is pending on the task's terminal cleanup, with its waker
+// registered, and is then cancelled: its future, its own waker and the task's
+// cleanup owner all go. The service's next wake then consumes the registered
+// waker, the last reference to its state, on the service's own thread.
+fn a_cancelled_waiters_waker_is_dropped_on_the_file_exit_thread_body(
+    client: crate::native_exit_broker::BrokerClient,
+) {
+    use std::future::Future;
+    use std::task::Context;
+    use std::task::Poll;
+    let runs = Arc::new(Mutex::new(crate::executor::AbandonedRuns::default()));
+    let admission = crate::executor::RunAdmission::begin(&runs).unwrap();
+    let mut task = admission.terminal_factory(client).spawn().unwrap();
+    // Readiness is the service's only wake before it has a batch. Wait for it
+    // with a plain waker, so it cannot consume the deep one below while this
+    // thread still holds a reference.
+    futures::executor::block_on(task.ready()).unwrap();
+    let events = Arc::new(Mutex::new(WakerEvents::default()));
+    {
+        let waker = std::task::Waker::from(Arc::new(DeepWaker(events.clone())));
+        let mut context = Context::from_waker(&waker);
+        let mut waiter = Box::pin(task.finish());
+        // The service has no batch yet, so the waiter is pending, and the
+        // registered waker stays until the service's next wake.
+        assert!(
+            matches!(waiter.as_mut().poll(&mut context), Poll::Pending),
+            "the waiter completed instead of pending"
+        );
+    }
+    assert!(
+        events.lock().unwrap().dropped_on.is_none(),
+        "cancelling the waiter dropped the registered waker"
+    );
+    let shared = task.shared.clone();
+    drop(task); // Cancellation: the run's reaper now owns the service thread.
+    // Wait for the service to finish, not for the waker's drop.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    loop {
+        {
+            let state = shared.lock();
+            assert!(state.failure.is_none(), "service failure: {:?}", state.failure);
+            if state.result.is_some() {
+                assert!(
+                    matches!(state.result, Some(Ok(()))),
+                    "the cancelled service did not complete"
+                );
+                break;
+            }
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the cancelled service did not complete"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+    drop(shared);
+    // This joins the run's reaper, which joins the service thread, so whatever
+    // that thread did with the waker is done.
+    admission.finish_fixture_cleanup();
+    let events = events.lock().unwrap();
+    assert_eq!(
+        events.woken_on.as_deref(),
+        Some("kvm-task-file-exit"),
+        "the service did not wake the registered waker"
+    );
+    assert_eq!(
+        events.dropped_on.as_deref(),
+        Some("kvm-task-file-exit"),
+        "the registered waker's last reference was not dropped by the service's wake"
+    );
+}
 
 // This body runs inside terminal_cleanup's cfg(test) module and observes its
 // private Shared state. Broker identity comes from the authenticated session.

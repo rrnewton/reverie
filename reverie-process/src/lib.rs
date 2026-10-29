@@ -42,6 +42,7 @@ use std::io;
 
 pub use child::Child;
 pub use child::Output;
+pub use clone::CHILD_STACK_SIZE;
 pub use container::ChildCleanupObservation;
 pub use container::ChildParentResourceStartContext;
 pub use container::ChildStartContext;

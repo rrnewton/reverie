@@ -87,7 +87,12 @@ pub(crate) mod pipe_owner;
 
 #[cfg(test)]
 #[path = "executor/entry_host_wait_tests.rs"]
+#[allow(clippy::disallowed_methods, reason = "tests may make threads freely")]
 mod entry_host_wait_tests;
+
+#[cfg(test)]
+#[path = "executor/reaper_stack_tests.rs"]
+mod reaper_stack_tests;
 
 use capture_identity::CaptureMetadata;
 use capture_identity::CaptureObjectIdentity;
@@ -558,6 +563,7 @@ pub fn test_loaded_state_for_vm(cwd: &std::path::Path) -> LoadedStaticElf {
 }
 
 #[cfg(test)]
+#[allow(clippy::disallowed_methods, reason = "tests may make threads freely")]
 mod tests {
     include!("../tests/support/executor_terminal_tests.rs");
     include!("executor/parent_death_tests.rs");
@@ -44533,6 +44539,7 @@ mod child_panic_owner_tests {
 
 #[cfg(test)]
 #[path = "executor/exit_descriptor_tests.rs"]
+#[allow(clippy::disallowed_methods, reason = "tests may make threads freely")]
 mod exit_descriptor_tests;
 
 #[cfg(test)]

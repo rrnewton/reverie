@@ -19,11 +19,19 @@ const LAUNCHER_NAME: &str = concat!(env!("CARGO_PKG_NAME"), "-broker-test-launch
 /// None means its isolated exact child completed successfully and was reaped.
 /// Neither unavailable helpers nor empty libtest selections are successes.
 pub(crate) fn selected_child(test: &str) -> Option<BrokerClient> {
+    selected_child_without(test, &[])
+}
+
+/// [`selected_child`], with the named variables removed from the child's
+/// environment: `RUST_MIN_STACK`, for one, which a test runner may set and
+/// which would size every thread the child spawns without an explicit size.
+pub(crate) fn selected_child_without(test: &str, removed: &[&str]) -> Option<BrokerClient> {
     assert!(matches!(
         test,
         "executor::tests::terminal_cleanup_preserves_live_shared_table_and_does_not_wait_for_its_lock"
             | "executor::tests::terminal_cleanup_retires_socket_despite_fdinfo_observer_table_pin"
             | "terminal_cleanup::tests::dropped_waiter_keeps_native_wait_and_owned_service_alive"
+            | "terminal_cleanup::tests::a_cancelled_waiters_waker_is_dropped_on_the_file_exit_thread_without_rust_min_stack"
             | "executor::tests::pdeath_abi_adoption_full_width_and_scalar_copyout_are_exact"
             | "executor::tests::pdeath_close_replacement_and_exec_cloexec_require_owned_completion_authority"
             | "executor::tests::pdeath_creator_thread_exit_publishes_process_si_user_once"
@@ -58,13 +66,18 @@ pub(crate) fn selected_child(test: &str) -> Option<BrokerClient> {
     let launcher = launcher_path(&executable);
     let result_directory = ResultDirectory::new();
     let execution_log = result_directory.0.join("libtest.log");
-    let output = std::process::Command::new("timeout")
+    let mut command = std::process::Command::new("timeout");
+    command
         .args(["--kill-after=2s", "30s"])
         .arg(launcher)
         .arg(executable)
         .args(["--exact", test, "--nocapture", "--logfile"])
         .arg(&execution_log)
-        .env(broker_test_protocol::CHILD_ENV, test)
+        .env(broker_test_protocol::CHILD_ENV, test);
+    for name in removed {
+        command.env_remove(name);
+    }
+    let output = command
         .output()
         .expect("start ordinary-main broker test launcher");
     let stdout = String::from_utf8_lossy(&output.stdout);
