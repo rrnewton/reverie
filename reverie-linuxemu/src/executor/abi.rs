@@ -10,7 +10,24 @@
 
 use super::*;
 
-pub(super) const GUEST_NOFILE_LIMIT: libc::c_int = 1 << 20;
+/// The highest guest descriptor number, as Linux bounds it: a process may
+/// hold descriptors below its `RLIMIT_NOFILE` soft limit, and the kernel
+/// refuses allocation at or above it (`alloc_fd` in fs/file.c). The guest's
+/// descriptors live in this process, so the host kernel's limit for this
+/// process is the guest's, exactly as it is for a traced guest process,
+/// which inherits the same limit. Detcore's virtual limit reporting
+/// (`prlimit64`) is its own decision on every backend and is unchanged:
+/// Detcore enforces that virtual bound at its layer, as it does over the
+/// kernel's allocation on the ptrace backend. Read at each use, as the
+/// kernel reads the current limit at each allocation.
+pub(super) fn guest_nofile_limit() -> libc::c_int {
+    // SAFETY: limit is writable for the call.
+    let mut limit: libc::rlimit = unsafe { std::mem::zeroed() };
+    if unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &mut limit) } != 0 {
+        return 1 << 20;
+    }
+    libc::c_int::try_from(limit.rlim_cur).unwrap_or(libc::c_int::MAX)
+}
 pub(super) const ROBUST_LIST_HEAD_SIZE: u64 = 3 * std::mem::size_of::<u64>() as u64;
 // prctl(2) PR_CAPBSET_READ and PR_CAPBSET_DROP options.
 pub(super) const PR_CAPBSET_READ: u64 = 23;
@@ -149,5 +166,23 @@ pub(super) fn synthetic_proc_create_directory_errno(
         // final dentry before may_open, so an existing regular file is
         // ENOTDIR here; O_EXCL above still yields EEXIST.
         RegularCreateDirectoryPolicy::LegacyLookup => libc::ENOTDIR,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn guest_nofile_limit_is_the_host_soft_limit() {
+        // SAFETY: limit is writable for the call.
+        let mut limit: libc::rlimit = unsafe { std::mem::zeroed() };
+        assert_eq!(
+            unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &mut limit) },
+            0
+        );
+        let expected = libc::c_int::try_from(limit.rlim_cur).unwrap_or(libc::c_int::MAX);
+        assert_eq!(guest_nofile_limit(), expected);
+        assert!(guest_nofile_limit() > 2, "standard descriptors must fit");
     }
 }

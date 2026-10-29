@@ -306,7 +306,7 @@ mod shared_file_dispatch_tests {
         file.set_len(PAGE_SIZE).unwrap();
         let output = address + PAGE_SIZE - 2;
         let mut executor = f.take_executor();
-        let first_new_fd = (0..GUEST_NOFILE_LIMIT)
+        let first_new_fd = (0..guest_nofile_limit())
             .find(|fd| {
                 !is_open_standard(&executor.state, *fd) && !executor.state.files.contains_key(fd)
             })

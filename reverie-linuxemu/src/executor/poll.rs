@@ -366,7 +366,7 @@ pub(super) fn select(memory: &mut GuestMemory, state: &LoadedStaticElf, args: &[
     let Ok(nfds) = libc::c_int::try_from(args[0]) else {
         return negative_errno(libc::EINVAL);
     };
-    if !(0..=GUEST_NOFILE_LIMIT).contains(&nfds) {
+    if !(0..=guest_nofile_limit()).contains(&nfds) {
         return negative_errno(libc::EINVAL);
     }
     let word_count = (nfds as usize).div_ceil(u64::BITS as usize);
@@ -568,7 +568,7 @@ fn poll_with_timeout<M: GuestMemoryAccess<Error = crate::Error>>(
     // Both Linux syscall entrypoints declare nfds as unsigned int, even on
     // x86-64 where the raw syscall register and host nfds_t are wider.
     let count = args[1] as u32 as usize;
-    if count > GUEST_NOFILE_LIMIT as usize {
+    if count > guest_nofile_limit() as usize {
         return negative_errno(libc::EINVAL);
     }
     let Some(byte_length) = count.checked_mul(std::mem::size_of::<libc::pollfd>()) else {

@@ -1791,7 +1791,7 @@ pub(super) fn chdir(memory: &GuestMemory, state: &mut LoadedStaticElf, args: &[u
 
 pub(super) fn fchdir(state: &mut LoadedStaticElf, args: &[u64; 6]) -> i64 {
     // Linux consumes the low descriptor word, ignoring the upper register bits.
-    // Allocated guest fds are in 0..GUEST_NOFILE_LIMIT, so signed-negative low
+    // Allocated guest fds are in 0..guest_nofile_limit(), so signed-negative low
     // words miss this table just like Linux's out-of-range unsigned descriptors.
     let fd = args[0] as libc::c_int;
     let Some(file) = state.files.get(&fd) else {
