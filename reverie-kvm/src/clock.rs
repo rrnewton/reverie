@@ -493,7 +493,16 @@ impl CountedVcpu {
             }
             TimerKind::Imprecise => (0, None),
         };
+        let previous = self.clock.timer;
         self.clock.timer = TimerState::request(clock, ticks, kind, margin, first_stage)?;
+        if crate::t2dry_trace::enabled() {
+            self.t2dry_window_end("REPLACE", &previous);
+            self.clock.t2dry_win = T2dryWindow {
+                req_clock: clock,
+                req_ns: crate::preemption_timer::monotonic_ns(),
+                ..T2dryWindow::default()
+            };
+        }
         Ok(())
     }
 
@@ -555,7 +564,34 @@ impl CountedVcpu {
     /// Withdraws the outstanding request, if any. The next entry quiets the
     /// timer event if it could still overflow.
     pub(crate) fn cancel_timer(&mut self) {
+        let previous = self.clock.timer;
         self.clock.timer = TimerState::Idle;
+        if crate::t2dry_trace::enabled() {
+            self.t2dry_window_end("CANCEL", &previous);
+        }
+    }
+
+    /// SCRATCH (T2 dry run): a request that leaves (`what`: cancelled or
+    /// replaced) after entries in its stepping window costs those entries;
+    /// one trace line says how many.
+    fn t2dry_window_end(&mut self, what: &str, previous: &TimerState) {
+        let window = std::mem::take(&mut self.clock.t2dry_win);
+        if window.steps + window.runto + window.other == 0 {
+            return;
+        }
+        let (kind, target, margin, staged) = t2dry_describe(previous);
+        let now = crate::preemption_timer::monotonic_ns();
+        crate::t2dry_trace::line(format_args!(
+            "{what}\t{}\t{kind}\t{target}\t{}\t{margin}\t{staged}\t{}\t{}\t{}\t{}\t{}\t{}",
+            crate::t2dry_trace::tid(),
+            self.clock.total,
+            window.steps,
+            window.runto,
+            window.other,
+            now.saturating_sub(window.start_ns),
+            window.req_clock,
+            now.saturating_sub(window.req_ns),
+        ));
     }
 
     /// The target of the outstanding request, armed or due.
@@ -608,6 +644,20 @@ impl CountedVcpu {
         self.apply_step_mode(mode)?;
         self.stepped = mode == StepMode::Step;
         self.clock.stepping_entry = self.stepped;
+        if crate::t2dry_trace::enabled()
+            && self.clock.tracking
+            && self.clock.timer.stepping(self.clock.total)
+        {
+            let window = &mut self.clock.t2dry_win;
+            if window.start_ns == 0 {
+                window.start_ns = crate::preemption_timer::monotonic_ns();
+            }
+            match mode {
+                StepMode::Step => window.steps += 1,
+                StepMode::RunTo(_) => window.runto += 1,
+                StepMode::Off => window.other += 1,
+            }
+        }
         // Declare entry first: unwinding must retire the clock and restore CPU
         // affinity before entry withdraws its target and checks its signals.
         let Some(entry) = self
@@ -911,8 +961,50 @@ struct GuestClock {
     /// Present while `KVM_RUN` on the vCPU runs under a signal mask that a
     /// timer composed from a host thread's mask (see `preemption_timer.rs`).
     vcpu_mask: Option<VcpuMask>,
+    /// SCRATCH (T2 dry run, `t2dry_trace`): the last finished interval's
+    /// `EINTR` exit took a kick.
+    t2dry_kick: bool,
+    /// SCRATCH (T2 dry run, `t2dry_trace`): the current request's stepping
+    /// window so far.
+    t2dry_win: T2dryWindow,
     #[cfg(test)]
     run_probe: Option<std::sync::Arc<RunProbe>>,
+}
+
+/// SCRATCH (T2 dry run): entries set up inside a precise request's stepping
+/// window, by mode, the host time of the first, and the request's own clock
+/// and host time. Kept only while `t2dry_trace` is on.
+#[derive(Clone, Copy, Debug, Default)]
+struct T2dryWindow {
+    steps: u64,
+    runto: u64,
+    other: u64,
+    start_ns: u64,
+    req_clock: u64,
+    req_ns: u64,
+}
+
+/// SCRATCH (T2 dry run): kind, target, margin and first-stage flag of a
+/// request, for trace lines.
+fn t2dry_describe(state: &TimerState) -> (&'static str, u64, u64, u8) {
+    match *state {
+        TimerState::Idle => ("-", 0, 0, 0),
+        TimerState::Armed {
+            target,
+            kind,
+            margin,
+            first_stage,
+        } => (
+            match kind {
+                TimerKind::Precise => "P",
+                TimerKind::Imprecise => "I",
+            },
+            target,
+            margin,
+            u8::from(first_stage.is_some()),
+        ),
+        TimerState::Due(due) => ("D", due.target, 0, 0),
+    }
 }
 
 /// Whose mask a vCPU signal mask was composed from: the host thread, and
@@ -985,6 +1077,7 @@ impl GuestClock {
     /// entry, whose exit takes no kick and composes the mask.
     fn take_kick(&mut self) -> Result<()> {
         if crate::preemption_timer::drain_kick()? {
+            self.t2dry_kick = true;
             return Ok(());
         }
         let Some(mask) = self.vcpu_mask else {
@@ -1008,10 +1101,61 @@ impl GuestClock {
     /// becomes due. Issues no syscall.
     fn observe_timer_exit(&mut self) {
         let clock = self.total;
+        let trace = crate::t2dry_trace::enabled();
+        let before = self.timer;
+        let kick = self.t2dry_kick;
+        let mut noted = false;
         if let Some(timer) = self.binding.as_mut().and_then(|b| b.timer.as_mut()) {
+            if trace
+                && let Some(at) = timer.overflow_at()
+                && clock >= at
+            {
+                noted = true;
+                let (kind, target, margin, staged) = t2dry_describe(&before);
+                let (prog_clock, prog_ns) = timer.t2dry_prog;
+                crate::t2dry_trace::line(format_args!(
+                    "NOTE\t{}\t{}\t{at}\t{clock}\t{}\t{kind}\t{target}\t{margin}\t{staged}\t{prog_clock}\t{prog_ns}\t{}\t{}",
+                    crate::t2dry_trace::tid(),
+                    u8::from(kick),
+                    clock - at,
+                    crate::preemption_timer::monotonic_ns(),
+                    u8::from(self.stepping_entry),
+                ));
+            }
             timer.observe_exit(clock);
         }
-        self.timer.observe_exit(clock, self.stepping_entry);
+        if trace && kick && !noted {
+            let (kind, target, margin, staged) = t2dry_describe(&before);
+            crate::t2dry_trace::line(format_args!(
+                "KICK\t{}\t{clock}\t{kind}\t{target}\t{margin}\t{staged}",
+                crate::t2dry_trace::tid(),
+            ));
+        }
+        let due = self.timer.observe_exit(clock, self.stepping_entry);
+        if trace && let Some(due) = due {
+            let window = std::mem::take(&mut self.t2dry_win);
+            let now = crate::preemption_timer::monotonic_ns();
+            let (_, _, margin, staged) = t2dry_describe(&before);
+            crate::t2dry_trace::line(format_args!(
+                "DUE\t{}\t{}\t{}\t{clock}\t{}\t{}\t{margin}\t{staged}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{:?}",
+                crate::t2dry_trace::tid(),
+                match due.kind {
+                    TimerKind::Precise => "P",
+                    TimerKind::Imprecise => "I",
+                },
+                due.target,
+                u8::from(due.late),
+                u8::from(self.stepping_entry),
+                window.steps,
+                window.runto,
+                window.other,
+                if window.start_ns == 0 { 0 } else { now.saturating_sub(window.start_ns) },
+                window.req_clock,
+                now.saturating_sub(window.req_ns),
+                u8::from(kick),
+                self.placement,
+            ));
+        }
     }
 
     fn read(&self) -> Result<u64> {
@@ -1807,6 +1951,7 @@ impl CountInterval<'_> {
         let restored = self.affinity.as_mut().map_or(Ok(()), CpuAffinity::restore);
         // KVM_RUN ran with the kick signal unblocked, and returned with the
         // thread's own mask, which blocks it: a kick that ended it is pending.
+        self.clock.t2dry_kick = false;
         let drained = if interrupted && self.clock.vcpu_mask.is_some() {
             self.clock.take_kick()
         } else {
