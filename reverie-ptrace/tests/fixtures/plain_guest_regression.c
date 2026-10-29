@@ -2622,6 +2622,29 @@ static void mode_sigtrap_timer(void) {
   }
 }
 
+/* A precise timer's single-steps with SIGTRAP caught or default and
+ * unblocked, as in mode_sigtrap_timer: no step can reset it, and none
+ * runs an rt_sigreturn, so no step reads SIGTRAP's state. */
+static void mode_sigtrap_timer_unblocked(void) {
+  warm();
+  static const struct {
+    const char* name;
+    void (*action)(int);
+  } states[] = {
+      {"handler", trap_handler},
+      {"dfl", SIG_DFL},
+  };
+  for (unsigned i = 0; i < sizeof states / sizeof states[0]; i++) {
+    sigtrap_set(states[i].action, 0);
+    SITEM(SYS_getppid, 0, 0, 0, 0, PM_BRANCHES + 1, ARM_TIMER);
+    for (volatile int j = 0; j < 3 * PM_BRANCHES; j++)
+      ;
+    char tag[64];
+    snprintf(tag, sizeof tag, "timer %s", states[i].name);
+    sigtrap_full_state(tag);
+  }
+}
+
 static volatile long sigreturn_k;
 
 /* Arms a precise timer sigreturn_k branches out from inside a SIGUSR1
@@ -2654,8 +2677,83 @@ static void mode_sigtrap_sigreturn_timer(void) {
   }
 }
 
+/* As arming_handler, after unblocking SIGTRAP, which the frame's mask still
+ * blocks: the timer's sequence starts with SIGTRAP unblocked, and its steps
+ * run the handler's rt_sigreturn, which blocks it again. */
+static void unblocking_arming_handler(int sig) {
+  (void)sig;
+  sigset_t trap;
+  sigemptyset(&trap);
+  sigaddset(&trap, SIGTRAP);
+  if (sigprocmask(SIG_UNBLOCK, &trap, NULL) != 0)
+    die("unblock SIGTRAP");
+  SITEM(SYS_getppid, 0, 0, 0, 0, sigreturn_k, ARM_TIMER);
+}
+
+/* A guest rt_sigreturn single-stepped by a precise timer whose sequence
+ * started with SIGTRAP caught and unblocked, from a frame whose mask blocks
+ * it. */
+static void mode_sigtrap_sigreturn_handover_timer(void) {
+  warm();
+  struct sigaction usr1;
+  memset(&usr1, 0, sizeof usr1);
+  usr1.sa_handler = unblocking_arming_handler;
+  if (sigaction(SIGUSR1, &usr1, NULL) != 0)
+    die("install SIGUSR1");
+  sigtrap_set(trap_handler, 1);
+  for (int k = 1; k <= 8; k++) {
+    sigreturn_k = k;
+    raise(SIGUSR1);
+    for (volatile int j = 0; j < 16; j++)
+      ;
+    char tag[64];
+    snprintf(tag, sizeof tag, "handover k=%d", k);
+    sigtrap_full_state(tag);
+  }
+}
+
 static void quiet_usr1(int sig) {
   (void)sig;
+}
+
+/* A timer sequence whose first step is taken while a temporary mask's
+ * restore is pending. SIGURG is blocked and pending before an epoll_pwait
+ * whose temporary mask admits it, so the wait returns EINTR at once with the
+ * restore pending (an EINTR from epoll_pwait is not restarted). The Tool
+ * suppresses SIGURG and arms a short precise timer from its callback, whose
+ * artificial notification is taken at that same pending restore. Resuming
+ * for the first step performs the restore, so the step's trap meets the
+ * guest's mask, which blocks a caught SIGTRAP. */
+static void mode_sigtrap_pending_restore_timer(void) {
+  warm();
+  struct sigaction urg;
+  memset(&urg, 0, sizeof urg);
+  urg.sa_handler = quiet_usr1;
+  if (sigaction(SIGURG, &urg, NULL) != 0)
+    die("install SIGURG");
+  int ep = epoll_create1(0);
+  if (ep < 0)
+    die("epoll_create1");
+  sigtrap_set(trap_handler, 1);
+  sigset_t urg_set;
+  sigemptyset(&urg_set);
+  sigaddset(&urg_set, SIGURG);
+  if (sigprocmask(SIG_BLOCK, &urg_set, NULL) != 0)
+    die("block SIGURG");
+  raise(SIGURG);
+  uint64_t admit_all = 0;
+  struct epoll_event event;
+  long r = syscall(SYS_epoll_pwait, ep, &event, 1, 1000, &admit_all, 8);
+  int err = errno;
+  for (volatile int j = 0; j < 64; j++)
+    ;
+  char tag[64];
+  snprintf(tag, sizeof tag, "pending-restore-timer r=%s",
+           r == -1 && err == EINTR ? "eintr" : "other");
+  sigtrap_full_state(tag);
+  if (sigprocmask(SIG_UNBLOCK, &urg_set, NULL) != 0)
+    die("unblock SIGURG");
+  close(ep);
 }
 
 /* SIGTRAP's state across a mask-swapping wait that a handled SIGUSR1
@@ -3799,6 +3897,31 @@ static void mode_sigtrap_caught_blocked_injections(void) {
   for (int i = 0; i < 200; i++)
     SITEM(SYS_getppid, 0, 0, 0, 0, 0, SHAPE_PRIVATE);
   sigtrap_full_state("caught-blocked after 200");
+}
+
+/* A caught SIGTRAP that the guest leaves unblocked, as Android's debuggerd
+ * installs one in every process, through `count` private injections. A
+ * step's trap resets the handler only while SIGTRAP is blocked or ignored, so
+ * none of them reads or repairs SIGTRAP's state, and the handler and the mask
+ * stay the guest's. */
+static void sigtrap_caught_unblocked_injections(int count) {
+  for (int i = 0; i < 3; i++)
+    SITE(SYS_getppid, 0, 0, 0, 0, 0);
+  sigtrap_set(trap_handler, 0);
+  for (int i = 0; i < count; i++)
+    SITEM(SYS_getppid, 0, 0, 0, 0, 0, SHAPE_PRIVATE);
+  char label[64];
+  snprintf(label, sizeof label, "caught-unblocked after %d", count);
+  sigtrap_full_state(label);
+}
+
+static void mode_sigtrap_caught_unblocked_injections(void) {
+  sigtrap_caught_unblocked_injections(200);
+}
+
+/* The same guest without the injections: what its setup and report cost. */
+static void mode_sigtrap_caught_unblocked_no_injections(void) {
+  sigtrap_caught_unblocked_injections(0);
 }
 
 /* A caught SIGTRAP that the guest blocks, after the guest installs a
@@ -5112,8 +5235,18 @@ int main(int argc, char** argv) {
     mode_sigtrap_ppoll_hold_then_read();
   else if (!strcmp(m, "sigtrap_callback_restore"))
     mode_sigtrap_callback_restore();
+  else if (!strcmp(m, "sigtrap_pending_restore_timer"))
+    mode_sigtrap_pending_restore_timer();
   else if (!strcmp(m, "sigtrap_caught_blocked_injections"))
     mode_sigtrap_caught_blocked_injections();
+  else if (!strcmp(m, "sigtrap_sigreturn_handover_timer"))
+    mode_sigtrap_sigreturn_handover_timer();
+  else if (!strcmp(m, "sigtrap_timer_unblocked"))
+    mode_sigtrap_timer_unblocked();
+  else if (!strcmp(m, "sigtrap_caught_unblocked_injections"))
+    mode_sigtrap_caught_unblocked_injections();
+  else if (!strcmp(m, "sigtrap_caught_unblocked_no_injections"))
+    mode_sigtrap_caught_unblocked_no_injections();
   else if (!strcmp(m, "sigtrap_caught_blocked_no_repair"))
     mode_sigtrap_caught_blocked_no_repair();
   else if (!strcmp(m, "sigtrap_caught_blocked_filter_install"))
