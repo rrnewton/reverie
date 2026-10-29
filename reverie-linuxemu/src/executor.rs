@@ -89,6 +89,10 @@ pub(crate) mod pipe_owner;
 #[path = "executor/entry_host_wait_tests.rs"]
 mod entry_host_wait_tests;
 
+#[cfg(test)]
+#[path = "executor/reaper_stack_tests.rs"]
+mod reaper_stack_tests;
+
 use capture_identity::CaptureMetadata;
 use capture_identity::CaptureObjectIdentity;
 use capture_identity::CapturedPipeIdentities;

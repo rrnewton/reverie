@@ -245,7 +245,9 @@ impl GuestThreadGroup {
 
     fn start_worker_join_helper(&self) -> Result<()> {
         self.start_worker_join_helper_with(
-            std::thread::Builder::new().name("reverie-kvm-join".into()),
+            std::thread::Builder::new()
+                .name("reverie-kvm-join".into())
+                .stack_size(crate::supervisor_thread::stack_bytes()),
             || {},
         )
     }

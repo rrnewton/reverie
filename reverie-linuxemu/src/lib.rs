@@ -73,3 +73,4 @@ use reverie_kvm_core::error_ext as error;
 use reverie_kvm_core::failure;
 use reverie_kvm_core::memory;
 use reverie_kvm_core::provider_memory;
+use reverie_kvm_core::supervisor_thread;

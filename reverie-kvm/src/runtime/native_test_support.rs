@@ -413,8 +413,10 @@ where
         let completion = Arc::new(ChildCompletionSlot::default());
         let child_completion = completion.clone();
         let (observed, observations) = std::sync::mpsc::channel();
-        let handle =
-            ChildThread::spawn_owned(std::thread::Builder::new(), child, move |mut child| {
+        let handle = ChildThread::spawn_owned(
+            std::thread::Builder::new().stack_size(crate::supervisor_thread::stack_bytes()),
+            child,
+            move |mut child| {
                 let outcome = match receiver.recv() {
                     Ok(
                         command @ (ChildStartCommand::Cancel
@@ -457,7 +459,8 @@ where
                     wait_context.publish_fixture_owner(*status, &child_completion)?;
                 }
                 result.map(|_| ())
-            });
+            },
+        );
         let handle = match handle {
             Ok(handle) => handle,
             Err((error, mut child)) => {
@@ -487,14 +490,17 @@ where
     ) {
         let failure = self.failure.clone();
         let group = self.workers.clone();
-        let handle = std::thread::spawn(move || {
-            crate::vm::finish_host_worker_outcome(Some(&failure), tid, work(), |failed| {
-                if failed {
-                    group.record_worker_failure(tid.as_raw());
-                }
+        let handle = std::thread::Builder::new()
+            .stack_size(crate::supervisor_thread::stack_bytes())
+            .spawn(move || {
+                crate::vm::finish_host_worker_outcome(Some(&failure), tid, work(), |failed| {
+                    if failed {
+                        group.record_worker_failure(tid.as_raw());
+                    }
+                })
+                .map(|()| (ExitStatus::Exited(0), Vec::new(), Vec::new()))
             })
-            .map(|()| (ExitStatus::Exited(0), Vec::new(), Vec::new()))
-        });
+            .expect("failed to spawn the native host worker");
         self.workers.add_worker_handle(tid.as_raw(), handle);
     }
 
