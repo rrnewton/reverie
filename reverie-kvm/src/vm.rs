@@ -6560,6 +6560,18 @@ impl KvmBackend {
         self.thread_group.exit_status()
     }
 
+    /// Whether this thread must select no more signals: its thread group has
+    /// begun to exit, as this backend published it or as LinuxEmu committed
+    /// it, or the group cancelled this worker (a group exit, the root's exec,
+    /// or a peer's failure). Linux's get_signal takes a group exit, or
+    /// another thread's exec, before every dequeue (SIGNAL_GROUP_EXIT and
+    /// group_exec_task, at the top of its loop).
+    pub(crate) fn guest_thread_takes_no_signal(&self, executor: &ElfExecutor) -> bool {
+        self.guest_thread_group_exit_status().is_some()
+            || self.guest_thread_is_cancelled()
+            || executor.committed_group_exit_status().is_some()
+    }
+
     pub(crate) fn request_guest_thread_group_exit(&self, status: ExitStatus) {
         self.thread_group.request_exit_group(status);
     }

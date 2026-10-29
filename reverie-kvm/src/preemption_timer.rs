@@ -125,31 +125,38 @@
 //!   registers that call restores. Found due anywhere else (by a kick that
 //!   stopped the guest in ring 0), it is armed again at its target (see
 //!   `KvmBackend::timer_instruction_boundary`).
-//! - After the callback, one pending signal is selected at the same point and
+//! - After the callback, the pending signals are selected at the same point and
 //!   delivered. Linux's return to user mode after a preemption calls
 //!   `schedule()` before `arch_do_signal_or_restart()`
 //!   (`exit_to_user_mode_loop`, `kernel/entry/common.c`), so at each of the
-//!   three points the timer event comes first and the signal second. Linux
-//!   then delivers every other eligible signal on the same return, each
-//!   frame on top of the last; like its other boundaries, this backend
-//!   delivers one per return, and the next waits for the next return. At a
-//!   user instruction boundary the signal's frame holds the live registers,
-//!   and nothing restarts: the interrupt that preempts a thread (the local
-//!   APIC timer or a reschedule IPI) enters with `orig_ax` -1, so
-//!   `handle_signal` in `arch/x86/kernel/signal.c` finds no syscall. The
+//!   three points the timer event comes first and the signals second. Linux
+//!   delivers every eligible signal on the same return, each frame on top of
+//!   the last, and so does this backend, at this boundary as at its others.
+//!   Linux's `get_signal` takes a group exit before every dequeue, so a thread
+//!   whose group began to exit, or that was cancelled, while its callback or a
+//!   signal's hook there ran selects no further signal there, also after a hook
+//!   that suppressed its signal or returned an ignored one, and ends before it
+//!   runs another instruction. The signal whose hook was running still gets its
+//!   frame, which the thread never runs, and a Tool that controls delivery a
+//!   `Caught` receipt for it, where Linux requeues it (`ptrace_signal`,
+//!   <https://github.com/rrnewton/reverie/issues/1208>). At a user instruction
+//!   boundary the signal's frame holds
+//!   the live registers, and nothing restarts: the interrupt that preempts a
+//!   thread (the local APIC timer or a reschedule IPI) enters with `orig_ax`
+//!   -1, so `handle_signal` in `arch/x86/kernel/signal.c` finds no syscall. The
 //!   signal hook sees the complete registers the timer event's callback saw,
 //!   segment selectors and FS and GS bases included. A boundary with no
 //!   eligible pending signal makes no selection. One where KVM has yet to
 //!   inject an exception (a host interrupt ended its delivery) defers the
-//!   selection to the first user boundary with no event left to inject: the
-//!   one that exception's own boundary leaves, after a fault's signal (whose
-//!   frame the signal's then goes on top of, under the mask that delivery
-//!   left) or after an intercepted CPUID or RDTSC's callback. At a syscall's
-//!   return the selection is the syscall's own, with its restart rules, and
-//!   at an `rt_sigreturn` it sees the registers and the mask that call
-//!   restores. Selection, masking, the Tool's signal hook and the frame are
-//!   those of every other boundary. A signal that another thread sends while
-//!   the callback runs counts.
+//!   selection to the first user boundary with no event left to inject: the one
+//!   that exception's own boundary leaves, after a fault's signal (whose frame
+//!   the signal's then goes on top of, under the mask that delivery left) or
+//!   after an intercepted CPUID or RDTSC's callback. At a syscall's return the
+//!   selection is the syscall's own, with its restart rules, and at an
+//!   `rt_sigreturn` it sees the registers and the mask that call restores.
+//!   Selection, masking, the Tool's signal hook and the frame are those of
+//!   every other boundary. A signal that another thread sends while the
+//!   callback runs counts.
 //! - The callback can inject syscalls that return, and exits. A process
 //!   action, a tail injection other than an exit, a signal that needs a
 //!   syscall return frame, or an `rt_sigprocmask` that would make a pending
