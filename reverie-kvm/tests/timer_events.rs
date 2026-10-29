@@ -1776,9 +1776,10 @@ fn after_branch(registers: &Registers, branch: u64) -> u64 {
 }
 
 /// The most guests [`lands_exactly`] runs for one target: as many again as
-/// the exact runs it needs, for kicks proven late. On this host about one
-/// kick in a hundred came past the 2,000 RCB margin, and one in seven at a
-/// load average of 43.
+/// the exact runs it needs, for kicks proven late. How often a kick comes
+/// late depends on the host, its load and how long the guest ran before it
+/// (see the limits in reverie-kvm's `preemption_timer.rs`); as many as one
+/// in seven came late when these tests ran at a load average of 43.
 const ATTEMPTS: usize = 2 * REPEATS;
 
 /// A plan that requests one precise event of `ticks` RCBs at the start of
@@ -1846,9 +1847,9 @@ fn the_guest_budget_of_a_precise_target_is_a_total() {
 ///
 /// A request whose last notification is a kick (`kicked`: its target lies
 /// more than the skid margin plus the single-step allowance past the clock
-/// where it is requested) can come late: the PMU interrupt behind about one
-/// kick in a thousand on an idle host, and one in a hundred on a busy one,
-/// arrives past the margin.
+/// where it is requested) can come late: now and then its kick's exit comes
+/// past the margin, more often after a longer run and on a busier host (see
+/// the limits in reverie-kvm's `preemption_timer.rs`).
 /// Such a run gets its one event at or past the target before any entry of
 /// the window began (see [`WINDOW_ENTRIES`]), recorded as late: exactly at
 /// the target too, since an asynchronous exit may have run past the boundary
