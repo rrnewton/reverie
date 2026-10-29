@@ -11389,6 +11389,101 @@ mod tests {
         assert_eq!(executor.take_unsupported_refusal(), None);
     }
 
+    /// The protection-key calls, userfaultfd, and a ppoll with a temporary
+    /// signal mask that finds nothing ready are refused with ENOSYS and their
+    /// typed refusals (`ProtectionKeys`, `Userfaultfd`, `MaskedWait`), which no
+    /// other result carries: not a ppoll without a mask, and not a call that
+    /// succeeds.
+    #[test]
+    fn unimplemented_calls_carry_their_typed_refusals() {
+        const MASK: u64 = 0x100;
+        const ZERO_TIMEOUT: u64 = 0x200;
+        let root = TestDir::new();
+        let memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
+        let mut executor = ElfExecutor::new(test_state(&root.0), false);
+        let refusal = |operation, diagnostic| {
+            Some(reverie::UnsupportedRefusal::new(
+                operation,
+                reverie::Errno::ENOSYS,
+                diagnostic,
+            ))
+        };
+        let protection_keys = refusal(
+            reverie::UnsupportedOperation::ProtectionKeys,
+            PROTECTION_KEY_REFUSAL,
+        );
+        for (number, args) in [
+            (libc::SYS_pkey_alloc, [0; 6]),
+            (
+                libc::SYS_pkey_mprotect,
+                [PAGE_SIZE, PAGE_SIZE, libc::PROT_READ as u64, 1, 0, 0],
+            ),
+            (libc::SYS_pkey_free, [1, 0, 0, 0, 0, 0]),
+        ] {
+            assert_eq!(
+                executor.execute(&SyscallRequest::new(number as u64, args), &memory),
+                negative_errno(libc::ENOSYS),
+                "syscall {number}"
+            );
+            assert_eq!(
+                executor.take_unsupported_refusal(),
+                protection_keys,
+                "syscall {number}"
+            );
+        }
+        assert_eq!(
+            executor.execute(
+                &SyscallRequest::new(
+                    libc::SYS_userfaultfd as u64,
+                    [libc::O_CLOEXEC as u64, 0, 0, 0, 0, 0]
+                ),
+                &memory
+            ),
+            negative_errno(libc::ENOSYS)
+        );
+        assert_eq!(
+            executor.take_unsupported_refusal(),
+            refusal(
+                reverie::UnsupportedOperation::Userfaultfd,
+                USERFAULTFD_REFUSAL
+            )
+        );
+        // No descriptors: nothing is ready, so a masked ppoll would wait.
+        assert_eq!(
+            executor.execute(
+                &SyscallRequest::new(
+                    libc::SYS_ppoll as u64,
+                    [0, 0, 0, MASK, KERNEL_SIGSET_SIZE as u64, 0]
+                ),
+                &memory
+            ),
+            negative_errno(libc::ENOSYS)
+        );
+        assert_eq!(
+            executor.take_unsupported_refusal(),
+            refusal(
+                reverie::UnsupportedOperation::MaskedWait,
+                MASKED_PPOLL_REFUSAL
+            )
+        );
+        // Without a mask, the same ppoll with a zero timeout answers 0.
+        assert_eq!(
+            executor.execute(
+                &SyscallRequest::new(libc::SYS_ppoll as u64, [0, 0, ZERO_TIMEOUT, 0, 0, 0]),
+                &memory
+            ),
+            0
+        );
+        assert_eq!(executor.take_unsupported_refusal(), None);
+        assert!(
+            executor.execute(
+                &SyscallRequest::new(libc::SYS_getpid as u64, [0; 6]),
+                &memory
+            ) > 0
+        );
+        assert_eq!(executor.take_unsupported_refusal(), None);
+    }
+
     /// Every call that Detcore decides on every backend
     /// (`TOOL_DECIDED_SYSCALLS`) answers ENOSYS with the typed refusal
     /// `UnsupportedOperation::ToolDecided`. That nothing is forwarded is shown
@@ -38664,6 +38759,106 @@ mod tests {
             Some(negative_errno(libc::ENOTSUP))
         );
         assert!(executor.take_process_action().is_none());
+    }
+
+    /// A clone asking for sharing that Linux allows and this backend cannot
+    /// give the child keeps its answer, creates no child, and records the
+    /// typed refusal `UnsupportedOperation::CloneSharing`, naming the case:
+    /// CLONE_VM for a new process without CLONE_VFORK (EOPNOTSUPP), by clone
+    /// and by clone3, and a thread without CLONE_FS or without CLONE_FILES
+    /// (EINVAL). The neighbouring refusals of clone flags record none: a thread
+    /// without CLONE_SIGHAND (Linux's own EINVAL), CLONE_VFORK without CLONE_VM
+    /// and a namespace flag (EOPNOTSUPP).
+    #[test]
+    fn clone_sharing_the_backend_cannot_give_is_a_typed_refusal() {
+        const CLONE3_ARGS: u64 = 0x200;
+        const CHILD_STACK: u64 = 0x4000;
+
+        let root = TestDir::new();
+        let mut memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
+        let mut executor = ElfExecutor::new(test_state(&root.0), false);
+        let refusal = |errno, diagnostic| {
+            Some(reverie::UnsupportedRefusal::new(
+                reverie::UnsupportedOperation::CloneSharing,
+                reverie::Errno::new(errno),
+                diagnostic,
+            ))
+        };
+        let shared_memory = SyscallRequest::new(
+            libc::SYS_clone as u64,
+            [
+                libc::CLONE_VM as u64 | libc::SIGCHLD as u64,
+                CHILD_STACK,
+                0,
+                0,
+                0,
+                0,
+            ],
+        );
+        let mut clone3 = [0_u8; 88];
+        clone3[0..8].copy_from_slice(&(libc::CLONE_VM as u64).to_le_bytes());
+        memory.write(CLONE3_ARGS, &clone3).unwrap();
+        let shared_memory_clone3 = SyscallRequest::new(
+            libc::SYS_clone3 as u64,
+            [CLONE3_ARGS, clone3.len() as u64, 0, 0, 0, 0],
+        );
+        for request in [shared_memory, shared_memory_clone3] {
+            assert_eq!(
+                executor.execute_process_action(&request, &memory),
+                Some(negative_errno(libc::ENOTSUP)),
+                "{request:?}"
+            );
+            assert!(executor.take_process_action().is_none());
+            assert_eq!(
+                executor.take_unsupported_refusal(),
+                refusal(libc::ENOTSUP, SHARED_MEMORY_PROCESS_REFUSAL),
+                "{request:?}"
+            );
+        }
+        for missing in [libc::CLONE_FS, libc::CLONE_FILES] {
+            let flags = THREAD_CLONE_REQUIRED_FLAGS & !(missing as u64);
+            let request =
+                SyscallRequest::new(libc::SYS_clone as u64, [flags, CHILD_STACK, 0, 0, 0, 0]);
+            assert_eq!(
+                executor.execute_process_action(&request, &memory),
+                Some(negative_errno(libc::EINVAL)),
+                "flags {flags:#x}"
+            );
+            assert!(executor.take_process_action().is_none());
+            assert_eq!(
+                executor.take_unsupported_refusal(),
+                refusal(libc::EINVAL, UNSHARED_THREAD_REFUSAL),
+                "flags {flags:#x}"
+            );
+        }
+        for (flags, errno) in [
+            (
+                THREAD_CLONE_REQUIRED_FLAGS & !(libc::CLONE_SIGHAND as u64),
+                libc::EINVAL,
+            ),
+            (
+                libc::CLONE_VFORK as u64 | libc::SIGCHLD as u64,
+                libc::ENOTSUP,
+            ),
+            (
+                libc::CLONE_NEWNS as u64 | libc::SIGCHLD as u64,
+                libc::ENOTSUP,
+            ),
+        ] {
+            let request =
+                SyscallRequest::new(libc::SYS_clone as u64, [flags, CHILD_STACK, 0, 0, 0, 0]);
+            assert_eq!(
+                executor.execute_process_action(&request, &memory),
+                Some(negative_errno(errno)),
+                "flags {flags:#x}"
+            );
+            assert!(executor.take_process_action().is_none());
+            assert_eq!(
+                executor.take_unsupported_refusal(),
+                None,
+                "flags {flags:#x}"
+            );
+        }
     }
 
     #[test]
