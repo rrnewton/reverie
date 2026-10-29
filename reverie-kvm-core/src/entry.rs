@@ -1798,6 +1798,7 @@ impl Drop for Closed {
 }
 
 #[cfg(test)]
+#[allow(clippy::disallowed_methods, reason = "tests may make threads freely")]
 mod tests {
     use std::future::Future;
     use std::pin::pin;
@@ -3121,6 +3122,7 @@ fn captured_owner_is_visible_before_wake_outside_registry_lock() {
 /// The participant's origin, which lives in the participant rather than in
 /// its member under the registry lock (`Participant::origin`).
 #[cfg(test)]
+#[allow(clippy::disallowed_methods, reason = "tests may make threads freely")]
 mod participant_origin_tests {
     use std::sync::mpsc;
     use std::time::Duration;

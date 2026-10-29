@@ -467,6 +467,7 @@ pub fn accept_delivered_for_test() {
 }
 
 #[cfg(test)]
+#[allow(clippy::disallowed_methods, reason = "tests may make threads freely")]
 mod tests {
     use super::*;
 
