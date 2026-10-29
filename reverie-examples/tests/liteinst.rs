@@ -1301,12 +1301,23 @@ fn exact_strace_tool_observes_filtered_write() {
     assert!(stderr.contains(" = 6"), "{stderr}");
 }
 
+fn run_strace(backend: &str, extra: &[&str], guest: &[&str]) -> Output {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_strace"));
+    command
+        .arg("--backend")
+        .arg(backend)
+        .args(extra)
+        .arg("--")
+        .args(guest);
+    output_with_timeout(&mut command)
+}
+
 #[test]
 fn ptrace_strace_reports_exit_after_echo_closes_stdio() {
     // GNU echo closes stdout and stderr before exit. Keep the original write
     // oracle above unchanged, and also require the consuming Tool diagnostics
     // to survive those application descriptor closes through controller RPC.
-    let output = run("strace", &["--trace", "write"], &["/bin/echo", "hello"]);
+    let output = run_strace("ptrace", &["--trace", "write"], &["/bin/echo", "hello"]);
     assert!(output.status.success(), "{output:?}");
     assert_eq!(output.stdout, b"hello\n");
     let stderr = String::from_utf8(output.stderr).unwrap();

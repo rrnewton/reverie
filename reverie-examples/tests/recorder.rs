@@ -15,6 +15,8 @@
 use std::path::Path;
 use std::process::Command;
 
+use reverie::GlobalTool;
+
 /// Every run gets the sanitizer settings reverie-ptrace adds to its guest's
 /// environment (tracer.rs), so that ptrace's guest has the native one: the
 /// number of variables decides when `sh -c` grows its heap.
