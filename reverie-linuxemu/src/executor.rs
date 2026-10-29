@@ -3089,7 +3089,7 @@ mod tests {
 
         for (path, dirfd, control_error) in [
             ("", libc::AT_FDCWD, libc::ENOENT),
-            ("missing", GUEST_NOFILE_LIMIT, libc::EBADF),
+            ("missing", guest_nofile_limit(), libc::EBADF),
             ("missing", libc::AT_FDCWD, libc::ENOENT),
             ("/proc/self/fdinfo/999", libc::AT_FDCWD, libc::ENOENT),
             ("/proc/self/fd/999", libc::AT_FDCWD, libc::ENOENT),
@@ -3705,7 +3705,7 @@ mod tests {
 
         for (path, dirfd, control_error) in [
             ("", libc::AT_FDCWD, libc::ENOENT),
-            ("missing", GUEST_NOFILE_LIMIT, libc::EBADF),
+            ("missing", guest_nofile_limit(), libc::EBADF),
             ("missing", libc::AT_FDCWD, libc::ENOENT),
             ("/proc/self/fdinfo/999", libc::AT_FDCWD, libc::ENOENT),
             ("/proc/self/fd/999", libc::AT_FDCWD, libc::ENOENT),
@@ -12196,7 +12196,7 @@ mod tests {
                     (1, 0, &[0]),
                     (3, 2, &[0, libc::POLLNVAL, libc::POLLIN]),
                     (
-                        GUEST_NOFILE_LIMIT as u64 + 1,
+                        guest_nofile_limit() as u64 + 1,
                         negative_errno(libc::EINVAL),
                         &[],
                     ),
@@ -20745,7 +20745,7 @@ mod tests {
             ("bad-pointer", info, native, bad_address, 1, 0, libc::ESPIPE),
             (
                 "invalid-fd",
-                GUEST_NOFILE_LIMIT as i64,
+                guest_nofile_limit() as i64,
                 -1,
                 BUFFER,
                 1,
@@ -20754,7 +20754,7 @@ mod tests {
             ),
             (
                 "invalid-fd-negative",
-                GUEST_NOFILE_LIMIT as i64,
+                guest_nofile_limit() as i64,
                 -1,
                 BUFFER,
                 1,
@@ -21465,6 +21465,38 @@ mod tests {
             .flatten()
             .map(|&(fd, _)| fd)
             .collect()
+    }
+
+    #[test]
+    fn dup_to_self_at_the_allocation_bound_is_not_an_allocation() {
+        let root = TestDir::new();
+        let mut state = test_state(&root.0);
+        let mut memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
+        // Place a descriptor at the current bound directly: it stands for
+        // one allocated while RLIMIT_NOFILE was higher, then lowered.
+        let bound = guest_nofile_limit();
+        state
+            .files
+            .insert(bound, std::fs::File::open("/dev/null").unwrap());
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_dup2,
+                [bound as u64, bound as u64, 0, 0, 0, 0],
+            ),
+            i64::from(bound)
+        );
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_dup3,
+                [bound as u64, bound as u64, 0, 0, 0, 0],
+            ),
+            negative_errno(libc::EINVAL)
+        );
+        state.files.remove(&bound);
     }
 
     #[test]
@@ -37151,7 +37183,14 @@ mod tests {
                 &mut memory,
                 &mut state,
                 libc::SYS_fcntl,
-                [4, libc::F_DUPFD as u64, GUEST_NOFILE_LIMIT as u64, 0, 0, 0,],
+                [
+                    4,
+                    libc::F_DUPFD as u64,
+                    guest_nofile_limit() as u64,
+                    0,
+                    0,
+                    0,
+                ],
             ),
             negative_errno(libc::EINVAL)
         );

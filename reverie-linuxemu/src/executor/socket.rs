@@ -1127,7 +1127,8 @@ pub(super) fn install_received_rights(
             )
         })
         .collect();
-    let guest_fds = match available_guest_fds_with_limit(state, rights.len(), GUEST_NOFILE_LIMIT) {
+    let guest_fds = match available_guest_fds_with_limit(state, rights.len(), guest_nofile_limit())
+    {
         Ok(guest_fds) => guest_fds,
         Err(error) => {
             release_dropped_proc_transfers(

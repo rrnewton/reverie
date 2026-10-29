@@ -10,7 +10,30 @@
 
 use super::*;
 
-pub(super) const GUEST_NOFILE_LIMIT: libc::c_int = 1 << 20;
+/// The capacity of the guest descriptor table. A descriptor allocated
+/// while the limit was higher stays usable after the limit is lowered, so
+/// lookups that only test existence (fdinfo path parsing, `select`) bound
+/// by this capacity, never by the current allocation limit.
+pub(super) const GUEST_FD_TABLE_CAPACITY: libc::c_int = 1 << 20;
+
+/// The bound on allocating a new guest descriptor, as Linux bounds it:
+/// `alloc_fd` refuses a descriptor at or above the process's
+/// `RLIMIT_NOFILE` soft limit
+/// (<https://github.com/torvalds/linux/blob/v6.18/fs/file.c>). The guest's
+/// descriptors live in this process, so this process's limit is the
+/// guest's, exactly as it is for a traced guest process, which inherits
+/// the same limit. Read at each allocation, as the kernel reads the
+/// current limit. Detcore's virtual `prlimit64` reporting is its own
+/// decision on every backend and is not this bound.
+pub(super) fn guest_nofile_limit() -> libc::c_int {
+    // SAFETY: limit is writable for the call.
+    let mut limit: libc::rlimit = unsafe { std::mem::zeroed() };
+    if unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &mut limit) } != 0 {
+        return GUEST_FD_TABLE_CAPACITY;
+    }
+    let soft = libc::c_int::try_from(limit.rlim_cur).unwrap_or(libc::c_int::MAX);
+    soft.min(GUEST_FD_TABLE_CAPACITY)
+}
 pub(super) const ROBUST_LIST_HEAD_SIZE: u64 = 3 * std::mem::size_of::<u64>() as u64;
 // prctl(2) PR_CAPBSET_READ and PR_CAPBSET_DROP options.
 pub(super) const PR_CAPBSET_READ: u64 = 23;
@@ -149,5 +172,25 @@ pub(super) fn synthetic_proc_create_directory_errno(
         // final dentry before may_open, so an existing regular file is
         // ENOTDIR here; O_EXCL above still yields EEXIST.
         RegularCreateDirectoryPolicy::LegacyLookup => libc::ENOTDIR,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn guest_nofile_limit_is_the_host_soft_limit() {
+        // SAFETY: limit is writable for the call.
+        let mut limit: libc::rlimit = unsafe { std::mem::zeroed() };
+        assert_eq!(
+            unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &mut limit) },
+            0
+        );
+        let expected = libc::c_int::try_from(limit.rlim_cur)
+            .unwrap_or(libc::c_int::MAX)
+            .min(GUEST_FD_TABLE_CAPACITY);
+        assert_eq!(guest_nofile_limit(), expected);
+        assert!(guest_nofile_limit() > 2, "standard descriptors must fit");
     }
 }
