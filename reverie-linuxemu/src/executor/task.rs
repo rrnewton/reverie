@@ -2727,7 +2727,10 @@ impl DroppedRunReaper {
         let reaping = crate::failure::spawn_owned(
             std::thread::Builder::new().name("reverie-kvm-reaper".into()),
             shared.clone(),
-            Self::reap,
+            |shared| {
+                let _stack_probe = reverie_kvm_core::stack_probe::Guard::new("reaper");
+                Self::reap(shared)
+            },
         )
         .map_err(|(error, _)| crate::Error::from(error).cleanup("dropped-run reaper spawn"))?;
         Ok((Self { shared }, reaping))

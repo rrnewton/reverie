@@ -283,6 +283,7 @@ impl GuestThreadGroup {
         // No originals are transferred until both Ready and this exact handle
         // are in the ledger. Refusal returns the bootstrap owner to this scope.
         match crate::failure::spawn_owned(builder, bootstrap, move |bootstrap| {
+            let _stack_probe = reverie_kvm_core::stack_probe::Guard::new("join");
             run_helper(bootstrap, before_ready)
         }) {
             Ok(handle) => {

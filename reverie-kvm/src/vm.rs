@@ -3834,6 +3834,7 @@ impl KvmBackend {
                     "reverie-kvm-guest-{child_tid}"
                 ))
                 .spawn(move || {
+                        let _stack_probe = reverie_kvm_core::stack_probe::Guard::new("guest-native");
                         let _completion_notice = completion_notice;
                         let mut run_child = move || {
                             let driver = child.start_entry_driver();
@@ -4327,6 +4328,7 @@ impl KvmBackend {
                         subscriptions,
                         child_exit_context,
                     )| {
+                        let _stack_probe = reverie_kvm_core::stack_probe::Guard::new("process");
                         let driver = child.backend.start_entry_driver();
                         child.executor.bind_address_space(&child.backend.memory);
                         let execution = std::panic::catch_unwind(std::panic::AssertUnwindSafe(
@@ -4658,6 +4660,7 @@ impl KvmBackend {
                         config,
                         subscriptions,
                     )| {
+                        let _stack_probe = reverie_kvm_core::stack_probe::Guard::new("guest-tool");
                         let _completion_notice = completion_notice;
                         let run_child = move || {
                             let driver = child.start_entry_driver();
@@ -6062,6 +6065,7 @@ impl KvmBackend {
     pub fn run_static_elf(&mut self) -> Result<i32> {
         // Any return finishes the run; only an unwinding run leaves its
         // backend abandoned.
+        let _stack_probe = reverie_kvm_core::stack_probe::Guard::new("root-native");
         let admission = RunAdmission::begin(&self.abandoned_runs)?;
         let status = self.run_admitted_static_elf();
         self.finish_run(admission);
@@ -6081,6 +6085,7 @@ impl KvmBackend {
 
     /// Runs the installed ELF process tree and captures its standard output streams.
     pub fn run_static_elf_captured(&mut self) -> Result<(i32, Vec<u8>, Vec<u8>)> {
+        let _stack_probe = reverie_kvm_core::stack_probe::Guard::new("root-native");
         let admission = RunAdmission::begin(&self.abandoned_runs)?;
         let captured = self.run_admitted_static_elf_captured();
         self.finish_run(admission);

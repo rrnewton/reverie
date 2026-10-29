@@ -122,7 +122,10 @@ impl TaskCleanup {
         let thread = ChildThread::spawn_owned(
             std::thread::Builder::new().name("kvm-task-file-exit".into()),
             drive,
-            Driver::run,
+            |drive| {
+                let _stack_probe = reverie_kvm_core::stack_probe::Guard::new("file-exit");
+                Driver::run(drive)
+            },
         )
         .map_err(|(error, _empty_driver)| {
             crate::Error::from(error).cleanup("terminal-file service spawn")

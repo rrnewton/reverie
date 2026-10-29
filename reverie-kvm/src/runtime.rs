@@ -6006,6 +6006,7 @@ impl KvmBackend {
     {
         // Any return, including a setup error, finishes the run. Only a
         // dropped or unwinding run leaves its backend abandoned.
+        let _stack_probe = reverie_kvm_core::stack_probe::Guard::new("root-tool");
         let admission = RunAdmission::begin(&self.abandoned_runs)?;
         let completion = self
             .run_admitted_static_elf_with_tool::<T>(&admission, config, capture_output)

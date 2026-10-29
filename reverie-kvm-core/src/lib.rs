@@ -36,6 +36,7 @@ pub mod failure;
 pub mod layout;
 pub mod memory;
 pub mod provider_memory;
+pub mod stack_probe;
 pub mod supervisor_thread;
 pub mod syscall;
 

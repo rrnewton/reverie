@@ -33,6 +33,9 @@ pub const KVM_SUPERVISOR_THREAD_STACK_BYTES: usize = 16 << 20;
 /// that variable able to raise the stack for a Tool that needs more, and
 /// never lets it shrink the stack below what the backend needs.
 pub fn stack_bytes() -> usize {
+    if let Some(bytes) = crate::stack_probe::override_bytes() {
+        return bytes;
+    }
     static RUST_MIN_STACK: OnceLock<Option<usize>> = OnceLock::new();
     let requested = *RUST_MIN_STACK.get_or_init(|| {
         std::env::var_os("RUST_MIN_STACK").and_then(|value| value.to_str()?.parse().ok())
