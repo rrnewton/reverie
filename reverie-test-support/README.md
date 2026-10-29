@@ -210,3 +210,38 @@ cargo test -p reverie-test-support --features dbt --test inject_then_tail -- \
 DBT keeps the existing initial-process restrictions and signal-error contract.
 Buck registers the ptrace target; the optional DBT producer is explicit in the
 Cargo validation and CI paths.
+
+## AT_RANDOM through the initial post-exec hook
+
+The `at_random` target reuses the standalone example's actual `TestTool` and
+16-byte `PRNG_SEED`. Its post-exec hook writes that seed through the guest's
+auxiliary vector. The original standalone guest, host and main bodies remain
+unchanged; these are new command tests, not execution of that standalone.
+
+Each positive compiles the embedded C fixture with `CC` (or `cc`) in an owned,
+executable temporary directory. The same image and empty argument list run
+natively first, then through ptrace or the authenticated DBT caller. Every run
+requires exit 0, exactly 16 stdout bytes and empty stderr. Native entropy is
+unconstrained; the Tool runs compare every byte with the shared seed. The C
+fixture contains no copy of the seed. Compiler output and image bytes are
+retained before launch; independent compilations need not produce equal hashes.
+These helpers have no local timeout.
+
+The default target has one ptrace test. Feature `dbt` adds the actual caller
+positive and an independent missing-manifest guard, for three tests total.
+The guard authenticates the current pair before requiring refusal. Unit global
+state alone does not authenticate the selected Tool. No probabilistic Noop
+negative, initial libc-canary timing, auxv-source branch or exec/re-exec support
+is claimed. The existing DBT initial-process and signal-error limits remain.
+
+```sh
+reverie-dbt/scripts/build-client.sh \
+  --caller-manifest tests/fixtures/at-random-dbt-runtime/Cargo.toml \
+  --profile debug --jobs 4 --check
+cargo test -p reverie-test-support --features dbt --test at_random -- \
+  --test-threads=1
+```
+
+Buck registers the ptrace target; Cargo validation and both CI jobs explicitly
+produce the DBT caller before its consumers. The maintained testing helper
+installs `reverie=trace` independently of `RUST_LOG`.

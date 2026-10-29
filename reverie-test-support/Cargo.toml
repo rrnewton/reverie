@@ -57,3 +57,7 @@ path = "../tests/vdso.rs"
 [[test]]
 name = "inject_then_tail"
 path = "../tests/inject_then_tail.rs"
+
+[[test]]
+name = "at_random"
+path = "../tests/at_random.rs"

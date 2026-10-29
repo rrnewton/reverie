@@ -224,6 +224,7 @@ rust_library(
                 {"name": "stat", "path": "../tests/stat.rs"},
                 {"name": "vdso", "path": "../tests/vdso.rs"},
                 {"name": "inject_then_tail", "path": "../tests/inject_then_tail.rs"},
+                {"name": "at_random", "path": "../tests/at_random.rs"},
                 {"name": "dbt_command", "path": "tests/dbt_command.rs", "required-features": ["dbt"]},
             ],
             "dependencies_override": {
@@ -349,6 +350,23 @@ rust_unittest(
     deps = [
         "fbsource//third-party/rust:tempfile",
         "fbsource//third-party/rust:tracing",
+        ":reverie",
+        ":reverie-test-support",
+    ],
+)
+
+rust_unittest(
+    name = "generic-at-random",
+    srcs = [
+        "tests/at_random.rs",
+        "tests/fixtures/at-random-command.c",
+        "tests/support/at_random_command.rs",
+        "tests/tool_fixtures/at_random.rs",
+    ],
+    crate_root = "tests/at_random.rs",
+    rustc_flags = sanitized_feature,
+    deps = [
+        "fbsource//third-party/rust:tempfile",
         ":reverie",
         ":reverie-test-support",
     ],
