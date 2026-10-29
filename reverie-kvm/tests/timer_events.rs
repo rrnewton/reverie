@@ -300,6 +300,10 @@ struct Plan {
     precise: bool,
     /// From the callback of the guest's `getpid`, request this many RCBs.
     rearm_at_getpid: Option<u64>,
+    /// From the callback of each of the guest's `getpid`s, request the last
+    /// request's target this many RCBs earlier, as a Tool that charges each
+    /// syscall against a thread's budget renews its request.
+    renew_at_getpid: Option<u64>,
     /// From a signal's callback, request this many RCBs.
     rearm_at_signal: Option<u64>,
     /// Ask for a precise event with an instruction offset, and for 0 RCBs
@@ -653,6 +657,8 @@ struct Counts {
     timers: u32,
     /// Rendezvous sends (`tgkill` or `kill`) the thread has made.
     sends: u32,
+    /// The target of the thread's last request.
+    target: u64,
 }
 
 /// A process SIGALRM, as the kernel would queue it.
@@ -731,6 +737,7 @@ async fn arm<G: Guest<TimerTool>>(guest: &mut G, ticks: u64) {
     } else {
         guest.set_timer(schedule).unwrap();
     }
+    guest.thread_state_mut().target = clock + ticks;
     guest.send_rpc(Event::Requested { clock, ticks }).await;
 }
 
@@ -862,6 +869,11 @@ impl Tool for TimerTool {
                     guest.send_rpc(Event::Sent { gate, needed }).await;
                 }
                 return Ok(sent?);
+            }
+            (_, Sysno::getpid) if plan.renew_at_getpid.is_some() => {
+                let target = guest.thread_state().target - plan.renew_at_getpid.unwrap();
+                let clock = guest.read_clock().unwrap();
+                arm(guest, target - clock).await
             }
             (_, Sysno::getpid) if plan.rearm_at_getpid.is_some() => {
                 arm(guest, plan.rearm_at_getpid.unwrap()).await
@@ -1836,12 +1848,14 @@ fn the_guest_budget_of_a_precise_target_is_a_total() {
 /// more than the skid margin plus the single-step allowance past the clock
 /// where it is requested) can come late: the PMU interrupt behind about one
 /// kick in a thousand on an idle host, and one in a hundred on a busy one,
-/// arrives past the margin. Such a run gets its one event past the target,
-/// recorded as late, before any entry of the window began (see
-/// [`WINDOW_ENTRIES`]), and is run again, within [`ATTEMPTS`] guests in all
-/// (see [`within_attempts`]). Every other run must land exactly and record
-/// no skid overshoot (the process-global witness count), so a miss after the
-/// window's entries began fails.
+/// arrives past the margin.
+/// Such a run gets its one event at or past the target before any entry of
+/// the window began (see [`WINDOW_ENTRIES`]), recorded as late: exactly at
+/// the target too, since an asynchronous exit may have run past the boundary
+/// right after the target branch. It is run again, within [`ATTEMPTS`]
+/// guests in all (see [`within_attempts`]). Every other run must land exactly
+/// and record no skid overshoot (the process-global witness count), so a
+/// miss after the window's entries began fails.
 fn lands_exactly(
     program: &Program,
     plan: Plan,
@@ -1866,7 +1880,9 @@ fn lands_exactly(
              {events:?}"
         );
         let clocks = timer_clocks(&events);
-        if kicked && clocks.len() == 1 && clocks[0] > target && entries == 0 {
+        if kicked && clocks.len() == 1 && clocks[0] >= target && entries == 0 {
+            // No step came first, so the event is late even at exactly the
+            // target, and must have been recorded as late.
             assert!(witnessed > 0, "a late event is recorded: {context}");
             println!(
                 "late run: target {target}, attempt {attempt}, delivered at {} before any \
@@ -2308,6 +2324,47 @@ fn a_replaced_or_stale_precise_request_still_lands_exactly() {
     );
     // The control: without the getpid, the first request lands exactly.
     lands_exactly(&program(""), plan, 3_000, |r| after_branch(r, 2_990), true);
+}
+
+/// A precise request renewed at each of 20 getpids, each time earlier, as a
+/// Tool that charges each syscall against a thread's budget renews it, lands
+/// exactly at the last target, with the same registers every time. The
+/// first renewal moves the point the request needs before the pending
+/// overflow, which the next entry reprograms with slack (see reverie-kvm's
+/// `preemption_timer.rs`). Renewals 1,000 RCBs apart then stay within that
+/// slack, and ones 200,000 apart move past it and reprogram it again. Either
+/// way the guest then runs into the overflow the slack brought forward, an
+/// early kick that decides nothing, before its first stage, second stage and
+/// single steps take it to the target.
+#[test]
+fn a_precise_request_renewed_earlier_at_each_syscall_still_lands_exactly() {
+    if bounded("a_precise_request_renewed_earlier_at_each_syscall_still_lands_exactly") {
+        return;
+    }
+    const RENEWALS: u64 = 20;
+    // Ten RCBs, then a getpid, for each renewal: the loop starts 200 RCBs
+    // on.
+    let calls = format!("{TEN_RCBS}mov $39,%eax\nsyscall\n").repeat(RENEWALS as usize);
+    let before = 10 * RENEWALS;
+    for (first, by) in [(4_000_000, 1_000), (10_000_000, 200_000)] {
+        let target = first - RENEWALS * by;
+        let program = labelled(&calls, target - before + PRECISE_TAIL, EXIT);
+        let plan = Plan {
+            renew_at_getpid: Some(by),
+            ..precise(first)
+        };
+        let registers = lands_exactly(
+            &program,
+            plan,
+            target,
+            |r| after_branch(r, target - before),
+            true,
+        );
+        println!(
+            "renewed precise request: {first} RCBs, renewed {RENEWALS} times {by} RCBs earlier: \
+             {REPEATS} runs at clock {target}, {registers:x?}"
+        );
+    }
 }
 
 /// Where the guests of the signal tests below keep their SIGUSR1 handler's

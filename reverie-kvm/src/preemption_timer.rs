@@ -42,6 +42,49 @@
 //! both events) forgets it, and the next armed entry programs the event
 //! afresh. A distance longer than [`MAX_PERIOD`] is programmed in pieces.
 //!
+//! A pending overflow that would come too late is reprogrammed with slack: up
+//! to [`MAX_ARMING_SLACK`] RCBs, and at most half the distance, before the
+//! point the request needs, or not at all if that would be less than
+//! [`MIN_ARMING_SLACK`]. A Tool that renews its request after each event with
+//! less of a budget left (one that charges each syscall against a thread's
+//! budget of branches renews it after each syscall, a little earlier each time)
+//! would otherwise cost one reprogramming per renewal. With the slack, a
+//! renewal that moves the point `d` RCBs earlier costs one reprogramming per
+//! `MAX_ARMING_SLACK / d` renewals while the point is at least twice the slack
+//! away, more often closer than that, and one per renewal within twice
+//! [`MIN_ARMING_SLACK`] of it. A programming with nothing pending (the first
+//! after the event opens, one after a cancel quieted it, one after the clock
+//! reached the pending overflow) has no slack, nor has one inside a precise
+//! request's stepping region, so a thread whose requests never move earlier (a
+//! guest that spins from one event to the next) is programmed exactly as it
+//! would be without slack.
+//!
+//! The slack changes when the backend looks, never what it decides at a given
+//! clock. An overflow the slack brought forward kicks the guest before the
+//! point the request needs, unless renewals have since moved that point back to
+//! within the kick's skid of it, or the host held the kick's interrupt. An exit
+//! short of the point decides nothing; it can only end a first stage that it
+//! finds no more than [`SINGLESTEP_TIMEOUT_RCBS`] short of its point, as any
+//! exit there does (see [`TimerState::observe_exit`]). An exit at or past the
+//! point is decided as the kick of an overflow programmed there would be.
+//! Either way the overflow is then reached, so the next entry programs the
+//! point the request then needs with nothing pending, and so without slack.
+//! Such an early notification, one whose exit is short of the point, costs
+//! three host syscalls: the `KVM_RUN` it ends, the drain of its kick, and the
+//! next programming. It needs a programming with slack before it, which needs a
+//! renewal that moved the point earlier than the pending overflow, and then the
+//! guest must run at least half the distance to the point without another
+//! renewal moving it past the new overflow, which leaves the guest at most half
+//! the distance, and at most [`MAX_ARMING_SLACK`], short of the point. So a
+//! thread gets at most one early notification per renewal that moved its point
+//! earlier, none while its requests never move earlier, and, while its points
+//! only move earlier (as within one budget), at most
+//! `log2(R / MIN_ARMING_SLACK)` for a starting distance of `R` RCBs and never
+//! more than `1 + log2(MAX_ARMING_SLACK / MIN_ARMING_SLACK)`, rounded down: 7.
+//! Each one at least halves the distance, the first leaves at most
+//! [`MAX_ARMING_SLACK`], and none comes once a slack would be less than
+//! [`MIN_ARMING_SLACK`].
+//!
 //! Between the overflow and the exit that the kick causes, the guest keeps
 //! running for the interrupt's latency (the skid), so a precise request is
 //! first programmed one skid margin short of its target. From that close to
@@ -178,11 +221,12 @@
 //!   instructions past the count. A request is staged as reverie-ptrace
 //!   stages one ([`reverie::pmu_config::PmuConfig::stages`]): one longer than
 //!   the first stage margin plus [`SINGLESTEP_TIMEOUT_RCBS`] is programmed
-//!   one first stage margin short of its target, and the first exit at or
-//!   past that point sizes the second stage margin from the RCBs and the host
-//!   time (`CLOCK_MONOTONIC`) since the request. Any other is programmed one
-//!   skid margin short. Staging changes where the last kick comes, never
-//!   where the event is delivered.
+//!   one first stage margin short of its target, and the first exit at that
+//!   point, past it, or no more than [`SINGLESTEP_TIMEOUT_RCBS`] short of it
+//!   sizes the second stage margin from the RCBs and the host time
+//!   (`CLOCK_MONOTONIC`) since the request. Any other is programmed one skid
+//!   margin short. Staging changes where the last kick comes, never where the
+//!   event is delivered.
 //! - Once the clock is no more than the margin plus
 //!   [`SINGLESTEP_TIMEOUT_RCBS`] short of the target, every entry runs under
 //!   KVM's guest debugging (`KvmBackend::prepare_timer_steps`): it
@@ -331,6 +375,22 @@ const QUIET_PERIOD: u64 = MAX_PERIOD;
 /// overflow at the next branch.
 const MIN_PERIOD: u64 = 2;
 
+/// The most an entry that must reprogram the timer event, because its pending
+/// overflow would come later than the request now needs, programs it before
+/// that point (see the module documentation and `programming`): 1,048,576
+/// RCBs, about 0.36 ms of a loop retiring 2.9 RCBs per ns. A renewal that
+/// moves the point `d` RCBs earlier costs one reprogramming per `2^20 / d`
+/// renewals, for example one per 1,048 renewals that each take 1,000 RCBs off
+/// a budget. A guest that runs longer than this between renewals gets at most
+/// one early notification per renewal.
+pub(crate) const MAX_ARMING_SLACK: u64 = 1 << 20;
+
+/// The least slack a reprogramming takes: closer to the point than twice
+/// this, a reprogramming has none (see the module documentation). It ends
+/// the halving of early kicks well before the point, and keeps an early kick
+/// at least this far, plus the request's margin, from a precise target.
+pub(crate) const MIN_ARMING_SLACK: u64 = 10_000;
+
 // Not available in the libc crate.
 const F_SETSIG: libc::c_int = 10;
 const F_SETOWN_EX: libc::c_int = 15;
@@ -380,6 +440,9 @@ thread_local! {
     /// creation and setup, every programming ioctl, the vCPU signal mask, and
     /// every drain of a pending kick.
     pub(crate) static TIMER_SYSCALLS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    /// Periods this thread programmed into a timer event
+    /// (`PERF_EVENT_IOC_PERIOD`), finite or quiet.
+    pub(crate) static TIMER_PROGRAMMINGS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
 }
 
 thread_local! {
@@ -631,17 +694,22 @@ enum Programming {
 
 /// The programming an entry at `clock` needs for an event that next
 /// overflows at `overflow_at` and that counts and keeps overflowing when
-/// `active` (enabled with a finite period), so that it overflows at `wanted`,
-/// or never when `wanted` is None.
+/// `active` (enabled with a finite period), so that it overflows no later
+/// than `wanted`, or never when `wanted` is None.
 ///
 /// A pending overflow that comes no later than `wanted` is kept: the overflow
 /// it causes only makes the backend look earlier than needed, while
-/// reprogramming would cost a syscall now. A new period is never shorter than
-/// [`MIN_PERIOD`] and never longer than [`MAX_PERIOD`]. A disabled event
+/// reprogramming would cost a syscall now. One that would come later than
+/// `wanted` is reprogrammed `slack` RCBs before it (see the module
+/// documentation): the point moved earlier since the event was programmed,
+/// and the slack keeps the new programming through further such moves. Any
+/// other programming is at `wanted` itself. A new period is never shorter
+/// than [`MIN_PERIOD`] and never longer than [`MAX_PERIOD`]. A disabled event
 /// cannot overflow, so it need not be quieted.
 fn programming(
     clock: u64,
     wanted: Option<u64>,
+    slack: u64,
     overflow_at: Option<u64>,
     active: bool,
 ) -> Programming {
@@ -650,7 +718,13 @@ fn programming(
             Programming::Keep
         }
         Some(wanted) => {
-            Programming::Period(wanted.saturating_sub(clock).clamp(MIN_PERIOD, MAX_PERIOD))
+            let slack = if overflow_at.is_some_and(|at| clock < at) {
+                slack
+            } else {
+                0
+            };
+            let point = wanted.saturating_sub(slack);
+            Programming::Period(point.saturating_sub(clock).clamp(MIN_PERIOD, MAX_PERIOD))
         }
         None if active => Programming::Quiet,
         None => Programming::Keep,
@@ -760,6 +834,8 @@ impl TimerEvent {
     fn set_period(&mut self, period: u64) -> Result<()> {
         let mut period = period;
         count_syscall();
+        #[cfg(test)]
+        TIMER_PROGRAMMINGS.with(|count| count.set(count.get() + 1));
         // The bindings take the period by value; the ioctl reads it through a
         // pointer.
         // SAFETY: the ioctl reads one u64 from initialized storage.
@@ -799,16 +875,24 @@ impl TimerEvent {
         Ok(())
     }
 
-    /// Makes the event overflow at `wanted` (never, for None) for an entry at
-    /// `clock`, with as few syscalls as [`programming`] allows, and enables it
-    /// when it is wanted. With nothing wanted and nothing pending, issues none.
+    /// Makes the event overflow no later than `wanted` (never, for None) for
+    /// an entry at `clock`, with as few syscalls as [`programming`] allows,
+    /// and up to `slack` RCBs sooner when a pending overflow must be
+    /// reprogrammed because it would come too late, and enables it when it is
+    /// wanted. With nothing wanted and nothing pending, issues none.
     ///
     /// An event left disabled for the entry misses every branch the entry
     /// retires, while the clock counts them, so its pending overflow no
     /// longer names a clock value. It is forgotten, and the next entry that
     /// wants an overflow programs one afresh.
-    pub(crate) fn prepare(&mut self, clock: u64, wanted: Option<u64>) -> Result<()> {
-        match programming(clock, wanted, self.overflow_at, self.enabled && self.live) {
+    pub(crate) fn prepare(&mut self, clock: u64, wanted: Option<u64>, slack: u64) -> Result<()> {
+        match programming(
+            clock,
+            wanted,
+            slack,
+            self.overflow_at,
+            self.enabled && self.live,
+        ) {
             Programming::Keep => {}
             Programming::Period(period) => {
                 self.set_period(period)?;
@@ -966,6 +1050,22 @@ impl TimerState {
     /// programmed at the target. The result is always at least
     /// [`MIN_PERIOD`] past `clock`, because Linux programs no shorter period.
     pub(crate) fn wanted_overflow(&self, clock: u64) -> Option<u64> {
+        self.overflow_point(clock).map(|(point, _)| point)
+    }
+
+    /// How many RCBs before [`Self::wanted_overflow`] an entry at `clock` may
+    /// program the timer event when it must reprogram a pending overflow that
+    /// would come too late (see the module documentation): half the distance
+    /// to that point, and at most [`MAX_ARMING_SLACK`], or none if that is
+    /// less than [`MIN_ARMING_SLACK`]. None inside a precise request's
+    /// stepping region, where the event is programmed at the target itself,
+    /// and none without an armed request.
+    pub(crate) fn arming_slack(&self, clock: u64) -> u64 {
+        self.overflow_point(clock).map_or(0, |(_, slack)| slack)
+    }
+
+    /// [`Self::wanted_overflow`] and [`Self::arming_slack`].
+    fn overflow_point(&self, clock: u64) -> Option<(u64, u64)> {
         let Self::Armed {
             target,
             kind,
@@ -975,16 +1075,24 @@ impl TimerState {
         else {
             return None;
         };
-        let point = match kind {
+        let (point, lazy) = match kind {
             TimerKind::Precise
                 if target.saturating_sub(clock)
                     > margin.saturating_add(SINGLESTEP_TIMEOUT_RCBS) =>
             {
-                target - margin
+                (target - margin, true)
             }
-            TimerKind::Precise | TimerKind::Imprecise => target,
+            TimerKind::Precise => (target, false),
+            TimerKind::Imprecise => (target, true),
         };
-        Some(point.max(clock.saturating_add(MIN_PERIOD)))
+        let point = point.max(clock.saturating_add(MIN_PERIOD));
+        let slack = ((point - clock) / 2).min(MAX_ARMING_SLACK);
+        let slack = if lazy && slack >= MIN_ARMING_SLACK {
+            slack
+        } else {
+            0
+        };
+        Some((point, slack))
     }
 
     /// Whether the next entry at `clock` must single-step toward a precise
@@ -1009,9 +1117,13 @@ impl TimerState {
     /// clock reached becomes due; a precise one is on time only when a single
     /// step retired the target branch, so that the vCPU stands at the
     /// boundary right after it, and any other is recorded as late. A staged
-    /// request whose first stage the clock reached gets its second stage
-    /// margin, from the RCBs and the host time since it was requested.
-    /// Returns the request this exit made due, at most once.
+    /// request whose first stage the clock reached, or came within
+    /// [`SINGLESTEP_TIMEOUT_RCBS`] of, gets its second stage margin, from the
+    /// RCBs and the host time since it was requested; closer than that to its
+    /// first stage point, the request would otherwise be programmed at its
+    /// target without stepping (see [`Self::wanted_overflow`] and
+    /// [`Self::stepping`]). Returns the request this exit made due, at most
+    /// once.
     pub(crate) fn observe_exit(&mut self, clock: u64, stepped: bool) -> Option<TimerDue> {
         let Self::Armed {
             target,
@@ -1023,8 +1135,14 @@ impl TimerState {
             return None;
         };
         if clock < target {
+            // The first stage ends where `overflow_point` stops programming
+            // its point and programs the target: an exit no more than the
+            // margin plus SINGLESTEP_TIMEOUT_RCBS short of the target. Ending
+            // it only at the margin left a request in its first stage, which
+            // never steps, programmed at its target, for an exit just short
+            // of its first stage point: its event came late.
             if let Some(first) = first_stage
-                && clock >= target - margin
+                && target - clock <= margin.saturating_add(SINGLESTEP_TIMEOUT_RCBS)
                 && let Some(config) = reverie::pmu_config::try_get_pmu_config()
             {
                 let elapsed = monotonic_ns().saturating_sub(first.requested_ns);
@@ -1412,9 +1530,13 @@ mod tests {
                 requested_clock: 0,
             }),
         };
-        // Short of the first stage point: still in the first stage.
+        // Short of the first stage point by more than SINGLESTEP_TIMEOUT_RCBS:
+        // still in the first stage.
         assert_eq!(state.wanted_overflow(0), Some(target - first));
-        assert_eq!(state.observe_exit(target - first - 1, false), None);
+        assert_eq!(
+            state.observe_exit(target - first - SINGLESTEP_TIMEOUT_RCBS - 1, false),
+            None
+        );
         assert!(matches!(
             state,
             TimerState::Armed {
@@ -1437,6 +1559,69 @@ mod tests {
     }
 
     #[test]
+    fn an_exit_just_short_of_the_first_stage_point_leaves_no_request_programmed_at_its_target() {
+        let Some(config) = reverie::pmu_config::try_get_pmu_config() else {
+            println!("NOT EXECUTED: this CPU has no PMU profile");
+            return;
+        };
+        let first = config.first_stage_margin();
+        let target = 1_000_000;
+        // A first stage requested just now gives the largest second stage
+        // margin, and one requested long ago the smallest.
+        for requested_ns in [monotonic_ns(), 0] {
+            // An exit (a kick, or an exit without a Tool callback) no more than
+            // SINGLESTEP_TIMEOUT_RCBS short of the first stage point. The next
+            // entry programs the target there (see `wanted_overflow`), so the
+            // request must be one that steps; one still in its first stage
+            // would run unstepped to its target and come late.
+            for short in 1..=SINGLESTEP_TIMEOUT_RCBS {
+                let clock = target - first - short;
+                let mut state = TimerState::Armed {
+                    target,
+                    kind: TimerKind::Precise,
+                    margin: first,
+                    first_stage: Some(FirstStage {
+                        requested_ns,
+                        requested_clock: 0,
+                    }),
+                };
+                assert_eq!(state.observe_exit(clock, false), None);
+                let wanted = state.wanted_overflow(clock).unwrap();
+                assert!(
+                    state.stepping(clock) || wanted < target,
+                    "{short} RCBs short of the first stage point: programmed at {wanted} \
+                     for target {target} without stepping: {state:?}"
+                );
+                assert!(
+                    matches!(
+                        state,
+                        TimerState::Armed {
+                            first_stage: None,
+                            ..
+                        }
+                    ),
+                    "{state:?}"
+                );
+            }
+        }
+        // One RCB farther, the request stays in its first stage, programmed
+        // at its first stage point.
+        let clock = target - first - SINGLESTEP_TIMEOUT_RCBS - 1;
+        let mut state = TimerState::Armed {
+            target,
+            kind: TimerKind::Precise,
+            margin: first,
+            first_stage: Some(FirstStage {
+                requested_ns: monotonic_ns(),
+                requested_clock: 0,
+            }),
+        };
+        assert_eq!(state.observe_exit(clock, false), None);
+        assert_eq!(state.wanted_overflow(clock), Some(target - first));
+        assert!(!state.stepping(clock));
+    }
+
+    #[test]
     fn durations_convert_to_rcbs_as_reverie_ptrace_converts_them() {
         assert_eq!(rcbs_for_duration(std::time::Duration::ZERO), 0);
         assert_eq!(rcbs_for_duration(std::time::Duration::from_nanos(10)), 6);
@@ -1449,71 +1634,174 @@ mod tests {
 
     #[test]
     fn programming_is_lazy() {
+        // A slack that the cases below show applied only where it may be.
+        const SLACK: u64 = 40;
         // Nothing wanted and nothing pending: no syscall.
-        assert_eq!(programming(5, None, None, false), Programming::Keep);
+        assert_eq!(programming(5, None, SLACK, None, false), Programming::Keep);
         // Nothing wanted, but an active finite period: quiet it once.
-        assert_eq!(programming(5, None, Some(9), true), Programming::Quiet);
-        assert_eq!(programming(5, None, None, true), Programming::Quiet);
-        // A disabled event cannot overflow, so it is left alone.
-        assert_eq!(programming(5, None, Some(9), false), Programming::Keep);
-        // No pending overflow: program one.
         assert_eq!(
-            programming(5, Some(105), None, true),
+            programming(5, None, SLACK, Some(9), true),
+            Programming::Quiet
+        );
+        assert_eq!(programming(5, None, SLACK, None, true), Programming::Quiet);
+        // A disabled event cannot overflow, so it is left alone.
+        assert_eq!(
+            programming(5, None, SLACK, Some(9), false),
+            Programming::Keep
+        );
+        // No pending overflow: program one at the wanted point, without slack.
+        assert_eq!(
+            programming(5, Some(105), SLACK, None, true),
             Programming::Period(100)
         );
         // A pending overflow at or before the wanted point is kept, so an
         // unchanged target costs no syscall.
         assert_eq!(
-            programming(5, Some(105), Some(105), true),
+            programming(5, Some(105), SLACK, Some(105), true),
             Programming::Keep
         );
         assert_eq!(
-            programming(5, Some(205), Some(105), true),
+            programming(5, Some(205), SLACK, Some(105), true),
             Programming::Keep
         );
-        // A pending overflow later than wanted, or already reached, is
-        // reprogrammed from the entry's clock.
+        // A pending overflow later than wanted is reprogrammed from the
+        // entry's clock, the slack before the wanted point.
         assert_eq!(
-            programming(5, Some(105), Some(106), true),
+            programming(5, Some(105), SLACK, Some(106), true),
+            Programming::Period(100 - SLACK)
+        );
+        assert_eq!(
+            programming(5, Some(105), 0, Some(106), true),
             Programming::Period(100)
         );
+        // On a disabled event too: a pending overflow it keeps is valid.
         assert_eq!(
-            programming(105, Some(205), Some(105), true),
+            programming(5, Some(105), SLACK, Some(106), false),
+            Programming::Period(100 - SLACK)
+        );
+        // That programming survives the point moving earlier by up to the
+        // slack, and only then is reprogrammed, again with slack.
+        let at = 5 + 100 - SLACK;
+        for wanted in [104, 90, at] {
+            assert_eq!(
+                programming(5, Some(wanted), SLACK, Some(at), true),
+                Programming::Keep
+            );
+        }
+        assert_eq!(
+            programming(5, Some(at - 1), SLACK, Some(at), true),
+            Programming::Period(at - 1 - SLACK - 5)
+        );
+        // One already reached is reprogrammed at the wanted point: it has
+        // overflowed, and nothing is pending.
+        assert_eq!(
+            programming(105, Some(205), SLACK, Some(105), true),
             Programming::Period(100)
         );
         // Never shorter than Linux's shortest period.
         assert_eq!(
-            programming(5, Some(6), None, true),
+            programming(5, Some(6), SLACK, None, true),
+            Programming::Period(MIN_PERIOD)
+        );
+        assert_eq!(
+            programming(5, Some(8), SLACK, Some(9), true),
             Programming::Period(MIN_PERIOD)
         );
         // Never longer than the longest period programmed at once: a farther
         // overflow is programmed in pieces. Linux refuses bit 63 outright.
         assert_eq!(
-            programming(5, Some(5 + MAX_PERIOD), None, true),
+            programming(5, Some(5 + MAX_PERIOD), SLACK, None, true),
             Programming::Period(MAX_PERIOD)
         );
         assert_eq!(
-            programming(5, Some(5 + MAX_PERIOD + 1), None, true),
+            programming(5, Some(5 + MAX_PERIOD + 1), SLACK, None, true),
             Programming::Period(MAX_PERIOD)
         );
         assert_eq!(
-            programming(0, Some(1 << 63), None, true),
+            programming(0, Some(1 << 63), SLACK, None, true),
             Programming::Period(MAX_PERIOD)
         );
         assert_eq!(
-            programming(0, Some(u64::MAX), None, true),
+            programming(0, Some(u64::MAX), SLACK, None, true),
             Programming::Period(MAX_PERIOD)
         );
         const { assert!(MAX_PERIOD & (1 << 63) == 0) };
         // A piece is kept until the clock reaches it, then the next follows.
         assert_eq!(
-            programming(5, Some(u64::MAX), Some(5 + MAX_PERIOD), true),
+            programming(5, Some(u64::MAX), SLACK, Some(5 + MAX_PERIOD), true),
             Programming::Keep
         );
         assert_eq!(
-            programming(5 + MAX_PERIOD, Some(u64::MAX), Some(5 + MAX_PERIOD), true),
+            programming(
+                5 + MAX_PERIOD,
+                Some(u64::MAX),
+                SLACK,
+                Some(5 + MAX_PERIOD),
+                true
+            ),
             Programming::Period(MAX_PERIOD)
         );
+    }
+
+    #[test]
+    fn the_arming_slack_is_half_the_distance_at_most_the_cap_and_none_while_stepping() {
+        let target = 10 * MAX_ARMING_SLACK;
+        // Far from a precise request's point: the cap.
+        let precise = armed(target, TimerKind::Precise);
+        assert_eq!(precise.wanted_overflow(0), Some(target - MARGIN));
+        assert_eq!(precise.arming_slack(0), MAX_ARMING_SLACK);
+        // Closer: half the distance to the point, so that the programming
+        // stays ahead of the clock.
+        let clock = target - MARGIN - 50_000;
+        assert_eq!(precise.arming_slack(clock), 25_000);
+        // None once that would be less than the least slack.
+        let near = target - MARGIN - 2 * MIN_ARMING_SLACK;
+        assert_eq!(precise.arming_slack(near), MIN_ARMING_SLACK);
+        assert_eq!(precise.arming_slack(near + 1), 0);
+        assert_eq!(precise.arming_slack(target - MARGIN - 1), 0);
+        // Inside the stepping region the event is programmed at the target,
+        // with no slack.
+        let edge = target - MARGIN - SINGLESTEP_TIMEOUT_RCBS;
+        assert_eq!(precise.wanted_overflow(edge), Some(target));
+        assert_eq!(precise.arming_slack(edge), 0);
+        assert_eq!(precise.arming_slack(target - 1), 0);
+        // An imprecise request is programmed at its target, with slack
+        // before it.
+        let imprecise = armed(target, TimerKind::Imprecise);
+        assert_eq!(imprecise.arming_slack(0), MAX_ARMING_SLACK);
+        assert_eq!(imprecise.arming_slack(target - 60_000), 30_000);
+        assert_eq!(imprecise.arming_slack(target - 100), 0);
+        // No request, or one already due: nothing to program.
+        assert_eq!(TimerState::Idle.arming_slack(0), 0);
+        let due = TimerState::Due(TimerDue {
+            target,
+            clock: target,
+            late: false,
+            kind: TimerKind::Imprecise,
+        });
+        assert_eq!(due.arming_slack(target), 0);
+        // The slack never brings the overflow to or before the clock, nor
+        // below Linux's shortest period.
+        for clock in [
+            0,
+            target / 2,
+            near,
+            target - MARGIN - 7,
+            target - MARGIN - 3,
+        ] {
+            let wanted = precise.wanted_overflow(clock).unwrap();
+            let slack = precise.arming_slack(clock);
+            assert!(wanted - slack > clock, "{clock}");
+            let Programming::Period(period) =
+                programming(clock, Some(wanted), slack, Some(wanted + 1), true)
+            else {
+                panic!("{clock}: no reprogramming");
+            };
+            assert!(
+                period >= MIN_PERIOD && clock + period <= wanted,
+                "{clock}: {period}"
+            );
+        }
     }
 
     fn current_mask() -> libc::sigset_t {
