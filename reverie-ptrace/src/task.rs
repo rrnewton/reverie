@@ -13769,6 +13769,20 @@ impl<L: Tool + 'static> Guest<L> for TracedTask<L> {
         let session = &self.global_state.fatal_session;
         crate::signal_sets::read(tid, |tid| session.traced_directories(tid))
     }
+
+    /// The kernel's own `readlink` of thread `tid`'s `fd/<fd>`, `exe` or
+    /// `cwd` link, read by the tracer while this thread is stopped, for a
+    /// live thread this session traces, in any of its processes, through the
+    /// `/proc/<tid>` directory the session retained for it
+    /// (`crate::link_path`).
+    fn link_path(
+        &self,
+        tid: Pid,
+        link: reverie::PathLink,
+    ) -> Result<reverie::LinkPath, reverie::FactError> {
+        let session = &self.global_state.fatal_session;
+        crate::link_path::read(tid, link, |tid| session.traced_directories(tid))
+    }
 }
 
 #[async_trait]

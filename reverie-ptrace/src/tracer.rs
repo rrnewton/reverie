@@ -4585,6 +4585,7 @@ mod tests {
     include!("tracer/fatal_group_lifetime_tests.rs");
     include!("tracer/fatal_dead_exec_tests.rs");
     include!("tracer/signal_sets_session_tests.rs");
+    include!("tracer/link_path_session_tests.rs");
     #[tokio::test(flavor = "current_thread")]
     async fn unsupported_injected_completion_returns_original_pipes_and_usable_tracer() {
         let mut command = Command::new("/bin/sh");
