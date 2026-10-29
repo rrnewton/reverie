@@ -388,7 +388,9 @@ fn exact_hex_02(text: &str, max: u32) -> Option<u32> {
 /// (`/proc/<pid>/task/<tid>/status`; `task_sig` in Linux's
 /// `fs/proc/array.c`), in the order Linux prints them. A tool gets them for
 /// any live guest thread, whatever its process; see
-/// [`Guest::signal_sets`](crate::Guest::signal_sets).
+/// [`Guest::signal_sets`](crate::Guest::signal_sets), or, from code that holds
+/// no `Guest`,
+/// [`ProcessSignalControl::signal_sets`](crate::ProcessSignalControl::signal_sets).
 ///
 /// Each set holds signal `n`, from 1 to 64, at bit `n - 1`, as the `status`
 /// line shows it: sixteen hexadecimal digits, highest-numbered signals
