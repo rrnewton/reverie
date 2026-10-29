@@ -190,6 +190,7 @@ impl AddressSpace for ProviderMemory<'_> {
         length: u64,
         protection: libc::c_int,
     ) -> std::result::Result<(), MapError> {
+        let user_address = address;
         let Some(address) = self.0.user_range_to_guest(address, length) else {
             return Err(MapError::Unaddressable);
         };
@@ -215,6 +216,10 @@ impl AddressSpace for ProviderMemory<'_> {
         {
             return Err(MapError::AccessDenied);
         }
+        // The pages' states hold access and write only: a change to the read
+        // or execute permission Linux keeps on the mapping leaves them as they
+        // are, so the change is recorded here whether or not they change.
+        self.0.note_user_mapping_change(user_address, length);
         self.0
             .map_user_permissions(
                 address,
