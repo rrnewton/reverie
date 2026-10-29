@@ -1935,6 +1935,13 @@ fn a_precise_event_lands_exactly_around_the_skid_margin() {
     precise_events_land_exactly(&[margin - 1, margin, margin + 5, margin + 6]);
 }
 
+/// The backend's long first stage lead (`FIRST_STAGE_LEAD` in
+/// reverie-kvm's `preemption_timer.rs`): a request longer than this plus
+/// [`reverie::pmu_config::SINGLESTEP_TIMEOUT_RCBS`] has its first stage
+/// programmed this far short of its target, and a shorter staged one
+/// reverie-ptrace's first stage margin short.
+const FIRST_STAGE_LEAD: u64 = 1 << 19;
+
 #[test]
 fn a_precise_event_lands_exactly_around_the_staging_edge() {
     if bounded("a_precise_event_lands_exactly_around_the_staging_edge") {
@@ -1945,6 +1952,18 @@ fn a_precise_event_lands_exactly_around_the_staging_edge() {
         .unwrap()
         .first_stage_margin()
         + reverie::pmu_config::SINGLESTEP_TIMEOUT_RCBS;
+    precise_events_land_exactly(&[edge, edge + 1]);
+}
+
+#[test]
+fn a_precise_event_lands_exactly_around_the_long_first_stage_edge() {
+    if bounded("a_precise_event_lands_exactly_around_the_long_first_stage_edge") {
+        return;
+    }
+    // The longest request whose first stage is programmed reverie-ptrace's
+    // first stage margin short, and the shortest programmed the long lead
+    // short.
+    let edge = FIRST_STAGE_LEAD + reverie::pmu_config::SINGLESTEP_TIMEOUT_RCBS;
     precise_events_land_exactly(&[edge, edge + 1]);
 }
 

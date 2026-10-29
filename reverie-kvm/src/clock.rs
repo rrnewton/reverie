@@ -466,15 +466,17 @@ impl CountedVcpu {
     /// Requests a timer event due when this thread's clock has advanced
     /// `ticks` RCBs from its value now, replacing any outstanding request.
     /// The next entry programs the timer event; this call issues no syscall.
-    /// A precise request is staged as reverie-ptrace stages one
+    /// A precise request is staged when reverie-ptrace stages one
     /// ([`reverie::pmu_config::PmuConfig::stages`]): programmed one first
-    /// stage margin short of its target and then one second stage margin
-    /// short, or else one PMU skid margin short. It is refused on a CPU with
-    /// no PMU profile, whose margin is unknown. An imprecise request has no
-    /// margin: it is programmed at its target, as reverie-ptrace programs
-    /// one. Refused while the clock is not tracking or is poisoned, for 0
-    /// RCBs, and for a target past the clock's range. A refused request
-    /// leaves the outstanding one in place.
+    /// stage margin short of its target (see
+    /// [`crate::preemption_timer::first_stage_lead`]) and then one second
+    /// stage margin short. Any other precise request is programmed one PMU
+    /// skid margin short. A precise request is refused on a CPU with no PMU
+    /// profile, whose margin is unknown. An imprecise request has no margin:
+    /// it is programmed at its target, as reverie-ptrace programs one.
+    /// Refused while the clock is not tracking or is poisoned, for 0 RCBs,
+    /// and for a target past the clock's range. A refused request leaves the
+    /// outstanding one in place.
     pub(crate) fn request_timer(&mut self, ticks: u64, kind: TimerKind) -> Result<()> {
         let clock = self.clock.read()?;
         let (margin, first_stage) = match kind {
@@ -486,7 +488,10 @@ impl CountedVcpu {
                         requested_ns: crate::preemption_timer::monotonic_ns(),
                         requested_clock: clock,
                     };
-                    (config.first_stage_margin(), Some(first_stage))
+                    (
+                        crate::preemption_timer::first_stage_lead(config, ticks),
+                        Some(first_stage),
+                    )
                 } else {
                     (config.skid_margin(), None)
                 }

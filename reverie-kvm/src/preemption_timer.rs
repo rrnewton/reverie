@@ -202,14 +202,20 @@
 //! target, at the instruction boundary right after the target branch:
 //! - The schedule maps as for `set_timer`, except that `RcbsAndInstructions`
 //!   is refused with an `Unsupported` error: this backend does not step
-//!   instructions past the count. A request is staged as reverie-ptrace
-//!   stages one ([`reverie::pmu_config::PmuConfig::stages`]): one longer than
-//!   the first stage margin plus [`SINGLESTEP_TIMEOUT_RCBS`] is programmed
-//!   one first stage margin short of its target, and the first exit at or
-//!   past that point sizes the second stage margin from the RCBs and the host
-//!   time (`CLOCK_MONOTONIC`) since the request. Any other is programmed one
-//!   skid margin short. Staging changes where the last kick comes, never
-//!   where the event is delivered.
+//!   instructions past the count. A request is staged when reverie-ptrace
+//!   stages one ([`reverie::pmu_config::PmuConfig::stages`]): its first stage
+//!   is programmed one first stage margin short of its target, and the first
+//!   exit at or past that point sizes the second stage margin from the RCBs
+//!   and the host time (`CLOCK_MONOTONIC`) since the request. Any other is
+//!   programmed one skid margin short. The first stage margin is
+//!   [`FIRST_STAGE_LEAD`] for a request longer than that plus
+//!   [`SINGLESTEP_TIMEOUT_RCBS`], and reverie-ptrace's 10,000 RCBs for a
+//!   shorter one ([`first_stage_lead`]). The first stage's kick follows the
+//!   guest's longest run since an exit, which is when the host most often
+//!   holds the PMU interrupt behind a kick, for up to tens of microseconds
+//!   (see the limits below); with the long lead, a first stage kick held as
+//!   long as any measured still comes short of the target. Staging changes
+//!   where the kicks come, never where the event is delivered.
 //! - Once the clock is no more than the margin plus
 //!   [`SINGLESTEP_TIMEOUT_RCBS`] short of the target, every entry runs under
 //!   KVM's guest debugging (`KvmBackend::prepare_timer_steps`): it
@@ -262,9 +268,14 @@
 //! - Nothing refuses a PREEMPT_RT kernel or nested virtualization, where the
 //!   kick's latency has not been measured.
 //! - A precise request is late when the PMU interrupt behind its last kick
-//!   comes after the margin, from the hardware's interrupt latency: at the
-//!   2,000 RCB margin on an EPYC 9D85, about one kick in a thousand on an
-//!   idle host, and up to about one in a hundred on a busy one.
+//!   before the stepping window comes after the target. On an EPYC 9D85 the
+//!   host occasionally holds that interrupt for tens of microseconds while
+//!   the guest runs on (one kick in one to two thousand comes more than
+//!   10,000 RCBs late, and 257,574 RCBs is the latest measured), more often
+//!   the longer the guest has run since its last exit; an exit ends the hold.
+//!   The long first stage lead absorbs a held first stage kick, but the
+//!   second stage's kick then follows a run of up to that lead, and a held
+//!   one is late.
 //! - Every other instruction in the stepping window is a step of its own,
 //!   with no block steps yet. In a release build a step costs about 3.3
 //!   microseconds under following placement, and about 17 under pinned
@@ -368,6 +379,25 @@ const MIN_PERIOD: u64 = 2;
 /// one early notification per renewal.
 pub(crate) const MAX_ARMING_SLACK: u64 = 1 << 20;
 
+/// How far short of its target the first stage of a long staged precise
+/// request is programmed (see [`first_stage_lead`] and the module
+/// documentation): 524,288 RCBs, twice the latest kick measured on this
+/// backend's host, 257,574 RCBs (about 70 microseconds) late.
+pub(crate) const FIRST_STAGE_LEAD: u64 = 1 << 19;
+
+/// The first stage margin of a staged precise request of `ticks` RCBs:
+/// [`FIRST_STAGE_LEAD`] for a request longer than that plus
+/// [`SINGLESTEP_TIMEOUT_RCBS`], and otherwise `config`'s first stage margin,
+/// as reverie-ptrace stages it. Never less than the latter.
+pub(crate) fn first_stage_lead(config: &reverie::pmu_config::PmuConfig, ticks: u64) -> u64 {
+    let lead = FIRST_STAGE_LEAD.max(config.first_stage_margin());
+    if ticks > lead.saturating_add(SINGLESTEP_TIMEOUT_RCBS) {
+        lead
+    } else {
+        config.first_stage_margin()
+    }
+}
+
 // Not available in the libc crate.
 const F_SETSIG: libc::c_int = 10;
 const F_SETOWN_EX: libc::c_int = 15;
@@ -417,6 +447,20 @@ thread_local! {
     /// creation and setup, every programming ioctl, the vCPU signal mask, and
     /// every drain of a pending kick.
     pub(crate) static TIMER_SYSCALLS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    /// RCBs by which the next finite programming of this thread's timer event
+    /// overflows past the point it records as its pending overflow, as if the
+    /// host held the PMU interrupt behind its kick that long. That
+    /// programming takes it.
+    pub(crate) static LATE_PROGRAMMING: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// RCBs by which a test has the next finite programming overflow late (see
+/// [`LATE_PROGRAMMING`]); none outside tests.
+fn late_programming() -> u64 {
+    #[cfg(test)]
+    return LATE_PROGRAMMING.with(std::cell::Cell::take);
+    #[cfg(not(test))]
+    0
 }
 
 thread_local! {
@@ -867,7 +911,7 @@ impl TimerEvent {
         ) {
             Programming::Keep => {}
             Programming::Period(period) => {
-                self.set_period(period)?;
+                self.set_period(period.saturating_add(late_programming()).min(MAX_PERIOD))?;
                 self.overflow_at = Some(clock.saturating_add(period));
                 self.live = true;
             }
@@ -1512,6 +1556,33 @@ mod tests {
             panic!("still in the first stage: {state:?}");
         };
         assert!((config.skid_margin()..=first).contains(&margin), "{margin}");
+    }
+
+    #[test]
+    fn the_first_stage_lead_is_long_for_long_requests_and_reverie_ptraces_otherwise() {
+        // The EPYC 9D85's profile: a 2,000 RCB skid margin and reverie-ptrace's
+        // first stage margin of 10,000.
+        let config = reverie::pmu_config::PmuConfig::try_from_family_model(0x1a, 0x11).unwrap();
+        let margin = config.first_stage_margin();
+        assert_eq!(margin, reverie::pmu_config::LARGEST_TABLE_SKID_MARGIN);
+        const { assert!(FIRST_STAGE_LEAD > reverie::pmu_config::LARGEST_TABLE_SKID_MARGIN) };
+        // The shortest staged request, and the longest with reverie-ptrace's
+        // first stage margin.
+        let staged = margin + SINGLESTEP_TIMEOUT_RCBS + 1;
+        assert!(config.stages(staged) && !config.stages(staged - 1));
+        let edge = FIRST_STAGE_LEAD + SINGLESTEP_TIMEOUT_RCBS;
+        for ticks in [staged, 100_000, edge] {
+            assert_eq!(first_stage_lead(&config, ticks), margin, "{ticks}");
+        }
+        // Longer: the long lead, so that a first stage kick held up to that
+        // long still comes short of the target.
+        for ticks in [edge + 1, 20_000_000, u64::MAX] {
+            assert_eq!(
+                first_stage_lead(&config, ticks),
+                FIRST_STAGE_LEAD,
+                "{ticks}"
+            );
+        }
     }
 
     #[test]

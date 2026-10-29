@@ -758,7 +758,7 @@ fn re_arm_after(
     // margin short of the target.
     let config = reverie::pmu_config::try_get_pmu_config().unwrap();
     let margin = if config.stages(RE_ARM_TARGET) {
-        config.first_stage_margin()
+        crate::preemption_timer::first_stage_lead(config, RE_ARM_TARGET)
     } else {
         config.skid_margin()
     };
@@ -949,13 +949,20 @@ fn an_uncounted_vcpu_on_the_host_task_makes_the_armed_kick_late() {
         .unwrap();
     assert_eq!(next_exit(&mut armed.vcpu), Exit::Syscall);
     assert_eq!(armed.vcpu.read_clock().unwrap(), block);
-    // An uncounted guest (its clock never tracked) runs 7,000,000 branches
-    // on this host task: past the armed timer's remaining 5,998,000.
+    // An uncounted guest (its clock never tracked) runs on this host task
+    // past the armed timer's remaining distance to its first stage point,
+    // programmed at clock 0, but not so far that the period the timer reloads
+    // there runs out before the armed guest's next block ends.
+    let config = reverie::pmu_config::try_get_pmu_config().unwrap();
+    let point = RE_ARM_TARGET - crate::preemption_timer::first_stage_lead(config, RE_ARM_TARGET);
+    let remaining = point - block;
+    let branches = (remaining + 2 * point - 3 * block) / 2;
+    assert!(remaining < branches && 2 * point - branches > 3 * block);
     let mut uncounted =
         crate::KvmBackend::new(MEMORY).expect("the preemption timer controls require /dev/kvm");
     uncounted
         .install_static_elf(
-            &crate::vm::minimal_test_elf(&block_loop(7_000_000)),
+            &crate::vm::minimal_test_elf(&block_loop(u32::try_from(branches).unwrap())),
             "/bin/uncounted",
         )
         .unwrap();

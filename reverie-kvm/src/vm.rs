@@ -13334,6 +13334,7 @@ mod tests {
     include!("vm/instruction_callback_panic_tests.rs");
     include!("vm/timer_signal_deferral_tests.rs");
     include!("vm/lazy_arming_tests.rs");
+    include!("vm/late_first_stage_tests.rs");
 }
 
 #[cfg(test)]
