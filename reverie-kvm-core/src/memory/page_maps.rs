@@ -20,12 +20,19 @@
 //!   logically `Accessible { writable: true }`, so exposing and hiding a
 //!   scratch page touches no tree node. Every method answers for the logical
 //!   map, and the overlay is never a key of the tree.
+//! - [`UserPages`] can watch a range of pages ([`UserPages::watch`]): every
+//!   method that changes the logical state of a watched page records it, so
+//!   no caller can change one unseen. A clone shares the record, and two
+//!   maps can be made to share one ([`UserPages::share_watch`]) until either
+//!   takes one of its own ([`UserPages::detach_watch`]).
 
 use std::collections::BTreeMap;
 use std::fmt;
 use std::ops::Bound;
 use std::ops::Deref;
 use std::ops::RangeBounds;
+use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
 
@@ -102,13 +109,100 @@ pub(super) struct UserPages {
     /// Exposed Tool-scratch pages, ascending, never keys of `map`. One per
     /// Tool thread inside a callback, so a linear scan is the right search.
     scratch: Vec<u64>,
+    /// The watched pages, if any; see [`UserPages::watch`].
+    watch: Option<Watch>,
 }
+
+/// A range of pages whose logical state [`UserPages`] watches.
+#[derive(Clone, Debug)]
+struct Watch {
+    /// The first watched page.
+    first: u64,
+    /// The last watched page.
+    last: u64,
+    /// Whether the logical state of a watched page has changed, or
+    /// [`UserPages::note_change`] named one, since the watch began: in this
+    /// map, or in any map that shares the record (a clone of this one, or
+    /// one that [`UserPages::share_watch`] joined to it). It only ever goes
+    /// from false to true.
+    changed: Arc<AtomicBool>,
+}
+
+/// A watch ([`UserPages::watch`]) and its record, taken from one map for
+/// another to share ([`UserPages::share_watch`]).
+#[derive(Clone, Debug)]
+pub(super) struct WatchRecord(Option<Watch>);
 
 impl UserPages {
     pub(super) fn new() -> Self {
         Self {
             map: Versioned::new(BTreeMap::new()),
             scratch: Vec::new(),
+            watch: None,
+        }
+    }
+
+    /// Watches pages `first..=last` from now on, replacing any earlier watch:
+    /// once a method of this map changes the logical state of one of them
+    /// (inserts a page with another state, removes one, clears the map, or
+    /// exposes or hides a scratch page over one), or
+    /// [`UserPages::note_change`] names one, the watch records that it
+    /// changed, until the next `watch`. The new watch has a record of its
+    /// own, shared with no other map.
+    ///
+    /// A clone shares the record: a change either records is recorded for
+    /// both, so a copy prepared from this map and installed in its place
+    /// (or dropped) loses nothing. A copy that becomes another address space,
+    /// a fork's, takes a record of its own ([`UserPages::detach_watch`]).
+    pub(super) fn watch(&mut self, first: u64, last: u64) {
+        self.watch = Some(Watch {
+            first,
+            last,
+            changed: Arc::new(AtomicBool::new(false)),
+        });
+    }
+
+    /// The watched pages, `(first, last)`, if a watch is set and none of its
+    /// pages has changed since it began, in this map or in a map that shares
+    /// its record.
+    pub(super) fn unchanged_watch(&self) -> Option<(u64, u64)> {
+        self.watch
+            .as_ref()
+            .filter(|watch| !watch.changed.load(Ordering::SeqCst))
+            .map(|watch| (watch.first, watch.last))
+    }
+
+    /// Records that something the logical states do not hold changed for
+    /// pages `first..=last`: when they overlap the watch, it has changed.
+    pub(super) fn note_change(&mut self, first: u64, last: u64) {
+        if let Some(watch) = &self.watch
+            && first <= watch.last
+            && last >= watch.first
+        {
+            watch.changed.store(true, Ordering::SeqCst);
+        }
+    }
+
+    /// This map's watch and its record, for another map to share
+    /// ([`UserPages::share_watch`]).
+    pub(super) fn watch_record(&self) -> WatchRecord {
+        WatchRecord(self.watch.clone())
+    }
+
+    /// Makes `record`'s watch this map's, replacing its own: from now on a
+    /// change this map records is recorded for the map the record came from,
+    /// and the reverse, as for two copies of one address space.
+    pub(super) fn share_watch(&mut self, record: WatchRecord) {
+        self.watch = record.0;
+    }
+
+    /// Gives this map's watch a record of its own, which starts with the
+    /// answer the shared one has now: changes recorded by the maps that
+    /// shared it no longer reach this one, and this one's no longer reach
+    /// them.
+    pub(super) fn detach_watch(&mut self) {
+        if let Some(watch) = &mut self.watch {
+            watch.changed = Arc::new(AtomicBool::new(watch.changed.load(Ordering::SeqCst)));
         }
     }
 
@@ -152,18 +246,32 @@ impl UserPages {
         let exposed = self.take_scratch(page);
         let previous = self.map.edit().insert(page, state);
         debug_assert!(!(exposed && previous.is_some()));
-        if exposed { Some(EXPOSED) } else { previous }
+        let previous = if exposed { Some(EXPOSED) } else { previous };
+        if previous != Some(state) {
+            self.note_change(page, page);
+        }
+        previous
     }
 
     /// `BTreeMap::remove` of the logical map.
     pub(super) fn remove(&mut self, page: &u64) -> Option<UserPageState> {
-        if self.take_scratch(*page) {
-            return Some(EXPOSED);
+        let previous = if self.take_scratch(*page) {
+            Some(EXPOSED)
+        } else {
+            self.map.edit().remove(page)
+        };
+        if previous.is_some() {
+            self.note_change(*page, *page);
         }
-        self.map.edit().remove(page)
+        previous
     }
 
     pub(super) fn clear(&mut self) {
+        if let Some((first, last)) = self.watch.as_ref().map(|watch| (watch.first, watch.last))
+            && self.range(first..=last).next().is_some()
+        {
+            self.note_change(first, last);
+        }
         self.scratch.clear();
         self.map.edit().clear();
     }
@@ -177,20 +285,30 @@ impl UserPages {
             // Already exposed: inserting the same state changes nothing.
             return;
         };
-        if !known_absent && self.map.contains_key(&page) {
-            self.map.edit().remove(&page);
-        }
+        let previous = if !known_absent && self.map.contains_key(&page) {
+            self.map.edit().remove(&page)
+        } else {
+            None
+        };
         self.scratch.insert(index, page);
+        if previous != Some(EXPOSED) {
+            self.note_change(page, page);
+        }
     }
 
     /// Exactly `remove(&page)` of the logical map, without touching the tree
     /// when `page` is known not to be one of its keys.
     pub(super) fn hide_scratch(&mut self, page: u64, known_absent: bool) {
-        if self.take_scratch(page) || known_absent {
+        if self.take_scratch(page) {
+            self.note_change(page, page);
+            return;
+        }
+        if known_absent {
             return;
         }
         if self.map.contains_key(&page) {
             self.map.edit().remove(&page);
+            self.note_change(page, page);
         }
     }
 
@@ -358,16 +476,35 @@ mod tests {
     }
 
     /// Model check: every operation, overlay paths included, leaves the same
-    /// logical map as the plain `BTreeMap` operation it stands for.
+    /// logical map as the plain `BTreeMap` operation it stands for, and the
+    /// watch records a change exactly when an operation changed the logical
+    /// state of a watched page, or `note_change` named one.
     #[test]
     fn user_pages_behave_as_their_logical_btree_map() {
         let mut rng = Lcg(0x5eed);
+        let mut changes = 0;
         for _round in 0..64 {
             let mut pages = UserPages::new();
             let mut model = BTreeMap::new();
-            for _ in 0..200 {
+            assert_eq!(pages.unchanged_watch(), None);
+            let first = rng.next(20);
+            let last = first + rng.next(20 - first);
+            let mut watching = false;
+            let mut changed = false;
+            for step in 0..200 {
+                if step == 20 {
+                    // A watch begun on a map that already holds pages.
+                    pages.watch(first, last);
+                    watching = true;
+                    changed = false;
+                }
                 let page = rng.next(20);
-                match rng.next(7) {
+                let before: Vec<_> = model
+                    .range(first..=last)
+                    .map(|(&page, &state)| (page, state))
+                    .collect();
+                let mut noted = false;
+                match rng.next(8) {
                     0 | 1 => {
                         let value = state(rng.next(3));
                         assert_eq!(pages.insert(page, value), model.insert(page, value));
@@ -384,6 +521,13 @@ mod tests {
                         pages.hide_scratch(page, absent);
                         model.remove(&page);
                     }
+                    6 => {
+                        if rng.next(8) == 0 {
+                            let end = page + rng.next(4);
+                            pages.note_change(page, end);
+                            noted = page <= last && end >= first;
+                        }
+                    }
                     _ => {
                         if rng.next(16) == 0 {
                             pages.clear();
@@ -391,6 +535,16 @@ mod tests {
                         }
                     }
                 }
+                let after: Vec<_> = model
+                    .range(first..=last)
+                    .map(|(&page, &state)| (page, state))
+                    .collect();
+                if watching && (noted || before != after) {
+                    changed = true;
+                    changes += 1;
+                }
+                let expected = (watching && !changed).then_some((first, last));
+                assert_eq!(pages.unchanged_watch(), expected, "step {step}");
                 assert!(
                     pages
                         .scratch
@@ -401,8 +555,95 @@ mod tests {
                 assert_same(&pages, &model, &mut rng);
                 let cloned = pages.clone();
                 assert_same(&cloned, &model, &mut rng);
+                assert_eq!(cloned.unchanged_watch(), expected);
             }
         }
+        // The rounds exercised the watch, not only its absence.
+        assert!(changes > 64, "{changes}");
+    }
+
+    /// Who shares a watch's record: a clone does, and a map joined to it
+    /// with `share_watch`, both ways, until one detaches, which keeps the
+    /// answer it had; a new watch shares with no one.
+    #[test]
+    fn a_watch_record_is_shared_by_clones_and_joined_maps_until_detached() {
+        let watched = || {
+            let mut pages = UserPages::new();
+            pages.insert(5, UserPageState::NoAccess);
+            pages.watch(4, 6);
+            pages
+        };
+        let unchanged = Some((4, 6));
+
+        // A clone, changed after the cloning, changes the original, and the
+        // original changes the clone.
+        for clone_changes in [true, false] {
+            let mut original = watched();
+            let mut clone = original.clone();
+            let changing = if clone_changes {
+                &mut clone
+            } else {
+                &mut original
+            };
+            changing.remove(&5);
+            assert_eq!(original.unchanged_watch(), None, "{clone_changes}");
+            assert_eq!(clone.unchanged_watch(), None, "{clone_changes}");
+        }
+
+        // A detached copy keeps the answer it had and shares no change.
+        for detach_copy in [true, false] {
+            let mut original = watched();
+            let mut copy = original.clone();
+            if detach_copy {
+                copy.detach_watch();
+            } else {
+                original.detach_watch();
+            }
+            copy.insert(6, UserPageState::NoAccess);
+            assert_eq!(original.unchanged_watch(), unchanged, "{detach_copy}");
+            assert_eq!(copy.unchanged_watch(), None, "{detach_copy}");
+            original.remove(&5);
+            assert_eq!(original.unchanged_watch(), None, "{detach_copy}");
+        }
+        let mut changed = watched();
+        changed.note_change(4, 4);
+        let mut copy = changed.clone();
+        copy.detach_watch();
+        assert_eq!(copy.unchanged_watch(), None);
+
+        // A map joined to another's record shares its changes both ways,
+        // and a new watch on either leaves the other's record alone.
+        for joined_changes in [true, false] {
+            let mut original = watched();
+            let mut joined = original.clone();
+            joined.detach_watch();
+            joined.share_watch(original.watch_record());
+            let changing = if joined_changes {
+                &mut joined
+            } else {
+                &mut original
+            };
+            changing.note_change(6, 9);
+            assert_eq!(original.unchanged_watch(), None, "{joined_changes}");
+            assert_eq!(joined.unchanged_watch(), None, "{joined_changes}");
+        }
+        let mut original = watched();
+        let mut joined = UserPages::new();
+        joined.share_watch(original.watch_record());
+        assert_eq!(joined.unchanged_watch(), unchanged);
+        joined.watch(4, 6);
+        joined.note_change(5, 5);
+        assert_eq!(original.unchanged_watch(), unchanged);
+        original.watch(4, 6);
+        let shared = original.clone();
+        original.watch(4, 6);
+        original.note_change(4, 4);
+        assert_eq!(shared.unchanged_watch(), unchanged);
+        // Without a watch there is nothing to share or detach.
+        let mut none = UserPages::new();
+        none.detach_watch();
+        none.share_watch(UserPages::new().watch_record());
+        assert_eq!(none.unchanged_watch(), None);
     }
 
     #[test]

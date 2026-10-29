@@ -544,6 +544,22 @@ impl AddressSpaceState {
         }
     }
 
+    /// The stack window ([`GuestMemory::establish_user_stack_window`]), once
+    /// established.
+    fn stack_window(&self) -> Option<UserWindow> {
+        self.windows
+            .iter()
+            .copied()
+            .find(|window| window.user_end == USER_STACK_TOP)
+    }
+
+    /// The first and last physical page that `window`'s user addresses name.
+    fn window_pages(window: UserWindow) -> Option<(u64, u64)> {
+        let page = PAGE_SIZE as u64;
+        let end = window.physical(window.user_end);
+        (end > window.physical_start).then(|| (window.physical_start / page, end / page - 1))
+    }
+
     /// The exclusive end of the identity user addresses.
     fn identity_limit(&self) -> u64 {
         self.identity_end
@@ -1532,12 +1548,15 @@ impl GuestMemory {
             });
         }
         let snapshot = Self::new(self.guest_base(), self.len())?;
-        let user_access = self
+        let mut user_access = self
             .mapping
             .address_space
             .lock()
             .expect("guest memory access map lock poisoned")
             .clone();
+        // The copy is another address space: it starts with this one's
+        // stack-window record, and the two record their own changes.
+        user_access.pages.detach_watch();
 
         // The sparse helper requires whole, equal-sized files at offset zero.
         // A subset uses the existing view-relative copy without extending that
@@ -1761,7 +1780,13 @@ impl GuestMemory {
                 {
                     continue;
                 }
-                old.push((page, state.reservations.edit().insert(page, kind)));
+                let previous = state.reservations.edit().insert(page, kind);
+                // A page taken over for another use has changed, even where
+                // its state stays as it was (see `watch_user_stack_window`).
+                if previous != Some(kind) {
+                    state.pages.note_change(page, page);
+                }
+                old.push((page, previous));
             }
         }
         Ok(PendingReservation {
@@ -1871,6 +1896,145 @@ impl GuestMemory {
             .expect("guest memory access map lock poisoned");
         state.windows.clear();
         state.identity_end = None;
+    }
+
+    /// Watches the stack window ([`GuestMemory::establish_user_stack_window`])
+    /// from now on, replacing any earlier watch: it stays unchanged
+    /// ([`GuestMemory::unchanged_user_stack_window`]) until the state of one of
+    /// its pages changes, by whatever path maps, unmaps, protects, moves or
+    /// publishes it, until a page of it is reserved for another use, or until
+    /// [`GuestMemory::note_user_mapping_change`] names part of it. The page
+    /// map records every change to a watched page's state itself
+    /// (`UserPages::watch`), so no path can make one unseen. The new watch
+    /// has a record of its own. A loader calls this once it has mapped the
+    /// window for a new image. Without a stack window there is nothing to
+    /// watch, and the window is never unchanged.
+    pub fn watch_user_stack_window(&self) {
+        let mut state = self
+            .mapping
+            .address_space
+            .lock()
+            .expect("guest memory access map lock poisoned");
+        if let Some((first, last)) = state
+            .stack_window()
+            .and_then(AddressSpaceState::window_pages)
+        {
+            state.pages.watch(first, last);
+        }
+    }
+
+    /// The user range `[start, end)` of the stack window, if it is unchanged
+    /// since [`GuestMemory::watch_user_stack_window`] began watching it: no
+    /// page of it has changed state, nothing named part of it in
+    /// [`GuestMemory::note_user_mapping_change`], and every page of it is
+    /// still reserved for the stack. `None` otherwise, and when nothing
+    /// watches it. A fork's copy of the memory ([`GuestMemory::snapshot`])
+    /// starts with the answer and keeps a record of its own; a copy that
+    /// stands for the same address space shares the record
+    /// ([`GuestMemory::share_user_stack_window_watch`]); a new image's
+    /// loader starts it again.
+    pub fn unchanged_user_stack_window(&self) -> Option<(u64, u64)> {
+        let state = self
+            .mapping
+            .address_space
+            .lock()
+            .expect("guest memory access map lock poisoned");
+        let window = state.stack_window()?;
+        let pages = AddressSpaceState::window_pages(window)?;
+        if state.pages.unchanged_watch() != Some(pages) {
+            return None;
+        }
+        // A reservation can change without a page's state. A page reserved
+        // for something else, as `reserve_region` records in the watch, or
+        // with a reservation that cannot be taken back (a Tool's scratch
+        // page), is not the stack's: only a loader reserves the stack.
+        let (first, last) = pages;
+        if (first..=last).any(|page| state.reservations.get(&page) != Some(&RegionKind::Stack)) {
+            return None;
+        }
+        Some((window.user_start, window.user_end))
+    }
+
+    /// Records that the guest changed something about the mappings of the
+    /// user range `[address, address + length)` that the pages' states do not
+    /// hold: a protection bit other than access and write, or a flag Linux
+    /// keeps on a mapping, such as the ones `madvise(2)` and `munlock(2)` set
+    /// or clear. When the range overlaps the stack window, the window is no
+    /// longer unchanged ([`GuestMemory::unchanged_user_stack_window`]). An
+    /// empty range names nothing.
+    pub fn note_user_mapping_change(&self, address: u64, length: u64) {
+        let mut state = self
+            .mapping
+            .address_space
+            .lock()
+            .expect("guest memory access map lock poisoned");
+        let Some(window) = state.stack_window() else {
+            return;
+        };
+        if length > 0
+            && address < window.user_end
+            && address.saturating_add(length) > window.user_start
+            && let Some((first, last)) = AddressSpaceState::window_pages(window)
+        {
+            state.pages.note_change(first, last);
+        }
+    }
+
+    /// [`GuestMemory::note_user_mapping_change`] for every user address, as
+    /// for a call such as `munlockall(2)` that changes every mapping.
+    pub fn note_every_user_mapping_change(&self) {
+        let mut state = self
+            .mapping
+            .address_space
+            .lock()
+            .expect("guest memory access map lock poisoned");
+        if let Some((first, last)) = state
+            .stack_window()
+            .and_then(AddressSpaceState::window_pages)
+        {
+            state.pages.note_change(first, last);
+        }
+    }
+
+    /// Makes this memory's stack-window record `parent`'s, replacing its own,
+    /// for a copy of `parent` that stands for the same address space: a
+    /// child that shares its parent's address space on Linux (`vfork(2)`,
+    /// and `clone(2)` or `clone3(2)` with `CLONE_VM|CLONE_VFORK`) but runs on
+    /// a copy of the memory here. From then on a change either records, to
+    /// the copy's pages or to the parent's, empties
+    /// [`GuestMemory::unchanged_user_stack_window`] for both, while the child
+    /// runs and after it exits, until either takes a record of its own
+    /// ([`GuestMemory::detach_user_stack_window_watch`]), as a new image does.
+    pub fn share_user_stack_window_watch(&self, parent: &GuestMemory) {
+        // One lock at a time: the two memories' locks have no order.
+        let record = parent
+            .mapping
+            .address_space
+            .lock()
+            .expect("guest memory access map lock poisoned")
+            .pages
+            .watch_record();
+        self.mapping
+            .address_space
+            .lock()
+            .expect("guest memory access map lock poisoned")
+            .pages
+            .share_watch(record);
+    }
+
+    /// Gives this memory a stack-window record of its own, which starts with
+    /// the answer the shared one has now
+    /// ([`GuestMemory::share_user_stack_window_watch`]): a new image's loader
+    /// calls this before it clears the old image, since the new image is a
+    /// new address space, and clearing the old one changes nothing for a
+    /// process that shared it.
+    pub fn detach_user_stack_window_watch(&self) {
+        self.mapping
+            .address_space
+            .lock()
+            .expect("guest memory access map lock poisoned")
+            .pages
+            .detach_watch();
     }
 
     /// The established windows, by user start, and the end of the identity
@@ -5758,6 +5922,243 @@ mod tests {
         let mut bytes = [0; 16];
         memory.read_raw(8 * MIB, &mut bytes).unwrap();
         assert_eq!(bytes, [[2; 8], [3; 8]].concat()[..]);
+    }
+
+    /// A stack window mapped as a loader maps it: 16 MiB of memory, the top
+    /// 8 MiB reserved for the stack and mapped read-write, then watched.
+    /// Returns the memory and the window's user start.
+    fn watched_stack_window() -> (GuestMemory, u64) {
+        const MIB: u64 = 1024 * 1024;
+        let memory = GuestMemory::new(0, (16 * MIB) as usize).unwrap();
+        let window = memory.establish_user_stack_window(8 * MIB).unwrap();
+        memory
+            .reserve_region(8 * MIB, 8 * MIB, RegionKind::Stack)
+            .unwrap()
+            .commit();
+        memory.map_user_range(8 * MIB, 8 * MIB, false).unwrap();
+        assert_eq!(memory.unchanged_user_stack_window(), None, "not watched");
+        memory.watch_user_stack_window();
+        assert_eq!(
+            memory.unchanged_user_stack_window(),
+            Some((window, USER_STACK_TOP))
+        );
+        (memory, window)
+    }
+
+    /// Every path that changes the state of one of the stack window's pages
+    /// leaves the window changed for good, and so does a reservation taken
+    /// over or a change the states do not hold that names part of it. A state
+    /// set again unchanged, and changes elsewhere, leave it unchanged. A copy
+    /// keeps the answer it had, independently of its source, and a new watch
+    /// starts again.
+    #[test]
+    fn the_stack_window_stays_unchanged_until_a_page_of_it_changes() {
+        const MIB: u64 = 1024 * 1024;
+        let page = PAGE_SIZE as u64;
+        // A page of the window, physically, and one below it.
+        let inside = 12 * MIB;
+        let below = 4 * MIB;
+        type Change = fn(&GuestMemory, u64, u64);
+        let changes: [(&str, Change); 9] = [
+            ("read-only", |memory, inside, _| {
+                memory
+                    .map_user_permissions(inside, PAGE_SIZE as u64, true, false)
+                    .unwrap();
+            }),
+            ("inaccessible", |memory, inside, _| {
+                memory
+                    .map_user_range(inside, PAGE_SIZE as u64, true)
+                    .unwrap();
+            }),
+            ("unmapped", |memory, inside, _| {
+                memory.unmap_user_range(inside, PAGE_SIZE as u64).unwrap();
+            }),
+            ("moved away", |memory, inside, below| {
+                memory
+                    .remap_user_range(inside, PAGE_SIZE as u64, below, PAGE_SIZE as u64)
+                    .unwrap();
+            }),
+            ("reserved for a mapping", |memory, inside, _| {
+                memory
+                    .reserve_region(inside, PAGE_SIZE as u64, RegionKind::Mmap)
+                    .unwrap()
+                    .commit();
+            }),
+            ("exposed as scratch", |memory, inside, _| {
+                memory
+                    .expose_tool_scratch(inside, PAGE_SIZE as u64)
+                    .unwrap();
+            }),
+            ("cleared", |memory, _, _| memory.clear_user_access()),
+            ("noted", |memory, _, _| {
+                memory.note_user_mapping_change(USER_STACK_TOP - 4096, 1);
+            }),
+            ("noted everywhere", |memory, _, _| {
+                memory.note_every_user_mapping_change();
+            }),
+        ];
+        for (name, change) in changes {
+            let (memory, _) = watched_stack_window();
+            change(&memory, inside, below);
+            assert_eq!(memory.unchanged_user_stack_window(), None, "{name}");
+            // Setting the whole window back as the loader left it, as far as
+            // the change allows (a scratch page's reservation is permanent),
+            // does not undo it.
+            if let Ok(reservation) = memory.reserve_region(8 * MIB, 8 * MIB, RegionKind::Stack) {
+                reservation.commit();
+            }
+            memory.map_user_range(8 * MIB, 8 * MIB, false).unwrap();
+            assert_eq!(memory.unchanged_user_stack_window(), None, "{name}");
+        }
+        // A reservation changed without the watch's knowledge, as no path
+        // here changes one, is found all the same.
+        let (memory, _) = watched_stack_window();
+        memory
+            .mapping
+            .address_space
+            .lock()
+            .unwrap()
+            .reservations
+            .edit()
+            .insert(inside / page, RegionKind::Mmap);
+        assert_eq!(memory.unchanged_user_stack_window(), None);
+        // A scratch page exposed and hidden again leaves the page unmapped.
+        let (memory, _) = watched_stack_window();
+        memory.expose_tool_scratch(inside, page).unwrap();
+        memory.hide_tool_scratch(inside, page).unwrap();
+        assert_eq!(memory.unchanged_user_stack_window(), None);
+
+        // Unchanged: a state set again as it is, changes below the window,
+        // and noted changes that do not reach it.
+        let (memory, window) = watched_stack_window();
+        memory.map_user_range(inside, page, false).unwrap();
+        memory.map_user_range(below, page, false).unwrap();
+        memory.unmap_user_range(below, page).unwrap();
+        memory.note_user_mapping_change(window - page, page);
+        memory.note_user_mapping_change(USER_STACK_TOP, page);
+        memory.note_user_mapping_change(window + page, 0);
+        assert_eq!(
+            memory.unchanged_user_stack_window(),
+            Some((window, USER_STACK_TOP))
+        );
+        // A copy keeps the answer, then changes independently of its source.
+        let copy = memory.snapshot().unwrap();
+        assert_eq!(
+            copy.unchanged_user_stack_window(),
+            Some((window, USER_STACK_TOP))
+        );
+        memory.note_user_mapping_change(window, 1);
+        assert_eq!(memory.unchanged_user_stack_window(), None);
+        assert_eq!(
+            copy.unchanged_user_stack_window(),
+            Some((window, USER_STACK_TOP))
+        );
+        assert_eq!(
+            memory.snapshot().unwrap().unchanged_user_stack_window(),
+            None
+        );
+        // A shared handle sees the same address space.
+        let shared = copy.clone();
+        shared.map_user_range(inside, page, true).unwrap();
+        assert_eq!(copy.unchanged_user_stack_window(), None);
+        // A new watch, as a new image's loader takes, starts again.
+        copy.map_user_range(inside, page, false).unwrap();
+        copy.watch_user_stack_window();
+        assert_eq!(
+            copy.unchanged_user_stack_window(),
+            Some((window, USER_STACK_TOP))
+        );
+        // Without a stack window nothing is watched or unchanged.
+        let plain = GuestMemory::new(0, (16 * MIB) as usize).unwrap();
+        plain.map_user_range(8 * MIB, page, false).unwrap();
+        plain.watch_user_stack_window();
+        plain.note_user_mapping_change(0, u64::MAX);
+        plain.note_every_user_mapping_change();
+        assert_eq!(plain.unchanged_user_stack_window(), None);
+    }
+
+    /// A fork's copy of the memory records its own changes, and its source
+    /// its own. A copy that stands for the same address space, as a vfork
+    /// child's does, shares the window's record with its source: a change
+    /// either makes empties the answer for both, until one takes a record of
+    /// its own, as a new image does before it clears the old one, which
+    /// keeps the answer the shared record had.
+    #[test]
+    fn a_copy_that_shares_the_address_space_shares_the_windows_record() {
+        const MIB: u64 = 1024 * 1024;
+        let page = PAGE_SIZE as u64;
+        let inside = 12 * MIB;
+        type Change = fn(&GuestMemory, u64);
+        let changes: [(&str, Change); 3] = [
+            ("read-only", |memory, inside| {
+                memory
+                    .map_user_permissions(inside, PAGE_SIZE as u64, true, false)
+                    .unwrap();
+            }),
+            ("noted", |memory, _| {
+                memory.note_user_mapping_change(USER_STACK_TOP - 4096, 1);
+            }),
+            ("cleared", |memory, _| memory.clear_user_access()),
+        ];
+        // The memory that changes, and the other one.
+        fn sides<'a>(
+            copy_changes: bool,
+            memory: &'a GuestMemory,
+            copy: &'a GuestMemory,
+        ) -> (&'a GuestMemory, &'a GuestMemory) {
+            if copy_changes {
+                (copy, memory)
+            } else {
+                (memory, copy)
+            }
+        }
+        for (name, change) in changes {
+            for copy_changes in [true, false] {
+                let label = format!("{name}, copy changes: {copy_changes}");
+
+                // A fork's copy.
+                let (memory, window) = watched_stack_window();
+                let unchanged = Some((window, USER_STACK_TOP));
+                let copy = memory.snapshot().unwrap();
+                let (changing, other) = sides(copy_changes, &memory, &copy);
+                change(changing, inside);
+                assert_eq!(other.unchanged_user_stack_window(), unchanged, "{label}");
+
+                // A sharing copy.
+                let (memory, _) = watched_stack_window();
+                let copy = memory.snapshot().unwrap();
+                copy.share_user_stack_window_watch(&memory);
+                assert_eq!(copy.unchanged_user_stack_window(), unchanged, "{label}");
+                let (changing, _) = sides(copy_changes, &memory, &copy);
+                change(changing, inside);
+                assert_eq!(memory.unchanged_user_stack_window(), None, "{label}");
+                assert_eq!(copy.unchanged_user_stack_window(), None, "{label}");
+
+                // A sharing copy that took a record of its own.
+                let (memory, _) = watched_stack_window();
+                let copy = memory.snapshot().unwrap();
+                copy.share_user_stack_window_watch(&memory);
+                copy.detach_user_stack_window_watch();
+                let (changing, other) = sides(copy_changes, &memory, &copy);
+                change(changing, inside);
+                assert_eq!(other.unchanged_user_stack_window(), unchanged, "{label}");
+            }
+        }
+        // Joining replaces the copy's own answer with its source's, both
+        // ways, and detaching keeps the shared answer.
+        let (memory, window) = watched_stack_window();
+        let copy = memory.snapshot().unwrap();
+        copy.map_user_range(inside, page, true).unwrap();
+        copy.share_user_stack_window_watch(&memory);
+        assert_eq!(
+            copy.unchanged_user_stack_window(),
+            Some((window, USER_STACK_TOP))
+        );
+        memory.note_user_mapping_change(window, page);
+        copy.detach_user_stack_window_watch();
+        assert_eq!(copy.unchanged_user_stack_window(), None);
+        let other = memory.snapshot().unwrap();
+        assert_eq!(other.unchanged_user_stack_window(), None);
     }
 
     /// The stack window places the top of guest memory at the top of the user

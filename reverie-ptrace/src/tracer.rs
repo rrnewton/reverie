@@ -4599,6 +4599,7 @@ mod tests {
     include!("tracer/fatal_dead_exec_tests.rs");
     include!("tracer/signal_sets_session_tests.rs");
     include!("tracer/link_path_session_tests.rs");
+    include!("tracer/memory_map_session_tests.rs");
 
     #[cfg(not(target_arch = "x86_64"))]
     #[tokio::test(flavor = "current_thread")]
