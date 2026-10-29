@@ -3830,9 +3830,10 @@ impl KvmBackend {
                 let returning = completion_notice.returning.clone();
                 #[cfg(test)]
                 tests::entry_action_tests::observe("host_spawn");
-                let handle = std::thread::Builder::new()
-                    .name(format!("reverie-kvm-guest-{child_tid}"))
-                    .spawn(move || {
+                let handle = crate::supervisor_thread::builder(format!(
+                    "reverie-kvm-guest-{child_tid}"
+                ))
+                .spawn(move || {
                         let _completion_notice = completion_notice;
                         let mut run_child = move || {
                             let driver = child.start_entry_driver();
@@ -4305,8 +4306,9 @@ impl KvmBackend {
                 let (start_sender, start_receiver) = std::sync::mpsc::channel();
                 let start_gate = ChildStartGate::new(start_sender);
                 let handle = ChildThread::spawn_owned(
-                    std::thread::Builder::new()
-                        .name(format!("reverie-kvm-process-{raw_child_pid}")),
+                    crate::supervisor_thread::builder(format!(
+                        "reverie-kvm-process-{raw_child_pid}"
+                    )),
                     (
                         child,
                         child_tool,
@@ -4637,7 +4639,7 @@ impl KvmBackend {
                 #[cfg(test)]
                 tests::entry_action_tests::observe("tool_spawn");
                 let handle = crate::failure::spawn_owned(
-                    std::thread::Builder::new().name(format!("reverie-kvm-guest-{child_tid}")),
+                    crate::supervisor_thread::builder(format!("reverie-kvm-guest-{child_tid}")),
                     (
                         child,
                         child_executor,
