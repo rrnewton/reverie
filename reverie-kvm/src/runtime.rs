@@ -6446,6 +6446,13 @@ impl KvmBackend {
     {
         #[cfg(test)]
         timer_signal_observation::observe(&self.vcpu, executor);
+        // Linux's get_signal takes a group exit before it dequeues any signal
+        // (SIGNAL_GROUP_EXIT, at the top of its loop): a thread whose group
+        // began to exit, or that was cancelled, while its timer callback ran
+        // takes no signal here, and the run loop's next iteration ends it.
+        if self.guest_thread_group_exit_status().is_some() || self.guest_thread_is_cancelled() {
+            return Ok(UserBoundarySignal::Settled);
+        }
         if !executor.has_eligible_pending_signal() {
             return Ok(UserBoundarySignal::Settled);
         }
@@ -6615,7 +6622,14 @@ impl KvmBackend {
             ),
         };
         for _ in 1..SIGNAL_SELECTIONS_PER_RETURN {
-            if executor.has_pending_exit() || !executor.has_eligible_pending_signal() {
+            // As at a timer boundary's first selection, a group exit or a
+            // cancellation that came during the last selection's hook ends
+            // the loop before another signal is selected.
+            if executor.has_pending_exit()
+                || self.guest_thread_group_exit_status().is_some()
+                || self.guest_thread_is_cancelled()
+                || !executor.has_eligible_pending_signal()
+            {
                 break;
             }
             executor.set_current_user_stack_pointer(resume.rsp);
