@@ -1693,6 +1693,7 @@ impl reverie::ProcessSignalControl for ProcessSignalControl {
 }
 
 #[cfg(test)]
+#[allow(clippy::disallowed_methods, reason = "tests may make threads freely")]
 mod tests {
     use std::os::fd::AsRawFd;
 

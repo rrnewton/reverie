@@ -3836,7 +3836,7 @@ impl KvmBackend {
                 let returning = completion_notice.returning.clone();
                 #[cfg(test)]
                 tests::entry_action_tests::observe("host_spawn");
-                let handle = std::thread::Builder::new()
+                let handle = crate::supervisor_thread::builder()
                     .name(format!("reverie-kvm-guest-{child_tid}"))
                     .spawn(move || {
                         let _completion_notice = completion_notice;
@@ -4311,7 +4311,7 @@ impl KvmBackend {
                 let (start_sender, start_receiver) = std::sync::mpsc::channel();
                 let start_gate = ChildStartGate::new(start_sender);
                 let handle = ChildThread::spawn_owned(
-                    std::thread::Builder::new()
+                    crate::supervisor_thread::builder()
                         .name(format!("reverie-kvm-process-{raw_child_pid}")),
                     (
                         child,
@@ -4643,7 +4643,8 @@ impl KvmBackend {
                 #[cfg(test)]
                 tests::entry_action_tests::observe("tool_spawn");
                 let handle = crate::failure::spawn_owned(
-                    std::thread::Builder::new().name(format!("reverie-kvm-guest-{child_tid}")),
+                    crate::supervisor_thread::builder()
+                        .name(format!("reverie-kvm-guest-{child_tid}")),
                     (
                         child,
                         child_executor,
@@ -7189,6 +7190,7 @@ fn supported_hypercall_instruction(cpuid: &CpuId) -> Result<[u8; 3]> {
 
 #[cfg(test)]
 #[path = "vm/worker_panic_tests.rs"]
+#[allow(clippy::disallowed_methods, reason = "tests may make threads freely")]
 mod worker_panic_tests;
 
 #[cfg(test)]
@@ -7245,6 +7247,7 @@ mod user_trap_signal_tests {
 }
 
 #[cfg(test)]
+#[allow(clippy::disallowed_methods, reason = "tests may make threads freely")]
 mod tests {
     /// The stack window's first page in a 16 MiB test memory: the user address
     /// of physical 0x80_0000, which these tests use as scratch memory.
@@ -13402,9 +13405,11 @@ mod tests {
 
 #[cfg(test)]
 #[path = "terminal_vm_tests.rs"]
+#[allow(clippy::disallowed_methods, reason = "tests may make threads freely")]
 mod terminal_tests;
 
 #[cfg(test)]
+#[allow(clippy::disallowed_methods, reason = "tests may make threads freely")]
 mod terminal_direct_error_tests {
     use std::os::fd::FromRawFd;
     use std::sync::mpsc;
@@ -13517,6 +13522,7 @@ mod entry_owner_tests;
 
 #[cfg(test)]
 #[path = "vm/exec_wait_tests.rs"]
+#[allow(clippy::disallowed_methods, reason = "tests may make threads freely")]
 mod exec_wait_tests;
 
 /// Milliseconds a dying task sleeps after its clear_child_tid wake (tests).

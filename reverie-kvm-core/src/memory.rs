@@ -4367,6 +4367,7 @@ impl Drop for Mapping {
 }
 
 #[cfg(test)]
+#[allow(clippy::disallowed_methods, reason = "tests may make threads freely")]
 mod user_copy_tests {
     use std::future::Future;
     use std::sync::atomic::AtomicBool;
@@ -5184,6 +5185,7 @@ impl MemoryAccess for UserMemory {
 
 #[cfg(test)]
 #[path = "memory/entry_snapshot_tests.rs"]
+#[allow(clippy::disallowed_methods, reason = "tests may make threads freely")]
 mod entry_snapshot_tests;
 
 #[cfg(any(test, feature = "test-support"))]
@@ -5200,6 +5202,7 @@ impl GuestMemory {
 }
 
 #[cfg(test)]
+#[allow(clippy::disallowed_methods, reason = "tests may make threads freely")]
 mod tests {
     use reverie::syscalls::AddrMut;
 
@@ -8506,6 +8509,7 @@ mod tests {
 /// order and errors as the separate copies they replace, one admission each,
 /// and the same refusals by the entry gate.
 #[cfg(test)]
+#[allow(clippy::disallowed_methods, reason = "tests may make threads freely")]
 mod one_admission_copy_tests {
     use std::time::Duration;
     use std::time::Instant;
