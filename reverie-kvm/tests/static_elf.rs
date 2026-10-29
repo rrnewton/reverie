@@ -6207,9 +6207,18 @@ int main(int argc, char **argv) {
     );
     let executable = executable.to_str().unwrap();
     let image = std::fs::read(executable).unwrap();
+    // A nested frame that would begin exactly at the stack's lower end is off
+    // the stack, as on Linux, whose get_sigframe requires __on_sig_stack of
+    // the frame, which for a stack that grows down is (base, base + size],
+    // the base excluded
+    // (https://github.com/gregkh/linux/blob/v7.1.3/arch/x86/kernel/signal.c#L150-L158,
+    // https://github.com/gregkh/linux/blob/v7.1.3/include/linux/sched/signal.h#L574-L583):
+    // SIGSEGV, as for the frame 16 bytes lower. timer_events.rs compares
+    // that case with native Linux
+    // (a_frame_that_would_start_at_the_alternate_stacks_base_is_refused_as_on_linux).
     for (mode, expected) in [
         ("fresh", 0),
-        ("exact", 0),
+        ("exact", 128 + libc::SIGSEGV),
         ("underflow", 128 + libc::SIGSEGV),
         ("guard", 128 + libc::SIGSEGV),
     ] {
