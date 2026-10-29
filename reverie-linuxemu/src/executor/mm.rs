@@ -1117,15 +1117,15 @@ pub(super) fn munlock_guest_range<M: AddressSpace>(memory: &M, address: u64, len
     0
 }
 
-/// `mincore(2)` range validation only. Residency is the Tool's decision:
-/// Detcore reports every mapped page resident on every backend
-/// (`handle_mincore` in detcore/src/syscalls/memory.rs), because host page
-/// residency is nondeterministic. LinuxEmu keeps Linux's pointer and
-/// mapping validation (EINVAL for a bad address or length, ENOMEM for an
-/// unmapped range) and leaves the residency vector untouched, so the
-/// Tool's answer is the only one the guest sees. A run with no Tool that
-/// answers residency therefore gets no residency bytes from LinuxEmu;
-/// that is the named cost of keeping the policy in one place.
+/// `mincore(2)` range validation only. Residency is the Tool's decision,
+/// because host page residency is nondeterministic: a Tool that answers
+/// mincore writes the residency bytes after this call. LinuxEmu keeps
+/// Linux's pointer and mapping validation (EINVAL for a bad address or
+/// length, ENOMEM for an unmapped range, EFAULT for a vector it cannot
+/// write) and leaves the residency bytes untouched, so the Tool's answer
+/// is the only one the guest sees. A run with no Tool that answers
+/// residency therefore gets no residency bytes from LinuxEmu; that is
+/// the named cost of keeping the policy in one place.
 pub(super) fn mincore<M: GuestMemoryAccess<Error = crate::Error> + AddressSpace>(
     memory: &mut M,
     args: &[u64; 6],
@@ -1141,14 +1141,22 @@ pub(super) fn mincore<M: GuestMemoryAccess<Error = crate::Error> + AddressSpace>
         RangeState::Unaddressable => return negative_errno(libc::EINVAL),
         RangeState::Unmapped | RangeState::Mixed => return negative_errno(libc::ENOMEM),
     }
-    // Linux faults a residency vector it cannot write (EFAULT), without
-    // deciding any residency byte; probe only that the vector's range is
-    // addressable.
+    // Linux faults a residency vector it cannot write (EFAULT), including
+    // one on a PROT_NONE page, without deciding any residency byte. Probe
+    // writability by writing the vector's own bytes back unchanged; a
+    // fault on the read or the write is the kernel's EFAULT.
     let Some(page_count) = length.checked_add(PAGE_SIZE - 1).map(|n| n / PAGE_SIZE) else {
         return negative_errno(libc::ENOMEM);
     };
-    match memory.query(args[2], page_count) {
-        RangeState::Mapped => 0,
-        _ => negative_errno(libc::EFAULT),
+    let Ok(page_count) = usize::try_from(page_count) else {
+        return negative_errno(libc::ENOMEM);
+    };
+    let mut probe = vec![0_u8; page_count];
+    if memory.read_exact(args[2], &mut probe).is_err() {
+        return negative_errno(libc::EFAULT);
+    }
+    match memory.write_exact(args[2], &probe) {
+        Ok(()) => 0,
+        Err(_) => negative_errno(libc::EFAULT),
     }
 }

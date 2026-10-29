@@ -39087,8 +39087,8 @@ mod tests {
             syscall_result(&mut memory, &mut state, libc::SYS_munlockall, [u64::MAX; 6],),
             0
         );
-        // Residency is Detcore's decision on every backend; LinuxEmu only
-        // validates and leaves the vector's bytes as the guest left them.
+        // Residency is the Tool's decision; LinuxEmu only validates and
+        // leaves the vector's bytes as the guest left them.
         memory.write(VECTOR, &[7_u8, 7]).unwrap();
         assert_eq!(
             syscall_result(
@@ -39102,6 +39102,15 @@ mod tests {
         assert_eq!(
             read_guest_bytes::<2>(&ProviderMemory(&memory), VECTOR).unwrap(),
             [7, 7]
+        );
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_mincore,
+                [PAGE_SIZE, PAGE_SIZE, 10 * PAGE_SIZE, 0, 0, 0],
+            ),
+            negative_errno(libc::EFAULT)
         );
         assert_eq!(
             syscall_result(
