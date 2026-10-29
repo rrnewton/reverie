@@ -39,7 +39,9 @@ use crate::cp;
 
 /// A stopped task's memory as a Tool sees it. Reads are [`Stopped`]'s; every
 /// write respects the target's page permissions and never touches Reverie's
-/// private page.
+/// private page. Once the notifier publishes an exit stop that supersedes
+/// this held non-exit capability, accesses fail with `ESRCH` without touching
+/// the exit stop its original owner must handle.
 pub struct ToolMemory(Stopped);
 
 impl ToolMemory {
@@ -54,6 +56,21 @@ impl ToolMemory {
     #[cfg(test)]
     pub(crate) fn stopped(&self) -> &Stopped {
         &self.0
+    }
+
+    fn check_held_stop(&self) -> Result<(), Errno> {
+        // Memory remains readable at PTRACE_EVENT_EXIT. A callback polling
+        // it through the old stop can otherwise keep the EXIT owner from
+        // progressing (https://github.com/rrnewton/reverie/issues/1091).
+        // This passive publication check makes no ptrace/procfs request and
+        // does not claim or advance the exit stop. Before publication (in
+        // particular, before a legacy ptracer's next wait poll), it proves
+        // nothing; an access can also race a later publication.
+        if self.0.superseded_by_observed_exit_stop() {
+            Err(Errno::ESRCH)
+        } else {
+            Ok(())
+        }
     }
 
     /// Whether every page of `[address, address + length)` is mapped writable.
@@ -120,6 +137,7 @@ impl MemoryAccess for ToolMemory {
         read_from: &[io::IoSlice],
         write_to: &mut [io::IoSliceMut],
     ) -> Result<usize, Errno> {
+        self.check_held_stop()?;
         self.0.read_vectored(read_from, write_to)
     }
 
@@ -128,6 +146,7 @@ impl MemoryAccess for ToolMemory {
         read_from: &[io::IoSlice],
         write_to: &mut [io::IoSliceMut],
     ) -> Result<usize, Errno> {
+        self.check_held_stop()?;
         for remote in write_to.iter() {
             refuse_private_page_write(remote.as_ptr() as usize, remote.len())?;
         }
@@ -141,6 +160,7 @@ impl MemoryAccess for ToolMemory {
         local: &[io::IoSlice],
         remote: &[RemoteIoVec],
     ) -> Result<usize, Errno> {
+        self.check_held_stop()?;
         for span in remote {
             refuse_private_page_write(span.address(), span.length())?;
         }
@@ -152,6 +172,7 @@ impl MemoryAccess for ToolMemory {
     where
         A: Into<Addr<'a, u8>>,
     {
+        self.check_held_stop()?;
         self.0.read(addr, buf)
     }
 
@@ -159,17 +180,20 @@ impl MemoryAccess for ToolMemory {
     where
         A: Into<Addr<'a, u8>>,
     {
+        self.check_held_stop()?;
         self.0.read_exact_with_user_access(addr, buf)
     }
 
     /// Every size goes through the permission-respecting copy, never the
     /// eight-byte `PTRACE_POKEDATA` path of [`Stopped`]'s debugger `write`.
     fn write(&mut self, addr: AddrMut<u8>, buf: &[u8]) -> Result<usize, Errno> {
+        self.check_held_stop()?;
         refuse_private_page_write(addr.as_raw(), buf.len())?;
         self.0.write_with_user_access(addr, buf)
     }
 
     fn write_with_user_access(&mut self, addr: AddrMut<u8>, buf: &[u8]) -> Result<usize, Errno> {
+        self.check_held_stop()?;
         refuse_private_page_write(addr.as_raw(), buf.len())?;
         self.0.write_with_user_access(addr, buf)
     }
@@ -184,6 +208,7 @@ impl MemoryAccess for ToolMemory {
         A: Into<AddrMut<'a, T>>,
         T: Sized + 'a,
     {
+        self.check_held_stop()?;
         let addr = addr.into().cast::<u8>();
         // SAFETY: `value` is a live `T`, viewed as its `size_of::<T>()` bytes.
         let bytes = unsafe {

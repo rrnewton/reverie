@@ -1234,6 +1234,25 @@ impl Stopped {
         }
     }
 
+    /// Whether an actual published exit stop has superseded this non-exit
+    /// capability. The capability minted for the exit stop itself is never
+    /// superseded by that publication: its owner must still inspect it.
+    ///
+    /// This only reads the existing generation's published fact. It cannot
+    /// register a notifier, capture an identity, poll or claim a wait, or
+    /// change any status. In particular, forged or rewritten siginfo does
+    /// not change the answer.
+    ///
+    /// A false answer is not a liveness guarantee. Before publication,
+    /// including when a legacy ptracer has not yet consumed the exit stop,
+    /// this detects nothing. Publication can also race the caller's next
+    /// request; the observation does not make that request atomic with it.
+    #[cfg(feature = "notifier")]
+    pub fn superseded_by_observed_exit_stop(&self) -> bool {
+        self.2.0.is_none()
+            && TerminalCleanup::new_unregistered(self.0, &self.1).exit_stop_observed()
+    }
+
     /// Converts this capability into the running state after a successful
     /// ptrace request moved the tracee out of its stop.
     fn into_running(self) -> Running {

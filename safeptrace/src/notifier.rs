@@ -11957,6 +11957,79 @@ mod test {
     }
 
     #[tokio::test(flavor = "current_thread")]
+    async fn observed_exit_supersedes_the_old_stop_without_taking_its_owner() {
+        let (pid, stopped, mut cleanup) = spawn_traced_process(None).unwrap();
+        stopped.setoptions(Options::PTRACE_O_TRACEEXIT).unwrap();
+        let terminal = stopped.generation().terminal_cleanup();
+        assert!(!stopped.superseded_by_observed_exit_stop());
+        assert_eq!(
+            terminal.event.event().worker_state.load(Ordering::Acquire),
+            WORKER_NOT_STARTED,
+            "passive stop observation registered a notifier"
+        );
+
+        // Siginfo can look exactly like EXIT at a live signal stop. Only
+        // an actual wait publication can supersede the held capability.
+        let original = stopped.getsiginfo().unwrap();
+        let mut forged = unsafe { mem::zeroed::<libc::siginfo_t>() };
+        forged.si_signo = libc::SIGTRAP;
+        forged.si_code = libc::SIGTRAP | (libc::PTRACE_EVENT_EXIT << 8);
+        stopped.setsiginfo(&forged).unwrap();
+        let seen = stopped.getsiginfo().unwrap();
+        assert_eq!(
+            (seen.si_signo, seen.si_code),
+            (forged.si_signo, forged.si_code)
+        );
+        assert!(!stopped.superseded_by_observed_exit_stop());
+        assert_eq!(
+            terminal.event.event().worker_state.load(Ordering::Acquire),
+            WORKER_NOT_STARTED
+        );
+        stopped.setsiginfo(&original).unwrap();
+
+        let exit = cleanup.exit_event(&stopped).unwrap();
+        terminal.request_sigkill().unwrap();
+        let exit_stopped = tokio::time::timeout(TRACEE_WAIT_TIMEOUT, exit)
+            .await
+            .unwrap()
+            .unwrap();
+        cleanup.mark_claimed_exit();
+        let queued = terminal.queued_raw_statuses();
+        assert!(stopped.superseded_by_observed_exit_stop());
+        assert!(
+            stopped
+                .generation()
+                .assume_stopped()
+                .superseded_by_observed_exit_stop()
+        );
+        assert!(!exit_stopped.superseded_by_observed_exit_stop());
+        assert_eq!(terminal.queued_raw_statuses(), queued);
+
+        // The actual EXIT owner remains usable even after its siginfo was
+        // rewritten. Neither observation takes or resumes that capability.
+        exit_stopped.setsiginfo(&original).unwrap();
+        assert!(stopped.superseded_by_observed_exit_stop());
+        assert!(!exit_stopped.superseded_by_observed_exit_stop());
+        assert_eq!(exit_stopped.getevent().unwrap(), i64::from(libc::SIGKILL));
+        let waited = tokio::time::timeout(
+            TRACEE_WAIT_TIMEOUT,
+            exit_stopped.resume(None).unwrap().next_state(),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            waited.assume_exited(),
+            (
+                pid.into(),
+                crate::ExitStatus::Signaled(Signal::SIGKILL, false)
+            )
+        );
+        assert!(terminal.wait(TRACEE_WAIT_TIMEOUT));
+        cleanup.disarm();
+    }
+
+    #[tokio::test(flavor = "current_thread")]
     async fn fatal_signal_requires_real_exit_and_exclusive_exit_capability() {
         let (pid, stopped, mut cleanup) = spawn_traced_process(None).unwrap();
         stopped.setoptions(Options::PTRACE_O_TRACEEXIT).unwrap();
