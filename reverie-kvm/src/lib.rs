@@ -34,6 +34,7 @@ mod preemption_timer;
 mod runtime;
 mod stats;
 mod step_filter;
+mod t2dry_trace;
 mod timestamp;
 mod tools;
 mod vm;

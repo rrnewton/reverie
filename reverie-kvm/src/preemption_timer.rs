@@ -698,6 +698,9 @@ pub(crate) struct TimerEvent {
     /// A finite period is programmed. The event reloads it after each
     /// overflow, so it keeps overflowing until it is reprogrammed.
     live: bool,
+    /// SCRATCH (T2 dry run): the clock and host time at the last finite
+    /// programming, recorded only while `t2dry_trace` is on.
+    pub(crate) t2dry_prog: (u64, u64),
     /// The clock value at the entry that opened the event, from which its
     /// own count started.
     #[cfg(test)]
@@ -808,6 +811,7 @@ impl TimerEvent {
             enabled: false,
             overflow_at: None,
             live: false,
+            t2dry_prog: (0, 0),
             #[cfg(test)]
             opened_clock: 0,
         };
@@ -920,6 +924,9 @@ impl TimerEvent {
             Programming::Period(period) => {
                 self.set_period(period)?;
                 self.overflow_at = Some(clock.saturating_add(period));
+                if crate::t2dry_trace::enabled() {
+                    self.t2dry_prog = (clock, monotonic_ns());
+                }
                 self.live = true;
             }
             Programming::Quiet => {
@@ -946,8 +953,7 @@ impl TimerEvent {
         }
     }
 
-    /// The pending overflow, for tests.
-    #[cfg(test)]
+    /// The pending overflow (SCRATCH: no longer test-only, for `t2dry_trace`).
     pub(crate) fn overflow_at(&self) -> Option<u64> {
         self.overflow_at
     }
