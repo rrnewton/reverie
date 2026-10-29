@@ -528,14 +528,9 @@ impl GuestMemory {
             );
             match permissions {
                 Some((readable, writable)) => {
-                    prepared.pages.insert(
-                        page,
-                        if readable {
-                            UserPageState::Accessible { writable }
-                        } else {
-                            UserPageState::NoAccess
-                        },
-                    );
+                    prepared
+                        .pages
+                        .insert(page, UserPageState::undeclared(readable, writable));
                 }
                 None => {
                     prepared.pages.remove(&page);
@@ -780,8 +775,8 @@ impl GuestMemory {
                 Arc::new(Backing::new_shared_anonymous(length).map_err(Error::MemoryMapping)?);
             let slice = BackingSlice::new(backing, 0, length).map_err(Error::MemoryMapping)?;
             let permissions = match permission {
-                UserPageState::Accessible { writable } => (true, writable),
-                UserPageState::NoAccess => (false, false),
+                UserPageState::Accessible { writable, .. } => (true, writable),
+                UserPageState::NoAccess { .. } => (false, false),
             };
             match self.publish_range_from(
                 allocation,
@@ -818,6 +813,7 @@ impl GuestMemory {
     pub(super) fn snapshot_with_shared_files(
         &self,
         allocation: AllocationGuard<'_>,
+        share_record: bool,
     ) -> Result<Self> {
         if !Arc::ptr_eq(&allocation.memory.mapping, &self.mapping) {
             return Err(Error::MappingPublicationGateMismatch);
@@ -871,17 +867,19 @@ impl GuestMemory {
             &mut buffer,
         )?;
         let mut child_state = parent_state.clone();
-        // The child is another address space: it starts with the parent's
-        // stack-window record, and the two record their own changes, those
-        // the publications below make in the child included.
-        child_state.pages.detach_watch();
+        // A fork's child is another address space: it starts with the
+        // parent's stack-window record, and the two record their own changes,
+        // those the publications below make in the child included.
+        if !share_record {
+            child_state.pages.detach_watch();
+        }
         // All private extents now belong to the child's base backing. Shared
         // installed pointers are recreated only from actual child syscall results.
         child_state.backing_pages.clear();
         *child.mapping.address_space.lock().unwrap() = child_state;
         let permissions = |page: u64| match parent_state.pages.get(&page) {
-            Some(UserPageState::Accessible { writable }) => Some((true, *writable)),
-            Some(UserPageState::NoAccess) => Some((false, false)),
+            Some(UserPageState::Accessible { writable, .. }) => Some((true, *writable)),
+            Some(UserPageState::NoAccess { .. }) => Some((false, false)),
             None => None,
         };
         let mut inherited = inherited.into_iter().peekable();
@@ -2165,61 +2163,155 @@ mod tests {
         assert_eq!(bytes(&original, 2 * P, 5), b"alive");
     }
 
+    /// A memory of six pages whose top three are a stack window, the top two
+    /// reachable and mapped read-write as one mapping, watched; and the
+    /// window's user start.
+    fn watched_window_fixture() -> (GuestMemory, u64) {
+        let memory = fixture(6);
+        let window = memory.establish_user_stack_window(3 * P).unwrap();
+        memory
+            .reserve_region(BASE + 3 * P, 3 * P, RegionKind::Stack)
+            .unwrap()
+            .commit();
+        memory
+            .map_user_protection(
+                BASE + 3 * P,
+                3 * P,
+                (libc::PROT_READ | libc::PROT_WRITE) as u8,
+            )
+            .unwrap();
+        memory.watch_user_stack_window();
+        (memory, window)
+    }
+
+    /// The stack window's pages as extents of equal declared mapping.
+    type WindowList = Option<Vec<(u64, u64, DeclaredMapping)>>;
+
+    /// `memory`'s stack window pages as extents of equal declared mapping,
+    /// `(user start, user end, declared)`; `None` while its record is not
+    /// certain. Every page of these fixtures is declared.
+    fn window_list(memory: &GuestMemory) -> WindowList {
+        let mut extents: Vec<(u64, u64, DeclaredMapping)> = Vec::new();
+        for page in memory.user_stack_window_pages()? {
+            let declared = page.declared.unwrap();
+            match extents.last_mut() {
+                Some((_, end, last)) if *end == page.user_address && *last == declared => *end += P,
+                _ => extents.push((page.user_address, page.user_address + P, declared)),
+            }
+        }
+        Some(extents)
+    }
+
+    /// The window's one mapping, and its two once its top page is read-only.
+    fn window_lists(window: u64) -> (WindowList, WindowList) {
+        let mapping = |prot: libc::c_int| DeclaredMapping {
+            prot: prot as u8,
+            flags: 0,
+            lineage: 0,
+        };
+        let read_write = mapping(libc::PROT_READ | libc::PROT_WRITE);
+        (
+            Some(vec![(window, USER_STACK_TOP, read_write)]),
+            Some(vec![
+                (window, window + P, read_write),
+                (window + P, USER_STACK_TOP, mapping(libc::PROT_READ)),
+            ]),
+        )
+    }
+
     /// A fork's copy of a memory that holds a shared file view is another
-    /// address space: it starts with the stack window's record and keeps one
-    /// of its own, so a change either side makes afterwards leaves the other
-    /// unchanged.
+    /// address space: it starts with the stack window's pages and keeps a
+    /// record of its own, so a change either side makes afterwards shows in
+    /// its own list only.
     #[test]
     fn a_shared_file_snapshot_keeps_its_own_stack_window_record() {
         for child_changes in [true, false] {
-            let memory = fixture(6);
-            // A window of three pages, the top two reachable.
-            let window = memory.establish_user_stack_window(3 * P).unwrap();
-            memory
-                .reserve_region(BASE + 3 * P, 3 * P, RegionKind::Stack)
-                .unwrap()
-                .commit();
-            memory.watch_user_stack_window();
+            let (memory, window) = watched_window_fixture();
+            let (whole, split) = window_lists(window);
             install(&memory, &file(1), BASE + P, 1, 0);
-            let unchanged = Some((window, USER_STACK_TOP));
-            assert_eq!(memory.unchanged_user_stack_window(), unchanged);
+            assert_eq!(window_list(&memory), whole);
             let child = memory.snapshot().unwrap();
             assert!(child.contains_shared_file());
-            assert_eq!(child.unchanged_user_stack_window(), unchanged);
+            assert_eq!(window_list(&child), whole);
             let (changing, other) = if child_changes {
                 (&child, &memory)
             } else {
                 (&memory, &child)
             };
             changing
-                .map_user_permissions(BASE + 4 * P, P, true, false)
+                .protect_user_range(BASE + 4 * P, P, libc::PROT_READ as u8)
                 .unwrap();
-            assert_eq!(changing.unchanged_user_stack_window(), None);
-            assert_eq!(
-                other.unchanged_user_stack_window(),
-                unchanged,
-                "child changes: {child_changes}"
-            );
+            assert_eq!(window_list(changing), split);
+            assert_eq!(window_list(other), whole, "child changes: {child_changes}");
+        }
+    }
+
+    /// A fork's copy of a memory that holds a shared file view keeps the
+    /// lineages its source's window pages were given, as any copy does.
+    #[test]
+    fn a_shared_file_snapshot_keeps_the_lineages_it_is_given() {
+        let (memory, window) = watched_window_fixture();
+        install(&memory, &file(1), BASE + P, 1, 0);
+        memory.set_user_stack_window_lineage(window + P, P, 3);
+        let child = memory.snapshot().unwrap();
+        assert!(child.contains_shared_file());
+        let read_write = DeclaredMapping {
+            prot: (libc::PROT_READ | libc::PROT_WRITE) as u8,
+            flags: 0,
+            lineage: 0,
+        };
+        let given = Some(vec![
+            (window, window + P, read_write),
+            (
+                window + P,
+                USER_STACK_TOP,
+                DeclaredMapping {
+                    lineage: 3,
+                    ..read_write
+                },
+            ),
+        ]);
+        assert_eq!(window_list(&memory), given);
+        assert_eq!(window_list(&child), given);
+    }
+
+    /// A copy of a memory that holds a shared file view, for a child that
+    /// shares the address space (`snapshot_sharing_address_space`), shares
+    /// the stack window's record as the copy of any other memory does: a
+    /// change either side makes afterwards leaves the other's list unknown.
+    #[test]
+    fn a_shared_file_sharing_snapshot_shares_the_stack_window_record() {
+        for copy_changes in [true, false] {
+            let (memory, window) = watched_window_fixture();
+            let (whole, split) = window_lists(window);
+            install(&memory, &file(1), BASE + P, 1, 0);
+            let copy = memory.snapshot_sharing_address_space().unwrap();
+            assert!(copy.contains_shared_file());
+            assert_eq!(window_list(&copy), whole);
+            let (changing, other) = if copy_changes {
+                (&copy, &memory)
+            } else {
+                (&memory, &copy)
+            };
+            changing
+                .protect_user_range(BASE + 4 * P, P, libc::PROT_READ as u8)
+                .unwrap();
+            assert_eq!(window_list(changing), split);
+            assert_eq!(window_list(other), None, "copy changes: {copy_changes}");
         }
     }
 
     /// A copy that shares the stack window's record with its source, as a
     /// vfork child's does, keeps sharing it across a publication, which
     /// installs a prepared copy of the address-space state in place of the
-    /// old one: a change either side makes afterwards still empties the
-    /// other's answer.
+    /// old one: a change either side makes afterwards still leaves the
+    /// other's list unknown.
     #[test]
     fn a_publication_keeps_a_shared_stack_window_record() {
         for copy_publishes in [true, false] {
-            let memory = fixture(6);
-            let window = memory.establish_user_stack_window(3 * P).unwrap();
-            memory
-                .reserve_region(BASE + 3 * P, 3 * P, RegionKind::Stack)
-                .unwrap()
-                .commit();
-            memory.watch_user_stack_window();
-            let copy = memory.snapshot().unwrap();
-            copy.share_user_stack_window_watch(&memory);
+            let (memory, window) = watched_window_fixture();
+            let (whole, split) = window_lists(window);
+            let copy = memory.snapshot_sharing_address_space().unwrap();
             let (publisher, other) = if copy_publishes {
                 (&copy, &memory)
             } else {
@@ -2227,18 +2319,15 @@ mod tests {
             };
             replace(publisher, BASE, 1, Some(b"published"), true);
             assert_eq!(
-                other.unchanged_user_stack_window(),
-                Some((window, USER_STACK_TOP)),
+                window_list(other),
+                whole,
                 "copy publishes: {copy_publishes}"
             );
             publisher
-                .map_user_permissions(BASE + 4 * P, P, true, false)
+                .protect_user_range(BASE + 4 * P, P, libc::PROT_READ as u8)
                 .unwrap();
-            assert_eq!(
-                other.unchanged_user_stack_window(),
-                None,
-                "copy publishes: {copy_publishes}"
-            );
+            assert_eq!(window_list(publisher), split);
+            assert_eq!(window_list(other), None, "copy publishes: {copy_publishes}");
         }
     }
 
