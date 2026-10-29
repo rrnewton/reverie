@@ -714,28 +714,17 @@ fn execute_basic_syscall_inner(
         mprotect(&ProviderMemory(memory), args)
     } else if number == libc::SYS_madvise as u64 {
         // Advice answered as a hint that changes the flags Linux keeps on the
-        // mappings it covers leaves the pages' states as they are, so the
-        // change is recorded here (`GuestMemory::note_user_mapping_change`).
-        if let Some((start, length)) = madvise_flag_change(args) {
-            memory.note_user_mapping_change(start, length);
+        // mappings it covers: the pages keep them (`DeclaredMapping::flags`).
+        if let Some((start, length, set, clear)) = madvise_flag_change(args) {
+            memory.flag_user_range(start, length, set, clear);
         }
         madvise(&ProviderMemory(memory), args)
     } else if number == libc::SYS_munlock as u64 {
         // AUTONOMOUS-BOT-IMPLEMENTED
-        let result = munlock_guest_range(&ProviderMemory(memory), args[0], args[1]);
-        // Accepted without a change to the pages' states: recorded as a
-        // change to the flags Linux keeps on the mappings it covers.
-        if result == 0
-            && let Some((start, length)) = munlock_range(args[0], args[1])
-        {
-            memory.note_user_mapping_change(start, length);
-        }
-        result
+        munlock_guest_range(&ProviderMemory(memory), args[0], args[1])
     } else if number == libc::SYS_munlockall as u64 {
         // AUTONOMOUS-BOT-IMPLEMENTED
         // TODO-HUMAN-REVIEW(PR-145): Review the deterministic no-op unlock-all model.
-        // As for munlock, for every mapping.
-        memory.note_every_user_mapping_change();
         0
     } else if number == libc::SYS_mincore as u64 {
         mincore(&mut ProviderMemory(memory), args)
