@@ -1588,6 +1588,55 @@ impl reverie::ProcessSignalControl for ProcessSignalControl {
         <Self as reverie::ProcessSignalControl>::signal_recipients(self, process, libc::SIGALRM)
     }
 
+    /// The same state `ElfExecutor::signal_sets` reads for the task, reached
+    /// through the run registry rather than through a callback's executor,
+    /// with the locks `signal_recipients` takes, in the order every signal path
+    /// takes them: the process's transaction, the lifecycle table, the
+    /// process's signals, then the thread's. Read only: nothing is dequeued,
+    /// masked or recorded.
+    fn signal_sets(
+        &self,
+        task: reverie::SignalTaskIdentity,
+    ) -> Result<reverie::SignalSets, reverie::FactError> {
+        let gone = || reverie::FactError::Errno(Errno::ESRCH);
+        let registry = self.0.upgrade().ok_or_else(gone)?;
+        let binding = registry.lookup(task.process).ok_or_else(gone)?;
+        let image = binding
+            .image
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .clone();
+        let transaction = binding.transaction.upgrade().ok_or_else(gone)?;
+        let lifecycle = binding.lifecycle.upgrade().ok_or_else(gone)?;
+        let signals = image.signals.upgrade().ok_or_else(gone)?;
+        let _transaction = transaction.lock().unwrap_or_else(|p| p.into_inner());
+        if binding
+            .image
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .revision
+            != image.revision
+        {
+            return Err(reverie::FactError::Errno(Errno::EAGAIN));
+        }
+        let lifecycle = lifecycle.lock().unwrap_or_else(|p| p.into_inner());
+        // The exact lifetime the caller names, never whichever task now has
+        // its numeric TID.
+        let live = lifecycle.get(task.tid.as_raw()).ok_or_else(gone)?;
+        if live.tgid != task.process.tgid.as_raw()
+            || live.process_generation != task.process.generation
+            || live.generation != task.task_generation
+        {
+            return Err(gone());
+        }
+        let thread = lifecycle
+            .signal_target(task.tid.as_raw())
+            .ok_or_else(gone)?;
+        let process = signals.lock().unwrap_or_else(|p| p.into_inner());
+        let thread = thread.lock();
+        Ok(crate::signal::task_signal_sets(&process, &thread))
+    }
+
     fn reserve_delivery(&self, permit: reverie::SignalDeliveryPermit) -> Result<(), Errno> {
         let registry = self.0.upgrade().ok_or(Errno::ESRCH)?;
         let binding = registry.lookup(permit.task.process).ok_or(Errno::ESRCH)?;
@@ -6965,6 +7014,197 @@ mod tests {
         );
         drop(guard);
         assert!(registry.lookup(process).is_none());
+    }
+
+    fn signal_bit(signal: i32) -> u64 {
+        1 << (signal - 1)
+    }
+
+    /// `rt_sigprocmask(SIG_BLOCK, signals)` by `executor`.
+    fn block_signals(executor: &mut ElfExecutor, memory: &mut GuestMemory, signals: &[i32]) {
+        let mut set = KernelSigset::default();
+        for &signal in signals {
+            set.insert(signal);
+        }
+        memory.write(0x100, &set.to_bytes()).unwrap();
+        let block = libc::SIG_BLOCK as u64;
+        assert_eq!(
+            call(
+                executor,
+                memory,
+                libc::SYS_rt_sigprocmask,
+                [block, 0x100, 0, 8, 0, 0]
+            ),
+            0
+        );
+    }
+
+    /// `rt_sigaction(signal, handler)` by `executor`, with no flags and an
+    /// empty mask: handler 1 is `SIG_IGN`.
+    fn set_action(executor: &mut ElfExecutor, memory: &mut GuestMemory, signal: i32, handler: u64) {
+        let mut action = [0u8; 32];
+        action[..8].copy_from_slice(&handler.to_le_bytes());
+        memory.write(0x200, &action).unwrap();
+        assert_eq!(
+            call(
+                executor,
+                memory,
+                libc::SYS_rt_sigaction,
+                [signal as u64, 0x200, 0, 8, 0, 0]
+            ),
+            0
+        );
+    }
+
+    /// Queue a child-exit SIGCHLD in `parent`'s shared queue, from a child
+    /// with process ID `child_pid` that exits with status 7.
+    fn publish_exited_child(parent: &ElfExecutor, child_pid: i32) {
+        let mut child = parent.fork_child(child_pid, false, false).unwrap();
+        let completion = child_completion(
+            identity(parent),
+            identity(&child),
+            reverie::ExitStatus::Exited(7),
+            true,
+        );
+        child.retire_current_thread(completion.status, false);
+        child_receipt(
+            parent
+                .backend_signal_control()
+                .process
+                .publish_child_exit(completion),
+        );
+    }
+
+    /// For every live task of the run (the caller, a sibling with its own
+    /// mask, and the thread of another process), the run-scoped
+    /// `signal_sets` answers exactly what the `Guest` fact
+    /// (`ElfExecutor::signal_sets`) answers, after masks, two actions, a
+    /// thread-directed signal and a child-exit SIGCHLD in the shared queue
+    /// have changed the state. The caller's sets are also checked bit by bit,
+    /// so that agreement on empty sets cannot pass.
+    #[test]
+    fn run_scoped_signal_sets_match_the_guest_fact_for_every_task() {
+        let mut parent = executor();
+        let mut memory = GuestMemory::new(0, 4096).unwrap();
+        let mut sibling = parent.thread_child(9).unwrap();
+        let mut other = parent.fork_child(2, false, false).unwrap();
+        block_signals(
+            &mut parent,
+            &mut memory,
+            &[libc::SIGUSR1, libc::SIGUSR2, libc::SIGCHLD],
+        );
+        block_signals(&mut sibling, &mut memory, &[libc::SIGWINCH]);
+        block_signals(&mut other, &mut memory, &[libc::SIGINT]);
+        set_action(&mut parent, &mut memory, libc::SIGHUP, 1);
+        set_action(&mut parent, &mut memory, libc::SIGTERM, 0x1000);
+        let (pid, tid) = (parent.state.pid as u64, parent.state.tid as u64);
+        let usr1 = libc::SIGUSR1 as u64;
+        assert_eq!(
+            call(
+                &mut parent,
+                &memory,
+                libc::SYS_tgkill,
+                [pid, tid, usr1, 0, 0, 0]
+            ),
+            0
+        );
+        publish_exited_child(&parent, 3);
+        let control = parent.backend_signal_control().process;
+        let caller = parent.signal_task_identity().unwrap();
+        assert_eq!(
+            control.signal_sets(caller),
+            Ok(reverie::SignalSets::new(
+                signal_bit(libc::SIGUSR1),
+                signal_bit(libc::SIGCHLD),
+                signal_bit(libc::SIGUSR1) | signal_bit(libc::SIGUSR2) | signal_bit(libc::SIGCHLD),
+                signal_bit(libc::SIGHUP),
+                signal_bit(libc::SIGTERM),
+            ))
+        );
+        for task in [
+            caller,
+            sibling.signal_task_identity().unwrap(),
+            other.signal_task_identity().unwrap(),
+        ] {
+            assert_eq!(
+                control.signal_sets(task),
+                parent.signal_sets(task.tid.as_raw()),
+                "task {}",
+                task.tid
+            );
+        }
+        let sibling_sets = control
+            .signal_sets(sibling.signal_task_identity().unwrap())
+            .unwrap();
+        assert_eq!(
+            (sibling_sets.pending, sibling_sets.blocked),
+            (0, signal_bit(libc::SIGWINCH))
+        );
+        let other_sets = control
+            .signal_sets(other.signal_task_identity().unwrap())
+            .unwrap();
+        assert_eq!(
+            (other_sets.shared_pending, other_sets.blocked),
+            (0, signal_bit(libc::SIGINT))
+        );
+    }
+
+    /// The task is named by its exact lifetime. A wrong task or process
+    /// generation, a TID no task has, and a task that has exited are each
+    /// ESRCH, even where the numeric TID is still in use.
+    #[test]
+    fn run_scoped_signal_sets_name_an_exact_live_task() {
+        let parent = executor();
+        let sibling = parent.thread_child(9).unwrap();
+        let control = parent.backend_signal_control().process;
+        let live = sibling.signal_task_identity().unwrap();
+        assert!(control.signal_sets(live).is_ok());
+        let esrch = Err(reverie::FactError::Errno(Errno::ESRCH));
+        let mut stale_task = live;
+        stale_task.task_generation += 1;
+        assert_eq!(control.signal_sets(stale_task), esrch);
+        let mut stale_process = live;
+        stale_process.process.generation += 1;
+        assert_eq!(control.signal_sets(stale_process), esrch);
+        let mut nobody = live;
+        nobody.tid = reverie::Pid::from_raw(77);
+        assert_eq!(control.signal_sets(nobody), esrch);
+        drop(sibling);
+        assert_eq!(control.signal_sets(live), esrch);
+        assert!(
+            control
+                .signal_sets(parent.signal_task_identity().unwrap())
+                .is_ok()
+        );
+    }
+
+    /// Reading the sets changes nothing: asked again it answers the same, the
+    /// recipients of the pending signal are unchanged, and the next delivery
+    /// still takes that signal, after which it is no longer pending.
+    #[test]
+    fn run_scoped_signal_sets_only_report() {
+        let mut parent = executor();
+        let process = identity(&parent);
+        publish_exited_child(&parent, 2);
+        let control = parent.backend_signal_control().process;
+        let task = parent.signal_task_identity().unwrap();
+        let before = control.signal_sets(task).unwrap();
+        assert_eq!(before.shared_pending, signal_bit(libc::SIGCHLD));
+        let recipients = control.signal_recipients(process, libc::SIGCHLD).unwrap();
+        for _ in 0..3 {
+            assert_eq!(control.signal_sets(task), Ok(before));
+        }
+        assert_eq!(
+            control.signal_recipients(process, libc::SIGCHLD).unwrap(),
+            recipients
+        );
+        let delivered = parent.take_pending_signal_for_delivery().unwrap().unwrap();
+        let info = delivered.event.siginfo();
+        assert_eq!(
+            i32::from_ne_bytes(info[..4].try_into().unwrap()),
+            libc::SIGCHLD
+        );
+        assert_eq!(control.signal_sets(task).unwrap().shared_pending, 0);
     }
     include!("process_child_wait_tests.rs");
 }

@@ -346,6 +346,44 @@ pub trait ProcessSignalControl: Debug + Send + Sync {
         self.signal_recipients(process, libc::SIGALRM)
     }
 
+    /// Returns the signal sets of `task`, a live task of this run in any of
+    /// its processes: what is pending for the task and for its process, its
+    /// mask, and its process's ignored and caught signals, as Linux shows them
+    /// in the task's `/proc/<pid>/task/<tid>/status` (`SigPnd`, `ShdPnd`,
+    /// `SigBlk`, `SigIgn` and `SigCgt`); see [`crate::SignalSets`].
+    ///
+    /// This is [`crate::Guest::signal_sets`] for code that holds no `Guest`,
+    /// such as a global tool. A backend that provides both answers from the
+    /// same state, so the two agree for the same task at the same moment, and
+    /// they differ from Linux in the same ways, which the backend documents.
+    ///
+    /// It only reports state. It dequeues no signal, changes no mask, action
+    /// or pending set, records nothing, and calls no Tool code. Like every
+    /// method here it is synchronous and takes the backend's signal locks
+    /// after any lock the caller holds (see [`Self::publish_child_exit`] for
+    /// that order); no backend path may wait for a caller's lock while holding
+    /// those.
+    ///
+    /// `task` names an exact task lifetime, so a task that later received the
+    /// same numeric TID is not the task it names.
+    /// `Err(FactError::Errno(ESRCH))` means that it names no live task of this
+    /// run: an exited task, a reused TID with another generation, or a
+    /// lifetime the backend never had. `Err(FactError::Errno(EAGAIN))` means
+    /// that the task's process replaced its image while the sets were read;
+    /// asking again reads the new image. `Err(FactError::NotProvided)` is the
+    /// default, for a backend that does not report this fact.
+    ///
+    /// The answer describes the moment of the call. Any task can change
+    /// another's sets by signalling it, and any task of the process can change
+    /// its actions. A caller that needs a stable answer asks while the task,
+    /// and every task that could do either, cannot run.
+    fn signal_sets(
+        &self,
+        _task: SignalTaskIdentity,
+    ) -> Result<crate::SignalSets, crate::FactError> {
+        Err(crate::FactError::NotProvided)
+    }
+
     /// Register one selected task. A second outstanding permit is not a retry.
     fn reserve_delivery(&self, permit: SignalDeliveryPermit) -> Result<(), Errno>;
 
@@ -376,4 +414,63 @@ pub trait ProcessSignalControl: Debug + Send + Sync {
 pub struct BackendSignalControl {
     /// Run-local weak backend facade.
     pub process: Arc<dyn ProcessSignalControl>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A control that implements only the required methods, as a backend that
+    /// keeps no readable signal state would.
+    #[derive(Debug)]
+    struct RequiredOnly;
+
+    impl ProcessSignalControl for RequiredOnly {
+        fn publish_alarm(
+            &self,
+            _process: SignalProcessId,
+            _event: SignalEvent,
+        ) -> ProcessSignalPublicationResult {
+            ProcessSignalPublicationResult::RejectedBeforeCommit(Errno::ENOSYS)
+        }
+
+        fn signal_recipients(
+            &self,
+            _process: SignalProcessId,
+            _signal: i32,
+        ) -> Result<Vec<SignalRecipient>, Errno> {
+            Ok(Vec::new())
+        }
+
+        fn reserve_delivery(&self, _permit: SignalDeliveryPermit) -> Result<(), Errno> {
+            Err(Errno::ENOSYS)
+        }
+
+        fn release_delivery(&self, _permit: SignalDeliveryPermit) -> Result<(), Errno> {
+            Err(Errno::ENOSYS)
+        }
+
+        fn finish_publication_failure(&self, _process: SignalProcessId) -> Result<(), Errno> {
+            Err(Errno::ENOSYS)
+        }
+    }
+
+    /// The default is the fact's "not provided", never an answer, and never
+    /// an errno that would read as a statement about the task.
+    #[test]
+    fn a_control_that_reports_nothing_does_not_provide_signal_sets() {
+        let task = SignalTaskIdentity {
+            process: SignalProcessId {
+                tgid: crate::Pid::from_raw(1),
+                generation: 1,
+            },
+            tid: crate::Pid::from_raw(1),
+            task_generation: 1,
+        };
+        let control: Arc<dyn ProcessSignalControl> = Arc::new(RequiredOnly);
+        assert_eq!(
+            control.signal_sets(task),
+            Err(crate::FactError::NotProvided)
+        );
+    }
 }

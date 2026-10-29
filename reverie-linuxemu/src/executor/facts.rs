@@ -295,30 +295,8 @@ impl ElfExecutor {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let thread = thread.lock();
-        let generations = &process.pending_generations;
-        let mut ignored = KernelSigset::default();
-        let mut caught = KernelSigset::default();
-        for (&signal, action) in &process.dispositions {
-            if action.is_ignored() {
-                ignored.insert(signal);
-            } else if action.handler != libc::SIG_DFL as u64 {
-                caught.insert(signal);
-            }
-        }
-        Ok(reverie::SignalSets::new(
-            set_bits(thread.pending.pending_mask(generations)),
-            set_bits(process.shared_pending.pending_mask(generations)),
-            set_bits(thread.blocked),
-            set_bits(ignored),
-            set_bits(caught),
-        ))
+        Ok(crate::signal::task_signal_sets(&process, &thread))
     }
-}
-
-/// `set` as the fact holds it: signal `n` at bit `n - 1`, the bit
-/// `KernelSigset` keeps in byte `(n - 1) / 8`.
-fn set_bits(set: KernelSigset) -> u64 {
-    u64::from_le_bytes(set.to_bytes())
 }
 
 /// Which thread of this process a link of [`ElfExecutor::link_path`] is
