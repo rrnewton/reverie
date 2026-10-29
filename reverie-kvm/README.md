@@ -94,12 +94,19 @@ to guest memory are not held back (see the limits below). An
 `rt_sigprocmask` with invalid arguments still returns its `EINVAL` or `EFAULT`,
 and one that makes no pending signal deliverable runs as usual.
 
-After the callback, one pending signal is selected at the same point and
+After the callback, the pending signals are selected at the same point and
 delivered. Linux's return to user mode after a preemption runs `schedule()`
-before signal delivery, so the timer event comes first, then the signal; Linux
-then delivers every other eligible signal on the same return, with stacked
-frames, where this backend delivers one per return, as at its other boundaries
-(https://github.com/rrnewton/reverie/issues/1188). At a user instruction
+before signal delivery, so the timer event comes first, then the signals;
+Linux delivers every eligible signal on the same return, with stacked frames,
+and so does this backend, as at its other boundaries
+(https://github.com/rrnewton/reverie/issues/1188). Linux's `get_signal` takes
+a group exit before every dequeue, so a thread whose group began to exit, or
+that was cancelled, while its callback or a signal's hook there ran selects no
+further signal there, also after a hook that suppressed its signal or returned
+an ignored one, and ends before it runs another instruction; the signal whose
+hook was running still gets its frame, which the thread never runs, and a Tool
+that controls delivery a `Caught` receipt for it, where Linux requeues it
+(https://github.com/rrnewton/reverie/issues/1208). At a user instruction
 boundary the signal's frame holds the live registers and nothing restarts, as
 after an interrupt, and the signal hook sees the timer event's complete
 registers; at a syscall's return the selection is that syscall's own, with its
@@ -559,6 +566,114 @@ do procfs working directories and filesystem-stat results: `chdir` or `fchdir`
 into procfs and procfs `statfs`/`fstatfs` return `EACCES`. Unlike Linux, this
 backend also continues to reject `fchdir` on ordinary `O_PATH` descriptors with
 `EBADF`. Ordinary readable-directory cwd operations remain supported.
+
+`Guest::descriptor_status` answers from the executor's descriptor table: for a
+guest descriptor backed by a host descriptor of the same open file description,
+it reports what the host kernel's `fdinfo` shows for that description (an
+eventfd's count, a Unix socket's queued `SCM_RIGHTS` descriptors, its locks). It
+reads that `fdinfo` while the table is locked and never duplicates or closes a
+descriptor of the guest's file, so a query releases no POSIX lock held by the
+process the Tool runs in. Two answers differ from Linux. A guest's `F_SETLK` or
+`F_SETLKW` record lock is held as an open file description lock on the host, so
+it is reported with class `OpenFileDescription` where Linux reports `Posix`. It
+also behaves as an open file description lock. Every process that holds a
+descriptor of its description, such as a forked child or a receiver through
+`SCM_RIGHTS`, shares it: the lock is reported for that descriptor, and an
+`F_SETLK` through it changes or releases the lock, where Linux lists a `POSIX`
+lock only through its owner's descriptor table and lets only its owner change
+it. And it outlives a close that releases a `POSIX` lock on Linux, any close of
+the file by the owning process, until the description's last descriptor is
+closed. The guest's own `flock(2)` is refused, so a flock lock is reported only
+for a description the guest received already locked, such as an inherited
+standard input. Objects the executor keeps itself are not provided, however the
+guest holds them, including through `SCM_RIGHTS`: signalfds, the executor's own
+memfds (such as synthetic `/proc` files), and with captured output the
+supervisor's standard output and error. The memfds are recognized by their
+reserved names and captured output by device and inode, so a guest memfd given a
+reserved name, or a guest's own descriptor of the file the supervisor's output
+goes to, is not provided either.
+
+`Guest::signal_sets` answers from the executor's own signal state, for any live
+thread of the run, in any of its processes: the thread's pending queue, its
+process's shared queue, the thread's mask (a temporary mask while one is
+installed), and its process's ignored and caught signals, as Linux shows them in
+`/proc/<pid>/task/<tid>/status`. A thread ID that names no live thread of the
+run (an exited thread, reaped or not, or a number no task has) is `ESRCH`, and
+so is a thread caught between the steps of its process's fork; across an exec
+the answer is the process before it or after it, never `ESRCH`. Two differences
+from Linux follow from the executor's limits. Because it refuses real-time
+signals, no real-time signal is ever pending. And because it keeps no waiting
+state (it answers `rt_sigtimedwait` and a masked `ppoll` or `pselect6` at once,
+and refuses an `rt_sigsuspend` that would wait), a thread waiting in one of
+those calls shows its own mask, where Linux shows the call's mask, or for
+`rt_sigtimedwait` the thread's mask without the signals it waits for.
+
+`Guest::link_path` answers with the name Linux's `readlink(2)` gives a thread's
+`fd/<fd>`, `exe` or `cwd` link, from the executor's own state: for a guest
+descriptor backed by a host descriptor of the same open file description, the
+host kernel's name for that description (a file's path, with ` (deleted)` once
+it is unlinked, or an object's name such as `pipe:[<inode>]`), read while the
+descriptor table is locked and without opening or closing anything of the file;
+and the names of the executor's own handles of the process's image and the
+thread's working directory, walked at the call. Captured standard output and
+error, and descriptors the guest made of them, are named as the pipes their
+`fstat` describes, and a signalfd as `anon_inode:[signalfd]`. Objects the
+executor keeps itself are not provided, judged as for `Guest::descriptor_status`:
+the executor's own memfds (such as synthetic `/proc` files, where Linux names
+the `/proc` file), and with captured output the supervisor's standard output
+and error however the guest holds them. A closed descriptor is `EBADF`, and a
+thread ID that names no live thread of the run is `ESRCH`. The executor keeps a
+process's descriptor table, image and each thread's working directory in that
+process's own executors, so the fact answers for the asking thread's process
+only: the descriptor table and the image for any live thread of it, and the
+working directory for the asking thread alone, since the executor keeps one per
+thread where Linux shares it between threads created with `CLONE_FS`. A live
+thread of another process, and another thread's working directory, are not
+provided, where Linux shows them to a reader it lets read them.
+
+`Guest::memory_map` lists only what the executor can establish exactly, and
+says that the list is not complete (`MemoryMap::complete` is false). Each
+listed entry is exact for the executor's own address space, which differs from
+a native process's where this section says so. The executor keeps the address
+space as pages, each with what it was reserved for and whether it is
+accessible and writable. That holds neither a mapping's read and execute
+permissions nor the history that decides where Linux splits and merges
+mappings (https://github.com/rrnewton/reverie/issues/1211). So the list holds
+one mapping, the process's `[stack]`, and only while nothing has changed the
+stack window since the image started. The entry is the window: from its start
+(the loader maps it whole, 8 MiB less its top page, where Linux maps the
+stack's arguments and 128 KiB below them and grows the stack on demand) to the
+top of the user address space; read-write, and executable for an image whose
+last `PT_GNU_STACK` header has `PF_X`, as Linux maps it; private, with no
+file. Once any page of the window has changed state, been reserved for another
+use, or been named by an accepted call that changes what Linux keeps on the
+mapping without changing the pages (`mprotect(2)`, madvise advice other than
+`MADV_WILLNEED`, `MADV_DONTNEED`, `MADV_FREE`, `MADV_COLD` and
+`MADV_PAGEOUT`, `munlock(2)`, and `munlockall(2)` for every mapping), the
+list is empty, also in a child forked afterwards; a new image starts it again.
+An `mprotect(2)` range that overlaps the window is recorded before any
+refusal: Linux protects the mappings before a hole and keeps that when it
+then fails with `ENOMEM`, where the executor refuses the whole range. A vfork
+child (`vfork(2)`, or `clone(2)` and `clone3(2)` with `CLONE_VM|CLONE_VFORK`)
+runs on a copy of its parent's memory, but the two share the record, as on
+Linux they share the address space: a change either makes empties both lists,
+until the child executes another image, which leaves its parent's entry, as a
+`posix_spawn(3)` child does. A guest that changes its own stack, for example
+protecting a page of it, even only to set it back, therefore loses its
+`[stack]` entry where Linux still shows one. A call the executor refuses where
+Linux applies it (`mlock(2)` and `mlock2(2)`, `ENOSYS`; `mprotect(2)` with
+`PROT_GROWSDOWN`, `EINVAL`; a `MAP_FIXED` mapping or an `mremap(2)` destination
+in the window, `ENOMEM` and `EINVAL`) leaves the entry listed where Linux
+shows the stack changed: the entry is exact for the executor's address space,
+which the call left as it was, and the refusal is the difference the guest
+sees. A tool that renders the list as `/proc/<pid>/maps` must name the
+omitted mappings as a difference of this backend: rendered so, the file is the
+one `[stack]` line, as the executor's own synthetic `/proc/self/maps` already
+is today, or empty once the window changed. The guest's page tables map every user page
+without the no-execute bit, so a guest can execute on a stack that Linux maps
+non-executable. The fact answers for any live thread of the asking thread's
+process, whose address space they share, and a live thread of another process
+is not provided, where Linux shows its map to a reader it lets read it.
 
 A Tool can reserve one empty host directory on a read-only file system for its
 own use (`KvmBackend::reserve_tool_directory`): the executor hides it from the

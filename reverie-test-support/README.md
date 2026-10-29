@@ -30,3 +30,21 @@ Only ptrace is implemented here. DBT and in-guest adapters must install the
 same caller-owned Tool and return its real global state before they can run
 these tests. No backend selector, name-based Tool substitution or fallback is
 provided by this package.
+
+## Shared command fixtures
+
+The `exit`, `stat`, `vdso` and `inject_then_tail` integration targets also run
+through ptrace. They reuse the original Tools and preserve the original function
+controls. Their checked assembly/C fixtures are compiled in test-owned temporary
+directories, run natively first, then run with the actual Tool. Missing compiler
+capability or an unavailable required vDSO entry fails the relevant test.
+
+```sh
+cargo test -p reverie-test-support --test exit --test stat --test vdso --test inject_then_tail -- --test-threads=1
+```
+
+These commands require an x86-64 Linux C toolchain selected by `CC` or `cc` and
+executable temporary storage. The helpers retain the existing logging and have
+no local timeout; an enclosing validation runner owns their deadline. External
+caller adapters and their source-matched artifacts belong to the backend
+extensions, and are not selected by this core package.

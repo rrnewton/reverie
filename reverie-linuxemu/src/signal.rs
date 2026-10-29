@@ -236,6 +236,27 @@ impl GuestStack {
     }
 }
 
+/// The trap fields of a thread's signal frames: the number, error code and
+/// fault address of the last CPU exception that raised a signal in the
+/// thread. Linux keeps them in the task (`thread.trap_nr`,
+/// `thread.error_code` and `thread.cr2`), sets them when a trap handler
+/// raises its signal (`do_trap_no_signal` in arch/x86/kernel/traps.c,
+/// `set_signal_archinfo` in arch/x86/mm/fault.c; only a page fault sets
+/// `cr2`), and writes them into the `sigcontext` of every frame it builds
+/// afterwards (`__unsafe_setup_sigcontext` in arch/x86/kernel/signal_64.c),
+/// whatever signal the frame is for. Nothing clears them: fork and clone copy
+/// them with the task (`arch_dup_task_struct`), and exec keeps them
+/// (`flush_thread`).
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct SignalTrapFields {
+    /// `sigcontext.trapno`: the exception vector.
+    pub trapno: u64,
+    /// `sigcontext.err`: the exception's error code.
+    pub error_code: u64,
+    /// `sigcontext.cr2`: the address of the last page fault.
+    pub cr2: u64,
+}
+
 const PENDING_SIGNAL_GENERATION_COUNT: usize = 65;
 pub(crate) type PendingSignalGenerations = [u64; PENDING_SIGNAL_GENERATION_COUNT];
 
@@ -592,6 +613,9 @@ impl ProcessSignalState {
 #[cfg_attr(any(test, feature = "test-support"), derive(Eq, PartialEq))]
 pub(crate) struct ThreadSignalState {
     pub(crate) blocked: KernelSigset,
+    /// The alternate stack as Linux's task holds it (`sas_ss_sp`,
+    /// `sas_ss_flags` and `sas_ss_size`), with `None` for the disabled stack
+    /// Linux starts with and resets to: no address or size and SS_DISABLE.
     pub(crate) altstack: Option<GuestStack>,
     pub(crate) pending: StandardPendingSignals,
     /// A Tool observes eligible ignored signals before the final disposition,
@@ -610,6 +634,8 @@ pub(crate) struct ThreadSignalState {
     /// Set only while this thread waits in a host poll that includes
     /// signalfds; a sender that queues a covered signal for it wakes it.
     pub(crate) signalfd_waiter: Option<SignalFdWaiter>,
+    /// The trap fields every signal frame of this thread saves.
+    pub(crate) trap: SignalTrapFields,
 }
 
 impl ThreadSignalState {
@@ -623,6 +649,7 @@ impl ThreadSignalState {
             dequeue_identity: None,
             dequeue_wake: SignalDequeueWake::default(),
             signalfd_waiter: None,
+            trap: self.trap,
         }
     }
 
@@ -636,19 +663,28 @@ impl ThreadSignalState {
             dequeue_identity: None,
             dequeue_wake: SignalDequeueWake::default(),
             signalfd_waiter: None,
+            trap: self.trap,
         }
     }
 
     pub(crate) fn after_exec(&self) -> Self {
         Self {
             blocked: self.blocked,
-            altstack: None,
+            // Linux's begin_new_exec clears the stack's address and size and
+            // keeps its flags, which later frames save in uc_stack; with no
+            // size, the stack stays disabled.
+            altstack: self.altstack.map(|stack| GuestStack {
+                sp: 0,
+                size: 0,
+                ..stack
+            }),
             pending: self.pending.clone(),
             observe_ignored: self.observe_ignored,
             saved_sigmask: None,
             dequeue_identity: self.dequeue_identity,
             dequeue_wake: self.dequeue_wake.clone(),
             signalfd_waiter: None,
+            trap: self.trap,
         }
     }
 }
@@ -973,8 +1009,15 @@ impl SignalFrameLayout {
         })
     }
 
+    /// Whether the frame lies on an alternate stack whose base is
+    /// `lower_bound`. Linux's get_sigframe refuses a frame on, or switched
+    /// to, the alternate stack unless `__on_sig_stack` holds for it, which
+    /// for a stack that grows down means strictly above the base: the stack
+    /// is (base, base + size]
+    /// (<https://github.com/gregkh/linux/blob/v7.1.3/arch/x86/kernel/signal.c#L150-L158>,
+    /// <https://github.com/gregkh/linux/blob/v7.1.3/include/linux/sched/signal.h#L574-L583>).
     pub fn fits_above(self, lower_bound: u64) -> bool {
-        self.frame_address >= lower_bound
+        self.frame_address > lower_bound
     }
 }
 
@@ -1425,15 +1468,23 @@ mod tests {
         );
         assert!(fresh.xsave_address + XSAVE_SIGNAL_SIZE as u64 <= stack_top);
 
-        let exact_lower_bound = fresh.frame_address;
-        assert!(fresh.fits_above(exact_lower_bound));
+        // Linux's __on_sig_stack puts a stack's base outside it: a frame fits
+        // on an alternate stack only strictly above its base, so the lowest
+        // base that holds the frame is one byte below it.
+        let lowest_base = fresh.frame_address - 1;
+        assert!(fresh.fits_above(lowest_base));
         assert!(
-            !fresh.fits_above(exact_lower_bound + 1),
+            !fresh.fits_above(fresh.frame_address),
+            "a frame that starts exactly at the alternate stack's base is off the stack",
+        );
+        assert!(
+            !fresh.fits_above(fresh.frame_address + 1),
             "one-byte alternate-stack underflow must be rejected even when adjacent memory is mapped",
         );
         let nested = SignalFrameLayout::below(stack_top, true).unwrap();
         assert!(nested.frame_address < fresh.frame_address);
-        assert!(nested.fits_above(nested.frame_address));
+        assert!(nested.fits_above(nested.frame_address - 1));
+        assert!(!nested.fits_above(nested.frame_address));
         assert!(!nested.fits_above(nested.frame_address + 1));
     }
 
@@ -1640,6 +1691,16 @@ mod tests {
             size: 0x2000,
         });
         thread.pending.enqueue(event, 7).unwrap();
+        // The last trap's fields live in the task: fork and clone copy them,
+        // and exec keeps them.
+        thread.trap = SignalTrapFields {
+            trapno: 14,
+            error_code: 6,
+            cr2: 0x10,
+        };
+        assert_eq!(thread.for_fork().trap, thread.trap);
+        assert_eq!(thread.for_clone_thread().trap, thread.trap);
+        assert_eq!(thread.after_exec().trap, thread.trap);
         let forked = thread.for_fork();
         assert_eq!(forked.blocked, thread.blocked);
         assert_eq!(forked.altstack, thread.altstack);
@@ -1660,7 +1721,32 @@ mod tests {
         );
         let executed = thread.after_exec();
         assert_eq!(executed.blocked, thread.blocked);
-        assert_eq!(executed.altstack, None);
+        // exec clears the stack's address and size and keeps its flags
+        // (begin_new_exec in fs/exec.c).
+        assert_eq!(
+            executed.altstack,
+            Some(GuestStack {
+                sp: 0,
+                flags: 0,
+                size: 0,
+            })
+        );
+        let mut autodisarm = thread.clone();
+        autodisarm.altstack = Some(GuestStack {
+            flags: SS_AUTODISARM,
+            ..thread.altstack.unwrap()
+        });
+        assert_eq!(
+            autodisarm.after_exec().altstack,
+            Some(GuestStack {
+                sp: 0,
+                flags: SS_AUTODISARM,
+                size: 0,
+            })
+        );
+        let mut disabled = thread.clone();
+        disabled.altstack = None;
+        assert_eq!(disabled.after_exec().altstack, None);
         assert!(
             executed
                 .pending

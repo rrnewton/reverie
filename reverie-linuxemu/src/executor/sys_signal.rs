@@ -10,6 +10,14 @@
 
 use super::*;
 
+#[cfg(test)]
+std::thread_local! {
+    /// Runs in `prepare_captured_trap` on this thread between its two changes,
+    /// the signal unblocked and its action not yet reset.
+    pub(super) static CAPTURED_TRAP_TEST_HOOK: std::cell::RefCell<Option<Box<dyn FnMut()>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
 impl ElfExecutor {
     // TODO-HUMAN-REVIEW(PR-132): Review cooperative KVM thread context updates.
     /// Queues a backend-neutral event selected for this exact guest task.
@@ -1917,6 +1925,66 @@ impl ElfExecutor {
         // dependency. A sibling FIFO open or recvmsg may retain that table indefinitely.
         let transaction = self.state.signal_transaction.clone();
         let _transaction = transaction.lock().unwrap_or_else(|p| p.into_inner());
+        self.take_pending_signal_locked()
+    }
+
+    /// [`Self::take_pending_signal_for_delivery`] for a task whose thread
+    /// group may be exiting: once that group's exit has committed (a peer's
+    /// exit_group, or a signal's group exit), it selects nothing, changes
+    /// nothing, and returns the committed status. Every task exit commits
+    /// under the signal transaction lock that this selection holds from that
+    /// test through its dequeue, so no group exit can commit between the two,
+    /// as Linux's get_signal tests SIGNAL_GROUP_EXIT under siglock before
+    /// every dequeue
+    /// (<https://github.com/gregkh/linux/blob/v7.1.3/kernel/signal.c#L2865-L2918>).
+    pub fn take_pending_signal_for_delivery_unless_group_exit(
+        &mut self,
+    ) -> Result<GuardedSignal, reverie::syscalls::Errno> {
+        if self.signal_controlled() && self.delivery_permit().is_none() {
+            return Ok(GuardedSignal::Nothing);
+        }
+        let transaction = self.state.signal_transaction.clone();
+        let _transaction = transaction.lock().unwrap_or_else(|p| p.into_inner());
+        // The lifecycle lock comes after the transaction's, in the ordinary
+        // order, and is released before the dequeue takes the process and
+        // thread locks.
+        if let Some(status) = wait_group_exit_status(&self.state) {
+            return Ok(GuardedSignal::GroupExit(status));
+        }
+        Ok(match self.take_pending_signal_locked()? {
+            Some(pending) => GuardedSignal::Selected(pending),
+            None => GuardedSignal::Nothing,
+        })
+    }
+
+    /// Admits `pending`, a signal the backend raised for this task's own
+    /// fault rather than one it dequeued, under the same rule: once the task's
+    /// thread group has committed its exit, the fault's signal is not
+    /// delivered either, and the committed status is returned. The test holds
+    /// the signal transaction lock under which every task exit commits, so
+    /// the admission is ordered with each commit, as Linux's get_signal takes
+    /// the group exit before it dequeues even a synchronous signal
+    /// (<https://github.com/gregkh/linux/blob/v7.1.3/kernel/signal.c#L2865-L2918>).
+    pub fn admit_signal_unless_group_exit(&self, pending: PendingSignal) -> GuardedSignal {
+        let transaction = self.state.signal_transaction.clone();
+        let _transaction = transaction.lock().unwrap_or_else(|p| p.into_inner());
+        match wait_group_exit_status(&self.state) {
+            Some(status) => GuardedSignal::GroupExit(status),
+            None => GuardedSignal::Selected(pending),
+        }
+    }
+
+    /// The exit status of this task's thread group once that group's exit
+    /// has committed, while this task is still live; `None` otherwise.
+    pub fn committed_group_exit_status(&self) -> Option<ExitStatus> {
+        wait_group_exit_status(&self.state)
+    }
+
+    /// The dequeue of a delivery selection, with the caller holding the
+    /// signal transaction lock.
+    fn take_pending_signal_locked(
+        &mut self,
+    ) -> Result<Option<PendingSignal>, reverie::syscalls::Errno> {
         self.reserve_signal_effects(1)?;
         let pending = take_signal_event_locked(&mut self.state, SignalSelection::Delivery)?;
         refresh_signalfd_readiness_from_carriers_locked(&self.state, None).map_err(|raw| {
@@ -2079,6 +2147,7 @@ impl ElfExecutor {
         installed_signal_action(&self.state, signal).unwrap_or_default()
     }
 
+    #[cfg(test)]
     pub(crate) fn signal_mask(&self) -> KernelSigset {
         self.state.thread_signals.lock().blocked
     }
@@ -2145,65 +2214,105 @@ impl ElfExecutor {
     pub fn prepare_captured_trap(&mut self, signal: libc::c_int) {
         let transaction = self.state.signal_transaction.clone();
         let _transaction = transaction.lock().unwrap_or_else(|p| p.into_inner());
-        if self.signal_mask().contains(signal)
-            || self.signal_disposition(signal) == SignalDisposition::Ignore
+        // Linux unblocks the signal and resets its action under one siglock
+        // (`force_sig_info_to_task`), which a reader of the thread's signal
+        // state holds too (`task_sig`). Hold the process's and the thread's
+        // signal locks together, in the order every signal path takes them,
+        // so that no reader sees one change without the other.
+        let mut process_signals = self
+            .state
+            .process_signals
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut thread_signals = self.state.thread_signals.lock();
+        let action = process_signals.dispositions.get(&signal).copied();
+        if thread_signals.blocked.contains(signal)
+            || signal_disposition_with_action(action, signal) == SignalDisposition::Ignore
         {
-            self.state.thread_signals.lock().blocked.remove(signal);
-            self.state
-                .process_signals
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .dispositions
-                .remove(&signal);
+            thread_signals.blocked.remove(signal);
+            #[cfg(test)]
+            CAPTURED_TRAP_TEST_HOOK.with(|hook| {
+                if let Some(hook) = hook.borrow_mut().as_mut() {
+                    hook();
+                }
+            });
+            process_signals.dispositions.remove(&signal);
         }
     }
 
-    pub fn signal_altstack(&self, stack_pointer: u64) -> GuestStack {
-        match self.state.thread_signals.lock().altstack {
-            Some(mut stack) => {
-                if stack.contains(stack_pointer) {
-                    stack.flags |= libc::SS_ONSTACK;
-                }
-                stack
-            }
-            None => GuestStack {
-                sp: 0,
-                flags: libc::SS_DISABLE,
-                size: 0,
-            },
+    /// Records a CPU exception that raises a signal in this thread's trap
+    /// fields, as Linux's trap handlers do before they raise it: the vector
+    /// and error code always, and `fault_address`, a page fault's CR2, only
+    /// when there is one. Every later frame of the thread saves them; see
+    /// [`SignalTrapFields`].
+    pub fn record_user_trap(&mut self, trapno: u64, error_code: u64, fault_address: Option<u64>) {
+        let mut thread_signals = self.state.thread_signals.lock();
+        thread_signals.trap.trapno = trapno;
+        thread_signals.trap.error_code = error_code;
+        if let Some(address) = fault_address {
+            thread_signals.trap.cr2 = address;
         }
+    }
+
+    /// The trap fields this thread's next signal frame saves.
+    pub fn signal_trap_fields(&self) -> SignalTrapFields {
+        self.state.thread_signals.lock().trap
+    }
+
+    /// The `uc_stack` a signal frame saves: the alternate stack as
+    /// `sigaltstack` installed it, with the flags it was given (after an exec,
+    /// or SS_DISABLE with SS_AUTODISARM, with no address or size and those
+    /// flags), or `SS_DISABLE` and no stack when there is none. Linux writes
+    /// the task's own `sas_ss_flags` there (`unsafe_save_altstack`,
+    /// include/linux/signal.h): SS_ONSTACK only when a caller gave it as the
+    /// mode, never for running on the stack, which only `sigaltstack`'s report
+    /// adds.
+    pub fn signal_altstack(&self) -> GuestStack {
+        self.state
+            .thread_signals
+            .lock()
+            .altstack
+            .unwrap_or(DISABLED_ALTSTACK)
     }
 
     pub fn signal_stack_top(
         &self,
         action: KernelSigaction,
         stack_pointer: u64,
-    ) -> Result<(u64, Option<u64>, bool, bool), reverie::syscalls::Errno> {
-        let Some(stack) = self.state.thread_signals.lock().altstack else {
-            return Ok((stack_pointer, None, true, false));
+    ) -> Result<(u64, Option<u64>, bool), reverie::syscalls::Errno> {
+        // A stack with no size, as exec or SS_DISABLE with SS_AUTODISARM
+        // leaves one, is disabled: Linux's sas_ss_flags reports SS_DISABLE
+        // for it, whatever its flags.
+        let Some(stack) = self
+            .state
+            .thread_signals
+            .lock()
+            .altstack
+            .filter(|stack| stack.size != 0)
+        else {
+            return Ok((stack_pointer, None, true));
         };
-        if stack.contains(stack_pointer) {
-            // Nested delivery stays on the alternate stack and preserves the
-            // interrupted handler's red zone. The frame must not underflow the
-            // configured lower bound even when adjacent memory is mapped.
-            return Ok((stack_pointer, Some(stack.sp), true, false));
+        // Linux's get_sigframe (arch/x86/kernel/signal.c) first subtracts the
+        // interrupted stack's red zone, and switches an SA_ONSTACK handler to
+        // the top of the alternate stack only when that adjusted rsp is not
+        // on the stack (`sas_ss_flags(sp) == 0`). So an rsp up to 128 bytes
+        // above the stack's top gets its frame below its red zone, inside the
+        // stack, with no switch, and one on the stack within 128 bytes of its
+        // base gets a frame at the top again. No red zone is subtracted from
+        // the fresh stack, and the frame must fit on it.
+        let red_zone_base = stack_pointer.wrapping_sub(crate::signal::SIGNAL_RED_ZONE);
+        if action.flags & libc::SA_ONSTACK as u64 != 0 && !stack.contains(red_zone_base) {
+            return Ok((stack.sp.wrapping_add(stack.size), Some(stack.sp), false));
         }
-        if action.flags & libc::SA_ONSTACK as u64 == 0 {
-            return Ok((stack_pointer, None, true, false));
-        }
-        let top = stack.sp.wrapping_add(stack.size);
-        // Linux switches to the top of a fresh alternate stack after applying
-        // the interrupted stack's red-zone adjustment, so no red zone is
-        // subtracted from this new stack.
-        Ok((top, Some(stack.sp), false, stack.flags & SS_AUTODISARM != 0))
+        // Otherwise the frame goes below the red zone. A nested delivery, one
+        // whose interrupted rsp itself is on the stack (`on_sig_stack`), must
+        // not underflow the configured lower bound even when adjacent memory
+        // is mapped.
+        let nested = stack.contains(stack_pointer);
+        Ok((stack_pointer, nested.then_some(stack.sp), true))
     }
 
-    pub fn enter_signal_handler(
-        &mut self,
-        pending: PendingSignal,
-        action: KernelSigaction,
-        autodisarm: bool,
-    ) {
+    pub fn enter_signal_handler(&mut self, pending: PendingSignal, action: KernelSigaction) {
         let transaction = self.state.signal_transaction.clone();
         let _transaction = transaction.lock().unwrap_or_else(|p| p.into_inner());
         let signal = pending.event.signal();
@@ -2225,7 +2334,14 @@ impl ElfExecutor {
         if action.flags & libc::SA_RESETHAND as u64 != 0 {
             process_signals.dispositions.remove(&signal);
         }
-        if autodisarm {
+        // Linux's signal_delivered disarms an SS_AUTODISARM stack after every
+        // delivery (sas_ss_reset), whichever stack the frame went on, so a
+        // handler that does not run on it finds it disabled too. The frame
+        // already saved the stack as it was.
+        if thread_signals
+            .altstack
+            .is_some_and(|stack| stack.flags & SS_AUTODISARM != 0)
+        {
             thread_signals.altstack = None;
         }
     }
@@ -2285,14 +2401,41 @@ impl ElfExecutor {
         self.exit_status?;
         let transaction = self.state.signal_transaction.clone();
         let _transaction = transaction.lock().unwrap_or_else(|p| p.into_inner());
-        let status = self.exit_status.take()?;
-        let group = std::mem::take(&mut self.exit_group);
+        let mut status = self.exit_status.take()?;
+        let mut group = std::mem::take(&mut self.exit_group);
         let (status, process_status, group_started) = {
             let mut lifecycle = self
                 .state
                 .task_lifecycle
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
+            // A SIGKILL keeps its group exit: complete_signal starts that
+            // group exit without looking at group_exec_task
+            // (https://github.com/gregkh/linux/blob/v7.1.3/kernel/signal.c#L1003-L1025),
+            // and de_thread then fails the exec, so the whole process dies
+            // (https://github.com/gregkh/linux/blob/v7.1.3/fs/exec.c#L927-L932).
+            // The exec here does not stop for it yet
+            // (https://github.com/rrnewton/reverie/issues/1210). Other fatal
+            // signals start a group exit there only in an untraced process; a
+            // Tool's signal hook stands where a tracer's signal-delivery stop
+            // does, and a traced thread's fatal signal reaches do_group_exit
+            // through get_signal.
+            if group
+                && !matches!(status, ExitStatus::Signaled(reverie::Signal::SIGKILL, _))
+                && lifecycle.exec_froze_live_task(self.admitted_signal_identity())
+            {
+                // An exec by another thread of this group froze this live
+                // task's death (prepare_parent_death_exec) before the task's
+                // own exit committed, and no group exit has committed: Linux's
+                // do_group_exit, finding group_exec_task, starts no group exit
+                // and ends the thread with status 0
+                // (https://github.com/gregkh/linux/blob/v7.1.3/kernel/exit.c#L1093-L1121).
+                // A group exit committed here would instead mark the exec's
+                // surviving issuer dead and end its process. The retirement
+                // of a task whose exit was already taken is not a new exit.
+                group = false;
+                status = ExitStatus::SUCCESS;
+            }
             if guest_death {
                 // A previously committed exit_group owns the status even if a
                 // later task requests a different exit. Freeze that winner
@@ -3174,6 +3317,22 @@ fn signal_is_blocked(state: &LoadedStaticElf, signal: libc::c_int) -> bool {
     state.thread_signals.lock().blocked.contains(signal)
 }
 
+/// The alternate stack a thread holds when it has none: Linux's initial and
+/// reset state (`sas_ss_reset`), which `ThreadSignalState::altstack` stores as
+/// `None`.
+const DISABLED_ALTSTACK: GuestStack = GuestStack {
+    sp: 0,
+    flags: libc::SS_DISABLE,
+    size: 0,
+};
+
+/// The stack a thread holds after asking for `requested`, as Linux's
+/// `do_sigaltstack` (kernel/signal.c) decides it, in its order: EPERM while
+/// `current_stack_pointer` runs on the current stack; EINVAL unless the mode,
+/// the flags without SS_AUTODISARM, is 0, SS_ONSTACK or SS_DISABLE; no change
+/// for a request equal to the stack held; for SS_DISABLE, no address and size
+/// and the flags as given; otherwise ENOMEM below MINSIGSTKSZ bytes, else the
+/// request as given, flags included.
 fn validate_altstack_update(
     current: Option<GuestStack>,
     current_stack_pointer: Option<u64>,
@@ -3184,23 +3343,25 @@ fn validate_altstack_update(
     }) {
         return Err(negative_errno(libc::EPERM));
     }
-    let allowed_flags = libc::SS_DISABLE | SS_AUTODISARM;
-    let disabled = requested.flags & libc::SS_DISABLE != 0;
-    if requested.flags & !allowed_flags != 0 || disabled && requested.flags & SS_AUTODISARM != 0 {
-        // SS_ONSTACK is status-only and is never valid as input.
+    let mode = requested.flags & !SS_AUTODISARM;
+    if mode != 0 && mode != libc::SS_ONSTACK && mode != libc::SS_DISABLE {
         return Err(negative_errno(libc::EINVAL));
     }
-    if !disabled && requested.size < libc::MINSIGSTKSZ as u64 {
+    if requested == current.unwrap_or(DISABLED_ALTSTACK) {
+        return Ok(current);
+    }
+    if mode == libc::SS_DISABLE {
+        let disabled = GuestStack {
+            sp: 0,
+            size: 0,
+            ..requested
+        };
+        return Ok((disabled != DISABLED_ALTSTACK).then_some(disabled));
+    }
+    if requested.size < libc::MINSIGSTKSZ as u64 {
         return Err(negative_errno(libc::ENOMEM));
     }
-    Ok(if disabled {
-        None
-    } else {
-        Some(GuestStack {
-            flags: requested.flags & SS_AUTODISARM,
-            ..requested
-        })
-    })
+    Ok(Some(requested))
 }
 
 pub(super) fn sigaltstack(
@@ -3233,20 +3394,24 @@ pub(super) fn sigaltstack(
     }
     if args[1] != 0 {
         if let Some(mut previous) = previous {
-            if on_stack {
-                previous.flags |= libc::SS_ONSTACK;
-            }
+            // As Linux's do_sigaltstack reports it: sas_ss_flags (SS_DISABLE
+            // for a stack with no size, as exec or SS_DISABLE with
+            // SS_AUTODISARM leaves one, SS_ONSTACK while the caller runs on
+            // it) with the stored SS_AUTODISARM.
+            let status = if previous.size == 0 {
+                libc::SS_DISABLE
+            } else if on_stack {
+                libc::SS_ONSTACK
+            } else {
+                0
+            };
+            previous.flags = status | (previous.flags & SS_AUTODISARM);
             return write_bytes(&mut ProviderMemory(memory), args[1], &previous.encode());
         }
         return write_bytes(
             &mut ProviderMemory(memory),
             args[1],
-            &GuestStack {
-                sp: 0,
-                flags: libc::SS_DISABLE,
-                size: 0,
-            }
-            .encode(),
+            &DISABLED_ALTSTACK.encode(),
         );
     }
     0

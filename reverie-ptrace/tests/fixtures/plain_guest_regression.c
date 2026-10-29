@@ -2563,6 +2563,37 @@ static void mode_perf_marker(void) {
   }
 }
 
+/* A precise timer whose single-steps run in an execute-only page, which
+ * process_vm_readv cannot read: a snippet of 16 conditional branches
+ * (mov ecx, 16; dec ecx; jnz; ret) in a PROT_EXEC page, called right after
+ * the branch loop, with the timer's target c branches into the snippet. */
+static void mode_timer_execute_only(void) {
+  warm();
+  static const unsigned char snippet_bytes[] = {
+      0xb9, 0x10, 0x00, 0x00, 0x00, /* mov ecx, 16 */
+      0xff, 0xc9, /* dec ecx */
+      0x75, 0xfc, /* jnz -4 */
+      0xc3, /* ret */
+  };
+  unsigned char* page =
+      mmap(NULL, 4096, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+  if (page == MAP_FAILED)
+    die("snippet mmap");
+  memcpy(page, snippet_bytes, sizeof snippet_bytes);
+  if (mprotect(page, 4096, PROT_EXEC) != 0)
+    die("snippet mprotect");
+  void (*volatile snippet)(void) = (void (*)(void))page;
+  for (int c = 4; c <= 12; c += 4) {
+    SITEM(SYS_getppid, 0, 0, 0, 0, PM_BRANCHES + 1 + c, ARM_TIMER);
+    for (volatile int j = 0; j < PM_BRANCHES; j++)
+      ;
+    snippet();
+    say("xo c=%d\n", c);
+  }
+  if (munmap(page, 4096) != 0)
+    die("snippet munmap");
+}
+
 /* Each SIGTRAP state across a precise timer's single-steps: the timer is
  * armed PM_BRANCHES + 1 branches out and fires in the branch loop, whose
  * last branches it single-steps
@@ -5225,6 +5256,8 @@ int main(int argc, char** argv) {
     mode_sigchld_nanosleep();
   else if (!strcmp(m, "timer_loop"))
     mode_timer_loop();
+  else if (!strcmp(m, "timer_execute_only"))
+    mode_timer_execute_only();
   else if (!strcmp(m, "perf_marker"))
     mode_perf_marker();
   else if (!strcmp(m, "timer_allow"))

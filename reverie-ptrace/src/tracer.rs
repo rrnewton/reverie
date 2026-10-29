@@ -157,10 +157,12 @@ struct TraceeSnapshot {
 pub(crate) struct TraceeIdentity {
     tid: Pid,
     snapshot: TraceeSnapshot,
-    /// Only test assertions (`same_process`) read the retained procfs handle
-    /// and inode; production still captures them as before.
-    #[cfg_attr(not(test), allow(dead_code))]
+    /// The task's `/proc/<tid>` directory, opened while the task was
+    /// certainly traced here (`capture` checks before and after the open).
+    /// It names that task until the task is reaped, and no task after.
     proc_dir: OwnedFd,
+    /// Only test assertions (`same_process`) read the inode; production still
+    /// captures it as before.
     #[cfg_attr(not(test), allow(dead_code))]
     proc_inode: u64,
     pidfd: Option<OwnedFd>,
@@ -2505,6 +2507,13 @@ impl TraceeIdentity {
         })
     }
 
+    /// The task's retained `/proc/<tid>` directory: a file opened through it
+    /// is this task's, never that of a task that took its number over, and
+    /// none once this task is reaped (`ENOENT`).
+    pub(crate) fn proc_dir(&self) -> BorrowedFd<'_> {
+        std::os::fd::AsFd::as_fd(&self.proc_dir)
+    }
+
     pub(crate) fn signal_owned_process_group(&self) -> Result<(), Errno> {
         if self.tid != self.snapshot.tgid || self.pidfd.is_none() {
             return Err(Errno::EINVAL);
@@ -2634,7 +2643,9 @@ pub(crate) fn newborn_own_process_parent(child: Pid) -> std::io::Result<Option<P
     Ok(Some(status_pid(&status, "PPid:")?))
 }
 
-fn tracer_is_current(tracer_tid: Pid) -> bool {
+/// Whether `tracer_tid`, a tracee's `TracerPid`, names a thread of this
+/// process: a tracer of ours traces the tracee.
+pub(crate) fn tracer_is_current(tracer_tid: Pid) -> bool {
     tracer_tid.as_raw() > 0
         && std::path::Path::new(&format!("/proc/self/task/{tracer_tid}")).exists()
 }
@@ -3936,12 +3947,12 @@ async fn postspawn<L: Tool + 'static>(
     ordinary_session.capture_root(&child);
     if !ordinary_session.is_failed() {
         child = match tracer.postspawn_preinit(child).await? {
+            PostspawnPreinit::Outcome(PreinitOutcome::Ready(child)) => child,
             // A refused initialization has published its named primary
             // failure. The ordinary driver must still consume the owned tree;
             // returning a bare spawn errno here would bypass that cleanup.
-            PostspawnPreinit::Outcome(
-                PreinitOutcome::Ready(child) | PreinitOutcome::Refused(child),
-            ) => child,
+            #[cfg(target_arch = "x86_64")]
+            PostspawnPreinit::Outcome(PreinitOutcome::Refused(child)) => child,
             PostspawnPreinit::Outcome(PreinitOutcome::Exited(pid, exit_status)) => {
                 return Err(PostspawnError::Exited { pid, exit_status });
             }
@@ -4127,7 +4138,7 @@ impl<T: Tool + 'static> TracerBuilder<T> {
 
     /// Shows `hook` the registers at the final resume of each Tool-visible
     /// seccomp stop, and leaves the signal it picks pending for that resume.
-    #[cfg(test)]
+    #[cfg(all(test, target_arch = "x86_64"))]
     fn final_resume_signal_for_test(mut self, hook: crate::task::FinalResumeSignalForTest) -> Self {
         self.final_resume_signal_for_test = Some(hook);
         self
@@ -4135,7 +4146,7 @@ impl<T: Tool + 'static> TracerBuilder<T> {
 
     /// Awaits `hook` immediately before each Tool-visible syscall runs (see
     /// [`crate::task::PreSyscallForTest`]).
-    #[cfg(test)]
+    #[cfg(all(test, target_arch = "x86_64"))]
     fn pre_syscall_for_test(mut self, hook: crate::task::PreSyscallForTest) -> Self {
         self.pre_syscall_for_test = Some(hook);
         self
@@ -4191,7 +4202,20 @@ impl<T: Tool + 'static> TracerBuilder<T> {
     }
 
     /// Spawns the tracer.
+    ///
+    /// Fails without starting the guest if an injected-syscall trap is
+    /// configured on an architecture other than x86_64: the trap's ABI is
+    /// x86_64's (`injected_syscall_trap`), nothing else handles it, and the
+    /// guest's traps would otherwise run as ordinary signals.
     pub async fn spawn(self) -> Result<Tracer<T::GlobalState>, Error> {
+        #[cfg(not(target_arch = "x86_64"))]
+        if self.injected_syscall_trap.is_some() {
+            return Err(anyhow::anyhow!(
+                "an injected-syscall trap is supported only on x86_64, not on {}",
+                std::env::consts::ARCH
+            )
+            .into());
+        }
         // A retained failed tree must not acquire peers through another mode.
         let _ordinary_admission = OrdinaryAdmission::acquire()?;
         let backend_stats = PtraceBackendStatsSource::from_request(self.backend_stats_request);
@@ -4573,6 +4597,28 @@ mod tests {
     include!("tracer/fatal_capacity_tests.rs");
     include!("tracer/fatal_group_lifetime_tests.rs");
     include!("tracer/fatal_dead_exec_tests.rs");
+    include!("tracer/signal_sets_session_tests.rs");
+    include!("tracer/link_path_session_tests.rs");
+    include!("tracer/memory_map_session_tests.rs");
+
+    #[cfg(not(target_arch = "x86_64"))]
+    #[tokio::test(flavor = "current_thread")]
+    async fn an_injected_syscall_trap_is_refused_off_x86_64() {
+        let error = TracerBuilder::<()>::new(Command::new("/bin/true"))
+            .injected_syscall_trap(u64::MAX, u64::MAX)
+            .spawn()
+            .await
+            .err()
+            .expect("an injected-syscall trap must be refused off x86_64");
+        assert!(
+            error.to_string().contains("supported only on x86_64"),
+            "{error}"
+        );
+    }
+
+    // The injected-syscall trap exists only on x86_64; elsewhere `spawn`
+    // refuses it (`an_injected_syscall_trap_is_refused_off_x86_64`).
+    #[cfg(target_arch = "x86_64")]
     #[tokio::test(flavor = "current_thread")]
     async fn unsupported_injected_completion_returns_original_pipes_and_usable_tracer() {
         let mut command = Command::new("/bin/sh");
@@ -4876,6 +4922,18 @@ mod tests {
     /// `FatalTool` config for the timer-decoded fork control.
     const FATAL_TIMER_FORK_MODE: u8 = 4;
 
+    /// The syscall a guest's `libc::pause()` waits in, as procfs's
+    /// `/proc/<pid>/syscall` names it. aarch64 has no `pause`, and glibc's
+    /// wrapper there calls `ppoll(NULL, 0, NULL, NULL)` instead
+    /// (sysdeps/unix/sysv/linux/pause.c, since glibc 2.26:
+    /// https://sourceware.org/git/?p=glibc.git;a=blob;f=sysdeps/unix/sysv/linux/pause.c;hb=glibc-2.39).
+    /// An older glibc used `rt_sigsuspend` there, which this never matches,
+    /// so the wait below would time out rather than pass.
+    #[cfg(target_arch = "x86_64")]
+    const LIBC_PAUSE_SYSCALL: i64 = libc::SYS_pause;
+    #[cfg(not(target_arch = "x86_64"))]
+    const LIBC_PAUSE_SYSCALL: i64 = libc::SYS_ppoll;
+
     #[derive(Default)]
     struct FatalTool {
         starts: std::sync::atomic::AtomicUsize,
@@ -4953,7 +5011,7 @@ mod tests {
                         .ok()
                         .and_then(|text| text.split_whitespace().next().map(str::to_owned))
                         .and_then(|value| value.parse::<i64>().ok())
-                        == Some(libc::SYS_pause);
+                        == Some(LIBC_PAUSE_SYSCALL);
                     if ready && paused {
                         break;
                     }
@@ -9752,6 +9810,7 @@ mod tests {
         }
 
         /// Hands the child to an owner that reaps it itself.
+        #[cfg(target_arch = "x86_64")]
         fn into_pid(self) -> Pid {
             let mut this = std::mem::ManuallyDrop::new(self);
             drop(this.pidfd.take());

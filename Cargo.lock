@@ -1335,8 +1335,10 @@ dependencies = [
  "reverie-core",
  "reverie-kvm-core",
  "reverie-linuxemu",
+ "reverie-ptrace",
  "serde",
  "thiserror",
+ "tokio",
 ]
 
 [[package]]
@@ -1539,6 +1541,8 @@ dependencies = [
  "reverie-core",
  "reverie-ptrace",
  "serde",
+ "tempfile",
+ "tracing",
 ]
 
 [[package]]

@@ -8,6 +8,8 @@
 
 //! Basic tests that don't fall into some other category.
 
+#[path = "support/basics_commands.rs"]
+mod commands;
 #[path = "tool_fixtures/basics.rs"]
 mod tools;
 
@@ -42,28 +44,17 @@ use tools::NoopTool;
 
 #[test]
 fn noop_tool_test() {
-    let (output, _) = test_cmd::<NoopTool>("/bin/pwd", &[]).unwrap();
-    // pwd should succeed & print some characters:
-    assert_eq!(output.status, ExitStatus::Exited(0));
-    assert!(!output.stdout.is_empty());
-    assert!(output.stderr.is_empty());
+    commands::noop_tool_test(test_cmd::<NoopTool>);
 }
 
 #[test]
 fn counter_tool_test() {
-    let (output, state) = test_cmd::<CounterLocal>("ls", &[]).unwrap();
-    assert_eq!(output.status, ExitStatus::Exited(0));
-    // ls should print some characters and perform some syscalls:
-    assert!(!output.stdout.is_empty());
-    assert!(AtomicU64::load(&state.num_syscalls, Ordering::SeqCst) > 30);
+    commands::counter_tool_test(test_cmd::<CounterLocal>);
 }
 
 #[test]
 fn error_exit_test() {
-    let (output, state) = test_cmd::<CounterLocal>("/bin/bash", &["-c", "exit 42"]).unwrap();
-    assert_eq!(output.status, ExitStatus::Exited(42));
-    assert_eq!(output.stdout.len(), 0);
-    assert!(AtomicU64::load(&state.num_syscalls, Ordering::SeqCst) > 0);
+    commands::error_exit_test(test_cmd::<CounterLocal>);
 }
 
 #[allow(dead_code)]
@@ -97,18 +88,13 @@ fn run_fn_test() {
 #[cfg(not(sanitized))]
 #[test]
 fn run_guest_command_test() {
-    let (output, _state) = test_cmd::<CounterLocal>("/bin/echo", &["-n", "abcd"]).unwrap();
-    assert_eq!(output.status, ExitStatus::Exited(0));
-    assert_eq!(output.stdout.as_slice(), b"abcd");
+    commands::run_guest_command_test(test_cmd::<CounterLocal>);
 }
 
 #[cfg(not(sanitized))]
 #[test]
 fn run_guest_command_test_closure() {
-    let msg = "abcd";
-    let (output, _state) = test_cmd::<CounterLocal>("/bin/echo", &["-n", msg]).unwrap();
-    assert_eq!(output.status, ExitStatus::Exited(0));
-    assert_eq!(output.stdout.as_slice(), msg.as_bytes());
+    commands::run_guest_command_test_closure(test_cmd::<CounterLocal>);
 }
 
 #[cfg(not(sanitized))]

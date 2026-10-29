@@ -286,7 +286,13 @@ impl Builder {
         attr.set_precise_ip(self.precise_ip.into());
         attr.__bindgen_anon_2.wakeup_events = 1; // generate a wakeup (overflow) after one sample event
         if self.sample_time {
-            attr.sample_type = perf::PERF_SAMPLE_TIME as u64;
+            #[allow(
+                clippy::unnecessary_cast,
+                reason = "the generated constant is u32 on x86_64 and u64 on aarch64"
+            )]
+            {
+                attr.sample_type = perf::PERF_SAMPLE_TIME as u64;
+            }
             attr.set_use_clockid(1);
             attr.clockid = libc::CLOCK_MONOTONIC;
         }
@@ -1085,7 +1091,7 @@ struct SampleScan {
 
 /// Count the `PERF_RECORD_SAMPLE` records from `tail` to `head` of a ring
 /// buffer, where `read_header` reads the header of the record at a position.
-#[cfg(test)]
+#[cfg(all(test, target_arch = "x86_64"))]
 fn count_sample_records(
     tail: u64,
     head: u64,

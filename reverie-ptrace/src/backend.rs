@@ -128,13 +128,16 @@ mod tests {
     use std::sync::atomic::Ordering;
 
     use reverie::BackendStatsSnapshot;
+    #[cfg(target_arch = "x86_64")]
     use reverie::Errno;
     use reverie::Guest;
     use reverie::Pid;
     use reverie::Subscription;
     use reverie::Tid;
     use reverie::syscalls::Syscall;
+    #[cfg(target_arch = "x86_64")]
     use reverie::syscalls::SyscallInfo;
+    #[cfg(target_arch = "x86_64")]
     use reverie::syscalls::Sysno;
 
     use super::*;
@@ -310,12 +313,16 @@ mod tests {
         assert!(stats.exec_stops() > 0);
     }
 
+    // The fixture below serves only the x86_64 test that runs it.
     /// The fixed address `guest_traced_mmap.c` asks `mmap` for.
+    #[cfg(target_arch = "x86_64")]
     const TRACED_MMAP_HINT: u64 = 0x1000_0000_0000;
 
+    #[cfg(target_arch = "x86_64")]
     #[derive(Debug, Default)]
     struct MappingCalls(AtomicU64);
 
+    #[cfg(target_arch = "x86_64")]
     #[reverie::global_tool]
     impl GlobalTool for MappingCalls {
         /// Whether the Tool subscribes to `mmap`.
@@ -330,9 +337,11 @@ mod tests {
 
     /// Refuses the fixture's own `mmap` with `EACCES` and counts every call it
     /// sees, so a run shows whether that `mmap` reached the Tool.
+    #[cfg(target_arch = "x86_64")]
     #[derive(Debug, Default)]
     struct RefuseFixtureMapping;
 
+    #[cfg(target_arch = "x86_64")]
     #[reverie::tool]
     impl Tool for RefuseFixtureMapping {
         type GlobalState = MappingCalls;
@@ -362,6 +371,7 @@ mod tests {
 
     /// Builds `tests/fixtures/guest_traced_mmap.c` into the temporary
     /// directory and returns the binary's path.
+    #[cfg(target_arch = "x86_64")]
     fn guest_traced_mmap() -> std::path::PathBuf {
         let source = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("tests/fixtures/guest_traced_mmap.c");

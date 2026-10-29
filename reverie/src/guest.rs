@@ -1055,6 +1055,66 @@ pub trait Guest<T: Tool>: Send + GlobalRPC<T::GlobalState> {
         None
     }
 
+    /// Arms this thread's hardware watchpoints with `specs`, replacing the
+    /// ones it had: an empty slice disarms them. Every access a watch catches
+    /// is reported to [`GlobalTool::on_watchpoint_hit`] as a
+    /// [`WatchHit`](crate::WatchHit) whose `slot` is the watch's index in
+    /// `specs`. Only the thread's own instructions are watched: an access the
+    /// kernel makes for one of its syscalls (a `read` into the watched
+    /// bytes) is not reported, as Linux excludes the kernel from a
+    /// debugger's watchpoints.
+    ///
+    /// The watches are this thread's own. A thread or process it starts has
+    /// none, and a successful `execve` disarms them, as Linux does. The
+    /// backend refuses, changing nothing, more watches than
+    /// [`BackendCapabilities::hardware_watchpoints`](crate::BackendCapabilities::hardware_watchpoints),
+    /// a length or alignment the hardware cannot watch, and, with any watch,
+    /// a thread that blocks or ignores SIGTRAP: Linux reports a hit by
+    /// forcing a SIGTRAP on the thread, which unblocks it and resets its
+    /// action to the default (`force_sig_info_to_task`). A thread can still
+    /// block or ignore SIGTRAP after its watches are armed; what its next hit
+    /// then changes, and what the backend puts back, is
+    /// [`WatchHit::sigtrap`](crate::WatchHit::sigtrap). A backend puts back
+    /// only what it knows, so a Tool that must not change the guest checks
+    /// each hit.
+    ///
+    /// A thread that glibc's `pthread_create` starts runs with every signal
+    /// blocked until its start code restores its mask with an
+    /// `rt_sigprocmask`, before the program's start routine: arming it in
+    /// [`Tool::handle_thread_start`](crate::Tool::handle_thread_start) is
+    /// refused ([`WatchError::SigtrapBlocked`](crate::WatchError::SigtrapBlocked)),
+    /// and the first stop at which it can be armed is the end of that
+    /// syscall. The thread's accesses before then, in glibc's start code,
+    /// are not watched.
+    ///
+    /// A hit stops the thread briefly and makes no Tool callback other than
+    /// `on_watchpoint_hit`: it does not count as an event the Tool observes.
+    /// Whether it can still change when a timer event
+    /// ([`Guest::set_timer_precise`]) is delivered is
+    /// [`Guest::watch_hits_keep_timer_events`].
+    ///
+    /// The default refuses ([`WatchError::Unsupported`](crate::WatchError::Unsupported)).
+    fn set_watchpoints(&mut self, _specs: &[crate::WatchSpec]) -> Result<(), crate::WatchError> {
+        Err(crate::WatchError::Unsupported)
+    }
+
+    /// Whether a watch hit on this thread ([`Guest::set_watchpoints`]) leaves
+    /// every timer event of the thread as it would have been without the
+    /// hit: delivered at the same clock and instruction, or not at all. A
+    /// backend that cannot tell whether a hit's stop came before the timer's
+    /// notification answers `false`, and so does the default.
+    ///
+    /// On reverie-ptrace this holds when the thread's precise timer maps its
+    /// overflow records, or when the thread has no timer at all. Without the
+    /// records (a `PREEMPT_RT` kernel, or a host whose perf locked-memory
+    /// budget ran out), a hit's stop within the keep margin of a precise
+    /// event's target cancels the event, as Reverie's other traps without a
+    /// Tool callback do. A Tool that must not let a hit move a timer event
+    /// checks this on every thread it arms.
+    fn watch_hits_keep_timer_events(&self) -> bool {
+        false
+    }
+
     /// Returns true if all of the following conditions are true:
     ///  1. [`Tool::subscriptions`] returns an interest in intercepting CPUID.
     ///  2. We're able to trap and intercept the CPUID instruction. We may not
@@ -1174,6 +1234,181 @@ pub trait Guest<T: Tool>: Send + GlobalRPC<T::GlobalState> {
     /// are) override this with the rule their own syscall emulation applies.
     fn user_address_limit(&self) -> Result<crate::UserAddressLimit, crate::Error> {
         crate::user_address::host_user_address_limit()
+    }
+
+    /// Returns the state of this thread's open descriptor `fd` that no
+    /// syscall reads without changing it: an eventfd's counter, a Unix domain
+    /// socket's queued `SCM_RIGHTS` descriptors, and the locks held through
+    /// the descriptor's open file description. Linux shows the same state in
+    /// `/proc/<pid>/fdinfo/<fd>`; see [`crate::DescriptorStatus`].
+    ///
+    /// `Err(FactError::Errno(EBADF))` means that `fd` is not open in this
+    /// thread's descriptor table. Other errnos come from the backend's own
+    /// read of the state. `Err(FactError::NotProvided)` means the backend
+    /// does not report this fact, for any descriptor or for this one; it is
+    /// the default, for a backend that states nothing.
+    ///
+    /// The answer describes the moment of the call, while this thread is
+    /// stopped in the callback. Any task that shares the descriptor's open
+    /// file description, or the socket's peer, can change it afterwards.
+    ///
+    /// A backend whose guest threads are host tasks the tool may read
+    /// ([`crate::BackendCapabilities::host_task_reads_reach_guest_threads`])
+    /// reads the thread's own `fdinfo`. A backend that runs the guest's
+    /// syscalls itself answers from the descriptor table it keeps, with the
+    /// differences from Linux that its documentation names. Any other backend
+    /// does not report it, because a host read there would describe another
+    /// task.
+    fn descriptor_status(&self, _fd: i32) -> Result<crate::DescriptorStatus, crate::FactError> {
+        Err(crate::FactError::NotProvided)
+    }
+
+    /// Returns the signal sets of thread `tid`, a live guest thread of this
+    /// tool instance in any of its processes: what is pending for the thread
+    /// and for its process, its mask, and its process's ignored and caught
+    /// signals. Linux shows the same sets to any reader in the thread's
+    /// `/proc/<pid>/task/<tid>/status` (`SigPnd`, `ShdPnd`, `SigBlk`, `SigIgn`
+    /// and `SigCgt`); see [`crate::SignalSets`]. `tid` is numbered as
+    /// [`Guest::tid`] numbers this thread.
+    ///
+    /// `Err(FactError::Errno(ESRCH))` means that `tid` names no live thread
+    /// the backend runs for this tool instance: a thread that has exited,
+    /// reaped or not, a host task that is not one of its guest threads, or a
+    /// number no task has, zero and below included. ESRCH is the errno Linux
+    /// gives a thread-directed call such as `tgkill(2)` for a thread it
+    /// cannot find. Other errnos come from the backend's own read of the
+    /// state. `Err(FactError::NotProvided)` means the backend does not report
+    /// this fact, for any thread or for this one; it is the default, for a
+    /// backend that states nothing.
+    ///
+    /// The answer describes the moment of the call. This thread is stopped in
+    /// the callback, but other guest threads may run unless the tool keeps
+    /// them from it, and any thread can change another's sets by signalling
+    /// it. A tool that needs a stable answer for another thread asks while
+    /// that thread, and every thread that could signal it, cannot run; the
+    /// backend's read is a snapshot taken under the locks the target's own
+    /// signal syscalls take.
+    ///
+    /// A backend whose guest threads are host tasks the tool may read
+    /// ([`crate::BackendCapabilities::host_task_reads_reach_guest_threads`])
+    /// reads the kernel's sets of a thread it traces, every bit as Linux
+    /// shows it, including any signal the backend reserves for its own use.
+    /// It reads them through a handle on that task taken while it traced it,
+    /// so it reads no other task's state, not even that of a task that took
+    /// over the number of one it traced. A backend that runs the guest's
+    /// syscalls and delivers its signals itself answers from the signal
+    /// state it keeps, with the differences from Linux that its documentation
+    /// names. Any other backend does not report it, because a host read
+    /// there would describe another task.
+    ///
+    /// Like [`Guest::descriptor_status`], the call is synchronous: the
+    /// backend reads state it reaches without running the guest or injecting
+    /// anything, while this thread stays stopped.
+    fn signal_sets(&self, _tid: Pid) -> Result<crate::SignalSets, crate::FactError> {
+        Err(crate::FactError::NotProvided)
+    }
+
+    /// Returns what Linux's `readlink(2)` gives for the path link `link` of
+    /// thread `tid`, a live guest thread of this tool instance in any of its
+    /// processes: the name of the file one of its descriptors refers to, of
+    /// the file its process executes, or of its working directory, as its
+    /// `/proc/<pid>/task/<tid>/fd/<fd>`, `exe` and `cwd` show them to a reader
+    /// Linux lets read them; see [`crate::PathLink`] and [`crate::LinkPath`].
+    /// `tid` is numbered as [`Guest::tid`] numbers this thread.
+    ///
+    /// `Err(FactError::Errno(ESRCH))` means that `tid` names no live thread
+    /// the backend runs for this tool instance, exactly as for
+    /// [`Guest::signal_sets`]: a thread that has exited, reaped or not, a host
+    /// task that is not one of its guest threads, or a number no task has,
+    /// zero and below included. `Err(FactError::Errno(EBADF))` means that the
+    /// descriptor of a [`crate::PathLink::Descriptor`] is not open in the
+    /// thread's descriptor table, a negative number included (Linux's
+    /// `readlink` answers `ENOENT` there, as for any name `/proc` does not
+    /// have). Other errnos come from the backend's own read: for example
+    /// `ENAMETOOLONG`, Linux's answer for a name that does not fit in
+    /// `PATH_MAX` bytes. `Err(FactError::NotProvided)` means the backend does
+    /// not report this fact, for any link or for this one; it is the default,
+    /// for a backend that states nothing.
+    ///
+    /// The answer describes the moment of the call. This thread is stopped in
+    /// the callback, but other guest threads may run unless the tool keeps
+    /// them from it: a thread that shares the target's descriptor table can
+    /// close or replace the descriptor, and any file can be renamed or
+    /// unlinked. Linux renders a path from the root of the task that reads
+    /// the link, which here is the backend's reader: the guest's root unless
+    /// a guest thread changed its own.
+    ///
+    /// A backend whose guest threads are host tasks the tool may read
+    /// ([`crate::BackendCapabilities::host_task_reads_reach_guest_threads`])
+    /// reads the kernel's link of a thread it traces, through a handle on
+    /// that task taken while it traced it, so it reads no other task's link,
+    /// not even that of a task that took over the number of one it traced. A
+    /// backend that runs the guest's syscalls itself answers from the state
+    /// it keeps, with the differences from Linux that its documentation
+    /// names. Any other backend does not report it, because a host read there
+    /// would describe another task.
+    ///
+    /// Like [`Guest::descriptor_status`], the call is synchronous: the
+    /// backend reads state it reaches without running the guest or injecting
+    /// anything, while this thread stays stopped.
+    fn link_path(
+        &self,
+        _tid: Pid,
+        _link: crate::PathLink,
+    ) -> Result<crate::LinkPath, crate::FactError> {
+        Err(crate::FactError::NotProvided)
+    }
+
+    /// Returns the mappings of the address space of thread `tid`, a live
+    /// guest thread of this tool instance in any of its processes, as its
+    /// `/proc/<pid>/task/<tid>/maps` lists them to a reader Linux lets read
+    /// it, and whether the list is all of them; see [`crate::MemoryMap`]. The
+    /// threads of a process share its address space, so they have the same
+    /// list. `tid` is numbered as [`Guest::tid`] numbers this thread.
+    ///
+    /// `Err(FactError::Errno(ESRCH))` means that `tid` names no live thread
+    /// the backend runs for this tool instance, exactly as for
+    /// [`Guest::signal_sets`]: a thread that has exited, reaped or not, a host
+    /// task that is not one of its guest threads, or a number no task has,
+    /// zero and below included. Other errnos come from the backend's own
+    /// read. `Err(FactError::NotProvided)` means the backend does not report
+    /// this fact, for any thread or for this one; it is the default, for a
+    /// backend that states nothing.
+    ///
+    /// Every listed mapping is exact for the backend's own address space, as
+    /// Linux prints it, whether or not the list is complete: a backend that
+    /// cannot establish a mapping's fields leaves the mapping out. That
+    /// address space can differ from the one a native process would have
+    /// after the same calls (a backend may map a whole stack at once, for
+    /// example); the backend's documentation names how. A list with
+    /// [`complete`](crate::MemoryMap::complete) false omits mappings that
+    /// exist, which the backend's documentation names. A tool must not infer
+    /// from a missing entry that no mapping is there, such as that an address
+    /// is unmapped or free, and a tool that renders such a list as a `maps`
+    /// file must name the omissions as a difference of the backend.
+    ///
+    /// The answer describes the moment of the call. This thread is stopped in
+    /// the callback, but other guest threads may run unless the tool keeps
+    /// them from it, and any thread of the process can map, unmap or protect
+    /// memory. Linux renders a file's name from the root of the task that
+    /// reads the map, which here is the backend's reader: the guest's root
+    /// unless a guest thread changed its own.
+    ///
+    /// A backend whose guest threads are host tasks the tool may read
+    /// ([`crate::BackendCapabilities::host_task_reads_reach_guest_threads`])
+    /// reads the kernel's map of a thread it traces, through a handle on that
+    /// task taken while it traced it, so it reads no other task's map, not
+    /// even that of a task that took over the number of one it traced. A
+    /// backend that runs the guest's syscalls itself answers from the address
+    /// space it keeps, and each mapping it lists is exact for that address
+    /// space. Any other backend does not report it, because a host read there
+    /// would describe another task.
+    ///
+    /// Like [`Guest::descriptor_status`], the call is synchronous: the
+    /// backend reads state it reaches without running the guest or injecting
+    /// anything, while this thread stays stopped.
+    fn memory_map(&self, _tid: Pid) -> Result<crate::MemoryMap, crate::FactError> {
+        Err(crate::FactError::NotProvided)
     }
 }
 
@@ -1462,6 +1697,14 @@ where
         self.inner.backtrace()
     }
 
+    fn set_watchpoints(&mut self, specs: &[crate::WatchSpec]) -> Result<(), crate::WatchError> {
+        self.inner.set_watchpoints(specs)
+    }
+
+    fn watch_hits_keep_timer_events(&self) -> bool {
+        self.inner.watch_hits_keep_timer_events()
+    }
+
     fn has_cpuid_interception(&self) -> bool {
         self.inner.has_cpuid_interception()
     }
@@ -1488,5 +1731,25 @@ where
 
     fn user_address_limit(&self) -> Result<crate::UserAddressLimit, crate::Error> {
         self.inner.user_address_limit()
+    }
+
+    fn descriptor_status(&self, fd: i32) -> Result<crate::DescriptorStatus, crate::FactError> {
+        self.inner.descriptor_status(fd)
+    }
+
+    fn signal_sets(&self, tid: Pid) -> Result<crate::SignalSets, crate::FactError> {
+        self.inner.signal_sets(tid)
+    }
+
+    fn link_path(
+        &self,
+        tid: Pid,
+        link: crate::PathLink,
+    ) -> Result<crate::LinkPath, crate::FactError> {
+        self.inner.link_path(tid, link)
+    }
+
+    fn memory_map(&self, tid: Pid) -> Result<crate::MemoryMap, crate::FactError> {
+        self.inner.memory_map(tid)
     }
 }

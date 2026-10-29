@@ -590,6 +590,201 @@ fn wait_group_exit_requires_live_generation_and_nonfailed_owner() {
 }
 
 #[test]
+fn a_committed_group_exit_ends_signal_selection_with_nothing_changed() {
+    let mut parent = outside_init_root();
+    let mut sibling = parent.thread_child(9).unwrap();
+    let mut info = [0; reverie::SIGNAL_INFO_SIZE];
+    info[..4].copy_from_slice(&libc::SIGUSR1.to_ne_bytes());
+    info[8..12].copy_from_slice(&libc::SI_TKILL.to_ne_bytes());
+    let event = reverie::SignalEvent::new(
+        libc::SIGUSR1,
+        info,
+        reverie::SignalTarget::Thread {
+            pid: reverie::Pid::from_raw(3),
+            tid: reverie::Pid::from_raw(9),
+        },
+    )
+    .unwrap();
+    sibling.defer_signal_delivery(event).unwrap();
+    assert_eq!(sibling.committed_group_exit_status(), None);
+    // The leader's exit_group commits the group's exit.
+    parent.retire_current_thread(reverie::ExitStatus::Exited(37), true);
+    assert_eq!(
+        sibling.committed_group_exit_status(),
+        Some(reverie::ExitStatus::Exited(37))
+    );
+    // Linux's get_signal takes the group exit before any dequeue: no signal
+    // is selected, the pending one stays pending, and the committed status
+    // comes back for the caller to act on.
+    assert_eq!(
+        sibling.take_pending_signal_for_delivery_unless_group_exit(),
+        Ok(super::super::GuardedSignal::GroupExit(
+            reverie::ExitStatus::Exited(37)
+        ))
+    );
+    assert!(sibling.has_eligible_pending_signal());
+    // A fault's signal, which the backend raises rather than dequeues, is
+    // refused the same way.
+    let fault = super::super::PendingSignal {
+        event,
+        domain: super::super::PendingSignalDomain::Thread,
+    };
+    assert_eq!(
+        sibling.admit_signal_unless_group_exit(fault),
+        super::super::GuardedSignal::GroupExit(reverie::ExitStatus::Exited(37))
+    );
+    // The ordinary selection, which the backend's own runtime uses, still
+    // dequeues it.
+    let pending = sibling.take_pending_signal_for_delivery().unwrap().unwrap();
+    assert_eq!(pending.event.signal(), libc::SIGUSR1);
+}
+
+#[test]
+fn a_signal_selection_before_any_group_exit_selects_and_admits() {
+    let parent = outside_init_root();
+    let mut sibling = parent.thread_child(9).unwrap();
+    let mut info = [0; reverie::SIGNAL_INFO_SIZE];
+    info[..4].copy_from_slice(&libc::SIGUSR1.to_ne_bytes());
+    info[8..12].copy_from_slice(&libc::SI_TKILL.to_ne_bytes());
+    let event = reverie::SignalEvent::new(
+        libc::SIGUSR1,
+        info,
+        reverie::SignalTarget::Thread {
+            pid: reverie::Pid::from_raw(3),
+            tid: reverie::Pid::from_raw(9),
+        },
+    )
+    .unwrap();
+    let fault = super::super::PendingSignal {
+        event,
+        domain: super::super::PendingSignalDomain::Thread,
+    };
+    assert_eq!(
+        sibling.admit_signal_unless_group_exit(fault),
+        super::super::GuardedSignal::Selected(fault)
+    );
+    assert_eq!(
+        sibling.take_pending_signal_for_delivery_unless_group_exit(),
+        Ok(super::super::GuardedSignal::Nothing)
+    );
+    sibling.defer_signal_delivery(event).unwrap();
+    assert_eq!(
+        sibling.take_pending_signal_for_delivery_unless_group_exit(),
+        Ok(super::super::GuardedSignal::Selected(fault))
+    );
+    assert!(!sibling.has_eligible_pending_signal());
+}
+
+#[test]
+fn a_fatal_signal_in_a_worker_that_an_exec_froze_starts_no_group_exit() {
+    // A worker's fatal signal commits after another thread's exec froze the
+    // worker's death (prepare_parent_death_exec). Linux's do_group_exit,
+    // finding group_exec_task, starts no group exit and ends the thread with
+    // status 0, so the exec's issuer survives and its replacement image can
+    // still fork.
+    let root = outside_init_root();
+    let mut worker = root.thread_child(9).unwrap();
+    root.prepare_parent_death_exec().unwrap();
+    worker.force_signal_exit(libc::SIGTERM);
+    assert_eq!(
+        worker.take_exit(),
+        Some(super::super::ProcessExit {
+            status: reverie::ExitStatus::SUCCESS,
+            group: false
+        })
+    );
+    assert_eq!(root.committed_group_exit_status(), None);
+    assert_eq!(root.process_exit_status(), None);
+    // The issuer is still a live parent: a fork inherits it.
+    let child = root.fork_child(2, false, false);
+    assert!(child.is_ok(), "fork after the worker's fatal signal: {:?}", child.err());
+}
+
+#[test]
+fn a_sigkill_a_frozen_worker_sends_still_ends_the_whole_process() {
+    // A SIGKILL sent to the process, or to one of its threads, starts a group
+    // exit whatever the exec: Linux's complete_signal does not look at
+    // group_exec_task, and de_thread then fails the exec, so the whole
+    // process dies by SIGKILL. The exec rule above leaves it a group exit:
+    // the worker's exit commits it, and the leader's own end then takes its
+    // status, which becomes the process's.
+    let killed = reverie::ExitStatus::Signaled(reverie::Signal::SIGKILL, false);
+    for (number, args) in [
+        (libc::SYS_kill, [3, libc::SIGKILL as u64, 0, 0, 0, 0]),
+        (libc::SYS_tgkill, [3, 9, libc::SIGKILL as u64, 0, 0, 0]),
+    ] {
+        let mut root = outside_init_root();
+        let mut worker = root.thread_child(9).unwrap();
+        root.prepare_parent_death_exec().unwrap();
+        let memory = GuestMemory::new(0, 4096).unwrap();
+        worker.execute(&SyscallRequest::new(number as u64, args), &memory);
+        assert_eq!(
+            worker.take_exit(),
+            Some(super::super::ProcessExit {
+                status: killed,
+                group: true
+            }),
+            "syscall {number}"
+        );
+        assert_eq!(
+            root.committed_group_exit_status(),
+            Some(killed),
+            "syscall {number}"
+        );
+        assert_eq!(
+            root.retire_current_thread(reverie::ExitStatus::SUCCESS, false)
+                .status,
+            killed,
+            "syscall {number}"
+        );
+        assert_eq!(root.process_exit_status(), Some(killed), "syscall {number}");
+    }
+}
+
+#[test]
+fn retiring_a_thread_whose_group_exit_was_taken_keeps_the_group_status() {
+    // The group exit's own death set holds its issuer, but no exec froze the
+    // issuer: a later retirement of the exited thread (a Tool-cancelled
+    // worker's, for one) is not a new exit and keeps the group's status.
+    let root = outside_init_root();
+    let mut worker = root.thread_child(9).unwrap();
+    let status = reverie::ExitStatus::Exited(42);
+    assert_eq!(
+        worker.retire_guest_thread(status, true),
+        super::super::ProcessExit {
+            status,
+            group: true
+        }
+    );
+    assert_eq!(
+        worker.retire_current_thread(status, true),
+        super::super::ProcessExit {
+            status,
+            group: true
+        }
+    );
+    assert_eq!(root.committed_group_exit_status(), Some(status));
+}
+
+#[test]
+fn a_fatal_signal_without_an_exec_still_ends_the_group() {
+    // The control: with no exec, the same fatal signal starts the group exit.
+    let root = outside_init_root();
+    let mut worker = root.thread_child(9).unwrap();
+    worker.force_signal_exit(libc::SIGTERM);
+    let exit = worker.take_exit().unwrap();
+    assert!(exit.group, "{exit:?}");
+    assert_eq!(
+        exit.status,
+        reverie::ExitStatus::Signaled(reverie::Signal::SIGTERM, false)
+    );
+    assert_eq!(
+        root.committed_group_exit_status(),
+        Some(reverie::ExitStatus::Signaled(reverie::Signal::SIGTERM, false))
+    );
+}
+
+#[test]
 fn committed_wait_failure_precedes_clean_parent_group_exit() {
     // Exercise production family mutations, not an invented final-state map.
     for failure_kind in [0, 1, 2] {

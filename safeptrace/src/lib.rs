@@ -1092,6 +1092,9 @@ impl Stopped {
     /// of the exit stop, so the queued stops ahead of it are still dead.
     fn map_err(&self, err: Errno) -> Error {
         if err == Errno::ESRCH {
+            // The tracee has left the stop this capability names.
+            #[cfg(feature = "notifier")]
+            self.1.event().stop_may_have_ended();
             self.retire_statuses_before_exit_stop();
             Error::Died(Zombie::from_token(self.0, self.1.clone()))
         } else {
@@ -1238,7 +1241,10 @@ impl Stopped {
     /// ptrace request moved the tracee out of its stop.
     fn into_running(self) -> Running {
         #[cfg(feature = "notifier")]
-        self.1.event().invalidate_numeric_auth();
+        {
+            self.1.event().invalidate_numeric_auth();
+            self.1.event().expect_stop();
+        }
         self.retire_statuses_before_exit_stop();
         Running::from_token(self.0, self.1)
     }
@@ -1323,6 +1329,44 @@ impl Stopped {
             })
             .map_err(|err| self.map_err(err))?;
 
+        Ok(())
+    }
+
+    /// Reads the word at byte `offset` of the tracee's `struct user`
+    /// (`PTRACE_PEEKUSER`), such as one of its debug registers on x86-64
+    /// (`offset_of!(libc::user, u_debugreg)` plus eight times its number).
+    pub fn peekuser(&self, offset: usize) -> Result<u64, Error> {
+        let mut word: u64 = 0;
+        // The raw request stores the word at `data`; only glibc's wrapper
+        // returns it.
+        self.1
+            .on_held_tid(|| unsafe {
+                syscalls::syscall!(
+                    Sysno::ptrace,
+                    libc::PTRACE_PEEKUSER,
+                    self.0.as_raw(),
+                    offset,
+                    &mut word as *mut u64
+                )
+            })
+            .map_err(|err| self.map_err(err))?;
+        Ok(word)
+    }
+
+    /// Writes `word` at byte `offset` of the tracee's `struct user`
+    /// (`PTRACE_POKEUSER`). See [`Stopped::peekuser`].
+    pub fn pokeuser(&self, offset: usize, word: u64) -> Result<(), Error> {
+        self.1
+            .on_held_tid(|| unsafe {
+                syscalls::syscall!(
+                    Sysno::ptrace,
+                    libc::PTRACE_POKEUSER,
+                    self.0.as_raw(),
+                    offset,
+                    word
+                )
+            })
+            .map_err(|err| self.map_err(err))?;
         Ok(())
     }
 
@@ -1492,6 +1536,8 @@ impl Stopped {
                 if error == Errno::ESRCH {
                     // The retained value keeps its ownership role, but the
                     // tracee has left the exit stop this capability names.
+                    #[cfg(feature = "notifier")]
+                    self.1.event().stop_may_have_ended();
                     self.retire_statuses_before_exit_stop();
                 }
                 Err((self, error))
@@ -2265,7 +2311,10 @@ impl Running {
                 )
             })
             .map(drop)
-        })
+        })?;
+        #[cfg(feature = "notifier")]
+        self.1.event().expect_stop();
+        Ok(())
     }
 
     /// Returns the pid of the running process.
@@ -3596,6 +3645,44 @@ mod test {
             stopped.resume(Some(Signal::SIGUSR1))?.wait()?,
             Wait::Exited(pid, ExitStatus::Exited(0))
         );
+        Ok(())
+    }
+
+    /// A tracee's debug registers, read and written in its `struct user`:
+    /// an address and a slot's controls read back as written, and DR6 reads
+    /// back in the hardware's polarity, its hit bits as written.
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn debug_registers_round_trip_through_peekuser_and_pokeuser()
+    -> Result<(), Box<dyn std::error::Error + 'static>> {
+        static WATCHED: u64 = 0;
+        let debugreg = |n: usize| core::mem::offset_of!(libc::user, u_debugreg) + 8 * n;
+        let (parent_pid, tracee) = trace(
+            || {
+                let _ = unsafe { libc::syscall(libc::SYS_exit_group, 0) };
+                unreachable!()
+            },
+            Options::PTRACE_O_EXITKILL,
+        )?;
+        let addr = &WATCHED as *const u64 as u64;
+        tracee.pokeuser(debugreg(0), addr)?;
+        assert_eq!(tracee.peekuser(debugreg(0))?, addr);
+        // Slot 0 enabled, watching writes of 8 bytes.
+        tracee.pokeuser(debugreg(7), 0x0009_0001)?;
+        assert_eq!(tracee.peekuser(debugreg(7))?, 0x0009_0001);
+        let dr6 = tracee.peekuser(debugreg(6))?;
+        assert_eq!(dr6 & 0xf, 0, "{dr6:#x}");
+        tracee.pokeuser(debugreg(6), dr6 | 0b0100)?;
+        assert_eq!(tracee.peekuser(debugreg(6))?, dr6 | 0b0100);
+        tracee.pokeuser(debugreg(6), dr6)?;
+        tracee.pokeuser(debugreg(7), 0)?;
+        // There is no DR4.
+        assert_eq!(
+            tracee.pokeuser(debugreg(4), 0),
+            Err(Error::Errno(Errno::EIO))
+        );
+        tracee.resume(None)?;
+        while wait_group(parent_pid)?.is_some() {}
         Ok(())
     }
 

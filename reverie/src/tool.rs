@@ -363,6 +363,32 @@ pub trait GlobalTool: Send + Sync + Default {
     /// the guest. The default does nothing. Only the ptrace backend calls it.
     fn on_fatal_signal_exit(&self, _exit: &FatalSignalExit) {}
 
+    /// Receives an access that a hardware watchpoint caught
+    /// ([`Guest::set_watchpoints`](crate::Guest::set_watchpoints)). Hits of
+    /// one thread arrive in the order the thread made the accesses.
+    ///
+    /// The call runs synchronously on the tracing thread of the accessing
+    /// thread while that thread is stopped, between two of its instructions,
+    /// so its host time stalls the guest. Hits of different threads can be
+    /// reported at the same time on different tracing threads, so their order
+    /// across threads is the host's unless the Tool runs one guest thread at
+    /// a time ([`Tool::enforces_serialized_execution`](crate::Tool::enforces_serialized_execution));
+    /// the method must be safe to call concurrently. It is not a Tool
+    /// callback: nothing is injected, no request is sent and the guest is not
+    /// modified. The method must be bounded, must not panic, must not wait
+    /// for guest progress and must not take a lock that a Tool callback holds
+    /// across an `await`; the default does nothing. Only the ptrace backend
+    /// calls it.
+    ///
+    /// [`WatchHit::sigtrap`](crate::WatchHit::sigtrap) says whether the hit's
+    /// SIGTRAP may have changed the guest's SIGTRAP mask bit or action.
+    ///
+    /// The hit's stop is one the Tool does not observe, so the thread's
+    /// timer event is finished as it would have been without it, where
+    /// [`Guest::watch_hits_keep_timer_events`](crate::Guest::watch_hits_keep_timer_events)
+    /// holds.
+    fn on_watchpoint_hit(&self, _hit: &crate::WatchHit) {}
+
     /// Waits until this run cannot continue faithfully. Each call must subscribe
     /// independently: multiple Tool callbacks and the scheduler may be waiting.
     /// The default preserves Tools that do not own a scheduler.

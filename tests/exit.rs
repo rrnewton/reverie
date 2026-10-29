@@ -10,72 +10,44 @@
 
 //! Tests surrounding exit logic.
 
-use std::sync::Mutex;
+#[path = "support/exit_command.rs"]
+mod command;
+#[path = "tool_fixtures/exit.rs"]
+mod exit_tool;
 
-use reverie::Error;
+use exit_tool::GlobalState;
+use exit_tool::InjectExitTool;
 use reverie::ExitStatus;
-use reverie::GlobalRPC;
-use reverie::GlobalTool;
-use reverie::Guest;
-use reverie::Pid;
-use reverie::Tool;
-use reverie::syscalls;
-use reverie::syscalls::Syscall;
-use reverie::syscalls::SyscallInfo;
-use reverie::syscalls::Sysno;
+use reverie::process::Output;
 
-#[derive(Debug, Default)]
-struct GlobalState {
-    // FIXME: Can't use (Pid, ExitStatus) types here since they don't implement
-    // Serialize/Deserialize.
-    exited: Mutex<Vec<(i32, ExitStatus)>>,
+fn record_command(label: &str, output: &Output, state: &GlobalState) {
+    eprintln!(
+        "injected exit {label}: status={:?} stdout={:02x?} stderr={:02x?} exited={:?}",
+        output.status,
+        output.stdout,
+        output.stderr,
+        *state.exited.lock().unwrap(),
+    );
 }
 
-#[reverie::global_tool]
-impl GlobalTool for GlobalState {
-    type Request = ExitStatus;
-    type Response = ();
-    type Config = ();
-
-    async fn receive_rpc(&self, from: Pid, exit_status: ExitStatus) -> Self::Response {
-        self.exited
-            .lock()
-            .unwrap()
-            .push((from.as_raw(), exit_status));
-    }
+fn assert_exit_oracle(output: &Output, state: &GlobalState) {
+    assert_eq!(output.status, ExitStatus::Exited(42));
+    let mut mg = state.exited.lock().unwrap();
+    assert_eq!(mg.pop().map(|x| x.1), Some(ExitStatus::Exited(42)));
+    assert!(mg.is_empty());
 }
 
-#[derive(Debug, Default, Clone)]
-struct InjectExitTool {}
-
-#[reverie::tool]
-impl Tool for InjectExitTool {
-    type GlobalState = GlobalState;
-    type ThreadState = ();
-
-    async fn on_exit_process<G: GlobalRPC<Self::GlobalState>>(
-        self,
-        _pid: Pid,
-        global_state: &G,
-        exit_status: ExitStatus,
-    ) -> Result<(), Error> {
-        global_state.send_rpc(exit_status).await;
-        Ok(())
-    }
-
-    async fn handle_syscall_event<T: Guest<Self>>(
-        &self,
-        guest: &mut T,
-        syscall: Syscall,
-    ) -> Result<i64, Error> {
-        if syscall.number() == Sysno::getpid {
-            guest
-                .tail_inject(syscalls::ExitGroup::new().with_status(42))
-                .await
-        } else {
-            guest.tail_inject(syscall).await
-        }
-    }
+#[test]
+fn ptrace_inject_exit_command() {
+    let guest = command::GuestBinary::compile();
+    guest.assert_native();
+    guest.record_before_launch("ptrace");
+    let (output, state) =
+        reverie_test_support::test_cmd::<InjectExitTool>(guest.program(), &[]).unwrap();
+    record_command("ptrace", &output, &state);
+    assert!(output.stdout.is_empty());
+    assert!(output.stderr.is_empty());
+    assert_exit_oracle(&output, &state);
 }
 
 #[test]

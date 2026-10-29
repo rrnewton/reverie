@@ -54,6 +54,7 @@ type LogicalTime = u64;
 
 #[derive(Debug, Default)]
 // TODO-HUMAN-REVIEW(PR-152): Review crate-local LiteInst hosting visibility.
+/// Shared buffers and epoch state for the ChunkyPrint Tool.
 pub struct ChunkyPrintGlobal(Mutex<Inner>);
 
 #[derive(Debug, Default)]
@@ -90,6 +91,7 @@ impl GlobalTool for ChunkyPrintGlobal {
 
 impl ChunkyPrintGlobal {
     // TODO-HUMAN-REVIEW(PR-152): Review the shared final-output flush boundary.
+    /// Writes the remaining buffered messages to their original streams.
     pub fn flush(&self) -> io::Result<()> {
         self.0.lock().unwrap().flush_messages()
     }
@@ -168,6 +170,7 @@ impl Inner {
 
 #[derive(Debug, Default)]
 // TODO-HUMAN-REVIEW(PR-152): Review crate-local LiteInst hosting visibility.
+/// Buffers standard-stream writes while forwarding writes to other descriptors.
 pub struct ChunkyPrintLocal {
     stdout_disconnected: AtomicBool,
     stderr_disconnected: AtomicBool,

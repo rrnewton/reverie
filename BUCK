@@ -215,7 +215,13 @@ rust_library(
                 "description": "Command helpers for generic Reverie conformance tests.",
                 "publish": False,
             },
-            "test": [{"name": "basics", "path": "../tests/basics.rs"}],
+            "test": [
+                {"name": "basics", "path": "../tests/basics.rs"},
+                {"name": "exit", "path": "../tests/exit.rs"},
+                {"name": "stat", "path": "../tests/stat.rs"},
+                {"name": "vdso", "path": "../tests/vdso.rs"},
+                {"name": "inject_then_tail", "path": "../tests/inject_then_tail.rs"},
+            ],
             "dependencies_override": {
                 "dev-dependencies": {
                     "nix": {"features": ["fs", "process", "signal"]},
@@ -239,6 +245,8 @@ rust_library(
         "fbsource//third-party/rust:libc",
         "fbsource//third-party/rust:nix",
         "fbsource//third-party/rust:serde",
+        "fbsource//third-party/rust:tempfile",
+        "fbsource//third-party/rust:tracing",
         ":reverie-ptrace",
     ],
     deps = [
@@ -249,7 +257,7 @@ rust_library(
 
 rust_unittest(
     name = "generic-basics",
-    srcs = ["tests/basics.rs", "tests/tool_fixtures/basics.rs"],
+    srcs = ["tests/basics.rs", "tests/support/basics_commands.rs", "tests/tool_fixtures/basics.rs"],
     crate_root = "tests/basics.rs",
     rustc_flags = sanitized_feature,
     deps = [
@@ -259,6 +267,82 @@ rust_unittest(
         "fbsource//third-party/rust:serde",
         ":reverie",
         ":reverie-ptrace",
+        ":reverie-test-support",
+    ],
+)
+
+rust_unittest(
+    name = "generic-exit",
+    srcs = [
+        "tests/exit.rs",
+        "tests/fixtures/exit-command.S",
+        "tests/support/exit_command.rs",
+        "tests/tool_fixtures/exit.rs",
+    ],
+    crate_root = "tests/exit.rs",
+    rustc_flags = sanitized_feature,
+    deps = [
+        "fbsource//third-party/rust:libc",
+        "fbsource//third-party/rust:tempfile",
+        ":reverie",
+        ":reverie-ptrace",
+        ":reverie-test-support",
+    ],
+)
+
+rust_unittest(
+    name = "generic-stat",
+    srcs = [
+        "tests/stat.rs",
+        "tests/fixtures/stat-command.c",
+        "tests/fixtures/statx-command.c",
+        "tests/support/stat_command.rs",
+        "tests/tool_fixtures/stat.rs",
+    ],
+    crate_root = "tests/stat.rs",
+    rustc_flags = sanitized_feature,
+    deps = [
+        "fbsource//third-party/rust:libc",
+        "fbsource//third-party/rust:tempfile",
+        ":reverie",
+        ":reverie-ptrace",
+        ":reverie-test-support",
+    ],
+)
+
+rust_unittest(
+    name = "generic-vdso",
+    srcs = [
+        "tests/vdso.rs",
+        "tests/fixtures/vdso-command.c",
+        "tests/support/vdso_command.rs",
+        "tests/tool_fixtures/vdso.rs",
+    ],
+    crate_root = "tests/vdso.rs",
+    rustc_flags = sanitized_feature,
+    deps = [
+        "fbsource//third-party/rust:libc",
+        "fbsource//third-party/rust:tempfile",
+        ":reverie",
+        ":reverie-ptrace",
+        ":reverie-test-support",
+    ],
+)
+
+rust_unittest(
+    name = "generic-inject-then-tail",
+    srcs = [
+        "tests/inject_then_tail.rs",
+        "tests/fixtures/inject-then-tail-command.c",
+        "tests/support/inject_then_tail_command.rs",
+        "tests/tool_fixtures/inject_then_tail.rs",
+    ],
+    crate_root = "tests/inject_then_tail.rs",
+    rustc_flags = sanitized_feature,
+    deps = [
+        "fbsource//third-party/rust:tempfile",
+        "fbsource//third-party/rust:tracing",
+        ":reverie",
         ":reverie-test-support",
     ],
 )

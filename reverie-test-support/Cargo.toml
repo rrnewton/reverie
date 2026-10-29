@@ -1,5 +1,5 @@
-# Hand-maintained alongside :reverie-test-support and :generic-basics in BUCK.
-# Keep the dependencies and basics integration registration synchronized.
+# Hand-maintained alongside the generic conformance targets in BUCK.
+# Keep the dependencies and integration registrations synchronized.
 
 [package]
 name = "reverie-test-support"
@@ -22,6 +22,8 @@ nix = { version = "0.30.1", features = ["fs", "process", "signal"] }
 # The workspace already pins nightly; ordinary library users need no feature.
 reverie-ptrace = { version = "0.5.4", path = "../reverie-ptrace", features = ["nightly"] }
 serde = { version = "1.0.219", features = ["derive"] }
+tempfile = "3.27.0"
+tracing = "0.1.41"
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ["cfg(sanitized)"] }
@@ -29,3 +31,19 @@ unexpected_cfgs = { level = "warn", check-cfg = ["cfg(sanitized)"] }
 [[test]]
 name = "basics"
 path = "../tests/basics.rs"
+
+[[test]]
+name = "exit"
+path = "../tests/exit.rs"
+
+[[test]]
+name = "stat"
+path = "../tests/stat.rs"
+
+[[test]]
+name = "vdso"
+path = "../tests/vdso.rs"
+
+[[test]]
+name = "inject_then_tail"
+path = "../tests/inject_then_tail.rs"

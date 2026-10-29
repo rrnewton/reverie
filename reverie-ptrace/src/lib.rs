@@ -47,10 +47,13 @@ mod cp;
 mod debug;
 #[cfg(target_arch = "x86_64")]
 pub mod decoder;
+mod descriptor_status;
 mod error;
 mod failure;
 mod gdbstub;
 mod injected_syscall;
+mod link_path;
+mod memory_map;
 mod perf;
 mod pidfd_self;
 mod poll_on_wake;
@@ -58,6 +61,7 @@ pub mod regs;
 mod segv_state;
 #[cfg(all(test, target_arch = "x86_64"))]
 mod signal_action_boundary_tests;
+mod signal_sets;
 mod sigtrap_state;
 mod stack;
 mod stats;
@@ -68,6 +72,7 @@ mod tool_memory;
 mod tracer;
 mod validation;
 mod vdso;
+mod watch;
 
 // Shared with the transient opens in reverie-core and safeptrace.
 pub use backend::PtraceBackend;

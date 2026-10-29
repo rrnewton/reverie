@@ -9,18 +9,11 @@
 // reinject stat* as fstatat unittest
 
 #[cfg(all(not(sanitized), test))]
-use reverie::Tool;
+#[path = "tool_fixtures/stat.rs"]
+mod stat_tool;
 
 #[cfg(all(not(sanitized), test))]
-#[derive(Debug, Default, Clone)]
-struct LocalState;
-
-#[cfg(all(not(sanitized), test))]
-#[reverie::tool]
-impl Tool for LocalState {
-    type GlobalState = ();
-    type ThreadState = ();
-}
+use stat_tool::LocalState;
 
 #[cfg(all(not(sanitized), test))]
 mod tests {
@@ -96,4 +89,39 @@ mod tests {
             assert_eq!(fstatat_result.st_ino, statx_result.stx_ino);
         })
     }
+}
+
+#[cfg(all(not(sanitized), test))]
+#[path = "support/stat_command.rs"]
+mod command;
+
+#[cfg(all(not(sanitized), test))]
+fn assert_command_output(label: &str, output: &reverie::process::Output) {
+    eprintln!(
+        "stat command {label}: status={:?} stdout={:02x?} stderr={:02x?}",
+        output.status, output.stdout, output.stderr,
+    );
+    assert_eq!(output.status, reverie::ExitStatus::Exited(0));
+    assert!(output.stdout.is_empty());
+    assert!(output.stderr.is_empty());
+}
+
+#[cfg(all(not(sanitized), test))]
+#[test]
+fn ptrace_stat_command() {
+    let guest = command::GuestBinary::compile(command::Operation::Stat);
+    guest.assert_native();
+    guest.record_before_launch("ptrace");
+    let (output, ()) = reverie_test_support::test_cmd::<LocalState>(guest.program(), &[]).unwrap();
+    assert_command_output("stat/ptrace", &output);
+}
+
+#[cfg(all(not(sanitized), test))]
+#[test]
+fn ptrace_statx_command() {
+    let guest = command::GuestBinary::compile(command::Operation::Statx);
+    guest.assert_native();
+    guest.record_before_launch("ptrace");
+    let (output, ()) = reverie_test_support::test_cmd::<LocalState>(guest.program(), &[]).unwrap();
+    assert_command_output("statx/ptrace", &output);
 }

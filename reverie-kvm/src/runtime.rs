@@ -347,8 +347,10 @@ use crate::provider::ProviderOutcome;
 use crate::provider::ProviderRequest;
 use crate::vm::CompletedBoundarySlot;
 use crate::vm::CompletedSyscallBoundary;
+use crate::vm::HandlerEntry;
 use crate::vm::ProcessActionContinuation;
 use crate::vm::ProcessActionOutcome;
+use crate::vm::SIGNAL_SELECTIONS_PER_RETURN;
 use crate::vm::SyscallExitRead;
 use crate::vm::UserTrap;
 
@@ -617,9 +619,11 @@ pub(crate) struct ToolContext<'a, T: Tool> {
 /// provider trait: the vCPU clock and its preemption timer, CPUID
 /// interception, the run's failure subscription, the adapter's signal guard,
 /// the two injection admission checks, the traced-parent query behind
-/// `Guest::ppid`, and the completion of process actions. The trait is generic
-/// over the Tool only because `complete_injection` starts child Tool
-/// instances.
+/// `Guest::ppid`, the descriptor fact behind `Guest::descriptor_status`, the
+/// signal fact behind `Guest::signal_sets`, the link fact behind
+/// `Guest::link_path`, the map fact behind `Guest::memory_map`, and the
+/// completion of process actions. The trait is generic over the Tool only
+/// because `complete_injection` starts child Tool instances.
 trait GuestSyscallExecutor<T: Tool>:
     LinuxProvider<Context = GuestMemory, Plan = StagedProcessAction, Error = Error>
     + LinuxEmuSignalControl
@@ -709,6 +713,44 @@ trait GuestSyscallExecutor<T: Tool>:
         None
     }
 
+    /// The issuing task's `Guest::descriptor_status(fd)`. An adapter whose
+    /// provider keeps no descriptor table of its own, such as a
+    /// caller-supplied executor, does not provide it.
+    fn descriptor_status(
+        &self,
+        _fd: i32,
+    ) -> std::result::Result<reverie::DescriptorStatus, reverie::FactError> {
+        Err(reverie::FactError::NotProvided)
+    }
+
+    /// The issuing task's `Guest::signal_sets(tid)`. An adapter whose
+    /// provider keeps no signal state of its own, such as a caller-supplied
+    /// executor, does not provide it.
+    fn signal_sets(
+        &self,
+        _tid: Pid,
+    ) -> std::result::Result<reverie::SignalSets, reverie::FactError> {
+        Err(reverie::FactError::NotProvided)
+    }
+
+    /// The issuing task's `Guest::link_path(tid, link)`. An adapter whose
+    /// provider keeps no descriptor table, image or working directory of its
+    /// own, such as a caller-supplied executor, does not provide it.
+    fn link_path(
+        &self,
+        _tid: Pid,
+        _link: reverie::PathLink,
+    ) -> std::result::Result<reverie::LinkPath, reverie::FactError> {
+        Err(reverie::FactError::NotProvided)
+    }
+
+    /// The issuing task's `Guest::memory_map(tid)`. An adapter whose provider
+    /// keeps no record of the address space, such as a caller-supplied
+    /// executor, does not provide it.
+    fn memory_map(&self, _tid: Pid) -> std::result::Result<reverie::MemoryMap, reverie::FactError> {
+        Err(reverie::FactError::NotProvided)
+    }
+
     /// [`Self::complete_injection`]'s answer, when it is known at once without
     /// awaiting anything, so that the common injection, one that staged no
     /// process action, is completed without the boxed future and the
@@ -791,6 +833,39 @@ enum UserBoundarySignal {
     Deferred,
     /// The signal or its hook ended the thread or its group: the thread's
     /// Tool loop returns this exit.
+    Finished(ToolProcessExit),
+}
+
+/// How the guest enters the handlers of the frames a return to user mode
+/// builds after its first, and what their signals' hooks are shown (see
+/// `KvmBackend::deliver_stacked_signals_with_tool`).
+#[derive(Clone, Copy, Debug)]
+enum StackedFrames {
+    /// Through the syscall frame at `frame_address`, at a syscall's or
+    /// rt_sigreturn's return. A hook sees `syscall_number` as orig_rax and no
+    /// segment registers, as the first frame's hook did.
+    SyscallReturn {
+        frame_address: u64,
+        syscall_number: u64,
+    },
+    /// At a user instruction boundary, with the vCPU's registers: an
+    /// unstarted clone, a timer event's boundary, or a fault's once the
+    /// fault's frame has resumed the vCPU in user mode. A hook sees orig_rax
+    /// -1 and the user segment registers.
+    UserBoundary,
+}
+
+/// What `KvmBackend::deliver_stacked_signals_with_tool` left.
+enum StackedSignals {
+    /// No eligible signal is left, or the Tool authorized no selection: the
+    /// guest enters the last frame's handler.
+    Settled,
+    /// A selected signal's default action, or the SIGSEGV that a frame it
+    /// could not build forces, ended the thread or its group: the caller
+    /// handles this exit as one taken at its own boundary.
+    Exited(ProcessExit),
+    /// A signal's hook ended the thread or its group: the thread's Tool loop
+    /// returns this exit.
     Finished(ToolProcessExit),
 }
 
@@ -1554,7 +1629,27 @@ impl LinuxEmuSignalControl for StaticElfSyscallExecutor<'_> {
 
     fn take_signal_for_observation(&mut self) -> std::result::Result<Option<PendingSignal>, Errno> {
         self.executor.reserve_signal_effects(1)?;
-        self.executor.take_pending_signal_for_delivery()
+        // A parked syscall's signal observation is a delivery selection too:
+        // Linux's get_signal takes a group exit before every dequeue. A
+        // committed group exit stops the observation, with nothing selected,
+        // and is published so that the thread ends before it next runs.
+        Ok(
+            match self
+                .executor
+                .take_pending_signal_for_delivery_unless_group_exit()?
+            {
+                crate::executor::GuardedSignal::Selected(pending) => Some(pending),
+                crate::executor::GuardedSignal::Nothing => None,
+                crate::executor::GuardedSignal::GroupExit(status) => {
+                    #[cfg(test)]
+                    crate::vm::guarded_selection_observation::found_group_exit(
+                        crate::vm::guarded_selection_observation::Site::ParkedObservation,
+                    );
+                    self.backend.publish_committed_group_exit(status);
+                    None
+                }
+            },
+        )
     }
 
     fn filter_signal_replacement(
@@ -1650,6 +1745,32 @@ where
     // (`Guest::initial_stack_pointer`).
     fn initial_stack_pointer(&self) -> Option<u64> {
         Some(self.executor.initial_stack_pointer())
+    }
+
+    fn descriptor_status(
+        &self,
+        fd: i32,
+    ) -> std::result::Result<reverie::DescriptorStatus, reverie::FactError> {
+        self.executor.descriptor_status(fd)
+    }
+
+    fn signal_sets(
+        &self,
+        tid: Pid,
+    ) -> std::result::Result<reverie::SignalSets, reverie::FactError> {
+        self.executor.signal_sets(tid.as_raw())
+    }
+
+    fn link_path(
+        &self,
+        tid: Pid,
+        link: reverie::PathLink,
+    ) -> std::result::Result<reverie::LinkPath, reverie::FactError> {
+        self.executor.link_path(tid.as_raw(), link)
+    }
+
+    fn memory_map(&self, tid: Pid) -> std::result::Result<reverie::MemoryMap, reverie::FactError> {
+        self.executor.memory_map(&self.memory, tid.as_raw())
     }
 
     fn ordinary_injection_allowed(&self, request: &SyscallRequest) -> bool {
@@ -2791,6 +2912,52 @@ impl<T: Tool> Guest<T> for KvmGuest<'_, T> {
         // 6.4 and later do, whatever the host kernel does.
         Ok(crate::executor::GUEST_USER_ADDRESS_LIMIT)
     }
+
+    fn descriptor_status(
+        &self,
+        fd: i32,
+    ) -> std::result::Result<reverie::DescriptorStatus, reverie::FactError> {
+        // `pid()` and `tid()` name no host task whose `fdinfo` is the
+        // guest's. The executor answers from the descriptor table the task's
+        // syscalls use, through the host descriptors behind it; its gaps (a
+        // record lock reported as the OFD lock it is held as, refused flock,
+        // descriptions it keeps itself) are documented on the executor's
+        // facts module.
+        self.executor.descriptor_status(fd)
+    }
+
+    fn signal_sets(
+        &self,
+        tid: Pid,
+    ) -> std::result::Result<reverie::SignalSets, reverie::FactError> {
+        // `tid` is in the guest's own numbering, as `tid()` is, and no host
+        // task has the guest's signal state. The executor answers from the
+        // signal state it delivers from, for a live thread of the run in any
+        // process; it refuses real-time signals, so none is ever pending.
+        self.executor.signal_sets(tid)
+    }
+
+    fn link_path(
+        &self,
+        tid: Pid,
+        link: reverie::PathLink,
+    ) -> std::result::Result<reverie::LinkPath, reverie::FactError> {
+        // `tid` is in the guest's own numbering, and no host task has the
+        // guest's links. The executor answers from its own descriptor table,
+        // image and working directory handles, for the asking thread's
+        // process; its limits are documented on the executor's facts module.
+        self.executor.link_path(tid, link)
+    }
+
+    fn memory_map(&self, tid: Pid) -> std::result::Result<reverie::MemoryMap, reverie::FactError> {
+        // `pid()` is the host VMM process, whose `/proc/<pid>/maps` describes
+        // host addresses, and no host task has the guest's address space. The
+        // executor lists the mappings it can establish exactly (the stack,
+        // while nothing has changed the stack window) for the asking thread's
+        // process, and marks the list incomplete; its limits are documented
+        // on the executor's facts module.
+        self.executor.memory_map(tid)
+    }
 }
 
 /// The readable runs of the heap `[heap_base, program_break)`, in address
@@ -3295,11 +3462,16 @@ fn signal_selection_start<G: GlobalTool>(
 }
 
 /// The exit test after each selection iteration: the boundary is finished
-/// unless it selected nothing, no exit is pending, and a signal the mask
-/// leaves unblocked is (still or newly) pending.
+/// unless it selected nothing, no exit is pending, a signal the mask leaves
+/// unblocked is (still or newly) pending, and the thread may still take a
+/// signal (`takes_no_signal`, asked only when the rest leaves the boundary
+/// unfinished). Linux's get_signal takes a group exit before its next
+/// dequeue also when it comes back after a tracer suppressed a signal or it
+/// discarded an ignored one.
 fn signal_selection_finished(
     executor: &ElfExecutor,
     pending: &CallbackOutcome<Option<PendingSignal>>,
+    takes_no_signal: impl FnOnce() -> bool,
 ) -> bool {
     matches!(
         pending,
@@ -3309,6 +3481,7 @@ fn signal_selection_finished(
             | CallbackOutcome::Completed(Some(_))
     ) || executor.has_pending_exit()
         || !executor.has_eligible_pending_signal()
+        || takes_no_signal()
 }
 
 /// The part of finish_signal_boundary before its first await: a recorded
@@ -6107,7 +6280,9 @@ impl KvmBackend {
             signal_future_sizes::record(&signal_future_sizes::FILTER_NEXT, &selection);
             let pending = selection.await?;
             selection_started = false;
-            if signal_selection_finished(executor, &pending) {
+            if signal_selection_finished(executor, &pending, || {
+                self.guest_thread_takes_no_signal(executor)
+            }) {
                 return Ok(pending);
             }
         }
@@ -6334,18 +6509,18 @@ impl KvmBackend {
     }
 
     /// After a timer event's callback at a user instruction boundary (see
-    /// `timer_instruction_boundary`), selects one pending signal there and
-    /// delivers it. Linux's return to user mode after the interrupt that
-    /// preempted the thread calls `schedule()` before
-    /// `arch_do_signal_or_restart()` (`exit_to_user_mode_loop`), so the
-    /// preemption comes first, and that interrupt entered with `orig_ax` -1,
-    /// so nothing restarts. Linux then delivers every other eligible signal
-    /// on the same return; like the backend's other boundaries, this one
-    /// delivers one. A signal another thread sent while the callback ran
-    /// counts. Selection, masking, the Tool's signal hook and the frame are
-    /// those of every other boundary. The vCPU's continuation is changed
-    /// directly, as for an unstarted clone. Returns
-    /// [`UserBoundarySignal::Finished`] when the signal or its hook ended the
+    /// `timer_instruction_boundary`), delivers the pending signals there.
+    /// Linux's return to user mode after the interrupt that preempted the
+    /// thread calls `schedule()` before `arch_do_signal_or_restart()`
+    /// (`exit_to_user_mode_loop`), so the preemption comes first, and that
+    /// interrupt entered with `orig_ax` -1, so nothing restarts. Linux then
+    /// delivers every eligible signal on the same return, and so does this
+    /// boundary: one selection, and then the frames on top of its frame (see
+    /// `deliver_stacked_signals_with_tool`). A signal another thread sent
+    /// while the callback ran counts. Selection, masking, the Tool's signal
+    /// hook and the frame are those of every other boundary. The vCPU's
+    /// continuation is changed directly, as for an unstarted clone. Returns
+    /// [`UserBoundarySignal::Finished`] when a signal or its hook ended the
     /// thread or its group.
     ///
     /// A boundary with no eligible pending signal makes no selection, and so
@@ -6381,6 +6556,13 @@ impl KvmBackend {
     {
         #[cfg(test)]
         timer_signal_observation::observe(&self.vcpu, executor);
+        // Linux's get_signal takes a group exit before it dequeues any signal
+        // (SIGNAL_GROUP_EXIT, at the top of its loop): a thread whose group
+        // began to exit, or that was cancelled, while its timer callback ran
+        // takes no signal here, and the run loop's next iteration ends it.
+        if self.guest_thread_takes_no_signal(executor) {
+            return Ok(UserBoundarySignal::Settled);
+        }
         if !executor.has_eligible_pending_signal() {
             return Ok(UserBoundarySignal::Settled);
         }
@@ -6434,19 +6616,46 @@ impl KvmBackend {
             Some(pending) if !executor.has_pending_exit() => {
                 self.deliver_selected_signal_at_timer_boundary(executor, interrupted, pending)?
             }
-            _ => false,
+            _ => None,
         };
         let exit = executor.take_exit();
         let outcome = if let Some(exit) = exit {
             exit.signal_boundary_outcome()
-        } else if delivered {
+        } else if delivered.is_some() {
             reverie::SignalBoundaryOutcome::Caught
         } else {
             reverie::SignalBoundaryOutcome::NoHandler
         };
         self.finish_signal_boundary(executor, global_state.as_ref(), outcome)
             .await?;
-        let Some(exit) = exit.or_else(|| executor.take_exit()) else {
+        let mut exit = exit.or_else(|| executor.take_exit());
+        if exit.is_none()
+            && let Some(handler) = delivered
+        {
+            match self
+                .deliver_stacked_signals_with_tool(
+                    executor,
+                    pid,
+                    tid,
+                    tool,
+                    memory,
+                    auxv,
+                    thread_state,
+                    global_state,
+                    config,
+                    subscriptions,
+                    stack_checked_out,
+                    handler,
+                    StackedFrames::UserBoundary,
+                )
+                .await?
+            {
+                StackedSignals::Settled => {}
+                StackedSignals::Exited(stacked) => exit = Some(stacked),
+                StackedSignals::Finished(exit) => return Ok(UserBoundarySignal::Finished(exit)),
+            }
+        }
+        let Some(exit) = exit else {
             return Ok(UserBoundarySignal::Settled);
         };
         self.discard_process_clear_tid_at_signal_return(executor);
@@ -6454,6 +6663,152 @@ impl KvmBackend {
             self.request_guest_thread_group_exit(exit.status);
         }
         Ok(UserBoundarySignal::Finished(exit.into()))
+    }
+
+    /// Linux's `exit_to_user_mode_loop` after the first selection of a return
+    /// to user mode, where the guest would now resume with `resume`: the
+    /// handler of the frame that selection built, at its first instruction,
+    /// or the faulting instruction of a fault whose hook suppressed its
+    /// signal. While a signal the mask leaves unblocked is pending (the mask
+    /// the last delivery left: its sa_mask, and the signal itself unless
+    /// SA_NODEFER), selects one and builds its frame on top of the last, with
+    /// `resume` as the interrupted context, and resumes at its handler. So
+    /// the handler of the last signal selected runs first, and each frame's
+    /// rt_sigreturn returns to the handler of the frame below, as on Linux.
+    ///
+    /// Each selection is a boundary of its own, as the first was: a delivery
+    /// permit when the Tool controls signals, the hooks of the signals it
+    /// selects, the frame of the one it delivers, and the permit's receipt,
+    /// in selection order. So each signal delivered has a boundary of its own,
+    /// as each signal has its own signal-delivery stop under ptrace; a signal
+    /// whose hook suppresses it, or that is ignored, shares the boundary of the
+    /// signal selected after it, and one selected last ends its boundary with
+    /// a NoHandler receipt. The loop ends when
+    /// nothing eligible is left, when a selection delivers nothing (the Tool
+    /// authorized none, or its hook suppressed every eligible signal), or when
+    /// a signal ends the thread or its group, which Linux's `get_signal` does
+    /// for a fatal default action before it builds any more frames. `frames`
+    /// says how each handler is entered and what the hooks see. The return
+    /// builds at most [`SIGNAL_SELECTIONS_PER_RETURN`] frames, the first
+    /// selection's included.
+    #[allow(clippy::too_many_arguments)]
+    async fn deliver_stacked_signals_with_tool<T>(
+        &mut self,
+        executor: &mut ElfExecutor,
+        pid: Pid,
+        tid: Pid,
+        tool: &Arc<T>,
+        memory: &GuestMemory,
+        auxv: &[(libc::c_ulong, libc::c_ulong)],
+        thread_state: &mut T::ThreadState,
+        global_state: &Arc<T::GlobalState>,
+        config: &<T::GlobalState as GlobalTool>::Config,
+        subscriptions: &Subscription,
+        stack_checked_out: &Arc<AtomicBool>,
+        mut resume: kvm_regs,
+        frames: StackedFrames,
+    ) -> Result<StackedSignals>
+    where
+        T: Tool + 'static,
+        T::ThreadState: 'static,
+        T::GlobalState: 'static,
+        <T::GlobalState as GlobalTool>::Config: 'static,
+    {
+        let (syscall_number, frame_address, user_instruction, entry) = match frames {
+            StackedFrames::SyscallReturn {
+                frame_address,
+                syscall_number,
+            } => (
+                syscall_number,
+                frame_address,
+                false,
+                HandlerEntry::SyscallFrame(frame_address),
+            ),
+            StackedFrames::UserBoundary => (
+                u64::MAX,
+                self.syscall_frame_address,
+                true,
+                HandlerEntry::UserBoundary,
+            ),
+        };
+        for _ in 1..SIGNAL_SELECTIONS_PER_RETURN {
+            // As at a timer boundary's first selection, a group exit or a
+            // cancellation that came during the last selection's hook ends
+            // the loop before another signal is selected.
+            if executor.has_pending_exit()
+                || !executor.has_eligible_pending_signal()
+                || self.guest_thread_takes_no_signal(executor)
+            {
+                break;
+            }
+            executor.set_current_user_stack_pointer(resume.rsp);
+            let pending = match self
+                .filter_one_pending_signal_with_tool(
+                    executor,
+                    pid,
+                    tid,
+                    tool,
+                    memory,
+                    auxv,
+                    resume,
+                    syscall_number,
+                    frame_address,
+                    thread_state,
+                    global_state,
+                    config,
+                    subscriptions,
+                    stack_checked_out,
+                    user_instruction,
+                    SignalBoundaryResume::Fresh,
+                )
+                .await?
+            {
+                CallbackOutcome::Completed(pending) => pending,
+                CallbackOutcome::GroupExit(status) => {
+                    return self
+                        .wait_group_exit_status(executor, status)
+                        .map(StackedSignals::Finished);
+                }
+                CallbackOutcome::ThreadCancelled => {
+                    return Ok(StackedSignals::Finished(
+                        self.cancelled_tool_thread_status(executor),
+                    ));
+                }
+                CallbackOutcome::ThreadRetired => {
+                    return self
+                        .retired_tool_thread_status(executor)
+                        .map(StackedSignals::Finished);
+                }
+            };
+            if let Some((segment, address)) = self.take_pending_segment() {
+                set_user_segment_base(&self.vcpu, segment, address)?;
+            }
+            let mut exit = executor.take_exit();
+            let delivered = match pending {
+                Some(pending) if exit.is_none() => {
+                    self.deliver_selected_signal_at_boundary(executor, resume, pending, entry)?
+                }
+                _ => None,
+            };
+            exit = exit.or_else(|| executor.take_exit());
+            let outcome = if let Some(exit) = exit {
+                exit.signal_boundary_outcome()
+            } else if delivered.is_some() {
+                reverie::SignalBoundaryOutcome::Caught
+            } else {
+                reverie::SignalBoundaryOutcome::NoHandler
+            };
+            self.finish_signal_boundary(executor, global_state.as_ref(), outcome)
+                .await?;
+            if let Some(exit) = exit.or_else(|| executor.take_exit()) {
+                return Ok(StackedSignals::Exited(exit));
+            }
+            match delivered {
+                Some(next) => resume = next,
+                None => break,
+            }
+        }
+        Ok(StackedSignals::Settled)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -6501,10 +6856,55 @@ impl KvmBackend {
             None if user_instruction => self.user_boundary_registers(registers, syscall_number)?,
             None => kvm_registers(registers, syscall_number),
         };
-        let selected = if let Some(fault) = fault {
-            Ok(Some(fault.pending()))
+        // Linux's get_signal takes a group exit, or another thread's exec,
+        // before every dequeue, a fault's signal included. A thread whose
+        // group exit or cancellation this backend has published selects
+        // nothing here and ends at the run loop's next iteration. LinuxEmu
+        // tests a committed group exit under the lock that commits it,
+        // together with the dequeue, or with a fault's admission, so none can
+        // commit between the two; a commit it finds that this backend has yet
+        // to publish is published here, so that the same next iteration ends
+        // the thread before any entry into the guest.
+        #[cfg(test)]
+        if fault.is_some() {
+            crate::vm::guarded_selection_observation::hold_fault(
+                crate::vm::group_exit_publication_gap::is_held,
+            );
+        }
+        let selected = if self.guest_thread_group_exit_status().is_some()
+            || self.guest_thread_is_cancelled()
+        {
+            Ok(None)
         } else {
-            executor.take_pending_signal_for_delivery()
+            #[cfg(test)]
+            let site = match fault {
+                Some(_) => crate::vm::guarded_selection_observation::Site::FaultAdmission,
+                None => crate::vm::guarded_selection_observation::Site::Dequeue {
+                    eligible: executor.has_eligible_pending_signal(),
+                },
+            };
+            let guarded = match fault {
+                Some(fault) => {
+                    let admitted = executor.admit_signal_unless_group_exit(fault.pending());
+                    #[cfg(test)]
+                    crate::vm::guarded_selection_observation::fault_admitted(matches!(
+                        admitted,
+                        crate::executor::GuardedSignal::GroupExit(_)
+                    ));
+                    Ok(admitted)
+                }
+                None => executor.take_pending_signal_for_delivery_unless_group_exit(),
+            };
+            guarded.map(|guarded| match guarded {
+                crate::executor::GuardedSignal::Selected(pending) => Some(pending),
+                crate::executor::GuardedSignal::Nothing => None,
+                crate::executor::GuardedSignal::GroupExit(status) => {
+                    #[cfg(test)]
+                    crate::vm::guarded_selection_observation::found_group_exit(site);
+                    self.publish_committed_group_exit(status);
+                    None
+                }
+            })
         };
         flush_pending_signal_effects_with_tool(
             self,
@@ -7013,6 +7413,13 @@ impl KvmBackend {
                         return self.retired_tool_thread_status(executor);
                     }
                 };
+                // A segment base the hook set reaches the vCPU before the
+                // next selection's hook, as at every other delivery point:
+                // the backend stages one base at a time, and that hook reads
+                // the vCPU's registers.
+                if let Some((segment, address)) = self.take_pending_segment() {
+                    set_user_segment_base(&self.vcpu, segment, address)?;
+                }
                 let delivered = if !executor.has_pending_exit()
                     && let Some(pending) = pending
                 {
@@ -7022,18 +7429,46 @@ impl KvmBackend {
                         pending,
                     )?
                 } else {
-                    false
+                    None
                 };
-                let exit = executor.take_exit();
+                let mut exit = executor.take_exit();
                 let outcome = if let Some(exit) = exit {
                     exit.signal_boundary_outcome()
-                } else if delivered {
+                } else if delivered.is_some() {
                     reverie::SignalBoundaryOutcome::Caught
                 } else {
                     reverie::SignalBoundaryOutcome::NoHandler
                 };
                 self.finish_signal_boundary(executor, global_state.as_ref(), outcome)
                     .await?;
+                // Every other eligible signal, each frame on top of the last,
+                // before the thread's first instruction.
+                if exit.is_none()
+                    && let Some(handler) = delivered
+                {
+                    match self
+                        .deliver_stacked_signals_with_tool(
+                            executor,
+                            pid,
+                            tid,
+                            &tool,
+                            &memory,
+                            &auxv,
+                            &mut thread_state,
+                            &global_state,
+                            config,
+                            subscriptions,
+                            &stack_checked_out,
+                            handler,
+                            StackedFrames::UserBoundary,
+                        )
+                        .await?
+                    {
+                        StackedSignals::Settled => {}
+                        StackedSignals::Exited(stacked) => exit = Some(stacked),
+                        StackedSignals::Finished(exit) => return Ok(exit),
+                    }
+                }
                 if let Some(exit) = exit {
                     if exit.group {
                         self.request_guest_thread_group_exit(exit.status);
@@ -7251,7 +7686,7 @@ impl KvmBackend {
                         let Some(fault) = self.capture_user_trap(executor)? else {
                             return Err(self.static_elf_halt_error()?);
                         };
-                        executor.prepare_captured_trap(fault.event.signal());
+                        fault.prepare_delivery(executor);
                         executor.set_current_user_stack_pointer(fault.registers.rsp);
                         let pending = self
                             .filter_next_pending_signal_with_tool(
@@ -7292,12 +7727,18 @@ impl KvmBackend {
                         if pending.is_some() && !executor.has_pending_exit() {
                             self.authorize_fault_boundary(executor, global_state.as_ref())?;
                         }
+                        // Where the guest resumes once this fault's signal is
+                        // settled: its handler, or, when the hook suppressed
+                        // it, the faulting instruction.
+                        let mut resume = None;
                         let mut delivered = false;
                         if !executor.has_pending_exit() {
                             if let Some(pending) = pending {
-                                delivered = self.deliver_user_trap(executor, &fault, pending)?;
+                                resume = self.deliver_user_trap(executor, &fault, pending)?;
+                                delivered = resume.is_some();
                             } else {
                                 fault.resume_user(self, fault.registers)?;
+                                resume = Some(fault.registers);
                             }
                         }
                         let mut fault_exit = executor.take_exit();
@@ -7313,6 +7754,36 @@ impl KvmBackend {
                         self.finish_signal_boundary(executor, global_state.as_ref(), outcome)
                             .await?;
                         fault_exit = fault_exit.or_else(|| executor.take_exit());
+                        // Then every other eligible signal, at the user
+                        // boundary where the vCPU now stands, as Linux's
+                        // get_signal selects them after the fault's own
+                        // signal, also when a tracer suppressed it.
+                        if fault_exit.is_none()
+                            && let Some(resume) = resume
+                        {
+                            match self
+                                .deliver_stacked_signals_with_tool(
+                                    executor,
+                                    pid,
+                                    tid,
+                                    &tool,
+                                    &memory,
+                                    &auxv,
+                                    &mut thread_state,
+                                    &global_state,
+                                    config,
+                                    subscriptions,
+                                    &stack_checked_out,
+                                    resume,
+                                    StackedFrames::UserBoundary,
+                                )
+                                .await?
+                            {
+                                StackedSignals::Settled => {}
+                                StackedSignals::Exited(stacked) => fault_exit = Some(stacked),
+                                StackedSignals::Finished(exit) => return Ok(exit),
+                            }
+                        }
                         if let Some(exit) = fault_exit {
                             self.discard_process_clear_tid_at_signal_return(executor);
                             if exit.group {
@@ -7367,7 +7838,7 @@ impl KvmBackend {
                     // is the register file restored from the guest frame, not an
                     // ordinary scalar return value that a Tool can replace.
                     let mut signal_exit = None;
-                    let mut signal_delivered = false;
+                    let mut signal_delivered = None;
                     if let Some(restored) = self.restore_rt_sigreturn(executor, frame_address)? {
                         executor.set_current_user_stack_pointer(restored.rsp);
                         // A timer request this exit found due is delivered
@@ -7441,11 +7912,11 @@ impl KvmBackend {
                                 pending,
                             )?
                         } else {
-                            false
+                            None
                         };
                         signal_exit = signal_exit.or_else(|| executor.take_exit());
                         signal_delivered = delivered;
-                        if !delivered && signal_exit.is_none() {
+                        if delivered.is_none() && signal_exit.is_none() {
                             stage_process_signal_return(
                                 &mut memory,
                                 &self.vcpu,
@@ -7457,7 +7928,7 @@ impl KvmBackend {
                     signal_exit = signal_exit.or_else(|| executor.take_exit());
                     let outcome = if let Some(exit) = signal_exit {
                         exit.signal_boundary_outcome()
-                    } else if signal_delivered {
+                    } else if signal_delivered.is_some() {
                         reverie::SignalBoundaryOutcome::Caught
                     } else {
                         reverie::SignalBoundaryOutcome::NoHandler
@@ -7465,6 +7936,37 @@ impl KvmBackend {
                     self.finish_signal_boundary(executor, global_state.as_ref(), outcome)
                         .await?;
                     signal_exit = signal_exit.or_else(|| executor.take_exit());
+                    // Every other eligible signal under the mask the first
+                    // frame left, each frame on top of the last.
+                    if signal_exit.is_none()
+                        && let Some(handler) = signal_delivered
+                    {
+                        match self
+                            .deliver_stacked_signals_with_tool(
+                                executor,
+                                pid,
+                                tid,
+                                &tool,
+                                &memory,
+                                &auxv,
+                                &mut thread_state,
+                                &global_state,
+                                config,
+                                subscriptions,
+                                &stack_checked_out,
+                                handler,
+                                StackedFrames::SyscallReturn {
+                                    frame_address,
+                                    syscall_number: request.number(),
+                                },
+                            )
+                            .await?
+                        {
+                            StackedSignals::Settled => {}
+                            StackedSignals::Exited(stacked) => signal_exit = Some(stacked),
+                            StackedSignals::Finished(exit) => return Ok(exit),
+                        }
+                    }
                     if let Some(exit) = signal_exit {
                         self.discard_process_clear_tid_at_signal_return(executor);
                         if exit.group {
@@ -7940,6 +8442,10 @@ impl KvmBackend {
                     }
                 }
                 let mut signal_boundary_outcome = reverie::SignalBoundaryOutcome::NoHandler;
+                // The registers the handler of this return's first frame
+                // starts with, on which the frames of the other eligible
+                // signals go.
+                let mut stacked_on = None;
                 #[cfg(not(test))]
                 let full_path = false;
                 #[cfg(test)]
@@ -7978,7 +8484,9 @@ impl KvmBackend {
                                     // pending since the start sends the
                                     // boundary on to the second iteration.
                                     let nothing = CallbackOutcome::Completed(None);
-                                    if signal_selection_finished(executor, &nothing) {
+                                    if signal_selection_finished(executor, &nothing, || {
+                                        self.guest_thread_takes_no_signal(executor)
+                                    }) {
                                         // A finished, skipped boundary whose
                                         // emptiness read found no saved mask
                                         // has nothing to restore: only this
@@ -8054,12 +8562,13 @@ impl KvmBackend {
                         } else {
                             returned_registers
                         };
-                        delivered = self.deliver_selected_signal_from_registers(
+                        stacked_on = self.deliver_selected_signal_from_registers(
                             executor,
                             frame_address,
                             signal_registers,
                             pending,
                         )?;
+                        delivered = stacked_on.is_some();
                     }
                     if !delivered && mask_may_be_saved {
                         // No handler frame saved a temporary-mask call's
@@ -8116,6 +8625,37 @@ impl KvmBackend {
                 }
                 executor.finish_parked_delivery();
                 pending_exit = pending_exit.or_else(|| executor.take_exit());
+                // Every other eligible signal under the mask the first frame
+                // left, each frame on top of the last.
+                if pending_exit.is_none()
+                    && let Some(handler) = stacked_on
+                {
+                    match self
+                        .deliver_stacked_signals_with_tool(
+                            executor,
+                            pid,
+                            tid,
+                            &tool,
+                            &memory,
+                            &auxv,
+                            &mut thread_state,
+                            &global_state,
+                            config,
+                            subscriptions,
+                            &stack_checked_out,
+                            handler,
+                            StackedFrames::SyscallReturn {
+                                frame_address,
+                                syscall_number: request.number(),
+                            },
+                        )
+                        .await?
+                    {
+                        StackedSignals::Settled => {}
+                        StackedSignals::Exited(stacked) => pending_exit = Some(stacked),
+                        StackedSignals::Finished(exit) => return Ok(exit),
+                    }
+                }
                 if let Some(exit) = pending_exit {
                     if exit.group {
                         self.request_guest_thread_group_exit(exit.status);
@@ -9896,6 +10436,22 @@ mod process_alarm_tests;
 #[cfg(test)]
 #[path = "captured_write_runtime_tests.rs"]
 mod captured_write_tests;
+
+#[cfg(test)]
+#[path = "descriptor_status_runtime_tests.rs"]
+mod descriptor_status_tests;
+
+#[cfg(test)]
+#[path = "signal_sets_runtime_tests.rs"]
+mod signal_sets_tests;
+
+#[cfg(test)]
+#[path = "link_path_runtime_tests.rs"]
+mod link_path_tests;
+
+#[cfg(test)]
+#[path = "memory_map_runtime_tests.rs"]
+mod memory_map_tests;
 
 #[cfg(test)]
 mod callback_completion_tests;

@@ -452,7 +452,7 @@ fn copy_cstr_to_slice<'a>(
 /// copying the path to a static buffer and replacing each `/` with a NUL
 /// terminator as needed (and then changing the `\0` back to `/` afterwards).
 pub fn create_dir_all(path: &CStr, mode: libc::mode_t) -> Result<(), Errno> {
-    let mut buf = ['\0' as libc::c_char; libc::PATH_MAX as usize];
+    let mut buf = [0 as libc::c_char; libc::PATH_MAX as usize];
     let path = copy_cstr_to_slice(path, &mut buf)?;
     create_dir_all_(path, mode)
 }
@@ -498,7 +498,7 @@ pub fn touch_path(
     file_mode: libc::mode_t,
     dir_mode: libc::mode_t,
 ) -> Result<(), Errno> {
-    let mut buf = ['\0' as libc::c_char; libc::PATH_MAX as usize];
+    let mut buf = [0 as libc::c_char; libc::PATH_MAX as usize];
     let path = copy_cstr_to_slice(path, &mut buf)?;
     touch_path_(path, file_mode, dir_mode)
 }

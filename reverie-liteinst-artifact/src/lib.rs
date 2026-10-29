@@ -1043,18 +1043,18 @@ const CONTENT_REVERIE_CATALOG: [(&str, u64, &str); 77] = [
     ),
     (
         "reverie/src/lib.rs",
-        6940,
-        "d72f87195bd6d6cf84f56d537f3bdcd3bca22649dbe1ffe73fbc8c19a897eaca",
+        7008,
+        "065ebaf5fd68f131595a8f9b201b0c39743559ae26aacf349152ec75fd471d0c",
     ),
     (
         "reverie/src/perf.rs",
-        78643,
-        "b655121d576de55de942bfaedf81ad8384a0f978322ef32517226c1ae3020df8",
+        78868,
+        "e5b7abe18f25241fbcfdf5cf9328e6f7f561d4df566c849070ade53e91837a57",
     ),
     (
         "reverie/src/pmu_config.rs",
-        31790,
-        "c9d60cf36f6c006dc7c7771b425d0397c8ad5ed451ecbdc93deba017e9ad67ad",
+        35867,
+        "2177a7d5c770e972b10ef717b51001a82639cc291ab7b2002b1f08d894dca7d7",
     ),
     (
         "reverie/src/in_guest_rcb.rs",
@@ -1083,8 +1083,8 @@ const CONTENT_REVERIE_CATALOG: [(&str, u64, &str); 77] = [
     ),
     (
         "reverie/src/guest.rs",
-        66645,
-        "db816c25e97df066ce521ba6e32ac85ef5261c1881f7ef4367aac99164df5421",
+        81764,
+        "b8e45c8b40b0e711fdd01a4a71bbd671c4debcfd1977d44d920446067119dc3a",
     ),
     (
         "reverie/src/pidfd_self.rs",
