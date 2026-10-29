@@ -13333,6 +13333,7 @@ mod tests {
     include!("vm/empty_signal_boundary_tests.rs");
     include!("vm/instruction_callback_panic_tests.rs");
     include!("vm/timer_signal_deferral_tests.rs");
+    include!("vm/lazy_arming_tests.rs");
 }
 
 #[cfg(test)]
