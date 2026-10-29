@@ -266,7 +266,7 @@ create/link/rename/unlink operations. A virtual umask is applied to creation
 modes before they are forwarded to the host. The executor retains signal
 actions, masks, pending state and alternate-stack configuration and delivers
 supported events at explicit execution boundaries, as described below.
-`mincore` reports every page of a mapped range resident.
+`mincore` validates the range and the residency vector and writes no residency byte; residency is the Tool's decision.
 
 The process personality implements `fork`, `vfork`, process-only `clone`/`clone3`,
 `execve`/`execveat`, and `wait4`. Forked children receive an independent guest
