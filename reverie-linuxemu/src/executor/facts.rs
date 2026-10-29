@@ -50,6 +50,21 @@
 //! processes (gVisor: pkg/sentry/fsimpl/proc/task_files.go, whose `status`
 //! prints them for any task from the Sentry's task and thread group): see
 //! `ElfExecutor::signal_sets`.
+//!
+//! `link_path`: a guest descriptor the executor backs with a host descriptor
+//! of the same open file description names what the host kernel's `d_path`
+//! names for that description, read by the supervisor through its own
+//! `/proc/self/fd/<host fd>` while the descriptor table is locked; the
+//! process's image and the thread's working directory are the supervisor's
+//! own handles of them (gVisor: pkg/sentry/fsimpl/proc/task_fds.go and
+//! task_files.go, whose `fd/<fd>`, `exe` and `cwd` render the Sentry's own
+//! file description, executable and working directory). An object the
+//! executor keeps itself names what Linux names for the object the guest
+//! sees, or is not provided: captured output is a pipe of its own, a virtual
+//! signalfd `anon_inode:[signalfd]`, and the executor's own memfds, and with
+//! captured output the supervisor's standard output or error however the
+//! guest holds them, are not provided. See `ElfExecutor::link_path` for the
+//! threads it answers for.
 
 use super::*;
 
@@ -104,6 +119,22 @@ fn descriptor_source(
     table: &FileTableState,
     fd: libc::c_int,
 ) -> std::result::Result<RawFd, reverie::FactError> {
+    let (host, _) = table_host_fd(table, fd)?;
+    if table.signalfd_fds.contains(&fd) {
+        return Err(reverie::FactError::NotProvided);
+    }
+    Ok(host)
+}
+
+/// The host descriptor behind guest descriptor `fd` in `table`, as the
+/// task's own syscalls resolve it (`host_fd` in `file.rs`), and whether `fd`
+/// is a standard descriptor the guest has neither replaced nor closed
+/// (`is_open_standard`), whose standard output and error are the
+/// supervisor's own. `EBADF` when the table does not hold `fd`.
+fn table_host_fd(
+    table: &FileTableState,
+    fd: libc::c_int,
+) -> std::result::Result<(RawFd, bool), reverie::FactError> {
     let open_standard = (0..=2).contains(&fd)
         && !table.files.contains_key(&fd)
         && !table.closed_standard_fds.contains(&fd)
@@ -115,11 +146,8 @@ fn descriptor_source(
         // Standard output or error is the supervisor's own.
         None => Some(fd),
     };
-    let host = host.ok_or(reverie::FactError::Errno(reverie::Errno::EBADF))?;
-    if table.signalfd_fds.contains(&fd) {
-        return Err(reverie::FactError::NotProvided);
-    }
-    Ok(host)
+    host.map(|host| (host, open_standard))
+        .ok_or(reverie::FactError::Errno(reverie::Errno::EBADF))
 }
 
 /// Whether host descriptor `host` is an object the executor keeps itself,
@@ -144,9 +172,13 @@ fn executor_object(host: RawFd, capture_output: bool) -> bool {
         Ok(path) if !syncfs_private_memfd_name(path.as_os_str().as_bytes()) => {}
         _ => return true,
     }
-    if !capture_output {
-        return false;
-    }
+    capture_output && supervisor_output(host)
+}
+
+/// Whether host descriptor `host` is the supervisor's standard output or
+/// error, compared by device and inode, or an object that cannot be
+/// identified: with captured output, the guest's writes never reach it.
+fn supervisor_output(host: RawFd) -> bool {
     let Ok(object) = host_file_key(host) else {
         return true;
     };
@@ -275,6 +307,179 @@ impl ElfExecutor {
 /// `KernelSigset` keeps in byte `(n - 1) / 8`.
 fn set_bits(set: KernelSigset) -> u64 {
     u64::from_le_bytes(set.to_bytes())
+}
+
+/// Which thread of this process a link of [`ElfExecutor::link_path`] is
+/// asked for.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum LinkOwner {
+    /// The asking thread itself.
+    Caller,
+    /// Another live thread of the asking thread's process.
+    Sibling,
+}
+
+impl ElfExecutor {
+    /// `reverie::Guest::link_path` for link `link` of thread `tid`: the name
+    /// Linux's `readlink(2)` gives for it, from the state the executor keeps.
+    ///
+    /// - `fd/<fd>`: the descriptor table the task's syscalls install, locked
+    ///   until the read is done, as `descriptor_status` locks it; the
+    ///   executor runs every thread of a process with that one table
+    ///   (`clone` without `CLONE_FILES` is refused). A descriptor the
+    ///   executor backs with a host descriptor of the same open file
+    ///   description names what the host kernel names for that description:
+    ///   the supervisor's `readlink` of its own `/proc/self/fd/<host fd>`,
+    ///   which opens and closes nothing, so it releases no POSIX lock the
+    ///   supervisor holds. Captured standard output or error, and a
+    ///   descriptor the guest made of it, is the pipe its `fstat` describes,
+    ///   `pipe:[<inode>]`; a virtual signalfd is `anon_inode:[signalfd]`, as
+    ///   Linux names a signalfd. The executor's own objects are not
+    ///   provided, judged by the host object as `descriptor_status` judges
+    ///   them, so a descriptor received through `SCM_RIGHTS` is declined too:
+    ///   any memfd with a name reserved for the executor's own, such as a
+    ///   synthetic `/proc` file or `fdinfo` description, and with captured
+    ///   output the supervisor's standard output or error however the guest
+    ///   holds it. `EBADF` when the table does not hold `fd`.
+    /// - `exe`: the supervisor's handle of the process's image
+    ///   (`executable_file`), the file the executor read the image from at
+    ///   the process's start or its last exec, so the name follows a rename
+    ///   and ends in ` (deleted)` once the file is unlinked, as Linux's
+    ///   `exe` link does. Not provided for an image the executor was given
+    ///   without a file.
+    /// - `cwd`: the supervisor's handle of the working directory
+    ///   (`cwd_fd`), walked at the call, as `getcwd` walks it, so a removed
+    ///   directory ends in ` (deleted)`, as Linux's `cwd` link does.
+    ///
+    /// The executor keeps a process's descriptor table, its image and each
+    /// thread's working directory in the executors of that process's own
+    /// threads, so it answers for the asking thread's process only: the
+    /// descriptor table and the image for any live thread of it, and the
+    /// working directory for the asking thread alone. Every other live
+    /// thread of the run is not provided, and neither is another thread's
+    /// working directory:
+    ///
+    /// - The executor keeps a working directory per thread, where Linux
+    ///   shares one between threads created with `CLONE_FS`, so another
+    ///   thread's is its own, in its own executor's state.
+    /// - Another process's image is in its executors' state too, and its
+    ///   descriptor table is reachable only by holding the table through the
+    ///   run's process records. A hold that outlived the process's last
+    ///   thread would close the process's descriptors on the asking thread
+    ///   when it ends, which is why the run's active signal publication does
+    ///   not hold one either (`process_signal_publication.rs`).
+    ///
+    /// `ESRCH` when `tid` names no task that is live in the run's lifecycle
+    /// table: no such number, zero and below, or an exited task.
+    pub fn link_path(
+        &self,
+        tid: libc::pid_t,
+        link: reverie::PathLink,
+    ) -> std::result::Result<reverie::LinkPath, reverie::FactError> {
+        match link {
+            reverie::PathLink::Descriptor(fd) => {
+                // The table every thread of the process installs before its
+                // syscalls run, locked until the read is done, before the
+                // lifecycle lock, the order an exec takes them in.
+                let table = self
+                    .file_table
+                    .lock()
+                    .expect("KVM file-table lock poisoned");
+                self.link_owner(tid)?;
+                descriptor_link(
+                    &table,
+                    fd,
+                    self.output.as_ref().map(CapturedOutput::metadata),
+                )
+            }
+            reverie::PathLink::Executable => {
+                self.link_owner(tid)?;
+                let file = self
+                    .state
+                    .executable_file
+                    .as_ref()
+                    .ok_or(reverie::FactError::NotProvided)?;
+                handle_link(file.as_raw_fd())
+            }
+            reverie::PathLink::WorkingDirectory => match self.link_owner(tid)? {
+                LinkOwner::Caller => handle_link(self.state.cwd_fd.as_raw_fd()),
+                LinkOwner::Sibling => Err(reverie::FactError::NotProvided),
+            },
+            _ => Err(reverie::FactError::NotProvided),
+        }
+    }
+
+    /// Which thread of this process `tid` is, from the run's lifecycle table:
+    /// `ESRCH` for a number that names no live task, and not provided for a
+    /// live thread of another process.
+    fn link_owner(&self, tid: libc::pid_t) -> std::result::Result<LinkOwner, reverie::FactError> {
+        let lifecycle = self
+            .state
+            .task_lifecycle
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let task = lifecycle
+            .get(tid)
+            .ok_or(reverie::FactError::Errno(reverie::Errno::ESRCH))?;
+        if task.tgid != self.state.pid || task.process_generation != self.process_generation {
+            return Err(reverie::FactError::NotProvided);
+        }
+        Ok(if tid == self.state.tid {
+            LinkOwner::Caller
+        } else {
+            LinkOwner::Sibling
+        })
+    }
+}
+
+/// The name of guest descriptor `fd` of `table`: see
+/// [`ElfExecutor::link_path`]. `capture` is the run's captured output, if it
+/// captures it.
+fn descriptor_link(
+    table: &FileTableState,
+    fd: libc::c_int,
+    capture: Option<CaptureMetadata>,
+) -> std::result::Result<reverie::LinkPath, reverie::FactError> {
+    let (host, open_standard) = table_host_fd(table, fd)?;
+    if let Some(capture) = capture
+        && let Some(alias) = output_alias_from_sets(
+            fd,
+            &table.stdout_alias_fds,
+            &table.stderr_alias_fds,
+            open_standard,
+        )
+    {
+        // The pipe `fstat` describes (`synthetic_captured_output_stat`).
+        let name = format!("pipe:[{}]", capture.identity(alias).inode);
+        return reverie::LinkPath::from_readlink(name.as_bytes());
+    }
+    if table.signalfd_fds.contains(&fd) {
+        return reverie::LinkPath::from_readlink(b"anon_inode:[signalfd]");
+    }
+    if capture.is_some() && supervisor_output(host) {
+        return Err(reverie::FactError::NotProvided);
+    }
+    handle_link(host)
+}
+
+/// The name the host kernel's `d_path` gives the supervisor's descriptor
+/// `host`, from the supervisor's `readlink` of its own `/proc/self/fd/<host>`
+/// into a buffer of `PATH_MAX` bytes, one more than the longest name Linux
+/// gives, so a name that fills it is refused. A memfd with a name reserved
+/// for the executor's own is not provided, whichever descriptor of it this
+/// is. Any error of the read is the host kernel's answer.
+fn handle_link(host: RawFd) -> std::result::Result<reverie::LinkPath, reverie::FactError> {
+    let mut text = [0u8; libc::PATH_MAX as usize];
+    let count = read_fd_link_into(host, &mut text).map_err(|error| {
+        reverie::FactError::Errno(reverie::Errno::new(
+            i32::try_from(-error).unwrap_or(libc::EIO),
+        ))
+    })?;
+    let text = &text[..count];
+    if syncfs_private_memfd_name(text) {
+        return Err(reverie::FactError::NotProvided);
+    }
+    reverie::LinkPath::from_readlink(text)
 }
 
 #[cfg(test)]
@@ -892,6 +1097,482 @@ mod tests {
             (status.eventfd_count, status.scm_fds, status.locks.len()),
             (None, None, 0)
         );
+    }
+
+    /// `ElfExecutor::link_path`, with the same guest operations.
+    mod link_path {
+        use std::os::unix::ffi::OsStringExt;
+
+        use reverie::LinkPath;
+        use reverie::PathLink;
+
+        use super::*;
+
+        fn path(text: &[u8]) -> std::result::Result<LinkPath, FactError> {
+            Ok(LinkPath::Path(text.to_vec()))
+        }
+
+        fn anonymous(text: &str) -> std::result::Result<LinkPath, FactError> {
+            Ok(LinkPath::Anonymous(text.as_bytes().to_vec()))
+        }
+
+        /// The name `d_path` gives `name` in the test's directory.
+        fn canonical(directory: &Directory, name: &str) -> Vec<u8> {
+            std::fs::canonicalize(directory.0.join(name))
+                .unwrap()
+                .into_os_string()
+                .into_vec()
+        }
+
+        /// Guest descriptor `fd`'s link, asked by the executor's own thread.
+        fn descriptor(executor: &ElfExecutor, fd: i32) -> std::result::Result<LinkPath, FactError> {
+            executor.link_path(executor.state.tid, PathLink::Descriptor(fd))
+        }
+
+        /// The inode of the host object behind guest descriptor `fd`.
+        fn table_inode(executor: &ElfExecutor, fd: i32) -> u64 {
+            let table = executor.file_table.lock().unwrap();
+            std::os::unix::fs::MetadataExt::ino(&table.files[&fd].metadata().unwrap())
+        }
+
+        /// The inode the guest's `fstat` of `fd` reports.
+        fn guest_inode(executor: &mut ElfExecutor, memory: &mut GuestMemory, fd: i32) -> u64 {
+            assert_eq!(
+                call(
+                    executor,
+                    memory,
+                    libc::SYS_fstat,
+                    [fd as u64, VALUE, 0, 0, 0, 0]
+                ),
+                0
+            );
+            // `st_ino` follows the eight bytes of `st_dev`.
+            let mut inode = [0u8; 8];
+            memory.read(VALUE + 8, &mut inode).unwrap();
+            u64::from_ne_bytes(inode)
+        }
+
+        /// Each kind of descriptor the guest makes is named as Linux names it:
+        /// a file, an unlinked file, a pipe and a socket by their host inodes,
+        /// an eventfd, a virtual signalfd as a signalfd, a memfd by its name,
+        /// `/dev/null`, and uncaptured standard output as the supervisor's own.
+        #[test]
+        fn each_kind_of_descriptor_is_named_as_linux_names_it() {
+            let directory = Directory::new();
+            let mut memory = GuestMemory::new(0, PAGE as usize).unwrap();
+            let mut executor = ElfExecutor::new(test_state(&directory.0), false);
+            let regular = open(
+                &mut executor,
+                &mut memory,
+                b"regular",
+                libc::O_RDWR | libc::O_CREAT,
+            );
+            assert_eq!(
+                descriptor(&executor, regular),
+                path(&canonical(&directory, "regular"))
+            );
+            let deleted = open(
+                &mut executor,
+                &mut memory,
+                b"deleted",
+                libc::O_RDWR | libc::O_CREAT,
+            );
+            let deleted_name = canonical(&directory, "deleted");
+            std::fs::remove_file(directory.0.join("deleted")).unwrap();
+            assert_eq!(
+                descriptor(&executor, deleted),
+                path(&[deleted_name.as_slice(), b" (deleted)"].concat())
+            );
+            assert_eq!(
+                call(
+                    &mut executor,
+                    &memory,
+                    libc::SYS_pipe2,
+                    [PAIR, 0, 0, 0, 0, 0]
+                ),
+                0
+            );
+            let mut pair = [0u8; 8];
+            memory.read(PAIR, &mut pair).unwrap();
+            let reader = i32::from_ne_bytes(pair[..4].try_into().unwrap());
+            let pipe = format!("pipe:[{}]", table_inode(&executor, reader));
+            assert_eq!(descriptor(&executor, reader), anonymous(&pipe));
+            assert_eq!(
+                pipe,
+                format!("pipe:[{}]", guest_inode(&mut executor, &mut memory, reader))
+            );
+            let [socket, _] = socket_pair(&mut executor, &memory);
+            assert_eq!(
+                descriptor(&executor, socket),
+                anonymous(&format!("socket:[{}]", table_inode(&executor, socket)))
+            );
+            let eventfd = new_fd(
+                &mut executor,
+                &memory,
+                libc::SYS_eventfd2,
+                [0, 0, 0, 0, 0, 0],
+            );
+            assert_eq!(
+                descriptor(&executor, eventfd),
+                anonymous("anon_inode:[eventfd]")
+            );
+            memory.write(VALUE, &0u64.to_ne_bytes()).unwrap();
+            let signalfd = new_fd(
+                &mut executor,
+                &memory,
+                libc::SYS_signalfd4,
+                [u64::MAX, VALUE, 8, 0, 0, 0],
+            );
+            assert_eq!(
+                descriptor(&executor, signalfd),
+                anonymous("anon_inode:[signalfd]")
+            );
+            let guest = memfd(&mut executor, &mut memory, b"guest-object");
+            assert_eq!(
+                descriptor(&executor, guest),
+                path(b"/memfd:guest-object (deleted)")
+            );
+            let null = open(&mut executor, &mut memory, b"/dev/null", libc::O_RDONLY);
+            assert_eq!(descriptor(&executor, null), path(b"/dev/null"));
+            let own = std::fs::read_link("/proc/self/fd/1")
+                .unwrap()
+                .into_os_string()
+                .into_vec();
+            assert_eq!(descriptor(&executor, 1), LinkPath::from_readlink(&own));
+        }
+
+        /// With captured output, standard output and error are the pipes
+        /// their `fstat` describes, and so is a descriptor the guest made of
+        /// one; standard output received through `SCM_RIGHTS`, which nothing
+        /// in the receiver's table records as captured output, is the
+        /// supervisor's own and is not provided. A standard number the guest
+        /// closed is `EBADF`, and one it reused for its own file names it.
+        #[test]
+        fn captured_output_is_its_own_pipe_and_the_supervisors_is_not_provided() {
+            let directory = Directory::new();
+            let mut memory = GuestMemory::new(0, PAGE as usize).unwrap();
+            let mut executor = ElfExecutor::new(test_state(&directory.0), true);
+            let metadata = executor.output.as_ref().unwrap().metadata();
+            let stdout = format!("pipe:[{}]", metadata.identity(OutputAlias::Stdout).inode);
+            let stderr = format!("pipe:[{}]", metadata.identity(OutputAlias::Stderr).inode);
+            assert_ne!(stdout, stderr);
+            assert_eq!(descriptor(&executor, 1), anonymous(&stdout));
+            assert_eq!(descriptor(&executor, 2), anonymous(&stderr));
+            assert_eq!(
+                stdout,
+                format!("pipe:[{}]", guest_inode(&mut executor, &mut memory, 1))
+            );
+            let duplicate = new_fd(&mut executor, &memory, libc::SYS_dup, [2, 0, 0, 0, 0, 0]);
+            assert_eq!(descriptor(&executor, duplicate), anonymous(&stderr));
+            let [sender, receiver] = socket_pair(&mut executor, &memory);
+            send_descriptor(&mut executor, &mut memory, sender, 1);
+            let received = receive_descriptor(&mut executor, &mut memory, receiver);
+            assert_eq!(descriptor(&executor, received), Err(FactError::NotProvided));
+            close(&mut executor, &memory, 1);
+            assert_eq!(
+                descriptor(&executor, 1),
+                Err(FactError::Errno(reverie::Errno::EBADF))
+            );
+            let file = open(
+                &mut executor,
+                &mut memory,
+                b"output",
+                libc::O_RDWR | libc::O_CREAT,
+            );
+            assert_eq!(
+                call(
+                    &mut executor,
+                    &memory,
+                    libc::SYS_dup2,
+                    [file as u64, 1, 0, 0, 0, 0]
+                ),
+                1
+            );
+            assert_eq!(
+                descriptor(&executor, 1),
+                path(&canonical(&directory, "output"))
+            );
+        }
+
+        /// The executor's own objects are not provided however the guest
+        /// holds them: a synthetic `/proc` file as opened, as received through
+        /// `SCM_RIGHTS` after the sender closed its descriptor, and as a
+        /// duplicate of the received one; and a guest memfd given a name the
+        /// executor reserves, since a name only denies.
+        #[test]
+        fn the_executors_own_objects_are_not_provided_however_the_guest_holds_them() {
+            let directory = Directory::new();
+            let mut memory = GuestMemory::new(0, PAGE as usize).unwrap();
+            let mut executor = ElfExecutor::new(test_state(&directory.0), false);
+            let [sender, receiver] = socket_pair(&mut executor, &memory);
+            for name in [&b"/proc/self/maps"[..], b"/proc/self/status"] {
+                let label = String::from_utf8_lossy(name);
+                let carrier = open(&mut executor, &mut memory, name, libc::O_RDONLY);
+                assert_eq!(
+                    descriptor(&executor, carrier),
+                    Err(FactError::NotProvided),
+                    "{label}"
+                );
+                send_descriptor(&mut executor, &mut memory, sender, carrier);
+                close(&mut executor, &memory, carrier);
+                let received = receive_descriptor(&mut executor, &mut memory, receiver);
+                let duplicate = new_fd(
+                    &mut executor,
+                    &memory,
+                    libc::SYS_dup,
+                    [received as u64, 0, 0, 0, 0, 0],
+                );
+                for fd in [received, duplicate] {
+                    assert_eq!(
+                        descriptor(&executor, fd),
+                        Err(FactError::NotProvided),
+                        "{label}, fd {fd}"
+                    );
+                }
+            }
+            let named = memfd(&mut executor, &mut memory, b"reverie-kvm-proc");
+            assert_eq!(descriptor(&executor, named), Err(FactError::NotProvided));
+        }
+
+        /// A descriptor the table does not hold is `EBADF`: one the guest
+        /// closed, one below zero and one above every open one.
+        #[test]
+        fn descriptors_the_table_does_not_hold_are_ebadf() {
+            let directory = Directory::new();
+            let mut memory = GuestMemory::new(0, PAGE as usize).unwrap();
+            let mut executor = ElfExecutor::new(test_state(&directory.0), false);
+            let closed = open(
+                &mut executor,
+                &mut memory,
+                b"closed",
+                libc::O_RDWR | libc::O_CREAT,
+            );
+            assert!(descriptor(&executor, closed).is_ok());
+            close(&mut executor, &memory, closed);
+            for fd in [closed, -1, i32::MIN, 4096] {
+                assert_eq!(
+                    descriptor(&executor, fd),
+                    Err(FactError::Errno(reverie::Errno::EBADF)),
+                    "fd {fd}"
+                );
+            }
+        }
+
+        /// The image is the file the executor read it from, by the name that
+        /// file has at the call, ` (deleted)` once it is unlinked; the working
+        /// directory likewise, walked at the call. An image the executor was
+        /// given without a file is not provided.
+        #[test]
+        fn the_image_and_the_working_directory_are_named_at_the_call() {
+            let directory = Directory::new();
+            let mut memory = GuestMemory::new(0, PAGE as usize).unwrap();
+            std::fs::write(directory.0.join("image"), b"an image").unwrap();
+            let mut state = test_state(&directory.0);
+            state.executable_file = Some(Arc::new(
+                std::fs::File::open(directory.0.join("image")).unwrap(),
+            ));
+            let mut executor = ElfExecutor::new(state, false);
+            let tid = executor.state.tid;
+            assert_eq!(
+                executor.link_path(tid, PathLink::Executable),
+                path(&canonical(&directory, "image"))
+            );
+            std::fs::rename(directory.0.join("image"), directory.0.join("renamed")).unwrap();
+            let renamed = canonical(&directory, "renamed");
+            assert_eq!(
+                executor.link_path(tid, PathLink::Executable),
+                path(&renamed)
+            );
+            std::fs::remove_file(directory.0.join("renamed")).unwrap();
+            assert_eq!(
+                executor.link_path(tid, PathLink::Executable),
+                path(&[renamed.as_slice(), b" (deleted)"].concat())
+            );
+            assert_eq!(
+                executor.link_path(tid, PathLink::WorkingDirectory),
+                path(&canonical(&directory, "."))
+            );
+            std::fs::create_dir(directory.0.join("sub")).unwrap();
+            let sub = canonical(&directory, "sub");
+            memory.write(PATH, b"sub\0").unwrap();
+            assert_eq!(
+                call(
+                    &mut executor,
+                    &memory,
+                    libc::SYS_chdir,
+                    [PATH, 0, 0, 0, 0, 0]
+                ),
+                0
+            );
+            assert_eq!(
+                executor.link_path(tid, PathLink::WorkingDirectory),
+                path(&sub)
+            );
+            std::fs::remove_dir(directory.0.join("sub")).unwrap();
+            assert_eq!(
+                executor.link_path(tid, PathLink::WorkingDirectory),
+                path(&[sub.as_slice(), b" (deleted)"].concat())
+            );
+            let bare = ElfExecutor::new(test_state(&directory.0), false);
+            assert_eq!(
+                bare.link_path(bare.state.tid, PathLink::Executable),
+                Err(FactError::NotProvided)
+            );
+        }
+
+        /// Another live thread of the process shares the process's
+        /// descriptor table and image, and answers with them; its working
+        /// directory is its own, and not provided. Once it has exited, every
+        /// link is `ESRCH`.
+        #[test]
+        fn a_sibling_shares_the_descriptors_and_the_image_but_not_the_working_directory() {
+            let directory = Directory::new();
+            let mut memory = GuestMemory::new(0, PAGE as usize).unwrap();
+            std::fs::write(directory.0.join("image"), b"an image").unwrap();
+            let mut state = test_state(&directory.0);
+            state.executable_file = Some(Arc::new(
+                std::fs::File::open(directory.0.join("image")).unwrap(),
+            ));
+            let mut executor = ElfExecutor::new(state, false);
+            let (pid, tid) = (executor.state.pid, executor.state.tid);
+            let file = open(
+                &mut executor,
+                &mut memory,
+                b"shared",
+                libc::O_RDWR | libc::O_CREAT,
+            );
+            let generation =
+                executor
+                    .state
+                    .task_lifecycle
+                    .lock()
+                    .unwrap()
+                    .register(tid + 1, pid, pid, true);
+            let sibling = |link| executor.link_path(tid + 1, link);
+            assert_eq!(
+                sibling(PathLink::Descriptor(file)),
+                path(&canonical(&directory, "shared"))
+            );
+            assert_eq!(
+                sibling(PathLink::Executable),
+                path(&canonical(&directory, "image"))
+            );
+            assert_eq!(
+                sibling(PathLink::WorkingDirectory),
+                Err(FactError::NotProvided)
+            );
+            assert_eq!(
+                sibling(PathLink::Descriptor(-1)),
+                Err(FactError::Errno(reverie::Errno::EBADF))
+            );
+            executor
+                .state
+                .task_lifecycle
+                .lock()
+                .unwrap()
+                .remove(tid + 1, generation);
+            for link in [
+                PathLink::Descriptor(file),
+                PathLink::Executable,
+                PathLink::WorkingDirectory,
+            ] {
+                assert_eq!(
+                    executor.link_path(tid + 1, link),
+                    Err(FactError::Errno(reverie::Errno::ESRCH)),
+                    "{link:?}"
+                );
+            }
+        }
+
+        /// A live thread of another process is not provided, for every link,
+        /// even for a descriptor number this process holds; a number that
+        /// names no live task is `ESRCH`, zero and below included.
+        #[test]
+        fn another_processs_threads_are_not_provided_and_dead_numbers_are_esrch() {
+            let directory = Directory::new();
+            let mut memory = GuestMemory::new(0, PAGE as usize).unwrap();
+            let mut executor = ElfExecutor::new(test_state(&directory.0), false);
+            let pid = executor.state.pid;
+            let file = open(
+                &mut executor,
+                &mut memory,
+                b"held",
+                libc::O_RDWR | libc::O_CREAT,
+            );
+            {
+                let mut lifecycle = executor.state.task_lifecycle.lock().unwrap();
+                lifecycle.register(pid + 10, pid + 10, pid + 10, true);
+                lifecycle.register(pid + 11, pid + 10, pid + 10, true);
+            }
+            let links = [
+                PathLink::Descriptor(file),
+                PathLink::Descriptor(-1),
+                PathLink::Executable,
+                PathLink::WorkingDirectory,
+            ];
+            for tid in [pid + 10, pid + 11] {
+                for link in links {
+                    assert_eq!(
+                        executor.link_path(tid, link),
+                        Err(FactError::NotProvided),
+                        "tid {tid} {link:?}"
+                    );
+                }
+            }
+            for tid in [0, -1, i32::MIN, pid + 5, i32::MAX] {
+                for link in links {
+                    assert_eq!(
+                        executor.link_path(tid, link),
+                        Err(FactError::Errno(reverie::Errno::ESRCH)),
+                        "tid {tid} {link:?}"
+                    );
+                }
+            }
+        }
+
+        /// A link query, answered or not, releases no lock the supervisor
+        /// process holds on the guest's file: it opens and closes nothing of
+        /// that file.
+        #[test]
+        fn a_link_query_leaves_the_supervisors_record_locks_held() {
+            let directory = Directory::new();
+            let mut memory = GuestMemory::new(0, PAGE as usize).unwrap();
+            let mut executor = ElfExecutor::new(test_state(&directory.0), true);
+            let guest = open(
+                &mut executor,
+                &mut memory,
+                b"shared",
+                libc::O_RDWR | libc::O_CREAT,
+            );
+            let path_name = directory.0.join("shared");
+            let supervisor = std::fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .open(&path_name)
+                .unwrap();
+            let lock = record_lock(libc::F_WRLCK, 0, 10);
+            // SAFETY: supervisor owns a live descriptor and lock is a valid flock.
+            assert_eq!(
+                unsafe { libc::fcntl(supervisor.as_raw_fd(), libc::F_SETLK, &lock) },
+                0
+            );
+            assert!(supervisor_lock_held(&path_name, &supervisor), "before");
+            assert_eq!(
+                descriptor(&executor, guest),
+                path(&canonical(&directory, "shared"))
+            );
+            assert!(supervisor_lock_held(&path_name, &supervisor), "answered");
+            let [sender, receiver] = socket_pair(&mut executor, &memory);
+            send_descriptor(&mut executor, &mut memory, sender, 1);
+            let received = receive_descriptor(&mut executor, &mut memory, receiver);
+            assert_eq!(descriptor(&executor, received), Err(FactError::NotProvided));
+            assert!(supervisor_lock_held(&path_name, &supervisor), "declined");
+            assert_eq!(
+                descriptor(&executor, 4000),
+                Err(FactError::Errno(reverie::Errno::EBADF))
+            );
+            assert!(supervisor_lock_held(&path_name, &supervisor), "not open");
+        }
     }
 }
 
