@@ -974,6 +974,9 @@ pub mod spawn_refusal {
         }
     }
 
+    // Test support, not production: an armed probe gives one spawn an
+    // impossible stack size, so that it fails as a refused allocation would.
+    #[allow(clippy::disallowed_methods)]
     pub(super) fn prepare(
         builder: std::thread::Builder,
     ) -> (std::thread::Builder, Option<Arc<Probe>>) {
@@ -1057,6 +1060,7 @@ pub fn is_peer_cancelled_tool_worker<R>(
 }
 
 #[cfg(test)]
+#[allow(clippy::disallowed_methods, reason = "tests may make threads freely")]
 mod tests {
     use std::future::Future;
     use std::task::Context;

@@ -602,6 +602,7 @@ fn handle_link(host: RawFd) -> std::result::Result<reverie::LinkPath, reverie::F
 }
 
 #[cfg(test)]
+#[allow(clippy::disallowed_methods, reason = "tests may make threads freely")]
 mod tests {
     use std::sync::atomic::AtomicU64;
     use std::sync::atomic::Ordering;
@@ -1696,6 +1697,7 @@ mod tests {
 }
 
 #[cfg(test)]
+#[allow(clippy::disallowed_methods, reason = "tests may make threads freely")]
 mod signal_sets_tests {
     use std::sync::atomic::AtomicU64;
     use std::sync::atomic::Ordering;

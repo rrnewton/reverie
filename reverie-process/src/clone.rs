@@ -12,15 +12,26 @@ use super::Pid;
 
 /// Usable bytes in a cloned child's stack, excluding the guard pages.
 ///
-/// The in-container tracer's main thread runs on this stack, including the
-/// tokio `block_on` frames and everything the tool does underneath them, so it
-/// gets what an ordinary main thread gets: 8 MiB is the default
-/// `RLIMIT_STACK`. 2 MiB was measured to be too small for a debug build of
-/// Hermit's LiteInst statistics path behind `--backend-engagement-json`: with
-/// the guard pages below, it faults in them; a core taken before they existed
-/// showed all 0x200000 bytes in use, about 1.1 MB in Hermit's own async frames.
-/// Only the pages the child actually touches are backed by memory.
-pub(super) const CHILD_STACK_SIZE: usize = 8 * 1024 * 1024;
+/// A command's child runs on this stack only until it execs; exec replaces
+/// its address space, so the program never runs on it. A container's child
+/// does not exec: the in-container tracer's main thread runs on this stack
+/// for the whole run, including the tokio `block_on` frames and everything
+/// the tool does underneath them. That can be a whole guest process: the KVM
+/// backend runs a run's first process on the thread that polls the run,
+/// where a debug build of a large Tool used 2,412 KiB. So the child gets 16
+/// MiB, twice the 8 MiB default `RLIMIT_STACK` of a main thread, and the KVM
+/// backend gives each of its own host threads the same: reverie-kvm-core
+/// defines `KVM_SUPERVISOR_THREAD_STACK_BYTES` as this constant, and keeps
+/// the measurements behind it. `RUST_MIN_STACK` does not change this stack:
+/// that variable sizes the threads the standard library spawns without an
+/// explicit size, and a cloned child is not one of them. 2 MiB was measured
+/// to be too small for a debug build of an embedder's LiteInst statistics
+/// path: with the guard pages below, it faulted in them, and a core taken
+/// before they existed showed all 0x200000 bytes in use, about 1.1 MB of it
+/// in the embedder's own async frames. Only the pages the child actually
+/// touches get physical memory, though strict overcommit charges the whole
+/// mapping.
+pub const CHILD_STACK_SIZE: usize = 16 * 1024 * 1024;
 
 // Supported Linux clone ABIs grow the stack down. Keep several inaccessible
 // pages below the usable stack; they are in addition to CHILD_STACK_SIZE.
@@ -356,16 +367,17 @@ mod tests {
     }
 
     #[test]
-    fn default_child_stack_is_a_main_thread_stack() {
+    fn default_child_stack_holds_a_backends_first_guest_process() {
         if crate::test_runs_in_own_process() {
             return;
         }
         let mut stack = child_stack().unwrap();
         let size = stack.top() as usize - stack.bottom() as usize;
         assert!(
-            size >= 8 * 1024 * 1024,
-            "the in-container tracer's main thread runs on the child stack and needs the \
-             8 MiB a main thread gets; 2 MiB was measured to overflow"
+            size >= 16 * 1024 * 1024,
+            "the in-container tracer's main thread runs on the child stack, and with \
+             it a KVM run's first guest process, which needs the 16 MiB the KVM \
+             backend gives each of its process threads"
         );
         // The guard pages are added to the mapping, not carved out of the
         // usable stack.

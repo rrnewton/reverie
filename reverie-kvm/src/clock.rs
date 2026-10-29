@@ -1958,6 +1958,7 @@ impl Drop for CpuAffinity {
 }
 
 #[cfg(test)]
+#[allow(clippy::disallowed_methods, reason = "tests may make threads freely")]
 mod tests {
     use std::io::Write;
 
@@ -3208,7 +3209,9 @@ mod tests {
 }
 
 #[cfg(test)]
+#[allow(clippy::disallowed_methods, reason = "tests may make threads freely")]
 mod entry_interrupt_tests;
 
 #[cfg(test)]
+#[allow(clippy::disallowed_methods, reason = "tests may make threads freely")]
 pub(crate) mod preemption_timer_tests;
