@@ -1671,6 +1671,7 @@ impl CounterBinding {
     /// from before the event blocked the kick signal.
     fn prepare_timer(&mut self, clock: u64, state: &TimerState) -> Result<Option<KernelSigset>> {
         let wanted = state.wanted_overflow(clock);
+        let slack = state.arming_slack(clock);
         let mut opened = None;
         if self.timer.is_none() {
             if wanted.is_none() {
@@ -1690,7 +1691,7 @@ impl CounterBinding {
         }
         let timer = self.timer.as_mut().unwrap();
         let was_enabled = timer.enabled();
-        timer.prepare(clock, wanted)?;
+        timer.prepare(clock, wanted, slack)?;
         if !was_enabled && timer.enabled() && self.identity.cpu == FOLLOWS_TASK {
             self.register_following_timer();
         }
@@ -3210,4 +3211,4 @@ mod tests {
 mod entry_interrupt_tests;
 
 #[cfg(test)]
-mod preemption_timer_tests;
+pub(crate) mod preemption_timer_tests;

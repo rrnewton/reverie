@@ -29,6 +29,7 @@ use super::*;
 use crate::preemption_timer::KICK_SIGNAL;
 use crate::preemption_timer::KICKS_DRAINED;
 use crate::preemption_timer::KICKS_TAKEN;
+use crate::preemption_timer::MAX_ARMING_SLACK;
 use crate::preemption_timer::MAX_PERIOD;
 use crate::preemption_timer::TIMER_SYSCALLS;
 use crate::preemption_timer::reserve_kick_signal;
@@ -92,10 +93,10 @@ const SPINNER: [u8; 6] = [
 
 /// Pins this thread to the CPU it is on until dropped, so that pinned entries
 /// keep one counter identity and never reopen their events.
-struct PinThread(libc::cpu_set_t);
+pub(crate) struct PinThread(libc::cpu_set_t);
 
 impl PinThread {
-    fn here() -> Self {
+    pub(crate) fn here() -> Self {
         let saved = affinity().unwrap();
         let cpu = current_cpu().expect("sched_getcpu");
         // SAFETY: an all-zero cpu_set_t is the empty set; `cpu` is below
@@ -531,6 +532,109 @@ fn the_clock_is_bit_exact_with_and_without_the_timer() {
         "timer clock parity: {BLOCKS} syscall clocks equal with and without the timer; \
          {kicks} kicks with a request renewed 997 RCBs ahead; the guest moved host threads \
          after {MOVED_AT} exits and its timer reopened at clock {opened}"
+    );
+}
+
+/// A precise request renewed earlier at each syscall exit: the first renewal
+/// reprograms the pending overflow with slack, half the distance or
+/// [`MAX_ARMING_SLACK`] before the point the request needs; renewals within
+/// the slack keep it; one past it reprograms with slack again. Once the
+/// renewals stop, the guest runs into the overflow the slack brought
+/// forward: that kick finds the clock short of the point, makes nothing due
+/// and records nothing, and the next entry programs the point itself.
+#[test]
+fn renewals_reprogram_with_slack_and_its_early_kick_decides_nothing() {
+    let _turn = witness_turn();
+    // One CPU, so that a pinned binding keeps one counter identity.
+    let _pin = PinThread::here();
+    const BLOCK: u64 = 1_000;
+    let mut backend = counted_backend(&block_loop(BLOCK as u32), CounterPlacement::default());
+    let config = reverie::pmu_config::try_get_pmu_config().unwrap();
+    let first = config.first_stage_margin();
+    let mut target = 4_000_000;
+    // The point a precise request for `target` needs, staged.
+    let point = |target: u64| target - first;
+    let slack = |point: u64, clock: u64| ((point - clock) / 2).min(MAX_ARMING_SLACK);
+    let renew = |backend: &mut crate::KvmBackend, target: u64| {
+        let clock = backend.vcpu.read_clock().unwrap();
+        backend
+            .vcpu
+            .request_timer(target - clock, TimerKind::Precise)
+            .unwrap();
+    };
+    let overflow = |backend: &crate::KvmBackend| timer_event(&backend.vcpu).unwrap().overflow_at();
+    renew(&mut backend, target);
+    assert_eq!(next_exit(&mut backend.vcpu), Exit::Syscall);
+    // A fresh request: nothing pending, programmed at its point, no slack.
+    assert_eq!(overflow(&backend), Some(point(target)));
+    // The first renewal moves the point before the pending overflow.
+    target -= 1_000;
+    renew(&mut backend, target);
+    let clock = backend.vcpu.read_clock().unwrap();
+    assert_eq!(next_exit(&mut backend.vcpu), Exit::Syscall);
+    let slackened = point(target) - slack(point(target), clock);
+    assert_eq!(overflow(&backend), Some(slackened));
+    assert!(slackened < point(target) - 500_000, "{slackened}");
+    // Renewals within the slack keep that programming, with no syscall to
+    // program it (pinned entries enable and disable their CPU-bound event).
+    let per_entry = if backend.vcpu.clock.placement == CounterPlacement::PinEachEntry {
+        2
+    } else {
+        0
+    };
+    for _ in 0..10 {
+        target -= 1_000;
+        renew(&mut backend, target);
+        let before = timer_syscalls();
+        assert_eq!(next_exit(&mut backend.vcpu), Exit::Syscall);
+        assert_eq!(timer_syscalls() - before, per_entry);
+        assert_eq!(overflow(&backend), Some(slackened));
+    }
+    // One past the slack reprograms, with slack again.
+    target = slackened + first - 2 * BLOCK;
+    renew(&mut backend, target);
+    let clock = backend.vcpu.read_clock().unwrap();
+    assert!(point(target) < slackened);
+    assert_eq!(next_exit(&mut backend.vcpu), Exit::Syscall);
+    let slackened = point(target) - slack(point(target), clock);
+    assert_eq!(overflow(&backend), Some(slackened));
+    // No more renewals: the guest runs into that overflow. Its kick (or the
+    // block's syscall exit, if it comes first) finds the clock at or past
+    // the overflow but short of the point: nothing due, nothing recorded.
+    let mut exits = Vec::new();
+    while backend.vcpu.read_clock().unwrap() < slackened {
+        let exit = next_exit(&mut backend.vcpu);
+        exits.push((exit, backend.vcpu.read_clock().unwrap()));
+        assert_eq!(backend.vcpu.timer_due(), None, "{exits:?}");
+    }
+    let early = backend.vcpu.read_clock().unwrap();
+    assert!(early < point(target), "{exits:?}");
+    // The next entry programs the point itself: nothing is pending. If the
+    // block's syscall exit came before the kick, the kick ends that entry
+    // at once, and the one after it reaches the block's end.
+    let mut after = Vec::new();
+    loop {
+        let exit = next_exit(&mut backend.vcpu);
+        after.push((exit, backend.vcpu.read_clock().unwrap()));
+        assert_eq!(backend.vcpu.timer_due(), None, "{exits:?} {after:?}");
+        if exit == Exit::Syscall {
+            break;
+        }
+        assert!(after.len() < 3, "{exits:?} {after:?}");
+    }
+    assert_eq!(
+        overflow(&backend),
+        Some(point(target)),
+        "{exits:?} {after:?}"
+    );
+    assert_eq!(backend.vcpu.timer_target(), Some(target));
+    assert_eq!(backend.vcpu.timer_due(), None);
+    assert_eq!(reverie::take_skid_overshoot_count(), 0);
+    println!(
+        "timer renewals with slack: overflow at {slackened} for point {}, early exit at \
+         {early} ({:?}), then the point itself",
+        point(target),
+        exits.last()
     );
 }
 
