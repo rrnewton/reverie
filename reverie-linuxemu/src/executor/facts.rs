@@ -65,6 +65,15 @@
 //! captured output the supervisor's standard output or error however the
 //! guest holds them, are not provided. See `ElfExecutor::link_path` for the
 //! threads it answers for.
+//!
+//! `memory_map`: the executor keeps the guest's address space page by page,
+//! with what each page was reserved for and whether it is accessible and
+//! writable, but no mapping list, no file identity and no execute
+//! permission. It lists the mappings it made for the process's stack and its
+//! program break, which need no file identity, and says that the list is not
+//! complete (gVisor: pkg/sentry/fsimpl/proc/task_files.go, whose `maps` the
+//! Sentry renders from its own memory manager's list). See
+//! `ElfExecutor::memory_map`.
 
 use super::*;
 
@@ -430,6 +439,133 @@ impl ElfExecutor {
             LinkOwner::Sibling
         })
     }
+}
+
+impl ElfExecutor {
+    /// `reverie::Guest::memory_map` for thread `tid`, a live thread of this
+    /// task's process, from the address space `memory` the process's
+    /// syscalls change: the part of it the executor keeps enough of to list
+    /// as Linux lists it, which is not all of it, so the list is never
+    /// complete.
+    ///
+    /// The executor keeps the address space as pages, each with what it was
+    /// reserved for (`RegionKind`) and whether it is accessible and writable,
+    /// and keeps no file identity for the pages of a file, so it lists the
+    /// mappings it made that are backed by no file and are named without
+    /// one:
+    ///
+    /// - the stack: the pages reserved for the stack window at the top of the
+    ///   user address space, which the loader maps whole, in runs of one
+    ///   access. The run that holds the image's initial stack pointer
+    ///   (`mm->start_stack`, counting a run that starts or ends there) is
+    ///   `[stack]`, and any other is anonymous memory, as Linux names a part
+    ///   `mprotect(2)` splits from the stack (`vma_is_initial_stack`);
+    /// - the program break's area: the pages reserved for the heap, which
+    ///   `brk(2)` adds from the initial break (the process image's
+    ///   `heap_base`, Linux's `mm->start_brk`), in runs of one access. A run
+    ///   that overlaps the area from the initial break to the current one,
+    ///   both excluded, is `[heap]` (`vma_is_initial_heap`).
+    ///
+    /// Each run is private (`brk` and the loader make no shared memory, and a
+    /// page `mmap(2)` replaced is reserved for that mapping instead), and has
+    /// no file offset. Its protection is what the executor keeps: an
+    /// accessible page is readable and a writable one writable, and no page
+    /// is executable, whatever the guest asked for. Everything else is
+    /// missing from the list: the process's image and interpreter, which are
+    /// mappings of files, the vDSO, every mapping `mmap(2)` made, including
+    /// pages of the break's area it replaced, and the pages the executor
+    /// keeps for itself.
+    ///
+    /// It answers for the threads of this task's process, as `link_path`
+    /// does, since only they share this address space: `ESRCH` when `tid`
+    /// names no task that is live in the run's lifecycle table, and not
+    /// provided for a live thread of another process, whose address space
+    /// this executor does not hold.
+    ///
+    /// The address space is read while the layout transaction that every
+    /// syscall changing it holds (`GuestMemory::allocation_guard`) is held
+    /// here, so no change is seen in part.
+    pub fn memory_map(
+        &self,
+        memory: &GuestMemory,
+        tid: libc::pid_t,
+    ) -> std::result::Result<reverie::MemoryMap, reverie::FactError> {
+        // The same threads as a link of this process.
+        self.link_owner(tid)?;
+        let _transaction = memory.allocation_guard();
+        let start_stack = self.state.stack_pointer;
+        let start_brk = self.state.heap_base;
+        let brk = memory
+            .allocation_cursors()
+            .map_or(self.state.program_break, |cursors| cursors.program_break);
+        let mut mappings = Vec::new();
+        let (windows, _) = memory.user_layout();
+        if let Some(window) = windows
+            .iter()
+            .find(|window| window.user_end == crate::memory::USER_STACK_TOP)
+        {
+            mappings.extend(region_mappings(
+                memory,
+                (window.user_start, window.user_end),
+                RegionKind::Stack,
+                |start, end| {
+                    if start <= start_stack && start_stack <= end {
+                        reverie::MappingBacking::Stack
+                    } else {
+                        reverie::MappingBacking::Anonymous
+                    }
+                },
+            ));
+        }
+        if let Some(end) = align_up(brk, PAGE_SIZE).filter(|end| *end > start_brk) {
+            mappings.extend(region_mappings(
+                memory,
+                (start_brk, end),
+                RegionKind::Heap,
+                |start, end| {
+                    if start < brk && end > start_brk {
+                        reverie::MappingBacking::Heap
+                    } else {
+                        reverie::MappingBacking::Anonymous
+                    }
+                },
+            ));
+        }
+        mappings.sort_by_key(|mapping| mapping.start);
+        Ok(reverie::MemoryMap::new(mappings, false))
+    }
+}
+
+/// The mappings of the runs of pages reserved as `kind` in the user range
+/// `range` of `memory`, each named by `name` from its range: private, with
+/// no file offset, readable where accessible and writable where writable,
+/// never executable. See [`ElfExecutor::memory_map`].
+fn region_mappings(
+    memory: &GuestMemory,
+    range: (u64, u64),
+    kind: RegionKind,
+    name: impl Fn(u64, u64) -> reverie::MappingBacking,
+) -> impl Iterator<Item = reverie::MappingFact> {
+    memory
+        .user_page_runs(range.0, range.1)
+        .unwrap_or_default()
+        .into_iter()
+        .filter(move |run| run.kind == Some(kind))
+        .map(move |run| {
+            let prot = match run.access {
+                crate::memory::UserPageAccess::NoAccess => 0,
+                crate::memory::UserPageAccess::ReadOnly => libc::PROT_READ,
+                crate::memory::UserPageAccess::ReadWrite => libc::PROT_READ | libc::PROT_WRITE,
+            };
+            reverie::MappingFact::new(
+                run.start,
+                run.end,
+                prot as u32,
+                false,
+                0,
+                name(run.start, run.end),
+            )
+        })
 }
 
 /// The name of guest descriptor `fd` of `table`: see
@@ -2151,6 +2287,374 @@ mod signal_sets_tests {
         drop(hook);
         assert_eq!(*during.borrow(), []);
         assert_eq!(answered.recv(), Ok(Ok(SignalSets::new(0, 0, 0, 0, 0))));
+        reading.join().unwrap();
+    }
+}
+
+#[cfg(test)]
+mod memory_map_tests {
+    use std::sync::atomic::AtomicU64;
+    use std::sync::atomic::Ordering;
+
+    use reverie::FactError;
+
+    use super::*;
+
+    struct Directory(std::path::PathBuf);
+
+    impl Directory {
+        fn new() -> Self {
+            static NEXT: AtomicU64 = AtomicU64::new(0);
+            let path = std::env::temp_dir().join(format!(
+                "reverie-linuxemu-memory-map-{}-{}",
+                std::process::id(),
+                NEXT.fetch_add(1, Ordering::Relaxed)
+            ));
+            std::fs::create_dir(&path).unwrap();
+            Self(path)
+        }
+    }
+
+    impl Drop for Directory {
+        fn drop(&mut self) {
+            std::fs::remove_dir_all(&self.0).unwrap();
+        }
+    }
+
+    fn call(
+        executor: &mut ElfExecutor,
+        memory: &GuestMemory,
+        number: libc::c_long,
+        args: [u64; 6],
+    ) -> i64 {
+        executor.execute(&SyscallRequest::new(number as u64, args), memory)
+    }
+
+    /// A loaded image's address space and an executor of its first thread:
+    /// a two-page image at 2 MiB, the stack window at the top of the user
+    /// address space, no heap yet.
+    fn loaded(directory: &Directory) -> (ElfExecutor, GuestMemory) {
+        let mut memory = GuestMemory::new(0, 16 * 1024 * 1024).unwrap();
+        let image = crate::elf::minimal_test_elf(&[0xf4]);
+        let mut state =
+            crate::elf::load_static_elf(&mut memory, &image, &["maps"], &[], &directory.0).unwrap();
+        state.children = ChildWaitContext::test_root();
+        (ElfExecutor::new(state, false), memory)
+    }
+
+    const RW: u32 = (libc::PROT_READ | libc::PROT_WRITE) as u32;
+    const READ: u32 = libc::PROT_READ as u32;
+    /// The stack window's user range.
+    const WINDOW: (u64, u64) = (
+        crate::memory::USER_ADDRESS_END - STACK_LIMIT,
+        crate::memory::USER_STACK_TOP,
+    );
+
+    fn region(
+        start: u64,
+        end: u64,
+        prot: u32,
+        backing: reverie::MappingBacking,
+    ) -> reverie::MappingFact {
+        reverie::MappingFact::new(start, end, prot, false, 0, backing)
+    }
+
+    fn incomplete(mappings: Vec<reverie::MappingFact>) -> reverie::MemoryMap {
+        reverie::MemoryMap::new(mappings, false)
+    }
+
+    fn change(
+        executor: &mut ElfExecutor,
+        memory: &GuestMemory,
+        number: libc::c_long,
+        args: [u64; 3],
+    ) -> i64 {
+        call(
+            executor,
+            memory,
+            number,
+            [args[0], args[1], args[2], 0, 0, 0],
+        )
+    }
+
+    /// The map lists the stack window and the program break's area, page
+    /// runs of one access each, named as Linux names them: the run that holds
+    /// the initial stack pointer `[stack]`, the other parts of the window
+    /// anonymous, every part of the break's area `[heap]`. Protections are
+    /// the executor's: never executable, readable whenever accessible. The
+    /// list is never complete. Its stack is the one line of the executor's
+    /// own `/proc/self/maps` today.
+    #[test]
+    fn the_map_lists_the_stack_and_the_breaks_area_as_the_executor_keeps_them() {
+        use reverie::MappingBacking::Anonymous;
+        use reverie::MappingBacking::Heap;
+        use reverie::MappingBacking::Stack;
+        let directory = Directory::new();
+        let (mut executor, memory) = loaded(&directory);
+        let tid = executor.state.tid;
+        let base = executor.state.heap_base;
+        let start_stack = executor.state.stack_pointer;
+        assert!(WINDOW.0 < start_stack && start_stack < WINDOW.1);
+        let stack = region(WINDOW.0, WINDOW.1, RW, Stack);
+        assert_eq!(
+            executor.memory_map(&memory, tid),
+            Ok(incomplete(vec![stack.clone()]))
+        );
+        // Today's synthetic file names the same range and protection.
+        let text = String::from_utf8(proc_self_maps_content(&executor.state)).unwrap();
+        assert_eq!(
+            text,
+            format!(
+                "{:012x}-{:012x} rw-p 00000000 00:00 0 [stack]\n",
+                stack.start, stack.end
+            )
+        );
+
+        let page = PAGE_SIZE;
+        assert_eq!(
+            change(
+                &mut executor,
+                &memory,
+                libc::SYS_brk,
+                [base + 3 * page, 0, 0]
+            ),
+            (base + 3 * page) as i64
+        );
+        let heap = |parts: &[(u64, u64, u32)]| {
+            let mut mappings: Vec<_> = parts
+                .iter()
+                .map(|&(start, end, prot)| {
+                    region(base + start * page, base + end * page, prot, Heap)
+                })
+                .collect();
+            mappings.push(stack.clone());
+            incomplete(mappings)
+        };
+        assert_eq!(executor.memory_map(&memory, tid), Ok(heap(&[(0, 3, RW)])));
+        let protect = |executor: &mut ElfExecutor, at: u64, prot: i32| {
+            assert_eq!(
+                change(
+                    executor,
+                    &memory,
+                    libc::SYS_mprotect,
+                    [at, page, prot as u64]
+                ),
+                0
+            );
+        };
+        // Every part of the break's area is the heap, as Linux names each.
+        protect(&mut executor, base + page, libc::PROT_READ);
+        assert_eq!(
+            executor.memory_map(&memory, tid),
+            Ok(heap(&[(0, 1, RW), (1, 2, READ), (2, 3, RW)]))
+        );
+        protect(&mut executor, base + page, libc::PROT_NONE);
+        assert_eq!(
+            executor.memory_map(&memory, tid),
+            Ok(heap(&[(0, 1, RW), (1, 2, 0), (2, 3, RW)]))
+        );
+        // The executor keeps no execute permission, and no read permission
+        // apart from access: Linux shows these as r-x and -w-.
+        protect(
+            &mut executor,
+            base + page,
+            libc::PROT_READ | libc::PROT_EXEC,
+        );
+        assert_eq!(
+            executor.memory_map(&memory, tid),
+            Ok(heap(&[(0, 1, RW), (1, 2, READ), (2, 3, RW)]))
+        );
+        protect(&mut executor, base + page, libc::PROT_WRITE);
+        assert_eq!(executor.memory_map(&memory, tid), Ok(heap(&[(0, 3, RW)])));
+
+        // A page of the stack made inaccessible splits the window: the run
+        // below it and the page itself are anonymous, the run above it, which
+        // holds the initial stack pointer, the stack.
+        let guard = (start_stack & !(page - 1)) - 4 * page;
+        protect(&mut executor, guard, libc::PROT_NONE);
+        let mut split = heap(&[(0, 3, RW)]).mappings;
+        split.pop();
+        split.extend([
+            region(WINDOW.0, guard, RW, Anonymous),
+            region(guard, guard + page, 0, Anonymous),
+            region(guard + page, WINDOW.1, RW, Stack),
+        ]);
+        assert_eq!(executor.memory_map(&memory, tid), Ok(incomplete(split)));
+        protect(&mut executor, guard, libc::PROT_READ | libc::PROT_WRITE);
+        assert_eq!(executor.memory_map(&memory, tid), Ok(heap(&[(0, 3, RW)])));
+
+        // A page that mmap(2) replaced in the break's area is that mapping's,
+        // which the list leaves out. (The executor refuses a fixed mapping in
+        // the stack window, above the mappings' range.)
+        let fixed = (libc::MAP_FIXED | libc::MAP_PRIVATE | libc::MAP_ANONYMOUS) as u64;
+        assert_eq!(
+            call(
+                &mut executor,
+                &memory,
+                libc::SYS_mmap,
+                [base + page, page, RW as u64, fixed, u64::MAX, 0]
+            ),
+            (base + page) as i64
+        );
+        assert_eq!(
+            call(
+                &mut executor,
+                &memory,
+                libc::SYS_mmap,
+                [guard, page, RW as u64, fixed, u64::MAX, 0]
+            ),
+            -i64::from(libc::ENOMEM)
+        );
+        assert_eq!(
+            executor.memory_map(&memory, tid),
+            Ok(incomplete(vec![
+                region(base, base + page, RW, Heap),
+                region(base + 2 * page, base + 3 * page, RW, Heap),
+                stack.clone(),
+            ]))
+        );
+        // Shrinking the break releases its area.
+        assert_eq!(
+            change(&mut executor, &memory, libc::SYS_brk, [base, 0, 0]),
+            base as i64
+        );
+        assert_eq!(
+            executor.memory_map(&memory, tid),
+            Ok(incomplete(vec![stack]))
+        );
+    }
+
+    /// Linux counts a mapping that ends or starts at the initial stack
+    /// pointer as the stack (`vma_is_initial_stack`): with the pointer on a
+    /// page boundary and that boundary between two runs, both are the stack.
+    #[test]
+    fn the_runs_on_either_side_of_the_initial_stack_pointer_are_the_stack() {
+        use reverie::MappingBacking::Anonymous;
+        use reverie::MappingBacking::Stack;
+        let directory = Directory::new();
+        let (mut executor, memory) = loaded(&directory);
+        let tid = executor.state.tid;
+        let boundary = WINDOW.1 - 8 * PAGE_SIZE;
+        executor.state.stack_pointer = boundary;
+        assert_eq!(
+            change(
+                &mut executor,
+                &memory,
+                libc::SYS_mprotect,
+                [boundary, PAGE_SIZE, libc::PROT_READ as u64]
+            ),
+            0
+        );
+        assert_eq!(
+            change(
+                &mut executor,
+                &memory,
+                libc::SYS_mprotect,
+                [boundary - 2 * PAGE_SIZE, PAGE_SIZE, libc::PROT_NONE as u64]
+            ),
+            0
+        );
+        assert_eq!(
+            executor.memory_map(&memory, tid),
+            Ok(incomplete(vec![
+                region(WINDOW.0, boundary - 2 * PAGE_SIZE, RW, Anonymous),
+                region(boundary - 2 * PAGE_SIZE, boundary - PAGE_SIZE, 0, Anonymous),
+                region(boundary - PAGE_SIZE, boundary, RW, Stack),
+                region(boundary, boundary + PAGE_SIZE, READ, Stack),
+                region(boundary + PAGE_SIZE, WINDOW.1, RW, Anonymous),
+            ]))
+        );
+    }
+
+    /// The threads of a process share its address space, so a sibling's map
+    /// is the same, asked by either thread. Another process's address space
+    /// is not this executor's: not provided. A number with no live task is
+    /// ESRCH.
+    #[test]
+    fn the_map_answers_for_the_threads_of_this_process() {
+        let directory = Directory::new();
+        let (mut executor, memory) = loaded(&directory);
+        let tid = executor.state.tid;
+        let base = executor.state.heap_base;
+        assert_eq!(
+            change(
+                &mut executor,
+                &memory,
+                libc::SYS_brk,
+                [base + PAGE_SIZE, 0, 0]
+            ),
+            (base + PAGE_SIZE) as i64
+        );
+        let own = executor.memory_map(&memory, tid).unwrap();
+        assert_eq!(own.mappings.len(), 2, "{own:?}");
+        let sibling = executor.thread_child(tid + 1).unwrap();
+        assert_eq!(executor.memory_map(&memory, tid + 1), Ok(own.clone()));
+        assert_eq!(sibling.memory_map(&memory, tid + 1), Ok(own.clone()));
+        assert_eq!(sibling.memory_map(&memory, tid), Ok(own.clone()));
+        let child = executor
+            .fork_child(executor.state.pid + 40, false, false)
+            .unwrap();
+        let child_tid = child.state.tid;
+        assert_eq!(
+            executor.memory_map(&memory, child_tid),
+            Err(FactError::NotProvided)
+        );
+        assert_eq!(child.memory_map(&memory, tid), Err(FactError::NotProvided));
+        for number in [0, -1, i32::MIN, tid + 5, i32::MAX] {
+            assert_eq!(
+                executor.memory_map(&memory, number),
+                Err(FactError::Errno(reverie::Errno::ESRCH)),
+                "tid {number}"
+            );
+        }
+    }
+
+    /// A reader waits for a change to the address space that another thread
+    /// has begun: it reads before the change or after it, never part of it.
+    /// Here the change is a break's growth made by hand as `brk` makes it,
+    /// with its layout transaction held: the pages reserved and mapped, then
+    /// the break moved. A reader asked in between answers only once the
+    /// transaction ends, with the whole growth: the new pages, named the heap
+    /// by the moved break.
+    #[test]
+    fn a_reader_waits_for_a_change_to_the_address_space_to_end() {
+        let directory = Directory::new();
+        let (executor, memory) = loaded(&directory);
+        let tid = executor.state.tid;
+        let base = executor.state.heap_base;
+        let reader = executor.thread_child(tid + 1).unwrap();
+        let (ask, asked) = std::sync::mpsc::channel::<()>();
+        let (answer, answered) = std::sync::mpsc::channel();
+        let reading = {
+            let memory = memory.clone();
+            std::thread::spawn(move || {
+                asked.recv().unwrap();
+                answer.send(reader.memory_map(&memory, tid)).unwrap();
+            })
+        };
+        let transaction = memory.allocation_guard();
+        memory
+            .reserve_region(base, PAGE_SIZE, RegionKind::Heap)
+            .unwrap()
+            .commit();
+        memory.map_user_range(base, PAGE_SIZE, false).unwrap();
+        ask.send(()).unwrap();
+        // A reader that gets in here reads half the change: the page, but the
+        // break not yet moved past it.
+        assert!(
+            answered
+                .recv_timeout(std::time::Duration::from_millis(200))
+                .is_err()
+        );
+        let mut cursors = memory.allocation_cursors().unwrap();
+        cursors.program_break = base + PAGE_SIZE;
+        memory.set_allocation_cursors(cursors);
+        drop(transaction);
+        let map = answered.recv().unwrap().unwrap();
+        assert_eq!(
+            map.mappings[0],
+            region(base, base + PAGE_SIZE, RW, reverie::MappingBacking::Heap)
+        );
         reading.join().unwrap();
     }
 }
