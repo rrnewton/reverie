@@ -97,6 +97,7 @@ pub async fn catch_pinned_future<F: Future>(
 }
 
 #[cfg(test)]
+#[allow(clippy::disallowed_methods, reason = "tests may make threads freely")]
 mod tests {
     use std::cell::Cell;
     use std::cell::RefCell;
