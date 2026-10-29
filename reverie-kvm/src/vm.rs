@@ -3490,7 +3490,7 @@ impl KvmBackend {
             // The child runs on a copy of the memory, but on Linux it shares
             // the parent's address space: a change to the stack window either
             // makes is the other's too, so they share the window's record
-            // (`GuestMemory::unchanged_user_stack_window`) from here on, until
+            // (`GuestMemory::user_stack_window_mappings`) from here on, until
             // the child's exec gives it a record of its own.
             child.memory.share_user_stack_window_watch(&self.memory);
         }
@@ -9572,8 +9572,9 @@ mod tests {
     /// A child that shares its parent's address space on Linux (vfork, and
     /// a process clone with CLONE_VM|CLONE_VFORK) runs on a copy of the
     /// parent's memory here, and shares the stack window's record with it:
-    /// a change to the window either makes, child or parent, empties the
-    /// answer for both. A forked child's record is its own.
+    /// a change to the window either makes, child or parent, leaves the
+    /// other's mappings unknown, while the one that made it lists it. A
+    /// forked child's record is its own.
     #[test]
     fn a_vfork_child_shares_the_stack_windows_record_with_its_parent() {
         for share_address_space in [true, false] {
@@ -9593,8 +9594,10 @@ mod tests {
                     registers,
                 )
                 .unwrap();
-                let window = parent.memory.unchanged_user_stack_window();
-                assert!(window.is_some(), "{label}");
+                let window = parent.memory.user_stack_window_mappings();
+                let &[(start, end, mapping)] = window.as_deref().unwrap() else {
+                    panic!("{label}: {window:?}");
+                };
                 let child = parent
                     .prepare_forked_process(
                         &executor,
@@ -9610,7 +9613,7 @@ mod tests {
                     )
                     .unwrap();
                 assert_eq!(
-                    child.backend.memory.unchanged_user_stack_window(),
+                    child.backend.memory.user_stack_window_mappings(),
                     window,
                     "{label}"
                 );
@@ -9619,10 +9622,27 @@ mod tests {
                 } else {
                     (&parent.memory, &child.backend.memory)
                 };
-                changing.note_user_mapping_change(window.unwrap().0, 4096);
-                assert_eq!(changing.unchanged_user_stack_window(), None, "{label}");
+                // A page of the window well below the initial stack, read-only.
+                let page = start + 16 * 4096;
+                let physical = changing.user_range_to_guest(page, 4096).unwrap();
+                changing
+                    .protect_user_range(physical, 4096, libc::PROT_READ as u8)
+                    .unwrap();
+                let read_only = crate::memory::DeclaredMapping {
+                    prot: libc::PROT_READ as u8,
+                    ..mapping
+                };
+                assert_eq!(
+                    changing.user_stack_window_mappings(),
+                    Some(vec![
+                        (start, page, mapping),
+                        (page, page + 4096, read_only),
+                        (page + 4096, end, mapping),
+                    ]),
+                    "{label}"
+                );
                 let expected = if share_address_space { None } else { window };
-                assert_eq!(other.unchanged_user_stack_window(), expected, "{label}");
+                assert_eq!(other.user_stack_window_mappings(), expected, "{label}");
             }
         }
     }

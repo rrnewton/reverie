@@ -67,14 +67,14 @@
 //! threads it answers for.
 //!
 //! `memory_map`: the executor keeps the guest's address space page by page,
-//! with what each page was reserved for and whether it is accessible and
-//! writable, but no mapping list, no file identity, no read or execute
-//! permission of its own, and none of the history that decides where Linux
-//! splits and merges mappings. It lists the one mapping it can establish
-//! exactly for its own address space, the process's `[stack]` while nothing
-//! has changed the stack window since the image started (in this process, or
-//! in a vfork child or parent that shares it), and says that the list is not
-//! complete (gVisor:
+//! with what each page was reserved for, whether it is accessible and
+//! writable, and, where the guest's calls declared them, the protection it
+//! asked for and the flags of the madvise hints this executor accepts, but no
+//! mapping list, no file identity, and none of the history that decides where
+//! Linux splits and merges most mappings. It lists the mappings it can
+//! establish exactly for its own address space, those of the stack window,
+//! whose pages split and merge only as the guest's calls change them, and
+//! says that the list is not complete (gVisor:
 //! pkg/sentry/fsimpl/proc/task_files.go, whose `maps` the Sentry renders from
 //! its own memory manager's list). See `ElfExecutor::memory_map`.
 
@@ -451,60 +451,57 @@ impl ElfExecutor {
     /// lists them for this address space, which are not all of them, so the
     /// list is never complete.
     ///
-    /// The executor keeps the address space as pages, each with what it was
-    /// reserved for and whether it is accessible and writable. That is not
-    /// enough for a mapping's permissions, which Linux keeps apart (read,
-    /// write and execute), nor for its boundaries, which depend on how
-    /// earlier calls split and merged mappings and on flags Linux keeps on
-    /// them (<https://github.com/rrnewton/reverie/issues/1211>). The one mapping
-    /// it can establish is the stack, while the stack window is as the
-    /// loader left it: nothing has changed since the image started
-    /// (`GuestMemory::unchanged_user_stack_window`), in this process; for a
-    /// fork, in its parent before the fork; and in a process that shares
-    /// this address space on Linux, a vfork child (`vfork(2)`, or `clone(2)`
-    /// and `clone3(2)` with `CLONE_VM|CLONE_VFORK`) and its parent, which run
-    /// on two copies of the memory here that share the record, until the
-    /// child executes another image. Then the list holds one mapping, the
-    /// window's:
+    /// The executor keeps the address space as pages: what each was reserved
+    /// for, whether it is accessible and writable and, where the guest's
+    /// calls declared them, the protection the guest asked for and the
+    /// mapping flags of the `madvise(2)` hints it accepts
+    /// (`GuestMemory::user_stack_window_mappings`). That holds no file
+    /// identity and none of the history that decides where Linux splits and
+    /// merges most mappings (<https://github.com/rrnewton/reverie/issues/1211>),
+    /// but it does for the stack window: the loader maps it whole as one
+    /// mapping, and no other mapping can be placed in it, so its pages split
+    /// and merge only as the guest's calls change their protection, mapping
+    /// and flags. The list holds the window's mappings, each a run of mapped
+    /// pages with the same protection and flags:
     ///
-    /// - its range is the window, from its start (the executor maps the whole
-    ///   window at load, where Linux maps the stack's arguments and 128 KiB
-    ///   below them and grows the stack on demand, so Linux's mapping starts
-    ///   higher) to the top of the user address space, where Linux's ends;
-    /// - it is readable and writable, and executable where Linux makes the
-    ///   stack executable (`setup_arg_pages`): for an image whose last
-    ///   `PT_GNU_STACK` header has `PF_X`. Linux also does for an image
-    ///   without one started with the `READ_IMPLIES_EXEC` personality, which
-    ///   this executor never sets; for a process that has it the entry is
-    ///   omitted, since the permission its stack started with cannot be
-    ///   established;
+    /// - its range is the run's; the lowest run starts at the window's start
+    ///   (the executor maps the whole window at load, where Linux maps the
+    ///   stack's arguments and 128 KiB below them and grows the stack on
+    ///   demand, so Linux's mapping starts higher);
+    /// - its permissions are the protection the guest declared: read-write,
+    ///   and executable for an image whose last `PT_GNU_STACK` header has
+    ///   `PF_X` (`setup_arg_pages`), as the loader maps the window, then as
+    ///   `mprotect(2)` changes it. Linux also makes the stack executable for an
+    ///   image without the header started with the `READ_IMPLIES_EXEC`
+    ///   personality, which this executor never sets; for a process that has
+    ///   it the list is empty, since the permission its stack started with
+    ///   cannot be established;
     /// - it is private, with no file offset, device or inode;
-    /// - it is `[stack]`, the mapping that holds the initial stack pointer
-    ///   (`vma_is_initial_stack`); a window that does not hold it is not
-    ///   listed.
+    /// - the run that holds the initial stack pointer is `[stack]`
+    ///   (`vma_is_initial_stack`); every other run has no name, as Linux
+    ///   prints the parts a split leaves of the stack.
     ///
-    /// Once the window has changed, the list is empty: any change to the
-    /// state of a page of it, a page of it reserved for another use, and any
-    /// call this executor accepts without changing the pages' states that
-    /// changes what Linux keeps on the mapping, that is `mprotect(2)` of part
-    /// of it, `madvise(2)` advice other than `MADV_WILLNEED`,
-    /// `MADV_DONTNEED`, `MADV_FREE`, `MADV_COLD` and `MADV_PAGEOUT`,
-    /// `munlock(2)` of part of it and `munlockall(2)`. Where Linux applies
-    /// part of a call and then fails, the part is recorded too: an
-    /// `mprotect(2)` range that overlaps the window is recorded before any
-    /// refusal, since Linux protects the mappings before a hole and keeps
-    /// that when it reports ENOMEM, where this executor refuses the whole
-    /// range (a range that Linux refuses before it reaches the stack is
-    /// recorded as well, which only omits); madvise records its range before
-    /// it reports a hole in the same way. A new image starts it again.
+    /// A run is left out next to a page whose mapping is not declared or that
+    /// is reserved for another use, and the whole list is empty once
+    /// something changed that the pages do not hold: an `mprotect(2)` this
+    /// executor refuses whole where Linux applies part of it before a hole,
+    /// or a change made by a vfork child or parent that shares this address
+    /// space on Linux but runs on a copy of the memory here. A new image
+    /// starts it again.
     ///
-    /// A call this executor refuses where Linux applies it leaves the entry
-    /// listed where Linux shows the stack changed: `mlock(2)` and `mlock2(2)`
-    /// (ENOSYS), `mprotect(2)` with `PROT_GROWSDOWN` (EINVAL), and a
-    /// `MAP_FIXED` mapping or an `mremap(2)` destination in the window
-    /// (ENOMEM and EINVAL). The entry is exact for this executor's address
-    /// space, which the refused call left as it was; the refusal, which the
-    /// guest sees, is the difference from Linux.
+    /// A call this executor refuses where Linux applies it leaves the window
+    /// as it was where Linux shows it changed: `mlock(2)` and `mlock2(2)`,
+    /// `madvise(2)` with `MADV_DONTFORK`, `MADV_DONTDUMP` or
+    /// `MADV_WIPEONFORK`, `mseal(2)`, `pkey_mprotect(2)`, `mbind(2)` and
+    /// `prctl(PR_SET_VMA)` (ENOSYS); `mprotect(2)` with `PROT_GROWSDOWN`
+    /// (EINVAL); a `MAP_FIXED` mapping or an `mremap(2)` destination in the
+    /// window (ENOMEM and EINVAL); and a `munmap(2)` that crosses the window's
+    /// start (EINVAL). The list is exact for this executor's address space,
+    /// which the refused call left as it was; the refusal, which the guest
+    /// sees, is the difference from Linux. So is a call on a page of the
+    /// window below the part Linux has mapped for the stack, which this
+    /// executor applies where Linux answers ENOMEM, or for `munmap(2)`
+    /// changes nothing.
     ///
     /// It answers for the threads of this task's process, as `link_path`
     /// does, since only they share this address space: `ESRCH` when `tid`
@@ -512,11 +509,12 @@ impl ElfExecutor {
     /// provided for a live thread of another process, whose address space
     /// this executor does not hold.
     ///
-    /// Whether the window is unchanged is read under one acquisition of the
-    /// address space's lock, which every change to a page's state and every
-    /// recorded change also takes, and a syscall records a change before it
-    /// makes it, so the answer is never part of a change; the reader never
-    /// waits for another thread's syscall to finish.
+    /// The window's pages are read under one acquisition of the address
+    /// space's lock, which every change to a page's state takes too, so the
+    /// answer is never part of a change; the reader never waits for another
+    /// thread's syscall to finish. A change made in a vfork partner's copy
+    /// takes that copy's lock and reaches this one through the record they
+    /// share, which only ever loses certainty.
     pub fn memory_map(
         &self,
         memory: &GuestMemory,
@@ -526,23 +524,24 @@ impl ElfExecutor {
         self.link_owner(tid)?;
         let mut mappings = Vec::new();
         let start_stack = self.state.stack_pointer;
-        if let Some((start, end)) = memory.unchanged_user_stack_window()
-            && self.state.linux_personality & READ_IMPLIES_EXEC == 0
-            && (start..=end).contains(&start_stack)
+        if self.state.linux_personality & READ_IMPLIES_EXEC == 0
+            && let Some(runs) = memory.user_stack_window_mappings()
         {
-            let executable = if self.state.stack_executable {
-                libc::PROT_EXEC
-            } else {
-                0
-            };
-            mappings.push(reverie::MappingFact::new(
-                start,
-                end,
-                (libc::PROT_READ | libc::PROT_WRITE | executable) as u32,
-                false,
-                0,
-                reverie::MappingBacking::Stack,
-            )?);
+            for (start, end, declared) in runs {
+                let backing = if (start..=end).contains(&start_stack) {
+                    reverie::MappingBacking::Stack
+                } else {
+                    reverie::MappingBacking::Anonymous
+                };
+                mappings.push(reverie::MappingFact::new(
+                    start,
+                    end,
+                    u32::from(declared.prot),
+                    false,
+                    0,
+                    backing,
+                )?);
+            }
         }
         reverie::MemoryMap::new(mappings, false)
     }
@@ -2280,6 +2279,7 @@ mod memory_map_tests {
     use std::sync::atomic::Ordering;
 
     use reverie::FactError;
+    use reverie::MappingBacking::Anonymous;
     use reverie::MappingBacking::Stack;
 
     use super::*;
@@ -2416,85 +2416,254 @@ mod memory_map_tests {
         assert_eq!(executor.memory_map(&memory, tid), Ok(stack(RW)));
     }
 
-    /// Each change to the window, and each call that changes what Linux
-    /// keeps on the stack's mapping without changing the pages' states,
-    /// empties the map for good: protecting a page, as anything at all,
-    /// read-write and read-write-execute included, which leave its state
-    /// as it is, and again after setting it back; unmapping a page; madvise
-    /// advice that sets or clears a mapping flag on Linux; munlock of a page;
-    /// munlockall.
+    /// A mapping of the window, `[stack]` or a part a split left.
+    fn run(
+        start: u64,
+        end: u64,
+        prot: u32,
+        backing: reverie::MappingBacking,
+    ) -> reverie::MappingFact {
+        reverie::MappingFact::new(start, end, prot, false, 0, backing).unwrap()
+    }
+
+    fn listed(mappings: Vec<reverie::MappingFact>) -> reverie::MemoryMap {
+        reverie::MemoryMap::new(mappings, false).unwrap()
+    }
+
+    /// The window split around `STACK_PAGE`, the page `middle` with
+    /// protection `prot`: two parts and the `[stack]` that holds the initial
+    /// stack pointer.
+    fn split(prot: u32) -> reverie::MemoryMap {
+        let high = STACK_PAGE + PAGE_SIZE;
+        listed(vec![
+            run(WINDOW.0, STACK_PAGE, RW, Anonymous),
+            run(STACK_PAGE, high, prot, Anonymous),
+            run(high, WINDOW.1, RW, Stack),
+        ])
+    }
+
+    /// Each change to the window is listed as Linux splits the stack: a
+    /// protection change splits it around the page (`r--`, `---`, `rwx` and
+    /// `-w-`), and setting the protection back merges it again; an unmapped
+    /// page leaves the parts on either side; a flag-changing madvise hint
+    /// splits it and its undo merges it, where advice already in force, and
+    /// read-write, the protection the page has, change nothing; a hint over a
+    /// hole is applied to the mapped part. The part that holds the initial
+    /// stack pointer is `[stack]`, the others have no name.
     #[test]
-    fn each_change_to_the_stack_window_empties_the_map() {
+    fn each_change_to_the_stack_window_is_listed_as_linux_splits_it() {
         let page = PAGE_SIZE;
         let protect = |prot: i32| (libc::SYS_mprotect, [STACK_PAGE, page, prot as u64]);
         let advise = |advice: i32| (libc::SYS_madvise, [STACK_PAGE, page, advice as u64]);
-        let mut changes = vec![
-            ("read-only", protect(libc::PROT_READ)),
-            ("inaccessible", protect(libc::PROT_NONE)),
-            ("read-write", protect(libc::PROT_READ | libc::PROT_WRITE)),
+        let (r, w) = (libc::PROT_READ as u32, libc::PROT_WRITE as u32);
+        let unmapped = listed(vec![
+            run(WINDOW.0, STACK_PAGE, RW, Anonymous),
+            run(STACK_PAGE + page, WINDOW.1, RW, Stack),
+        ]);
+        let top = WINDOW.1 - page;
+        let top_split = listed(vec![
+            run(WINDOW.0, top, RW, Anonymous),
+            run(top, WINDOW.1, RW, Stack),
+        ]);
+        type Calls = Vec<(libc::c_long, [u64; 3])>;
+        let cases: Vec<(&str, Calls, reverie::MemoryMap)> = vec![
+            ("read-only", vec![protect(libc::PROT_READ)], split(r)),
+            ("inaccessible", vec![protect(libc::PROT_NONE)], split(0)),
+            ("read-write-execute", vec![protect(RWX as i32)], split(RWX)),
+            ("write-only", vec![protect(libc::PROT_WRITE)], split(w)),
+            ("read-write", vec![protect(RW as i32)], stack(RW)),
             (
-                "read-write-execute",
-                protect(libc::PROT_READ | libc::PROT_WRITE | libc::PROT_EXEC),
+                "read-only and back",
+                vec![protect(libc::PROT_READ), protect(RW as i32)],
+                stack(RW),
             ),
-            ("write-only", protect(libc::PROT_WRITE)),
-            ("unmapped", (libc::SYS_munmap, [STACK_PAGE, page, 0])),
-            ("munlock", (libc::SYS_munlock, [STACK_PAGE, page, 0])),
-            ("munlockall", (libc::SYS_munlockall, [0, 0, 0])),
-        ];
-        let flagging = [
-            ("MADV_NORMAL", libc::MADV_NORMAL),
-            ("MADV_RANDOM", libc::MADV_RANDOM),
-            ("MADV_SEQUENTIAL", libc::MADV_SEQUENTIAL),
-            ("MADV_MERGEABLE", libc::MADV_MERGEABLE),
-            ("MADV_UNMERGEABLE", libc::MADV_UNMERGEABLE),
-            ("MADV_HUGEPAGE", libc::MADV_HUGEPAGE),
-            ("MADV_NOHUGEPAGE", libc::MADV_NOHUGEPAGE),
-        ];
-        changes.extend(
-            flagging
-                .iter()
-                .map(|&(name, advice)| (name, advise(advice))),
-        );
-        // A hint over a range with a hole is reported as ENOMEM, and Linux
-        // applies it to the mapped part all the same.
-        changes.push((
-            "MADV_RANDOM with a hole",
             (
-                libc::SYS_madvise,
-                [WINDOW.1 - page, 2 * page, libc::MADV_RANDOM as u64],
+                "unmapped",
+                vec![(libc::SYS_munmap, [STACK_PAGE, page, 0])],
+                unmapped,
             ),
-        ));
-        for (name, (number, args)) in changes {
+            ("MADV_RANDOM", vec![advise(libc::MADV_RANDOM)], split(RW)),
+            (
+                "MADV_SEQUENTIAL undone",
+                vec![advise(libc::MADV_SEQUENTIAL), advise(libc::MADV_NORMAL)],
+                stack(RW),
+            ),
+            (
+                "MADV_RANDOM undone",
+                vec![advise(libc::MADV_RANDOM), advise(libc::MADV_NORMAL)],
+                stack(RW),
+            ),
+            ("MADV_NORMAL", vec![advise(libc::MADV_NORMAL)], stack(RW)),
+            (
+                "MADV_SEQUENTIAL",
+                vec![advise(libc::MADV_SEQUENTIAL)],
+                split(RW),
+            ),
+            (
+                "MADV_RANDOM then MADV_SEQUENTIAL",
+                vec![advise(libc::MADV_RANDOM), advise(libc::MADV_SEQUENTIAL)],
+                split(RW),
+            ),
+            (
+                "MADV_HUGEPAGE",
+                vec![advise(libc::MADV_HUGEPAGE)],
+                split(RW),
+            ),
+            (
+                "MADV_HUGEPAGE then MADV_NOHUGEPAGE",
+                vec![advise(libc::MADV_HUGEPAGE), advise(libc::MADV_NOHUGEPAGE)],
+                split(RW),
+            ),
+            (
+                "MADV_MERGEABLE undone",
+                vec![advise(libc::MADV_MERGEABLE), advise(libc::MADV_UNMERGEABLE)],
+                stack(RW),
+            ),
+            (
+                "MADV_UNMERGEABLE",
+                vec![advise(libc::MADV_UNMERGEABLE)],
+                stack(RW),
+            ),
+            (
+                "a hint kept by a protection change",
+                vec![
+                    advise(libc::MADV_RANDOM),
+                    protect(libc::PROT_READ),
+                    protect(RW as i32),
+                ],
+                split(RW),
+            ),
+            // A hint over a hole is reported as ENOMEM, and Linux applies it
+            // to the mapped part all the same.
+            (
+                "MADV_RANDOM with a hole",
+                vec![(libc::SYS_madvise, [top, 2 * page, libc::MADV_RANDOM as u64])],
+                top_split,
+            ),
+        ];
+        for (name, calls, expected) in cases {
             let directory = Directory::new();
             let (mut executor, memory) = loaded(&directory);
             let tid = executor.state.tid;
-            let result = change(&mut executor, &memory, number, args);
-            assert!(
-                result == 0 || result == -i64::from(libc::ENOMEM),
-                "{name}: {result}"
-            );
-            assert_eq!(executor.memory_map(&memory, tid), Ok(empty()), "{name}");
-            // Setting the page back as the image started with it does not
-            // bring the line back.
-            let _ = change(
-                &mut executor,
-                &memory,
-                libc::SYS_mprotect,
-                [
-                    STACK_PAGE,
-                    page,
-                    (libc::PROT_READ | libc::PROT_WRITE) as u64,
-                ],
-            );
-            assert_eq!(executor.memory_map(&memory, tid), Ok(empty()), "{name}");
+            // The initial stack pointer lies in the window's top page.
+            assert!(executor.state.stack_pointer >= top, "{name}");
+            for (number, args) in calls {
+                let result = change(&mut executor, &memory, number, args);
+                assert!(
+                    result == 0 || result == -i64::from(libc::ENOMEM),
+                    "{name}: {result}"
+                );
+            }
+            assert_eq!(executor.memory_map(&memory, tid), Ok(expected), "{name}");
         }
     }
 
+    /// The access-pattern and huge-page hints replace each other, as Linux
+    /// sets one flag and clears the other: a page advised `MADV_RANDOM` and
+    /// then `MADV_SEQUENTIAL` is one mapping with the page above it advised
+    /// `MADV_SEQUENTIAL` alone, and likewise for `MADV_HUGEPAGE` and then
+    /// `MADV_NOHUGEPAGE`.
+    #[test]
+    fn hints_that_replace_each_other_leave_the_flag_linux_keeps() {
+        let page = PAGE_SIZE;
+        for (first, second) in [
+            (libc::MADV_RANDOM, libc::MADV_SEQUENTIAL),
+            (libc::MADV_HUGEPAGE, libc::MADV_NOHUGEPAGE),
+        ] {
+            let directory = Directory::new();
+            let (mut executor, memory) = loaded(&directory);
+            let tid = executor.state.tid;
+            let advise = |executor: &mut ElfExecutor, start: u64, advice: i32| {
+                let result = change(
+                    executor,
+                    &memory,
+                    libc::SYS_madvise,
+                    [start, page, advice as u64],
+                );
+                assert_eq!(result, 0, "advice {advice}");
+            };
+            advise(&mut executor, STACK_PAGE, first);
+            advise(&mut executor, STACK_PAGE, second);
+            advise(&mut executor, STACK_PAGE + page, second);
+            assert_eq!(
+                executor.memory_map(&memory, tid),
+                Ok(listed(vec![
+                    run(WINDOW.0, STACK_PAGE, RW, Anonymous),
+                    run(STACK_PAGE, STACK_PAGE + 2 * page, RW, Anonymous),
+                    run(STACK_PAGE + 2 * page, WINDOW.1, RW, Stack),
+                ])),
+                "{first} then {second}"
+            );
+        }
+    }
+
+    /// The pages keep the protection the guest declared, outside the window
+    /// too: the heap's new pages are read-write, a mapping has what mmap
+    /// asked for, and mprotect changes it. Flags are kept in the window only.
+    #[test]
+    fn the_pages_keep_the_protection_the_guest_declared() {
+        let directory = Directory::new();
+        let (mut executor, memory) = loaded(&directory);
+        let page = PAGE_SIZE;
+        let declared =
+            |user: u64| memory.declared_mapping(memory.user_range_to_guest(user, page).unwrap());
+        let mapping = |prot: u32| {
+            Some(crate::memory::DeclaredMapping {
+                prot: prot as u8,
+                flags: 0,
+            })
+        };
+        let base = executor.state.heap_base;
+        assert_eq!(
+            change(
+                &mut executor,
+                &memory,
+                libc::SYS_brk,
+                [base + 2 * page, 0, 0]
+            ),
+            (base + 2 * page) as i64
+        );
+        assert_eq!(declared(base + page), mapping(RW));
+        let private = (libc::MAP_PRIVATE | libc::MAP_ANONYMOUS) as u64;
+        let mapped = call(
+            &mut executor,
+            &memory,
+            libc::SYS_mmap,
+            [0, page, libc::PROT_READ as u64, private, u64::MAX, 0],
+        );
+        assert!(mapped > 0, "{mapped}");
+        let mapped = mapped as u64;
+        assert_eq!(declared(mapped), mapping(libc::PROT_READ as u32));
+        assert_eq!(
+            change(
+                &mut executor,
+                &memory,
+                libc::SYS_mprotect,
+                [mapped, page, u64::from(RWX)]
+            ),
+            0
+        );
+        assert_eq!(declared(mapped), mapping(RWX));
+        assert_eq!(
+            change(
+                &mut executor,
+                &memory,
+                libc::SYS_madvise,
+                [mapped, page, libc::MADV_RANDOM as u64]
+            ),
+            0
+        );
+        assert_eq!(declared(mapped), mapping(RWX));
+        assert_eq!(declared(STACK_PAGE), mapping(RW));
+    }
+
     /// Calls that change nothing Linux keeps on the stack's mapping leave
-    /// it listed: madvise advice that never sets or clears a mapping flag;
-    /// madvise this executor refuses, or that Linux refuses; madvise and
-    /// munlock over no page; a munlock that starts at no mapping, which Linux
-    /// refuses first; mprotect and munlock of the heap. So do the calls this
+    /// it listed: madvise advice that never sets or clears a mapping flag,
+    /// or clears one that is not set; madvise this executor refuses, or that
+    /// Linux refuses; madvise and munlock over no page; a munlock that starts
+    /// at no mapping, which Linux refuses first; mprotect and munlock of the
+    /// heap; munlock and munlockall, since nothing is locked; mprotect to the
+    /// protection the stack has. So do the calls this
     /// executor refuses before anything changes, where Linux applies them:
     /// mlock and mlock2 (ENOSYS), mprotect with `PROT_GROWSDOWN` (EINVAL),
     /// a fixed mapping in the window (ENOMEM) and an mremap there (EINVAL).
@@ -2504,7 +2673,16 @@ mod memory_map_tests {
         let (mut executor, memory) = loaded(&directory);
         let tid = executor.state.tid;
         let page = PAGE_SIZE;
-        for advice in mm::MADVISE_KEEPS_MAPPING_FLAGS {
+        let keeping = [
+            libc::MADV_WILLNEED,
+            libc::MADV_DONTNEED,
+            libc::MADV_FREE,
+            libc::MADV_COLD,
+            libc::MADV_PAGEOUT,
+            libc::MADV_NORMAL,
+            libc::MADV_UNMERGEABLE,
+        ];
+        for advice in keeping {
             assert_eq!(
                 change(
                     &mut executor,
@@ -2617,6 +2795,30 @@ mod memory_map_tests {
             change(&mut executor, &memory, libc::SYS_munlock, [base, page, 0]),
             0
         );
+        // munlock and munlockall, since nothing is locked, and mprotect to the
+        // protection the stack has.
+        assert_eq!(
+            change(
+                &mut executor,
+                &memory,
+                libc::SYS_munlock,
+                [STACK_PAGE, page, 0]
+            ),
+            0
+        );
+        assert_eq!(
+            change(&mut executor, &memory, libc::SYS_munlockall, [0, 0, 0]),
+            0
+        );
+        assert_eq!(
+            change(
+                &mut executor,
+                &memory,
+                libc::SYS_mprotect,
+                [STACK_PAGE, 4 * page, u64::from(RW)]
+            ),
+            0
+        );
         let fixed = (libc::MAP_FIXED | libc::MAP_PRIVATE | libc::MAP_ANONYMOUS) as u64;
         assert_eq!(
             call(
@@ -2650,8 +2852,9 @@ mod memory_map_tests {
 
     /// The stack is executable for an image whose last `PT_GNU_STACK` header
     /// has `PF_X`, as Linux maps it, and not otherwise. A process with the
-    /// `READ_IMPLIES_EXEC` personality, and a window that does not hold the
-    /// initial stack pointer, have the entry omitted.
+    /// `READ_IMPLIES_EXEC` personality has the list empty, and a window that
+    /// does not hold the initial stack pointer is listed without the name
+    /// `[stack]`.
     #[test]
     fn the_stack_is_executable_as_linux_maps_it() {
         const PF_RW: u32 = 6;
@@ -2682,15 +2885,18 @@ mod memory_map_tests {
         assert_eq!(executor.memory_map(&memory, tid), Ok(stack(RW)));
         let start_stack = executor.state.stack_pointer;
         executor.state.stack_pointer = WINDOW.0 - PAGE_SIZE;
-        assert_eq!(executor.memory_map(&memory, tid), Ok(empty()));
+        assert_eq!(
+            executor.memory_map(&memory, tid),
+            Ok(listed(vec![run(WINDOW.0, WINDOW.1, RW, Anonymous)]))
+        );
         executor.state.stack_pointer = start_stack;
         assert_eq!(executor.memory_map(&memory, tid), Ok(stack(RW)));
     }
 
     /// A forked child's address space is a copy of its parent's, as the
-    /// backend makes it: it lists the stack while the parent's window was
-    /// unchanged at the fork, whatever either changes afterwards, and not
-    /// once the parent's had changed. Its threads share its answer.
+    /// backend makes it: it lists the window as the parent's was at the
+    /// fork, a split included, whatever either changes afterwards. Its
+    /// threads share its answer.
     #[test]
     fn a_fork_inherits_the_stack_window_as_it_was() {
         let directory = Directory::new();
@@ -2711,7 +2917,8 @@ mod memory_map_tests {
             ),
             0
         );
-        assert_eq!(executor.memory_map(&memory, tid), Ok(empty()));
+        let read_only = split(libc::PROT_READ as u32);
+        assert_eq!(executor.memory_map(&memory, tid), Ok(read_only.clone()));
         assert_eq!(child.memory_map(&child_memory, child_tid), Ok(stack(RW)));
         let grandchild = executor
             .fork_child(executor.state.pid + 41, false, false)
@@ -2719,7 +2926,7 @@ mod memory_map_tests {
         let grandchild_memory = memory.snapshot().unwrap();
         assert_eq!(
             grandchild.memory_map(&grandchild_memory, grandchild.state.tid),
-            Ok(empty())
+            Ok(read_only)
         );
         let sibling = child.thread_child(child_tid + 1).unwrap();
         assert_eq!(
@@ -2772,9 +2979,10 @@ mod memory_map_tests {
     /// A vfork child shares its parent's address space on Linux. The backend
     /// gives it a copy of the memory that shares the stack window's record
     /// with the parent's (`GuestMemory::share_user_stack_window_watch`), so
-    /// a change the child makes to the window empties the parent's map, and
-    /// one the parent's other threads make while the child runs empties the
-    /// child's.
+    /// a change the child makes to the window, which the parent's copy
+    /// lacks, empties the parent's map, and one the parent's other threads
+    /// make while the child runs empties the child's; the one that made the
+    /// change lists it.
     #[test]
     fn a_vfork_child_and_its_parent_share_the_stack_windows_record() {
         let protect = [STACK_PAGE, PAGE_SIZE, libc::PROT_READ as u64];
@@ -2795,23 +3003,25 @@ mod memory_map_tests {
                 change(&mut executor, &memory, libc::SYS_mprotect, protect)
             };
             assert_eq!(result, 0, "child changes: {child_changes}");
-            assert_eq!(
+            let read_only = split(libc::PROT_READ as u32);
+            let (parent, child) = (
                 executor.memory_map(&memory, tid),
-                Ok(empty()),
-                "child changes: {child_changes}"
-            );
-            assert_eq!(
                 child.memory_map(&child_memory, child_tid),
-                Ok(empty()),
-                "child changes: {child_changes}"
             );
+            let (changer, other) = if child_changes {
+                (child, parent)
+            } else {
+                (parent, child)
+            };
+            assert_eq!(changer, Ok(read_only), "child changes: {child_changes}");
+            assert_eq!(other, Ok(empty()), "child changes: {child_changes}");
         }
     }
 
     /// A vfork child that executes another image, as posix_spawn's does,
     /// leaves its parent's map as it was: the new image is a new address
-    /// space, which lists its own stack, and from then on neither's change
-    /// reaches the other.
+    /// space, which lists its own stack, and from then on each lists its own
+    /// changes, and neither's change reaches the other.
     #[test]
     fn a_vfork_child_that_executes_leaves_its_parents_stack_listed() {
         let protect = [STACK_PAGE, PAGE_SIZE, libc::PROT_READ as u64];
@@ -2854,7 +3064,7 @@ mod memory_map_tests {
                     image.memory_map(&child_memory, image_tid),
                 )
             };
-            assert_eq!(changed, Ok(empty()), "{label}");
+            assert_eq!(changed, Ok(split(libc::PROT_READ as u32)), "{label}");
             assert_eq!(unchanged, Ok(stack(RW)), "{label}");
         }
     }
@@ -2899,7 +3109,7 @@ mod memory_map_tests {
             ),
             0
         );
-        assert_eq!(executor.memory_map(&memory, tid), Ok(empty()));
-        assert_eq!(sibling.memory_map(&memory, tid + 1), Ok(empty()));
+        assert_eq!(executor.memory_map(&memory, tid), Ok(split(RW)));
+        assert_eq!(sibling.memory_map(&memory, tid + 1), Ok(split(RW)));
     }
 }

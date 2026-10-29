@@ -2102,16 +2102,24 @@ fn load_executable(
         at_base,
         main_entry,
     )?;
-    memory.map_user_range(memory.guest_end() - STACK_LIMIT, STACK_LIMIT, false)?;
-    // The window as this image starts with it: from here on, any change to it
-    // is recorded (`GuestMemory::unchanged_user_stack_window`).
-    memory.watch_user_stack_window();
     // Linux takes the last PT_GNU_STACK header's PF_X.
     let stack_executable = elf
         .program_headers
         .iter()
         .rfind(|header| header.p_type == PT_GNU_STACK)
         .is_some_and(|header| header.p_flags & PF_X != 0);
+    // The stack's mapping as Linux's setup_arg_pages makes it: read-write,
+    // and executable for a PT_GNU_STACK with PF_X.
+    let stack_prot =
+        libc::PROT_READ | libc::PROT_WRITE | if stack_executable { libc::PROT_EXEC } else { 0 };
+    memory.map_user_protection(
+        memory.guest_end() - STACK_LIMIT,
+        STACK_LIMIT,
+        stack_prot as u8,
+    )?;
+    // The window as this image starts with it: from here on, every change to
+    // it is counted (`GuestMemory::user_stack_window_mappings`).
+    memory.watch_user_stack_window();
     let program_break = align_up(main_end, PAGE_SIZE)?;
     // Mappings are placed top-down in the mmap window, [mmap_base, mmap_limit)
     // physically; the program break grows up to the end of the identity
