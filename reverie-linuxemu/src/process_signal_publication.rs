@@ -57,6 +57,37 @@ pub(crate) use child_wait::TestChildCompletion;
 use child_wait::WaitPhase;
 use child_wait::WaitPublication;
 
+/// A test hook: a closure a test installs on one thread.
+#[cfg(test)]
+pub(crate) type TestHook = std::cell::RefCell<Option<Box<dyn FnMut()>>>;
+
+#[cfg(test)]
+std::thread_local! {
+    /// Runs on the calling thread in `signal_recipients`, `signal_sets` and
+    /// `publish`, after each clones the process's current image and before it
+    /// takes the process's transaction: the window in which an exec of the
+    /// process can replace the image, and free the replaced image's state,
+    /// under the caller.
+    pub(crate) static IMAGE_CLONED_TEST_HOOK: TestHook = const { std::cell::RefCell::new(None) };
+    /// Runs on the calling thread in the same three, right after each takes
+    /// the process's transaction and before it takes the lifecycle table or
+    /// the process's signal state (the inactive `publish` path already holds
+    /// the file table, which the lock order puts first): where a test can
+    /// hold the transaction against another call.
+    pub(crate) static TRANSACTION_HELD_TEST_HOOK: TestHook =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Runs `hook`, if this thread installed one.
+#[cfg(test)]
+fn run_test_hook(hook: &'static std::thread::LocalKey<TestHook>) {
+    hook.with(|hook| {
+        if let Some(hook) = hook.borrow_mut().as_mut() {
+            hook();
+        }
+    });
+}
+
 type ProcessKey = (i32, u64);
 
 pub fn process_key(process: SignalProcessId) -> ProcessKey {
@@ -119,6 +150,30 @@ impl ProcessBinding {
             signals: Arc::downgrade(&state.process_signals),
         };
     }
+}
+
+/// The signal state of `image`, the image of `binding`'s process that the
+/// caller cloned before it took the process's transaction, which it now holds.
+///
+/// `EAGAIN` when an exec has replaced that image since the clone. Only for the
+/// image that is still current does a state that cannot be upgraded mean that
+/// the process is gone (`ESRCH`): an exec that completed between the clone and
+/// the transaction may already have freed the replaced image's state, and
+/// upgrading before this check would report a live process as gone.
+fn current_image_signals(
+    binding: &ProcessBinding,
+    image: &CurrentImage,
+) -> Result<Arc<Mutex<ProcessSignalState>>, Errno> {
+    if binding
+        .image
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .revision
+        != image.revision
+    {
+        return Err(Errno::EAGAIN);
+    }
+    image.signals.upgrade().ok_or(Errno::ESRCH)
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -989,17 +1044,26 @@ impl ProcessSignalControl {
             .lock()
             .unwrap_or_else(|p| p.into_inner())
             .clone();
-        let (Some(transaction), Some(lifecycle), Some(signals)) = (
-            binding.transaction.upgrade(),
-            binding.lifecycle.upgrade(),
-            image.signals.upgrade(),
-        ) else {
+        #[cfg(test)]
+        run_test_hook(&IMAGE_CLONED_TEST_HOOK);
+        let (Some(transaction), Some(lifecycle)) =
+            (binding.transaction.upgrade(), binding.lifecycle.upgrade())
+        else {
             return Rejected(StaleProcess);
         };
+        // Declared here, before the file table and the transaction's guard,
+        // so that it is dropped after both, as before; but taken only under
+        // the transaction (`current_image_signals`): an exec that overlaps the
+        // publication is a changed image, never a stale process.
+        let signals;
         // The active path neither acquires nor pins an ordinary file table:
         // even dropping its final Arc could close an unrelated blocking socket
         // while the Tool holds its scheduler mutex. Only the inactive private
         // endpoint retains its historical table preflight and corruption checks.
+        // Its table is taken before the transaction, as the lock order
+        // requires; an exec keeps the executor's table (it updates it in
+        // place), so unlike the signal state this upgrade cannot fail because
+        // of an exec, only because the process has exited.
         let files_owner = if independent_carriers {
             None
         } else {
@@ -1016,15 +1080,13 @@ impl ProcessSignalControl {
             None => None,
         };
         let _transaction = transaction.lock().unwrap_or_else(|p| p.into_inner());
-        if binding
-            .image
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .revision
-            != image.revision
-        {
-            return Rejected(ChangedImage);
-        }
+        #[cfg(test)]
+        run_test_hook(&TRANSACTION_HELD_TEST_HOOK);
+        signals = match current_image_signals(&binding, &image) {
+            Ok(signals) => signals,
+            Err(Errno::EAGAIN) => return Rejected(ChangedImage),
+            Err(_) => return Rejected(StaleProcess),
+        };
         let lifecycle = lifecycle.lock().unwrap_or_else(|p| p.into_inner());
         if binding.identity != target
             || !lifecycle.contains_process(target.tgid.as_raw(), target.generation)
@@ -1545,21 +1607,19 @@ impl reverie::ProcessSignalControl for ProcessSignalControl {
             .lock()
             .unwrap_or_else(|p| p.into_inner())
             .clone();
+        #[cfg(test)]
+        run_test_hook(&IMAGE_CLONED_TEST_HOOK);
         let transaction = binding.transaction.upgrade().ok_or(Errno::ESRCH)?;
         let lifecycle = binding.lifecycle.upgrade().ok_or(Errno::ESRCH)?;
-        let signals = image.signals.upgrade().ok_or(Errno::ESRCH)?;
+        // Declared before the transaction's guard, so that it is dropped after
+        // the guard, but taken only under it (`current_image_signals`).
+        let process_signals;
         let _transaction = transaction.lock().unwrap_or_else(|p| p.into_inner());
-        if binding
-            .image
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .revision
-            != image.revision
-        {
-            return Err(Errno::EAGAIN);
-        }
+        #[cfg(test)]
+        run_test_hook(&TRANSACTION_HELD_TEST_HOOK);
+        process_signals = current_image_signals(&binding, &image)?;
         let lifecycle = lifecycle.lock().unwrap_or_else(|p| p.into_inner());
-        let signals = signals.lock().unwrap_or_else(|p| p.into_inner());
+        let signals = process_signals.lock().unwrap_or_else(|p| p.into_inner());
         let mut signal_mask = crate::signal::KernelSigset::default();
         signal_mask.insert(signal);
         if !signals
@@ -1586,6 +1646,57 @@ impl reverie::ProcessSignalControl for ProcessSignalControl {
         process: SignalProcessId,
     ) -> Result<Vec<reverie::SignalRecipient>, Errno> {
         <Self as reverie::ProcessSignalControl>::signal_recipients(self, process, libc::SIGALRM)
+    }
+
+    /// The same state `ElfExecutor::signal_sets` reads for the task, reached
+    /// through the run registry rather than through a callback's executor,
+    /// with the locks `signal_recipients` takes, in the order every signal path
+    /// takes them: the process's transaction, the lifecycle table, the
+    /// process's signals, then the thread's. The process's state is taken only
+    /// under its transaction, from the image that is still current there
+    /// (`current_image_signals`), so an exec that overlaps the read makes it
+    /// EAGAIN, never ESRCH. Read only: nothing is dequeued, masked or
+    /// recorded.
+    fn signal_sets(
+        &self,
+        task: reverie::SignalTaskIdentity,
+    ) -> Result<reverie::SignalSets, reverie::FactError> {
+        let gone = || reverie::FactError::Errno(Errno::ESRCH);
+        let registry = self.0.upgrade().ok_or_else(gone)?;
+        let binding = registry.lookup(task.process).ok_or_else(gone)?;
+        let image = binding
+            .image
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .clone();
+        #[cfg(test)]
+        run_test_hook(&IMAGE_CLONED_TEST_HOOK);
+        let transaction = binding.transaction.upgrade().ok_or_else(gone)?;
+        let lifecycle = binding.lifecycle.upgrade().ok_or_else(gone)?;
+        // Declared before the transaction's guard, so that it is dropped after
+        // the guard, but taken only under it.
+        let process_signals;
+        let _transaction = transaction.lock().unwrap_or_else(|p| p.into_inner());
+        #[cfg(test)]
+        run_test_hook(&TRANSACTION_HELD_TEST_HOOK);
+        process_signals =
+            current_image_signals(&binding, &image).map_err(reverie::FactError::Errno)?;
+        let lifecycle = lifecycle.lock().unwrap_or_else(|p| p.into_inner());
+        // The exact lifetime the caller names, never whichever task now has
+        // its numeric TID: the same process lifetime, whose thread group and
+        // generation are one key, and the same task generation.
+        let live = lifecycle.get(task.tid.as_raw()).ok_or_else(gone)?;
+        if (live.tgid, live.process_generation) != process_key(task.process)
+            || live.generation != task.task_generation
+        {
+            return Err(gone());
+        }
+        let thread = lifecycle
+            .signal_target(task.tid.as_raw())
+            .ok_or_else(gone)?;
+        let process = process_signals.lock().unwrap_or_else(|p| p.into_inner());
+        let thread = thread.lock();
+        Ok(crate::signal::task_signal_sets(&process, &thread))
     }
 
     fn reserve_delivery(&self, permit: reverie::SignalDeliveryPermit) -> Result<(), Errno> {
@@ -2789,8 +2900,24 @@ mod tests {
         );
     }
 
+    /// A deadlock between the publisher and the consumer would hang the
+    /// scopes below, since a scope joins its threads even while unwinding;
+    /// the rounds run on their own thread, so that the test fails at a 60 s
+    /// bound instead, without dropping anything the stuck threads hold.
     #[test]
     fn inactive_publication_concurrent_dequeue_keeps_readiness_equal_to_pending() {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+        let (done, finished) = std::sync::mpsc::channel();
+        let rounds = std::thread::spawn(move || {
+            inactive_publication_concurrent_dequeue_rounds();
+            done.send(()).unwrap();
+        });
+        if let Err(why) = finish_by("rounds", finished, rounds, deadline) {
+            panic!("{why}");
+        }
+    }
+
+    fn inactive_publication_concurrent_dequeue_rounds() {
         let mut executor = executor();
         let id = identity(&executor);
         let control = executor.signal_registry.control();
@@ -6966,6 +7093,629 @@ mod tests {
         );
         drop(guard);
         assert!(registry.lookup(process).is_none());
+    }
+
+    fn signal_bit(signal: i32) -> u64 {
+        1 << (signal - 1)
+    }
+
+    /// `rt_sigprocmask(SIG_BLOCK, signals)` by `executor`.
+    fn block_signals(executor: &mut ElfExecutor, memory: &mut GuestMemory, signals: &[i32]) {
+        change_mask(executor, memory, libc::SIG_BLOCK, signals);
+    }
+
+    /// `rt_sigprocmask(how, signals)` by `executor`.
+    fn change_mask(
+        executor: &mut ElfExecutor,
+        memory: &mut GuestMemory,
+        how: libc::c_int,
+        signals: &[i32],
+    ) {
+        let mut set = KernelSigset::default();
+        for &signal in signals {
+            set.insert(signal);
+        }
+        memory.write(0x100, &set.to_bytes()).unwrap();
+        assert_eq!(
+            call(
+                executor,
+                memory,
+                libc::SYS_rt_sigprocmask,
+                [how as u64, 0x100, 0, 8, 0, 0]
+            ),
+            0
+        );
+    }
+
+    /// `rt_sigaction(signal, handler)` by `executor`, with no flags and an
+    /// empty mask: handler 1 is `SIG_IGN`.
+    fn set_action(executor: &mut ElfExecutor, memory: &mut GuestMemory, signal: i32, handler: u64) {
+        let mut action = [0u8; 32];
+        action[..8].copy_from_slice(&handler.to_le_bytes());
+        memory.write(0x200, &action).unwrap();
+        assert_eq!(
+            call(
+                executor,
+                memory,
+                libc::SYS_rt_sigaction,
+                [signal as u64, 0x200, 0, 8, 0, 0]
+            ),
+            0
+        );
+    }
+
+    /// Queue a child-exit SIGCHLD in `parent`'s shared queue, from a child
+    /// with process ID `child_pid` that exits with status 7.
+    fn publish_exited_child(parent: &ElfExecutor, child_pid: i32) {
+        let mut child = parent.fork_child(child_pid, false, false).unwrap();
+        let completion = child_completion(
+            identity(parent),
+            identity(&child),
+            reverie::ExitStatus::Exited(7),
+            true,
+        );
+        child.retire_current_thread(completion.status, false);
+        child_receipt(
+            parent
+                .backend_signal_control()
+                .process
+                .publish_child_exit(completion),
+        );
+    }
+
+    /// For every live task of the run (the caller, a sibling with its own
+    /// mask, and the thread of another process), the run-scoped
+    /// `signal_sets` answers exactly what the `Guest` fact
+    /// (`ElfExecutor::signal_sets`) answers, after masks, two actions, a
+    /// thread-directed signal and a child-exit SIGCHLD in the shared queue
+    /// have changed the state. The caller's sets are also checked bit by bit,
+    /// so that agreement on empty sets cannot pass.
+    #[test]
+    fn run_scoped_signal_sets_match_the_guest_fact_for_every_task() {
+        let mut parent = executor();
+        let mut memory = GuestMemory::new(0, 4096).unwrap();
+        let mut sibling = parent.thread_child(9).unwrap();
+        let mut other = parent.fork_child(2, false, false).unwrap();
+        block_signals(
+            &mut parent,
+            &mut memory,
+            &[libc::SIGUSR1, libc::SIGUSR2, libc::SIGCHLD],
+        );
+        block_signals(&mut sibling, &mut memory, &[libc::SIGWINCH]);
+        block_signals(&mut other, &mut memory, &[libc::SIGINT]);
+        set_action(&mut parent, &mut memory, libc::SIGHUP, 1);
+        set_action(&mut parent, &mut memory, libc::SIGTERM, 0x1000);
+        let (pid, tid) = (parent.state.pid as u64, parent.state.tid as u64);
+        let usr1 = libc::SIGUSR1 as u64;
+        assert_eq!(
+            call(
+                &mut parent,
+                &memory,
+                libc::SYS_tgkill,
+                [pid, tid, usr1, 0, 0, 0]
+            ),
+            0
+        );
+        publish_exited_child(&parent, 3);
+        let control = parent.backend_signal_control().process;
+        let caller = parent.signal_task_identity().unwrap();
+        assert_eq!(
+            control.signal_sets(caller),
+            Ok(reverie::SignalSets::new(
+                signal_bit(libc::SIGUSR1),
+                signal_bit(libc::SIGCHLD),
+                signal_bit(libc::SIGUSR1) | signal_bit(libc::SIGUSR2) | signal_bit(libc::SIGCHLD),
+                signal_bit(libc::SIGHUP),
+                signal_bit(libc::SIGTERM),
+            ))
+        );
+        for task in [
+            caller,
+            sibling.signal_task_identity().unwrap(),
+            other.signal_task_identity().unwrap(),
+        ] {
+            assert_eq!(
+                control.signal_sets(task),
+                parent.signal_sets(task.tid.as_raw()),
+                "task {}",
+                task.tid
+            );
+        }
+        let sibling_sets = control
+            .signal_sets(sibling.signal_task_identity().unwrap())
+            .unwrap();
+        assert_eq!(
+            (sibling_sets.pending, sibling_sets.blocked),
+            (0, signal_bit(libc::SIGWINCH))
+        );
+        let other_sets = control
+            .signal_sets(other.signal_task_identity().unwrap())
+            .unwrap();
+        assert_eq!(
+            (other_sets.shared_pending, other_sets.blocked),
+            (0, signal_bit(libc::SIGINT))
+        );
+    }
+
+    /// The task is named by its exact lifetime. A wrong task or process
+    /// generation, a TID no task has, and a task that has exited are each
+    /// ESRCH, even where the numeric TID is still in use.
+    #[test]
+    fn run_scoped_signal_sets_name_an_exact_live_task() {
+        let parent = executor();
+        let sibling = parent.thread_child(9).unwrap();
+        let control = parent.backend_signal_control().process;
+        let live = sibling.signal_task_identity().unwrap();
+        assert!(control.signal_sets(live).is_ok());
+        let esrch = Err(reverie::FactError::Errno(Errno::ESRCH));
+        let mut stale_task = live;
+        stale_task.task_generation += 1;
+        assert_eq!(control.signal_sets(stale_task), esrch);
+        let mut stale_process = live;
+        stale_process.process.generation += 1;
+        assert_eq!(control.signal_sets(stale_process), esrch);
+        let mut nobody = live;
+        nobody.tid = reverie::Pid::from_raw(77);
+        assert_eq!(control.signal_sets(nobody), esrch);
+        drop(sibling);
+        assert_eq!(control.signal_sets(live), esrch);
+        assert!(
+            control
+                .signal_sets(parent.signal_task_identity().unwrap())
+                .is_ok()
+        );
+    }
+
+    /// Reading the sets changes nothing: asked again it answers the same, the
+    /// recipients of the pending signal are unchanged, and the next delivery
+    /// still takes that signal, after which it is no longer pending.
+    #[test]
+    fn run_scoped_signal_sets_only_report() {
+        let mut parent = executor();
+        let process = identity(&parent);
+        publish_exited_child(&parent, 2);
+        let control = parent.backend_signal_control().process;
+        let task = parent.signal_task_identity().unwrap();
+        let before = control.signal_sets(task).unwrap();
+        assert_eq!(before.shared_pending, signal_bit(libc::SIGCHLD));
+        let recipients = control.signal_recipients(process, libc::SIGCHLD).unwrap();
+        for _ in 0..3 {
+            assert_eq!(control.signal_sets(task), Ok(before));
+        }
+        assert_eq!(
+            control.signal_recipients(process, libc::SIGCHLD).unwrap(),
+            recipients
+        );
+        let delivered = parent.take_pending_signal_for_delivery().unwrap().unwrap();
+        let info = delivered.event.siginfo();
+        assert_eq!(
+            i32::from_ne_bytes(info[..4].try_into().unwrap()),
+            libc::SIGCHLD
+        );
+        assert_eq!(control.signal_sets(task).unwrap().shared_pending, 0);
+    }
+
+    /// An identity that joins one live process to another process's live
+    /// thread names no task: the thread group and process generation are one
+    /// key, checked against the thread's own. Accepting it would read one
+    /// process's queue and actions beside another process's thread.
+    #[test]
+    fn run_scoped_signal_sets_refuse_a_mixed_identity() {
+        let parent = executor();
+        let other = parent.fork_child(2, false, false).unwrap();
+        let control = parent.backend_signal_control().process;
+        let parent_task = parent.signal_task_identity().unwrap();
+        let other_task = other.signal_task_identity().unwrap();
+        let esrch = Err(reverie::FactError::Errno(Errno::ESRCH));
+        let mut mixed = other_task;
+        mixed.process = parent_task.process;
+        assert_eq!(control.signal_sets(mixed), esrch);
+        let mut mixed = parent_task;
+        mixed.process = other_task.process;
+        assert_eq!(control.signal_sets(mixed), esrch);
+        assert!(control.signal_sets(parent_task).is_ok());
+        assert!(control.signal_sets(other_task).is_ok());
+    }
+
+    /// A call that runs on its own thread and stops at
+    /// `IMAGE_CLONED_TEST_HOOK`, once: [`Self::start`] returns once the call
+    /// has cloned its process's image and before it takes the process's
+    /// transaction, so the caller can complete an exec there; [`Self::resume`]
+    /// lets the call go on and returns its answer.
+    struct PausedAfterImageClone<T> {
+        resume: std::sync::mpsc::Sender<()>,
+        thread: std::thread::JoinHandle<T>,
+    }
+
+    impl<T: Send + 'static> PausedAfterImageClone<T> {
+        fn start(call: impl FnOnce() -> T + Send + 'static) -> Self {
+            let (paused, stopped) = std::sync::mpsc::channel::<()>();
+            let (resume, resumed) = std::sync::mpsc::channel::<()>();
+            let thread = std::thread::spawn(move || {
+                let mut pause = Some((paused, resumed));
+                IMAGE_CLONED_TEST_HOOK.with(|hook| {
+                    *hook.borrow_mut() = Some(Box::new(move || {
+                        if let Some((paused, resumed)) = pause.take() {
+                            paused.send(()).unwrap();
+                            resumed.recv().unwrap();
+                        }
+                    }));
+                });
+                call()
+            });
+            stopped
+                .recv_timeout(std::time::Duration::from_secs(10))
+                .expect("the call never cloned its process's image");
+            Self { resume, thread }
+        }
+
+        fn resume(self) -> T {
+            self.resume.send(()).unwrap();
+            self.thread.join().unwrap()
+        }
+    }
+
+    /// An exec of the task's process that completes after a run-scoped read
+    /// has cloned the process's image, and before the read takes the
+    /// process's transaction, frees the replaced image's state. The read
+    /// answers EAGAIN for the live task, never ESRCH. Asked again with the
+    /// same identity, which the exec keeps, it answers the new image, the
+    /// handler reset and the mask kept, as the `Guest` fact does.
+    #[test]
+    fn run_scoped_signal_sets_overlapping_an_exec_are_eagain_then_the_new_image() {
+        let parent = executor();
+        let mut memory = GuestMemory::new(0, 4096).unwrap();
+        let mut child = parent
+            .fork_child(parent.state.pid + 30, false, false)
+            .unwrap();
+        block_signals(&mut child, &mut memory, &[libc::SIGUSR2]);
+        set_action(&mut child, &mut memory, libc::SIGUSR1, 0x1000);
+        let task = child.signal_task_identity().unwrap();
+        let control = parent.backend_signal_control().process;
+        let (usr1, usr2) = (signal_bit(libc::SIGUSR1), signal_bit(libc::SIGUSR2));
+        assert_eq!(
+            control.signal_sets(task),
+            Ok(reverie::SignalSets::new(0, 0, usr2, 0, usr1))
+        );
+        let reading = PausedAfterImageClone::start({
+            let control = control.clone();
+            move || control.signal_sets(task)
+        });
+        child.replace_after_exec(native_loaded_state(std::path::Path::new("/tmp")));
+        assert_eq!(
+            reading.resume(),
+            Err(reverie::FactError::Errno(Errno::EAGAIN))
+        );
+        assert_eq!(child.signal_task_identity(), Some(task));
+        let after = reverie::SignalSets::new(0, 0, usr2, 0, 0);
+        assert_eq!(control.signal_sets(task), Ok(after));
+        assert_eq!(parent.signal_sets(task.tid.as_raw()), Ok(after));
+    }
+
+    /// `signal_recipients` overlapping an exec of the process, in the same
+    /// window, answers EAGAIN for the live process, never ESRCH, which a
+    /// caller would take for a process that is gone. Asked again, it answers
+    /// the process's pending alarm's recipient.
+    #[test]
+    fn signal_recipients_overlapping_an_exec_are_eagain() {
+        let parent = executor();
+        let mut child = parent
+            .fork_child(parent.state.pid + 30, false, false)
+            .unwrap();
+        let process = identity(&child);
+        let task = child.signal_task_identity().unwrap();
+        let control = parent.backend_signal_control().process;
+        assert!(matches!(
+            control.publish_alarm(process, alarm(process)),
+            reverie::ProcessSignalPublicationResult::Committed(_)
+        ));
+        let recipients = vec![reverie::SignalRecipient { task }];
+        assert_eq!(control.alarm_recipients(process), Ok(recipients.clone()));
+        let reading = PausedAfterImageClone::start({
+            let control = control.clone();
+            move || control.alarm_recipients(process)
+        });
+        child.replace_after_exec(native_loaded_state(std::path::Path::new("/tmp")));
+        assert_eq!(reading.resume(), Err(Errno::EAGAIN));
+        assert_eq!(control.alarm_recipients(process), Ok(recipients));
+    }
+
+    /// A child-exit publication overlapping an exec of its parent, in the
+    /// same window, is rejected as a changed image (EAGAIN), never as a
+    /// stale process (ESRCH), and commits when published again.
+    #[test]
+    fn a_child_exit_publication_overlapping_an_exec_of_its_parent_is_eagain() {
+        let mut parent = executor();
+        let mut child = parent
+            .fork_child(parent.state.pid + 30, false, false)
+            .unwrap();
+        let completion = child_completion(
+            identity(&parent),
+            identity(&child),
+            reverie::ExitStatus::Exited(7),
+            true,
+        );
+        child.retire_current_thread(completion.status, false);
+        let control = parent.backend_signal_control().process;
+        let publishing = PausedAfterImageClone::start({
+            let control = control.clone();
+            move || control.publish_child_exit(completion)
+        });
+        parent.replace_after_exec(native_loaded_state(std::path::Path::new("/tmp")));
+        assert_eq!(
+            publishing.resume(),
+            reverie::ChildExitPublicationResult::RejectedBeforeCommit(Errno::EAGAIN)
+        );
+        child_receipt(control.publish_child_exit(completion));
+    }
+
+    /// The message of the panic `payload`.
+    fn panic_message(payload: Box<dyn std::any::Any + Send>) -> String {
+        match payload.downcast::<String>() {
+            Ok(message) => *message,
+            Err(payload) => payload
+                .downcast_ref::<&str>()
+                .map_or_else(|| "a panic with no message".to_owned(), |m| m.to_string()),
+        }
+    }
+
+    /// The value `thread` sends on `result` before `deadline`, or why not:
+    /// the thread's panic, or that it has not finished by then, which means
+    /// that it is stuck, as in a lock-order deadlock. It never waits past
+    /// the deadline, so a stuck thread fails the test instead of hanging it.
+    fn finish_by<T>(
+        name: &str,
+        result: std::sync::mpsc::Receiver<T>,
+        thread: std::thread::JoinHandle<()>,
+        deadline: std::time::Instant,
+    ) -> Result<T, String> {
+        match result.recv_timeout(deadline.saturating_duration_since(std::time::Instant::now())) {
+            Ok(value) => {
+                thread.join().unwrap();
+                Ok(value)
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => Err(format!(
+                "the {name} failed: {}",
+                panic_message(thread.join().unwrap_err())
+            )),
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => Err(format!(
+                "the {name} did not finish in time: a lock-order deadlock?"
+            )),
+        }
+    }
+
+    /// Waits until `ready` holds, for at most 10 s.
+    fn await_condition(what: &str, ready: impl Fn() -> bool) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while !ready() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "{what} never happened"
+            );
+            std::thread::sleep(std::time::Duration::from_micros(100));
+        }
+    }
+
+    /// The lock-order test of the design's S1, with an overlap that every
+    /// round proves. A reader thread reads the process's task in a loop
+    /// while a writer thread runs 256 rounds of fork, child exit,
+    /// `publish_child_exit`, a mask change and, every third round, the
+    /// delivery of the pending SIGCHLD. In every round a read and the
+    /// round's publication are inside their calls at the same time, which
+    /// the hooks around the process's transaction arrange:
+    ///
+    /// - in even rounds a read holds the transaction
+    ///   (`TRANSACTION_HELD_TEST_HOOK`) until the publication has cloned the
+    ///   image (`IMAGE_CLONED_TEST_HOOK`) and is on its way to that
+    ///   transaction;
+    /// - in odd rounds the publication holds it until a read has cloned the
+    ///   image and is on its way to it.
+    ///
+    /// That overlap is guaranteed: a round in which it does not happen
+    /// fails. Both calls take the transaction, the lifecycle table and the
+    /// process's signal state in that order. A read that took the lifecycle
+    /// table before the transaction can deadlock with an odd round's
+    /// publication, which takes the table after the transaction, and the test
+    /// then fails at its bound instead of hanging; no one round guarantees
+    /// that deadlock, because the publication can take the table in the
+    /// instant before such a read does. Every read must be `Ok` with no bit
+    /// set that the writer never sets, the snapshots before and after must be
+    /// exact, every round's meeting must happen, and both threads must finish
+    /// within one 60 s bound. A failure reports what each thread reported.
+    #[test]
+    fn run_scoped_reads_overlapping_child_exit_publications_stay_coherent() {
+        use std::sync::atomic::AtomicBool;
+        use std::sync::atomic::AtomicU32;
+        use std::sync::atomic::AtomicU64;
+
+        const ROUNDS: i32 = 256;
+        // Which call is to hold the process's transaction in this round.
+        const NEITHER: u32 = 0;
+        const READ_TO_HOLD: u32 = 1;
+        const READ_HOLDS: u32 = 2;
+        const PUBLICATION_TO_HOLD: u32 = 3;
+
+        let mut parent = executor();
+        let control = parent.backend_signal_control().process;
+        let task = parent.signal_task_identity().unwrap();
+        let process = identity(&parent);
+        let (usr1, chld) = (signal_bit(libc::SIGUSR1), signal_bit(libc::SIGCHLD));
+        assert_eq!(
+            control.signal_sets(task),
+            Ok(reverie::SignalSets::new(0, 0, 0, 0, 0))
+        );
+        let turn = Arc::new(AtomicU32::new(NEITHER));
+        // A call between its image clone and the transaction, which it then
+        // waits for while the other call holds it.
+        let read_waiting = Arc::new(AtomicBool::new(false));
+        let publication_waiting = Arc::new(AtomicBool::new(false));
+        // The meetings that happened: a read holding the transaction while a
+        // publication waited for it, and the other way round.
+        let held_by_read = Arc::new(AtomicU64::new(0));
+        let held_by_publication = Arc::new(AtomicU64::new(0));
+        let writing = Arc::new(AtomicBool::new(true));
+        let (read_done, reader_result) = std::sync::mpsc::channel();
+        let reader = std::thread::spawn({
+            let control = control.clone();
+            let (turn, read_waiting) = (turn.clone(), read_waiting.clone());
+            let (publication_waiting, held_by_read) =
+                (publication_waiting.clone(), held_by_read.clone());
+            let writing = writing.clone();
+            move || {
+                IMAGE_CLONED_TEST_HOOK.with(|hook| {
+                    let read_waiting = read_waiting.clone();
+                    *hook.borrow_mut() =
+                        Some(Box::new(move || read_waiting.store(true, Ordering::SeqCst)));
+                });
+                TRANSACTION_HELD_TEST_HOOK.with(|hook| {
+                    *hook.borrow_mut() = Some(Box::new(move || {
+                        read_waiting.store(false, Ordering::SeqCst);
+                        if turn
+                            .compare_exchange(
+                                READ_TO_HOLD,
+                                READ_HOLDS,
+                                Ordering::SeqCst,
+                                Ordering::SeqCst,
+                            )
+                            .is_ok()
+                        {
+                            await_condition(
+                                "a publication waiting for a read's transaction",
+                                || publication_waiting.load(Ordering::SeqCst),
+                            );
+                            held_by_read.fetch_add(1, Ordering::SeqCst);
+                            turn.store(NEITHER, Ordering::SeqCst);
+                        }
+                    }));
+                });
+                let outcome = loop {
+                    let still_writing = writing.load(Ordering::SeqCst);
+                    match control.signal_sets(task) {
+                        Ok(sets)
+                            if sets.pending == 0
+                                && sets.shared_pending & !chld == 0
+                                && sets.blocked & !usr1 == 0
+                                && sets.ignored == 0
+                                && sets.caught == 0 => {}
+                        other => break Err(format!("incoherent read: {other:?}")),
+                    }
+                    if !still_writing {
+                        break Ok(());
+                    }
+                };
+                read_done.send(outcome).unwrap();
+            }
+        });
+        let (write_done, writer_result) = std::sync::mpsc::channel();
+        let writer = std::thread::spawn({
+            let control = control.clone();
+            let (turn, read_waiting) = (turn.clone(), read_waiting.clone());
+            let (publication_waiting, held_by_publication) =
+                (publication_waiting.clone(), held_by_publication.clone());
+            let writing = writing.clone();
+            move || {
+                IMAGE_CLONED_TEST_HOOK.with(|hook| {
+                    let publication_waiting = publication_waiting.clone();
+                    *hook.borrow_mut() = Some(Box::new(move || {
+                        publication_waiting.store(true, Ordering::SeqCst)
+                    }));
+                });
+                TRANSACTION_HELD_TEST_HOOK.with(|hook| {
+                    let (turn, publication_waiting) = (turn.clone(), publication_waiting.clone());
+                    *hook.borrow_mut() = Some(Box::new(move || {
+                        publication_waiting.store(false, Ordering::SeqCst);
+                        if turn.load(Ordering::SeqCst) == PUBLICATION_TO_HOLD {
+                            await_condition(
+                                "a read waiting for a publication's transaction",
+                                || read_waiting.load(Ordering::SeqCst),
+                            );
+                            held_by_publication.fetch_add(1, Ordering::SeqCst);
+                            turn.store(NEITHER, Ordering::SeqCst);
+                        }
+                    }));
+                });
+                let mut memory = GuestMemory::new(0, 4096).unwrap();
+                for round in 0..ROUNDS {
+                    let mut child = parent
+                        .fork_child(parent.state.pid + 100 + round, false, false)
+                        .unwrap();
+                    let completion = child_completion(
+                        process,
+                        identity(&child),
+                        reverie::ExitStatus::Exited(7),
+                        true,
+                    );
+                    child.retire_current_thread(completion.status, false);
+                    if round % 2 == 0 {
+                        turn.store(READ_TO_HOLD, Ordering::SeqCst);
+                        await_condition("a read holding the transaction", || {
+                            turn.load(Ordering::SeqCst) == READ_HOLDS
+                        });
+                    } else {
+                        turn.store(PUBLICATION_TO_HOLD, Ordering::SeqCst);
+                    }
+                    child_receipt(control.publish_child_exit(completion));
+                    assert_eq!(
+                        turn.load(Ordering::SeqCst),
+                        NEITHER,
+                        "round {round}: the read and the publication did not meet"
+                    );
+                    let how = if round % 2 == 0 {
+                        libc::SIG_BLOCK
+                    } else {
+                        libc::SIG_UNBLOCK
+                    };
+                    change_mask(&mut parent, &mut memory, how, &[libc::SIGUSR1]);
+                    if round % 3 == 2 {
+                        parent.take_pending_signal_for_delivery().unwrap();
+                    }
+                }
+                writing.store(false, Ordering::SeqCst);
+                write_done.send(parent).unwrap();
+            }
+        });
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+        let writer_outcome = finish_by("writer", writer_result, writer, deadline);
+        // A writer that failed leaves the reader reading: stop it.
+        writing.store(false, Ordering::SeqCst);
+        let reader_outcome = finish_by("reader", reader_result, reader, deadline);
+        let parent = match (writer_outcome, reader_outcome) {
+            (Ok(parent), Ok(Ok(()))) => parent,
+            (writer, reader) => {
+                let writer = match writer {
+                    Ok(parent) => {
+                        // The reader may be stuck holding the run's locks,
+                        // which dropping the parent's executor would wait
+                        // for: leak it, so that the test fails here.
+                        std::mem::forget(parent);
+                        "finished".to_owned()
+                    }
+                    Err(why) => why,
+                };
+                let reader = match reader {
+                    Ok(Ok(())) => "finished".to_owned(),
+                    Ok(Err(why)) | Err(why) => why,
+                };
+                panic!("writer: {writer}; reader: {reader}");
+            }
+        };
+        assert_eq!(
+            (
+                held_by_read.load(Ordering::SeqCst),
+                held_by_publication.load(Ordering::SeqCst)
+            ),
+            (ROUNDS as u64 / 2, ROUNDS as u64 / 2)
+        );
+        // The last round (255, odd and not two more than a multiple of
+        // three) unblocked SIGUSR1 and queued a SIGCHLD that it did not take.
+        assert_eq!(
+            control.signal_sets(task),
+            Ok(reverie::SignalSets::new(0, chld, 0, 0, 0))
+        );
+        assert_eq!(
+            control.signal_sets(task),
+            parent.signal_sets(task.tid.as_raw())
+        );
     }
     include!("process_child_wait_tests.rs");
 }
