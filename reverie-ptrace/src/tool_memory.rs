@@ -63,9 +63,11 @@ impl ToolMemory {
         // it through the old stop can otherwise keep the EXIT owner from
         // progressing (https://github.com/rrnewton/reverie/issues/1091).
         // This passive publication check makes no ptrace/procfs request and
-        // does not claim or advance the exit stop. Before publication (in
-        // particular, before a legacy ptracer's next wait poll), it proves
-        // nothing; an access can also race a later publication.
+        // does not claim or advance the exit stop. Real Exec and FIFO-routed
+        // second exits reset the fact; synchronous waits never publish it.
+        // Before publication (including a legacy callback blocking its own
+        // next wait poll), it proves nothing. An access can race publication
+        // or reset; this does not make check-and-access atomic.
         if self.0.superseded_by_observed_exit_stop() {
             Err(Errno::ESRCH)
         } else {
@@ -227,6 +229,284 @@ impl MemoryAccess for ToolMemory {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Keep the notifier worker and ptrace owner in one disposable libtest
+    /// cell. The alarm and EXITKILL belong only to that cell and its tracee.
+    #[test]
+    fn a_published_exit_refuses_every_old_tool_memory_primitive() {
+        use std::io::Read;
+        use std::os::unix::process::CommandExt;
+        use std::process::Command;
+        use std::process::Stdio;
+        use std::time::Duration;
+        use std::time::Instant;
+
+        const CELL_ENV: &str = "REVERIE_TOOL_MEMORY_EXIT_CELL";
+        const PASSED: &str = "TOOL_MEMORY_EXIT_CELL_PASSED";
+        if let Ok(cell) = std::env::var(CELL_ENV) {
+            assert_eq!(cell, "published-exit");
+            published_exit_memory_cell();
+            println!("{PASSED}");
+            return;
+        }
+        let mut child = Command::new(std::env::current_exe().unwrap())
+            .args([
+                "tool_memory::tests::a_published_exit_refuses_every_old_tool_memory_primitive",
+                "--exact",
+                "--nocapture",
+            ])
+            .env(CELL_ENV, "published-exit")
+            .process_group(0)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(15);
+        let status = loop {
+            if let Some(status) = child.try_wait().unwrap() {
+                break status;
+            }
+            if Instant::now() >= deadline {
+                // Only the newly created owned cell process group is signaled.
+                assert_eq!(
+                    unsafe { libc::kill(-(child.id() as i32), libc::SIGKILL) },
+                    0
+                );
+                let status = child.wait().unwrap();
+                eprintln!("ToolMemory EXIT cell exceeded its 15s bound: {status}");
+                break status;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        };
+        let mut stdout = Vec::new();
+        let mut stderr = Vec::new();
+        child
+            .stdout
+            .take()
+            .unwrap()
+            .take(65537)
+            .read_to_end(&mut stdout)
+            .unwrap();
+        child
+            .stderr
+            .take()
+            .unwrap()
+            .take(65537)
+            .read_to_end(&mut stderr)
+            .unwrap();
+        assert!(stdout.len() <= 65536 && stderr.len() <= 65536);
+        let stdout = String::from_utf8(stdout).unwrap();
+        let stderr = String::from_utf8(stderr).unwrap();
+        println!("ToolMemory EXIT cell, actual status {status}:\n{stdout}");
+        eprintln!("{stderr}");
+        assert!(status.success());
+        assert_eq!(stdout.lines().filter(|line| *line == PASSED).count(), 1);
+        assert!(stdout.contains("test result: ok. 1 passed; 0 failed; 0 ignored;"));
+    }
+
+    fn published_exit_memory_cell() {
+        use std::time::Duration;
+
+        const SENTINEL: u64 = 0x0123_4567_89ab_cdef;
+        const REPLACEMENT: u64 = !SENTINEL;
+        const BOUNDARY: [u8; 8] = [0x31, 0x42, 0x53, 0x64, 0x75, 0x86, 0x97, 0xa8];
+        const WAIT: Duration = Duration::from_secs(2);
+
+        struct Mapping(*mut libc::c_void);
+        impl Drop for Mapping {
+            fn drop(&mut self) {
+                assert_eq!(unsafe { libc::munmap(self.0, 2 * PAGE_SIZE) }, 0);
+            }
+        }
+        // This process is the re-executed owned cell, not the shared runner.
+        unsafe { libc::alarm(10) };
+        let raw = unsafe {
+            libc::mmap(
+                std::ptr::null_mut(),
+                2 * PAGE_SIZE,
+                libc::PROT_READ | libc::PROT_WRITE,
+                libc::MAP_PRIVATE | libc::MAP_ANONYMOUS,
+                -1,
+                0,
+            )
+        };
+        assert_ne!(raw, libc::MAP_FAILED);
+        let mapping = Mapping(raw);
+        let base = raw as usize;
+        let cross = base + PAGE_SIZE - 4;
+        // Both pages exist before fork, so every remote operand is also a
+        // valid local address when the legacy IoSlice APIs form references.
+        unsafe {
+            (base as *mut u64).write(SENTINEL);
+            std::ptr::copy_nonoverlapping(BOUNDARY.as_ptr(), cross as *mut u8, BOUNDARY.len());
+        }
+        assert_eq!(
+            unsafe { libc::mprotect((base + PAGE_SIZE) as *mut _, PAGE_SIZE, libc::PROT_READ) },
+            0
+        );
+        let expected_parent = unsafe { libc::getpid() };
+        let child = unsafe { libc::fork() };
+        assert!(child >= 0);
+        if child == 0 {
+            // Death before PDEATHSIG was armed must not leave an orphan
+            // holding the cell output pipes. Death after arming kills it.
+            unsafe {
+                if libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL) != 0
+                    || libc::getppid() != expected_parent
+                    || safeptrace::traceme_and_stop().is_err()
+                {
+                    libc::_exit(2);
+                }
+                loop {
+                    libc::pause();
+                }
+            }
+        }
+        let pid = Pid::from_raw(child);
+        let mut status = 0;
+        assert_eq!(unsafe { libc::waitpid(child, &mut status, 0) }, child);
+        assert!(libc::WIFSTOPPED(status));
+        assert_eq!(libc::WSTOPSIG(status), libc::SIGSTOP);
+        // The wait above proved this actual stop; no unchecked numeric
+        // capability is created after notifier registration.
+        let stopped = Stopped::new_unchecked(pid);
+        stopped
+            .setoptions(
+                safeptrace::Options::PTRACE_O_TRACEEXIT | safeptrace::Options::PTRACE_O_EXITKILL,
+            )
+            .unwrap();
+        let mut old = ToolMemory::new(stopped.generation().assume_stopped());
+        let address = Addr::<u8>::from_raw(base).unwrap();
+        let boundary = Addr::<u8>::from_raw(cross).unwrap();
+        let writable = AddrMut::<u8>::from_raw(base).unwrap();
+        let cross_value = AddrMut::<u64>::from_raw(cross).unwrap();
+        assert_eq!(old.read_value::<_, u64>(address.cast()).unwrap(), SENTINEL);
+        assert_eq!(
+            old.write_value(cross_value, &REPLACEMENT),
+            Err(Errno::EFAULT)
+        );
+        let mut bytes = [0; 8];
+        stopped.read_exact(boundary, &mut bytes).unwrap();
+        assert_eq!(bytes, BOUNDARY, "the live EFAULT left a writable prefix");
+
+        tokio::runtime::Builder::new_current_thread()
+            .enable_time()
+            .build()
+            .unwrap()
+            .block_on(async {
+                // One original EXIT future owns publication and the later
+                // resume. The old ToolMemory never polls or claims a wait.
+                let exit = stopped.exit_event();
+                let terminal = stopped.terminal_cleanup();
+                terminal.request_sigkill().unwrap();
+                let exit_stopped = tokio::time::timeout(WAIT, exit).await.unwrap().unwrap();
+                assert!(old.0.superseded_by_observed_exit_stop());
+                assert!(!exit_stopped.superseded_by_observed_exit_stop());
+                assert!(terminal.exit_stop_observed());
+                let queued_before = terminal.queued_raw_statuses();
+                let observed_before = terminal.exit_stop_observed();
+                let assert_unchanged = || {
+                    assert_eq!(
+                        exit_stopped.read_value::<_, u64>(address.cast()).unwrap(),
+                        SENTINEL
+                    );
+                    let mut actual = [0; 8];
+                    exit_stopped.read_exact(boundary, &mut actual).unwrap();
+                    assert_eq!(actual, BOUNDARY);
+                };
+                assert_unchanged();
+
+                // All eight overrides are called directly with nonempty,
+                // valid operands. Refused reads leave local output intact.
+                {
+                    let source = unsafe { std::slice::from_raw_parts(base as *const u8, 8) };
+                    let mut output = [0xa5; 8];
+                    assert_eq!(
+                        old.read_vectored(
+                            &[io::IoSlice::new(source)],
+                            &mut [io::IoSliceMut::new(&mut output)]
+                        ),
+                        Err(Errno::ESRCH)
+                    );
+                    assert_eq!(output, [0xa5; 8]);
+                }
+                let mut output = [0xa5; 8];
+                assert_eq!(old.read(address, &mut output), Err(Errno::ESRCH));
+                assert_eq!(output, [0xa5; 8]);
+                assert_eq!(
+                    old.read_exact_with_user_access(address, &mut output),
+                    Err(Errno::ESRCH)
+                );
+                assert_eq!(output, [0xa5; 8]);
+                let payload = REPLACEMENT.to_ne_bytes();
+                {
+                    let target = unsafe { std::slice::from_raw_parts_mut(base as *mut u8, 8) };
+                    assert_eq!(
+                        old.write_vectored(
+                            &[io::IoSlice::new(&payload)],
+                            &mut [io::IoSliceMut::new(target)]
+                        ),
+                        Err(Errno::ESRCH)
+                    );
+                }
+                assert_unchanged();
+                assert_eq!(old.write(writable, &payload), Err(Errno::ESRCH));
+                assert_unchanged();
+                assert_eq!(
+                    old.write_with_user_access(writable, &payload),
+                    Err(Errno::ESRCH)
+                );
+                assert_unchanged();
+                assert_eq!(
+                    old.write_native_user_vectored(
+                        child,
+                        &[io::IoSlice::new(&payload)],
+                        &[RemoteIoVec::new(writable, payload.len()).unwrap()],
+                    ),
+                    Err(Errno::ESRCH)
+                );
+                assert_unchanged();
+                // The live control returned EFAULT for these exact pages.
+                // ESRCH must precede write_value's procfs permission probe.
+                assert_eq!(
+                    old.write_value(cross_value, &REPLACEMENT),
+                    Err(Errno::ESRCH)
+                );
+                assert_unchanged();
+                assert_eq!(terminal.queued_raw_statuses(), queued_before);
+                assert_eq!(terminal.exit_stop_observed(), observed_before);
+
+                // The actual marked owner is still a usable ToolMemory.
+                // It retains permission semantics and alone resumes/reaps.
+                let mut current = ToolMemory::new(exit_stopped);
+                assert_eq!(
+                    current.read_value::<_, u64>(address.cast()).unwrap(),
+                    SENTINEL
+                );
+                assert_eq!(
+                    current.write_value(cross_value, &REPLACEMENT),
+                    Err(Errno::EFAULT)
+                );
+                current.0.read_exact(boundary, &mut bytes).unwrap();
+                assert_eq!(bytes, BOUNDARY);
+                assert_eq!(current.0.getevent().unwrap(), i64::from(libc::SIGKILL));
+                let waited =
+                    tokio::time::timeout(WAIT, current.0.resume(None).unwrap().next_state())
+                        .await
+                        .unwrap()
+                        .unwrap();
+                assert_eq!(
+                    waited.assume_exited(),
+                    (
+                        pid,
+                        safeptrace::ExitStatus::Signaled(safeptrace::Signal::SIGKILL, false)
+                    )
+                );
+                assert!(terminal.wait(WAIT));
+            });
+        drop(mapping);
+        unsafe { libc::alarm(0) };
+    }
 
     #[test]
     fn private_page_overlap_is_exact() {

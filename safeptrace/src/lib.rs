@@ -1234,23 +1234,32 @@ impl Stopped {
         }
     }
 
-    /// Whether an actual published exit stop has superseded this non-exit
-    /// capability. The capability minted for the exit stop itself is never
-    /// superseded by that publication: its owner must still inspect it.
+    /// Whether an actual published exit stop has superseded this capability.
+    /// Only the capability marked with that publication's current exit epoch
+    /// is exempt: its owner must still inspect that exit stop. An older exit
+    /// mark is superseded by a later epoch's publication, like a plain stop.
     ///
     /// This only reads the existing generation's published fact. It cannot
     /// register a notifier, capture an identity, poll or claim a wait, or
     /// change any status. In particular, forged or rewritten siginfo does
     /// not change the answer.
     ///
+    /// This fact lasts one published exit epoch. A real Exec clears it before
+    /// the new image's status is visible. A second exit stop or dead-Exec
+    /// forwarding can also clear it and route that exit stop through the
+    /// FIFO instead. Synchronously owned exit stops are queued without this
+    /// publication. Terminal publication preserves an already observed EXIT,
+    /// but never creates the fact when none was observed. None of those
+    /// queued exits is detected by this query.
+    ///
     /// A false answer is not a liveness guarantee. Before publication,
-    /// including when a legacy ptracer has not yet consumed the exit stop,
-    /// this detects nothing. Publication can also race the caller's next
-    /// request; the observation does not make that request atomic with it.
+    /// including when a legacy ptracer's synchronous callback prevents its
+    /// next wait poll, this detects nothing. The status/epoch observation
+    /// and the caller's next request can race a later publication or reset;
+    /// neither the observation nor check-and-access is an atomic transaction.
     #[cfg(feature = "notifier")]
     pub fn superseded_by_observed_exit_stop(&self) -> bool {
-        self.2.0.is_none()
-            && TerminalCleanup::new_unregistered(self.0, &self.1).exit_stop_observed()
+        self.1.event().superseded_by_observed_exit_stop(self.2.0)
     }
 
     /// Converts this capability into the running state after a successful

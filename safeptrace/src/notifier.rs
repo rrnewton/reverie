@@ -495,7 +495,8 @@ const ECHILD_STATUS: i32 = -2;
 /// No `PTRACE_EVENT_EXIT` outcome has been published yet.
 const EXIT_PENDING: i32 = 0;
 
-/// The tracee entered `PTRACE_EVENT_EXIT`; this observation remains latched.
+/// This exit epoch published `PTRACE_EVENT_EXIT`. A real Exec or a later
+/// FIFO-routed exit stop resets the observation for the following epoch.
 const EXIT_STOPPED: i32 = 1;
 
 /// The tracee became terminal without an observed `PTRACE_EVENT_EXIT`.
@@ -2928,6 +2929,20 @@ impl EventHandle {
     /// See [`Event::superseded_new_child`].
     pub(super) fn superseded_new_child(&self, epoch: usize) -> Result<(), SupersededStopRefusal> {
         self.event().superseded_new_child(epoch)
+    }
+
+    /// Reads one resolved Event's publication before its epoch. This makes no
+    /// ownership or status change; a concurrent reset is still an observation
+    /// race, not an atomic snapshot of the tracee's physical stop.
+    pub(super) fn superseded_by_observed_exit_stop(&self, mark: Option<usize>) -> bool {
+        let event = self.event();
+        if event.exit_status.load(Ordering::Acquire) != EXIT_STOPPED {
+            return false;
+        }
+        match mark {
+            None => true,
+            Some(epoch) => epoch != event.exit_epoch.load(Ordering::Acquire),
+        }
     }
 
     fn identity(&self) -> Option<&Arc<WorkerIdentity>> {
@@ -9466,6 +9481,103 @@ mod test {
 
     fn queued(event: &Event) -> Vec<i32> {
         event.status.lock().pending.iter().copied().collect()
+    }
+
+    /// Internal lifecycle control: statuses enter the real publication path,
+    /// but no task or physical kernel stop is claimed by this fixture.
+    #[test]
+    fn observed_exit_supersedes_only_marks_from_an_earlier_published_epoch() {
+        let waker = Waker::from(Arc::new(WakeCounter::default()));
+        let handle = EventHandle::new();
+        let event = handle.event();
+        let token = TraceeToken::from_event(handle.clone());
+        let pid = crate::Pid::from_raw(ABSENT_PID);
+        let plain = Stopped::from_token(pid, token.clone());
+        assert!(!plain.superseded_by_observed_exit_stop());
+
+        event.update(PTRACE_EVENT_EXIT_STOP);
+        let first = Arc::new(ExitWaiter::default());
+        assert_eq!(event.poll_exit(&first, &waker), Poll::Ready(Ok(())));
+        let first_exit = Stopped::from_exit_token(pid, token.clone(), 0);
+        assert!(plain.superseded_by_observed_exit_stop());
+        assert!(!first_exit.superseded_by_observed_exit_stop());
+
+        event.update(POST_EXIT_EXEC_STOP);
+        assert_eq!(event.exit_epoch.load(Ordering::Acquire), 1);
+        assert_eq!(event.exit_status.load(Ordering::Acquire), EXIT_PENDING);
+        assert!(!plain.superseded_by_observed_exit_stop());
+        assert!(!first_exit.superseded_by_observed_exit_stop());
+
+        event.update(PTRACE_EVENT_EXIT_STOP);
+        let second = Arc::new(ExitWaiter {
+            epoch: 1,
+            ..ExitWaiter::default()
+        });
+        assert_eq!(event.poll_exit(&second, &waker), Poll::Ready(Ok(())));
+        let second_exit = Stopped::from_exit_token(pid, token, 1);
+        assert!(plain.superseded_by_observed_exit_stop());
+        assert!(first_exit.superseded_by_observed_exit_stop());
+        assert!(!second_exit.superseded_by_observed_exit_stop());
+
+        // A second EXIT without Exec follows the existing FIFO route, which
+        // resets the publication rather than latching a false liveness claim.
+        event.update(PTRACE_EVENT_EXIT_STOP);
+        assert_eq!(event.exit_epoch.load(Ordering::Acquire), 2);
+        assert_eq!(event.exit_status.load(Ordering::Acquire), EXIT_PENDING);
+        assert!(!plain.superseded_by_observed_exit_stop());
+        assert!(!first_exit.superseded_by_observed_exit_stop());
+        assert!(!second_exit.superseded_by_observed_exit_stop());
+    }
+
+    /// Internal state control with a required nonempty FIFO. The separate
+    /// genuine EXIT-owner test supplies the physical SIGKILL/resume proof.
+    #[test]
+    fn observed_exit_queries_preserve_a_nonempty_fifo_and_its_claimed_owner() {
+        let waker = Waker::from(Arc::new(WakeCounter::default()));
+        let handle = EventHandle::new();
+        let event = handle.event();
+        event.update(PRE_EXIT_STEP_STOP);
+        event.update(PTRACE_EVENT_EXIT_STOP);
+        let winner = Arc::new(ExitWaiter::default());
+        assert_eq!(event.poll_exit(&winner, &waker), Poll::Ready(Ok(())));
+        let token = TraceeToken::from_event(handle.clone());
+        let pid = crate::Pid::from_raw(ABSENT_PID);
+        let plain = Stopped::from_token(pid, token.clone());
+        let exit = Stopped::from_exit_token(pid, token, 0);
+        let snapshot = || {
+            let state = event.status.lock();
+            (
+                state.pending.iter().copied().collect::<Vec<_>>(),
+                state.before_exit,
+                state.before_exit_epoch,
+                state.retired_before_exit,
+                event.exit_status.load(Ordering::Acquire),
+                event.exit_capability.load(Ordering::Acquire),
+                event.exit_epoch.load(Ordering::Acquire),
+                event.worker_state.load(Ordering::Acquire),
+            )
+        };
+        // Establish the nonempty prefix and exclusive claim before querying.
+        assert_eq!(queued(event), [PRE_EXIT_STEP_STOP]);
+        assert_eq!(event.status.lock().before_exit, 1);
+        assert_eq!(event.status.lock().retired_before_exit, 0);
+        assert_eq!(
+            event.exit_capability.load(Ordering::Acquire),
+            EXIT_CAP_CLAIMED
+        );
+        let before = snapshot();
+        for _ in 0..2 {
+            assert!(plain.superseded_by_observed_exit_stop());
+            assert!(!exit.superseded_by_observed_exit_stop());
+            assert!(
+                plain
+                    .generation()
+                    .assume_stopped()
+                    .superseded_by_observed_exit_stop()
+            );
+            assert_eq!(snapshot(), before);
+        }
+        assert_eq!(queued(event), [PRE_EXIT_STEP_STOP]);
     }
 
     #[test]
