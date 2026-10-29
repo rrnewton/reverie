@@ -33,6 +33,8 @@ use futures::FutureExt;
 use reverie::BackendStatsRequest;
 use reverie::BackendStatsSource;
 use reverie::CpuIdResult;
+use reverie::ExitStatus;
+use reverie::GlobalRPC;
 use reverie::GlobalTool;
 use reverie::Guest;
 use reverie::ParkedObservationLease;
@@ -173,6 +175,19 @@ impl Program {
             memory,
         }
     }
+
+    /// The address of the label `name` in the guest's symbol table. The
+    /// guests are static and not position-independent, so it is the address
+    /// under both backends and natively.
+    fn symbol(&self, name: &str) -> u64 {
+        let image = std::fs::read(&self.executable).unwrap();
+        let elf = goblin::elf::Elf::parse(&image).unwrap();
+        elf.syms
+            .iter()
+            .find(|symbol| elf.strtab.get_at(symbol.st_name) == Some(name))
+            .unwrap_or_else(|| panic!("the guest has no symbol {name}"))
+            .st_value
+    }
 }
 
 impl Drop for Program {
@@ -307,11 +322,19 @@ struct Plan {
     restart: Option<bool>,
     /// Hold the first timer event's callback until another thread's `tgkill`
     /// has run, and hold that `tgkill` until the callback has begun, as a
-    /// Tool that runs one thread at a time would (see [`Gate`]).
+    /// Tool that runs one thread at a time would (see [`Gate`]). A `kill`
+    /// takes part as a `tgkill` does; the main thread's own sends do not.
     rendezvous: bool,
+    /// The sends (`tgkill` or `kill`) of the sending thread that each timer
+    /// event's rendezvous waits for, by timer event of the thread it holds:
+    /// the first `rendezvous_sends[0]` with its first timer event, the next
+    /// `rendezvous_sends[1]` with its second, and so on. Empty means one
+    /// rendezvous, with the first timer event, of [`Plan::sends`] sends.
+    rendezvous_sends: Vec<u32>,
     /// Deliver every signal, and report the clock at its callback.
     deliver: bool,
-    /// Subscribe to `tgkill` alone.
+    /// Subscribe to `tgkill` alone, and to the marker when the plan arms
+    /// there.
     only_tgkill: bool,
     /// From SIGSEGV's callback, send SIGUSR1 to the thread itself.
     self_signal_at_fault: bool,
@@ -330,6 +353,53 @@ struct Plan {
     /// r13, and from SIGUSR2's, the second to the address in r14, each with an
     /// injected `arch_prctl`.
     bases_at_signals: Option<[SegmentBase; 2]>,
+    /// From the callback of this signal only, request this many RCBs.
+    rearm_at: Option<(i32, u64)>,
+    /// Signals (a mask with bit `signal - 1`) whose callback suppresses
+    /// them, also under [`Plan::deliver`].
+    suppress: u64,
+    /// Report every thread's exit and its status ([`Event::Exited`]).
+    exits: bool,
+    /// The first timer event's callback, after any rendezvous, waits until
+    /// another thread has exited ([`Gate::Exited`]).
+    timer_waits_for_exit: bool,
+    /// The callback of this signal opens [`Gate::Hooked`] and then waits
+    /// until another thread has exited.
+    hook_waits_for_exit: Option<i32>,
+    /// The callback of an `exit_group` waits until [`Gate::Hooked`] opens.
+    exit_waits_for_hook: bool,
+    /// Report the unsupported-operation refusal, if any, that each `kill`
+    /// or `tgkill` the Tool injects leaves ([`Event::Refusal`]).
+    refusals_of_sends: bool,
+}
+
+impl Plan {
+    /// How many timer events of the held thread rendezvous.
+    fn rendezvous_events(&self) -> u32 {
+        if self.rendezvous_sends.is_empty() {
+            1
+        } else {
+            self.rendezvous_sends.len() as u32
+        }
+    }
+
+    /// The gate that the `send`th rendezvous send of a thread (counted from
+    /// 0) belongs to, and how many sends that gate waits for; none past the
+    /// last.
+    fn send_gate(&self, send: u32) -> Option<(u32, u32)> {
+        if self.rendezvous_sends.is_empty() {
+            let needed = self.sends.max(1);
+            return (send < needed).then_some((0, needed));
+        }
+        let mut first = 0;
+        for (gate, &needed) in self.rendezvous_sends.iter().enumerate() {
+            if send < first + needed {
+                return Some((gate as u32, needed));
+            }
+            first += needed;
+        }
+        None
+    }
 }
 
 /// A segment base that a signal's callback sets under
@@ -340,13 +410,19 @@ enum SegmentBase {
     Gs,
 }
 
-/// The two points a [`Plan::rendezvous`] orders.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// The points a [`Plan::rendezvous`] orders, by timer event of the held
+/// thread, counted from 0, and the exit [`Plan::timer_waits_for_exit`] and
+/// [`Plan::hook_waits_for_exit`] wait for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 enum Gate {
-    /// The first timer event's callback has begun.
-    Timer,
-    /// The other thread's `tgkill` has run.
-    Sent,
+    /// That timer event's callback has begun.
+    Timer(u32),
+    /// The sends that timer event's rendezvous waits for have run.
+    Sent(u32),
+    /// A thread has exited (under [`Plan::exits`]).
+    Exited,
+    /// The callback of [`Plan::hook_waits_for_exit`]'s signal has begun.
+    Hooked,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -369,9 +445,20 @@ enum Event {
     Open(Gate),
     /// Waits until a gate is open (not logged).
     Wait(Gate),
-    /// One more `tgkill` has run; [`Gate::Sent`] opens once this many have
-    /// (not logged).
-    Sent(u32),
+    /// One more send of a rendezvous has run; that rendezvous's
+    /// [`Gate::Sent`] opens once `needed` have (not logged).
+    Sent {
+        gate: u32,
+        needed: u32,
+    },
+    /// A thread exited ([`Tool::on_exit_thread`]), with its status in
+    /// wait(2) encoding; opens [`Gate::Exited`].
+    Exited {
+        tid: i32,
+        status: i32,
+    },
+    /// The unsupported-operation refusal a send left, as text.
+    Refusal(String),
     /// A delivery permit granted under [`Plan::permits`], by its sequence.
     Permit(u64),
     /// The receipt that settled a permit: its sequence and its outcome.
@@ -388,7 +475,7 @@ enum Event {
 
 /// The user registers a timer event's callback sees (`Guest::regs`), and the
 /// thread's pid as the Tool sees it (`Guest::pid`).
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 struct Registers {
     pid: u64,
     rip: u64,
@@ -423,10 +510,10 @@ struct Registers {
 #[derive(Default)]
 struct Log {
     events: Mutex<Vec<Event>>,
-    timer: Latch,
-    sent: Latch,
-    /// The `tgkill`s [`Event::Sent`] has counted.
-    sends: std::sync::atomic::AtomicU32,
+    /// Each gate's latch, made when first named.
+    latches: Mutex<std::collections::HashMap<Gate, std::sync::Arc<Latch>>>,
+    /// The sends [`Event::Sent`] has counted, by rendezvous.
+    sends: Mutex<std::collections::HashMap<u32, u32>>,
     /// [`Plan::permits`], and the signal control it takes.
     permits: bool,
     control: Mutex<Option<reverie::BackendSignalControl>>,
@@ -517,20 +604,40 @@ impl GlobalTool for Log {
     }
 
     async fn receive_rpc(&self, _from: Pid, event: Event) {
-        let latch = |gate| match gate {
-            Gate::Timer => &self.timer,
-            Gate::Sent => &self.sent,
-        };
         match event {
-            Event::Open(gate) => latch(gate).open(),
-            Event::Wait(gate) => latch(gate).wait().await,
-            Event::Sent(needed) => {
-                if self.sends.fetch_add(1, Ordering::SeqCst) + 1 >= needed {
-                    self.sent.open();
+            Event::Open(gate) => self.latch(gate).open(),
+            Event::Wait(gate) => {
+                let latch = self.latch(gate);
+                latch.wait().await
+            }
+            Event::Sent { gate, needed } => {
+                let sent = {
+                    let mut sends = self.sends.lock().unwrap();
+                    let count = sends.entry(gate).or_default();
+                    *count += 1;
+                    *count
+                };
+                if sent >= needed {
+                    self.latch(Gate::Sent(gate)).open();
                 }
+            }
+            event @ Event::Exited { .. } => {
+                self.events.lock().unwrap().push(event);
+                self.latch(Gate::Exited).open();
             }
             event => self.events.lock().unwrap().push(event),
         }
+    }
+}
+
+impl Log {
+    fn latch(&self, gate: Gate) -> std::sync::Arc<Latch> {
+        self.latches
+            .lock()
+            .unwrap()
+            .entry(gate)
+            .or_default()
+            .clone()
     }
 }
 
@@ -542,6 +649,10 @@ struct TimerTool;
 struct Counts {
     delivered: u32,
     attempts: u32,
+    /// Timer events whose callback has begun.
+    timers: u32,
+    /// Rendezvous sends (`tgkill` or `kill`) the thread has made.
+    sends: u32,
 }
 
 /// A process SIGALRM, as the kernel would queue it.
@@ -668,6 +779,9 @@ impl Tool for TimerTool {
         if plan.only_tgkill {
             subscription = Subscription::none();
             subscription.syscall(Sysno::tgkill);
+            if plan.arm == Arm::Marker {
+                subscription.syscall(Sysno::getppid);
+            }
         }
         subscription
     }
@@ -680,7 +794,7 @@ impl Tool for TimerTool {
             request(guest).await;
         }
         if guest.config().hold_thread_start && guest.tid() != guest.pid() {
-            guest.send_rpc(Event::Wait(Gate::Sent)).await;
+            guest.send_rpc(Event::Wait(Gate::Sent(0))).await;
         }
         Ok(())
     }
@@ -726,16 +840,34 @@ impl Tool for TimerTool {
                 }
             }
             (Arm::Execve, Sysno::execve) => request(guest).await,
-            (_, Sysno::tgkill) if plan.rendezvous || plan.hold_thread_start => {
-                if plan.rendezvous {
-                    guest.send_rpc(Event::Wait(Gate::Timer)).await;
+            (_, Sysno::tgkill | Sysno::kill)
+                if (plan.rendezvous && guest.tid() != guest.pid()) || plan.hold_thread_start =>
+            {
+                let send = guest.thread_state().sends;
+                guest.thread_state_mut().sends += 1;
+                let gate = plan.send_gate(send);
+                if plan.rendezvous
+                    && let Some((gate, _)) = gate
+                {
+                    guest.send_rpc(Event::Wait(Gate::Timer(gate))).await;
                 }
                 let sent = guest.inject(syscall).await;
-                guest.send_rpc(Event::Sent(plan.sends.max(1))).await;
+                if plan.refusals_of_sends
+                    && let Some(refusal) = guest.take_unsupported_refusal()
+                {
+                    let refusal = format!("{:?}: {}", refusal.operation, refusal.diagnostic);
+                    guest.send_rpc(Event::Refusal(refusal)).await;
+                }
+                if let Some((gate, needed)) = gate {
+                    guest.send_rpc(Event::Sent { gate, needed }).await;
+                }
                 return Ok(sent?);
             }
             (_, Sysno::getpid) if plan.rearm_at_getpid.is_some() => {
                 arm(guest, plan.rearm_at_getpid.unwrap()).await
+            }
+            (_, Sysno::exit_group) if plan.exit_waits_for_hook => {
+                guest.send_rpc(Event::Wait(Gate::Hooked)).await;
             }
             _ => {}
         }
@@ -785,8 +917,19 @@ impl Tool for TimerTool {
         if let Some(ticks) = plan.rearm_at_signal {
             arm(guest, ticks).await;
         }
-        let suppressed = signal == Signal::SIGUSR1 || signal == Signal::SIGALRM;
-        Ok((plan.deliver || !suppressed).then_some(signal))
+        if let Some((at, ticks)) = plan.rearm_at
+            && at == signal as i32
+        {
+            arm(guest, ticks).await;
+        }
+        if plan.hook_waits_for_exit == Some(signal as i32) {
+            guest.send_rpc(Event::Open(Gate::Hooked)).await;
+            guest.send_rpc(Event::Wait(Gate::Exited)).await;
+        }
+        let suppressed = ((signal == Signal::SIGUSR1 || signal == Signal::SIGALRM)
+            && !plan.deliver)
+            || plan.suppress & bit(signal as i32) != 0;
+        Ok((!suppressed).then_some(signal))
     }
 
     async fn handle_rdtsc_event<G: Guest<Self>>(
@@ -818,12 +961,17 @@ impl Tool for TimerTool {
         let clock = guest.read_clock().unwrap();
         guest.send_rpc(Event::Timer { clock }).await;
         let plan = guest.config().clone();
+        let index = guest.thread_state().timers;
+        guest.thread_state_mut().timers += 1;
         if plan.registers {
             report_registers(guest).await;
         }
-        if plan.rendezvous && guest.thread_state().delivered == 0 {
-            guest.send_rpc(Event::Open(Gate::Timer)).await;
-            guest.send_rpc(Event::Wait(Gate::Sent)).await;
+        if plan.rendezvous && index < plan.rendezvous_events() {
+            guest.send_rpc(Event::Open(Gate::Timer(index))).await;
+            guest.send_rpc(Event::Wait(Gate::Sent(index))).await;
+        }
+        if plan.timer_waits_for_exit && index == 0 {
+            guest.send_rpc(Event::Wait(Gate::Exited)).await;
         }
         if let Some(change) = plan.mask_change {
             let masks = guest.regs().await.r14;
@@ -864,6 +1012,20 @@ impl Tool for TimerTool {
         } else if plan.exit_at_event {
             guest.tail_inject(ExitGroup::new().with_status(0)).await
         }
+    }
+
+    async fn on_exit_thread<G: GlobalRPC<Self::GlobalState>>(
+        &self,
+        tid: Pid,
+        global_state: &G,
+        _counts: Counts,
+        status: ExitStatus,
+    ) -> Result<(), reverie::Error> {
+        if global_state.config().exits {
+            let (tid, status) = (tid.as_raw(), status.into_raw());
+            global_state.send_rpc(Event::Exited { tid, status }).await;
+        }
+        Ok(())
     }
 }
 
@@ -3898,16 +4060,16 @@ enum Seen {
     Varies,
 }
 
+/// What [`comparable`] returns: each entry's compared quads, by name.
+type ComparedEntries = Vec<Vec<(&'static str, Seen)>>;
+
 /// The entries of `log` as the runs compare them: every [`COMPARED`] quad,
 /// with a saved rsp, rsi or rdx that some handler found in that register at
 /// its first instruction written as that entry, XSTATE_BV cut to the x87, SSE
 /// and AVX bits (the native frame adds what the host has, such as PKRU), and
 /// the quads `varies` names left out. Every interrupted context the guests
 /// compare is a call that takes no pid or tid, which differ between runs.
-fn comparable(
-    log: &StackedLog,
-    varies: &dyn Fn(usize, usize) -> bool,
-) -> Vec<Vec<(&'static str, Seen)>> {
+fn comparable(log: &StackedLog, varies: &dyn Fn(usize, usize) -> bool) -> ComparedEntries {
     let entry_of = |value: u64, register: usize| {
         let (name, at) = match register {
             q::RSP => ("rsp", q::ENTRY_RSP),
@@ -4019,6 +4181,29 @@ enum Tracing {
     HoldNewThread { signals: [i32; 2] },
 }
 
+/// What [`traced_native_with`] does besides its [`Tracing`]: the stops at
+/// which a Tool's callbacks would suppress a signal or hold a thread while
+/// another thread ends the group.
+#[derive(Clone, Copy, Debug, Default)]
+struct TraceOptions {
+    /// Signals (a mask with bit `signal - 1`) that the tracer suppresses at
+    /// every signal-delivery stop, as a Tool's signal hook suppresses them.
+    suppress: u64,
+    /// At the main thread's first signal-delivery stop for this signal, the
+    /// tracer leaves the thread stopped, as a Tool's signal hook holds it;
+    /// only a group exit can then end it.
+    hold_until_exit: Option<i32>,
+    /// The tracer follows the main thread's syscalls and leaves it stopped at
+    /// the exit of its first call with this number, before any signal is
+    /// selected there, as a Tool's timer callback holds it; only a group
+    /// exit can then end it.
+    hold_at_syscall_exit: Option<i64>,
+    /// The tracer follows the other threads' syscalls and holds another
+    /// thread's `exit_group` at its entry until the main thread is held, as a
+    /// Tool holds that call until the main thread's callback has begun.
+    exit_group_after_hold: bool,
+}
+
 /// A native run under [`traced_native`]: its stdout, and the signals the
 /// tracer delivered, in the order of their stops.
 struct TracedRun {
@@ -4026,6 +4211,19 @@ struct TracedRun {
     delivered: Vec<i32>,
     /// The synthetic SIGSTOPs of new threads that the tracer suppressed.
     synthetic_stops: usize,
+    /// The signal of every signal-delivery stop the tracer reported, in
+    /// order, whatever it did with it: the signals a Tool's signal hook
+    /// would see.
+    stops: Vec<i32>,
+    /// How the main thread ended, in wait(2) encoding.
+    status: i32,
+    /// How each thread ended, in the order the tracer reaped them.
+    threads: Vec<(libc::pid_t, i32)>,
+    /// The stops the tracer left the main thread in: the signal of each
+    /// signal-delivery stop, and -1 for a syscall-exit stop.
+    held: Vec<i32>,
+    /// The stderr the run wrote.
+    stderr: Vec<u8>,
 }
 
 /// What PTRACE_GETSIGINFO shows for a stop that is not a ptrace event.
@@ -4035,6 +4233,9 @@ enum StopInfo {
     Signal { signo: i32, code: i32, sender: i32 },
     /// A group-stop report, which has no siginfo (EINVAL).
     GroupStop,
+    /// The thread is no longer stopped (ESRCH): a group exit's SIGKILL woke
+    /// and ended it after its stop was reported. Its end is reported next.
+    Gone,
 }
 
 /// Reads the siginfo of thread `tid`'s stop.
@@ -4060,6 +4261,9 @@ fn stop_info(tid: libc::pid_t) -> StopInfo {
         }
     } else {
         let error = std::io::Error::last_os_error();
+        if error.raw_os_error() == Some(libc::ESRCH) {
+            return StopInfo::Gone;
+        }
         assert_eq!(
             error.raw_os_error(),
             Some(libc::EINVAL),
@@ -4148,6 +4352,20 @@ fn wait_pending(pid: libc::pid_t, tid: libc::pid_t, signals: &[i32]) {
 /// Linux builds: it only decides, at each signal's stop, whether and when the
 /// signal is delivered.
 fn traced_native(program: &Program, tracing: Tracing) -> TracedRun {
+    let run = traced_native_with(program, tracing, TraceOptions::default());
+    assert!(
+        libc::WIFEXITED(run.status) && libc::WEXITSTATUS(run.status) == 0 && run.stderr.is_empty(),
+        "native: status {:#x}: {}",
+        run.status,
+        String::from_utf8_lossy(&run.stderr)
+    );
+    run
+}
+
+/// [`traced_native`], doing also what `options` says, and returning however
+/// the run ended: the tracer reaps every thread, and reports how each ended.
+/// The guest may not dump core (RLIMIT_CORE 1: see [`native_output`]).
+fn traced_native_with(program: &Program, tracing: Tracing, options: TraceOptions) -> TracedRun {
     use std::io::Read;
     use std::os::unix::process::CommandExt;
     let mut command = std::process::Command::new(&program.executable);
@@ -4156,21 +4374,63 @@ fn traced_native(program: &Program, tracing: Tracing) -> TracedRun {
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());
-    // SAFETY: ptrace(PTRACE_TRACEME) is async-signal-safe and touches no
-    // memory the parent shares.
+    // SAFETY: setrlimit, sigprocmask and ptrace(PTRACE_TRACEME) are
+    // async-signal-safe and touch no memory the parent shares.
     unsafe {
-        command.pre_exec(|| match libc::ptrace(libc::PTRACE_TRACEME, 0, 0, 0) {
-            0 => Ok(()),
-            _ => Err(std::io::Error::last_os_error()),
+        command.pre_exec(|| {
+            let one = libc::rlimit {
+                rlim_cur: 1,
+                rlim_max: 1,
+            };
+            if libc::setrlimit(libc::RLIMIT_CORE, &one) != 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            // Linux's initial mask, as a KVM guest starts with: a thread
+            // that ran a KVM timer keeps the kick signal blocked, and exec
+            // keeps the mask.
+            let mut empty: libc::sigset_t = std::mem::zeroed();
+            libc::sigemptyset(&mut empty);
+            if libc::sigprocmask(libc::SIG_SETMASK, &empty, std::ptr::null_mut()) != 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            match libc::ptrace(libc::PTRACE_TRACEME, 0, 0, 0) {
+                0 => Ok(()),
+                _ => Err(std::io::Error::last_os_error()),
+            }
         });
     }
     let mut child = command.spawn().unwrap();
     let pid = child.id() as libc::pid_t;
     let mut status = 0;
-    // SAFETY: plain wait and ptrace calls on this test's own tracee.
-    let resume = |tid: libc::pid_t, signal: i32| {
-        let resumed = unsafe { libc::ptrace(libc::PTRACE_CONT, tid, 0, signal as libc::c_long) };
-        assert_eq!(resumed, 0, "{}", std::io::Error::last_os_error());
+    // SAFETY: plain wait and ptrace calls on this test's own tracee. A
+    // thread that a group exit's SIGKILL woke from its stop, and so ended,
+    // cannot be resumed (ESRCH); its end is reported next.
+    let resume_with = |request: libc::c_uint, tid: libc::pid_t, signal: i32| {
+        let resumed = unsafe { libc::ptrace(request, tid, 0, signal as libc::c_long) };
+        if resumed != 0 {
+            let error = std::io::Error::last_os_error();
+            assert_eq!(error.raw_os_error(), Some(libc::ESRCH), "{error}");
+        }
+    };
+    // The registers of thread `tid`'s stop, or none if it has ended since.
+    let registers_of_stop = |tid: libc::pid_t| {
+        // SAFETY: an all-zero user_regs_struct is valid, and PTRACE_GETREGS
+        // writes one into it.
+        let mut regs: libc::user_regs_struct = unsafe { std::mem::zeroed() };
+        let got = unsafe {
+            libc::ptrace(
+                libc::PTRACE_GETREGS,
+                tid,
+                0,
+                &mut regs as *mut libc::user_regs_struct,
+            )
+        };
+        if got == 0 {
+            return Some(regs);
+        }
+        let error = std::io::Error::last_os_error();
+        assert_eq!(error.raw_os_error(), Some(libc::ESRCH), "{error}");
+        None
     };
     // The stop at exec.
     assert_eq!(
@@ -4182,13 +4442,27 @@ fn traced_native(program: &Program, tracing: Tracing) -> TracedRun {
         "{status:#x}"
     );
     // An exec of the guest's own stops as an event, not as a SIGTRAP to
-    // deliver.
-    let options = libc::PTRACE_O_TRACECLONE | libc::PTRACE_O_TRACEEXEC | libc::PTRACE_O_EXITKILL;
+    // deliver. Following the main thread's syscalls, its syscall stops come
+    // with SIGTRAP | 0x80.
+    let mut options_set =
+        libc::PTRACE_O_TRACECLONE | libc::PTRACE_O_TRACEEXEC | libc::PTRACE_O_EXITKILL;
+    if options.hold_at_syscall_exit.is_some() || options.exit_group_after_hold {
+        options_set |= libc::PTRACE_O_TRACESYSGOOD;
+    }
     assert_eq!(
-        unsafe { libc::ptrace(libc::PTRACE_SETOPTIONS, pid, 0, options) },
+        unsafe { libc::ptrace(libc::PTRACE_SETOPTIONS, pid, 0, options_set) },
         0
     );
-    resume(pid, 0);
+    // How the main thread is resumed: syscall by syscall until it is held at
+    // its syscall exit, if it is to be.
+    let follow = |held_at_exit: bool| {
+        if options.hold_at_syscall_exit.is_some() && !held_at_exit {
+            libc::PTRACE_SYSCALL
+        } else {
+            libc::PTRACE_CONT
+        }
+    };
+    resume_with(follow(false), pid, 0);
     let mut threads = vec![pid];
     // The cloned threads whose synthetic SIGSTOP the tracer has suppressed.
     let mut synthetic = Vec::new();
@@ -4196,13 +4470,30 @@ fn traced_native(program: &Program, tracing: Tracing) -> TracedRun {
     // reports then follow.
     let mut stop_forwarded = false;
     let mut delivered = Vec::new();
+    let mut stops = Vec::new();
+    let mut held_stops = Vec::new();
+    let mut ended = Vec::new();
+    let mut leader_status = None;
     let (mut held, mut faulted) = (false, false);
-    let ending = loop {
+    // Whether the main thread is inside a syscall, between its entry and
+    // exit stops, while the tracer follows its syscalls.
+    let mut in_syscall = false;
+    let mut held_at_exit = false;
+    // The other threads inside a syscall, while the tracer follows theirs,
+    // and the one whose exit_group waits for the main thread to be held.
+    let mut others_in_syscall = Vec::new();
+    let mut waiting_exit: Option<libc::pid_t> = None;
+    loop {
         let tid = unsafe { libc::waitpid(-1, &mut status, libc::__WALL) };
-        assert!(tid > 0, "waitpid: {}", std::io::Error::last_os_error());
+        if tid < 0 {
+            let error = std::io::Error::last_os_error();
+            assert_eq!(error.raw_os_error(), Some(libc::ECHILD), "waitpid: {error}");
+            break;
+        }
         if libc::WIFEXITED(status) || libc::WIFSIGNALED(status) {
+            ended.push((tid, status));
             if tid == pid {
-                break status;
+                leader_status = Some(status);
             }
             continue;
         }
@@ -4217,8 +4508,60 @@ fn traced_native(program: &Program, tracing: Tracing) -> TracedRun {
                 wait_pending(pid, tid, &others);
             }
         }
+        let request = if tid == pid {
+            follow(held_at_exit)
+        } else if options.exit_group_after_hold {
+            libc::PTRACE_SYSCALL
+        } else {
+            libc::PTRACE_CONT
+        };
+        if signal == libc::SIGTRAP | 0x80 && tid != pid {
+            // A syscall stop of another thread, which the tracer follows.
+            if let Some(at) = others_in_syscall.iter().position(|&other| other == tid) {
+                others_in_syscall.swap_remove(at);
+            } else {
+                others_in_syscall.push(tid);
+                let Some(regs) = registers_of_stop(tid) else {
+                    continue;
+                };
+                if regs.orig_rax as i64 == libc::SYS_exit_group && held_stops.is_empty() {
+                    assert!(waiting_exit.is_none(), "a second exit_group waits");
+                    waiting_exit = Some(tid);
+                    continue;
+                }
+            }
+            resume_with(request, tid, 0);
+            continue;
+        }
+        if signal == libc::SIGTRAP | 0x80 && tid == pid {
+            // A syscall stop of the main thread, which the tracer follows.
+            if in_syscall
+                && let Some(number) = options.hold_at_syscall_exit
+                && !held_at_exit
+            {
+                let Some(regs) = registers_of_stop(tid) else {
+                    continue;
+                };
+                if regs.orig_rax as i64 == number {
+                    held_at_exit = true;
+                    held_stops.push(-1);
+                    in_syscall = false;
+                    if let Some(waiting) = waiting_exit.take() {
+                        resume_with(libc::PTRACE_SYSCALL, waiting, 0);
+                    }
+                    // Left stopped: only the group exit ends it.
+                    continue;
+                }
+            }
+            in_syscall = !in_syscall;
+            resume_with(request, tid, 0);
+            continue;
+        }
         // A clone or exec event stop has no siginfo of its own to read.
         let info = (status >> 16 == 0).then(|| stop_info(tid));
+        if info == Some(StopInfo::Gone) {
+            continue;
+        }
         let deliver = if info.is_none() {
             // A clone or exec event stop.
             0
@@ -4244,16 +4587,26 @@ fn traced_native(program: &Program, tracing: Tracing) -> TracedRun {
                     0
                 }
                 Ok(SigstopAction::Forward) => {
+                    stops.push(signal);
                     stop_forwarded = true;
                     signal
                 }
                 Err(why) => panic!("an unclassifiable SIGSTOP stop of thread {tid}: {why}"),
             }
         } else {
+            stops.push(signal);
             if [libc::SIGTSTP, libc::SIGTTIN, libc::SIGTTOU].contains(&signal) {
                 stop_forwarded = true;
             }
-            match tracing {
+            if tid == pid && options.hold_until_exit == Some(signal) && held_stops.is_empty() {
+                held_stops.push(signal);
+                if let Some(waiting) = waiting_exit.take() {
+                    resume_with(libc::PTRACE_SYSCALL, waiting, 0);
+                }
+                // Left stopped: only the group exit ends it.
+                continue;
+            }
+            let deliver = match tracing {
                 Tracing::HoldUntilPending { first, then }
                     if tid == pid && signal == first && !held =>
                 {
@@ -4273,13 +4626,18 @@ fn traced_native(program: &Program, tracing: Tracing) -> TracedRun {
                     signal
                 }
                 _ => signal,
+            };
+            if options.suppress & bit(signal) != 0 {
+                0
+            } else {
+                deliver
             }
         };
         if deliver != 0 {
             delivered.push(deliver);
         }
-        resume(tid, deliver);
-    };
+        resume_with(request, tid, deliver);
+    }
     let mut stdout = Vec::new();
     child
         .stdout
@@ -4296,15 +4654,15 @@ fn traced_native(program: &Program, tracing: Tracing) -> TracedRun {
         .unwrap();
     // The tracer has reaped the child: its handle must not wait for it.
     std::mem::forget(child);
-    assert!(
-        libc::WIFEXITED(ending) && libc::WEXITSTATUS(ending) == 0 && stderr.is_empty(),
-        "native: status {ending:#x}: {}",
-        String::from_utf8_lossy(&stderr)
-    );
     TracedRun {
         stdout,
         delivered,
         synthetic_stops: synthetic.len(),
+        stops,
+        status: leader_status.expect("the main thread was reaped"),
+        threads: ended,
+        held: held_stops,
+        stderr,
     }
 }
 
@@ -4905,6 +5263,27 @@ fn two_signals_pending_at_a_new_threads_first_instruction_stack_their_frames() {
     assert_eq!(first[q::RAX], 0, "{log:#x?}");
 }
 
+/// The guest of `two_signals_pending_at_a_timer_boundary_stack_their_frames`:
+/// a sibling waits until the main thread spins, without a syscall, and sends
+/// it SIGUSR1 and then SIGUSR2. The main thread announces the spin once r12
+/// and rcx are set, so that natively the signals interrupt the loop itself.
+fn pair_at_timer_boundary_program() -> Program {
+    stacked_program(
+        &[Handler::new(SIGUSR1), Handler::new(SIGUSR2)],
+        &format!(
+            "{LOAD_FPU}{}{GETPPID}xor %eax,%eax\nlea 1f(%rip),%r12\nmov $2000000000,%rcx\n\
+             movb $1,spinning(%rip)\n1: cmpq $2,header(%rip)\njae 2f\ndec %rcx\njnz 1b\n2:\n",
+            sibling(&format!(
+                "5: cmpb $0,spinning(%rip)\nje 5b\n{}{}",
+                tgkill_self(SIGUSR1),
+                tgkill_self(SIGUSR2)
+            )),
+        ),
+        "spinning: .byte 0\n",
+        SIBLING_STACK,
+    )
+}
+
 #[test]
 fn two_signals_pending_at_a_timer_boundary_stack_their_frames() {
     if bounded("two_signals_pending_at_a_timer_boundary_stack_their_frames") {
@@ -4918,21 +5297,7 @@ fn two_signals_pending_at_a_timer_boundary_stack_their_frames() {
     // SIGUSR2's on top. Where the interrupt landed differs between the runs:
     // the first frame's rip, rcx and flags, and so the flags and rcx its
     // handler starts with, which the second frame saves.
-    let program = stacked_program(
-        &[Handler::new(SIGUSR1), Handler::new(SIGUSR2)],
-        &format!(
-            "{LOAD_FPU}{}{GETPPID}movb $1,spinning(%rip)\nxor %eax,%eax\nlea 1f(%rip),%r12\n\
-             mov $2000000000,%rcx\n\
-             1: cmpq $2,header(%rip)\njae 2f\ndec %rcx\njnz 1b\n2:\n",
-            sibling(&format!(
-                "5: cmpb $0,spinning(%rip)\nje 5b\n{}{}",
-                tgkill_self(SIGUSR1),
-                tgkill_self(SIGUSR2)
-            )),
-        ),
-        "spinning: .byte 0\n",
-        SIBLING_STACK,
-    );
+    let program = pair_at_timer_boundary_program();
     let plan = Plan {
         sends: 2,
         ..spinner_plan()
@@ -5379,4 +5744,2203 @@ fn the_native_tracer_forwards_a_sent_sigstop_and_suppresses_only_the_synthetic_o
     let native = traced_native(&program, Tracing::Deliver);
     assert_eq!(native.delivered, [libc::SIGSTOP]);
     assert_eq!(native.synthetic_stops, 1);
+}
+
+// Outcomes at a timer boundary (https://github.com/rrnewton/reverie/issues/1188
+// added the stacked frames these build on): the termination outcomes, a
+// signal the Tool suppresses or the guest ignores, the alternate stack, the
+// red zone, a boundary inside a running handler, and a process-directed
+// signal in a process with several threads. Each guest is compared with the
+// same binary's native Linux run, under the native tracer where a Tool's
+// signal hook decides something (see [`traced_native_with`]). On KVM the
+// boundary is a precise timer event at a fixed RCB target, in the main
+// thread's spin, which holds the thread while a sibling sends it signals (the
+// rendezvous of [`spinner_plan`]); natively a sibling's signal interrupts the
+// spin wherever it then is, so where the interrupt landed (the first frame's
+// rip, rcx and flags) is left out of the comparison.
+
+/// A stacked-signal guest (see [`stacked_program`]) whose main thread runs
+/// `before`, starts a sibling that waits until the main thread spins and then
+/// runs `sends`, reaches the marker, and spins without a syscall, with r12 at
+/// the loop's head, until `entries` handlers have logged their entries (or
+/// for 2,000,000,000 iterations), and then runs `after`. The main thread
+/// announces the spin right before its loop, once r12 and rcx are set, so a
+/// signal the sibling sends natively interrupts the loop itself. The sibling
+/// exits once `sends` is done, unless `sends` keeps it.
+fn timer_boundary_program(
+    handlers: &[Handler],
+    before: &str,
+    sends: &str,
+    entries: usize,
+    after: &str,
+    data: &str,
+    bss: &str,
+) -> Program {
+    stacked_program(
+        handlers,
+        &format!(
+            "{before}{}{GETPPID}xor %eax,%eax\nlea 1f(%rip),%r12\nmov $2000000000,%rcx\n\
+             movb $1,spinning(%rip)\n1: cmpq ${entries},header(%rip)\njae 2f\ndec %rcx\njnz 1b\n2:\n{after}",
+            sibling(&format!("5: cmpb $0,spinning(%rip)\nje 5b\n{sends}")),
+        ),
+        &format!("spinning: .byte 0\n{data}"),
+        &format!("{SIBLING_STACK}{bss}"),
+    )
+}
+
+/// The quads where the interrupt that delivers a timer-boundary guest's
+/// first signal natively lands, which only the KVM runs fix: the first
+/// frame's rip, rcx and flags, and so the flags its handler starts with.
+fn interrupt_varies(index: usize, quad: usize) -> bool {
+    index == 0 && [q::RIP, q::RCX, q::EFLAGS, q::ENTRY_RFLAGS].contains(&quad)
+}
+
+/// How a run ended: its status in wait(2) encoding, stdout and stderr, or
+/// the run's failure, as text.
+type StatusEnding = Result<(i32, Vec<u8>, Vec<u8>), String>;
+
+/// Runs `program` under a [`TimerTool`] following `plan`, and returns the
+/// Tool's events and how the run ended.
+fn run_status(program: &Program, plan: Plan) -> (Vec<Event>, StatusEnding) {
+    let mut backend = KvmBackend::new(program.memory).unwrap();
+    backend
+        .install_static_elf_file_with_context(
+            std::fs::File::open(&program.executable).unwrap(),
+            &[program.executable.to_str().unwrap()],
+            &[],
+            &program.directory,
+        )
+        .unwrap();
+    let completion = futures::executor::block_on(
+        backend.run_static_elf_with_tool_completion::<TimerTool>(plan, true),
+    )
+    .unwrap();
+    let events = completion.global_state.events.into_inner().unwrap();
+    let ending = completion
+        .result
+        .map(|(status, out, err)| (status.into_raw(), out, err))
+        .map_err(|error| error.to_string());
+    (events, ending)
+}
+
+/// Every thread's exit status that the Tool saw ([`Event::Exited`]), sorted
+/// by status.
+fn exit_statuses(events: &[Event]) -> Vec<i32> {
+    let mut statuses: Vec<i32> = events
+        .iter()
+        .filter_map(|event| match event {
+            Event::Exited { status, .. } => Some(*status),
+            _ => None,
+        })
+        .collect();
+    statuses.sort();
+    statuses
+}
+
+/// prctl(PR_SET_DUMPABLE, 0): the process may not dump core.
+const NOT_DUMPABLE: &str =
+    "mov $4,%edi\nxor %esi,%esi\nmov $157,%eax\nsyscall\ntest %rax,%rax\njnz 99f\n";
+
+#[test]
+fn a_fatal_signal_at_a_timer_boundary_ends_every_thread_with_linuxs_status() {
+    if bounded("a_fatal_signal_at_a_timer_boundary_ends_every_thread_with_linuxs_status") {
+        return;
+    }
+    // A sibling waits until the main thread spins, without a syscall, sends
+    // it `signal`, whose action is the default, and spins on. The Tool's
+    // precise timer event lands in the main thread's spin and holds it until
+    // the signal is sent; the native tracer delivers the signal at its stop.
+    // The default action ends the group before any handler runs: the main
+    // thread, then the sibling, end with the signal's status, which carries
+    // the core flag only when a core dump was written (coredump_finish in
+    // fs/coredump.c). A process that is not dumpable writes none
+    // (coredump_skip), and natively the tracer's RLIMIT_CORE of 1 aborts the
+    // dump of one that is, so Linux sets the flag in neither case here.
+    for (signal, dumpable) in [
+        (libc::SIGTERM, true),
+        (libc::SIGQUIT, false),
+        (libc::SIGQUIT, true),
+    ] {
+        let program = timer_boundary_program(
+            &[],
+            if dumpable { "" } else { NOT_DUMPABLE },
+            &format!("{}3: jmp 3b\n", tgkill_self(signal)),
+            1,
+            "",
+            "",
+            "",
+        );
+        let context = format!("signal {signal}, dumpable {dumpable}");
+        let native = traced_native_with(&program, Tracing::Deliver, TraceOptions::default());
+        assert_eq!(
+            (
+                native.status,
+                native.stdout.as_slice(),
+                native.stderr.as_slice()
+            ),
+            (signal, &[][..], &[][..]),
+            "native, {context}"
+        );
+        assert_eq!(native.delivered, [signal], "native, {context}");
+        let mut native_threads: Vec<i32> =
+            native.threads.iter().map(|&(_, status)| status).collect();
+        native_threads.sort();
+        assert_eq!(native_threads, [signal; 2], "native, {context}");
+        let plan = Plan {
+            exits: true,
+            ..spinner_plan()
+        };
+        let (events, ending) = run_status(&program, plan);
+        let context = format!("{context}: {events:?}");
+        // KVM sets the core flag for a dumpable process killed by a signal
+        // whose default action dumps core, and writes no dump: Linux sets it
+        // only when a dump was written
+        // (https://github.com/rrnewton/reverie/issues/1204).
+        let kvm_status = if dumpable && signal == libc::SIGQUIT {
+            signal | 0x80
+        } else {
+            signal
+        };
+        assert_eq!(ending, Ok((kvm_status, vec![], vec![])), "{context}");
+        assert_eq!(exit_statuses(&events), [kvm_status; 2], "{context}");
+        let (timer_at, timer_clock) = first_timer(&events);
+        let (requested_at, _) = last_request(&events);
+        assert_eq!(timer_clock, requested_at + SPIN_TICKS, "{context}");
+        let hooks: Vec<(usize, i32, u64)> = events
+            .iter()
+            .enumerate()
+            .filter_map(|(at, event)| match event {
+                Event::Signalled { signal, clock } => Some((at, *signal, *clock)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(hooks.len(), 1, "{context}");
+        assert_eq!((hooks[0].1, hooks[0].2), (signal, timer_clock), "{context}");
+        assert!(hooks[0].0 > timer_at, "{context}");
+        println!(
+            "signal {signal}, dumpable {dumpable}: native status {:#x}, threads {native_threads:#x?}; \
+             KVM status {kvm_status:#x} at the timer boundary at clock {timer_clock}, threads {:#x?}",
+            native.status,
+            exit_statuses(&events)
+        );
+    }
+}
+
+/// exit_group(42).
+const EXIT_GROUP_42: &str = "mov $42,%edi\nmov $231,%eax\nsyscall\nud2\n";
+
+/// How every thread of the group-exit guests below ends: exited, status 42.
+const EXITED_42: i32 = 42 << 8;
+
+#[test]
+fn a_group_exit_while_a_timer_callback_holds_a_thread_ends_it_before_any_signal() {
+    if bounded("a_group_exit_while_a_timer_callback_holds_a_thread_ends_it_before_any_signal") {
+        return;
+    }
+    // The main thread writes a byte to a pipe, reaches the marker and spins;
+    // a sibling reads the byte, sends SIGUSR1 to the main thread, whose
+    // handler would log an entry, and ends the group with exit_group(42).
+    // Both happen while the main thread is held: on KVM in the callback of
+    // its precise timer event in the spin, which waits until the sibling has
+    // exited; natively in its write, which the sibling's read waits for, and
+    // at that write's syscall-exit stop, before any signal is selected
+    // there (a group exit that comes before the stop ends the thread on the
+    // way to it, with no stop: ptrace_stop skips one while a fatal signal is
+    // pending). Linux's get_signal takes the group exit before it dequeues
+    // any signal (SIGNAL_GROUP_EXIT, at the top of its loop in
+    // kernel/signal.c), so the main thread ends without a signal-delivery
+    // stop, its handler never runs, and every thread ends with status 42.
+    let program = stacked_program(
+        &[Handler::new(SIGUSR1)],
+        &format!(
+            "lea pipe_fds(%rip),%rdi\nxor %esi,%esi\nmov $293,%eax\nsyscall\ntest %rax,%rax\njnz 99f\n{}\
+             mov pipe_fds+4(%rip),%edi\nlea one_byte(%rip),%rsi\nmov $1,%edx\nmov $1,%eax\nsyscall\n\
+             {GETPPID}lea 1f(%rip),%r12\nmov $2000000000,%rcx\n\
+             1: cmpq $1,header(%rip)\njae 2f\ndec %rcx\njnz 1b\n2:\n",
+            sibling(&format!(
+                "mov pipe_fds(%rip),%edi\nlea sibling_byte(%rip),%rsi\nmov $1,%edx\nxor %eax,%eax\nsyscall\n\
+                 {}{EXIT_GROUP_42}",
+                tgkill_self(SIGUSR1)
+            )),
+        ),
+        "pipe_fds: .long 0, 0\none_byte: .byte 0x78\nsibling_byte: .byte 0\n",
+        SIBLING_STACK,
+    );
+    let native = traced_native_with(
+        &program,
+        Tracing::Deliver,
+        TraceOptions {
+            hold_at_syscall_exit: Some(libc::SYS_write),
+            ..TraceOptions::default()
+        },
+    );
+    let mut native_threads: Vec<i32> = native.threads.iter().map(|&(_, status)| status).collect();
+    native_threads.sort();
+    assert_eq!(
+        (
+            native.status,
+            native.stdout.as_slice(),
+            native.stderr.as_slice()
+        ),
+        (EXITED_42, &[][..], &[][..]),
+        "native"
+    );
+    assert_eq!(native_threads, [EXITED_42; 2], "native");
+    assert_eq!(native.stops, [0; 0], "native: no signal-delivery stop");
+    assert!(
+        native.held.is_empty() || native.held == [-1],
+        "native: held {:?}",
+        native.held
+    );
+    let plan = Plan {
+        exits: true,
+        timer_waits_for_exit: true,
+        ..spinner_plan()
+    };
+    let (events, ending) = run_status(&program, plan);
+    assert_eq!(ending, Ok((EXITED_42, vec![], vec![])), "{events:?}");
+    assert_eq!(exit_statuses(&events), [EXITED_42; 2], "{events:?}");
+    assert_eq!(timer_clocks(&events).len(), 1, "{events:?}");
+    assert_eq!(
+        signal_hooks(&events),
+        [0; 0],
+        "no signal hook after the group exit: {events:?}"
+    );
+    println!(
+        "ended with status {EXITED_42:#x} before any signal: native held {:?}, KVM {events:?}",
+        native.held
+    );
+}
+
+/// What SIGUSR1's hook leaves of SIGUSR1 in the held-hook guests of
+/// [`held_hook_group_exit`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum HeldSignal {
+    /// The hook returns SIGUSR1, whose handler is installed.
+    Delivered,
+    /// The hook suppresses SIGUSR1.
+    Suppressed,
+    /// The hook returns SIGUSR1, whose action is SIG_IGN, so that it is
+    /// discarded after its hook (a traced Linux thread, and a Tool's hook,
+    /// see an ignored signal: sig_ignored in kernel/signal.c).
+    Ignored,
+}
+
+/// A held-hook guest: a sibling waits until the main thread spins, sends it
+/// SIGUSR1 (and, with `pair`, SIGUSR2, whose handler would log an entry),
+/// and ends the group with exit_group(42), which the Tool holds until
+/// SIGUSR1's callback has begun, and the native tracer at its entry until the
+/// main thread's SIGUSR1 stop. That callback, at the main thread's timer
+/// boundary, waits until the sibling has exited and then leaves SIGUSR1 as
+/// `held` says; natively the tracer leaves the stop as it is, which only the
+/// group exit ends. Checks that natively and on KVM every thread ends with
+/// status 42, that natively SIGUSR1's is the one signal-delivery stop, and
+/// that on KVM SIGUSR1's is the one hook, at the timer event's clock; then
+/// runs the guest again under a Tool that controls delivery with permits and
+/// returns that run's permits, hooks and receipts ([`boundaries`]).
+fn held_hook_group_exit(pair: bool, held: HeldSignal) -> Vec<String> {
+    let sends = if pair {
+        tgkill_self(SIGUSR1) + &tgkill_self(SIGUSR2)
+    } else {
+        tgkill_self(SIGUSR1)
+    };
+    let (handlers, before, data) = if held == HeldSignal::Ignored {
+        (
+            vec![Handler::new(SIGUSR2)],
+            format!(
+                "mov ${SIGUSR1},%edi\nlea ignore_action(%rip),%rsi\nxor %edx,%edx\nmov $8,%r10d\n\
+                 mov $13,%eax\nsyscall\ntest %rax,%rax\njnz 99f\n"
+            ),
+            format!(".balign 8\nignore_action: .quad 1, {HANDLER_FLAGS:#x}, restorer, 0\n"),
+        )
+    } else {
+        (
+            vec![Handler::new(SIGUSR1), Handler::new(SIGUSR2)],
+            String::new(),
+            String::new(),
+        )
+    };
+    let program = timer_boundary_program(
+        &handlers,
+        &before,
+        &format!("{sends}{EXIT_GROUP_42}"),
+        1,
+        "",
+        &data,
+        "",
+    );
+    let native = traced_native_with(
+        &program,
+        Tracing::Deliver,
+        TraceOptions {
+            hold_until_exit: Some(SIGUSR1),
+            exit_group_after_hold: true,
+            ..TraceOptions::default()
+        },
+    );
+    let context = format!("pair {pair}, {held:?}");
+    let mut native_threads: Vec<i32> = native.threads.iter().map(|&(_, status)| status).collect();
+    native_threads.sort();
+    assert_eq!(
+        (
+            native.status,
+            native.stdout.as_slice(),
+            native.stderr.as_slice()
+        ),
+        (EXITED_42, &[][..], &[][..]),
+        "native, {context}"
+    );
+    assert_eq!(native_threads, [EXITED_42; 2], "native, {context}");
+    assert_eq!(
+        (native.held.as_slice(), native.stops.as_slice()),
+        (&[SIGUSR1][..], &[SIGUSR1][..]),
+        "native, {context}"
+    );
+    let plan = Plan {
+        exits: true,
+        hook_waits_for_exit: Some(SIGUSR1),
+        exit_waits_for_hook: true,
+        sends: if pair { 2 } else { 1 },
+        suppress: if held == HeldSignal::Suppressed {
+            bit(SIGUSR1)
+        } else {
+            0
+        },
+        ..spinner_plan()
+    };
+    let (events, ending) = run_status(&program, plan.clone());
+    let kvm_context = format!("{context}: {events:?}");
+    assert_eq!(ending, Ok((EXITED_42, vec![], vec![])), "{kvm_context}");
+    assert_eq!(exit_statuses(&events), [EXITED_42; 2], "{kvm_context}");
+    let (timer_at, timer_clock) = first_timer(&events);
+    let hooks: Vec<(usize, i32, u64)> = events
+        .iter()
+        .enumerate()
+        .filter_map(|(at, event)| match event {
+            Event::Signalled { signal, clock } => Some((at, *signal, *clock)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(hooks.len(), 1, "only SIGUSR1's hook: {kvm_context}");
+    assert!(hooks[0].0 > timer_at, "{kvm_context}");
+    assert_eq!(
+        (hooks[0].1, hooks[0].2),
+        (SIGUSR1, timer_clock),
+        "{kvm_context}"
+    );
+    let (events, ending) = run_status(
+        &program,
+        Plan {
+            permits: true,
+            ..plan
+        },
+    );
+    let permits_context = format!("{context}, with permits: {events:?}");
+    assert_eq!(ending, Ok((EXITED_42, vec![], vec![])), "{permits_context}");
+    assert_eq!(exit_statuses(&events), [EXITED_42; 2], "{permits_context}");
+    println!(
+        "{context}: ended with status {EXITED_42:#x}: native stops {:?}, KVM boundaries {:?}",
+        native.stops,
+        boundaries(&events)
+    );
+    boundaries(&events)
+}
+
+#[test]
+fn a_group_exit_while_a_signal_hook_holds_a_thread_ends_it_before_its_handler() {
+    if bounded("a_group_exit_while_a_signal_hook_holds_a_thread_ends_it_before_its_handler") {
+        return;
+    }
+    // SIGUSR1's hook returns SIGUSR1, whose handler is installed, after the
+    // group exit (see held_hook_group_exit). Linux's ptrace_signal requeues a
+    // signal whose stop a fatal signal (the group exit's SIGKILL) ended, and
+    // get_signal then takes the group exit before it selects another signal
+    // (kernel/signal.c): no handler runs, SIGUSR2 gets no stop, and every
+    // thread ends with status 42. On KVM no handler runs either, and SIGUSR2
+    // gets no hook; but SIGUSR1, whose hook was running, still gets its frame,
+    // which the thread never runs, and a Tool that controls delivery a Caught
+    // receipt for it, where Linux requeues it: a named limit
+    // (https://github.com/rrnewton/reverie/issues/1208).
+    for pair in [false, true] {
+        assert_eq!(
+            held_hook_group_exit(pair, HeldSignal::Delivered),
+            ["permit 1", "hook 10", "receipt 1 Caught"],
+            "pair {pair}"
+        );
+    }
+}
+
+#[test]
+fn a_group_exit_during_a_hook_that_drops_its_signal_selects_no_other_signal() {
+    if bounded("a_group_exit_during_a_hook_that_drops_its_signal_selects_no_other_signal") {
+        return;
+    }
+    // SIGUSR1 and SIGUSR2 are pending, and SIGUSR1's hook, after the group
+    // exit, suppresses SIGUSR1 (first guest), or returns it to be discarded,
+    // its action being SIG_IGN (second guest). Linux comes back to
+    // get_signal's group-exit test, before any other dequeue, both after
+    // ptrace_signal returns no signal and after it discards an ignored one
+    // (kernel/signal.c), so SIGUSR2 gets no stop either way. On KVM the
+    // selection after the dropped signal stops at the group exit too: only
+    // SIGUSR1's hook runs, nothing is delivered, and the boundary's permit
+    // settles with NoHandler.
+    for held in [HeldSignal::Suppressed, HeldSignal::Ignored] {
+        assert_eq!(
+            held_hook_group_exit(true, held),
+            ["permit 1", "hook 10", "receipt 1 NoHandler"],
+            "{held:?}"
+        );
+    }
+}
+
+/// The permits, hooks and receipts of a run under [`Plan::permits`], as
+/// text, in order.
+fn boundaries(events: &[Event]) -> Vec<String> {
+    events
+        .iter()
+        .filter_map(|event| match event {
+            Event::Permit(sequence) => Some(format!("permit {sequence}")),
+            Event::Signalled { signal, .. } => Some(format!("hook {signal}")),
+            Event::Receipt(sequence, outcome) => Some(format!("receipt {sequence} {outcome}")),
+            _ => None,
+        })
+        .collect()
+}
+
+/// Runs a timer-boundary guest natively under `tracing` and `options` and on
+/// KVM under the Tool following `plan` (with [`Plan::deliver`] and, when
+/// `permits`, [`Plan::permits`]), and checks that both exit with status 0
+/// and write logs that compare equal (with [`interrupt_varies`]), and that
+/// the Tool's hooks come in the order of the tracer's signal-delivery stops.
+/// Returns the native log, the KVM log and the Tool's events.
+fn timer_boundary_matches_native(
+    program: &Program,
+    tracing: Tracing,
+    options: TraceOptions,
+    plan: Plan,
+) -> (StackedLog, StackedLog, Vec<Event>) {
+    let native = traced_native_with(program, tracing, options);
+    assert!(
+        libc::WIFEXITED(native.status)
+            && libc::WEXITSTATUS(native.status) == 0
+            && native.stderr.is_empty(),
+        "native: status {:#x}: {}",
+        native.status,
+        String::from_utf8_lossy(&native.stderr)
+    );
+    let native_log = StackedLog::read(&native.stdout);
+    let (events, stdout) = tool_stdout(
+        program,
+        Plan {
+            deliver: true,
+            ..plan
+        },
+    );
+    let log = StackedLog::read(&stdout);
+    assert_eq!(
+        comparable(&log, &interrupt_varies),
+        comparable(&native_log, &interrupt_varies),
+        "tool {log:#x?}, native {native_log:#x?}, {events:?}"
+    );
+    assert_eq!(
+        (
+            log.final_mask,
+            log.final_stack,
+            log.queried_stack,
+            log.results
+        ),
+        (
+            native_log.final_mask,
+            native_log.final_stack,
+            native_log.queried_stack,
+            native_log.results
+        ),
+        "tool {log:#x?}, native {native_log:#x?}"
+    );
+    assert_eq!(
+        signal_hooks(&events),
+        native.stops,
+        "tool hooks against the native tracer's stops: {events:?}"
+    );
+    (native_log, log, events)
+}
+
+/// rt_sigpending into the header's result `index`.
+fn pending_into_result(index: usize) -> String {
+    assert!(index < RESULTS);
+    format!(
+        "lea header+{}(%rip),%rdi\nmov $8,%esi\nmov $127,%eax\nsyscall\n",
+        8 * (8 + index)
+    )
+}
+
+#[test]
+fn a_signal_a_tool_suppresses_at_a_timer_boundary_runs_no_handler() {
+    if bounded("a_signal_a_tool_suppresses_at_a_timer_boundary_runs_no_handler") {
+        return;
+    }
+    // A sibling waits until the main thread spins and sends it SIGUSR1, then,
+    // in the second guest, SIGUSR2 as well. The Tool's precise timer event
+    // holds the main thread in its spin until they are sent, and its hook
+    // suppresses SIGUSR1 at that boundary; the native tracer suppresses
+    // SIGUSR1 at its stop (and holds that stop until SIGUSR2 is pending).
+    // Suppressed, SIGUSR1 runs no handler and leaves nothing pending; Linux's
+    // get_signal goes on to the next signal, so SIGUSR2's frame is built at
+    // the same boundary, saving the interrupted spin. The guest spins until
+    // the sibling has finished and then reads its pending set.
+    for pair in [false, true] {
+        let sends = if pair {
+            tgkill_self(SIGUSR1) + &tgkill_self(SIGUSR2)
+        } else {
+            tgkill_self(SIGUSR1)
+        };
+        let program = timer_boundary_program(
+            &[Handler::new(SIGUSR1), Handler::new(SIGUSR2)],
+            LOAD_FPU,
+            &format!("{sends}movb $1,sent(%rip)\n"),
+            usize::from(pair),
+            &format!("3: cmpb $0,sent(%rip)\nje 3b\n{}", pending_into_result(0)),
+            "sent: .byte 0\n",
+            "",
+        );
+        let tracing = if pair {
+            Tracing::HoldUntilPending {
+                first: SIGUSR1,
+                then: SIGUSR2,
+            }
+        } else {
+            Tracing::Deliver
+        };
+        let options = TraceOptions {
+            suppress: bit(SIGUSR1),
+            ..TraceOptions::default()
+        };
+        let base = Plan {
+            sends: if pair { 2 } else { 1 },
+            suppress: bit(SIGUSR1),
+            ..spinner_plan()
+        };
+        let (native, log, events) =
+            timer_boundary_matches_native(&program, tracing, options, base.clone());
+        let context = format!("pair {pair}: {log:#x?} {events:?}");
+        let expected: &[i32] = if pair { &[SIGUSR2] } else { &[] };
+        assert_eq!(native.signals(), expected, "{context}");
+        assert_eq!(native.results[0], 0, "nothing pending: {context}");
+        if pair {
+            // SIGUSR2's frame saved the spin at the timer event's boundary.
+            let r = registers_of(&events);
+            let e = log.entry(0);
+            assert_eq!(
+                [e[q::RIP], e[q::RCX], e[q::EFLAGS], e[q::R12]],
+                [r.rip, r.rcx, r.eflags, r.r12],
+                "{context}"
+            );
+            assert_interrupted_at_mark_but_rip(&native, 0, "native");
+        }
+        // The receipts, under a Tool that controls signal delivery with
+        // permits: SIGUSR1, suppressed, shares the boundary of the signal
+        // selected after it, and alone ends its boundary with NoHandler.
+        let (_, _, events) = timer_boundary_matches_native(
+            &program,
+            tracing,
+            options,
+            Plan {
+                permits: true,
+                ..base
+            },
+        );
+        let expected = if pair {
+            vec![
+                "permit 1".to_owned(),
+                format!("hook {SIGUSR1}"),
+                format!("hook {SIGUSR2}"),
+                "receipt 1 Caught".to_owned(),
+            ]
+        } else {
+            vec![
+                "permit 1".to_owned(),
+                format!("hook {SIGUSR1}"),
+                "receipt 1 NoHandler".to_owned(),
+            ]
+        };
+        assert_eq!(boundaries(&events), expected, "pair {pair}: {events:?}");
+        println!(
+            "pair {pair}: suppressed SIGUSR1, handlers {:?}, receipts {:?}",
+            native.signals(),
+            boundaries(&events)
+        );
+    }
+}
+
+/// [`assert_interrupted_at_mark`] for an entry whose rip is where an
+/// interrupt landed in the spin: rbx, rbp and the loaded FPU state intact.
+fn assert_interrupted_at_mark_but_rip(log: &StackedLog, index: usize, context: &str) {
+    let e = log.entry(index);
+    let context = format!("{context}: entry {index}: {log:#x?}");
+    assert_eq!([e[q::RBX], e[q::RBP]], [RBX, RBP], "{context}");
+    assert_eq!(
+        [e[q::MXCSR], e[q::XMM5], e[q::XSTATE_BV] & 0b111],
+        [LOADED_MXCSR, LOADED_XMM5, 0b011],
+        "{context}"
+    );
+}
+
+#[test]
+fn an_ignored_signal_at_a_timer_boundary_is_discarded_as_linux_discards_it() {
+    if bounded("an_ignored_signal_at_a_timer_boundary_is_discarded_as_linux_discards_it") {
+        return;
+    }
+    // SIGUSR1's action is SIG_IGN, set before the sibling starts. The sibling
+    // waits until the main thread spins and sends it SIGUSR1 and SIGUSR2,
+    // during the Tool's timer event at the spin. A traced thread queues an
+    // ignored signal (sig_ignored in kernel/signal.c), so the tracer and the
+    // Tool's hook see it, and get_signal then discards it and goes on to
+    // SIGUSR2, whose frame is built at the same boundary; nothing is left
+    // pending. The second guest sends SIGUSR1 alone: discarded, no handler.
+    for pair in [false, true] {
+        let sends = if pair {
+            tgkill_self(SIGUSR1) + &tgkill_self(SIGUSR2)
+        } else {
+            tgkill_self(SIGUSR1)
+        };
+        let program = timer_boundary_program(
+            &[Handler::new(SIGUSR2)],
+            &format!(
+                "mov ${SIGUSR1},%edi\nlea ignore_action(%rip),%rsi\nxor %edx,%edx\nmov $8,%r10d\n\
+                 mov $13,%eax\nsyscall\ntest %rax,%rax\njnz 99f\n{LOAD_FPU}"
+            ),
+            &format!("{sends}movb $1,sent(%rip)\n"),
+            usize::from(pair),
+            &format!("3: cmpb $0,sent(%rip)\nje 3b\n{}", pending_into_result(0)),
+            &format!(
+                "sent: .byte 0\n.balign 8\nignore_action: .quad 1, {HANDLER_FLAGS:#x}, restorer, 0\n"
+            ),
+            "",
+        );
+        let tracing = if pair {
+            Tracing::HoldUntilPending {
+                first: SIGUSR1,
+                then: SIGUSR2,
+            }
+        } else {
+            Tracing::Deliver
+        };
+        let base = Plan {
+            sends: if pair { 2 } else { 1 },
+            ..spinner_plan()
+        };
+        let (native, log, events) =
+            timer_boundary_matches_native(&program, tracing, TraceOptions::default(), base.clone());
+        let context = format!("pair {pair}: {log:#x?} {events:?}");
+        let expected: &[i32] = if pair { &[SIGUSR2] } else { &[] };
+        assert_eq!(native.signals(), expected, "{context}");
+        assert_eq!(native.results[0], 0, "nothing pending: {context}");
+        if pair {
+            let r = registers_of(&events);
+            let e = log.entry(0);
+            assert_eq!(
+                [e[q::RIP], e[q::RCX], e[q::EFLAGS], e[q::R12]],
+                [r.rip, r.rcx, r.eflags, r.r12],
+                "{context}"
+            );
+            assert_interrupted_at_mark_but_rip(&native, 0, "native");
+        }
+        // Under permits, the ignored SIGUSR1 shares the boundary of the
+        // signal selected after it, and alone ends its boundary with
+        // NoHandler.
+        let (_, _, events) = timer_boundary_matches_native(
+            &program,
+            tracing,
+            TraceOptions::default(),
+            Plan {
+                permits: true,
+                ..base
+            },
+        );
+        let expected = if pair {
+            vec![
+                "permit 1".to_owned(),
+                format!("hook {SIGUSR1}"),
+                format!("hook {SIGUSR2}"),
+                "receipt 1 Caught".to_owned(),
+            ]
+        } else {
+            vec![
+                "permit 1".to_owned(),
+                format!("hook {SIGUSR1}"),
+                "receipt 1 NoHandler".to_owned(),
+            ]
+        };
+        assert_eq!(boundaries(&events), expected, "pair {pair}: {events:?}");
+        println!(
+            "pair {pair}: ignored SIGUSR1, handlers {:?}, receipts {:?}",
+            native.signals(),
+            boundaries(&events)
+        );
+    }
+}
+
+/// Quads a guest writes in the 128-byte red zone below its rsp, which no
+/// signal frame may touch (get_sigframe in arch/x86/kernel/signal.c).
+const CANARY: u64 = 0x5afe_c0de_0000_0000;
+
+/// Writes 16 canary quads, `CANARY + i` at `-8 * (i + 1)(%rsp)`: the whole
+/// red zone below the current rsp. Uses rax.
+fn write_canaries() -> String {
+    (0..16)
+        .map(|i| {
+            format!(
+                "movabs ${:#x},%rax\nmov %rax,{}(%rsp)\n",
+                CANARY + i,
+                -8 * (i as i64 + 1)
+            )
+        })
+        .collect()
+}
+
+/// Counts the canaries of [`write_canaries`] still intact below the current
+/// rsp into the header's result `index`. Uses rax and r8.
+fn check_canaries(index: usize) -> String {
+    assert!(index < RESULTS);
+    let checks: String = (0..16)
+        .map(|i| {
+            format!(
+                "movabs ${:#x},%rax\ncmp %rax,{}(%rsp)\njne 7f\ninc %r8\n7:\n",
+                CANARY + i,
+                -8 * (i as i64 + 1)
+            )
+        })
+        .collect();
+    format!(
+        "xor %r8d,%r8d\n{checks}mov %r8,header+{}(%rip)\n",
+        8 * (8 + index)
+    )
+}
+
+/// The guest of the nested-boundary tests below. Its main thread writes
+/// canaries below its rsp, starts a sibling and spins, as in
+/// [`timer_boundary_program`]. The sibling sends it SIGUSR1, waits until
+/// SIGUSR1's handler runs, and sends SIGUSR2. SIGUSR1's handler writes
+/// canaries below its own rsp, keeps the head of its loop in r12, and spins
+/// without a syscall until SIGUSR2's handler, which queries the alternate
+/// stack, has run; then it checks its canaries (result 1). The main thread
+/// checks its own once both handlers have returned (result 0). With
+/// `altstack`, both handlers are SA_ONSTACK and the guest arms a 64 KiB
+/// alternate stack with those flags first.
+fn nested_boundaries_program(altstack: Option<u64>) -> Program {
+    let onstack = if altstack.is_some() { SA_ONSTACK } else { 0 };
+    timer_boundary_program(
+        &[
+            Handler::new(SIGUSR1).flags(onstack).actions(&format!(
+                "{}lea 3f(%rip),%r12\nmov $2000000000,%rcx\nmovb $1,in_handler(%rip)\n\
+                 3: cmpb $0,second(%rip)\njne 4f\ndec %rcx\njnz 3b\n4:\n{}",
+                write_canaries(),
+                check_canaries(1)
+            )),
+            Handler::new(SIGUSR2)
+                .flags(onstack)
+                .actions(&format!("{QUERY_STACK}movb $1,second(%rip)\n")),
+        ],
+        &format!(
+            "{}{LOAD_FPU}{}",
+            if altstack.is_some() { ARM_ALTSTACK } else { "" },
+            write_canaries()
+        ),
+        &format!(
+            "{}3: cmpb $0,in_handler(%rip)\nje 3b\n{}",
+            tgkill_self(SIGUSR1),
+            tgkill_self(SIGUSR2)
+        ),
+        2,
+        &check_canaries(0),
+        &format!(
+            "in_handler: .byte 0\nsecond: .byte 0\n{}",
+            altstack.map(altstack_data).unwrap_or_default()
+        ),
+        if altstack.is_some() { ALTSTACK } else { "" },
+    )
+}
+
+/// RCBs from SIGUSR1's callback to the second timer event of the
+/// nested-boundary tests, which lands in SIGUSR1's handler's loop.
+const NESTED_TICKS: u64 = 1_000;
+
+/// The plan of the nested-boundary tests: the spinner's precise event, with
+/// SIGUSR1 sent during it, and a second precise event requested in
+/// SIGUSR1's callback, with SIGUSR2 sent during it.
+fn nested_plan() -> Plan {
+    Plan {
+        rendezvous_sends: vec![1, 1],
+        rearm_at: Some((SIGUSR1, NESTED_TICKS)),
+        ..spinner_plan()
+    }
+}
+
+/// Where the interrupts that deliver the nested-boundary guests' signals
+/// natively land, which only the KVM runs fix: each frame's rip, rcx and
+/// flags, and the flags its handler starts with.
+fn interrupts_vary(_: usize, quad: usize) -> bool {
+    [q::RIP, q::RCX, q::EFLAGS, q::ENTRY_RFLAGS].contains(&quad)
+}
+
+/// The registers each timer event saw, in order.
+fn timer_registers(events: &[Event]) -> Vec<Registers> {
+    events
+        .iter()
+        .filter_map(|event| match event {
+            Event::Registers(registers) => Some(registers.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+/// Runs a nested-boundary guest natively, delivering each signal at its stop,
+/// and on KVM under [`nested_plan`]; checks that both exit with status 0,
+/// write logs that compare equal with [`interrupts_vary`], and see their
+/// hooks and stops in one order; and checks the chain both build: SIGUSR1's
+/// frame saved the main thread's spin and SIGUSR2's saved SIGUSR1's handler
+/// in its loop, on its stack (rsp, and its arguments in rdi, rsi and rdx),
+/// below its red zone. On KVM each frame saved the registers of the timer
+/// event at whose boundary it was built. Returns the native log, the KVM
+/// log and the Tool's events.
+fn nested_boundaries_match_native(program: &Program) -> (StackedLog, StackedLog, Vec<Event>) {
+    let native = traced_native(program, Tracing::Deliver);
+    let native_log = StackedLog::read(&native.stdout);
+    let (events, stdout) = tool_stdout(program, nested_plan());
+    let log = StackedLog::read(&stdout);
+    assert_eq!(
+        comparable(&log, &interrupts_vary),
+        comparable(&native_log, &interrupts_vary),
+        "tool {log:#x?}, native {native_log:#x?}, {events:?}"
+    );
+    assert_eq!(
+        (
+            log.final_mask,
+            log.final_stack,
+            log.queried_stack,
+            log.results
+        ),
+        (
+            native_log.final_mask,
+            native_log.final_stack,
+            native_log.queried_stack,
+            native_log.results
+        ),
+        "tool {log:#x?}, native {native_log:#x?}"
+    );
+    assert_eq!(signal_hooks(&events), native.delivered, "{events:?}");
+    for (name, log) in [("native", &native_log), ("tool", &log)] {
+        let context = format!("{name}: {log:#x?}");
+        assert_eq!(log.signals(), [SIGUSR1, SIGUSR2], "{context}");
+        let (first, second) = (log.entry(0), log.entry(1));
+        // Each saved rip lies in the loop whose head the frame's r12 holds:
+        // four instructions, at most 20 bytes.
+        for e in [first, second] {
+            assert!(
+                (e[q::R12]..e[q::R12] + 20).contains(&e[q::RIP]),
+                "{context}"
+            );
+        }
+        assert_interrupted_at_mark_but_rip(log, 0, name);
+        assert_eq!(
+            [
+                second[q::RSP],
+                second[q::RDI],
+                second[q::RSI],
+                second[q::RDX]
+            ],
+            [
+                first[q::ENTRY_RSP],
+                SIGUSR1 as u64,
+                first[q::ENTRY_RSI],
+                first[q::ENTRY_RDX]
+            ],
+            "{context}"
+        );
+        assert!(
+            second[q::ENTRY_RSP] + 128 < first[q::ENTRY_RSP],
+            "{context}"
+        );
+        // The mask SIGUSR1's handler runs under, which SIGUSR2's frame saved.
+        assert_eq!(
+            [first[q::SIGMASK], second[q::SIGMASK], log.final_mask],
+            [0, bit(SIGUSR1), 0],
+            "{context}"
+        );
+        // No frame touched a red zone.
+        assert_eq!(log.results[..2], [16, 16], "{context}");
+    }
+    let r = timer_registers(&events);
+    assert_eq!(r.len(), 2, "{events:?}");
+    for (index, r) in r.iter().enumerate() {
+        let e = log.entry(index);
+        assert_eq!(
+            [e[q::RIP], e[q::RCX], e[q::EFLAGS], e[q::RSP], e[q::R12]],
+            [r.rip, r.rcx, r.eflags, r.rsp, r.r12],
+            "frame {index}: {log:#x?} {events:?}"
+        );
+    }
+    // Each signal's hook ran at its timer event's clock.
+    let clocks: Vec<u64> = events
+        .iter()
+        .filter_map(|event| match event {
+            Event::Timer { clock } | Event::Signalled { clock, .. } => Some(*clock),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(clocks.len(), 4, "{events:?}");
+    assert_eq!((clocks[0], clocks[2]), (clocks[1], clocks[3]), "{events:?}");
+    (native_log, log, events)
+}
+
+#[test]
+fn a_timer_boundary_inside_a_running_handler_nests_its_frame_as_linux_does() {
+    if bounded("a_timer_boundary_inside_a_running_handler_nests_its_frame_as_linux_does") {
+        return;
+    }
+    // SIGUSR1 is delivered at the main thread's first timer boundary, in its
+    // spin; SIGUSR1's callback requests a second precise event, which lands
+    // in its handler's loop, and SIGUSR2 is delivered at that boundary.
+    // Linux builds SIGUSR2's frame below the interrupted handler's rsp and
+    // red zone, saving the handler's registers and the mask it runs under;
+    // SIGUSR2's rt_sigreturn returns to the handler's loop, and SIGUSR1's to
+    // the spin. Natively the same signals come wherever the sibling's sends
+    // interrupt the thread.
+    let (native, _, events) = nested_boundaries_match_native(&nested_boundaries_program(None));
+    println!(
+        "nested at a timer boundary in SIGUSR1's handler: native {native:#x?}, KVM timer registers {:#x?}",
+        timer_registers(&events)
+    );
+}
+
+#[test]
+fn frames_at_timer_boundaries_enter_and_nest_on_an_alternate_stack() {
+    if bounded("frames_at_timer_boundaries_enter_and_nest_on_an_alternate_stack") {
+        return;
+    }
+    // The guest of
+    // `a_timer_boundary_inside_a_running_handler_nests_its_frame_as_linux_does`,
+    // with SA_ONSTACK handlers and an armed alternate stack. At the first
+    // timer boundary SIGUSR1's frame switches to the top of the stack; at the
+    // second, inside SIGUSR1's handler, which runs on the stack, SIGUSR2's
+    // frame nests below the handler's rsp and red zone, still on the stack,
+    // and its handler finds itself on the stack (SS_ONSTACK). With
+    // SS_AUTODISARM, SIGUSR1's delivery disarms the stack: SIGUSR2's frame
+    // then saves no stack and goes below the handler's rsp all the same, its
+    // handler finds the stack disabled, and SIGUSR1's rt_sigreturn arms it
+    // again (signal_delivered and sas_ss_reset in Linux).
+    for flags in [0, SS_AUTODISARM] {
+        let (native, log, _) =
+            nested_boundaries_match_native(&nested_boundaries_program(Some(flags)));
+        let context = format!("ss_flags {flags:#x}: {native:#x?}");
+        let (first, second) = (native.entry(0), native.entry(1));
+        let armed = [first[q::SS_SP], flags, 65536];
+        assert_ne!(armed[0], 0, "{context}");
+        assert_eq!(
+            [first[q::SS_SP], first[q::SS_FLAGS], first[q::SS_SIZE]],
+            armed,
+            "{context}"
+        );
+        let (second_saved, queried) = if flags == SS_AUTODISARM {
+            ([0, SS_DISABLE, 0], [0, SS_DISABLE, 0])
+        } else {
+            (armed, [armed[0], libc::SS_ONSTACK as u64, 65536])
+        };
+        assert_eq!(
+            [second[q::SS_SP], second[q::SS_FLAGS], second[q::SS_SIZE]],
+            second_saved,
+            "{context}"
+        );
+        assert_eq!(native.queried_stack, queried, "{context}");
+        assert_eq!(native.final_stack, armed, "{context}");
+        // Both frames lie on the alternate stack, in both runs.
+        for log in [&native, &log] {
+            let stack = log.entry(0)[q::SS_SP]..log.entry(0)[q::SS_SP] + 65536;
+            assert!(
+                stack.contains(&log.entry(0)[q::ENTRY_RSP])
+                    && stack.contains(&log.entry(1)[q::ENTRY_RSP]),
+                "{context}: {log:#x?}"
+            );
+        }
+        println!(
+            "ss_flags {flags:#x}: SIGUSR1 entered the stack, SIGUSR2 nested on it: {native:#x?}"
+        );
+    }
+}
+
+/// Where the main thread of [`red_zone_program`] spins.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SpinStack {
+    /// On its own stack, with an ordinary SIGUSR1 handler.
+    Ordinary,
+    /// On its own stack, with an SA_ONSTACK handler and an armed alternate
+    /// stack, which the frame enters.
+    Entering,
+    /// 64 bytes above the armed alternate stack's top, with an SA_ONSTACK
+    /// handler: its red zone reaches 64 bytes into the stack.
+    AboveTop,
+    /// On the armed alternate stack, 64 bytes above its base, with an
+    /// SA_ONSTACK handler: its red zone reaches 64 bytes below the stack.
+    NearBase,
+}
+
+/// A timer-boundary guest whose main thread spins where `spin` says, with
+/// canaries in the red zone below its rsp there, which it checks once the
+/// spin has ended (result 0), and whose sibling sends it SIGUSR1.
+fn red_zone_program(spin: SpinStack) -> Program {
+    let (flags, at) = match spin {
+        SpinStack::Ordinary => (0, None),
+        SpinStack::Entering => (SA_ONSTACK, None),
+        SpinStack::AboveTop => (SA_ONSTACK, Some("altstack_end+64")),
+        SpinStack::NearBase => (SA_ONSTACK, Some("altstack+64")),
+    };
+    let switch = at
+        .map(|at| format!("lea {at}(%rip),%rsp\n"))
+        .unwrap_or_default();
+    timer_boundary_program(
+        &[Handler::new(SIGUSR1).flags(flags)],
+        &format!(
+            "{}{LOAD_FPU}mov %rsp,%r15\n{switch}{}",
+            if flags == SA_ONSTACK {
+                ARM_ALTSTACK
+            } else {
+                ""
+            },
+            write_canaries()
+        ),
+        &tgkill_self(SIGUSR1),
+        1,
+        &format!("{}mov %r15,%rsp\n", check_canaries(0)),
+        &altstack_data(0),
+        ".balign 64\n.skip 4096\naltstack: .skip 65536\naltstack_end:\n.skip 4096\n",
+    )
+}
+
+#[test]
+fn a_frame_at_a_timer_boundary_leaves_the_red_zone_untouched() {
+    if bounded("a_frame_at_a_timer_boundary_leaves_the_red_zone_untouched") {
+        return;
+    }
+    // The main thread writes canaries in the 128 bytes below its rsp and
+    // spins; SIGUSR1 comes at the Tool's timer boundary in the spin, and
+    // natively wherever the sibling's send interrupts it. Linux's
+    // get_sigframe (arch/x86/kernel/signal.c) subtracts the red zone from the
+    // interrupted rsp first, then switches an SA_ONSTACK handler to the top
+    // of the alternate stack only when that adjusted rsp is not on the stack
+    // (sas_ss_flags), and checks that a frame fits only when the interrupted
+    // rsp itself, or the switch, is on it. So:
+    // - on the thread's own stack, the frame goes below the red zone;
+    // - entering the stack, the frame goes at its top;
+    // - with the rsp 64 bytes above the stack's top, the adjusted rsp is on
+    //   the stack, so there is no switch: the frame goes below the red zone,
+    //   within the stack, and no check applies;
+    // - with the rsp on the stack 64 bytes above its base, the adjusted rsp
+    //   is below the stack, so the frame starts at the stack's top again.
+    // Every canary is intact after the handler returns.
+    for spin in [
+        SpinStack::Ordinary,
+        SpinStack::Entering,
+        SpinStack::AboveTop,
+        SpinStack::NearBase,
+    ] {
+        let program = red_zone_program(spin);
+        let (native, log, events) = timer_boundary_matches_native(
+            &program,
+            Tracing::Deliver,
+            TraceOptions::default(),
+            spinner_plan(),
+        );
+        let context = format!("{spin:?}: native {native:#x?}, tool {log:#x?}, {events:?}");
+        assert_eq!(native.results[0], 16, "{context}");
+        for log in [&native, &log] {
+            let e = log.entry(0);
+            let interrupted = e[q::RSP];
+            let (base, top) = (e[q::SS_SP], e[q::SS_SP] + 65536);
+            assert!(
+                e[q::ENTRY_RSP] + 128 < interrupted
+                    || spin == SpinStack::NearBase
+                    || spin == SpinStack::Entering,
+                "{context}"
+            );
+            match spin {
+                SpinStack::Ordinary => assert_eq!(base, 0, "{context}"),
+                SpinStack::Entering | SpinStack::NearBase => {
+                    // At the top of the stack: within its last 4 KiB.
+                    assert!((top - 4096..top).contains(&e[q::ENTRY_RSP]), "{context}")
+                }
+                SpinStack::AboveTop => {
+                    assert_eq!(interrupted, top + 64, "{context}");
+                    assert!((base..top - 64).contains(&e[q::ENTRY_RSP]), "{context}")
+                }
+            }
+        }
+        let r = registers_of(&events);
+        assert_eq!(log.entry(0)[q::RSP], r.rsp, "{context}");
+        println!(
+            "{spin:?}: canaries intact; native frame at {:#x}, interrupted rsp {:#x}",
+            native.entry(0)[q::ENTRY_RSP],
+            native.entry(0)[q::RSP]
+        );
+    }
+}
+
+/// What the exact-base guest of
+/// `a_frame_that_would_start_at_the_alternate_stacks_base_is_refused_as_on_linux`
+/// writes before its last signal: how far below the interrupted rsp a frame
+/// starts, the alternate stack's base, and where the control frame started.
+#[derive(Debug, PartialEq, Eq)]
+struct ExactBase {
+    depth: u64,
+    base: u64,
+    control: u64,
+}
+
+impl ExactBase {
+    fn read(stdout: &[u8]) -> Self {
+        assert!(stdout.len() >= 24, "{stdout:?}");
+        let quad = |i: usize| u64::from_ne_bytes(stdout[8 * i..8 * i + 8].try_into().unwrap());
+        Self {
+            depth: quad(0),
+            base: quad(1),
+            control: quad(2),
+        }
+    }
+}
+
+#[test]
+fn a_frame_that_would_start_at_the_alternate_stacks_base_is_refused_as_on_linux() {
+    if bounded("a_frame_that_would_start_at_the_alternate_stacks_base_is_refused_as_on_linux") {
+        return;
+    }
+    // Linux's get_sigframe refuses a frame on the alternate stack unless
+    // __on_sig_stack holds for its address, which for a stack that grows
+    // down means strictly above the base: the stack is (base, base + size]
+    // (https://github.com/gregkh/linux/blob/v7.1.3/arch/x86/kernel/signal.c#L150-L158,
+    // https://github.com/gregkh/linux/blob/v7.1.3/include/linux/sched/signal.h#L574-L583).
+    // A frame starts at round_down(sp, 16) - 8, so only a base 8 above a
+    // multiple of 16 can be a frame's address. The guest measures how far
+    // below an interrupted rsp a nested frame starts (its depth, which each
+    // backend's floating-point state decides and which depends only on that
+    // rsp modulo 64), with a SIGUSR2 sent from a 64-aligned rsp, and arms an
+    // alternate stack whose base is congruent to that frame modulo 64. Its
+    // SIGUSR1 handler, on that stack, moves rsp to the base plus the depth
+    // plus an offset and sends itself SIGUSR2, whose frame then starts at the
+    // base plus the offset: 64 above it, the control, which both run, and
+    // then exactly at it, which Linux refuses with SIGSEGV.
+    //
+    // One difference is pinned, not allowed: Linux's failed frame forces a
+    // SIGSEGV that goes through get_signal, which the tracer sees as a last
+    // signal stop, where this backend's refusal ends the process with that
+    // SIGSEGV's status, with no signal hook
+    // (https://github.com/rrnewton/reverie/issues/1192). So the native run's
+    // signals end in SIGSEGV, and the KVM run's hooks are the five before it.
+    let program = Program::new(&format!(
+        "mov $39,%eax\nsyscall\nmov %rax,pid(%rip)\nmov $186,%eax\nsyscall\nmov %rax,tid(%rip)\n\
+         mov $12,%edi\nlea usr2_action(%rip),%rsi\nxor %edx,%edx\nmov $8,%r10d\nmov $13,%eax\n\
+         syscall\ntest %rax,%rax\njnz 99f\n\
+         mov $10,%edi\nlea usr1_action(%rip),%rsi\nxor %edx,%edx\nmov $8,%r10d\nmov $13,%eax\n\
+         syscall\ntest %rax,%rax\njnz 99f\n\
+         mov %rsp,%r15\nlea probe_top(%rip),%rsp\n{usr2}mov %r15,%rsp\n\
+         lea probe_top(%rip),%rax\nsub entry(%rip),%rax\nmov %rax,depth(%rip)\n\
+         mov entry(%rip),%rax\nand $63,%rax\nlea altstack(%rip),%rbx\nadd %rax,%rbx\n\
+         mov %rbx,alt_base(%rip)\nmov %rbx,exact_altstack(%rip)\n\
+         lea exact_altstack(%rip),%rdi\nxor %esi,%esi\nmov $131,%eax\nsyscall\ntest %rax,%rax\njnz 99f\n\
+         movq $64,offset(%rip)\n{usr1}\
+         mov depth(%rip),%rax\nmov %rax,record(%rip)\nmov alt_base(%rip),%rax\nmov %rax,record+8(%rip)\n\
+         mov entry(%rip),%rax\nmov %rax,record+16(%rip)\n\
+         mov $1,%edi\nlea record(%rip),%rsi\nmov $24,%edx\nmov $1,%eax\nsyscall\n\
+         movq $0,offset(%rip)\n{usr1}\
+         mov $1,%edi\nlea entry(%rip),%rsi\nmov $8,%edx\nmov $1,%eax\nsyscall\n\
+         xor %edi,%edi\nmov $231,%eax\nsyscall\nud2\n\
+         99: mov $1,%edi\nmov $231,%eax\nsyscall\nud2\n\
+         usr1: mov %rsp,%r14\nmov alt_base(%rip),%rsp\nadd depth(%rip),%rsp\nadd offset(%rip),%rsp\n\
+         {usr2}mov %r14,%rsp\nret\n\
+         usr2: mov %rsp,entry(%rip)\nret\n\
+         restorer: mov $15,%eax\nsyscall\nud2\n\
+         .data\n.balign 8\n\
+         usr1_action: .quad usr1, {usr1_flags:#x}, restorer, 0\n\
+         usr2_action: .quad usr2, {HANDLER_FLAGS:#x}, restorer, 0\n\
+         exact_altstack: .quad 0\n.long 0, 0\n.quad 65536\n\
+         pid: .quad 0\ntid: .quad 0\ndepth: .quad 0\nalt_base: .quad 0\noffset: .quad 0\n\
+         entry: .quad 0\nrecord: .quad 0, 0, 0\n\
+         .bss\n.balign 64\n.skip 4096\nprobe_stack: .skip 65536\nprobe_top:\n.skip 4096\n\
+         altstack: .skip 65600\n.skip 4096\n",
+        usr1 = tgkill_self(SIGUSR1),
+        usr2 = tgkill_self(SIGUSR2),
+        usr1_flags = HANDLER_FLAGS | SA_ONSTACK,
+    ));
+    let native = traced_native_with(&program, Tracing::Deliver, TraceOptions::default());
+    let context = format!(
+        "native: status {:#x}, stdout {:?}",
+        native.status, native.stdout
+    );
+    assert!(
+        libc::WIFSIGNALED(native.status) && libc::WTERMSIG(native.status) == libc::SIGSEGV,
+        "{context}"
+    );
+    assert_eq!(native.stdout.len(), 24, "{context}");
+    let linux = ExactBase::read(&native.stdout);
+    assert_eq!(linux.control, linux.base + 64, "{context}: {linux:#x?}");
+    assert_eq!(linux.base % 16, 8, "{context}: {linux:#x?}");
+    assert_eq!(
+        native.delivered,
+        [SIGUSR2, SIGUSR1, SIGUSR2, SIGUSR1, SIGUSR2, libc::SIGSEGV],
+        "{context}"
+    );
+    let (events, ending) = run_ending(
+        &program,
+        Plan {
+            deliver: true,
+            ..Plan::default()
+        },
+    );
+    let (code, stdout, stderr) = ending.unwrap_or_else(|failure| panic!("{failure}: {events:?}"));
+    let context = format!("KVM: exit code {code}, stdout {stdout:?}, {events:?}");
+    assert_eq!((code, stderr), (128 + libc::SIGSEGV, vec![]), "{context}");
+    assert_eq!(stdout.len(), 24, "{context}");
+    let kvm = ExactBase::read(&stdout);
+    assert_eq!(kvm.control, kvm.base + 64, "{context}: {kvm:#x?}");
+    assert_eq!(kvm.base % 16, 8, "{context}: {kvm:#x?}");
+    // No SIGSEGV hook: https://github.com/rrnewton/reverie/issues/1192.
+    assert_eq!(
+        signal_hooks(&events),
+        [SIGUSR2, SIGUSR1, SIGUSR2, SIGUSR1, SIGUSR2],
+        "{context}"
+    );
+    println!(
+        "a frame at the base: natively SIGSEGV ({linux:#x?}), on KVM exit code {code} ({kvm:#x?})"
+    );
+}
+
+/// Handler actions that keep, as result `index`, which thread runs the
+/// handler: 1 for the main thread, 2 for another.
+fn keep_taker(index: usize) -> String {
+    assert!(index < RESULTS);
+    let at = 8 * (8 + index);
+    format!(
+        "mov $186,%eax\nsyscall\ncmp tid(%rip),%rax\njne 4f\nmovq $1,header+{at}(%rip)\njmp 5f\n\
+         4: movq $2,header+{at}(%rip)\n5:\n"
+    )
+}
+
+#[test]
+fn a_process_directed_signal_at_a_timer_boundary_goes_where_linux_can_send_it() {
+    if bounded("a_process_directed_signal_at_a_timer_boundary_goes_where_linux_can_send_it") {
+        return;
+    }
+    // Which thread takes a process-directed signal. Linux queues it for the
+    // process and complete_signal (kernel/signal.c) wakes one thread that
+    // wants it: the thread the pid names, the main thread, when it has the
+    // signal unblocked and is running or has nothing pending, else another.
+    // Any thread that reaches get_signal with the signal unblocked before
+    // that one may dequeue it instead, but a thread reaches get_signal only
+    // when it was woken or its own recalc_sigpending (after a mask change,
+    // for one) found the signal.
+    //
+    // First, kill(pid, SIGUSR1) from a sibling while the main thread spins,
+    // during the Tool's timer event there. Natively the main thread, running
+    // with SIGUSR1 unblocked, takes it. KVM refuses a process-directed
+    // signal sent while the process has another live thread, rather than
+    // choose its recipient: kill returns ENOSYS with the typed refusal, and
+    // no thread takes the signal. So KVM never gives such a signal to a
+    // thread Linux could not; it gives it to none
+    // (https://github.com/rrnewton/reverie/issues/1205).
+    let sent = timer_boundary_program(
+        &[Handler::new(SIGUSR1).actions(&keep_taker(1))],
+        LOAD_FPU,
+        &format!(
+            "{}{}movb $1,sent(%rip)\n",
+            kill_self(SIGUSR1),
+            keep_result(0)
+        ),
+        0,
+        "3: cmpb $0,sent(%rip)\nje 3b\n",
+        "sent: .byte 0\n",
+        "",
+    );
+    let native = traced_native(&sent, Tracing::Deliver);
+    let native_log = StackedLog::read(&native.stdout);
+    assert_eq!(native_log.signals(), [SIGUSR1], "native: {native_log:#x?}");
+    assert_eq!(
+        native_log.results[..2],
+        [0, 1],
+        "native: the main thread took it: {native_log:#x?}"
+    );
+    let plan = Plan {
+        refusals_of_sends: true,
+        ..spinner_plan()
+    };
+    let (events, stdout) = tool_stdout(&sent, plan);
+    let log = StackedLog::read(&stdout);
+    let enosys = -i64::from(libc::ENOSYS) as u64;
+    assert_eq!(log.signals(), [0; 0], "{log:#x?} {events:?}");
+    assert_eq!(log.results[..2], [enosys, 0], "{log:#x?} {events:?}");
+    assert!(
+        events.contains(&Event::Refusal(
+            "Signal: KVM signal delivery refused: KVM cannot choose the recipient of a \
+             process-directed signal in a process with several threads"
+                .to_owned()
+        )),
+        "{events:?}"
+    );
+    assert_eq!(signal_hooks(&events), [0; 0], "{events:?}");
+    assert_eq!(timer_clocks(&events).len(), 1, "{events:?}");
+    // Second, a process-directed SIGUSR1 queued while the process has one
+    // thread, which blocks it: the main thread blocks SIGUSR1, sends it to
+    // the process and starts a sibling, which inherits that mask, then
+    // spins. The sibling sends SIGUSR2 to the main thread, waits until
+    // SIGUSR2's handler has run, and unblocks SIGUSR1. Natively the main
+    // thread takes only SIGUSR2, SIGUSR1 being blocked for it, and the
+    // sibling's unblocking call, whose recalc_sigpending sends it to
+    // get_signal at its return, takes SIGUSR1. KVM refuses to create a
+    // thread while a process-directed signal is pending, rather than choose
+    // its recipient later: clone returns ENOSYS, SIGUSR1 stays pending for
+    // the one thread, and the main thread stops waiting for the sibling.
+    let queued = stacked_program(
+        &[
+            Handler::new(SIGUSR1).actions(&keep_taker(1)),
+            Handler::new(SIGUSR2).actions("movb $1,usr2_done(%rip)\n"),
+        ],
+        &format!(
+            "{LOAD_FPU}{}{}{}{}{}{GETPPID}movb $1,spinning(%rip)\nlea 1f(%rip),%r12\n\
+             mov $2000000000,%rcx\n1: cmpq $2,header(%rip)\njae 2f\ncmpq $0,header+80(%rip)\njs 2f\n\
+             dec %rcx\njnz 1b\n2:\n",
+            sigprocmask(libc::SIG_BLOCK, "usr1"),
+            kill_self(SIGUSR1),
+            keep_result(0),
+            sibling(&format!(
+                "5: cmpb $0,spinning(%rip)\nje 5b\n{}3: cmpb $0,usr2_done(%rip)\nje 3b\n{}",
+                tgkill_self(SIGUSR2),
+                sigprocmask(libc::SIG_UNBLOCK, "usr1")
+            )),
+            keep_result(2),
+        ),
+        &format!(
+            "spinning: .byte 0\nusr2_done: .byte 0\n.balign 8\nusr1: .quad {:#x}\n",
+            bit(SIGUSR1)
+        ),
+        SIBLING_STACK,
+    );
+    let native = traced_native(&queued, Tracing::Deliver);
+    let native_log = StackedLog::read(&native.stdout);
+    assert_eq!(
+        native_log.signals(),
+        [SIGUSR2, SIGUSR1],
+        "native: {native_log:#x?}"
+    );
+    assert_eq!(
+        native_log.results[..2],
+        [0, 2],
+        "native: the sibling took SIGUSR1: {native_log:#x?}"
+    );
+    assert!(
+        (native_log.results[2] as i64) > 0,
+        "native: the sibling's tid: {native_log:#x?}"
+    );
+    assert_eq!(
+        native_log.final_mask,
+        bit(SIGUSR1),
+        "native: {native_log:#x?}"
+    );
+    let (events, stdout) = tool_stdout(&queued, spinner_plan());
+    let log = StackedLog::read(&stdout);
+    assert_eq!(log.signals(), [0; 0], "{log:#x?} {events:?}");
+    assert_eq!(log.results[..3], [0, 0, enosys], "{log:#x?} {events:?}");
+    assert_eq!(log.final_mask, bit(SIGUSR1), "{log:#x?} {events:?}");
+    assert_eq!(signal_hooks(&events), [0; 0], "{events:?}");
+    println!(
+        "kill to a process with several threads: natively the main thread took it, KVM refused the \
+         kill; a thread created while one is pending: natively the sibling took it, KVM refused \
+         the clone"
+    );
+}
+
+// The ptrace comparison: one guest under reverie-ptrace, the reference
+// backend, and under this one, with the same Tool ([`TimerTool`]) following
+// the same plan, at the three points where a timer event and a signal meet:
+// a precise event in a spinner, an event due at a syscall's return, and one
+// due at rt_sigreturn, and with two signals pending at the precise event.
+// Under reverie-ptrace the guest runs natively, so its signal frames are
+// Linux's own.
+
+/// Runs `program` under reverie-ptrace with a [`TimerTool`] following
+/// `plan`, as [`run_ending`] runs it on KVM: no environment, its directory as
+/// the working directory. Returns the Tool's events and how the run ended.
+fn run_on_ptrace(program: &Program, plan: Plan) -> (Vec<Event>, Ending) {
+    use reverie::process::Command;
+    use reverie::process::Stdio;
+    assert!(
+        reverie_ptrace::is_perf_supported(),
+        "the ptrace comparison requires the PMU"
+    );
+    let mut command = Command::new(&program.executable);
+    command
+        .current_dir(&program.directory)
+        .env_clear()
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .worker_threads(2)
+        .build()
+        .unwrap();
+    let result = runtime.block_on(async move {
+        tokio::task::LocalSet::new()
+            .run_until(async move {
+                let tracer = reverie_ptrace::TracerBuilder::<TimerTool>::new(command)
+                    .config(plan)
+                    .spawn()
+                    .await?;
+                tracer.wait_with_output().await
+            })
+            .await
+    });
+    match result {
+        Ok((output, log)) => {
+            let status = output.status;
+            let code = status
+                .code()
+                .unwrap_or_else(|| 128 + status.signal().expect("a signaled status"));
+            (
+                log.events.into_inner().unwrap(),
+                Ok((code, output.stdout, output.stderr)),
+            )
+        }
+        Err(error) => (vec![], Err(error.to_string())),
+    }
+}
+
+/// A run's events as the backends compare them: each timer event's
+/// registers without what the backends lay out differently and Linux
+/// allocates or randomizes: the pid (this backend's guest pids start at 1),
+/// and r11, the flags the guest's last SYSCALL saved, which come from its
+/// test of the tid its clone returned; the segment selectors (this backend's
+/// descriptor table has its own); and rsp (the initial stack, which Linux
+/// randomizes and this backend places at a fixed address). Every other event
+/// is as it is.
+fn comparable_events(events: &[Event]) -> Vec<Event> {
+    events
+        .iter()
+        .map(|event| match event {
+            Event::Registers(registers) => Event::Registers(Registers {
+                pid: 0,
+                r11: 0,
+                rsp: 0,
+                cs: 0,
+                ss: 0,
+                ds: 0,
+                es: 0,
+                fs: 0,
+                gs: 0,
+                ..registers.clone()
+            }),
+            event => event.clone(),
+        })
+        .collect()
+}
+
+/// One timer event's registers as [`comparable_events`] compares them.
+fn comparable_timer_registers(registers: &Registers) -> Registers {
+    match comparable_events(&[Event::Registers(registers.clone())]).pop() {
+        Some(Event::Registers(registers)) => registers,
+        _ => unreachable!("comparable_events keeps each event's kind"),
+    }
+}
+
+/// How many times each ptrace comparison runs its guest on each backend.
+const COMPARED_RUNS: usize = 3;
+
+#[test]
+fn a_signal_at_a_precise_timer_boundary_matches_ptrace() {
+    if bounded("a_signal_at_a_precise_timer_boundary_matches_ptrace") {
+        return;
+    }
+    // The guest of
+    // `a_spinner_signalled_by_a_sibling_gets_its_handler_at_the_next_timer_boundary`:
+    // a precise event 1,000 RCBs after the marker lands in the spin, its
+    // callback waits for the sibling's tgkill of SIGUSR1, and the signal is
+    // delivered at the same boundary, with SA_RESTART and without. Under
+    // reverie-ptrace the event is a stop the steps end at, and Linux's
+    // get_signal delivers SIGUSR1 when the tracer resumes the thread, before
+    // it runs on. Both backends show the Tool the same events: the request
+    // and its clock, the event at the target with the same registers, and
+    // the signal's hook at the event's clock; and the handler's frame saves
+    // the same interrupted context.
+    for flags in [HANDLER_FLAGS, HANDLER_FLAGS | libc::SA_RESTART as u64] {
+        let program = spinner(flags, false);
+        let mut first: Option<(Vec<Event>, Record)> = None;
+        for backend in ["ptrace", "kvm"] {
+            for run in 0..COMPARED_RUNS {
+                let (events, ending) = match backend {
+                    "ptrace" => run_on_ptrace(&program, spinner_plan()),
+                    _ => run_ending(&program, spinner_plan()),
+                };
+                let context = format!("{backend} run {run}, flags {flags:#x}: {events:?}");
+                let (code, stdout, stderr) =
+                    ending.unwrap_or_else(|failure| panic!("{failure}: {context}"));
+                assert_eq!((code, stderr), (0, vec![]), "{context}");
+                let record = Record::read(&stdout);
+                let (requested_at, _) = last_request(&events);
+                assert_eq!(
+                    timer_clocks(&events),
+                    [requested_at + SPIN_TICKS],
+                    "{context}"
+                );
+                assert_eq!(record.count, 1, "{context}");
+                let seen = (comparable_events(&events), record);
+                match &first {
+                    None => first = Some(seen),
+                    Some(first) => assert_eq!(&seen, first, "{context}"),
+                }
+            }
+        }
+        println!("flags {flags:#x}: ptrace and KVM agree: {first:x?}");
+    }
+}
+
+#[test]
+fn two_signals_at_a_precise_timer_boundary_match_ptrace() {
+    if bounded("two_signals_at_a_precise_timer_boundary_match_ptrace") {
+        return;
+    }
+    // The guest of `two_signals_pending_at_a_timer_boundary_stack_their_frames`:
+    // the precise event's callback waits until the sibling has sent SIGUSR1
+    // and SIGUSR2, and both are delivered at that boundary. Under
+    // reverie-ptrace, Linux's get_signal stops for SIGUSR1, builds its frame,
+    // then stops for SIGUSR2 and builds that frame on top, before the thread
+    // runs on; this backend gives every eligible signal its own selection at
+    // the boundary. The Tool sees the same events on both, with SIGUSR1's
+    // hook before SIGUSR2's at the event's clock, and every handler finds the
+    // same frame at its first instruction (addresses that a frame's size
+    // decides compared as the handler entry that saw them).
+    let program = pair_at_timer_boundary_program();
+    let plan = Plan {
+        sends: 2,
+        ..spinner_plan()
+    };
+    // reverie-ptrace steps the thread to the target with PTRACE_SINGLESTEP,
+    // whose debug traps set Linux's trap number to X86_TRAP_DB (send_sigtrap,
+    // https://github.com/gregkh/linux/blob/v7.1.3/arch/x86/kernel/ptrace.c#L1408-L1418),
+    // which every later frame saves; this backend's steps never reach the
+    // guest, which keeps its own last trap, none here, as an untraced Linux
+    // thread does. That field aside, the frames are equal.
+    let trapno = |_: usize, quad: usize| quad == q::TRAPNO;
+    let mut first: Option<(Vec<Event>, ComparedEntries)> = None;
+    for backend in ["ptrace", "kvm"] {
+        for run in 0..COMPARED_RUNS {
+            let (events, ending) = match backend {
+                "ptrace" => run_on_ptrace(&program, plan.clone()),
+                _ => run_ending(&program, plan.clone()),
+            };
+            let context = format!("{backend} run {run}: {events:?}");
+            let (code, stdout, stderr) =
+                ending.unwrap_or_else(|failure| panic!("{failure}: {context}"));
+            assert_eq!((code, stderr), (0, vec![]), "{context}");
+            let log = StackedLog::read(&stdout);
+            assert_eq!(log.signals(), [SIGUSR2, SIGUSR1], "{context}: {log:#x?}");
+            assert_stacked_on(&log, 0, 1, &context);
+            let stepped_trap = if backend == "ptrace" { 1 } else { 0 };
+            for index in [0, 1] {
+                assert_eq!(
+                    log.entry(index)[q::TRAPNO],
+                    stepped_trap,
+                    "{context}: {log:#x?}"
+                );
+            }
+            let seen = (comparable_events(&events), comparable(&log, &trapno));
+            match &first {
+                None => first = Some(seen),
+                Some(first) => assert_eq!(&seen, first, "{context}: {log:#x?}"),
+            }
+        }
+    }
+    let (events, _) = first.unwrap();
+    let (_, timer_clock) = first_timer(&events);
+    assert_eq!(signal_hooks(&events), [SIGUSR1, SIGUSR2], "{events:?}");
+    assert!(
+        events.iter().all(|event| match event {
+            Event::Signalled { clock, .. } => *clock == timer_clock,
+            _ => true,
+        }),
+        "{events:?}"
+    );
+    println!("two signals at a precise boundary: ptrace and KVM agree: {events:x?}");
+}
+
+/// How many iterations the loop of the syscall-return comparison's guest
+/// runs; each retires four conditional branches, three in its inner loop and
+/// one in its outer one.
+const SYSCALL_RETURN_LOOP: u64 = 50_000;
+
+/// The conditional branches the syscall-return comparison's guest has
+/// retired since its marker when it stands at `registers.rip`, one of its
+/// loop's labelled instructions `labels` (sr0 to sr6), with the rbx and r15
+/// `registers` hold there, or `None` when the rip is none of them.
+fn syscall_return_loop_rcbs(registers: &Registers, labels: &[u64; 7]) -> Option<u64> {
+    let at = labels.iter().position(|&label| label == registers.rip)?;
+    // The outer iterations completed: sr6's jnz follows r15's decrement.
+    let done = SYSCALL_RETURN_LOOP - registers.r15 - u64::from(at == 6);
+    let inner = match at {
+        // mov $3,%rbx: an iteration's first instruction.
+        0 => 0,
+        // dec %rbx, before its decrement: one jnz per decrement done.
+        1 => 3 - registers.rbx,
+        // jnz 5b, after the decrement.
+        2 => 2 - registers.rbx,
+        // After the inner loop: mov $39,%eax, syscall, dec %r15, jnz 4b.
+        _ => 3,
+    };
+    Some(4 * done + inner)
+}
+
+/// Where the syscall-return comparison's event landed on `backend`, given
+/// its registers `r`, the loop's labels (sr0 to sr6), the request's clock
+/// `requested_at`, its `ticks` and the event's clock `timer_clock`; or why
+/// that backend cannot deliver it there (see the test).
+fn syscall_return_landing(
+    backend: &str,
+    r: &Registers,
+    labels: &[u64; 7],
+    requested_at: u64,
+    ticks: u64,
+    timer_clock: u64,
+) -> Result<&'static str, String> {
+    let at = labels
+        .iter()
+        .position(|&label| label == r.rip)
+        .ok_or_else(|| format!("rip {:#x} is none of the loop's instructions", r.rip))?;
+    let landing = if backend == "ptrace" && r.orig_rax == libc::SYS_getpid as u64 {
+        if at != 5 {
+            return Err(format!("orig_rax 39 at sr{at}, not at a getpid's return"));
+        }
+        "a getpid's return"
+    } else if r.orig_rax != u64::MAX {
+        return Err(format!("orig_rax {:#x}", r.orig_rax));
+    } else if at == 5 {
+        "a getpid's return, or a kick right after it"
+    } else {
+        "between instructions"
+    };
+    let delay = timer_clock - requested_at;
+    if backend == "kvm" {
+        if delay > ticks + 3 {
+            return Err(format!(
+                "{delay} RCBs after the request, past the target's first exit"
+            ));
+        }
+        if at == 6 {
+            return Err("sr6, after the getpid return that had to deliver it".to_owned());
+        }
+    }
+    let retired = syscall_return_loop_rcbs(r, labels);
+    if retired != Some(delay) {
+        return Err(format!(
+            "{delay} RCBs after the request where the loop has retired {retired:?} \
+             (rbx {}, r15 {})",
+            r.rbx, r.r15
+        ));
+    }
+    Ok(landing)
+}
+
+#[test]
+fn the_syscall_return_comparison_refuses_landings_kvm_cannot_make() {
+    // syscall_return_landing against registers made up for each case, with
+    // made-up label addresses: no guest runs. A landing is the event's rip,
+    // rbx, r15 and orig_rax and the clock it came at.
+    let labels = [0x1000, 0x1005, 0x1008, 0x100a, 0x100f, 0x1011, 0x1014];
+    let (requested_at, ticks) = (1, 100_000);
+    let landing = |at: usize, rbx: u64, r15: u64, orig_rax: u64| Registers {
+        rip: labels[at],
+        rbx,
+        r15,
+        orig_rax,
+        ..Registers::default()
+    };
+    let check = |backend: &str, r: &Registers, delay: u64| {
+        syscall_return_landing(
+            backend,
+            r,
+            &labels,
+            requested_at,
+            ticks,
+            requested_at + delay,
+        )
+    };
+    // KVM at sr6 (the jnz after the getpid's return and its dec %r15), at the
+    // target plus 3, whose RCB count the loop does retire there. No branch retires between the return at sr5 and sr6,
+    // so that return found the request due at the same clock and delivered
+    // it: KVM never stands at sr6 with it. reverie-ptrace, whose PMU
+    // notification comes some RCBs after the counter overflowed, may.
+    let sr6 = landing(6, 0, 24_999, u64::MAX);
+    assert_eq!(syscall_return_loop_rcbs(&sr6, &labels), Some(100_003));
+    assert_eq!(
+        check("kvm", &sr6, 100_003),
+        Err("sr6, after the getpid return that had to deliver it".to_owned())
+    );
+    assert_eq!(check("ptrace", &sr6, 100_003), Ok("between instructions"));
+    // A later getpid's return, at the target plus 7, as a delivery that
+    // missed the first due return would show.
+    let later = landing(5, 0, 24_999, u64::MAX);
+    assert_eq!(syscall_return_loop_rcbs(&later, &labels), Some(100_007));
+    assert!(check("kvm", &later, 100_007).is_err());
+    // KVM's documented landings: the target's first exit, the getpid return
+    // at the target plus 3, and a kick between two of the loop's instructions
+    // before it.
+    assert_eq!(
+        check("kvm", &landing(5, 0, 25_000, u64::MAX), 100_003),
+        Ok("a getpid's return, or a kick right after it")
+    );
+    for (at, rbx, delay) in [
+        (0, 0, 100_000),
+        (1, 3, 100_000),
+        (1, 2, 100_001),
+        (1, 1, 100_002),
+        (2, 2, 100_000),
+        (2, 1, 100_001),
+        (2, 0, 100_002),
+        (3, 0, 100_003),
+        (4, 0, 100_003),
+    ] {
+        assert_eq!(
+            check("kvm", &landing(at, rbx, 25_000, u64::MAX), delay),
+            Ok("between instructions"),
+            "sr{at} with rbx {rbx}"
+        );
+    }
+    // reverie-ptrace at a getpid's return shows the call's number, and only there.
+    assert_eq!(
+        check("ptrace", &landing(5, 0, 24_999, 39), 100_007),
+        Ok("a getpid's return")
+    );
+    assert!(check("ptrace", &landing(4, 0, 25_000, 39), 100_003).is_err());
+}
+
+#[test]
+fn a_signal_at_a_syscall_return_timer_event_matches_ptrace_but_for_where_it_lands() {
+    if bounded("a_signal_at_a_syscall_return_timer_event_matches_ptrace_but_for_where_it_lands") {
+        return;
+    }
+    // The guest of `a_signal_pending_at_a_syscall_return_timer_event_follows_it`,
+    // with the marker after the clone: reverie-ptrace's new-child stop
+    // cancels a request made before it, where this backend keeps it
+    // (https://github.com/rrnewton/reverie/issues/1176). The marker requests
+    // an imprecise event 100,000 RCBs on; the guest makes getpid calls the
+    // Tool does not see, 4 RCBs apart, and the event's callback waits for the
+    // sibling's tgkill of SIGUSR1.
+    //
+    // Where the event comes depends on host timing, as both backends
+    // document: an imprecise request is delivered at the first exit at or
+    // past its target. On this backend that is a getpid's return, where
+    // orig_rax reads -1, when the getpid comes before the kick that the
+    // counter's overflow sends, or the kick itself, between two of the loop's
+    // instructions, also with orig_rax -1; under reverie-ptrace it is where
+    // its PMU notification is taken: a getpid's return, where orig_rax shows
+    // the call (39), or between two of the loop's instructions, with
+    // orig_rax -1. So each run is checked against itself, and the runs
+    // against each other on what does not depend on that timing:
+    // - the events are the request, one timer event at or past the target,
+    //   its registers and SIGUSR1's hook at the event's clock;
+    // - on this backend the event comes no later than the target's first
+    //   exit, a getpid's return 3 RCBs past it at most: the loop's getpid
+    //   returns are at 4i + 3 RCBs, and the exit of a syscall that made no
+    //   Tool callback delivers a due request at its return (see
+    //   `preemption_timer.rs` and `KvmBackend::syscall_return_timer_boundary`),
+    //   so a kick can only make it earlier, and never at sr6, which that
+    //   return precedes with no branch between; reverie-ptrace takes its PMU
+    //   notification some RCBs later, which only the generic ceiling bounds;
+    // - the event is at one of those allowed places, with its exact
+    //   orig_rax, and the RCB count the Tool sees there is the one the loop
+    //   has retired at that instruction with those rbx and r15;
+    // - SIGUSR1's frame saves the registers the event saw: all eight that
+    //   the handler records (rip, rax, rbx, rcx, eflags, r12, r14 and r15),
+    //   rcx being the address after the last getpid's syscall instruction;
+    // - every run made its request at the same clock.
+    let program = Program::new(&format!(
+        "{SIBLING}{GETPPID}lea 7f(%rip),%r14\nmov ${SYSCALL_RETURN_LOOP},%r15\n\
+         4:\nsr0: mov $3,%rbx\n5:\nsr1: dec %rbx\nsr2: jnz 5b\nsr3: mov $39,%eax\nsr4: syscall\n\
+         7:\nsr5: dec %r15\nsr6: jnz 4b\n{WRITE_RECORD}{}",
+        signal_record(HANDLER_FLAGS, "")
+    ));
+    let labels = ["sr0", "sr1", "sr2", "sr3", "sr4", "sr5", "sr6"].map(|name| program.symbol(name));
+    let ticks = 100_000;
+    let plan = Plan {
+        arm: Arm::Marker,
+        requests: vec![ticks],
+        only_tgkill: true,
+        registers: true,
+        rendezvous: true,
+        deliver: true,
+        ..Plan::default()
+    };
+    let mut requests = vec![];
+    for backend in ["ptrace", "kvm"] {
+        for run in 0..COMPARED_RUNS {
+            let (events, ending) = match backend {
+                "ptrace" => run_on_ptrace(&program, plan.clone()),
+                _ => run_ending(&program, plan.clone()),
+            };
+            let context = format!("{backend} run {run}: {events:?}");
+            let (code, stdout, stderr) =
+                ending.unwrap_or_else(|failure| panic!("{failure}: {context}"));
+            assert_eq!((code, stderr), (0, vec![]), "{context}");
+            let record = Record::read(&stdout);
+            let shape: Vec<&str> = events
+                .iter()
+                .map(|event| match event {
+                    Event::Requested { .. } => "request",
+                    Event::Timer { .. } => "timer",
+                    Event::Registers(_) => "registers",
+                    Event::Signalled { .. } => "signal",
+                    _ => "other",
+                })
+                .collect();
+            assert_eq!(
+                shape,
+                ["other", "request", "timer", "registers", "signal"],
+                "{context}"
+            );
+            let (requested_at, _) = last_request(&events);
+            let (_, timer_clock) = first_timer(&events);
+            assert_delivered(timer_clock, requested_at, ticks, &context);
+            assert_eq!(sigusr1_clocks(&events)[0].1, timer_clock, "{context}");
+            let r = registers_of(&events);
+            assert_eq!(record.count, 1, "{context}");
+            assert_eq!(
+                record,
+                Record {
+                    rip: r.rip,
+                    rax: r.rax,
+                    rbx: r.rbx,
+                    rcx: r.rcx,
+                    eflags: r.eflags,
+                    r12: r.r12,
+                    r14: r.r14,
+                    r15: r.r15,
+                    count: 1,
+                },
+                "SIGUSR1's frame against the event's registers: {context}"
+            );
+            assert_eq!(
+                (r.r14, r.rcx),
+                (labels[5], labels[5]),
+                "r14 and the last getpid's return address: {context}"
+            );
+            // Where the event came, at what clock, and the RCBs the loop has
+            // retired there.
+            let landing =
+                syscall_return_landing(backend, &r, &labels, requested_at, ticks, timer_clock)
+                    .unwrap_or_else(|why| panic!("{why}: {context}"));
+            requests.push(requested_at);
+            println!(
+                "{backend} run {run}: requested at {requested_at}, delivered at {timer_clock}, \
+                 rip {:#x} ({landing}), orig_rax {:#x}",
+                r.rip, r.orig_rax
+            );
+        }
+    }
+    assert!(
+        requests.iter().all(|&at| at == requests[0]),
+        "every run's request clock: {requests:?}"
+    );
+}
+
+/// The timer events of `events` and their registers, in order.
+fn timer_events_with_registers(events: &[Event]) -> Vec<(u64, Registers)> {
+    timer_clocks(events)
+        .into_iter()
+        .zip(timer_registers(events))
+        .collect()
+}
+
+#[test]
+fn a_signal_at_an_rt_sigreturn_timer_event_matches_ptrace_where_precise() {
+    if bounded("a_signal_at_an_rt_sigreturn_timer_event_matches_ptrace_where_precise") {
+        return;
+    }
+    // The guest of `a_signal_pending_at_an_rt_sigreturn_timer_event_follows_it`:
+    // SIGSEGV's callback sends SIGUSR1 to the thread, which its handler's
+    // mask blocks, and requests 1 RCB, which the handler's one branch, right
+    // before its rt_sigreturn, reaches; the mask rt_sigreturn restores
+    // unblocks SIGUSR1, which is delivered at its return with the registers
+    // it restores. SIGUSR1's callback requests 1 RCB in turn, which the main
+    // loop's first branch reaches, right before the guest writes its record.
+    //
+    // A precise request lands on both backends at the boundary after that
+    // branch, in the handler, before rt_sigreturn, and SIGUSR1 comes at
+    // rt_sigreturn's return; the second lands after the main loop's branch,
+    // at the record write's first instruction. All six precise runs must
+    // agree: the same events, clocks and registers, and the same frame but
+    // for one bit. The fault's frame saves RF, which a fault sets in the
+    // flags the CPU pushes; rt_sigreturn restores it (its FIX_EFLAGS include
+    // RF:
+    // https://github.com/gregkh/linux/blob/v7.1.3/arch/x86/kernel/signal_64.c#L84,
+    // https://github.com/gregkh/linux/blob/v7.1.3/arch/x86/include/asm/sighandling.h#L11-L14),
+    // and an untraced Linux thread saves it again in SIGUSR1's frame, as this
+    // backend does, while the frame under reverie-ptrace lacks it, after the
+    // tracer handled the fault's stop, where this Tool injects a syscall.
+    //
+    // An imprecise request differs, as documented. This backend delivers
+    // the first at rt_sigreturn's exit, before the signal selected there.
+    // Under reverie-ptrace the PMU notification (SIGSTKFLT, 16) is taken
+    // after the handler's branch, during or after rt_sigreturn, where
+    // SIGUSR1 (10) is pending too, and Linux dequeues the lower number
+    // first: SIGUSR1's callback, an event of another kind, then cancels the
+    // request; should the notification be taken right after the branch,
+    // before rt_sigreturn, the event comes where a precise one comes. The
+    // second imprecise request is decided, on both backends, by whichever
+    // comes first after its target: a kick, which stops the guest between
+    // two of the record write's instructions and delivers it there, or the
+    // write's own callback, an event of another kind, which cancels it. Both
+    // are host timing, so imprecise runs are compared with each other up to
+    // that request, and what follows it must be nothing, or one event at its
+    // target (clock 2) at one of the record write's five instruction starts,
+    // with exactly the registers the instructions before it leave: those of
+    // the precise event at the record write's first instruction, but for rdi
+    // 1 after `mov $1,%edi`, rsi `record` after the lea, rdx 72 after
+    // `mov $72,%edx` and rax 1 after `mov $1,%eax`.
+    let program = Program::new(&format!(
+        "lea 9f(%rip),%r12\nmov $11,%edi\nlea segv_action(%rip),%rsi\nxor %edx,%edx\n\
+         mov $8,%r10d\nmov $13,%eax\nsyscall\nmov $10,%edi\nlea usr1_action(%rip),%rsi\n\
+         xor %edx,%edx\nmov $8,%r10d\nmov $13,%eax\nsyscall\nmovq 0x10,%rax\n\
+         9: mov ${SPINS},%rcx\n1: cmpb $0,flag(%rip)\njne 2f\ndec %rcx\njnz 1b\n2:\n\
+         record_write: mov $1,%edi\nrw1: lea record(%rip),%rsi\nrw2: mov $72,%edx\n\
+         rw3: mov $1,%eax\nrecord_syscall: syscall\nxor %edi,%edi\nmov $231,%eax\nsyscall\nud2\n\
+         segv: addq $8,168(%rdx)\nadd $8,%rsp\nmov $15,%eax\nxor %ecx,%ecx\njz 7f\n\
+         7:\nsegv_return: syscall\nud2\n{}",
+        signal_record(
+            HANDLER_FLAGS,
+            &format!("segv_action: .quad segv, {HANDLER_FLAGS:#x}, restorer, 0x200\n")
+        )
+    ));
+    const RF: u64 = 1 << 16;
+    // At SIGSEGV's handler's rt_sigreturn, where the precise event comes,
+    // rsi and rdx are the handler's arguments, which point into its frame,
+    // whose size each backend's floating-point state decides. The other
+    // events before the record write see the context rt_sigreturn restored
+    // (restore_sigcontext,
+    // https://github.com/gregkh/linux/blob/v7.1.3/arch/x86/kernel/signal_64.c#L64-L65):
+    // rsi still the address of usr1_action and rdx 0, as the guest's last
+    // rt_sigaction left them before the fault.
+    let segv_return = program.symbol("segv_return");
+    let usr1_action = program.symbol("usr1_action");
+    let record_write = program.symbol("record_write");
+    // The record write's instruction starts, in order.
+    let record_write_starts =
+        ["record_write", "rw1", "rw2", "rw3", "record_syscall"].map(|name| program.symbol(name));
+    let record_address = program.symbol("record");
+    // Where the precise event came: the handler's rt_sigreturn.
+    let precise_timer_rip = std::cell::Cell::new(None);
+    // The registers of the precise runs' event at the record write's first
+    // instruction, as the backends compare them.
+    let precise_at_record_write: std::cell::RefCell<Option<Registers>> = Default::default();
+    for precise in [true, false] {
+        let plan = Plan {
+            requests: vec![],
+            rearm_at_signal: Some(1),
+            registers: true,
+            deliver: true,
+            self_signal_at_fault: true,
+            precise,
+            ..Plan::default()
+        };
+        let mut seen: Vec<(&str, Vec<Event>, Record)> = vec![];
+        let precise_rip = precise_timer_rip.get();
+        for backend in ["ptrace", "kvm"] {
+            for run in 0..COMPARED_RUNS {
+                let (events, ending) = match backend {
+                    "ptrace" => run_on_ptrace(&program, plan.clone()),
+                    _ => run_ending(&program, plan.clone()),
+                };
+                let context = format!("{backend} run {run}, precise {precise}: {events:?}");
+                let (code, stdout, stderr) =
+                    ending.unwrap_or_else(|failure| panic!("{failure}: {context}"));
+                assert_eq!((code, stderr), (0, vec![]), "{context}");
+                let record = Record::read(&stdout);
+                assert_eq!(record.count, 1, "{context}");
+                // SIGUSR1's frame saves the context rt_sigreturn restored.
+                assert_eq!(
+                    (record.rip, record.r12, record.rax),
+                    (record.r12, record.r12, 0),
+                    "{context}"
+                );
+                assert_eq!(
+                    record.eflags & RF,
+                    if backend == "kvm" { RF } else { 0 },
+                    "{context}: {record:x?}"
+                );
+                // The events up to the second request, which precise and
+                // imprecise runs both compare, and the rest.
+                let second = events
+                    .iter()
+                    .rposition(|event| matches!(event, Event::Requested { .. }))
+                    .expect("SIGUSR1's request");
+                let (compared, after) = events.split_at(second + 1);
+                for (clock, registers) in timer_events_with_registers(compared) {
+                    if registers.rip != segv_return {
+                        assert_eq!(
+                            (registers.rsi, registers.rdx),
+                            (usr1_action, 0),
+                            "restored rsi and rdx at clock {clock}: {context}"
+                        );
+                    }
+                }
+                if precise {
+                    let timers = timer_events_with_registers(&events);
+                    let at: Vec<u64> = timers.iter().map(|(_, r)| r.rip).collect();
+                    assert_eq!(
+                        at,
+                        [segv_return, record_write],
+                        "the precise events: at the handler's rt_sigreturn, then at the \
+                         record write: {context}"
+                    );
+                    assert_eq!(
+                        (timers[1].1.rsi, timers[1].1.rdx),
+                        (usr1_action, 0),
+                        "restored rsi and rdx at the record write: {context}"
+                    );
+                    assert_eq!(timers[1].1.orig_rax, u64::MAX, "{context}");
+                    precise_at_record_write
+                        .borrow_mut()
+                        .get_or_insert_with(|| comparable_timer_registers(&timers[1].1));
+                } else {
+                    // What follows the second request: nothing, or its event
+                    // at its target, at one of the record write's instruction
+                    // starts, with the registers the instructions before that
+                    // start leave (see above).
+                    let first = precise_at_record_write
+                        .borrow()
+                        .clone()
+                        .expect("the precise runs' event at the record write");
+                    let mut allowed = vec![vec![]];
+                    for (index, &start) in record_write_starts.iter().enumerate() {
+                        let mut expected = first.clone();
+                        expected.rip = start;
+                        if index >= 1 {
+                            expected.rdi = 1;
+                        }
+                        if index >= 2 {
+                            expected.rsi = record_address;
+                        }
+                        if index >= 3 {
+                            expected.rdx = 72;
+                        }
+                        if index >= 4 {
+                            expected.rax = 1;
+                        }
+                        allowed.push(vec![Event::Timer { clock: 2 }, Event::Registers(expected)]);
+                    }
+                    let tail = comparable_events(after);
+                    assert!(
+                        allowed.contains(&tail),
+                        "after the second request {tail:x?}, where only one of {allowed:x?} \
+                         may come: {context}"
+                    );
+                }
+                // The precise event comes in SIGSEGV's handler, whose rsi and
+                // rdx point into its frame (see above).
+                let comparable_registers = |events: &[Event]| -> Vec<Event> {
+                    comparable_events(events)
+                        .into_iter()
+                        .map(|event| match event {
+                            Event::Registers(registers) if registers.rip == segv_return => {
+                                Event::Registers(Registers {
+                                    rsi: 0,
+                                    rdx: 0,
+                                    ..registers
+                                })
+                            }
+                            event => event,
+                        })
+                        .collect()
+                };
+                // Imprecise runs compare with each other up to the second
+                // request; what follows it was compared above with the only
+                // events it may hold.
+                let kept = if precise {
+                    comparable_registers(&events)
+                } else {
+                    comparable_registers(compared)
+                };
+                seen.push((backend, kept, record));
+            }
+        }
+        let (kvm_events, kvm_record) = (&seen.last().unwrap().1, seen.last().unwrap().2);
+        for (backend, events, record) in &seen {
+            assert_eq!(
+                Record {
+                    eflags: record.eflags & !RF,
+                    ..*record
+                },
+                Record {
+                    eflags: kvm_record.eflags & !RF,
+                    ..kvm_record
+                },
+                "{backend}, precise {precise}"
+            );
+            let context = format!("{backend}, precise {precise}: {events:?}, KVM {kvm_events:?}");
+            if precise || *backend == "kvm" {
+                assert_eq!(events, kvm_events, "{context}");
+            } else {
+                // Without the timer event and its registers, the events are
+                // KVM's: the fault, the request, SIGUSR1 at the request's
+                // target and the next request. Should the notification be
+                // taken right after the handler's branch, before its
+                // rt_sigreturn, the event comes there, where a precise one
+                // comes, and SIGUSR1 then cancels nothing.
+                let without_timer = |events: &[Event]| -> Vec<Event> {
+                    events
+                        .iter()
+                        .filter(|event| !matches!(event, Event::Timer { .. } | Event::Registers(_)))
+                        .cloned()
+                        .collect()
+                };
+                assert_eq!(
+                    without_timer(events),
+                    without_timer(kvm_events),
+                    "{context}"
+                );
+                if events
+                    .iter()
+                    .any(|event| matches!(event, Event::Timer { .. }))
+                {
+                    assert_eq!(timer_clocks(events), [1], "{context}");
+                    assert_eq!(Some(registers_of(events).rip), precise_rip, "{context}");
+                }
+            }
+        }
+        // On KVM the first event comes at its target, at rt_sigreturn's
+        // return (imprecise) or before it, at the handler's rt_sigreturn
+        // (precise), and SIGUSR1's hook at the same clock.
+        let (_, timer_clock) = first_timer(kvm_events);
+        let (requested_at, _) = last_request(
+            &kvm_events
+                .iter()
+                .take_while(|event| !matches!(event, Event::Timer { .. }))
+                .cloned()
+                .collect::<Vec<_>>(),
+        );
+        assert_eq!(timer_clock, requested_at + 1, "{kvm_events:?}");
+        assert_eq!(
+            sigusr1_clocks(kvm_events)[0].1,
+            timer_clock,
+            "{kvm_events:?}"
+        );
+        let r = registers_of(kvm_events);
+        if precise {
+            assert_eq!(r.rax, 15, "at the handler's rt_sigreturn: {r:x?}");
+            precise_timer_rip.set(Some(r.rip));
+        } else {
+            assert_eq!(
+                (r.rip, r.orig_rax),
+                (r.r12, u64::MAX),
+                "at rt_sigreturn's return: {r:x?}"
+            );
+        }
+        println!(
+            "precise {precise}: KVM {kvm_events:x?}, ptrace {:x?}",
+            seen[0].1
+        );
+    }
 }

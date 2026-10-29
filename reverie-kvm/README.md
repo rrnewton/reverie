@@ -94,12 +94,19 @@ to guest memory are not held back (see the limits below). An
 `rt_sigprocmask` with invalid arguments still returns its `EINVAL` or `EFAULT`,
 and one that makes no pending signal deliverable runs as usual.
 
-After the callback, one pending signal is selected at the same point and
+After the callback, the pending signals are selected at the same point and
 delivered. Linux's return to user mode after a preemption runs `schedule()`
-before signal delivery, so the timer event comes first, then the signal; Linux
-then delivers every other eligible signal on the same return, with stacked
-frames, where this backend delivers one per return, as at its other boundaries
-(https://github.com/rrnewton/reverie/issues/1188). At a user instruction
+before signal delivery, so the timer event comes first, then the signals;
+Linux delivers every eligible signal on the same return, with stacked frames,
+and so does this backend, as at its other boundaries
+(https://github.com/rrnewton/reverie/issues/1188). Linux's `get_signal` takes
+a group exit before every dequeue, so a thread whose group began to exit, or
+that was cancelled, while its callback or a signal's hook there ran selects no
+further signal there, also after a hook that suppressed its signal or returned
+an ignored one, and ends before it runs another instruction; the signal whose
+hook was running still gets its frame, which the thread never runs, and a Tool
+that controls delivery a `Caught` receipt for it, where Linux requeues it
+(https://github.com/rrnewton/reverie/issues/1208). At a user instruction
 boundary the signal's frame holds the live registers and nothing restarts, as
 after an interrupt, and the signal hook sees the timer event's complete
 registers; at a syscall's return the selection is that syscall's own, with its
