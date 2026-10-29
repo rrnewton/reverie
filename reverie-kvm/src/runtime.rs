@@ -620,9 +620,10 @@ pub(crate) struct ToolContext<'a, T: Tool> {
 /// interception, the run's failure subscription, the adapter's signal guard,
 /// the two injection admission checks, the traced-parent query behind
 /// `Guest::ppid`, the descriptor fact behind `Guest::descriptor_status`, the
-/// signal fact behind `Guest::signal_sets`, and the completion of process
-/// actions. The trait is generic over the Tool only because
-/// `complete_injection` starts child Tool instances.
+/// signal fact behind `Guest::signal_sets`, the link fact behind
+/// `Guest::link_path`, and the completion of process actions. The trait is
+/// generic over the Tool only because `complete_injection` starts child Tool
+/// instances.
 trait GuestSyscallExecutor<T: Tool>:
     LinuxProvider<Context = GuestMemory, Plan = StagedProcessAction, Error = Error>
     + LinuxEmuSignalControl
@@ -729,6 +730,17 @@ trait GuestSyscallExecutor<T: Tool>:
         &self,
         _tid: Pid,
     ) -> std::result::Result<reverie::SignalSets, reverie::FactError> {
+        Err(reverie::FactError::NotProvided)
+    }
+
+    /// The issuing task's `Guest::link_path(tid, link)`. An adapter whose
+    /// provider keeps no descriptor table, image or working directory of its
+    /// own, such as a caller-supplied executor, does not provide it.
+    fn link_path(
+        &self,
+        _tid: Pid,
+        _link: reverie::PathLink,
+    ) -> std::result::Result<reverie::LinkPath, reverie::FactError> {
         Err(reverie::FactError::NotProvided)
     }
 
@@ -1720,6 +1732,14 @@ where
         tid: Pid,
     ) -> std::result::Result<reverie::SignalSets, reverie::FactError> {
         self.executor.signal_sets(tid.as_raw())
+    }
+
+    fn link_path(
+        &self,
+        tid: Pid,
+        link: reverie::PathLink,
+    ) -> std::result::Result<reverie::LinkPath, reverie::FactError> {
+        self.executor.link_path(tid.as_raw(), link)
     }
 
     fn ordinary_injection_allowed(&self, request: &SyscallRequest) -> bool {
@@ -2884,6 +2904,18 @@ impl<T: Tool> Guest<T> for KvmGuest<'_, T> {
         // signal state it delivers from, for a live thread of the run in any
         // process; it refuses real-time signals, so none is ever pending.
         self.executor.signal_sets(tid)
+    }
+
+    fn link_path(
+        &self,
+        tid: Pid,
+        link: reverie::PathLink,
+    ) -> std::result::Result<reverie::LinkPath, reverie::FactError> {
+        // `tid` is in the guest's own numbering, and no host task has the
+        // guest's links. The executor answers from its own descriptor table,
+        // image and working directory handles, for the asking thread's
+        // process; its limits are documented on the executor's facts module.
+        self.executor.link_path(tid, link)
     }
 }
 
@@ -10303,6 +10335,10 @@ mod descriptor_status_tests;
 #[cfg(test)]
 #[path = "signal_sets_runtime_tests.rs"]
 mod signal_sets_tests;
+
+#[cfg(test)]
+#[path = "link_path_runtime_tests.rs"]
+mod link_path_tests;
 
 #[cfg(test)]
 mod callback_completion_tests;
