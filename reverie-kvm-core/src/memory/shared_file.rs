@@ -871,6 +871,10 @@ impl GuestMemory {
             &mut buffer,
         )?;
         let mut child_state = parent_state.clone();
+        // The child is another address space: it starts with the parent's
+        // stack-window record, and the two record their own changes, those
+        // the publications below make in the child included.
+        child_state.pages.detach_watch();
         // All private extents now belong to the child's base backing. Shared
         // installed pointers are recreated only from actual child syscall results.
         child_state.backing_pages.clear();
@@ -2159,6 +2163,44 @@ mod tests {
         child.write_raw(BASE + 2 * P, b"alive").unwrap();
         assert_eq!(read(&second, BASE + 2 * P, 5), b"alive");
         assert_eq!(bytes(&original, 2 * P, 5), b"alive");
+    }
+
+    /// A fork's copy of a memory that holds a shared file view is another
+    /// address space: it starts with the stack window's record and keeps one
+    /// of its own, so a change either side makes afterwards leaves the other
+    /// unchanged.
+    #[test]
+    fn a_shared_file_snapshot_keeps_its_own_stack_window_record() {
+        for child_changes in [true, false] {
+            let memory = fixture(6);
+            // A window of three pages, the top two reachable.
+            let window = memory.establish_user_stack_window(3 * P).unwrap();
+            memory
+                .reserve_region(BASE + 3 * P, 3 * P, RegionKind::Stack)
+                .unwrap()
+                .commit();
+            memory.watch_user_stack_window();
+            install(&memory, &file(1), BASE + P, 1, 0);
+            let unchanged = Some((window, USER_STACK_TOP));
+            assert_eq!(memory.unchanged_user_stack_window(), unchanged);
+            let child = memory.snapshot().unwrap();
+            assert!(child.contains_shared_file());
+            assert_eq!(child.unchanged_user_stack_window(), unchanged);
+            let (changing, other) = if child_changes {
+                (&child, &memory)
+            } else {
+                (&memory, &child)
+            };
+            changing
+                .map_user_permissions(BASE + 4 * P, P, true, false)
+                .unwrap();
+            assert_eq!(changing.unchanged_user_stack_window(), None);
+            assert_eq!(
+                other.unchanged_user_stack_window(),
+                unchanged,
+                "child changes: {child_changes}"
+            );
+        }
     }
 
     #[test]

@@ -3487,6 +3487,12 @@ impl KvmBackend {
         child.independent_process_mm = !share_address_space;
         if share_address_space {
             self.independent_process_mm = false;
+            // The child runs on a copy of the memory, but on Linux it shares
+            // the parent's address space: a change to the stack window either
+            // makes is the other's too, so they share the window's record
+            // (`GuestMemory::unchanged_user_stack_window`) from here on, until
+            // the child's exec gives it a record of its own.
+            child.memory.share_user_stack_window_watch(&self.memory);
         }
         if shared_file_snapshot {
             // Child TID may itself lie in a shared file, so neither TID store
@@ -9561,6 +9567,64 @@ mod tests {
             .unwrap();
         assert!(independent_child.backend.independent_process_mm);
         assert!(!child.backend.independent_process_mm);
+    }
+
+    /// A child that shares its parent's address space on Linux (vfork, and
+    /// a process clone with CLONE_VM|CLONE_VFORK) runs on a copy of the
+    /// parent's memory here, and shares the stack window's record with it:
+    /// a change to the window either makes, child or parent, empties the
+    /// answer for both. A forked child's record is its own.
+    #[test]
+    fn a_vfork_child_shares_the_stack_windows_record_with_its_parent() {
+        for share_address_space in [true, false] {
+            for child_changes in [true, false] {
+                let label = format!("vfork: {share_address_space}, child changes: {child_changes}");
+                let mut parent = KvmBackend::new(64 * 1024 * 1024)
+                    .expect("stack window record control requires KVM");
+                parent
+                    .install_static_elf(&minimal_test_elf(&[0xf4]), "/bin/stack-window")
+                    .unwrap();
+                let executor = ElfExecutor::new(parent.static_elf.take().unwrap(), false);
+                let registers = parent.vcpu.get_regs().unwrap();
+                stage_process_syscall_return(
+                    &mut parent.memory,
+                    &parent.vcpu,
+                    parent.syscall_frame_address,
+                    registers,
+                )
+                .unwrap();
+                let window = parent.memory.unchanged_user_stack_window();
+                assert!(window.is_some(), "{label}");
+                let child = parent
+                    .prepare_forked_process(
+                        &executor,
+                        2,
+                        None,
+                        None,
+                        None,
+                        None,
+                        false,
+                        share_address_space,
+                        false,
+                        None,
+                    )
+                    .unwrap();
+                assert_eq!(
+                    child.backend.memory.unchanged_user_stack_window(),
+                    window,
+                    "{label}"
+                );
+                let (changing, other) = if child_changes {
+                    (&child.backend.memory, &parent.memory)
+                } else {
+                    (&parent.memory, &child.backend.memory)
+                };
+                changing.note_user_mapping_change(window.unwrap().0, 4096);
+                assert_eq!(changing.unchanged_user_stack_window(), None, "{label}");
+                let expected = if share_address_space { None } else { window };
+                assert_eq!(other.unchanged_user_stack_window(), expected, "{label}");
+            }
+        }
     }
 
     // This control requires KVM construction and snapshot/register ioctls. It

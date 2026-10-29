@@ -631,6 +631,50 @@ thread where Linux shares it between threads created with `CLONE_FS`. A live
 thread of another process, and another thread's working directory, are not
 provided, where Linux shows them to a reader it lets read them.
 
+`Guest::memory_map` lists only what the executor can establish exactly, and
+says that the list is not complete (`MemoryMap::complete` is false). Each
+listed entry is exact for the executor's own address space, which differs from
+a native process's where this section says so. The executor keeps the address
+space as pages, each with what it was reserved for and whether it is
+accessible and writable. That holds neither a mapping's read and execute
+permissions nor the history that decides where Linux splits and merges
+mappings (https://github.com/rrnewton/reverie/issues/1211). So the list holds
+one mapping, the process's `[stack]`, and only while nothing has changed the
+stack window since the image started. The entry is the window: from its start
+(the loader maps it whole, 8 MiB less its top page, where Linux maps the
+stack's arguments and 128 KiB below them and grows the stack on demand) to the
+top of the user address space; read-write, and executable for an image whose
+last `PT_GNU_STACK` header has `PF_X`, as Linux maps it; private, with no
+file. Once any page of the window has changed state, been reserved for another
+use, or been named by an accepted call that changes what Linux keeps on the
+mapping without changing the pages (`mprotect(2)`, madvise advice other than
+`MADV_WILLNEED`, `MADV_DONTNEED`, `MADV_FREE`, `MADV_COLD` and
+`MADV_PAGEOUT`, `munlock(2)`, and `munlockall(2)` for every mapping), the
+list is empty, also in a child forked afterwards; a new image starts it again.
+An `mprotect(2)` range that overlaps the window is recorded before any
+refusal: Linux protects the mappings before a hole and keeps that when it
+then fails with `ENOMEM`, where the executor refuses the whole range. A vfork
+child (`vfork(2)`, or `clone(2)` and `clone3(2)` with `CLONE_VM|CLONE_VFORK`)
+runs on a copy of its parent's memory, but the two share the record, as on
+Linux they share the address space: a change either makes empties both lists,
+until the child executes another image, which leaves its parent's entry, as a
+`posix_spawn(3)` child does. A guest that changes its own stack, for example
+protecting a page of it, even only to set it back, therefore loses its
+`[stack]` entry where Linux still shows one. A call the executor refuses where
+Linux applies it (`mlock(2)` and `mlock2(2)`, `ENOSYS`; `mprotect(2)` with
+`PROT_GROWSDOWN`, `EINVAL`; a `MAP_FIXED` mapping or an `mremap(2)` destination
+in the window, `ENOMEM` and `EINVAL`) leaves the entry listed where Linux
+shows the stack changed: the entry is exact for the executor's address space,
+which the call left as it was, and the refusal is the difference the guest
+sees. A tool that renders the list as `/proc/<pid>/maps` must name the
+omitted mappings as a difference of this backend: rendered so, the file is the
+one `[stack]` line, as the executor's own synthetic `/proc/self/maps` already
+is today, or empty once the window changed. The guest's page tables map every user page
+without the no-execute bit, so a guest can execute on a stack that Linux maps
+non-executable. The fact answers for any live thread of the asking thread's
+process, whose address space they share, and a live thread of another process
+is not provided, where Linux shows its map to a reader it lets read it.
+
 A Tool can reserve one empty host directory on a read-only file system for its
 own use (`KvmBackend::reserve_tool_directory`): the executor hides it from the
 guest, answering `ENOENT` for every route to it but an `O_DIRECTORY` open or a
