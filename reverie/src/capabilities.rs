@@ -494,7 +494,6 @@ impl BackendCapabilities {
         kernel_signal_targets_are_predictable: false,
         host_task_reads_reach_guest_threads: false,
         host_timed_signals_are_physical: false,
-        delivers_preemption_timer_events: false,
         reports_sigreturns: false,
         hardware_watchpoints: 0,
         ..Self::PTRACE
@@ -677,7 +676,6 @@ mod tests {
                 "kernel_signal_targets_are_predictable": false,
                 "host_task_reads_reach_guest_threads": false,
                 "host_timed_signals_are_physical": false,
-                "delivers_preemption_timer_events": false,
                 "reports_sigreturns": false,
                 "hardware_watchpoints": 0,
             }))
