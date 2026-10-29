@@ -390,7 +390,7 @@ pub(crate) const FIRST_STAGE_LEAD: u64 = 1 << 19;
 /// [`SINGLESTEP_TIMEOUT_RCBS`], and otherwise `config`'s first stage margin,
 /// as reverie-ptrace stages it. Never less than the latter.
 pub(crate) fn first_stage_lead(config: &reverie::pmu_config::PmuConfig, ticks: u64) -> u64 {
-    let lead = FIRST_STAGE_LEAD.max(config.first_stage_margin());
+    let lead = scratch_first_stage_lead().max(config.first_stage_margin());
     if ticks > lead.saturating_add(SINGLESTEP_TIMEOUT_RCBS) {
         lead
     } else {
@@ -452,6 +452,30 @@ thread_local! {
     /// host held the PMU interrupt behind its kick that long. That
     /// programming takes it.
     pub(crate) static LATE_PROGRAMMING: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// SCRATCH (T1f measurement, never for review): `REVERIE_KVM_SCRATCH_FIRST_STAGE_LEAD`
+/// replaces [`FIRST_STAGE_LEAD`] when it parses as a u64.
+fn scratch_first_stage_lead() -> u64 {
+    static LEAD: OnceLock<u64> = OnceLock::new();
+    *LEAD.get_or_init(|| {
+        std::env::var("REVERIE_KVM_SCRATCH_FIRST_STAGE_LEAD")
+            .ok()
+            .and_then(|raw| raw.trim().parse().ok())
+            .unwrap_or(FIRST_STAGE_LEAD)
+    })
+}
+
+/// SCRATCH (T1f measurement, never for review): `REVERIE_KVM_SCRATCH_ARMING_SLACK`
+/// replaces [`MAX_ARMING_SLACK`] when it parses as a u64.
+fn scratch_arming_slack() -> u64 {
+    static SLACK: OnceLock<u64> = OnceLock::new();
+    *SLACK.get_or_init(|| {
+        std::env::var("REVERIE_KVM_SCRATCH_ARMING_SLACK")
+            .ok()
+            .and_then(|raw| raw.trim().parse().ok())
+            .unwrap_or(MAX_ARMING_SLACK)
+    })
 }
 
 /// RCBs by which a test has the next finite programming overflow late (see
@@ -1108,7 +1132,7 @@ impl TimerState {
         };
         let point = point.max(clock.saturating_add(MIN_PERIOD));
         let slack = if lazy {
-            ((point - clock) / 2).min(MAX_ARMING_SLACK)
+            ((point - clock) / 2).min(scratch_arming_slack())
         } else {
             0
         };
