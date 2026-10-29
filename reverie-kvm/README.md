@@ -631,6 +631,32 @@ thread where Linux shares it between threads created with `CLONE_FS`. A live
 thread of another process, and another thread's working directory, are not
 provided, where Linux shows them to a reader it lets read them.
 
+`Guest::memory_map` lists only what the executor can establish exactly, and
+says that the list is not complete (`MemoryMap::complete` is false). The
+executor keeps the address space as pages, each with what it was reserved for
+and whether it is accessible and writable. That holds neither a mapping's
+read and execute permissions nor the history that decides where Linux splits
+and merges mappings (https://github.com/rrnewton/reverie/issues/1211). So the
+list holds one mapping, the process's `[stack]`, and only while nothing has
+changed the stack window since the image started. The entry is the window:
+from its start (the loader maps it whole, 8 MiB less its top page, where Linux
+maps the stack's arguments and 128 KiB below them and grows the stack on
+demand) to the top of the user address space; read-write, and executable for
+an image whose last `PT_GNU_STACK` header has `PF_X`, as Linux maps it;
+private, with no file. Once any page of the window has changed state, been
+reserved for another use, or been named by an accepted call that changes what
+Linux keeps on the mapping without changing the pages (`mprotect(2)`, madvise
+advice other than `MADV_WILLNEED`, `MADV_DONTNEED`, `MADV_FREE`, `MADV_COLD`
+and `MADV_PAGEOUT`, `munlock(2)`, and `munlockall(2)` for every mapping), the
+list is empty, also in a child forked afterwards; a new image starts it again.
+A guest that changes its own stack, even only to set it back, therefore loses
+its `[stack]` entry where Linux still shows one. The guest's page tables map
+every user page without the no-execute bit, so a guest can execute on a stack
+that Linux maps non-executable. The fact answers for any live thread of the
+asking thread's process, whose address space they share, and a live thread of
+another process is not provided, where Linux shows its map to a reader it lets
+read it.
+
 A Tool can reserve one empty host directory on a read-only file system for its
 own use (`KvmBackend::reserve_tool_directory`): the executor hides it from the
 guest, answering `ENOENT` for every route to it but an `O_DIRECTORY` open or a
