@@ -264,6 +264,16 @@ impl ElfExecutor {
     ///
     /// The executor refuses real-time signals (`SignalRefusal`), so no
     /// real-time signal is ever pending here.
+    ///
+    /// Under a Tool, a signal whose action ignores it, and which its target
+    /// does not block, stays pending until the target's next return boundary
+    /// (`ThreadSignalState::observe_ignored`): the Tool observes it there,
+    /// before the final disposition discards it, as a tracer observes such a
+    /// signal at a ptrace signal-delivery stop. Linux discards it when it is
+    /// sent, unless the target is traced (`sig_ignored`, kernel/signal.c at
+    /// v6.12, line 104), so until that boundary it is pending here and not on
+    /// Linux. A child's exit `SIGCHLD` under an explicit `SIG_IGN` is the
+    /// exception: its publication suppresses it, as Linux does.
     pub fn signal_sets(
         &self,
         tid: libc::pid_t,
@@ -296,30 +306,8 @@ impl ElfExecutor {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let thread = thread.lock();
-        let generations = &process.pending_generations;
-        let mut ignored = KernelSigset::default();
-        let mut caught = KernelSigset::default();
-        for (&signal, action) in &process.dispositions {
-            if action.is_ignored() {
-                ignored.insert(signal);
-            } else if action.handler != libc::SIG_DFL as u64 {
-                caught.insert(signal);
-            }
-        }
-        Ok(reverie::SignalSets::new(
-            set_bits(thread.pending.pending_mask(generations)),
-            set_bits(process.shared_pending.pending_mask(generations)),
-            set_bits(thread.blocked),
-            set_bits(ignored),
-            set_bits(caught),
-        ))
+        Ok(crate::signal::task_signal_sets(&process, &thread))
     }
-}
-
-/// `set` as the fact holds it: signal `n` at bit `n - 1`, the bit
-/// `KernelSigset` keeps in byte `(n - 1) / 8`.
-fn set_bits(set: KernelSigset) -> u64 {
-    u64::from_le_bytes(set.to_bytes())
 }
 
 /// Which thread of this process a link of [`ElfExecutor::link_path`] is
@@ -2368,6 +2356,116 @@ mod signal_sets_tests {
         assert_eq!(*during.borrow(), []);
         assert_eq!(answered.recv(), Ok(Ok(SignalSets::new(0, 0, 0, 0, 0))));
         reading.join().unwrap();
+    }
+
+    /// A run-scoped read (`reverie::ProcessSignalControl::signal_sets`) of
+    /// another process's thread, asked inside that process's exec window
+    /// (the thread's state replaced, the process's not yet rebound) after it
+    /// has cloned the process's image, cannot answer there: the exec holds
+    /// the process's transaction. Once the exec completes it answers EAGAIN,
+    /// never the replaced image's sets. Asked again, it answers the new
+    /// image, the handler reset and the mask kept, as the `Guest` fact does.
+    /// The exec runs on its own thread, so that a read that took a lock out
+    /// of order, and with it the exec, deadlocks into a failure at a 60 s
+    /// bound instead of a hang; a read that never answers fails at the 10 s
+    /// wait for its answer. Neither failure drops an executor that a stuck
+    /// thread's locks would make wait.
+    #[test]
+    fn a_run_scoped_read_waits_out_an_exec_and_answers_eagain() {
+        use crate::executor::process_signal_publication::IMAGE_CLONED_TEST_HOOK;
+
+        let directory = Directory::new();
+        let mut memory = GuestMemory::new(0, PAGE).unwrap();
+        let parent = ElfExecutor::new(test_state(&directory.0), false);
+        let mut child = parent
+            .fork_child(parent.state.pid + 30, false, false)
+            .unwrap();
+        mask(&mut child, &mut memory, libc::SIG_BLOCK, bit(libc::SIGUSR2));
+        assert_eq!(act(&mut child, &mut memory, libc::SIGUSR1, 0x1000), 0);
+        let task = child.signal_task_identity().unwrap();
+        let control = parent.backend_signal_control().process;
+        let before = SignalSets::new(0, 0, bit(libc::SIGUSR2), 0, bit(libc::SIGUSR1));
+        let after = SignalSets::new(0, 0, bit(libc::SIGUSR2), 0, 0);
+        assert_eq!(control.signal_sets(task), Ok(before));
+        let (ask, asked) = std::sync::mpsc::channel::<()>();
+        let (cloned, image_cloned) = std::sync::mpsc::channel::<()>();
+        let (answer, answered) = std::sync::mpsc::channel();
+        let reading = std::thread::spawn({
+            let control = control.clone();
+            move || {
+                let _hook = Hook::install(&IMAGE_CLONED_TEST_HOOK, move || {
+                    let _ = cloned.send(());
+                });
+                asked.recv().unwrap();
+                answer.send(control.signal_sets(task)).unwrap();
+            }
+        });
+        let (exec_done, exec_result) = std::sync::mpsc::channel();
+        let image = directory.0.clone();
+        let execing = std::thread::spawn(move || {
+            let answered = std::rc::Rc::new(answered);
+            let during = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+            let hook = Hook::install(&EXEC_WINDOW_TEST_HOOK, {
+                let (answered, during) = (answered.clone(), during.clone());
+                move || {
+                    ask.send(()).unwrap();
+                    image_cloned
+                        .recv_timeout(std::time::Duration::from_secs(10))
+                        .expect("the read never cloned the process's image");
+                    // A read that answers here answers from the replaced image.
+                    if let Ok(sets) = answered.recv_timeout(std::time::Duration::from_millis(200)) {
+                        during.borrow_mut().push(sets);
+                    }
+                }
+            });
+            child.replace_after_exec(test_state(&image));
+            drop(hook);
+            let late = answered.recv_timeout(std::time::Duration::from_secs(10));
+            let during = during.borrow().clone();
+            exec_done.send((child, during, late)).unwrap();
+        });
+        let (child, during, late) =
+            match exec_result.recv_timeout(std::time::Duration::from_secs(60)) {
+                Ok(result) => result,
+                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                    // The read may still hold the run's locks, which dropping
+                    // the parent's executor would wait for: leak it.
+                    std::mem::forget(parent);
+                    std::panic::resume_unwind(execing.join().unwrap_err())
+                }
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                    // The stuck threads hold the run's locks, which dropping
+                    // the parent's executor would wait for: leak it, so that
+                    // the test fails here instead of hanging in its unwind.
+                    // Leak the receiver as well, and the exec thread's handle
+                    // with it: dropping the receiver would drop the child's
+                    // executor if the exec thread sent it after the deadline.
+                    std::mem::forget(parent);
+                    std::mem::forget(exec_result);
+                    std::mem::forget(execing);
+                    panic!("the exec or the read did not finish in 60 s: a lock-order deadlock?")
+                }
+            };
+        execing.join().unwrap();
+        if during.is_empty() && late.is_err() {
+            if late == Err(std::sync::mpsc::RecvTimeoutError::Disconnected) {
+                // The read ended without an answer: it panicked, which is
+                // the failure to report, and its unwind released its locks.
+                std::panic::resume_unwind(reading.join().unwrap_err());
+            }
+            // The read has given no answer at all, so it may be stuck, and
+            // may hold the run's locks, which joining it or dropping either
+            // executor would wait for: leak both, and fail without waiting.
+            std::mem::forget(child);
+            std::mem::forget(parent);
+            panic!("the read gave no answer within 10 s of the exec: a stuck read?");
+        }
+        reading.join().unwrap();
+        assert_eq!(during, []);
+        assert_eq!(late, Ok(Err(FactError::Errno(reverie::Errno::EAGAIN))));
+        assert_eq!(control.signal_sets(task), Ok(after));
+        assert_eq!(parent.signal_sets(task.tid.as_raw()), Ok(after));
+        drop(child);
     }
 }
 
