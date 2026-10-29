@@ -1120,11 +1120,12 @@ fn segv_ignored(task: &Stopped) -> Option<bool> {
         .map(|ignored| ignored & SIGSEGV_BIT != 0)
 }
 
-/// What `unblock_sigtrap_for_step_with` did before a Reverie single-step.
+/// What `unblock_sigtrap_for_step_known` did before a Reverie single-step.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum StepShield {
     /// Nothing: SIGTRAP is not blocked, or a temporary mask's restore is
-    /// pending, which a mask write would discard (`swaps_signal_mask`).
+    /// pending, which a mask write would discard (`swaps_signal_mask`), and
+    /// the step is not one `unblock_sigtrap_for_timer_step` shields anyway.
     None,
     /// SIGTRAP was unblocked, to be blocked again at the step's stop.
     Unblocked,
@@ -1136,14 +1137,9 @@ enum StepShield {
 }
 
 /// Unblocks SIGTRAP for one Reverie single-step (`sigtrap_state`'s shield),
-/// with the mask `PTRACE_GETSIGMASK` reported. procfs is read only when
-/// SIGTRAP is blocked.
-fn unblock_sigtrap_for_step_with(task: &Stopped, mask: u64) -> Result<StepShield, TraceError> {
-    unblock_sigtrap_for_step_known(task, mask, None)
-}
-
-/// `unblock_sigtrap_for_step_with`, with `known` the procfs state read for
-/// this same stop, if it was (`TracedTask::injection_proc_state`).
+/// with the mask `PTRACE_GETSIGMASK` reported, and `known` the procfs state
+/// read for this same stop, if it was (`TracedTask::injection_proc_state`).
+/// procfs is read only when SIGTRAP is blocked.
 fn unblock_sigtrap_for_step_known(
     task: &Stopped,
     mask: u64,
@@ -1166,8 +1162,49 @@ fn unblock_sigtrap_for_step_known(
     Ok(StepShield::Unblocked)
 }
 
+/// `unblock_sigtrap_for_step_known` for a timer step, which also shields a
+/// step taken while a temporary mask's restore is pending. The step resumes
+/// the thread with no signal, and the kernel performs the restore on its way
+/// back to the guest, before the step's instruction (`restore_saved_sigmask`
+/// in the signal-delivery path). So the trap meets the saved mask, `mask`,
+/// unless a signal that the temporary mask admits is delivered first. Where
+/// none is pending, `mask` without SIGTRAP is written now: the write does what
+/// the restore would have done, minus SIGTRAP, which the step's stop puts
+/// back, and it discards the restore, which then has nothing left to do.
+/// Where one is pending (`SIGSTOP` included, whose group stop natively keeps
+/// the temporary mask), the kernel delivers it under the temporary mask
+/// first, and the step is left unshielded as before. So it is too unless
+/// every mask-swapping call stops the step at its seccomp stop
+/// (`restore_shield`): where the interrupted call is restarted, the step's
+/// instruction is that call, which run untraced inside the step would take
+/// the shielded mask, without SIGTRAP, as its own restore target. As for the
+/// pending-SIGTRAP check, a signal sent from outside the guest between the
+/// procfs read and the resume is not seen.
+fn unblock_sigtrap_for_timer_step(
+    task: &Stopped,
+    mask: u64,
+    restore_shield: bool,
+) -> Result<StepShield, TraceError> {
+    if mask & SIGTRAP_BIT == 0 {
+        return Ok(StepShield::None);
+    }
+    let state = ProcSignalState::read(task)?;
+    if state.pending & SIGTRAP_BIT != 0 {
+        return Ok(StepShield::PendingTrap);
+    }
+    if state.blocked != mask {
+        if !restore_shield || state.pending & !state.blocked != 0 {
+            return Ok(StepShield::None);
+        }
+        #[cfg(test)]
+        TIMER_STEP_RESTORE_SHIELDS_FOR_TEST.with(|count| count.set(count.get() + 1));
+    }
+    set_sigmask(task, mask & !SIGTRAP_BIT)?;
+    Ok(StepShield::Unblocked)
+}
+
 /// Blocks SIGTRAP again at the stop a step shielded by
-/// `unblock_sigtrap_for_step_with` ended at, keeping any other change the stepped
+/// `unblock_sigtrap_for_step_known` ended at, keeping any other change the stepped
 /// instruction made to the mask.
 fn reblock_sigtrap_after_step(wait: &Wait) -> Result<(), TraceError> {
     if let Wait::Stopped(stopped, _) = wait {
@@ -1184,6 +1221,10 @@ struct TimerStepShield {
     /// Whether SIGTRAP is ignored for this sequence, read once at its start
     /// (`TracedTask::sigtrap_ignored`).
     ignored: bool,
+    /// Whether every mask-swapping call stops a step at its seccomp stop, as
+    /// for `quiet`: then a step at a pending mask restore is shielded
+    /// (`unblock_sigtrap_for_timer_step`).
+    restore_shield: bool,
     /// Whether no step of this sequence can reset SIGTRAP: it is neither
     /// ignored nor blocked at the start, and a step can change neither,
     /// because every syscall that could stops the step at its seccomp stop
@@ -1207,8 +1248,8 @@ struct TimerStepShield {
 }
 
 impl TimerStepShield {
-    /// Before a step: shield SIGTRAP as `unblock_sigtrap_for_step_with` does, or,
-    /// for a guest `rt_sigreturn`, in the frame it restores.
+    /// Before a step: shield SIGTRAP as `unblock_sigtrap_for_timer_step` does,
+    /// or, for a guest `rt_sigreturn`, in the frame it restores.
     fn prepare(&mut self, task: &Stopped) -> Result<(), TraceError> {
         if self.quiet {
             self.stepped = true;
@@ -1227,7 +1268,6 @@ impl TimerStepShield {
             self.native_trap = true;
             return Ok(());
         }
-        #[cfg(target_arch = "x86_64")]
         if let Some((address, rip)) = sigreturn_frame_mask_address(task, &regs)? {
             let frame = Addr::<u64>::from_raw(address).ok_or(Errno::EFAULT)?;
             let mask: u64 = task.read_value(frame)?;
@@ -1238,12 +1278,12 @@ impl TimerStepShield {
                     .write_value(frame, &(mask & !SIGTRAP_BIT))?;
                 self.frame_mask = Some((address, mask, rip));
                 #[cfg(test)]
-                FRAME_SHIELDS_FOR_TEST.fetch_add(1, Ordering::SeqCst);
+                FRAME_SHIELDS_FOR_TEST.with(|count| count.set(count.get() + 1));
             }
             self.stepped = true;
             return Ok(());
         }
-        match unblock_sigtrap_for_step_with(task, mask)? {
+        match unblock_sigtrap_for_timer_step(task, mask, self.restore_shield)? {
             StepShield::None => {}
             StepShield::Unblocked => self.reblock = true,
             StepShield::PendingTrap => {
@@ -1295,6 +1335,33 @@ fn sigreturn_frame_mask_address(
     Ok(Some((
         regs.rsp as usize + crate::sigtrap_state::SIGRETURN_UC_SIGMASK_OFFSET,
         regs.rip,
+    )))
+}
+
+/// If the task's next instruction is a guest `rt_sigreturn` (an `svc` with
+/// x8 139; Linux ignores the `svc` immediate), the address of the mask in the
+/// frame it restores, and the instruction's address.
+#[cfg(target_arch = "aarch64")]
+fn sigreturn_frame_mask_address(
+    task: &Stopped,
+    regs: &libc::user_regs_struct,
+) -> Result<Option<(usize, u64)>, TraceError> {
+    if regs.regs[8] != libc::SYS_rt_sigreturn as u64 {
+        return Ok(None);
+    }
+    let Some(pc) = Addr::<[u8; 4]>::from_raw(regs.pc as usize) else {
+        return Ok(None);
+    };
+    // `svc #imm16`: 0xd4000001 | imm16 << 5, little-endian.
+    let is_svc = task
+        .read_value(pc)
+        .is_ok_and(|insn| u32::from_le_bytes(insn) & 0xffe0_001f == 0xd400_0001);
+    if !is_svc {
+        return Ok(None);
+    }
+    Ok(Some((
+        regs.sp as usize + crate::sigtrap_state::SIGRETURN_UC_SIGMASK_OFFSET,
+        regs.pc,
     )))
 }
 
@@ -1507,9 +1574,10 @@ mod sigtrap_tables_tests {
 
 /// Whether `pid`'s address space, a fork's child at its fork event, has a
 /// read-write mapping at Reverie's SIGTRAP repair page (`cp::SCRATCH_BASE`),
-/// by procfs `maps`. The child has not run, and its parent's page is sealed,
-/// so such a mapping can only be the kernel's sealed copy of it; `maps` tells
-/// that without the page-table walk `smaps` makes. Unreadable is false.
+/// by procfs `maps`. The child has not run, so such a mapping can only be the
+/// kernel's copy of its parent's page: sealed if the parent's is, and
+/// otherwise checked by its canary before use; `maps` tells that without the
+/// page-table walk `smaps` makes. Unreadable is false.
 fn repair_page_sealed_in(pid: Pid) -> bool {
     let Ok(maps) = read_status(format!("/proc/{pid}/maps")) else {
         return false;
@@ -1831,13 +1899,59 @@ fn guest_seccomp_filters(tid: Pid) -> Option<u64> {
 
 /// The states of an address space's SIGTRAP repair page
 /// (`TracedTask::sigtrap_scratch_state`): not set up yet (a new image before
-/// pre-init), sealed, or none.
+/// pre-init), sealed, unsealed (`mseal` unavailable; checked by its canary
+/// before each use), or none.
 const SCRATCH_PENDING: u8 = 0;
 const SCRATCH_SEALED: u8 = 1;
 const SCRATCH_UNAVAILABLE: u8 = 2;
+const SCRATCH_UNSEALED: u8 = 3;
 
-/// `mseal(2)`'s number on x86-64 (Linux 6.10), which `Sysno` does not name.
+/// Whether an address space in `state` has a repair page to use.
+fn scratch_usable(state: u8) -> bool {
+    matches!(state, SCRATCH_SEALED | SCRATCH_UNSEALED)
+}
+
+/// `mseal(2)`'s number on x86-64 and aarch64 (Linux 6.10), which `Sysno`
+/// does not name.
 const SYS_MSEAL: Reg = 462;
+
+/// The bytes Reverie writes at the end of an unsealed repair page
+/// ([`SCRATCH_CANARY_OFFSET`]) and checks before every use: a page the guest
+/// unmapped, replaced or overwrote no longer holds them, and then no repair is
+/// written there (a guest page is never written).
+const SCRATCH_CANARY: [u8; 16] = *b"reverie-sigtrap\0";
+
+/// Where in the repair page the canary sits: its last 16 bytes, past every
+/// action a repair writes or reads at its start.
+const SCRATCH_CANARY_OFFSET: usize = cp::SCRATCH_SIZE - SCRATCH_CANARY.len();
+
+/// When set (to anything), the repair page is used unsealed as if `mseal`
+/// were unavailable, as on kernels before Linux 6.10: for testing that path
+/// on a kernel that has `mseal`.
+pub const SIGTRAP_REPAIR_NO_MSEAL_ENV: &str = "REVERIE_SIGTRAP_REPAIR_NO_MSEAL";
+
+fn mseal_disabled_for_testing() -> bool {
+    static OFF: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *OFF.get_or_init(|| std::env::var_os(SIGTRAP_REPAIR_NO_MSEAL_ENV).is_some())
+}
+
+/// Whether thread `tid`'s address space still holds the canary at the end of
+/// its unsealed repair page, read with `process_vm_readv`.
+fn scratch_canary_intact(tid: Pid) -> bool {
+    let mut found = [0u8; SCRATCH_CANARY.len()];
+    let local = libc::iovec {
+        iov_base: found.as_mut_ptr().cast(),
+        iov_len: found.len(),
+    };
+    let remote = libc::iovec {
+        iov_base: (cp::SCRATCH_BASE + SCRATCH_CANARY_OFFSET) as *mut libc::c_void,
+        iov_len: found.len(),
+    };
+    // SAFETY: `local` describes `found`, which outlives the call; the remote
+    // side is only read.
+    let read = unsafe { libc::process_vm_readv(tid.as_raw(), &local, 1, &remote, 1, 0) };
+    read == found.len() as isize && found == SCRATCH_CANARY
+}
 
 /// The `si_code` of a SIGILL for an illegal operand (`ud2`), which `libc`
 /// does not export.
@@ -3521,8 +3635,9 @@ struct GlobalState<G: GlobalTool> {
     /// Whether Reverie keeps the guest's SIGTRAP action and mask across its
     /// own single-steps (`sigtrap_state`): only for a Tool that enforces a
     /// serialized-execution contract (`Tool::enforces_serialized_execution`),
-    /// and only on x86-64, whose instruction encodings and syscall rewind
-    /// this relies on. The repair injects `rt_sigaction` into a stopped
+    /// on x86-64 and aarch64, whose self-trapping instructions
+    /// (`instruction_raises_sigtrap`) and `rt_sigreturn` frames
+    /// (`sigreturn_frame_mask_address`) it knows. The repair injects `rt_sigaction` into a stopped
     /// thread, which a guest thread running meanwhile could defeat. Otherwise
     /// SIGTRAP is left as at base.
     keeps_sigtrap_state: bool,
@@ -3636,15 +3751,28 @@ pub(crate) type PreSyscallForTest = Arc<
 static STEP_COUNTS_GLOBAL: std::sync::Mutex<std::collections::BTreeMap<i32, u64>> =
     std::sync::Mutex::new(std::collections::BTreeMap::new());
 
-/// Timer sequences whose single-steps ran (`drive_timer`), counted for
-/// tests that must know a sequence stepped: the per-thread step count
-/// (`record_step_for_test`) counts only `step_stopped`'s steps.
-#[cfg(test)]
-pub(crate) static TIMER_SEQUENCES_STEPPED_FOR_TEST: std::sync::atomic::AtomicU64 =
-    std::sync::atomic::AtomicU64::new(0);
-
 #[cfg(test)]
 thread_local! {
+    /// Timer steps shielded at a pending mask restore
+    /// (`unblock_sigtrap_for_timer_step`), counted for the test that must
+    /// know that case ran. Per thread, as below.
+    pub(crate) static TIMER_STEP_RESTORE_SHIELDS_FOR_TEST: std::cell::Cell<u64> =
+        const { std::cell::Cell::new(0) };
+
+    /// Timer sequences whose single-steps ran (`drive_timer`), counted for
+    /// tests that must know a sequence stepped: the per-thread step count
+    /// (`record_step_for_test`) counts only `step_stopped`'s steps. Per
+    /// thread, as below: a test that needs exactly its own sequences cannot
+    /// have another test's added.
+    pub(crate) static TIMER_SEQUENCES_STEPPED_FOR_TEST: std::cell::Cell<u64> =
+        const { std::cell::Cell::new(0) };
+
+    /// Timer steps over a guest `rt_sigreturn` whose frame blocked SIGTRAP
+    /// (`TimerStepShield::prepare`), counted for the test that must know one
+    /// ran. Per thread, as below.
+    pub(crate) static FRAME_SHIELDS_FOR_TEST: std::cell::Cell<u64> =
+        const { std::cell::Cell::new(0) };
+
     /// The unstepped injections of SIGTRAP repairs (the action's query, its
     /// write, and an `act`'s re-install), counted for the tests that bound
     /// them. Pre-init's sealing of the repair page is not counted. Per
@@ -3664,12 +3792,6 @@ thread_local! {
     pub(crate) static SEGV_TRAP_QUERIES_FOR_TEST: std::cell::Cell<u64> =
         const { std::cell::Cell::new(0) };
 }
-
-/// Timer steps over a guest `rt_sigreturn` whose frame blocked SIGTRAP
-/// (`TimerStepShield::prepare`), counted for the test that must know one ran.
-#[cfg(all(test, target_arch = "x86_64"))]
-pub(crate) static FRAME_SHIELDS_FOR_TEST: std::sync::atomic::AtomicU64 =
-    std::sync::atomic::AtomicU64::new(0);
 
 /// Test-only: counts every tracer single-step request per tid, so a test
 /// tool can measure the forced-SIGTRAP profile of a run.
@@ -4323,8 +4445,7 @@ impl<L: Tool> TracedTask<L> {
         // The report reads an x86-64 signal frame (`report_sigreturn`).
         let reports_sigreturns =
             cfg!(target_arch = "x86_64") && L::observes_sigreturns(&cfg) && gdbserver.is_none();
-        let keeps_sigtrap_state =
-            cfg!(target_arch = "x86_64") && L::enforces_serialized_execution(&cfg);
+        let keeps_sigtrap_state = L::enforces_serialized_execution(&cfg);
         let caches_sigtrap_disposition = options
             .events
             .iter_syscalls()
@@ -4627,6 +4748,10 @@ impl<L: Tool> TracedTask<L> {
             let state = match self.sigtrap_scratch_state.load(Ordering::SeqCst) {
                 SCRATCH_SEALED if repair_page_sealed_in(child) => SCRATCH_SEALED,
                 SCRATCH_SEALED => SCRATCH_UNAVAILABLE,
+                // The child's copy of an unsealed page is checked by its
+                // canary before use, as the parent's is.
+                SCRATCH_UNSEALED if repair_page_sealed_in(child) => SCRATCH_UNSEALED,
+                SCRATCH_UNSEALED => SCRATCH_UNAVAILABLE,
                 state => state,
             };
             Arc::new(AtomicU8::new(state))
@@ -5951,18 +6076,26 @@ impl<L: Tool + 'static> TracedTask<L> {
         // `CONTINUE`): only Reverie's own launch filter may be there. The
         // tracer has none of its own (`GlobalState::seccomp_filter_baseline`
         // is 1), the address space had no other, such as one a caller's
-        // `pre_exec` installs, when pre-init sealed its repair page
+        // `pre_exec` installs, when pre-init set up its repair page
         // (`seal_sigtrap_scratch`, which refuses otherwise), and the guest
-        // installs none later under the contract.
-        let quiet = !filtered
-            && !sigtrap_ignored
+        // installs none later under the contract. An unsealed page counts
+        // only while its canary is intact.
+        let syscalls_stop = !filtered
             && self.global_state.traces_signal_state_syscalls
-            && self.global_state.reports_sigreturns
             && self.global_state.seccomp_filter_baseline == Some(1)
-            && self.sigtrap_scratch_state.load(Ordering::SeqCst) == SCRATCH_SEALED
+            && match self.sigtrap_scratch_state.load(Ordering::SeqCst) {
+                SCRATCH_SEALED => true,
+                SCRATCH_UNSEALED => scratch_canary_intact(task.pid()),
+                _ => false,
+            };
+        let quiet = syscalls_stop
+            && !sigtrap_ignored
+            && self.global_state.reports_sigreturns
             && sigmask(&task)? & SIGTRAP_BIT == 0;
         let shield = Arc::new(StdMutex::new(TimerStepShield {
             ignored: sigtrap_ignored,
+            restore_shield: syscalls_stop
+                && (!cfg!(target_arch = "x86_64") || x32_syscalls_refused()),
             quiet,
             ..TimerStepShield::default()
         }));
@@ -6085,7 +6218,7 @@ impl<L: Tool + 'static> TracedTask<L> {
         }
         #[cfg(test)]
         if stepped {
-            TIMER_SEQUENCES_STEPPED_FOR_TEST.fetch_add(1, Ordering::SeqCst);
+            TIMER_SEQUENCES_STEPPED_FOR_TEST.with(|count| count.set(count.get() + 1));
         }
         // A guest instruction's own trap resets SIGTRAP natively too.
         if sigtrap_ignored && stepped && !native_trap {
@@ -10827,7 +10960,7 @@ impl<L: Tool + 'static> TracedTask<L> {
         }
     }
 
-    /// `unblock_sigtrap_for_step_with` before the Reverie single-step at `site`.
+    /// `unblock_sigtrap_for_step_known` before the Reverie single-step at `site`.
     /// Returns whether SIGTRAP was unblocked, to be blocked again at the
     /// step's stop; ends the run with the named failure
     /// `PendingSigtrapAtStep` when a blocked SIGTRAP is pending.
@@ -11061,7 +11194,7 @@ impl<L: Tool + 'static> TracedTask<L> {
     fn keeps_signal_records(&self) -> bool {
         self.global_state.keeps_signal_records
             && self.global_state.seccomp_filter_baseline == Some(1)
-            && self.sigtrap_scratch_state.load(Ordering::SeqCst) == SCRATCH_SEALED
+            && scratch_usable(self.sigtrap_scratch_state.load(Ordering::SeqCst))
             && self.keeps_sigtrap_state()
             && x32_syscalls_refused()
     }
@@ -11541,12 +11674,28 @@ impl<L: Tool + 'static> TracedTask<L> {
     /// without the contract no repair runs.
     fn sigtrap_scratch(&self, tid: Pid) -> Result<Option<usize>, ()> {
         match self.sigtrap_scratch_state.load(Ordering::SeqCst) {
-            SCRATCH_SEALED if self.guest_has_own_seccomp_filter(tid) => {
+            state if scratch_usable(state) && self.guest_has_own_seccomp_filter(tid) => {
                 self.sigtrap_scratch_state
                     .store(SCRATCH_UNAVAILABLE, Ordering::SeqCst);
                 Err(())
             }
             SCRATCH_SEALED => Ok(Some(cp::SCRATCH_BASE)),
+            // An unsealed page is used only while its canary is intact: one
+            // the guest unmapped, replaced or overwrote is not written to,
+            // and repairs end in this address space.
+            SCRATCH_UNSEALED if scratch_canary_intact(tid) => Ok(Some(cp::SCRATCH_BASE)),
+            SCRATCH_UNSEALED => {
+                self.sigtrap_scratch_state
+                    .store(SCRATCH_UNAVAILABLE, Ordering::SeqCst);
+                static WARNED: AtomicBool = AtomicBool::new(false);
+                if !WARNED.swap(true, Ordering::Relaxed) {
+                    tracing::warn!(
+                        "[scheduler/tool] (pid = {}) the unsealed SIGTRAP repair page was unmapped or replaced; a SIGTRAP repair is lost and repairs are off in this address space",
+                        tid
+                    );
+                }
+                Err(())
+            }
             SCRATCH_PENDING => Ok(None),
             _ => Err(()),
         }
@@ -11657,13 +11806,56 @@ impl<L: Tool + 'static> TracedTask<L> {
         };
         let (task, sealed) = if mapped == cp::SCRATCH_BASE {
             let args = SyscallArgs::new(cp::SCRATCH_BASE, cp::SCRATCH_SIZE, 0, 0, 0, 0);
-            let (task, result) = self
-                .untraced_syscall_number_unstepped(task, SYS_MSEAL, args)
-                .await?;
-            if let Err(errno) = result {
-                warn_once(task.pid(), format!("mseal: {}", errno));
+            let (task, result) = if mseal_disabled_for_testing() {
+                (task, Err(Errno::ENOSYS))
+            } else {
+                self.untraced_syscall_number_unstepped(task, SYS_MSEAL, args)
+                    .await?
+            };
+            match result {
+                // Without `mseal` (before Linux 6.10, or filtered by a
+                // container) the page is used unsealed. The guest could then
+                // unmap, replace or rewrite it; the canary written here is
+                // checked before every use (`sigtrap_scratch`), so a repair
+                // is never written into a page that is not Reverie's. That is
+                // detection, not prevention: such a page ends repairs in this
+                // address space.
+                Err(Errno::ENOSYS | Errno::EPERM) => {
+                    let canary = AddrMut::<[u8; SCRATCH_CANARY.len()]>::from_raw(
+                        cp::SCRATCH_BASE + SCRATCH_CANARY_OFFSET,
+                    )
+                    .ok_or(Errno::EFAULT)
+                    .and_then(|address| {
+                        task.generation()
+                            .assume_stopped()
+                            .write_value(address, &SCRATCH_CANARY)
+                    });
+                    match canary {
+                        Ok(()) => {
+                            static NOTED: AtomicBool = AtomicBool::new(false);
+                            if !NOTED.swap(true, Ordering::Relaxed) {
+                                tracing::info!(
+                                    "[scheduler/tool] (pid = {}) SIGTRAP repair page unsealed (mseal: {}); it is checked before each use",
+                                    task.pid(),
+                                    result.unwrap_err()
+                                );
+                            }
+                            self.sigtrap_scratch_state
+                                .store(SCRATCH_UNSEALED, Ordering::SeqCst);
+                            return Ok(task);
+                        }
+                        Err(errno) => {
+                            warn_once(task.pid(), format!("canary write: {}", errno));
+                            (task, false)
+                        }
+                    }
+                }
+                Err(errno) => {
+                    warn_once(task.pid(), format!("mseal: {}", errno));
+                    (task, false)
+                }
+                Ok(_) => (task, true),
             }
-            (task, result.is_ok())
         } else {
             warn_once(
                 task.pid(),
@@ -12299,9 +12491,17 @@ impl<L: Tool + 'static> TracedTask<L> {
             return Ok(task);
         }
         set_sigmask(&task, mask | BLOCKABLE_SIGNAL_BITS)?;
-        let mut skipped = regs;
-        *skipped.orig_syscall_mut() = -1i64 as Reg;
-        task.setregs(&skipped)?;
+        // Skip the syscall: x86_64 takes the number from orig_rax, aarch64
+        // from the kernel's own syscallno, which only NT_ARM_SYSTEM_CALL
+        // writes.
+        #[cfg(target_arch = "x86_64")]
+        {
+            let mut skipped = regs;
+            *skipped.orig_syscall_mut() = -1i64 as Reg;
+            task.setregs(&skipped)?;
+        }
+        #[cfg(target_arch = "aarch64")]
+        task.set_syscall(-1)?;
         let mut wait = self
             .syscall_stopped(task, None)?
             .next_state_with_owner(&self.ptracer_waits)
@@ -12338,7 +12538,14 @@ impl<L: Tool + 'static> TracedTask<L> {
         let mut again = regs;
         *again.ip_mut() = regs.ip() - cp::SYSCALL_INSTR_SIZE as Reg;
         *again.syscall_mut() = regs.orig_syscall();
-        *again.orig_syscall_mut() = -1i64 as Reg;
+        // x86_64: no restart of the skipped call. On aarch64 the number
+        // register is x8 itself, which must keep the call's number; the
+        // kernel's syscallno is already -1 from the skip, so nothing restarts
+        // there either, and x0 comes back from `regs` as the first argument.
+        #[cfg(target_arch = "x86_64")]
+        {
+            *again.orig_syscall_mut() = -1i64 as Reg;
+        }
         task.setregs(&again)?;
         let task = if owes_sigtrap {
             self.apply_sigtrap_repair(task).await?
@@ -12400,9 +12607,25 @@ impl<L: Tool + 'static> TracedTask<L> {
         // What the write leaves is read again when next needed
         // (`sigtrap_ignored`).
         self.forget_sigtrap_ignored();
-        let (task, _written) = self
+        let (task, written) = self
             .write_signal_action_at(task, scratch, libc::SIGTRAP, action)
             .await?;
+        // Through an unsealed page the action is read back, and a repair
+        // whose handler did not take is reported as lost. Only the handler is
+        // compared: a trap resets nothing else, and the kernel normalises the
+        // flags and mask a guest passed (`do_sigaction`).
+        if written && self.sigtrap_scratch_state.load(Ordering::SeqCst) == SCRATCH_UNSEALED {
+            let (task, back) = self.query_sigtrap_action_at(task, scratch).await?;
+            if back.is_some_and(|back| back.handler != action.handler) {
+                tracing::warn!(
+                    "[scheduler/tool] (pid = {}) a SIGTRAP repair did not take (read back {:?}, wrote {:?})",
+                    task.pid(),
+                    back,
+                    action
+                );
+            }
+            return Ok(task);
+        }
         Ok(task)
     }
 
