@@ -6,8 +6,9 @@
  * LICENSE file in the root directory of this source tree.
  */
 
-//! Facts a backend reports about the kernel objects of a guest that no
-//! syscall reads without changing them, and the errors that come with them.
+//! Facts a backend reports about the kernel state of a guest's threads,
+//! which Linux shows as text under `/proc`, and the errors that come with
+//! them.
 //!
 //! A fact is a [`Guest`](crate::Guest) method that returns typed state, such
 //! as [`Guest::descriptor_status`](crate::Guest::descriptor_status). Linux
@@ -432,6 +433,92 @@ impl SignalSets {
             blocked,
             ignored,
             caught,
+        }
+    }
+}
+
+/// One of the links to a file that Linux shows in a thread's `/proc`
+/// directory, `/proc/<pid>/task/<tid>`, and whose `readlink(2)` names the
+/// file: see [`Guest::link_path`](crate::Guest::link_path). The thread's
+/// `root` link is not one of them.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash, Serialize, Deserialize)]
+#[non_exhaustive]
+pub enum PathLink {
+    /// `fd/<fd>`: the file that descriptor `fd` of the thread's descriptor
+    /// table refers to (`proc_fd_link` in Linux's `fs/proc/fd.c`).
+    Descriptor(i32),
+    /// `exe`: the file the thread's process executes, its address space's
+    /// executable (`proc_exe_link` in Linux's `fs/proc/base.c`).
+    Executable,
+    /// `cwd`: the thread's working directory (`proc_cwd_link` in Linux's
+    /// `fs/proc/base.c`).
+    WorkingDirectory,
+}
+
+/// What Linux's `readlink(2)` gives for a [`PathLink`]: the name `d_path`
+/// renders for the file the link refers to (`do_proc_readlink` in Linux's
+/// `fs/proc/base.c`; `d_path` in `fs/d_path.c`). Linux names a file in one of
+/// two ways, which the text's first byte tells apart, so the kind is decided
+/// by the text alone. The text is never empty, has no NUL byte and is at most
+/// `PATH_MAX - 1` (4,095) bytes long, ` (deleted)` included: `d_path` renders
+/// into a buffer of `PATH_MAX` bytes and fails with `ENAMETOOLONG` for a
+/// name that does not fit, which a backend reports as that errno.
+#[derive(Clone, Debug, Eq, PartialEq, Hash, Serialize, Deserialize)]
+#[non_exhaustive]
+pub enum LinkPath {
+    /// A text that begins with `/`: the path of the file from the root of
+    /// the task that reads the link, with ` (deleted)` appended once the file
+    /// has been unlinked, as `d_path` renders a file of the tree of mounted
+    /// file systems (`prepend_path`, which always begins the path with `/`).
+    /// Some kernel-internal file systems give their files a name of the same
+    /// shape, which Linux renders as the path of a deleted file, such as a
+    /// memfd's `/memfd:<name> (deleted)` (`simple_dname`). A file whose own
+    /// name ends in ` (deleted)` reads as an unlinked one: Linux's text does
+    /// not tell them apart, and neither does this one.
+    Path(Vec<u8>),
+    /// A text that does not begin with `/`: the name a kernel-internal file
+    /// system gives an object that has no path, through the file system's
+    /// `d_dname` and `dynamic_dname`, such as `pipe:[<inode>]`,
+    /// `socket:[<inode>]`, `anon_inode:[eventfd]` or `anon_inode:inotify`.
+    /// `dynamic_dname` refuses a name longer than `NAME_MAX - 1` (254) bytes,
+    /// so this text is never longer.
+    Anonymous(Vec<u8>),
+}
+
+/// Linux's `PATH_MAX` (`include/uapi/linux/limits.h`): `d_path`'s buffer in
+/// `do_proc_readlink`, whose last byte is the name's NUL.
+const PATH_MAX: usize = 4096;
+
+/// Linux's `NAME_MAX` (`include/uapi/linux/limits.h`): `dynamic_dname`'s
+/// bound on a name and its NUL.
+const NAME_MAX: usize = 255;
+
+impl LinkPath {
+    /// Classifies `text`, the bytes Linux's `readlink(2)` of one of a
+    /// thread's `/proc` links returns, as [`LinkPath`] describes: a text that
+    /// begins with `/` is a [`LinkPath::Path`], any other a
+    /// [`LinkPath::Anonymous`]. Returns `Err(FactError::Errno(EIO))` for
+    /// text that Linux never returns for such a link: an empty text, one
+    /// longer than `PATH_MAX - 1` bytes, one with a NUL byte, or an anonymous
+    /// name longer than `NAME_MAX - 1` bytes.
+    pub fn from_readlink(text: &[u8]) -> Result<Self, FactError> {
+        let malformed = Err(FactError::Errno(Errno::EIO));
+        if text.is_empty() || text.len() >= PATH_MAX || text.contains(&0) {
+            return malformed;
+        }
+        if text[0] == b'/' {
+            Ok(Self::Path(text.to_vec()))
+        } else if text.len() < NAME_MAX {
+            Ok(Self::Anonymous(text.to_vec()))
+        } else {
+            malformed
+        }
+    }
+
+    /// The link's text, whichever kind it is.
+    pub fn as_bytes(&self) -> &[u8] {
+        match self {
+            Self::Path(text) | Self::Anonymous(text) => text,
         }
     }
 }
@@ -980,5 +1067,136 @@ mod signal_sets_tests {
         assert_eq!(sets.caught, bit(libc::SIGTERM) | bit(libc::SIGRTMIN()));
         let text = serde_json::to_string(&sets).unwrap();
         assert_eq!(serde_json::from_str::<SignalSets>(&text).unwrap(), sets);
+    }
+}
+
+#[cfg(test)]
+mod link_path_tests {
+    use super::*;
+
+    const MALFORMED: Result<LinkPath, FactError> = Err(FactError::Errno(Errno::EIO));
+
+    /// A text that begins with `/` is a path, whatever follows: a file's
+    /// path, an unlinked file's, a memfd's and the root's.
+    #[test]
+    fn a_text_that_begins_with_a_slash_is_a_path() {
+        for text in [
+            &b"/tmp/work/regular"[..],
+            b"/tmp/work/deleted (deleted)",
+            b"/memfd:link-path (deleted)",
+            b"/dev/null",
+            b"/",
+            b"/ (deleted)",
+            b"/proc/4242/maps",
+            b"/dir with spaces/\xff\xfe not UTF-8",
+        ] {
+            assert_eq!(
+                LinkPath::from_readlink(text),
+                Ok(LinkPath::Path(text.to_vec())),
+                "{}",
+                String::from_utf8_lossy(text)
+            );
+        }
+    }
+
+    /// A text that does not begin with `/` is an object's anonymous name.
+    #[test]
+    fn a_text_that_does_not_begin_with_a_slash_is_anonymous() {
+        for text in [
+            &b"pipe:[4242]"[..],
+            b"socket:[18446744073709551615]",
+            b"anon_inode:[eventfd]",
+            b"anon_inode:[signalfd]",
+            b"anon_inode:inotify",
+            b"anon_inode:[pidfd]",
+            b"net:[4026531840]",
+        ] {
+            assert_eq!(
+                LinkPath::from_readlink(text),
+                Ok(LinkPath::Anonymous(text.to_vec())),
+                "{}",
+                String::from_utf8_lossy(text)
+            );
+        }
+    }
+
+    /// `d_path`'s whole text, ` (deleted)` included, fits in `PATH_MAX - 1`
+    /// bytes, and `dynamic_dname`'s in `NAME_MAX - 1`; a byte more is not
+    /// Linux's.
+    #[test]
+    fn the_bounds_are_linuxs() {
+        let longest = [b"/".as_slice(), &vec![b'a'; PATH_MAX - 2]].concat();
+        assert_eq!(longest.len(), 4095);
+        assert_eq!(
+            LinkPath::from_readlink(&longest),
+            Ok(LinkPath::Path(longest.clone()))
+        );
+        assert_eq!(
+            LinkPath::from_readlink(&[longest.as_slice(), b"a"].concat()),
+            MALFORMED
+        );
+        let deleted = [&vec![b'/'; PATH_MAX - 11], b" (deleted)".as_slice()].concat();
+        assert_eq!(deleted.len(), 4095);
+        assert!(matches!(
+            LinkPath::from_readlink(&deleted),
+            Ok(LinkPath::Path(_))
+        ));
+        let anonymous = [b"anon_inode:".as_slice(), &vec![b'x'; NAME_MAX - 12]].concat();
+        assert_eq!(anonymous.len(), 254);
+        assert_eq!(
+            LinkPath::from_readlink(&anonymous),
+            Ok(LinkPath::Anonymous(anonymous.clone()))
+        );
+        assert_eq!(
+            LinkPath::from_readlink(&[anonymous.as_slice(), b"x"].concat()),
+            MALFORMED
+        );
+    }
+
+    /// An empty text, and one with a NUL byte anywhere, are not Linux's.
+    #[test]
+    fn an_empty_text_or_a_nul_byte_is_malformed() {
+        for text in [
+            &b""[..],
+            b"\0",
+            b"/tmp\0/x",
+            b"/tmp/x\0",
+            b"pipe:[1]\0",
+            b"\0/tmp",
+        ] {
+            assert_eq!(LinkPath::from_readlink(text), MALFORMED, "{text:?}");
+        }
+    }
+
+    /// The text comes back whichever kind it is, and the fact survives a
+    /// tool's RPC, as the other facts do.
+    #[test]
+    fn the_text_comes_back_and_survives_a_round_trip() {
+        for link in [
+            LinkPath::from_readlink(b"/tmp/work/regular").unwrap(),
+            LinkPath::from_readlink(b"pipe:[7]").unwrap(),
+        ] {
+            let text = serde_json::to_string(&link).unwrap();
+            assert_eq!(serde_json::from_str::<LinkPath>(&text).unwrap(), link);
+        }
+        assert_eq!(
+            LinkPath::from_readlink(b"/tmp/work/regular")
+                .unwrap()
+                .as_bytes(),
+            b"/tmp/work/regular"
+        );
+        assert_eq!(
+            LinkPath::from_readlink(b"socket:[9]").unwrap().as_bytes(),
+            b"socket:[9]"
+        );
+        for link in [
+            PathLink::Descriptor(-1),
+            PathLink::Descriptor(3),
+            PathLink::Executable,
+            PathLink::WorkingDirectory,
+        ] {
+            let text = serde_json::to_string(&link).unwrap();
+            assert_eq!(serde_json::from_str::<PathLink>(&text).unwrap(), link);
+        }
     }
 }
