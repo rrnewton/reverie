@@ -10,7 +10,8 @@
 //!
 //! When `REVERIE_KVM_TIMER_TRACE_DIR` names a directory, each process appends
 //! one tab-separated line per preemption-timer notification, delivery and
-//! cancelled stepping window to `<dir>/kvmtimer-<pid>.tsv`, with one unbuffered
+//! cancelled stepping window to `<dir>/kvmtimer-<pid>-<monotonic ns>.tsv`, after a PROC line naming the
+//! process's arguments and working directory, with one unbuffered
 //! `write` per line. Without it, every hook is one `OnceLock` read. Nothing it
 //! records reaches the guest, the Tool or any log Hermit compares.
 
@@ -23,14 +24,28 @@ static SINK: OnceLock<Option<Mutex<std::fs::File>>> = OnceLock::new();
 fn sink() -> &'static Option<Mutex<std::fs::File>> {
     SINK.get_or_init(|| {
         let dir = std::env::var_os("REVERIE_KVM_TIMER_TRACE_DIR")?;
-        let path =
-            std::path::Path::new(&dir).join(format!("kvmtimer-{}.tsv", std::process::id()));
-        std::fs::OpenOptions::new()
+        // The process is often PID 1 of its own namespace, so the name also
+        // carries the host's monotonic clock at the first line.
+        let path = std::path::Path::new(&dir).join(format!(
+            "kvmtimer-{}-{}.tsv",
+            std::process::id(),
+            crate::preemption_timer::monotonic_ns()
+        ));
+        let mut file = std::fs::OpenOptions::new()
             .create(true)
             .append(true)
             .open(path)
-            .ok()
-            .map(Mutex::new)
+            .ok()?;
+        let args: Vec<String> = std::env::args().collect();
+        let cwd = std::env::current_dir().unwrap_or_default();
+        let _ = writeln!(
+            file,
+            "PROC\t{}\t{}\t{}",
+            std::process::id(),
+            cwd.display(),
+            args.join("\u{1f}")
+        );
+        Some(Mutex::new(file))
     })
 }
 
