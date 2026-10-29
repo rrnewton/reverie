@@ -642,6 +642,39 @@ impl AddressSpaceState {
         merged
     }
 
+    /// See [`GuestMemory::user_page_runs`].
+    fn user_page_runs(&self, start: u64, end: u64) -> Option<Vec<UserPageRun>> {
+        let page = PAGE_SIZE as u64;
+        if !start.is_multiple_of(page) || !end.is_multiple_of(page) || start > end {
+            return None;
+        }
+        if start == end {
+            return Some(Vec::new());
+        }
+        let physical = self
+            .translate(start, usize::try_from(end - start).ok()?)
+            .ok()?;
+        let first = physical / page;
+        let mut runs: Vec<UserPageRun> = Vec::new();
+        for (&number, &state) in self.pages.range(first..first + (end - start) / page) {
+            let user = start + (number - first) * page;
+            let kind = self.reservations.get(&number).copied();
+            let access = UserPageAccess::from(state);
+            match runs.last_mut() {
+                Some(run) if run.end == user && run.kind == kind && run.access == access => {
+                    run.end = user + page;
+                }
+                _ => runs.push(UserPageRun {
+                    start: user,
+                    end: user + page,
+                    kind,
+                    access,
+                }),
+            }
+        }
+        Some(runs)
+    }
+
     fn translate(&self, address: u64, length: usize) -> Result<u64> {
         if let Some(window) = self.windows.iter().find(|window| {
             window.contains_user(address) || (length == 0 && address == window.user_end)
@@ -1144,6 +1177,44 @@ impl Drop for PendingReservation {
 enum UserPageState {
     Accessible { writable: bool },
     NoAccess,
+}
+
+/// How a mapped user page may be accessed, as the address space records it:
+/// whether it is accessible, and whether it is writable. The record keeps no
+/// read permission apart from accessibility, and no execute permission.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum UserPageAccess {
+    /// Mapped, but no access is allowed (`PROT_NONE`).
+    NoAccess,
+    /// Accessible and not writable.
+    ReadOnly,
+    /// Accessible and writable.
+    ReadWrite,
+}
+
+impl From<UserPageState> for UserPageAccess {
+    fn from(state: UserPageState) -> Self {
+        match state {
+            UserPageState::NoAccess => Self::NoAccess,
+            UserPageState::Accessible { writable: false } => Self::ReadOnly,
+            UserPageState::Accessible { writable: true } => Self::ReadWrite,
+        }
+    }
+}
+
+/// A run of consecutive mapped user pages that have the same reservation and
+/// the same access, as [`GuestMemory::user_page_runs`] reports it.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct UserPageRun {
+    /// The user address of the run's first page.
+    pub start: u64,
+    /// The user address just past the run's last page.
+    pub end: u64,
+    /// What the run's pages were reserved for, or `None` for pages that have
+    /// no reservation.
+    pub kind: Option<RegionKind>,
+    /// How the run's pages may be accessed.
+    pub access: UserPageAccess,
 }
 
 // SAFETY: Mapping owns every mmap view until Drop, not a Rust reference.
@@ -1917,6 +1988,20 @@ impl GuestMemory {
             .lock()
             .expect("guest memory access map lock poisoned")
             .user_storable_ranges()
+    }
+
+    /// The mapped pages of the user range `[start, end)`, both page-aligned,
+    /// as maximal runs of consecutive pages that have the same reservation and
+    /// the same access, in address order, read under one acquisition of the
+    /// address space's lock. A page that is not mapped is in no run, and ends
+    /// the run before it. `None` when the range is not page-aligned or is not
+    /// one contiguous range of user addresses.
+    pub fn user_page_runs(&self, start: u64, end: u64) -> Option<Vec<UserPageRun>> {
+        self.mapping
+            .address_space
+            .lock()
+            .expect("guest memory access map lock poisoned")
+            .user_page_runs(start, end)
     }
 
     /// The physical address of the user range `[address, address + length)`,
@@ -5758,6 +5843,127 @@ mod tests {
         let mut bytes = [0; 16];
         memory.read_raw(8 * MIB, &mut bytes).unwrap();
         assert_eq!(bytes, [[2; 8], [3; 8]].concat()[..]);
+    }
+
+    /// The page runs of a user range: consecutive mapped pages with the same
+    /// reservation and access form one run, by user address, in the window as
+    /// in the identity addresses; a page with another reservation or access,
+    /// or an unmapped one, ends it. A range that is not page-aligned or not
+    /// one contiguous range of user addresses has none.
+    #[test]
+    fn user_page_runs_group_pages_by_reservation_and_access() {
+        const MIB: u64 = 1024 * 1024;
+        let page = PAGE_SIZE as u64;
+        let memory = GuestMemory::new(0, (16 * MIB) as usize).unwrap();
+        let window = memory.establish_user_stack_window(8 * MIB).unwrap();
+        let run = |start, end, kind, access| UserPageRun {
+            start,
+            end,
+            kind,
+            access,
+        };
+        // The window: four stack pages, the third made read-only, then an
+        // unmapped page, then two more stack pages and one of another kind.
+        memory
+            .reserve_region(8 * MIB, 8 * page, RegionKind::Stack)
+            .unwrap()
+            .commit();
+        memory.map_user_range(8 * MIB, 4 * page, false).unwrap();
+        memory
+            .map_user_permissions(8 * MIB + 2 * page, page, true, false)
+            .unwrap();
+        memory
+            .map_user_range(8 * MIB + 5 * page, 2 * page, false)
+            .unwrap();
+        memory
+            .reserve_region(8 * MIB + 7 * page, page, RegionKind::Mmap)
+            .unwrap()
+            .commit();
+        memory
+            .map_user_range(8 * MIB + 7 * page, page, true)
+            .unwrap();
+        use UserPageAccess::*;
+        assert_eq!(
+            memory.user_page_runs(window, window + 9 * page),
+            Some(vec![
+                run(
+                    window,
+                    window + 2 * page,
+                    Some(RegionKind::Stack),
+                    ReadWrite
+                ),
+                run(
+                    window + 2 * page,
+                    window + 3 * page,
+                    Some(RegionKind::Stack),
+                    ReadOnly
+                ),
+                run(
+                    window + 3 * page,
+                    window + 4 * page,
+                    Some(RegionKind::Stack),
+                    ReadWrite
+                ),
+                run(
+                    window + 5 * page,
+                    window + 7 * page,
+                    Some(RegionKind::Stack),
+                    ReadWrite
+                ),
+                run(
+                    window + 7 * page,
+                    window + 8 * page,
+                    Some(RegionKind::Mmap),
+                    NoAccess
+                ),
+            ])
+        );
+        // Part of the range, and the whole window.
+        assert_eq!(
+            memory.user_page_runs(window + page, window + 3 * page),
+            Some(vec![
+                run(
+                    window + page,
+                    window + 2 * page,
+                    Some(RegionKind::Stack),
+                    ReadWrite
+                ),
+                run(
+                    window + 2 * page,
+                    window + 3 * page,
+                    Some(RegionKind::Stack),
+                    ReadOnly
+                ),
+            ])
+        );
+        assert_eq!(
+            memory
+                .user_page_runs(window, USER_STACK_TOP)
+                .map(|runs| runs.len()),
+            Some(5)
+        );
+        // The identity addresses: a page mapped without a reservation of
+        // its own is reserved as `User`.
+        memory.map_user_range(page, page, false).unwrap();
+        assert_eq!(
+            memory.user_page_runs(0, 4 * page),
+            Some(vec![run(page, 2 * page, Some(RegionKind::User), ReadWrite)])
+        );
+        assert_eq!(memory.user_page_runs(page, page), Some(Vec::new()));
+        // Not page-aligned, reversed, or not one range of user addresses.
+        for (start, end) in [
+            (window + 1, window + page),
+            (window, window + page + 1),
+            (window + page, window),
+            (8 * MIB - page, 8 * MIB + page),
+            (USER_STACK_TOP - page, USER_STACK_TOP + page),
+        ] {
+            assert_eq!(
+                memory.user_page_runs(start, end),
+                None,
+                "{start:#x}..{end:#x}"
+            );
+        }
     }
 
     /// The stack window places the top of guest memory at the top of the user
