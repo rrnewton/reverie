@@ -66,6 +66,7 @@ use reverie_kvm_core::entry;
 use reverie_kvm_core::error_ext as error;
 use reverie_kvm_core::failure;
 use reverie_kvm_core::memory;
+use reverie_kvm_core::supervisor_thread;
 use reverie_kvm_core::syscall;
 use reverie_linuxemu::elf;
 use reverie_linuxemu::executor;
