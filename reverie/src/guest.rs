@@ -1247,6 +1247,57 @@ pub trait Guest<T: Tool>: Send + GlobalRPC<T::GlobalState> {
     fn signal_sets(&self, _tid: Pid) -> Result<crate::SignalSets, crate::FactError> {
         Err(crate::FactError::NotProvided)
     }
+
+    /// Returns what Linux's `readlink(2)` gives for the path link `link` of
+    /// thread `tid`, a live guest thread of this tool instance in any of its
+    /// processes: the name of the file one of its descriptors refers to, of
+    /// the file its process executes, or of its working directory, as its
+    /// `/proc/<pid>/task/<tid>/fd/<fd>`, `exe` and `cwd` show them to a reader
+    /// Linux lets read them; see [`crate::PathLink`] and [`crate::LinkPath`].
+    /// `tid` is numbered as [`Guest::tid`] numbers this thread.
+    ///
+    /// `Err(FactError::Errno(ESRCH))` means that `tid` names no live thread
+    /// the backend runs for this tool instance, exactly as for
+    /// [`Guest::signal_sets`]: a thread that has exited, reaped or not, a host
+    /// task that is not one of its guest threads, or a number no task has,
+    /// zero and below included. `Err(FactError::Errno(EBADF))` means that the
+    /// descriptor of a [`crate::PathLink::Descriptor`] is not open in the
+    /// thread's descriptor table, a negative number included (Linux's
+    /// `readlink` answers `ENOENT` there, as for any name `/proc` does not
+    /// have). Other errnos come from the backend's own read: for example
+    /// `ENAMETOOLONG`, Linux's answer for a name that does not fit in
+    /// `PATH_MAX` bytes. `Err(FactError::NotProvided)` means the backend does
+    /// not report this fact, for any link or for this one; it is the default,
+    /// for a backend that states nothing.
+    ///
+    /// The answer describes the moment of the call. This thread is stopped in
+    /// the callback, but other guest threads may run unless the tool keeps
+    /// them from it: a thread that shares the target's descriptor table can
+    /// close or replace the descriptor, and any file can be renamed or
+    /// unlinked. Linux renders a path from the root of the task that reads
+    /// the link, which here is the backend's reader: the guest's root unless
+    /// a guest thread changed its own.
+    ///
+    /// A backend whose guest threads are host tasks the tool may read
+    /// ([`crate::BackendCapabilities::host_task_reads_reach_guest_threads`])
+    /// reads the kernel's link of a thread it traces, through a handle on
+    /// that task taken while it traced it, so it reads no other task's link,
+    /// not even that of a task that took over the number of one it traced. A
+    /// backend that runs the guest's syscalls itself answers from the state
+    /// it keeps, with the differences from Linux that its documentation
+    /// names. Any other backend does not report it, because a host read there
+    /// would describe another task.
+    ///
+    /// Like [`Guest::descriptor_status`], the call is synchronous: the
+    /// backend reads state it reaches without running the guest or injecting
+    /// anything, while this thread stays stopped.
+    fn link_path(
+        &self,
+        _tid: Pid,
+        _link: crate::PathLink,
+    ) -> Result<crate::LinkPath, crate::FactError> {
+        Err(crate::FactError::NotProvided)
+    }
 }
 
 /// Wraps a `Guest<T>` such that it implements `Guest<U>`.
@@ -1568,5 +1619,13 @@ where
 
     fn signal_sets(&self, tid: Pid) -> Result<crate::SignalSets, crate::FactError> {
         self.inner.signal_sets(tid)
+    }
+
+    fn link_path(
+        &self,
+        tid: Pid,
+        link: crate::PathLink,
+    ) -> Result<crate::LinkPath, crate::FactError> {
+        self.inner.link_path(tid, link)
     }
 }
