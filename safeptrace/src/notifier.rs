@@ -9519,8 +9519,9 @@ mod test {
         assert!(first_exit.superseded_by_observed_exit_stop());
         assert!(!second_exit.superseded_by_observed_exit_stop());
 
-        // A second EXIT without Exec follows the existing FIFO route, which
-        // resets the publication rather than latching a false liveness claim.
+        // Known limitation: a second EXIT without Exec follows the FIFO
+        // route and is not detected by this query. These assertions pin
+        // existing behavior, not a desired property.
         event.update(PTRACE_EVENT_EXIT_STOP);
         assert_eq!(event.exit_epoch.load(Ordering::Acquire), 2);
         assert_eq!(event.exit_status.load(Ordering::Acquire), EXIT_PENDING);
