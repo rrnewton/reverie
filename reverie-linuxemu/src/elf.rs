@@ -58,8 +58,6 @@ pub(crate) mod parent_death;
 
 const PAGE_SIZE: u64 = 4096;
 pub(crate) const TASK_COMM_LEN: usize = 16;
-/// The fixed ELF64 layout also used by the ptrace tracee initializer.
-pub(crate) const LINUX_FIXED_PERSONALITY: u32 = 0x0004_0000;
 pub const STACK_LIMIT: u64 = 8 * 1024 * 1024;
 
 /// The PID-namespace init process seen by the deterministic container. The
@@ -2172,7 +2170,7 @@ fn load_executable(
         // must not change this.
         is_traced_tree_root: true,
         umask: launcher.umask,
-        linux_personality: LINUX_FIXED_PERSONALITY,
+        linux_personality: crate::credentials::guest_personality(launcher.personality),
         ids_per_task: reverie::task_ids::LINUX_IDS_PER_TASK,
         host_metadata_timestamps: false,
         tool_directory: None,
@@ -3190,6 +3188,10 @@ mod tests {
         );
         assert_eq!(loaded.credential_root, launcher.root);
         assert_eq!(loaded.umask, launcher.umask);
+        assert_eq!(
+            loaded.linux_personality,
+            crate::credentials::guest_personality(launcher.personality)
+        );
     }
 
     /// The initial stack follows Linux's exec layout at Linux's addresses, so

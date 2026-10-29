@@ -487,7 +487,7 @@ fn read_capability_data<M: GuestMemoryAccess<Error = crate::Error>>(
 
 pub(super) const PERSONALITY_UNAME26: u32 = 0x0002_0000;
 
-// TODO-HUMAN-REVIEW(PR-1013): Review the per-task fixed-layout personality profile.
+// TODO-HUMAN-REVIEW(PR-1013): Review the per-task personality profile.
 pub(super) fn personality(state: &mut LoadedStaticElf, raw: u64) -> i64 {
     // Linux's syscall argument is unsigned int, including its query sentinel.
     let requested = raw as u32;
@@ -495,13 +495,14 @@ pub(super) fn personality(state: &mut LoadedStaticElf, raw: u64) -> i64 {
     if requested == u32::MAX {
         return i64::from(previous);
     }
-    // Other execution domains or address-layout changes are not implemented.
-    // Refuse before publishing state rather than reporting a flag with no effect.
+    // The task's base is its starting personality (the launcher's, plus the
+    // layout bit); other execution domains or address-layout changes are not
+    // implemented. Refuse before publishing state rather than reporting a flag with no effect.
     // UNAME26 is kept and reported: its one effect in Linux is the release
     // `uname` reports, which the Tool decides (Detcore replaces the release on
     // every backend, ptrace's included). A run without a Tool sees the host's
     // release unchanged, unlike Linux, which reports `2.6.<60 + minor>`.
-    if requested & !PERSONALITY_UNAME26 != crate::elf::LINUX_FIXED_PERSONALITY {
+    if requested & !PERSONALITY_UNAME26 != previous & !PERSONALITY_UNAME26 {
         return negative_errno(libc::ENOSYS);
     }
     state.linux_personality = requested;

@@ -11,7 +11,7 @@
 //!
 //! A guest is a process its launcher spawns, so it starts with what a child
 //! of the launcher has after exec: the launcher's capability sets put through
-//! Linux's exec rule, and its umask. Its supplementary groups are the
+//! Linux's exec rule, its umask, and its personality. Its supplementary groups are the
 //! launcher's, answered by the host (`getgroups` in the executor). LinuxEmu
 //! changes no uid or gid (the Tool decides those calls), so whether the guest
 //! counts as root at a later exec is fixed by the launcher's ids.
@@ -72,6 +72,7 @@ pub struct LauncherCredentials {
     pub capabilities: CapabilitySets,
     pub root: RootIds,
     pub umask: libc::mode_t,
+    pub personality: u32,
 }
 
 impl LauncherCredentials {
@@ -96,6 +97,7 @@ impl LauncherCredentials {
                 real: unsafe { libc::getuid() } == 0,
             },
             umask: read_umask()?,
+            personality: read_personality()?,
         })
     }
 
@@ -189,6 +191,28 @@ fn read_capability_sets() -> std::io::Result<CapabilitySets> {
         bounding,
         ambient,
     })
+}
+
+/// The launching process's personality, queried as Linux queries it
+/// (`personality(0xffffffff)` in kernel/sys.c). A guest this process spawns
+/// inherits it, as a child process would.
+fn read_personality() -> std::io::Result<u32> {
+    // SAFETY: the query sentinel takes no pointer.
+    let result = unsafe { libc::personality(u32::MAX as libc::c_ulong) };
+    if result < 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(result as u32)
+}
+
+/// The personality a guest starts with: the launcher's, with
+/// ADDR_NO_RANDOMIZE set. LinuxEmu always places mappings at fixed
+/// addresses (its layout has no ASLR, as a traced guest's does under
+/// Reverie's launcher, which sets the same bit on the tracee), so that
+/// one bit is the layout LinuxEmu actually implements, not an inherited
+/// choice.
+pub fn guest_personality(launcher: u32) -> u32 {
+    launcher | libc::ADDR_NO_RANDOMIZE as u32
 }
 
 /// The umask from /proc/self/status, which reads it without the set and
@@ -302,6 +326,13 @@ mod tests {
         assert_eq!(
             credentials.umask,
             libc::mode_t::from_str_radix(umask.trim(), 8).unwrap()
+        );
+        // SAFETY: the query sentinel takes no pointer.
+        let personality = unsafe { libc::personality(u32::MAX as libc::c_ulong) };
+        assert_eq!(credentials.personality, personality as u32);
+        assert_eq!(
+            guest_personality(credentials.personality),
+            credentials.personality | libc::ADDR_NO_RANDOMIZE as u32
         );
         assert_eq!(
             credentials.capabilities.bounding & !capability_mask(),

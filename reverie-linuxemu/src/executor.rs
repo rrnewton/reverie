@@ -489,7 +489,7 @@ pub fn native_loaded_state(cwd: &std::path::Path) -> LoadedStaticElf {
         orphan_reaper_pid: Arc::new(AtomicI32::new(0)),
         is_traced_tree_root: true,
         umask: 0o022,
-        linux_personality: crate::elf::LINUX_FIXED_PERSONALITY,
+        linux_personality: libc::ADDR_NO_RANDOMIZE as u32,
         ids_per_task: reverie::task_ids::LINUX_IDS_PER_TASK,
         host_metadata_timestamps: false,
         tool_directory: None,
