@@ -624,6 +624,27 @@ thread where Linux shares it between threads created with `CLONE_FS`. A live
 thread of another process, and another thread's working directory, are not
 provided, where Linux shows them to a reader it lets read them.
 
+`Guest::memory_map` answers with part of the address space only, and says so
+(`MemoryMap::complete` is false). The executor keeps the address space as
+pages, each with what it was reserved for and whether it is accessible and
+writable, and keeps no list of mappings, no file identity for a mapped file's
+pages and no execute permission. So it lists the mappings it made that need no
+file identity: the stack window, which the loader maps whole at the top of the
+user address space (8 MiB, where Linux maps the stack's arguments and 128 KiB
+below them and grows the stack on demand), and the pages `brk(2)` added, each
+in runs of one access. The run that holds the image's initial stack pointer is
+`[stack]` and any other part of the window anonymous memory, and every run of
+the break's area is `[heap]`, as Linux names them. An accessible page is
+readable and a writable one writable, and no page is executable: a mapping the
+guest made executable, or writable or executable without `PROT_READ`, is listed
+as readable and not executable. The image and interpreter, which are mappings
+of files, the vDSO, every mapping `mmap(2)` made, pages of the break's area it
+replaced, and the executor's own pages are not listed. The map is read while
+the layout transaction every syscall that changes the address space holds is
+held, so no change is seen in part. It answers for any live thread of the asking
+thread's process, whose address space they share, and a live thread of another
+process is not provided, where Linux shows its map to a reader it lets read it.
+
 A Tool can reserve one empty host directory on a read-only file system for its
 own use (`KvmBackend::reserve_tool_directory`): the executor hides it from the
 guest, answering `ENOENT` for every route to it but an `O_DIRECTORY` open or a

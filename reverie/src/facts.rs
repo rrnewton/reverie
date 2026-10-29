@@ -113,8 +113,8 @@ pub struct DescriptorStatus {
     pub locks: Vec<HeldLockFact>,
 }
 
-/// What [`DescriptorStatus::from_fdinfo`] answers for text that is not
-/// Linux's `fdinfo` format.
+/// What [`DescriptorStatus::from_fdinfo`] and [`MemoryMap::from_maps`]
+/// answer for text that is not Linux's `fdinfo` or `maps` format.
 const MALFORMED: FactError = FactError::Errno(Errno::EIO);
 
 /// Why one `lock:` line was not accepted.
@@ -521,6 +521,338 @@ impl LinkPath {
             Self::Path(text) | Self::Anonymous(text) => text,
         }
     }
+}
+
+/// The mappings of a thread's address space, as Linux lists them in
+/// `/proc/<pid>/task/<tid>/maps` (`show_map_vma` in Linux's
+/// `fs/proc/task_mmu.c`), and whether the list is all of them: see
+/// [`Guest::memory_map`](crate::Guest::memory_map). Every thread of a process
+/// shares its address space, so every thread has the same list.
+#[derive(Clone, Debug, Eq, PartialEq, Hash, Serialize, Deserialize)]
+#[non_exhaustive]
+pub struct MemoryMap {
+    /// The mappings, in ascending order of address and not overlapping, as
+    /// Linux lists them: the address space's own mappings first, then the
+    /// kernel's gate area (such as x86-64's `[vsyscall]`), which lies above
+    /// them.
+    pub mappings: Vec<MappingFact>,
+    /// Whether [`mappings`](Self::mappings) is every mapping Linux lists for
+    /// the address space, each exactly as Linux lists it. When it is false the
+    /// list is part of the address space only: mappings that exist are
+    /// missing from it, and a listed mapping can differ from Linux's in what
+    /// the backend does not keep. The backend's documentation names both, and
+    /// a tool that renders `maps` from a list that is not complete renders
+    /// something that is not Linux's file.
+    pub complete: bool,
+}
+
+/// One mapping of an address space, as Linux prints it on one line of
+/// `maps` (`show_map_vma` and `show_vma_header_prefix` in Linux's
+/// `fs/proc/task_mmu.c`): its range, its permissions, the file offset it
+/// starts at, and what backs it, which decides the device, the inode and the
+/// name Linux prints.
+#[derive(Clone, Debug, Eq, PartialEq, Hash, Serialize, Deserialize)]
+#[non_exhaustive]
+pub struct MappingFact {
+    /// The first address of the mapping, page-aligned (`vm_start`).
+    pub start: u64,
+    /// The address just past the mapping, page-aligned and above
+    /// [`start`](Self::start) (`vm_end`).
+    pub end: u64,
+    /// The access the mapping allows, as `PROT_READ`, `PROT_WRITE` and
+    /// `PROT_EXEC` bits (`libc`'s values, 1, 2 and 4) and no other: the first
+    /// three permission columns, which Linux prints from the mapping's
+    /// `VM_READ`, `VM_WRITE` and `VM_EXEC` flags. Linux keeps them apart, so a
+    /// mapping can be writable or executable without being readable, as
+    /// `mprotect(2)` leaves it.
+    pub prot: u32,
+    /// Whether the mapping was made shared, with `MAP_SHARED`
+    /// (`VM_MAYSHARE`), which Linux prints as `s` in the last permission
+    /// column; `p` (false) for a private one. A shared mapping of a file opened
+    /// read-only is shared too.
+    pub shared: bool,
+    /// For a mapping of a file ([`MappingBacking::File`] or
+    /// [`MappingBacking::NamedSharedAnonymous`]), the offset in the file of
+    /// the mapping's first byte (`vm_pgoff << PAGE_SHIFT`), a multiple of the
+    /// page size; zero for any other mapping, as Linux prints it.
+    pub offset: u64,
+    /// What backs the mapping, and the name Linux prints for it.
+    pub backing: MappingBacking,
+}
+
+impl MappingFact {
+    /// A mapping with these fields, in the order Linux prints them.
+    pub fn new(
+        start: u64,
+        end: u64,
+        prot: u32,
+        shared: bool,
+        offset: u64,
+        backing: MappingBacking,
+    ) -> Self {
+        Self {
+            start,
+            end,
+            prot,
+            shared,
+            offset,
+            backing,
+        }
+    }
+}
+
+/// What backs one mapping of an address space, and the name Linux prints for
+/// it after the inode column of `maps` (`get_vma_name` in Linux's
+/// `fs/proc/task_mmu.c`). A mapping of a file names the file, or for named
+/// shared anonymous memory its name; Linux prints the file's device and inode
+/// beside it. Any other mapping is backed by no file, and Linux prints device
+/// `00:00` and inode `0` beside the name the kernel gives it, or no name.
+#[derive(Clone, Debug, Eq, PartialEq, Hash, Serialize, Deserialize)]
+#[non_exhaustive]
+pub enum MappingBacking {
+    /// Memory backed by no file that has no name: nothing follows the inode
+    /// column.
+    Anonymous,
+    /// `[stack]`: the mapping that holds the address the process's first
+    /// thread started its stack at (`mm->start_stack`), counting a mapping
+    /// that ends or starts at that address (`vma_is_initial_stack` in Linux's
+    /// `include/linux/mm.h`). The parts `mprotect(2)` splits from it are
+    /// [`MappingBacking::Anonymous`]. Other threads' stacks are named only as
+    /// the memory they were made of.
+    Stack,
+    /// `[heap]`: a mapping that overlaps the program break's area, the
+    /// addresses from the initial break (`mm->start_brk`) to the current one
+    /// (`mm->brk`), both excluded (`vma_is_initial_heap`): the memory `brk(2)`
+    /// added, or each part of it that `mprotect(2)` split off. Linux names it
+    /// before any name `prctl(2)` gave it.
+    Heap,
+    /// `[vdso]`: the kernel's virtual dynamic shared object.
+    Vdso,
+    /// `[vvar]`: the data pages the vDSO reads.
+    Vvar,
+    /// `[anon:<name>]`: anonymous memory that a process named with
+    /// `prctl(PR_SET_VMA, PR_SET_VMA_ANON_NAME)`. The name, without `[anon:`
+    /// and `]`, is at most 79 printable ASCII bytes, without `\`, `` ` ``,
+    /// `$`, `[` or `]`, and may be empty (`set_anon_vma_name` in Linux's
+    /// `mm/madvise.c`).
+    NamedAnonymous(Vec<u8>),
+    /// Another name the kernel gives a mapping of its own, as Linux prints
+    /// it, brackets included: the mapping's `vm_ops->name`, such as
+    /// `[vvar_vclock]`, `[vsyscall]` or `[uprobes]`. Never one of the names
+    /// above, nor a name that begins `[anon:` or `[anon_shmem:`.
+    Special(Vec<u8>),
+    /// A file, such as an executable's segment or a file mapped with
+    /// `mmap(2)`, a memfd included, and shared anonymous memory, which Linux
+    /// backs with a file of its own (`/dev/zero (deleted)`).
+    File {
+        /// The device of the file's file system, as Linux prints it (the
+        /// superblock's device number, `i_sb->s_dev`), encoded as
+        /// `libc::makedev` encodes it. On btrfs this need not be the file's
+        /// `st_dev`, which names its subvolume.
+        raw_device: u64,
+        /// The file's inode number.
+        raw_inode: u64,
+        /// The file's name, as Linux prints it: `d_path`'s text from the
+        /// reader's root (` (deleted)` included once the file is unlinked, or
+        /// a name such as `anon_inode:[perf_event]` for a file with no path),
+        /// with every newline written as the four characters `\012`
+        /// (`seq_path`'s escape), so the text holds no newline. Never empty.
+        path: Vec<u8>,
+    },
+    /// `[anon_shmem:<name>]`: shared anonymous memory (`MAP_SHARED |
+    /// MAP_ANONYMOUS`) that a process named as for
+    /// [`MappingBacking::NamedAnonymous`], whose name Linux prints in place
+    /// of its file's path.
+    NamedSharedAnonymous {
+        /// The device of the memory's file, as for [`MappingBacking::File`].
+        raw_device: u64,
+        /// The inode number of the memory's file.
+        raw_inode: u64,
+        /// The name, without `[anon_shmem:` and `]`, as for
+        /// [`MappingBacking::NamedAnonymous`].
+        name: Vec<u8>,
+    },
+}
+
+impl MemoryMap {
+    /// A list of `mappings`, [`complete`](Self::complete) or not.
+    pub fn new(mappings: Vec<MappingFact>, complete: bool) -> Self {
+        Self { mappings, complete }
+    }
+
+    /// Parses the whole text Linux prints in a thread's `maps`, accepting
+    /// exactly what Linux prints, into a complete list. Each line is
+    /// `show_vma_header_prefix`'s `%08lx-%08lx`, the four permission
+    /// characters, `%08llx` for the offset, `%02x:%02x` for the device and
+    /// `%llu` for the inode, each followed by a space, then for a mapping
+    /// with a name the spaces `seq_pad` adds to fill the line to 72 columns,
+    /// one more space and the name, and a newline (`show_map_vma` in Linux's
+    /// `fs/proc/task_mmu.c`). The numbers must have Linux's digits, case and
+    /// padding, no name may begin with a space, and the mappings must be
+    /// page-aligned, non-empty, ascending and apart, with no offset for a
+    /// mapping of no file. An empty text, the file of a thread that has no
+    /// address space left, is an empty list.
+    ///
+    /// The name decides the backing. With a device and inode of zero there
+    /// is no file, and the name is none, a name the kernel gives a mapping of
+    /// its own, or `[anon:<name>]`; with a device there is a file, and the
+    /// name is its path or `[anon_shmem:<name>]`. Returns
+    /// `Err(FactError::Errno(EIO))` for text that is not Linux's format,
+    /// which includes a name in brackets that no backing above can have.
+    pub fn from_maps(text: &[u8]) -> Result<Self, FactError> {
+        let mut mappings: Vec<MappingFact> = Vec::new();
+        if !text.is_empty() {
+            let body = text.strip_suffix(b"\n").ok_or(MALFORMED)?;
+            for line in body.split(|byte| *byte == b'\n') {
+                let mapping = parse_mapping(line).ok_or(MALFORMED)?;
+                if mappings
+                    .last()
+                    .is_some_and(|previous| mapping.start < previous.end)
+                {
+                    return Err(MALFORMED);
+                }
+                mappings.push(mapping);
+            }
+        }
+        Ok(Self::new(mappings, true))
+    }
+}
+
+/// The width `show_vma_header_prefix` pads a line to before a name, with
+/// `seq_setwidth(m, 25 + sizeof(void *) * 6 - 1)` on a 64-bit kernel.
+const MAPS_NAME_COLUMN: usize = 25 + 8 * 6 - 1;
+
+/// The page size every mapping's range and every file offset is a multiple
+/// of: x86-64's, and the least page size of any Linux architecture Reverie
+/// supports.
+const MAPS_PAGE_SIZE: u64 = 4096;
+
+/// The longest name `prctl(PR_SET_VMA, PR_SET_VMA_ANON_NAME)` accepts:
+/// `ANON_VMA_NAME_MAX_LEN`, 80 bytes, less the NUL.
+const ANON_NAME_MAX: usize = 79;
+
+/// One line of `maps`, without its newline: see [`MemoryMap::from_maps`].
+/// `None` for a line that is not Linux's.
+fn parse_mapping(line: &[u8]) -> Option<MappingFact> {
+    let (range, rest) = split_at_byte(line, b' ')?;
+    let (start, end) = split_at_byte(range, b'-')?;
+    let (start, end) = (exact_hex_at_least(start, 8)?, exact_hex_at_least(end, 8)?);
+    let (permissions, rest) = split_at_byte(rest, b' ')?;
+    let (offset, rest) = split_at_byte(rest, b' ')?;
+    let offset = exact_hex_at_least(offset, 8)?;
+    let (device, rest) = split_at_byte(rest, b' ')?;
+    let (major, minor) = split_at_byte(device, b':')?;
+    let major = exact_hex_02(std::str::from_utf8(major).ok()?, 0xfff)?;
+    let minor = exact_hex_02(std::str::from_utf8(minor).ok()?, 0xf_ffff)?;
+    let (inode, rest) = split_at_byte(rest, b' ')?;
+    let inode = exact_decimal::<u64>(inode)?;
+    // `seq_pad` fills the line to the name column, then adds one space. No
+    // name Linux prints begins with a space: a path begins with `/`, and any
+    // other name with a letter or `[`.
+    let name = if rest.is_empty() {
+        None
+    } else {
+        let padding = MAPS_NAME_COLUMN.saturating_sub(line.len() - rest.len()) + 1;
+        let name = rest
+            .get(padding..)
+            .filter(|name| name.first().is_some_and(|first| *first != b' '))?;
+        if !rest[..padding].iter().all(|byte| *byte == b' ') {
+            return None;
+        }
+        Some(name)
+    };
+    let bit = |column: u8, set: u8, bit: i32| if column == set { bit as u32 } else { 0 };
+    let prot = match *permissions {
+        [
+            read @ (b'r' | b'-'),
+            write @ (b'w' | b'-'),
+            execute @ (b'x' | b'-'),
+            b's' | b'p',
+        ] => {
+            bit(read, b'r', libc::PROT_READ)
+                | bit(write, b'w', libc::PROT_WRITE)
+                | bit(execute, b'x', libc::PROT_EXEC)
+        }
+        _ => return None,
+    };
+    let shared = permissions[3] == b's';
+    if start % MAPS_PAGE_SIZE != 0 || end % MAPS_PAGE_SIZE != 0 || start >= end {
+        return None;
+    }
+    if offset % MAPS_PAGE_SIZE != 0 {
+        return None;
+    }
+    let backing = if (major, minor) == (0, 0) {
+        // No file: no offset, no inode.
+        if inode != 0 || offset != 0 {
+            return None;
+        }
+        unfiled_backing(name)?
+    } else {
+        let raw_device = libc::makedev(major, minor);
+        match name? {
+            name if name.starts_with(b"[") => MappingBacking::NamedSharedAnonymous {
+                raw_device,
+                raw_inode: inode,
+                name: anon_name(name, b"[anon_shmem:")?,
+            },
+            path => MappingBacking::File {
+                raw_device,
+                raw_inode: inode,
+                path: path.to_vec(),
+            },
+        }
+    };
+    Some(MappingFact::new(start, end, prot, shared, offset, backing))
+}
+
+/// The backing of a mapping of no file with name `name`, which
+/// `get_vma_name` gives in this order: the mapping's `vm_ops->name`, `[vdso]`
+/// for the gate area of a kernel that has no other name for it, `[heap]`,
+/// `[stack]`, then `[anon:<name>]`. Every such name the kernel gives is in
+/// brackets.
+fn unfiled_backing(name: Option<&[u8]>) -> Option<MappingBacking> {
+    let Some(name) = name else {
+        return Some(MappingBacking::Anonymous);
+    };
+    Some(match name {
+        b"[heap]" => MappingBacking::Heap,
+        b"[stack]" => MappingBacking::Stack,
+        b"[vdso]" => MappingBacking::Vdso,
+        b"[vvar]" => MappingBacking::Vvar,
+        _ if name.starts_with(b"[anon:") => {
+            MappingBacking::NamedAnonymous(anon_name(name, b"[anon:")?)
+        }
+        // Only memory backed by a file can carry this name.
+        _ if name.starts_with(b"[anon_shmem:") => return None,
+        [b'[', .., b']'] => MappingBacking::Special(name.to_vec()),
+        _ => return None,
+    })
+}
+
+/// The name in `text`, which must be `prefix`, a name
+/// `prctl(PR_SET_VMA, PR_SET_VMA_ANON_NAME)` accepts, and `]`.
+fn anon_name(text: &[u8], prefix: &[u8]) -> Option<Vec<u8>> {
+    let name = text.strip_prefix(prefix)?.strip_suffix(b"]")?;
+    // `is_valid_name_char`: printable ASCII but for `\`, `` ` ``, `$`, `[`
+    // and `]`.
+    let valid = |byte: &u8| (0x20..0x7f).contains(byte) && !b"\\`$[]".contains(byte);
+    (name.len() <= ANON_NAME_MAX && name.iter().all(valid)).then(|| name.to_vec())
+}
+
+/// `text` split at the first `separator`, which belongs to neither part.
+fn split_at_byte(text: &[u8], separator: u8) -> Option<(&[u8], &[u8])> {
+    let at = text.iter().position(|byte| *byte == separator)?;
+    Some((&text[..at], &text[at + 1..]))
+}
+
+/// `seq_put_hex_ll` with a minimum width of `width`: lowercase hexadecimal
+/// digits, zero-padded to `width` and no further. The text must be the
+/// value printed that way, so a sign, a capital or a digit too many is not
+/// accepted.
+fn exact_hex_at_least(text: &[u8], width: usize) -> Option<u64> {
+    let value = u64::from_str_radix(std::str::from_utf8(text).ok()?, 16).ok()?;
+    (format!("{value:0width$x}").as_bytes() == text).then_some(value)
 }
 
 #[cfg(test)]
@@ -1198,5 +1530,527 @@ mod link_path_tests {
             let text = serde_json::to_string(&link).unwrap();
             assert_eq!(serde_json::from_str::<PathLink>(&text).unwrap(), link);
         }
+    }
+}
+
+#[cfg(test)]
+mod memory_map_tests {
+    use super::*;
+
+    const MALFORMED: Result<MemoryMap, FactError> = Err(FactError::Errno(Errno::EIO));
+    const RW: u32 = (libc::PROT_READ | libc::PROT_WRITE) as u32;
+
+    /// `map` as Linux's `show_map_vma` prints it, written here from Linux's
+    /// rules independently of the parser, so that a text the parser read
+    /// can be printed again and compared byte for byte.
+    fn render(map: &MemoryMap) -> Vec<u8> {
+        let mut text = Vec::new();
+        for mapping in &map.mappings {
+            let (device, inode) = match &mapping.backing {
+                MappingBacking::File {
+                    raw_device,
+                    raw_inode,
+                    ..
+                }
+                | MappingBacking::NamedSharedAnonymous {
+                    raw_device,
+                    raw_inode,
+                    ..
+                } => (*raw_device, *raw_inode),
+                _ => (0, 0),
+            };
+            let bit = |bit: i32, set: char| {
+                if mapping.prot & bit as u32 != 0 {
+                    set
+                } else {
+                    '-'
+                }
+            };
+            let header = format!(
+                "{:08x}-{:08x} {}{}{}{} {:08x} {:02x}:{:02x} {} ",
+                mapping.start,
+                mapping.end,
+                bit(libc::PROT_READ, 'r'),
+                bit(libc::PROT_WRITE, 'w'),
+                bit(libc::PROT_EXEC, 'x'),
+                if mapping.shared { 's' } else { 'p' },
+                mapping.offset,
+                libc::major(device),
+                libc::minor(device),
+                inode,
+            );
+            let name: Option<Vec<u8>> = match &mapping.backing {
+                MappingBacking::Anonymous => None,
+                MappingBacking::Stack => Some(b"[stack]".to_vec()),
+                MappingBacking::Heap => Some(b"[heap]".to_vec()),
+                MappingBacking::Vdso => Some(b"[vdso]".to_vec()),
+                MappingBacking::Vvar => Some(b"[vvar]".to_vec()),
+                MappingBacking::NamedAnonymous(name) => {
+                    Some([b"[anon:".as_slice(), name, b"]"].concat())
+                }
+                MappingBacking::Special(name) => Some(name.clone()),
+                MappingBacking::File { path, .. } => Some(path.clone()),
+                MappingBacking::NamedSharedAnonymous { name, .. } => {
+                    Some([b"[anon_shmem:".as_slice(), name, b"]"].concat())
+                }
+            };
+            text.extend_from_slice(header.as_bytes());
+            if let Some(name) = name {
+                // `seq_pad`: spaces to column 72, then one more.
+                text.resize(text.len() + 72usize.saturating_sub(header.len()) + 1, b' ');
+                text.extend_from_slice(&name);
+            }
+            text.push(b'\n');
+        }
+        text
+    }
+
+    fn mapping(start: u64, end: u64, prot: u32, backing: MappingBacking) -> MappingFact {
+        MappingFact::new(start, end, prot, false, 0, backing)
+    }
+
+    fn file(raw_device: u64, raw_inode: u64, path: &[u8]) -> MappingBacking {
+        MappingBacking::File {
+            raw_device,
+            raw_inode,
+            path: path.to_vec(),
+        }
+    }
+
+    /// The text of one line, parsed alone.
+    fn line(text: &str) -> Result<MappingFact, FactError> {
+        let map = MemoryMap::from_maps(format!("{text}\n").as_bytes())?;
+        assert!(map.complete);
+        assert_eq!(map.mappings.len(), 1, "{map:?}");
+        Ok(map.mappings[0].clone())
+    }
+
+    /// The maps of a real process: a child of this test, forked so that its
+    /// address space is this one's and stopped so that nothing changes it
+    /// while it is read. The text the kernel printed parses, every line of
+    /// it, and prints again to the same bytes; it has the kernel's own
+    /// names, among them the stack, the vDSO's pages and x86-64's
+    /// `[vsyscall]`, which lies above the rest.
+    #[test]
+    fn a_real_maps_text_parses_and_prints_again_byte_for_byte() {
+        // SAFETY: the child only pauses until it is killed.
+        let child = unsafe { libc::fork() };
+        if child == 0 {
+            loop {
+                // SAFETY: pause takes no arguments.
+                unsafe { libc::pause() };
+            }
+        }
+        assert!(child > 0, "{}", std::io::Error::last_os_error());
+        let text = std::fs::read(format!("/proc/{child}/maps"));
+        // SAFETY: the child is this process's own and not reaped.
+        unsafe { libc::kill(child, libc::SIGKILL) };
+        let mut status = 0;
+        // SAFETY: status is writable.
+        assert_eq!(unsafe { libc::waitpid(child, &mut status, 0) }, child);
+        let text = text.unwrap();
+        let map = MemoryMap::from_maps(&text).unwrap();
+        assert!(map.complete);
+        assert_eq!(map.mappings.len(), text.split(|b| *b == b'\n').count() - 1);
+        assert_eq!(
+            String::from_utf8_lossy(&render(&map)),
+            String::from_utf8_lossy(&text)
+        );
+        let names: Vec<&MappingBacking> = map.mappings.iter().map(|m| &m.backing).collect();
+        assert!(names.contains(&&MappingBacking::Stack), "{map:?}");
+        assert!(names.contains(&&MappingBacking::Vdso), "{map:?}");
+        assert!(
+            names
+                .iter()
+                .any(|backing| matches!(backing, MappingBacking::File { .. })),
+            "{map:?}"
+        );
+        #[cfg(target_arch = "x86_64")]
+        if let Some(last) = map.mappings.last().filter(|last| last.start >> 63 != 0) {
+            assert_eq!(
+                last.backing,
+                MappingBacking::Special(b"[vsyscall]".to_vec())
+            );
+        }
+    }
+
+    /// Each backing, from the name and the device and inode beside it.
+    #[test]
+    fn each_backing_is_read_from_its_name() {
+        for (text, backing) in [
+            (
+                "7f7110fde000-7f7111000000 rw-p 00000000 00:00 0 ",
+                MappingBacking::Anonymous,
+            ),
+            (
+                "557afa72f000-557afa750000 rw-p 00000000 00:00 0                          [heap]",
+                MappingBacking::Heap,
+            ),
+            (
+                "7ffe3ffa4000-7ffe3ffc8000 rw-p 00000000 00:00 0                          [stack]",
+                MappingBacking::Stack,
+            ),
+            (
+                "7f711128f000-7f7111291000 r-xp 00000000 00:00 0                          [vdso]",
+                MappingBacking::Vdso,
+            ),
+            (
+                "7f7111289000-7f711128d000 r--p 00000000 00:00 0                          [vvar]",
+                MappingBacking::Vvar,
+            ),
+            (
+                "7f711128d000-7f711128f000 r--p 00000000 00:00 0                          [vvar_vclock]",
+                MappingBacking::Special(b"[vvar_vclock]".to_vec()),
+            ),
+            (
+                "7fffffffe000-7ffffffff000 r-xp 00000000 00:00 0                          [uprobes]",
+                MappingBacking::Special(b"[uprobes]".to_vec()),
+            ),
+            (
+                "7f0000000000-7f0000001000 rw-p 00000000 00:00 0                          [anon:glibc: malloc arena]",
+                MappingBacking::NamedAnonymous(b"glibc: malloc arena".to_vec()),
+            ),
+            (
+                "7f0000000000-7f0000001000 rw-p 00000000 00:00 0                          [anon:]",
+                MappingBacking::NamedAnonymous(Vec::new()),
+            ),
+            (
+                "557afa725000-557afa727000 r--p 00000000 00:20 100490                     /usr/bin/cat",
+                file(libc::makedev(0, 0x20), 100490, b"/usr/bin/cat"),
+            ),
+            (
+                "7f0000000000-7f0000002000 rw-s 00000000 00:01 4242                       /dev/zero (deleted)",
+                file(libc::makedev(0, 1), 4242, b"/dev/zero (deleted)"),
+            ),
+            (
+                "7f0000000000-7f0000002000 rw-s 00000000 00:01 4243                       /memfd:maps (deleted)",
+                file(libc::makedev(0, 1), 4243, b"/memfd:maps (deleted)"),
+            ),
+            (
+                "7f0000000000-7f0000009000 rw-s 00000000 00:0f 1057                       anon_inode:[perf_event]",
+                file(libc::makedev(0, 0xf), 1057, b"anon_inode:[perf_event]"),
+            ),
+            (
+                "7f0000000000-7f0000001000 r--p 00000000 08:03 555                        /tmp/a\\012b",
+                file(libc::makedev(8, 3), 555, b"/tmp/a\\012b"),
+            ),
+            (
+                "7f0000000000-7f0000001000 r--p 00000000 08:03 555                        / with  spaces ",
+                file(libc::makedev(8, 3), 555, b"/ with  spaces "),
+            ),
+            (
+                "7f0000000000-7f0000002000 rw-s 00000000 00:01 4244                       [anon_shmem:shared name]",
+                MappingBacking::NamedSharedAnonymous {
+                    raw_device: libc::makedev(0, 1),
+                    raw_inode: 4244,
+                    name: b"shared name".to_vec(),
+                },
+            ),
+        ] {
+            assert_eq!(line(text).map(|m| m.backing), Ok(backing), "{text}");
+        }
+        assert_eq!(
+            line(
+                "ffffffffff600000-ffffffffff601000 --xp 00000000 00:00 0                  [vsyscall]"
+            ),
+            Ok(mapping(
+                0xffff_ffff_ff60_0000,
+                0xffff_ffff_ff60_1000,
+                libc::PROT_EXEC as u32,
+                MappingBacking::Special(b"[vsyscall]".to_vec())
+            ))
+        );
+    }
+
+    /// The range, permissions, offset, device and inode, at every width
+    /// Linux prints them.
+    #[test]
+    fn every_column_is_read_at_every_width() {
+        assert_eq!(
+            line("00400000-00401000 r-xp 00000000 08:03 12                                 /bin/x"),
+            Ok(MappingFact::new(
+                0x40_0000,
+                0x40_1000,
+                (libc::PROT_READ | libc::PROT_EXEC) as u32,
+                false,
+                0,
+                file(libc::makedev(8, 3), 12, b"/bin/x")
+            ))
+        );
+        // Every permission column, and a shared mapping.
+        for (permissions, prot, shared) in [
+            ("---p", 0, false),
+            ("r--p", libc::PROT_READ, false),
+            ("-w-p", libc::PROT_WRITE, false),
+            ("--xp", libc::PROT_EXEC, false),
+            (
+                "rwxp",
+                libc::PROT_READ | libc::PROT_WRITE | libc::PROT_EXEC,
+                false,
+            ),
+            ("rw-s", libc::PROT_READ | libc::PROT_WRITE, true),
+            ("r--s", libc::PROT_READ, true),
+            ("---s", 0, true),
+        ] {
+            let parsed = line(&format!(
+                "00001000-00002000 {permissions} 00000000 00:00 0 "
+            ))
+            .unwrap();
+            assert_eq!(
+                (parsed.prot, parsed.shared),
+                (prot as u32, shared),
+                "{permissions}"
+            );
+        }
+        // An offset of more than eight digits, a 12-bit major and a 20-bit
+        // minor, and a 64-bit inode: a header longer than the name column,
+        // which `seq_pad` follows with one space.
+        assert_eq!(
+            line(
+                "7f0000000000-7f0000001000 r--s 7ffffffffffff000 fff:fffff 18446744073709551615  /f"
+            ),
+            Ok(MappingFact::new(
+                0x7f00_0000_0000,
+                0x7f00_0000_1000,
+                libc::PROT_READ as u32,
+                true,
+                0x7fff_ffff_ffff_f000,
+                file(libc::makedev(0xfff, 0xfffff), u64::MAX, b"/f")
+            ))
+        );
+        // The lowest range Linux can print and a range at the top of the
+        // address space.
+        assert_eq!(
+            line("00000000-00001000 r--p 00000000 00:00 0 ").map(|m| (m.start, m.end)),
+            Ok((0, 0x1000))
+        );
+        assert_eq!(
+            line("fffffffffffff000-ffffffffffffffff r--p 00000000 00:00 0 ")
+                .map(|m| (m.start, m.end)),
+            MALFORMED.map(|_| (0, 0))
+        );
+    }
+
+    /// The name follows exactly the spaces `seq_pad` adds after the header,
+    /// whose last column is a space: up to column 72, then one more; after a
+    /// header of 72 columns or more, the one alone. A name never begins with
+    /// a space, so one space too many is refused, not read as the name's.
+    #[test]
+    fn the_name_is_at_linuxs_column() {
+        // A header of 48 columns: 24 spaces to column 72, then one.
+        let header = "7ffe3ffa4000-7ffe3ffc8000 rw-p 00000000 00:00 0 ";
+        assert_eq!(header.len(), 48);
+        for spaces in [0, 1, 23, 24, 26, 30] {
+            assert_eq!(
+                MemoryMap::from_maps(format!("{header}{}[stack]\n", " ".repeat(spaces)).as_bytes()),
+                MALFORMED,
+                "{spaces}"
+            );
+        }
+        assert!(
+            MemoryMap::from_maps(format!("{header}{}[stack]\n", " ".repeat(25)).as_bytes()).is_ok()
+        );
+        // A header of 71 columns needs two spaces, of 72 one, of 73 one.
+        for (inode, columns, spaces) in [
+            ("1234567890123456", 71, 2),
+            ("12345678901234567", 72, 1),
+            ("123456789012345678", 73, 1),
+        ] {
+            let header = format!("7f0000000000-7f0000001000 r--s 7ffffffffffff000 08:03 {inode} ");
+            assert_eq!(header.len(), columns);
+            let text = format!("{header}{}/f\n", " ".repeat(spaces));
+            assert!(MemoryMap::from_maps(text.as_bytes()).is_ok(), "{text}");
+            for wrong in [spaces - 1, spaces + 1] {
+                let text = format!("{header}{}/f\n", " ".repeat(wrong));
+                assert_eq!(MemoryMap::from_maps(text.as_bytes()), MALFORMED, "{text}");
+            }
+        }
+        // A tab is not a space.
+        assert_eq!(
+            MemoryMap::from_maps(format!("{header}{}\t[stack]\n", " ".repeat(24)).as_bytes()),
+            MALFORMED
+        );
+    }
+
+    /// Ranges are page-aligned and not empty, and mappings ascend without
+    /// overlapping; adjacent ones may touch. An empty text is an empty list.
+    #[test]
+    fn mappings_ascend_apart_and_an_empty_text_is_an_empty_map() {
+        assert_eq!(
+            MemoryMap::from_maps(b""),
+            Ok(MemoryMap::new(Vec::new(), true))
+        );
+        let a = "00400000-00401000 r--p 00000000 00:00 0 \n";
+        let b = "00401000-00402000 rw-p 00000000 00:00 0 \n";
+        let c = "00400800-00403000 rw-p 00000000 00:00 0 \n";
+        let d = "00400000-00401000 r--p 00000000 00:00 0 \n";
+        let map = MemoryMap::from_maps(format!("{a}{b}").as_bytes()).unwrap();
+        assert_eq!(
+            map.mappings,
+            [
+                mapping(
+                    0x40_0000,
+                    0x40_1000,
+                    libc::PROT_READ as u32,
+                    MappingBacking::Anonymous
+                ),
+                mapping(0x40_1000, 0x40_2000, RW, MappingBacking::Anonymous),
+            ]
+        );
+        for text in [format!("{b}{a}"), format!("{a}{c}"), format!("{a}{d}")] {
+            assert_eq!(MemoryMap::from_maps(text.as_bytes()), MALFORMED, "{text}");
+        }
+    }
+
+    /// Text that is not Linux's: each line differs from one Linux prints in
+    /// one way.
+    #[test]
+    fn malformed_maps_are_refused() {
+        for text in [
+            // The range: `%08lx-%08lx`, lowercase, page-aligned, not empty.
+            "0400000-00401000 r--p 00000000 00:00 0 ",
+            "00400000-0401000 r--p 00000000 00:00 0 ",
+            "000400000-00401000 r--p 00000000 00:00 0 ",
+            "0000000000400000-00401000 r--p 00000000 00:00 0 ",
+            "00400000-00401000  r--p 00000000 00:00 0 ",
+            "7F0000000000-7f0000001000 r--p 00000000 00:00 0 ",
+            "+0400000-00401000 r--p 00000000 00:00 0 ",
+            "00400000_00401000 r--p 00000000 00:00 0 ",
+            "00400000-00401000-00402000 r--p 00000000 00:00 0 ",
+            "00400800-00401000 r--p 00000000 00:00 0 ",
+            "00400000-00401800 r--p 00000000 00:00 0 ",
+            "00401000-00401000 r--p 00000000 00:00 0 ",
+            "00402000-00401000 r--p 00000000 00:00 0 ",
+            "10000000000000000-10000000000001000 r--p 00000000 00:00 0 ",
+            // The permissions.
+            "00400000-00401000 r--q 00000000 00:00 0 ",
+            "00400000-00401000 R--p 00000000 00:00 0 ",
+            "00400000-00401000 rw-xp 00000000 00:00 0 ",
+            "00400000-00401000 r-p 00000000 00:00 0 ",
+            "00400000-00401000 wr-p 00000000 00:00 0 ",
+            "00400000-00401000 r-wp 00000000 00:00 0 ",
+            // The offset: `%08llx`, a multiple of the page size, zero
+            // without a file.
+            "00400000-00401000 r--p 0000000 08:03 5 /f",
+            "00400000-00401000 r--p 000000000 08:03 5 /f",
+            "00400000-00401000 r--p 0000000A 08:03 5 /f",
+            "00400000-00401000 r--p 00000800 08:03 5 /f",
+            "00400000-00401000 r--p 00001000 00:00 0 ",
+            // The device: `%02x:%02x`, a 12-bit major and a 20-bit minor.
+            "00400000-00401000 r--p 00000000 8:03 5 /f",
+            "00400000-00401000 r--p 00000000 08:3 5 /f",
+            "00400000-00401000 r--p 00000000 008:03 5 /f",
+            "00400000-00401000 r--p 00000000 08:003 5 /f",
+            "00400000-00401000 r--p 00000000 0A:03 5 /f",
+            "00400000-00401000 r--p 00000000 1000:03 5 /f",
+            "00400000-00401000 r--p 00000000 08:100000 5 /f",
+            "00400000-00401000 r--p 00000000 0803 5 /f",
+            "00400000-00401000 r--p 00000000 08:03:00 5 /f",
+            // The inode: `%llu`, and zero without a file.
+            "00400000-00401000 r--p 00000000 08:03 05 /f",
+            "00400000-00401000 r--p 00000000 08:03 +5 /f",
+            "00400000-00401000 r--p 00000000 08:03 -5 /f",
+            "00400000-00401000 r--p 00000000 08:03 18446744073709551616 /f",
+            "00400000-00401000 r--p 00000000 00:00 5 ",
+            // The space after the inode, and nothing but the name after the
+            // padding.
+            "00400000-00401000 r--p 00000000 00:00 0",
+            "00400000-00401000 r--p 00000000 00:00 0  ",
+            "00400000-00401000 r--p 00000000 08:03 5 ",
+            "00400000-00401000 r--p 00000000 08:03 5",
+            // Names: a file has one, and only memory of a file can have
+            // `[anon_shmem:...]`; without a file a name is in brackets.
+            "00400000-00401000 r--p 00000000 00:00 0                                  heap",
+            "00400000-00401000 r--p 00000000 00:00 0                                  /f",
+            "00400000-00401000 r--p 00000000 00:00 0                                  [heap",
+            "00400000-00401000 r--p 00000000 00:00 0                                  [anon_shmem:x]",
+            "00400000-00401000 r--p 00000000 08:03 5                                  [heap]",
+            "00400000-00401000 r--p 00000000 08:03 5                                  [anon:x]",
+            "00400000-00401000 r--p 00000000 08:03 5                                  [anon_shmem:x",
+            // Names `prctl(PR_SET_VMA_ANON_NAME)` never gives.
+            "00400000-00401000 r--p 00000000 00:00 0                                  [anon:a$b]",
+            "00400000-00401000 r--p 00000000 00:00 0                                  [anon:a`b]",
+            "00400000-00401000 r--p 00000000 00:00 0                                  [anon:a\\b]",
+            "00400000-00401000 r--p 00000000 00:00 0                                  [anon:a[b]",
+            "00400000-00401000 r--p 00000000 00:00 0                                  [anon:a]b]",
+            "00400000-00401000 r--p 00000000 00:00 0                                  [anon:a\x7fb]",
+            "00400000-00401000 r--p 00000000 00:00 0                                  [anon:a\tb]",
+            "00400000-00401000 r--p 00000000 00:00 0                                  [anon:x",
+            "00400000-00401000 rw-s 00000000 00:01 7                                  [anon_shmem:a$b]",
+        ] {
+            assert_eq!(
+                MemoryMap::from_maps(format!("{text}\n").as_bytes()),
+                MALFORMED,
+                "{text}"
+            );
+        }
+        // The longest name `prctl` accepts, and one byte more.
+        let longest = "n".repeat(79);
+        let header = "00400000-00401000 rw-p 00000000 00:00 0 ";
+        let pad = " ".repeat(72 - header.len() + 1);
+        assert_eq!(
+            line(&format!("{header}{pad}[anon:{longest}]")).map(|m| m.backing),
+            Ok(MappingBacking::NamedAnonymous(longest.clone().into_bytes()))
+        );
+        assert_eq!(
+            MemoryMap::from_maps(format!("{header}{pad}[anon:{longest}n]\n").as_bytes()),
+            MALFORMED
+        );
+        // The whole text: newline-terminated lines, none empty.
+        for text in [
+            &b"00400000-00401000 r--p 00000000 00:00 0 "[..],
+            b"\n",
+            b"00400000-00401000 r--p 00000000 00:00 0 \n\n",
+            b"\n00400000-00401000 r--p 00000000 00:00 0 \n",
+            b"00400000-00401000 r--p 00000000 00:00 0 \r\n",
+            b"00400000-00401000 r--p 00000000 00:00 0 \n00401000-00402000 \xff--p 00000000 00:00 0 \n",
+        ] {
+            assert_eq!(MemoryMap::from_maps(text), MALFORMED, "{text:?}");
+        }
+    }
+
+    /// Facts built with the constructors print as Linux would and read back
+    /// the same, and survive a tool's RPC, as the other facts do.
+    #[test]
+    fn constructed_maps_print_parse_and_round_trip() {
+        let map = MemoryMap::new(
+            vec![
+                mapping(0x40_0000, 0x40_3000, RW, MappingBacking::Heap),
+                MappingFact::new(
+                    0x7f00_0000_0000,
+                    0x7f00_0000_4000,
+                    (libc::PROT_READ | libc::PROT_EXEC) as u32,
+                    false,
+                    0x2000,
+                    file(libc::makedev(0, 0x20), 73572743, b"/usr/lib64/libc.so.6"),
+                ),
+                MappingFact::new(
+                    0x7f00_0000_4000,
+                    0x7f00_0000_5000,
+                    RW,
+                    true,
+                    0x1000,
+                    MappingBacking::NamedSharedAnonymous {
+                        raw_device: libc::makedev(0, 1),
+                        raw_inode: 9,
+                        name: b"ring".to_vec(),
+                    },
+                ),
+                mapping(
+                    0x7fff_ff80_0000,
+                    0x7fff_ffff_f000,
+                    RW,
+                    MappingBacking::Stack,
+                ),
+            ],
+            true,
+        );
+        assert_eq!(MemoryMap::from_maps(&render(&map)), Ok(map.clone()));
+        let text = serde_json::to_string(&map).unwrap();
+        assert_eq!(serde_json::from_str::<MemoryMap>(&text).unwrap(), map);
+        let partial = MemoryMap::new(map.mappings.clone(), false);
+        assert!(!partial.complete);
+        let text = serde_json::to_string(&partial).unwrap();
+        assert_eq!(serde_json::from_str::<MemoryMap>(&text).unwrap(), partial);
     }
 }
