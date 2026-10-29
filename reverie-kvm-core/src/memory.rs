@@ -1156,10 +1156,88 @@ impl Drop for PendingReservation {
     }
 }
 
+/// The mapping a provider declared for a guest page: the protection the
+/// guest asked for (`PROT_READ`, `PROT_WRITE` and `PROT_EXEC` bits, none for
+/// `PROT_NONE`), flags the provider keeps on the mapping, and a lineage the
+/// provider assigns. This memory stores and copies them and decides nothing
+/// from them: a page keeps them while it stays mapped, through a protection
+/// change ([`GuestMemory::protect_user_range`]), a flag or lineage change
+/// ([`GuestMemory::flag_user_range`],
+/// [`GuestMemory::set_user_stack_window_lineage`]), a move
+/// ([`GuestMemory::remap_user_range`]) and into a copy.
+#[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
+pub struct DeclaredMapping {
+    /// The declared protection.
+    pub prot: u8,
+    /// The provider's flags.
+    pub flags: u8,
+    /// The provider's lineage, zero for a new mapping
+    /// ([`GuestMemory::map_user_protection`]). LinuxEmu gives each mapping of
+    /// the stack window that a forked child inherits one of its own.
+    pub lineage: u16,
+}
+
+/// A mapped page of the stack window, as
+/// [`GuestMemory::user_stack_window_pages`] reports it.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct WindowPage {
+    /// The page's user address.
+    pub user_address: u64,
+    /// The mapping declared for the page, if one was ([`DeclaredMapping`]).
+    pub declared: Option<DeclaredMapping>,
+    /// What the page is reserved for, if anything.
+    pub reservation: Option<RegionKind>,
+}
+
+/// A user page's state: whether the guest can reach it and write it, and the
+/// mapping it belongs to where the caller declared it (`None` otherwise:
+/// [`GuestMemory::map_user_permissions`] and the shared-file paths say
+/// nothing about it).
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum UserPageState {
-    Accessible { writable: bool },
-    NoAccess,
+    Accessible {
+        writable: bool,
+        declared: Option<DeclaredMapping>,
+    },
+    NoAccess {
+        declared: Option<DeclaredMapping>,
+    },
+}
+
+impl UserPageState {
+    /// A page with access as `accessible` and `writable` say, and no declared
+    /// mapping.
+    fn undeclared(accessible: bool, writable: bool) -> Self {
+        if accessible {
+            Self::Accessible {
+                writable,
+                declared: None,
+            }
+        } else {
+            Self::NoAccess { declared: None }
+        }
+    }
+
+    /// A page of a mapping with `declared`'s protection and flags.
+    fn of(declared: DeclaredMapping) -> Self {
+        let prot = libc::c_int::from(declared.prot);
+        if prot == libc::PROT_NONE {
+            Self::NoAccess {
+                declared: Some(declared),
+            }
+        } else {
+            Self::Accessible {
+                writable: prot & libc::PROT_WRITE != 0,
+                declared: Some(declared),
+            }
+        }
+    }
+
+    fn declared(self) -> Option<DeclaredMapping> {
+        match self {
+            Self::Accessible { declared, .. } | Self::NoAccess { declared } => declared,
+        }
+    }
 }
 
 // SAFETY: Mapping owns every mmap view until Drop, not a Rust reference.
@@ -1524,13 +1602,38 @@ impl GuestMemory {
         self.observe_test_vector_copy(total);
     }
 
+    /// A copy of this memory for a fork: another address space, which keeps a
+    /// stack-window record of its own ([`GuestMemory::user_stack_window_pages`]).
     pub fn snapshot(&self) -> Result<Self> {
         self.snapshot_with_sparse_copy(copy_sparse_file)
+    }
+
+    /// A copy of this memory for a child that shares this address space on
+    /// Linux (`vfork(2)`, and `clone(2)` or `clone3(2)` with
+    /// `CLONE_VM|CLONE_VFORK`) but runs on a copy here: as
+    /// [`GuestMemory::snapshot`], but the copy shares the stack window's
+    /// record, taken with the pages it copies, so that a change either makes
+    /// afterwards, which the other's pages lack, leaves the other's pages
+    /// unknown ([`GuestMemory::user_stack_window_pages`]), while the child
+    /// runs and after it exits, until the child's new image takes a record of
+    /// its own ([`GuestMemory::detach_user_stack_window_watch`]).
+    pub fn snapshot_sharing_address_space(&self) -> Result<Self> {
+        self.snapshot_keeping(copy_sparse_file, true)
     }
 
     fn snapshot_with_sparse_copy(
         &self,
         sparse_copy: impl FnOnce(RawFd, RawFd, usize) -> io::Result<()>,
+    ) -> Result<Self> {
+        self.snapshot_keeping(sparse_copy, false)
+    }
+
+    /// The snapshot, keeping the stack window's record shared with this
+    /// memory when `share_record` says so, and else taking one of its own.
+    fn snapshot_keeping(
+        &self,
+        sparse_copy: impl FnOnce(RawFd, RawFd, usize) -> io::Result<()>,
+        share_record: bool,
     ) -> Result<Self> {
         const COPY_CHUNK: usize = 1024 * 1024;
 
@@ -1539,7 +1642,7 @@ impl GuestMemory {
         // it is inherited, so the child shares it rather than copying it.
         let _allocation = self.share_anonymous_memory_for_fork()?;
         if self.contains_retained_shared() {
-            return self.snapshot_with_shared_files(_allocation);
+            return self.snapshot_with_shared_files(_allocation, share_record);
         }
         if self.entry_gate().single_member_domain_active() {
             return Err(Error::SharedFileCapability {
@@ -1554,9 +1657,11 @@ impl GuestMemory {
             .lock()
             .expect("guest memory access map lock poisoned")
             .clone();
-        // The copy is another address space: it starts with this one's
+        // A fork's copy is another address space: it starts with this one's
         // stack-window record, and the two record their own changes.
-        user_access.pages.detach_watch();
+        if !share_record {
+            user_access.pages.detach_watch();
+        }
 
         // The sparse helper requires whole, equal-sized files at offset zero.
         // A subset uses the existing view-relative copy without extending that
@@ -1619,6 +1724,19 @@ impl GuestMemory {
         // fence. Fallback byte copies each take their own short admission.
         self.check_copy_failure()?;
         Ok(snapshot)
+    }
+
+    /// The declared mapping of the page that holds physical `address`, if it
+    /// is mapped and declared ([`DeclaredMapping`]).
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn declared_mapping(&self, address: u64) -> Option<DeclaredMapping> {
+        self.mapping
+            .address_space
+            .lock()
+            .unwrap()
+            .pages
+            .get(&(address / PAGE_SIZE as u64))
+            .and_then(|state| state.declared())
     }
 
     #[cfg(any(test, feature = "test-support"))]
@@ -1784,7 +1902,7 @@ impl GuestMemory {
                 // A page taken over for another use has changed, even where
                 // its state stays as it was (see `watch_user_stack_window`).
                 if previous != Some(kind) {
-                    state.pages.note_change(page, page);
+                    state.pages.count_change(page, page);
                 }
                 old.push((page, previous));
             }
@@ -1899,16 +2017,16 @@ impl GuestMemory {
     }
 
     /// Watches the stack window ([`GuestMemory::establish_user_stack_window`])
-    /// from now on, replacing any earlier watch: it stays unchanged
-    /// ([`GuestMemory::unchanged_user_stack_window`]) until the state of one of
-    /// its pages changes, by whatever path maps, unmaps, protects, moves or
-    /// publishes it, until a page of it is reserved for another use, or until
-    /// [`GuestMemory::note_user_mapping_change`] names part of it. The page
-    /// map records every change to a watched page's state itself
-    /// (`UserPages::watch`), so no path can make one unseen. The new watch
-    /// has a record of its own. A loader calls this once it has mapped the
-    /// window for a new image. Without a stack window there is nothing to
-    /// watch, and the window is never unchanged.
+    /// from now on, with a record of its own, replacing any earlier watch. The
+    /// window's pages ([`GuestMemory::user_stack_window_pages`]) are
+    /// known while the record is certain: every change to a page of it, by
+    /// whatever path maps, unmaps, protects, moves or publishes it or reserves
+    /// it for another use, is this memory's own and is held in its page states
+    /// (the page map counts each one, `UserPages::watch`, so no path can make
+    /// one unseen), and nothing the states do not hold has changed
+    /// ([`GuestMemory::note_user_mapping_change`]). A loader calls this once
+    /// it has mapped the window for a new image. Without a stack window there
+    /// is nothing to watch.
     pub fn watch_user_stack_window(&self) {
         let mut state = self
             .mapping
@@ -1923,45 +2041,48 @@ impl GuestMemory {
         }
     }
 
-    /// The user range `[start, end)` of the stack window, if it is unchanged
-    /// since [`GuestMemory::watch_user_stack_window`] began watching it: no
-    /// page of it has changed state, nothing named part of it in
-    /// [`GuestMemory::note_user_mapping_change`], and every page of it is
-    /// still reserved for the stack. `None` otherwise, and when nothing
-    /// watches it. A fork's copy of the memory ([`GuestMemory::snapshot`])
-    /// starts with the answer and keeps a record of its own; a copy that
-    /// stands for the same address space shares the record
-    /// ([`GuestMemory::share_user_stack_window_watch`]); a new image's
-    /// loader starts it again.
-    pub fn unchanged_user_stack_window(&self) -> Option<(u64, u64)> {
+    /// The mapped pages of the stack window, lowest first, each with what this
+    /// memory holds about it ([`WindowPage`]). `None` when nothing watches the
+    /// window, and when its record is not certain:
+    /// [`GuestMemory::note_user_mapping_change`] named part of it, or a copy
+    /// that shares the record ([`GuestMemory::snapshot_sharing_address_space`])
+    /// changed a page of it. While the record is certain, every change to the
+    /// window since the watch began is held in these pages. What mappings they
+    /// make is the provider's to decide. A fork's copy of the memory
+    /// ([`GuestMemory::snapshot`]) keeps the pages and a record of its own; a
+    /// new image's loader starts again.
+    pub fn user_stack_window_pages(&self) -> Option<Vec<WindowPage>> {
         let state = self
             .mapping
             .address_space
             .lock()
             .expect("guest memory access map lock poisoned");
         let window = state.stack_window()?;
-        let pages = AddressSpaceState::window_pages(window)?;
-        if state.pages.unchanged_watch() != Some(pages) {
+        let (first, last) = AddressSpaceState::window_pages(window)?;
+        if state.pages.certain_watch() != Some((first, last)) {
             return None;
         }
-        // A reservation can change without a page's state. A page reserved
-        // for something else, as `reserve_region` records in the watch, or
-        // with a reservation that cannot be taken back (a Tool's scratch
-        // page), is not the stack's: only a loader reserves the stack.
-        let (first, last) = pages;
-        if (first..=last).any(|page| state.reservations.get(&page) != Some(&RegionKind::Stack)) {
-            return None;
-        }
-        Some((window.user_start, window.user_end))
+        let page = PAGE_SIZE as u64;
+        Some(
+            (first..=last)
+                .filter_map(|number| {
+                    let page_state = state.pages.get(&number)?;
+                    Some(WindowPage {
+                        user_address: window.user_start + number * page - window.physical_start,
+                        declared: page_state.declared(),
+                        reservation: state.reservations.get(&number).copied(),
+                    })
+                })
+                .collect(),
+        )
     }
 
     /// Records that the guest changed something about the mappings of the
     /// user range `[address, address + length)` that the pages' states do not
-    /// hold: a protection bit other than access and write, or a flag Linux
-    /// keeps on a mapping, such as the ones `madvise(2)` and `munlock(2)` set
-    /// or clear. When the range overlaps the stack window, the window is no
-    /// longer unchanged ([`GuestMemory::unchanged_user_stack_window`]). An
-    /// empty range names nothing.
+    /// hold, as when Linux applies part of a call that this backend refuses
+    /// whole. When the range overlaps the stack window, its record is no
+    /// longer certain ([`GuestMemory::user_stack_window_pages`]). An empty
+    /// range names nothing.
     pub fn note_user_mapping_change(&self, address: u64, length: u64) {
         let mut state = self
             .mapping
@@ -1980,51 +2101,9 @@ impl GuestMemory {
         }
     }
 
-    /// [`GuestMemory::note_user_mapping_change`] for every user address, as
-    /// for a call such as `munlockall(2)` that changes every mapping.
-    pub fn note_every_user_mapping_change(&self) {
-        let mut state = self
-            .mapping
-            .address_space
-            .lock()
-            .expect("guest memory access map lock poisoned");
-        if let Some((first, last)) = state
-            .stack_window()
-            .and_then(AddressSpaceState::window_pages)
-        {
-            state.pages.note_change(first, last);
-        }
-    }
-
-    /// Makes this memory's stack-window record `parent`'s, replacing its own,
-    /// for a copy of `parent` that stands for the same address space: a
-    /// child that shares its parent's address space on Linux (`vfork(2)`,
-    /// and `clone(2)` or `clone3(2)` with `CLONE_VM|CLONE_VFORK`) but runs on
-    /// a copy of the memory here. From then on a change either records, to
-    /// the copy's pages or to the parent's, empties
-    /// [`GuestMemory::unchanged_user_stack_window`] for both, while the child
-    /// runs and after it exits, until either takes a record of its own
-    /// ([`GuestMemory::detach_user_stack_window_watch`]), as a new image does.
-    pub fn share_user_stack_window_watch(&self, parent: &GuestMemory) {
-        // One lock at a time: the two memories' locks have no order.
-        let record = parent
-            .mapping
-            .address_space
-            .lock()
-            .expect("guest memory access map lock poisoned")
-            .pages
-            .watch_record();
-        self.mapping
-            .address_space
-            .lock()
-            .expect("guest memory access map lock poisoned")
-            .pages
-            .share_watch(record);
-    }
-
-    /// Gives this memory a stack-window record of its own, which starts with
-    /// the answer the shared one has now
-    /// ([`GuestMemory::share_user_stack_window_watch`]): a new image's loader
+    /// Gives this memory a stack-window record of its own, certain exactly
+    /// when the shared one is for this memory now
+    /// ([`GuestMemory::snapshot_sharing_address_space`]): a new image's loader
     /// calls this before it clears the old image, since the new image is a
     /// new address space, and clearing the old one changes nothing for a
     /// process that shared it.
@@ -2175,13 +2254,108 @@ impl GuestMemory {
         accessible: bool,
         writable: bool,
     ) -> Result<()> {
+        let state = UserPageState::undeclared(accessible, writable);
+        self.set_user_pages(guest_address, length, writable, |_| state)
+    }
+
+    /// Maps `[guest_address, guest_address + length)` as a new mapping with
+    /// declared protection `prot` (`PROT_READ`, `PROT_WRITE` and `PROT_EXEC`
+    /// bits) and no provider flags ([`DeclaredMapping`]). The pages are
+    /// accessible unless `prot` is `PROT_NONE`, and writable with
+    /// `PROT_WRITE`, as [`GuestMemory::map_user_permissions`] maps them.
+    pub fn map_user_protection(&self, guest_address: u64, length: u64, prot: u8) -> Result<()> {
+        let state = UserPageState::of(DeclaredMapping {
+            prot,
+            ..DeclaredMapping::default()
+        });
+        let writable = libc::c_int::from(prot) & libc::PROT_WRITE != 0;
+        self.set_user_pages(guest_address, length, writable, |_| state)
+    }
+
+    /// Changes the declared protection of the mapped range `[guest_address,
+    /// guest_address + length)` to `prot`, as `mprotect(2)` changes a
+    /// mapping's: each page keeps its provider flags, and a page whose
+    /// mapping was never declared stays undeclared, with the access `prot`
+    /// gives.
+    pub fn protect_user_range(&self, guest_address: u64, length: u64, prot: u8) -> Result<()> {
+        let writable = libc::c_int::from(prot) & libc::PROT_WRITE != 0;
+        self.set_user_pages(guest_address, length, writable, |old| {
+            match old.and_then(UserPageState::declared) {
+                Some(declared) => UserPageState::of(DeclaredMapping { prot, ..declared }),
+                None => UserPageState::undeclared(prot != 0, writable),
+            }
+        })
+    }
+
+    /// Sets the provider flags `set` and clears `clear`
+    /// ([`DeclaredMapping::flags`]) on each declared page of the user range
+    /// `[user_address, user_address + length)` that lies in the stack window
+    /// ([`GuestMemory::user_stack_window_pages`]), whose pages alone keep
+    /// flags. An undeclared page stays so, and an unmapped one is skipped.
+    pub fn flag_user_range(&self, user_address: u64, length: u64, set: u8, clear: u8) {
+        self.edit_stack_window_pages(user_address, length, |declared| DeclaredMapping {
+            flags: declared.flags & !clear | set,
+            ..declared
+        });
+    }
+
+    /// Sets the lineage ([`DeclaredMapping::lineage`]) of each declared page
+    /// of the user range `[user_address, user_address + length)` that lies in
+    /// the stack window to `lineage`. An undeclared page stays so, and an
+    /// unmapped one is skipped.
+    pub fn set_user_stack_window_lineage(&self, user_address: u64, length: u64, lineage: u16) {
+        self.edit_stack_window_pages(user_address, length, |declared| DeclaredMapping {
+            lineage,
+            ..declared
+        });
+    }
+
+    /// Replaces the declared mapping of each declared page of the user range
+    /// `[user_address, user_address + length)` that lies in the stack window
+    /// with `edit(its declared mapping)`, which keeps its protection.
+    fn edit_stack_window_pages(
+        &self,
+        user_address: u64,
+        length: u64,
+        edit: impl Fn(DeclaredMapping) -> DeclaredMapping,
+    ) {
+        let mut access = self
+            .mapping
+            .address_space
+            .lock()
+            .expect("guest memory access map lock poisoned");
+        let Some(window) = access.stack_window() else {
+            return;
+        };
+        let page = PAGE_SIZE as u64;
+        let start = user_address.max(window.user_start);
+        let end = user_address.saturating_add(length).min(window.user_end);
+        for user in (start..end).step_by(PAGE_SIZE) {
+            let physical_page = window.physical(user & !(page - 1)) / page;
+            if let Some(declared) = access
+                .pages
+                .get(&physical_page)
+                .and_then(|state| state.declared())
+            {
+                access
+                    .pages
+                    .insert(physical_page, UserPageState::of(edit(declared)));
+            }
+        }
+    }
+
+    /// Sets each page of `[guest_address, guest_address + length)` to
+    /// `state(its old state)`, refusing a writable state on a page of an
+    /// ordinary file the guest may not write before anything changes.
+    fn set_user_pages(
+        &self,
+        guest_address: u64,
+        length: u64,
+        writable: bool,
+        state: impl Fn(Option<UserPageState>) -> UserPageState,
+    ) -> Result<()> {
         let Some((first_page, last_page)) = self.checked_page_range(guest_address, length)? else {
             return Ok(());
-        };
-        let state = if accessible {
-            UserPageState::Accessible { writable }
-        } else {
-            UserPageState::NoAccess
         };
         let mut access = self
             .mapping
@@ -2207,7 +2381,8 @@ impl GuestMemory {
             });
         }
         for page in first_page..=last_page {
-            access.pages.insert(page, state);
+            let new = state(access.pages.get(&page).copied());
+            access.pages.insert(page, new);
             access
                 .reservations
                 .edit()
@@ -3217,7 +3392,7 @@ impl GuestMemory {
                 if permissions.enabled
                     && !matches!(
                         permissions.pages.get(&page),
-                        Some(UserPageState::Accessible { writable: true })
+                        Some(UserPageState::Accessible { writable: true, .. })
                     )
                 {
                     continue;
@@ -3725,7 +3900,7 @@ impl UserMemory {
             if access.enabled
                 && !matches!(
                     access.pages.get(&(start / PAGE_SIZE as u64)),
-                    Some(UserPageState::Accessible { writable: true })
+                    Some(UserPageState::Accessible { writable: true, .. })
                 )
             {
                 return Err(denied);
@@ -3821,7 +3996,7 @@ impl UserMemory {
             if access.enabled
                 && !matches!(
                     access.pages.get(&(cursor / PAGE_SIZE as u64)),
-                    Some(UserPageState::Accessible { writable: true })
+                    Some(UserPageState::Accessible { writable: true, .. })
                 )
             {
                 break;
@@ -3947,7 +4122,7 @@ impl UserMemory {
         while cursor < end {
             if !matches!(
                 access.pages.get(&(cursor / PAGE_SIZE as u64)),
-                Some(UserPageState::Accessible { writable: true })
+                Some(UserPageState::Accessible { writable: true, .. })
             ) {
                 break;
             }
@@ -5927,95 +6102,279 @@ mod tests {
         assert_eq!(bytes, [[2; 8], [3; 8]].concat()[..]);
     }
 
+    const MIB: u64 = 1024 * 1024;
+    const R: u8 = libc::PROT_READ as u8;
+    const RW: u8 = (libc::PROT_READ | libc::PROT_WRITE) as u8;
+    const RWX: u8 = (libc::PROT_READ | libc::PROT_WRITE | libc::PROT_EXEC) as u8;
+
+    fn declared(prot: u8, flags: u8) -> DeclaredMapping {
+        DeclaredMapping {
+            prot,
+            flags,
+            lineage: 0,
+        }
+    }
+
+    /// The window's pages as extents of equal declared mapping, `(user
+    /// start, user end, declared)`, for brief assertions. A page that is not
+    /// declared or not reserved for the stack ends an extent and is not
+    /// shown. `None` while the window's record is not certain.
+    fn held(memory: &GuestMemory) -> Option<Vec<(u64, u64, DeclaredMapping)>> {
+        let page = PAGE_SIZE as u64;
+        let mut extents: Vec<(u64, u64, DeclaredMapping)> = Vec::new();
+        for window_page in memory.user_stack_window_pages()? {
+            let Some(declared) = window_page
+                .declared
+                .filter(|_| window_page.reservation == Some(RegionKind::Stack))
+            else {
+                continue;
+            };
+            match extents.last_mut() {
+                Some((_, end, last)) if *end == window_page.user_address && *last == declared => {
+                    *end += page;
+                }
+                _ => extents.push((
+                    window_page.user_address,
+                    window_page.user_address + page,
+                    declared,
+                )),
+            }
+        }
+        Some(extents)
+    }
+
     /// A stack window mapped as a loader maps it: 16 MiB of memory, the top
-    /// 8 MiB reserved for the stack and mapped read-write, then watched.
-    /// Returns the memory and the window's user start.
+    /// 8 MiB reserved for the stack and mapped as one read-write mapping,
+    /// then watched. Returns the memory and the window's user start.
     fn watched_stack_window() -> (GuestMemory, u64) {
-        const MIB: u64 = 1024 * 1024;
         let memory = GuestMemory::new(0, (16 * MIB) as usize).unwrap();
         let window = memory.establish_user_stack_window(8 * MIB).unwrap();
         memory
             .reserve_region(8 * MIB, 8 * MIB, RegionKind::Stack)
             .unwrap()
             .commit();
-        memory.map_user_range(8 * MIB, 8 * MIB, false).unwrap();
-        assert_eq!(memory.unchanged_user_stack_window(), None, "not watched");
+        memory.map_user_protection(8 * MIB, 8 * MIB, RW).unwrap();
+        assert_eq!(memory.user_stack_window_pages(), None, "not watched");
         memory.watch_user_stack_window();
         assert_eq!(
-            memory.unchanged_user_stack_window(),
-            Some((window, USER_STACK_TOP))
+            held(&memory),
+            Some(vec![(window, USER_STACK_TOP, declared(RW, 0))])
         );
         (memory, window)
     }
 
-    /// Every path that changes the state of one of the stack window's pages
-    /// leaves the window changed for good, and so does a reservation taken
-    /// over or a change the states do not hold that names part of it. A state
-    /// set again unchanged, and changes elsewhere, leave it unchanged. A copy
-    /// keeps the answer it had, independently of its source, and a new watch
-    /// starts again.
+    /// The window's pages hold the mapping declared for them: a protection
+    /// change keeps a page's flags and lineage, flags and lineages are set on
+    /// the window's declared pages only, an unmapped page leaves a gap, a move
+    /// in place keeps each page's mapping, and a new mapping has no flags and
+    /// lineage zero.
     #[test]
-    fn the_stack_window_stays_unchanged_until_a_page_of_it_changes() {
-        const MIB: u64 = 1024 * 1024;
+    fn the_stack_windows_pages_hold_their_declared_mappings() {
         let page = PAGE_SIZE as u64;
-        // A page of the window, physically, and one below it.
+        // A page of the window, physically, and user addresses.
+        let inside = 12 * MIB;
+        let (memory, window) = watched_stack_window();
+        let user = |physical: u64| window + physical - 8 * MIB;
+        let (low, high) = (user(inside), user(inside) + page);
+        let around = |middle: DeclaredMapping| {
+            Some(vec![
+                (window, low, declared(RW, 0)),
+                (low, high, middle),
+                (high, USER_STACK_TOP, declared(RW, 0)),
+            ])
+        };
+        let whole = Some(vec![(window, USER_STACK_TOP, declared(RW, 0))]);
+        for prot in [0, R, RWX] {
+            memory.protect_user_range(inside, page, prot).unwrap();
+            assert_eq!(held(&memory), around(declared(prot, 0)));
+        }
+        memory.protect_user_range(inside, page, RW).unwrap();
+        assert_eq!(held(&memory), whole);
+        // Flags and a lineage, which a protection change keeps.
+        memory.flag_user_range(low, page, 5, 0);
+        assert_eq!(held(&memory), around(declared(RW, 5)));
+        memory.set_user_stack_window_lineage(low, page, 7);
+        let lineaged = |prot: u8, flags: u8| DeclaredMapping {
+            prot,
+            flags,
+            lineage: 7,
+        };
+        assert_eq!(held(&memory), around(lineaged(RW, 5)));
+        memory.protect_user_range(inside, page, RWX).unwrap();
+        assert_eq!(held(&memory), around(lineaged(RWX, 5)));
+        memory.flag_user_range(low, page, 0, 5);
+        assert_eq!(held(&memory), around(lineaged(RWX, 0)));
+        memory.flag_user_range(low, page, 5, 0);
+        memory.protect_user_range(inside, page, RW).unwrap();
+        memory.set_user_stack_window_lineage(low, page, 0);
+        // Setting and clearing some flags keeps the others: the page's flag
+        // 4, which the call does not name, stays.
+        memory.flag_user_range(low - page, 3 * page, 2, 1);
+        assert_eq!(
+            held(&memory),
+            Some(vec![
+                (window, low - page, declared(RW, 0)),
+                (low - page, low, declared(RW, 2)),
+                (low, high, declared(RW, 6)),
+                (high, high + page, declared(RW, 2)),
+                (high + page, USER_STACK_TOP, declared(RW, 0)),
+            ])
+        );
+        memory.flag_user_range(low - page, 3 * page, 0, 6);
+        assert_eq!(held(&memory), whole);
+        // Flags and lineages outside the window, and on unmapped pages,
+        // change nothing.
+        memory.flag_user_range(window - page, page, 1, 0);
+        memory.flag_user_range(USER_STACK_TOP, page, 1, 0);
+        memory.set_user_stack_window_lineage(window - page, page, 3);
+        memory.set_user_stack_window_lineage(USER_STACK_TOP, page, 3);
+        assert_eq!(held(&memory), whole);
+        // An unmapped page leaves the pages on either side.
+        memory.unmap_user_range(inside, page).unwrap();
+        let split = Some(vec![
+            (window, low, declared(RW, 0)),
+            (high, USER_STACK_TOP, declared(RW, 0)),
+        ]);
+        assert_eq!(held(&memory), split);
+        memory.flag_user_range(low, page, 1, 0);
+        memory.set_user_stack_window_lineage(low, page, 1);
+        assert_eq!(held(&memory), split);
+        // A move in place keeps each page's mapping.
+        memory
+            .remap_user_range(inside + page, page, inside + page, page)
+            .unwrap();
+        assert_eq!(held(&memory), split);
+        // A new mapping has no flags, and lineage zero.
+        memory.flag_user_range(high, page, 1, 0);
+        memory.set_user_stack_window_lineage(high, page, 4);
+        memory.map_user_protection(inside + page, page, RW).unwrap();
+        assert_eq!(held(&memory), split);
+        // With nothing mapped there is nothing to hold.
+        memory.clear_user_access();
+        assert_eq!(memory.user_stack_window_pages(), Some(Vec::new()));
+        // Without a stack window nothing is watched or held.
+        let plain = GuestMemory::new(0, (16 * MIB) as usize).unwrap();
+        plain.map_user_protection(8 * MIB, page, RW).unwrap();
+        plain.watch_user_stack_window();
+        plain.note_user_mapping_change(0, u64::MAX);
+        assert_eq!(plain.user_stack_window_pages(), None);
+    }
+
+    /// A page moved out of the window leaves a gap where it was, between the
+    /// pages on either side, and takes its declared mapping (protection,
+    /// flags and lineage) to where it goes.
+    #[test]
+    fn a_page_moved_out_of_the_window_takes_its_mapping_along() {
+        let page = PAGE_SIZE as u64;
         let inside = 12 * MIB;
         let below = 4 * MIB;
-        type Change = fn(&GuestMemory, u64, u64);
-        let changes: [(&str, Change); 9] = [
-            ("read-only", |memory, inside, _| {
-                memory
-                    .map_user_permissions(inside, PAGE_SIZE as u64, true, false)
-                    .unwrap();
-            }),
-            ("inaccessible", |memory, inside, _| {
-                memory
-                    .map_user_range(inside, PAGE_SIZE as u64, true)
-                    .unwrap();
-            }),
-            ("unmapped", |memory, inside, _| {
-                memory.unmap_user_range(inside, PAGE_SIZE as u64).unwrap();
-            }),
-            ("moved away", |memory, inside, below| {
-                memory
-                    .remap_user_range(inside, PAGE_SIZE as u64, below, PAGE_SIZE as u64)
-                    .unwrap();
-            }),
-            ("reserved for a mapping", |memory, inside, _| {
-                memory
-                    .reserve_region(inside, PAGE_SIZE as u64, RegionKind::Mmap)
-                    .unwrap()
-                    .commit();
-            }),
-            ("exposed as scratch", |memory, inside, _| {
-                memory
-                    .expose_tool_scratch(inside, PAGE_SIZE as u64)
-                    .unwrap();
-            }),
-            ("cleared", |memory, _, _| memory.clear_user_access()),
-            ("noted", |memory, _, _| {
-                memory.note_user_mapping_change(USER_STACK_TOP - 4096, 1);
-            }),
-            ("noted everywhere", |memory, _, _| {
-                memory.note_every_user_mapping_change();
-            }),
+        let (memory, window) = watched_stack_window();
+        let user = |physical: u64| window + physical - 8 * MIB;
+        let (low, high) = (user(inside), user(inside) + page);
+        memory.protect_user_range(inside, page, R).unwrap();
+        memory.flag_user_range(low, page, 3, 0);
+        memory.set_user_stack_window_lineage(low, page, 9);
+        let moved = DeclaredMapping {
+            prot: R,
+            flags: 3,
+            lineage: 9,
+        };
+        assert_eq!(memory.declared_mapping(inside), Some(moved));
+        memory.remap_user_range(inside, page, below, page).unwrap();
+        assert_eq!(
+            held(&memory),
+            Some(vec![
+                (window, low, declared(RW, 0)),
+                (high, USER_STACK_TOP, declared(RW, 0)),
+            ])
+        );
+        assert_eq!(memory.declared_mapping(inside), None);
+        assert_eq!(memory.declared_mapping(below), Some(moved));
+    }
+
+    /// The window's pages tell what this memory does not know: a page mapped
+    /// without a declared protection, reserved for another use, or exposed
+    /// as a Tool's scratch page reports so, and the pages around it are as
+    /// they were. A change the pages do not hold leaves them unknown.
+    #[test]
+    fn the_stack_windows_pages_tell_what_is_not_known() {
+        let page = PAGE_SIZE as u64;
+        let inside = 12 * MIB;
+        type Change = fn(&GuestMemory, u64);
+        let changes: [(&str, Change, Option<DeclaredMapping>, Option<RegionKind>); 4] = [
+            (
+                "undeclared",
+                |memory, inside| {
+                    memory
+                        .map_user_permissions(inside, PAGE_SIZE as u64, true, true)
+                        .unwrap();
+                },
+                None,
+                Some(RegionKind::Stack),
+            ),
+            (
+                "protected undeclared",
+                |memory, inside| {
+                    memory
+                        .map_user_permissions(inside, PAGE_SIZE as u64, true, true)
+                        .unwrap();
+                    memory
+                        .protect_user_range(inside, PAGE_SIZE as u64, RW)
+                        .unwrap();
+                },
+                None,
+                Some(RegionKind::Stack),
+            ),
+            (
+                "reserved for a mapping",
+                |memory, inside| {
+                    memory
+                        .reserve_region(inside, PAGE_SIZE as u64, RegionKind::Mmap)
+                        .unwrap()
+                        .commit();
+                },
+                Some(declared(RW, 0)),
+                Some(RegionKind::Mmap),
+            ),
+            (
+                "exposed as scratch",
+                |memory, inside| {
+                    memory
+                        .expose_tool_scratch(inside, PAGE_SIZE as u64)
+                        .unwrap();
+                },
+                None,
+                Some(RegionKind::ToolScratch),
+            ),
         ];
-        for (name, change) in changes {
-            let (memory, _) = watched_stack_window();
-            change(&memory, inside, below);
-            assert_eq!(memory.unchanged_user_stack_window(), None, "{name}");
-            // Setting the whole window back as the loader left it, as far as
-            // the change allows (a scratch page's reservation is permanent),
-            // does not undo it.
-            if let Ok(reservation) = memory.reserve_region(8 * MIB, 8 * MIB, RegionKind::Stack) {
-                reservation.commit();
-            }
-            memory.map_user_range(8 * MIB, 8 * MIB, false).unwrap();
-            assert_eq!(memory.unchanged_user_stack_window(), None, "{name}");
+        for (name, change, declared_now, reservation) in changes {
+            let (memory, window) = watched_stack_window();
+            let user = |physical: u64| window + physical - 8 * MIB;
+            change(&memory, inside);
+            let pages = memory.user_stack_window_pages().unwrap();
+            assert_eq!(
+                pages.len() as u64,
+                (USER_STACK_TOP - window) / page,
+                "{name}"
+            );
+            let changed = pages
+                .iter()
+                .find(|window_page| window_page.user_address == user(inside))
+                .unwrap();
+            assert_eq!(changed.declared, declared_now, "{name}");
+            assert_eq!(changed.reservation, reservation, "{name}");
+            assert!(
+                pages
+                    .iter()
+                    .filter(|window_page| window_page.user_address != user(inside))
+                    .all(|window_page| window_page.declared == Some(declared(RW, 0))
+                        && window_page.reservation == Some(RegionKind::Stack)),
+                "{name}"
+            );
         }
-        // A reservation changed without the watch's knowledge, as no path
+        // A reservation changed without the page map's knowledge, as no path
         // here changes one, is found all the same.
-        let (memory, _) = watched_stack_window();
+        let (memory, window) = watched_stack_window();
         memory
             .mapping
             .address_space
@@ -6024,85 +6383,40 @@ mod tests {
             .reservations
             .edit()
             .insert(inside / page, RegionKind::Mmap);
-        assert_eq!(memory.unchanged_user_stack_window(), None);
-        // A scratch page exposed and hidden again leaves the page unmapped.
-        let (memory, _) = watched_stack_window();
-        memory.expose_tool_scratch(inside, page).unwrap();
-        memory.hide_tool_scratch(inside, page).unwrap();
-        assert_eq!(memory.unchanged_user_stack_window(), None);
-
-        // Unchanged: a state set again as it is, changes below the window,
-        // and noted changes that do not reach it.
+        let pages = memory.user_stack_window_pages().unwrap();
+        let found = pages
+            .iter()
+            .find(|window_page| window_page.user_address == window + inside - 8 * MIB)
+            .unwrap();
+        assert_eq!(found.reservation, Some(RegionKind::Mmap));
+        // A change the pages do not hold, noted where it reaches the window.
         let (memory, window) = watched_stack_window();
-        memory.map_user_range(inside, page, false).unwrap();
-        memory.map_user_range(below, page, false).unwrap();
-        memory.unmap_user_range(below, page).unwrap();
         memory.note_user_mapping_change(window - page, page);
         memory.note_user_mapping_change(USER_STACK_TOP, page);
         memory.note_user_mapping_change(window + page, 0);
+        assert_ne!(memory.user_stack_window_pages(), None);
+        memory.note_user_mapping_change(USER_STACK_TOP - 4096, 1);
+        assert_eq!(memory.user_stack_window_pages(), None);
+        // ... until a new watch, as a new image's loader takes.
+        memory.watch_user_stack_window();
         assert_eq!(
-            memory.unchanged_user_stack_window(),
-            Some((window, USER_STACK_TOP))
+            held(&memory),
+            Some(vec![(window, USER_STACK_TOP, declared(RW, 0))])
         );
-        // A copy keeps the answer, then changes independently of its source.
-        let copy = memory.snapshot().unwrap();
-        assert_eq!(
-            copy.unchanged_user_stack_window(),
-            Some((window, USER_STACK_TOP))
-        );
-        memory.note_user_mapping_change(window, 1);
-        assert_eq!(memory.unchanged_user_stack_window(), None);
-        assert_eq!(
-            copy.unchanged_user_stack_window(),
-            Some((window, USER_STACK_TOP))
-        );
-        assert_eq!(
-            memory.snapshot().unwrap().unchanged_user_stack_window(),
-            None
-        );
-        // A shared handle sees the same address space.
-        let shared = copy.clone();
-        shared.map_user_range(inside, page, true).unwrap();
-        assert_eq!(copy.unchanged_user_stack_window(), None);
-        // A new watch, as a new image's loader takes, starts again.
-        copy.map_user_range(inside, page, false).unwrap();
-        copy.watch_user_stack_window();
-        assert_eq!(
-            copy.unchanged_user_stack_window(),
-            Some((window, USER_STACK_TOP))
-        );
-        // Without a stack window nothing is watched or unchanged.
-        let plain = GuestMemory::new(0, (16 * MIB) as usize).unwrap();
-        plain.map_user_range(8 * MIB, page, false).unwrap();
-        plain.watch_user_stack_window();
-        plain.note_user_mapping_change(0, u64::MAX);
-        plain.note_every_user_mapping_change();
-        assert_eq!(plain.unchanged_user_stack_window(), None);
     }
 
-    /// A fork's copy of the memory records its own changes, and its source
-    /// its own. A copy that stands for the same address space, as a vfork
-    /// child's does, shares the window's record with its source: a change
-    /// either makes empties the answer for both, until one takes a record of
-    /// its own, as a new image does before it clears the old one, which
-    /// keeps the answer the shared record had.
+    /// A fork's copy of the memory keeps the window's pages, their lineages
+    /// included, and a record of its own: each holds its own changes, not
+    /// the other's. A copy that stands for the same address space, as a vfork
+    /// child's does (`snapshot_sharing_address_space`), shares the record with
+    /// its source, taken with the pages it copies: a change either makes to
+    /// the window leaves the other's pages unknown, while its own show the
+    /// change, until one takes a record of its own, as a new image does
+    /// before it clears the old one.
     #[test]
     fn a_copy_that_shares_the_address_space_shares_the_windows_record() {
-        const MIB: u64 = 1024 * 1024;
         let page = PAGE_SIZE as u64;
         let inside = 12 * MIB;
-        type Change = fn(&GuestMemory, u64);
-        let changes: [(&str, Change); 3] = [
-            ("read-only", |memory, inside| {
-                memory
-                    .map_user_permissions(inside, PAGE_SIZE as u64, true, false)
-                    .unwrap();
-            }),
-            ("noted", |memory, _| {
-                memory.note_user_mapping_change(USER_STACK_TOP - 4096, 1);
-            }),
-            ("cleared", |memory, _| memory.clear_user_access()),
-        ];
         // The memory that changes, and the other one.
         fn sides<'a>(
             copy_changes: bool,
@@ -6115,53 +6429,88 @@ mod tests {
                 (memory, copy)
             }
         }
-        for (name, change) in changes {
-            for copy_changes in [true, false] {
-                let label = format!("{name}, copy changes: {copy_changes}");
+        for copy_changes in [true, false] {
+            let label = format!("copy changes: {copy_changes}");
+            let (memory, window) = watched_stack_window();
+            let whole = Some(vec![(window, USER_STACK_TOP, declared(RW, 0))]);
+            let low = window + inside - 8 * MIB;
+            let changed = Some(vec![
+                (window, low, declared(RW, 0)),
+                (low, low + page, declared(R, 0)),
+                (low + page, USER_STACK_TOP, declared(RW, 0)),
+            ]);
 
-                // A fork's copy.
-                let (memory, window) = watched_stack_window();
-                let unchanged = Some((window, USER_STACK_TOP));
-                let copy = memory.snapshot().unwrap();
-                let (changing, other) = sides(copy_changes, &memory, &copy);
-                change(changing, inside);
-                assert_eq!(other.unchanged_user_stack_window(), unchanged, "{label}");
+            // A fork's copy.
+            let copy = memory.snapshot().unwrap();
+            assert_eq!(held(&copy), whole, "{label}");
+            let (changing, other) = sides(copy_changes, &memory, &copy);
+            changing.protect_user_range(inside, page, R).unwrap();
+            assert_eq!(held(changing), changed, "{label}");
+            assert_eq!(held(other), whole, "{label}");
+            // A fork of the changed memory starts with its change.
+            assert_eq!(held(&changing.snapshot().unwrap()), changed, "{label}");
 
-                // A sharing copy.
-                let (memory, _) = watched_stack_window();
-                let copy = memory.snapshot().unwrap();
-                copy.share_user_stack_window_watch(&memory);
-                assert_eq!(copy.unchanged_user_stack_window(), unchanged, "{label}");
-                let (changing, _) = sides(copy_changes, &memory, &copy);
-                change(changing, inside);
-                assert_eq!(memory.unchanged_user_stack_window(), None, "{label}");
-                assert_eq!(copy.unchanged_user_stack_window(), None, "{label}");
+            // A sharing copy.
+            let (memory, _) = watched_stack_window();
+            let copy = memory.snapshot_sharing_address_space().unwrap();
+            assert_eq!(held(&copy), whole, "{label}");
+            let (changing, other) = sides(copy_changes, &memory, &copy);
+            changing.protect_user_range(inside, page, R).unwrap();
+            assert_eq!(held(changing), changed, "{label}");
+            assert_eq!(other.user_stack_window_pages(), None, "{label}");
+            // A fork of the other memory inherits the unknown pages.
+            assert_eq!(other.snapshot().unwrap().user_stack_window_pages(), None);
 
-                // A sharing copy that took a record of its own.
-                let (memory, _) = watched_stack_window();
-                let copy = memory.snapshot().unwrap();
-                copy.share_user_stack_window_watch(&memory);
-                copy.detach_user_stack_window_watch();
-                let (changing, other) = sides(copy_changes, &memory, &copy);
-                change(changing, inside);
-                assert_eq!(other.unchanged_user_stack_window(), unchanged, "{label}");
-            }
+            // A sharing copy that took a record of its own.
+            let (memory, _) = watched_stack_window();
+            let copy = memory.snapshot_sharing_address_space().unwrap();
+            copy.detach_user_stack_window_watch();
+            let (changing, other) = sides(copy_changes, &memory, &copy);
+            changing.clear_user_access();
+            assert_eq!(held(other), whole, "{label}");
         }
-        // Joining replaces the copy's own answer with its source's, both
-        // ways, and detaching keeps the shared answer.
+        // A page of the window taken over for another use is a change too.
+        let (memory, _) = watched_stack_window();
+        let copy = memory.snapshot_sharing_address_space().unwrap();
+        copy.reserve_region(inside, page, RegionKind::Mmap)
+            .unwrap()
+            .commit();
+        assert_eq!(memory.user_stack_window_pages(), None);
+        // A copy keeps the lineages it is given, a fork's and a sharing one.
         let (memory, window) = watched_stack_window();
-        let copy = memory.snapshot().unwrap();
-        copy.map_user_range(inside, page, true).unwrap();
-        copy.share_user_stack_window_watch(&memory);
+        let low = window + inside - 8 * MIB;
+        memory.set_user_stack_window_lineage(low, page, 2);
+        memory.set_user_stack_window_lineage(low + page, USER_STACK_TOP - low - page, 1);
+        let lineaged = |lineage: u16| DeclaredMapping {
+            prot: RW,
+            flags: 0,
+            lineage,
+        };
+        let given = Some(vec![
+            (window, low, lineaged(0)),
+            (low, low + page, lineaged(2)),
+            (low + page, USER_STACK_TOP, lineaged(1)),
+        ]);
+        assert_eq!(held(&memory), given);
+        assert_eq!(held(&memory.snapshot().unwrap()), given);
         assert_eq!(
-            copy.unchanged_user_stack_window(),
-            Some((window, USER_STACK_TOP))
+            held(&memory.snapshot_sharing_address_space().unwrap()),
+            given
         );
-        memory.note_user_mapping_change(window, page);
+        // A sharing copy of a memory that changed its window holds the change.
+        let (memory, _) = watched_stack_window();
+        memory.protect_user_range(inside, page, R).unwrap();
+        let copy = memory.snapshot_sharing_address_space().unwrap();
+        let listed = held(&memory);
+        assert_eq!(listed.as_ref().map(Vec::len), Some(3));
+        assert_eq!(held(&copy), listed);
+        // A sharing copy of a memory whose record is not certain starts so.
+        let (memory, _) = watched_stack_window();
+        memory.note_user_mapping_change(USER_STACK_TOP - page, page);
+        let copy = memory.snapshot_sharing_address_space().unwrap();
+        assert_eq!(copy.user_stack_window_pages(), None);
         copy.detach_user_stack_window_watch();
-        assert_eq!(copy.unchanged_user_stack_window(), None);
-        let other = memory.snapshot().unwrap();
-        assert_eq!(other.unchanged_user_stack_window(), None);
+        assert_eq!(copy.user_stack_window_pages(), None);
     }
 
     /// The stack window places the top of guest memory at the top of the user

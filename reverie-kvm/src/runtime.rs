@@ -2952,10 +2952,10 @@ impl<T: Tool> Guest<T> for KvmGuest<'_, T> {
     fn memory_map(&self, tid: Pid) -> std::result::Result<reverie::MemoryMap, reverie::FactError> {
         // `pid()` is the host VMM process, whose `/proc/<pid>/maps` describes
         // host addresses, and no host task has the guest's address space. The
-        // executor lists the mappings it can establish exactly (the stack,
-        // while nothing has changed the stack window) for the asking thread's
-        // process, and marks the list incomplete; its limits are documented
-        // on the executor's facts module.
+        // executor lists the mappings it can establish exactly (the stack
+        // window's) for the asking thread's process, and marks the list
+        // incomplete; its limits are documented on the executor's facts
+        // module.
         self.executor.memory_map(tid)
     }
 }
