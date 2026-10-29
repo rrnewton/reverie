@@ -1918,6 +1918,33 @@ impl ElfExecutor {
     pub fn take_pending_signal_for_delivery(
         &mut self,
     ) -> Result<Option<PendingSignal>, reverie::syscalls::Errno> {
+        self.select_pending_signal_for_delivery(false)
+    }
+
+    /// [`Self::take_pending_signal_for_delivery`] for a task whose thread
+    /// group may be exiting: once that group's exit has committed (a peer's
+    /// exit_group, or a signal's group exit), it selects nothing and changes
+    /// nothing. Every task exit commits under the signal transaction lock
+    /// that this selection holds from that test through its dequeue, so no
+    /// group exit can commit between the two, as Linux's get_signal tests
+    /// SIGNAL_GROUP_EXIT under siglock before every dequeue
+    /// (<https://github.com/gregkh/linux/blob/v7.1.3/kernel/signal.c#L2865-L2918>).
+    pub fn take_pending_signal_for_delivery_unless_group_exit(
+        &mut self,
+    ) -> Result<Option<PendingSignal>, reverie::syscalls::Errno> {
+        self.select_pending_signal_for_delivery(true)
+    }
+
+    /// The exit status of this task's thread group once that group's exit
+    /// has committed, while this task is still live; `None` otherwise.
+    pub fn committed_group_exit_status(&self) -> Option<ExitStatus> {
+        wait_group_exit_status(&self.state)
+    }
+
+    fn select_pending_signal_for_delivery(
+        &mut self,
+        unless_group_exit: bool,
+    ) -> Result<Option<PendingSignal>, reverie::syscalls::Errno> {
         if self.signal_controlled() && self.delivery_permit().is_none() {
             return Ok(None);
         }
@@ -1925,6 +1952,12 @@ impl ElfExecutor {
         // dependency. A sibling FIFO open or recvmsg may retain that table indefinitely.
         let transaction = self.state.signal_transaction.clone();
         let _transaction = transaction.lock().unwrap_or_else(|p| p.into_inner());
+        // The lifecycle lock comes after the transaction's, in the ordinary
+        // order, and is released before the dequeue takes the process and
+        // thread locks.
+        if unless_group_exit && wait_group_exit_status(&self.state).is_some() {
+            return Ok(None);
+        }
         self.reserve_signal_effects(1)?;
         let pending = take_signal_event_locked(&mut self.state, SignalSelection::Delivery)?;
         refresh_signalfd_readiness_from_carriers_locked(&self.state, None).map_err(|raw| {
@@ -2232,20 +2265,24 @@ impl ElfExecutor {
         else {
             return Ok((stack_pointer, None, true));
         };
-        if stack.contains(stack_pointer) {
-            // Nested delivery stays on the alternate stack and preserves the
-            // interrupted handler's red zone. The frame must not underflow the
-            // configured lower bound even when adjacent memory is mapped.
-            return Ok((stack_pointer, Some(stack.sp), true));
+        // Linux's get_sigframe (arch/x86/kernel/signal.c) first subtracts the
+        // interrupted stack's red zone, and switches an SA_ONSTACK handler to
+        // the top of the alternate stack only when that adjusted rsp is not
+        // on the stack (`sas_ss_flags(sp) == 0`). So an rsp up to 128 bytes
+        // above the stack's top gets its frame below its red zone, inside the
+        // stack, with no switch, and one on the stack within 128 bytes of its
+        // base gets a frame at the top again. No red zone is subtracted from
+        // the fresh stack, and the frame must fit on it.
+        let red_zone_base = stack_pointer.wrapping_sub(crate::signal::SIGNAL_RED_ZONE);
+        if action.flags & libc::SA_ONSTACK as u64 != 0 && !stack.contains(red_zone_base) {
+            return Ok((stack.sp.wrapping_add(stack.size), Some(stack.sp), false));
         }
-        if action.flags & libc::SA_ONSTACK as u64 == 0 {
-            return Ok((stack_pointer, None, true));
-        }
-        let top = stack.sp.wrapping_add(stack.size);
-        // Linux switches to the top of a fresh alternate stack after applying
-        // the interrupted stack's red-zone adjustment, so no red zone is
-        // subtracted from this new stack.
-        Ok((top, Some(stack.sp), false))
+        // Otherwise the frame goes below the red zone. A nested delivery, one
+        // whose interrupted rsp itself is on the stack (`on_sig_stack`), must
+        // not underflow the configured lower bound even when adjacent memory
+        // is mapped.
+        let nested = stack.contains(stack_pointer);
+        Ok((stack_pointer, nested.then_some(stack.sp), true))
     }
 
     pub fn enter_signal_handler(&mut self, pending: PendingSignal, action: KernelSigaction) {

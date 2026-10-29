@@ -3389,11 +3389,16 @@ fn signal_selection_start<G: GlobalTool>(
 }
 
 /// The exit test after each selection iteration: the boundary is finished
-/// unless it selected nothing, no exit is pending, and a signal the mask
-/// leaves unblocked is (still or newly) pending.
+/// unless it selected nothing, no exit is pending, a signal the mask leaves
+/// unblocked is (still or newly) pending, and the thread may still take a
+/// signal (`takes_no_signal`, asked only when the rest leaves the boundary
+/// unfinished). Linux's get_signal takes a group exit before its next
+/// dequeue also when it comes back after a tracer suppressed a signal or it
+/// discarded an ignored one.
 fn signal_selection_finished(
     executor: &ElfExecutor,
     pending: &CallbackOutcome<Option<PendingSignal>>,
+    takes_no_signal: impl FnOnce() -> bool,
 ) -> bool {
     matches!(
         pending,
@@ -3403,6 +3408,7 @@ fn signal_selection_finished(
             | CallbackOutcome::Completed(Some(_))
     ) || executor.has_pending_exit()
         || !executor.has_eligible_pending_signal()
+        || takes_no_signal()
 }
 
 /// The part of finish_signal_boundary before its first await: a recorded
@@ -6201,7 +6207,9 @@ impl KvmBackend {
             signal_future_sizes::record(&signal_future_sizes::FILTER_NEXT, &selection);
             let pending = selection.await?;
             selection_started = false;
-            if signal_selection_finished(executor, &pending) {
+            if signal_selection_finished(executor, &pending, || {
+                self.guest_thread_takes_no_signal(executor)
+            }) {
                 return Ok(pending);
             }
         }
@@ -6475,6 +6483,13 @@ impl KvmBackend {
     {
         #[cfg(test)]
         timer_signal_observation::observe(&self.vcpu, executor);
+        // Linux's get_signal takes a group exit before it dequeues any signal
+        // (SIGNAL_GROUP_EXIT, at the top of its loop): a thread whose group
+        // began to exit, or that was cancelled, while its timer callback ran
+        // takes no signal here, and the run loop's next iteration ends it.
+        if self.guest_thread_takes_no_signal(executor) {
+            return Ok(UserBoundarySignal::Settled);
+        }
         if !executor.has_eligible_pending_signal() {
             return Ok(UserBoundarySignal::Settled);
         }
@@ -6644,7 +6659,13 @@ impl KvmBackend {
             ),
         };
         for _ in 1..SIGNAL_SELECTIONS_PER_RETURN {
-            if executor.has_pending_exit() || !executor.has_eligible_pending_signal() {
+            // As at a timer boundary's first selection, a group exit or a
+            // cancellation that came during the last selection's hook ends
+            // the loop before another signal is selected.
+            if executor.has_pending_exit()
+                || !executor.has_eligible_pending_signal()
+                || self.guest_thread_takes_no_signal(executor)
+            {
                 break;
             }
             executor.set_current_user_stack_pointer(resume.rsp);
@@ -6762,10 +6783,20 @@ impl KvmBackend {
             None if user_instruction => self.user_boundary_registers(registers, syscall_number)?,
             None => kvm_registers(registers, syscall_number),
         };
-        let selected = if let Some(fault) = fault {
+        // Linux's get_signal takes a group exit, or another thread's exec,
+        // before every dequeue, a fault's signal included. A thread whose
+        // group exit or cancellation this backend has published selects
+        // nothing here and ends at the run loop's next iteration; LinuxEmu
+        // tests a committed group exit under the lock that commits it,
+        // together with the dequeue, so none can commit between the two.
+        let selected = if self.guest_thread_group_exit_status().is_some()
+            || self.guest_thread_is_cancelled()
+        {
+            Ok(None)
+        } else if let Some(fault) = fault {
             Ok(Some(fault.pending()))
         } else {
-            executor.take_pending_signal_for_delivery()
+            executor.take_pending_signal_for_delivery_unless_group_exit()
         };
         flush_pending_signal_effects_with_tool(
             self,
@@ -8345,7 +8376,9 @@ impl KvmBackend {
                                     // pending since the start sends the
                                     // boundary on to the second iteration.
                                     let nothing = CallbackOutcome::Completed(None);
-                                    if signal_selection_finished(executor, &nothing) {
+                                    if signal_selection_finished(executor, &nothing, || {
+                                        self.guest_thread_takes_no_signal(executor)
+                                    }) {
                                         // A finished, skipped boundary whose
                                         // emptiness read found no saved mask
                                         // has nothing to restore: only this

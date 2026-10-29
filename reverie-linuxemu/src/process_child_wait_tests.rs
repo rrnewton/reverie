@@ -590,6 +590,43 @@ fn wait_group_exit_requires_live_generation_and_nonfailed_owner() {
 }
 
 #[test]
+fn a_committed_group_exit_ends_signal_selection_with_nothing_changed() {
+    let mut parent = outside_init_root();
+    let mut sibling = parent.thread_child(9).unwrap();
+    let mut info = [0; reverie::SIGNAL_INFO_SIZE];
+    info[..4].copy_from_slice(&libc::SIGUSR1.to_ne_bytes());
+    info[8..12].copy_from_slice(&libc::SI_TKILL.to_ne_bytes());
+    let event = reverie::SignalEvent::new(
+        libc::SIGUSR1,
+        info,
+        reverie::SignalTarget::Thread {
+            pid: reverie::Pid::from_raw(3),
+            tid: reverie::Pid::from_raw(9),
+        },
+    )
+    .unwrap();
+    sibling.defer_signal_delivery(event).unwrap();
+    assert_eq!(sibling.committed_group_exit_status(), None);
+    // The leader's exit_group commits the group's exit.
+    parent.retire_current_thread(reverie::ExitStatus::Exited(37), true);
+    assert_eq!(
+        sibling.committed_group_exit_status(),
+        Some(reverie::ExitStatus::Exited(37))
+    );
+    // Linux's get_signal takes the group exit before any dequeue: no signal
+    // is selected and the pending one stays pending.
+    assert!(matches!(
+        sibling.take_pending_signal_for_delivery_unless_group_exit(),
+        Ok(None)
+    ));
+    assert!(sibling.has_eligible_pending_signal());
+    // The ordinary selection, which the backend's own runtime uses, still
+    // dequeues it.
+    let pending = sibling.take_pending_signal_for_delivery().unwrap().unwrap();
+    assert_eq!(pending.event.signal(), libc::SIGUSR1);
+}
+
+#[test]
 fn committed_wait_failure_precedes_clean_parent_group_exit() {
     // Exercise production family mutations, not an invented final-state map.
     for failure_kind in [0, 1, 2] {
