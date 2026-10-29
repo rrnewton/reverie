@@ -37775,18 +37775,49 @@ mod tests {
             ..Default::default()
         };
         executor.state.thread_signals.lock().altstack = Some(stack);
-        for current in [stack.sp + 1, top] {
+        // Linux's get_sigframe decides the switch from the rsp less its
+        // 128-byte red zone, and the fit check from the rsp itself.
+        for current in [stack.sp + 129, top] {
             assert_eq!(
                 executor.signal_stack_top(action, current),
                 Ok((current, Some(stack.sp), true)),
-                "an rsp in (base, top] is nested",
+                "an rsp in (base + 128, top] is nested: {current:#x}",
             );
         }
-        assert_eq!(
-            executor.signal_stack_top(action, stack.sp),
-            Ok((top, Some(stack.sp), false)),
-            "an rsp at base is off-stack and starts a fresh altstack frame",
-        );
+        for current in [stack.sp + 1, stack.sp + 128] {
+            assert_eq!(
+                executor.signal_stack_top(action, current),
+                Ok((top, Some(stack.sp), false)),
+                "an rsp in (base, base + 128], its red zone reaching below the \
+                 stack, starts at the top of the stack again: {current:#x}",
+            );
+        }
+        for current in [top + 1, top + 128] {
+            assert_eq!(
+                executor.signal_stack_top(action, current),
+                Ok((current, None, true)),
+                "an rsp in (top, top + 128], its red zone reaching into the stack, \
+                 gets its frame below the red zone with no switch: {current:#x}",
+            );
+        }
+        for current in [stack.sp, top + 129] {
+            assert_eq!(
+                executor.signal_stack_top(action, current),
+                Ok((top, Some(stack.sp), false)),
+                "an rsp whose red zone is off the stack starts a fresh altstack frame: \
+                 {current:#x}",
+            );
+        }
+        // Without SA_ONSTACK there is no switch, and a nested frame must still
+        // fit on the stack.
+        let ordinary = KernelSigaction::default();
+        for (current, nested) in [(stack.sp + 1, true), (top, true), (top + 1, false)] {
+            assert_eq!(
+                executor.signal_stack_top(ordinary, current),
+                Ok((current, nested.then_some(stack.sp), true)),
+                "without SA_ONSTACK: {current:#x}",
+            );
+        }
         // A frame saves the stack's own flags, as Linux's
         // unsafe_save_altstack does, never SS_ONSTACK: a frame nested on the
         // stack saves the same uc_stack as the frame that switched to it.
