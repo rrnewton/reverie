@@ -760,6 +760,7 @@ fn protocol(operation: &'static str) -> Error {
 }
 
 #[cfg(test)]
+#[allow(clippy::disallowed_methods, reason = "tests may make threads freely")]
 mod tests {
     use std::future::Future;
     use std::pin::Pin;

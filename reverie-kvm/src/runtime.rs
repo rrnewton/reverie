@@ -6024,6 +6024,15 @@ impl KvmBackend {
     /// `SYSRET`s) and the guest exits via `exit`/`exit_group` rather than `HLT`.
     ///
     /// Returns the tool's global state, guest exit code, stdout, and stderr.
+    ///
+    /// The guest's first process runs on the thread that polls this future,
+    /// not on a supervisor thread of its own, so that thread needs as much
+    /// stack as one: about 2.3 MiB for a large Tool in a debug build, more
+    /// than Rust's 2 MiB default for a spawned thread. Poll it from a thread
+    /// with at least
+    /// [`KVM_SUPERVISOR_THREAD_STACK_BYTES`](reverie_kvm_core::supervisor_thread::KVM_SUPERVISOR_THREAD_STACK_BYTES)
+    /// of stack; every process and thread the guest creates later gets that
+    /// much on its own.
     pub async fn run_static_elf_with_tool<T>(
         &mut self,
         config: <T::GlobalState as GlobalTool>::Config,
@@ -6051,6 +6060,12 @@ impl KvmBackend {
     /// failure, so its owner can finish scheduler/global cleanup. An outer
     /// error means setup failed before the global state existed, or ownership
     /// could not be recovered after all owned children were joined.
+    ///
+    /// As with [`Self::run_static_elf_with_tool`], the guest's first process
+    /// runs on the thread that polls this future: poll it from a thread with
+    /// at least
+    /// [`KVM_SUPERVISOR_THREAD_STACK_BYTES`](reverie_kvm_core::supervisor_thread::KVM_SUPERVISOR_THREAD_STACK_BYTES)
+    /// of stack.
     pub async fn run_static_elf_with_tool_completion<T>(
         &mut self,
         config: <T::GlobalState as GlobalTool>::Config,
@@ -8827,6 +8842,7 @@ pub(crate) fn kvm_registers(registers: kvm_regs, syscall_number: u64) -> libc::u
 }
 
 #[cfg(test)]
+#[allow(clippy::disallowed_methods, reason = "tests may make threads freely")]
 mod tests {
     use super::*;
     use crate::bootstrap::BOOT_RESERVED_END;
@@ -10406,6 +10422,7 @@ mod child_exit_tests;
 
 #[cfg(test)]
 #[path = "runtime/failure_tests.rs"]
+#[allow(clippy::disallowed_methods, reason = "tests may make threads freely")]
 mod failure_tests;
 
 #[cfg(test)]
@@ -10444,6 +10461,7 @@ mod worker_execution_panic_tests;
 mod entry_owner_tests;
 
 #[cfg(test)]
+#[allow(clippy::disallowed_methods, reason = "tests may make threads freely")]
 mod callback_context_tests;
 
 #[cfg(test)]

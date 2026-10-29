@@ -7,6 +7,7 @@
  */
 
 #![cfg(target_arch = "x86_64")]
+#![allow(clippy::disallowed_methods, reason = "tests may make threads freely")]
 
 use std::collections::BTreeMap;
 use std::os::unix::fs::FileTypeExt;
