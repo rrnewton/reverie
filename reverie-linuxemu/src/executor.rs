@@ -38992,7 +38992,7 @@ mod tests {
     }
 
     #[test]
-    fn memory_residency_is_deterministic() {
+    fn mincore_validates_without_writing_residency() {
         const VECTOR: u64 = 4 * PAGE_SIZE;
 
         let root = TestDir::new();
@@ -39087,6 +39087,9 @@ mod tests {
             syscall_result(&mut memory, &mut state, libc::SYS_munlockall, [u64::MAX; 6],),
             0
         );
+        // Residency is Detcore's decision on every backend; LinuxEmu only
+        // validates and leaves the vector's bytes as the guest left them.
+        memory.write(VECTOR, &[7_u8, 7]).unwrap();
         assert_eq!(
             syscall_result(
                 &mut memory,
@@ -39098,7 +39101,7 @@ mod tests {
         );
         assert_eq!(
             read_guest_bytes::<2>(&ProviderMemory(&memory), VECTOR).unwrap(),
-            [1, 1]
+            [7, 7]
         );
         assert_eq!(
             syscall_result(
