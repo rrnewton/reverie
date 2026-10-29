@@ -3832,6 +3832,7 @@ impl KvmBackend {
                 tests::entry_action_tests::observe("host_spawn");
                 let handle = std::thread::Builder::new()
                     .name(format!("reverie-kvm-guest-{child_tid}"))
+                    .stack_size(crate::supervisor_thread::stack_bytes())
                     .spawn(move || {
                         let _completion_notice = completion_notice;
                         let mut run_child = move || {
@@ -4306,7 +4307,8 @@ impl KvmBackend {
                 let start_gate = ChildStartGate::new(start_sender);
                 let handle = ChildThread::spawn_owned(
                     std::thread::Builder::new()
-                        .name(format!("reverie-kvm-process-{raw_child_pid}")),
+                        .name(format!("reverie-kvm-process-{raw_child_pid}"))
+                        .stack_size(crate::supervisor_thread::stack_bytes()),
                     (
                         child,
                         child_tool,
@@ -4637,7 +4639,9 @@ impl KvmBackend {
                 #[cfg(test)]
                 tests::entry_action_tests::observe("tool_spawn");
                 let handle = crate::failure::spawn_owned(
-                    std::thread::Builder::new().name(format!("reverie-kvm-guest-{child_tid}")),
+                    std::thread::Builder::new()
+                        .name(format!("reverie-kvm-guest-{child_tid}"))
+                        .stack_size(crate::supervisor_thread::stack_bytes()),
                     (
                         child,
                         child_executor,
