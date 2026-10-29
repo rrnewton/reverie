@@ -20,6 +20,9 @@
 //!   logically `Accessible { writable: true }`, so exposing and hiding a
 //!   scratch page touches no tree node. Every method answers for the logical
 //!   map, and the overlay is never a key of the tree.
+//! - [`UserPages`] can watch a range of pages ([`UserPages::watch`]): every
+//!   method that changes the logical state of a watched page records it, so
+//!   no caller can change one unseen.
 
 use std::collections::BTreeMap;
 use std::fmt;
@@ -102,6 +105,20 @@ pub(super) struct UserPages {
     /// Exposed Tool-scratch pages, ascending, never keys of `map`. One per
     /// Tool thread inside a callback, so a linear scan is the right search.
     scratch: Vec<u64>,
+    /// The watched pages, if any; see [`UserPages::watch`].
+    watch: Option<Watch>,
+}
+
+/// A range of pages whose logical state [`UserPages`] watches.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct Watch {
+    /// The first watched page.
+    first: u64,
+    /// The last watched page.
+    last: u64,
+    /// Whether the logical state of a watched page has changed, or
+    /// [`UserPages::note_change`] named one, since the watch began.
+    changed: bool,
 }
 
 impl UserPages {
@@ -109,6 +126,40 @@ impl UserPages {
         Self {
             map: Versioned::new(BTreeMap::new()),
             scratch: Vec::new(),
+            watch: None,
+        }
+    }
+
+    /// Watches pages `first..=last` from now on, replacing any earlier watch:
+    /// once a method of this map changes the logical state of one of them
+    /// (inserts a page with another state, removes one, clears the map, or
+    /// exposes or hides a scratch page over one), or
+    /// [`UserPages::note_change`] names one, the watch records that it
+    /// changed, until the next `watch`. A clone keeps the watch as it is.
+    pub(super) fn watch(&mut self, first: u64, last: u64) {
+        self.watch = Some(Watch {
+            first,
+            last,
+            changed: false,
+        });
+    }
+
+    /// The watched pages, `(first, last)`, if a watch is set and none of its
+    /// pages has changed since it began.
+    pub(super) fn unchanged_watch(&self) -> Option<(u64, u64)> {
+        self.watch
+            .filter(|watch| !watch.changed)
+            .map(|watch| (watch.first, watch.last))
+    }
+
+    /// Records that something the logical states do not hold changed for
+    /// pages `first..=last`: when they overlap the watch, it has changed.
+    pub(super) fn note_change(&mut self, first: u64, last: u64) {
+        if let Some(watch) = &mut self.watch
+            && first <= watch.last
+            && last >= watch.first
+        {
+            watch.changed = true;
         }
     }
 
@@ -152,18 +203,32 @@ impl UserPages {
         let exposed = self.take_scratch(page);
         let previous = self.map.edit().insert(page, state);
         debug_assert!(!(exposed && previous.is_some()));
-        if exposed { Some(EXPOSED) } else { previous }
+        let previous = if exposed { Some(EXPOSED) } else { previous };
+        if previous != Some(state) {
+            self.note_change(page, page);
+        }
+        previous
     }
 
     /// `BTreeMap::remove` of the logical map.
     pub(super) fn remove(&mut self, page: &u64) -> Option<UserPageState> {
-        if self.take_scratch(*page) {
-            return Some(EXPOSED);
+        let previous = if self.take_scratch(*page) {
+            Some(EXPOSED)
+        } else {
+            self.map.edit().remove(page)
+        };
+        if previous.is_some() {
+            self.note_change(*page, *page);
         }
-        self.map.edit().remove(page)
+        previous
     }
 
     pub(super) fn clear(&mut self) {
+        if let Some(watch) = self.watch
+            && self.range(watch.first..=watch.last).next().is_some()
+        {
+            self.note_change(watch.first, watch.last);
+        }
         self.scratch.clear();
         self.map.edit().clear();
     }
@@ -177,20 +242,30 @@ impl UserPages {
             // Already exposed: inserting the same state changes nothing.
             return;
         };
-        if !known_absent && self.map.contains_key(&page) {
-            self.map.edit().remove(&page);
-        }
+        let previous = if !known_absent && self.map.contains_key(&page) {
+            self.map.edit().remove(&page)
+        } else {
+            None
+        };
         self.scratch.insert(index, page);
+        if previous != Some(EXPOSED) {
+            self.note_change(page, page);
+        }
     }
 
     /// Exactly `remove(&page)` of the logical map, without touching the tree
     /// when `page` is known not to be one of its keys.
     pub(super) fn hide_scratch(&mut self, page: u64, known_absent: bool) {
-        if self.take_scratch(page) || known_absent {
+        if self.take_scratch(page) {
+            self.note_change(page, page);
+            return;
+        }
+        if known_absent {
             return;
         }
         if self.map.contains_key(&page) {
             self.map.edit().remove(&page);
+            self.note_change(page, page);
         }
     }
 
@@ -358,16 +433,35 @@ mod tests {
     }
 
     /// Model check: every operation, overlay paths included, leaves the same
-    /// logical map as the plain `BTreeMap` operation it stands for.
+    /// logical map as the plain `BTreeMap` operation it stands for, and the
+    /// watch records a change exactly when an operation changed the logical
+    /// state of a watched page, or `note_change` named one.
     #[test]
     fn user_pages_behave_as_their_logical_btree_map() {
         let mut rng = Lcg(0x5eed);
+        let mut changes = 0;
         for _round in 0..64 {
             let mut pages = UserPages::new();
             let mut model = BTreeMap::new();
-            for _ in 0..200 {
+            assert_eq!(pages.unchanged_watch(), None);
+            let first = rng.next(20);
+            let last = first + rng.next(20 - first);
+            let mut watching = false;
+            let mut changed = false;
+            for step in 0..200 {
+                if step == 20 {
+                    // A watch begun on a map that already holds pages.
+                    pages.watch(first, last);
+                    watching = true;
+                    changed = false;
+                }
                 let page = rng.next(20);
-                match rng.next(7) {
+                let before: Vec<_> = model
+                    .range(first..=last)
+                    .map(|(&page, &state)| (page, state))
+                    .collect();
+                let mut noted = false;
+                match rng.next(8) {
                     0 | 1 => {
                         let value = state(rng.next(3));
                         assert_eq!(pages.insert(page, value), model.insert(page, value));
@@ -384,6 +478,13 @@ mod tests {
                         pages.hide_scratch(page, absent);
                         model.remove(&page);
                     }
+                    6 => {
+                        if rng.next(8) == 0 {
+                            let end = page + rng.next(4);
+                            pages.note_change(page, end);
+                            noted = page <= last && end >= first;
+                        }
+                    }
                     _ => {
                         if rng.next(16) == 0 {
                             pages.clear();
@@ -391,6 +492,16 @@ mod tests {
                         }
                     }
                 }
+                let after: Vec<_> = model
+                    .range(first..=last)
+                    .map(|(&page, &state)| (page, state))
+                    .collect();
+                if watching && (noted || before != after) {
+                    changed = true;
+                    changes += 1;
+                }
+                let expected = (watching && !changed).then_some((first, last));
+                assert_eq!(pages.unchanged_watch(), expected, "step {step}");
                 assert!(
                     pages
                         .scratch
@@ -401,8 +512,11 @@ mod tests {
                 assert_same(&pages, &model, &mut rng);
                 let cloned = pages.clone();
                 assert_same(&cloned, &model, &mut rng);
+                assert_eq!(cloned.unchanged_watch(), expected);
             }
         }
+        // The rounds exercised the watch, not only its absence.
+        assert!(changes > 64, "{changes}");
     }
 
     #[test]
