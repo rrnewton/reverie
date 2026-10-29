@@ -288,3 +288,73 @@ fn a_call_during_a_dequeue_notification_is_refused_before_the_cancellation_check
         "the same call outside the notification is cancelled"
     );
 }
+
+/// A parked syscall's signal observation dequeues through
+/// `take_signal_for_observation`, and Linux's get_signal takes a group exit
+/// before that dequeue too. Once a peer's exit_group has committed, and
+/// before this backend has published it, the observation selects nothing,
+/// leaves the pending signal pending, and publishes the committed exit, so
+/// that the thread ends before it next runs.
+#[test]
+fn a_parked_observation_finds_a_committed_group_exit_and_publishes_it() {
+    let (mut backend, mut root) = installed();
+    root.enable_signal_dequeues();
+    let mut worker = root.thread_child(2).unwrap();
+    let pid = Pid::from_raw(root.task_tid());
+    let mut info = [0; reverie::SIGNAL_INFO_SIZE];
+    info[..4].copy_from_slice(&libc::SIGUSR1.to_ne_bytes());
+    info[8..12].copy_from_slice(&libc::SI_TKILL.to_ne_bytes());
+    let event = SignalEvent::new(
+        libc::SIGUSR1,
+        info,
+        reverie::SignalTarget::Thread { pid, tid: pid },
+    )
+    .unwrap();
+    root.defer_signal_delivery(event).unwrap();
+    assert!(
+        root.has_eligible_pending_signal(),
+        "an unguarded dequeue would take it"
+    );
+    let status = reverie::ExitStatus::Exited(42);
+    assert_eq!(
+        worker.retire_guest_thread(status, true),
+        crate::executor::ProcessExit {
+            status,
+            group: true
+        }
+    );
+    assert_eq!(
+        backend.guest_thread_group_exit_status(),
+        None,
+        "unpublished"
+    );
+    let memory = backend.memory.clone();
+    let mut completed = false;
+    let mut adapter = StaticElfSyscallExecutor {
+        backend: &mut backend,
+        executor: &mut root,
+        memory,
+        process_context: ProcessExecutionContext::Lifecycle,
+        last_result: None,
+        polled_read_attempt: None,
+        process_completed: &mut completed,
+        callback_site: None,
+        original_syscall: None,
+        signal_guard: SignalGuard::Ordinary,
+    };
+    assert_eq!(
+        LinuxEmuSignalControl::take_signal_for_observation(&mut adapter),
+        Ok(None),
+        "nothing is selected"
+    );
+    drop(adapter);
+    assert_eq!(
+        backend.guest_thread_group_exit_status(),
+        Some(status),
+        "the observation published the committed exit"
+    );
+    assert!(
+        root.has_eligible_pending_signal(),
+        "the signal stays pending"
+    );
+}
