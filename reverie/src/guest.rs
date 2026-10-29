@@ -1358,6 +1358,58 @@ pub trait Guest<T: Tool>: Send + GlobalRPC<T::GlobalState> {
     ) -> Result<crate::LinkPath, crate::FactError> {
         Err(crate::FactError::NotProvided)
     }
+
+    /// Returns the mappings of the address space of thread `tid`, a live
+    /// guest thread of this tool instance in any of its processes, as its
+    /// `/proc/<pid>/task/<tid>/maps` lists them to a reader Linux lets read
+    /// it, and whether the list is all of them; see [`crate::MemoryMap`]. The
+    /// threads of a process share its address space, so they have the same
+    /// list. `tid` is numbered as [`Guest::tid`] numbers this thread.
+    ///
+    /// `Err(FactError::Errno(ESRCH))` means that `tid` names no live thread
+    /// the backend runs for this tool instance, exactly as for
+    /// [`Guest::signal_sets`]: a thread that has exited, reaped or not, a host
+    /// task that is not one of its guest threads, or a number no task has,
+    /// zero and below included. Other errnos come from the backend's own
+    /// read. `Err(FactError::NotProvided)` means the backend does not report
+    /// this fact, for any thread or for this one; it is the default, for a
+    /// backend that states nothing.
+    ///
+    /// Every listed mapping is exact for the backend's own address space, as
+    /// Linux prints it, whether or not the list is complete: a backend that
+    /// cannot establish a mapping's fields leaves the mapping out. That
+    /// address space can differ from the one a native process would have
+    /// after the same calls (a backend may map a whole stack at once, for
+    /// example); the backend's documentation names how. A list with
+    /// [`complete`](crate::MemoryMap::complete) false omits mappings that
+    /// exist, which the backend's documentation names. A tool must not infer
+    /// from a missing entry that no mapping is there, such as that an address
+    /// is unmapped or free, and a tool that renders such a list as a `maps`
+    /// file must name the omissions as a difference of the backend.
+    ///
+    /// The answer describes the moment of the call. This thread is stopped in
+    /// the callback, but other guest threads may run unless the tool keeps
+    /// them from it, and any thread of the process can map, unmap or protect
+    /// memory. Linux renders a file's name from the root of the task that
+    /// reads the map, which here is the backend's reader: the guest's root
+    /// unless a guest thread changed its own.
+    ///
+    /// A backend whose guest threads are host tasks the tool may read
+    /// ([`crate::BackendCapabilities::host_task_reads_reach_guest_threads`])
+    /// reads the kernel's map of a thread it traces, through a handle on that
+    /// task taken while it traced it, so it reads no other task's map, not
+    /// even that of a task that took over the number of one it traced. A
+    /// backend that runs the guest's syscalls itself answers from the address
+    /// space it keeps, and each mapping it lists is exact for that address
+    /// space. Any other backend does not report it, because a host read there
+    /// would describe another task.
+    ///
+    /// Like [`Guest::descriptor_status`], the call is synchronous: the
+    /// backend reads state it reaches without running the guest or injecting
+    /// anything, while this thread stays stopped.
+    fn memory_map(&self, _tid: Pid) -> Result<crate::MemoryMap, crate::FactError> {
+        Err(crate::FactError::NotProvided)
+    }
 }
 
 /// Wraps a `Guest<T>` such that it implements `Guest<U>`.
@@ -1695,5 +1747,9 @@ where
         link: crate::PathLink,
     ) -> Result<crate::LinkPath, crate::FactError> {
         self.inner.link_path(tid, link)
+    }
+
+    fn memory_map(&self, tid: Pid) -> Result<crate::MemoryMap, crate::FactError> {
+        self.inner.memory_map(tid)
     }
 }

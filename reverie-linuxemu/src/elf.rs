@@ -34,6 +34,7 @@ use goblin::elf::header::ET_DYN;
 use goblin::elf::header::ET_EXEC;
 use goblin::elf::program_header::PF_W;
 use goblin::elf::program_header::PF_X;
+use goblin::elf::program_header::PT_GNU_STACK;
 use goblin::elf::program_header::PT_INTERP;
 use goblin::elf::program_header::PT_LOAD;
 use reverie::ExitStatus;
@@ -1094,6 +1095,12 @@ fn file_system_is_read_only(file: &std::fs::File) -> std::io::Result<bool> {
 pub struct LoadedStaticElf {
     pub entry_point: u64,
     pub stack_pointer: u64,
+    /// Whether the main image asks for an executable stack: its last
+    /// `PT_GNU_STACK` program header has `PF_X` (`load_elf_binary` in Linux's
+    /// `fs/binfmt_elf.c`), so Linux maps the stack executable
+    /// (`setup_arg_pages` in `fs/exec.c`). The stack window is mapped the same
+    /// either way.
+    pub stack_executable: bool,
     /// Initial program break set at load time (`align_up(main_end)`); the base
     /// of the brk-managed heap. The live heap spans `[heap_base, program_break)`.
     pub heap_base: u64,
@@ -1370,6 +1377,7 @@ impl LoadedStaticElf {
         Ok(Self {
             entry_point: self.entry_point,
             stack_pointer: self.stack_pointer,
+            stack_executable: self.stack_executable,
             heap_base: self.heap_base,
             min_break: self.min_break,
             program_break: self.program_break,
@@ -1767,6 +1775,12 @@ pub fn load_static_elf_file(
 // rollback. Initial-install errors release tentative ownership. Exec invokes
 // this only after its existing fatal point of no return.
 fn begin_image(memory: &GuestMemory) -> Result<()> {
+    // The new image is a new address space. A vfork child that shares its
+    // parent's stack-window record (`GuestMemory::share_user_stack_window_watch`)
+    // takes one of its own first, so clearing the old image here, which
+    // records a change, leaves the parent's entry, as Linux leaves the
+    // parent's mappings when the child execs.
+    memory.detach_user_stack_window_watch();
     memory.clear_user_access();
     // The new image's layout replaces the old one whole: its identity end and
     // windows may differ (a larger image raises the identity end).
@@ -2089,6 +2103,15 @@ fn load_executable(
         main_entry,
     )?;
     memory.map_user_range(memory.guest_end() - STACK_LIMIT, STACK_LIMIT, false)?;
+    // The window as this image starts with it: from here on, any change to it
+    // is recorded (`GuestMemory::unchanged_user_stack_window`).
+    memory.watch_user_stack_window();
+    // Linux takes the last PT_GNU_STACK header's PF_X.
+    let stack_executable = elf
+        .program_headers
+        .iter()
+        .rfind(|header| header.p_type == PT_GNU_STACK)
+        .is_some_and(|header| header.p_flags & PF_X != 0);
     let program_break = align_up(main_end, PAGE_SIZE)?;
     // Mappings are placed top-down in the mmap window, [mmap_base, mmap_limit)
     // physically; the program break grows up to the end of the identity
@@ -2143,6 +2166,7 @@ fn load_executable(
     Ok(LoadedStaticElf {
         entry_point,
         stack_pointer,
+        stack_executable,
         heap_base: program_break,
         min_break,
         program_break,
