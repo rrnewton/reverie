@@ -820,7 +820,7 @@ impl ElfExecutor {
                             request.tls,
                         ),
                     Ok(request) => match validate_process_clone_flags(request.flags) {
-                        Err(error) => error,
+                        Err(refused) => self.refuse_clone_flags(refused),
                         Ok(())
                             if request.flags & PROCESS_CLONE_TID_FLAGS != 0
                                 || request.parent_tid.is_some()
@@ -866,8 +866,8 @@ impl ElfExecutor {
                 (flags & libc::CLONE_SETTLS as u64 != 0).then_some(tls),
             );
         }
-        if let Err(error) = validate_process_clone_flags(flags) {
-            return error;
+        if let Err(refused) = validate_process_clone_flags(flags) {
+            return self.refuse_clone_flags(refused);
         }
         let parent_tid =
             (flags & libc::CLONE_PARENT_SETTID as u64 != 0).then_some(parent_tid_address);
@@ -883,6 +883,16 @@ impl ElfExecutor {
             flags & CLONE_CLEAR_SIGHAND != 0,
             flags & libc::CLONE_VM as u64 != 0,
         )
+    }
+
+    /// The answer to a clone whose flags this backend refuses, recording the
+    /// typed refusal (`UnsupportedOperation::CloneSharing`) where the reason
+    /// is sharing Linux allows and this backend cannot give the child.
+    pub(super) fn refuse_clone_flags(&mut self, refused: CloneFlagsRefused) -> i64 {
+        if let Some(refusal) = refused.refusal() {
+            self.unsupported_refusal = Some(refusal);
+        }
+        refused.result()
     }
 
     /// Reserve the next run-wide task ID without wrapping, spending the run's
@@ -912,8 +922,8 @@ impl ElfExecutor {
         child_tid_address: Option<u64>,
         tls: Option<u64>,
     ) -> i64 {
-        if let Err(error) = validate_thread_clone_flags(flags) {
-            return error;
+        if let Err(refused) = validate_thread_clone_flags(flags) {
+            return self.refuse_clone_flags(refused);
         }
         let Some(child_stack) = child_stack else {
             return negative_errno(libc::EINVAL);
@@ -2831,10 +2841,10 @@ impl Drop for ElfExecutor {
     }
 }
 
-pub(super) fn validate_process_clone_flags(flags: u64) -> Result<(), i64> {
+pub(super) fn validate_process_clone_flags(flags: u64) -> Result<(), CloneFlagsRefused> {
     let signal = flags & 0xff;
     if signal != 0 && signal != libc::SIGCHLD as u64 {
-        return Err(negative_errno(libc::EINVAL));
+        return Err(CloneFlagsRefused::errno(libc::EINVAL));
     }
     let allowed = 0xff
         | libc::CLONE_VM as u64
@@ -2845,30 +2855,50 @@ pub(super) fn validate_process_clone_flags(flags: u64) -> Result<(), i64> {
         // The fork action clears caught handlers in the child snapshot.
         | CLONE_CLEAR_SIGHAND;
     if flags & !allowed != 0 {
-        return Err(negative_errno(libc::ENOTSUP));
+        return Err(CloneFlagsRefused::errno(libc::ENOTSUP));
     }
     let shared_address_space = flags & (libc::CLONE_VM as u64 | libc::CLONE_VFORK as u64);
+    if shared_address_space == libc::CLONE_VM as u64 {
+        // A process that goes on sharing its parent's memory after the call
+        // returns, which Linux allows and this backend cannot give the child.
+        return Err(CloneFlagsRefused::sharing(
+            libc::ENOTSUP,
+            SHARED_MEMORY_PROCESS_REFUSAL,
+        ));
+    }
     if shared_address_space != 0
         && shared_address_space != (libc::CLONE_VM as u64 | libc::CLONE_VFORK as u64)
     {
-        return Err(negative_errno(libc::ENOTSUP));
+        return Err(CloneFlagsRefused::errno(libc::ENOTSUP));
     }
     if shared_address_space != 0 && flags & PROCESS_CLONE_TID_FLAGS != 0 {
-        return Err(negative_errno(libc::ENOTSUP));
+        return Err(CloneFlagsRefused::errno(libc::ENOTSUP));
     }
     Ok(())
 }
 
 // TODO-HUMAN-REVIEW(PR-132): Review the accepted glibc pthread clone flag profile.
-fn validate_thread_clone_flags(flags: u64) -> Result<(), i64> {
+fn validate_thread_clone_flags(flags: u64) -> Result<(), CloneFlagsRefused> {
     if flags & 0xff != 0 {
-        return Err(negative_errno(libc::EINVAL));
+        return Err(CloneFlagsRefused::errno(libc::EINVAL));
     }
     if flags & THREAD_CLONE_REQUIRED_FLAGS != THREAD_CLONE_REQUIRED_FLAGS {
-        return Err(negative_errno(libc::EINVAL));
+        // Linux requires CLONE_SIGHAND with CLONE_THREAD and CLONE_VM with
+        // CLONE_SIGHAND, and refuses anything less with EINVAL. A thread
+        // without CLONE_FS or CLONE_FILES is valid there: one with a working
+        // directory or descriptor table of its own, which this backend cannot
+        // give the child.
+        let linux_requires = (libc::CLONE_VM | libc::CLONE_SIGHAND | libc::CLONE_THREAD) as u64;
+        if flags & linux_requires == linux_requires {
+            return Err(CloneFlagsRefused::sharing(
+                libc::EINVAL,
+                UNSHARED_THREAD_REFUSAL,
+            ));
+        }
+        return Err(CloneFlagsRefused::errno(libc::EINVAL));
     }
     if flags & !THREAD_CLONE_ALLOWED_FLAGS != 0 {
-        return Err(negative_errno(libc::ENOTSUP));
+        return Err(CloneFlagsRefused::errno(libc::ENOTSUP));
     }
     Ok(())
 }
