@@ -413,51 +413,50 @@ where
         let completion = Arc::new(ChildCompletionSlot::default());
         let child_completion = completion.clone();
         let (observed, observations) = std::sync::mpsc::channel();
-        let handle =
-            ChildThread::spawn_owned(std::thread::Builder::new(), child, move |mut child| {
-                let outcome = match receiver.recv() {
-                    Ok(
-                        command @ (ChildStartCommand::Cancel
-                        | ChildStartCommand::CancelAfterFailure),
-                    ) => {
-                        let _ = observed.send(NativeChildCommand::Cancel);
-                        if let Some(failure) = command.failure() {
-                            child.retire(Err(failure))
-                        } else {
-                            Ok(ToolProcessExit {
-                                exit: child.executor.as_mut().unwrap().cancel_current_thread(),
-                                disposition: ToolExitDisposition::ExplicitCancellation,
-                            })
-                        }
+        let builder =
+            std::thread::Builder::new().stack_size(crate::supervisor_thread::stack_bytes());
+        let handle = ChildThread::spawn_owned(builder, child, move |mut child| {
+            let outcome = match receiver.recv() {
+                Ok(
+                    command @ (ChildStartCommand::Cancel | ChildStartCommand::CancelAfterFailure),
+                ) => {
+                    let _ = observed.send(NativeChildCommand::Cancel);
+                    if let Some(failure) = command.failure() {
+                        child.retire(Err(failure))
+                    } else {
+                        Ok(ToolProcessExit {
+                            exit: child.executor.as_mut().unwrap().cancel_current_thread(),
+                            disposition: ToolExitDisposition::ExplicitCancellation,
+                        })
                     }
-                    Ok(ChildStartCommand::Start) => {
-                        let _ = observed.send(NativeChildCommand::Start);
-                        let result =
-                            match futures::executor::block_on(child.run_callback(&callback)) {
-                                Ok(NativeCallbackOutcome::Returned(result)) => result
-                                    .map(|code| ExitStatus::Exited(code as i32))
-                                    .map_err(Error::Reverie),
-                                Ok(NativeCallbackOutcome::RunFailed) => Err(Error::RunAborted),
-                                Err(error) => Err(error),
-                            };
-                        child.retire(result)
-                    }
-                    Err(_) => child.retire(Err(Error::UnexpectedVcpuExit(
-                        "native child lost parent".to_owned(),
-                    ))),
-                };
-                let wait_context = child
-                    .executor
-                    .as_ref()
-                    .unwrap()
-                    .fixture_child_wait_context();
-                let result = futures::executor::block_on(child.finish_retired(outcome, Ok(())));
-                if let Ok((status, _, _)) = &result {
-                    // No output is captured by this native fixture.
-                    wait_context.publish_fixture_owner(*status, &child_completion)?;
                 }
-                result.map(|_| ())
-            });
+                Ok(ChildStartCommand::Start) => {
+                    let _ = observed.send(NativeChildCommand::Start);
+                    let result = match futures::executor::block_on(child.run_callback(&callback)) {
+                        Ok(NativeCallbackOutcome::Returned(result)) => result
+                            .map(|code| ExitStatus::Exited(code as i32))
+                            .map_err(Error::Reverie),
+                        Ok(NativeCallbackOutcome::RunFailed) => Err(Error::RunAborted),
+                        Err(error) => Err(error),
+                    };
+                    child.retire(result)
+                }
+                Err(_) => child.retire(Err(Error::UnexpectedVcpuExit(
+                    "native child lost parent".to_owned(),
+                ))),
+            };
+            let wait_context = child
+                .executor
+                .as_ref()
+                .unwrap()
+                .fixture_child_wait_context();
+            let result = futures::executor::block_on(child.finish_retired(outcome, Ok(())));
+            if let Ok((status, _, _)) = &result {
+                // No output is captured by this native fixture.
+                wait_context.publish_fixture_owner(*status, &child_completion)?;
+            }
+            result.map(|_| ())
+        });
         let handle = match handle {
             Ok(handle) => handle,
             Err((error, mut child)) => {
@@ -487,14 +486,17 @@ where
     ) {
         let failure = self.failure.clone();
         let group = self.workers.clone();
-        let handle = std::thread::spawn(move || {
-            crate::vm::finish_host_worker_outcome(Some(&failure), tid, work(), |failed| {
-                if failed {
-                    group.record_worker_failure(tid.as_raw());
-                }
+        let handle = std::thread::Builder::new()
+            .stack_size(crate::supervisor_thread::stack_bytes())
+            .spawn(move || {
+                crate::vm::finish_host_worker_outcome(Some(&failure), tid, work(), |failed| {
+                    if failed {
+                        group.record_worker_failure(tid.as_raw());
+                    }
+                })
+                .map(|()| (ExitStatus::Exited(0), Vec::new(), Vec::new()))
             })
-            .map(|()| (ExitStatus::Exited(0), Vec::new(), Vec::new()))
-        });
+            .expect("failed to spawn the native host worker");
         self.workers.add_worker_handle(tid.as_raw(), handle);
     }
 
