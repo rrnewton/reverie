@@ -906,8 +906,8 @@ impl ElfExecutor {
                 if clone.flags & (libc::CLONE_VM | libc::CLONE_THREAD) as u64 != 0 {
                     return Err(refusal());
                 }
-                if let Err(error) = validate_process_clone_flags(clone.flags) {
-                    return Ok(error);
+                if let Err(refused) = validate_process_clone_flags(clone.flags) {
+                    return Ok(self.refuse_clone_flags(refused));
                 }
                 if clone.flags & PROCESS_CLONE_TID_FLAGS != 0
                     || clone.parent_tid.is_some()
@@ -1027,6 +1027,9 @@ impl ElfExecutor {
                     .or_else(|| tool_decided_refusal(request, result))
                     .or_else(|| madvise_refusal(request, result))
                     .or_else(|| signalfd_refusal(&self.state, request, result))
+                    .or_else(|| protection_key_refusal(request, result))
+                    .or_else(|| userfaultfd_refusal(request, result))
+                    .or_else(|| masked_wait_refusal(request, result))
                 {
                     self.unsupported_refusal = Some(refusal);
                 }
