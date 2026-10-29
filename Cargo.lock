@@ -1615,7 +1615,9 @@ dependencies = [
  "kvm-bindings",
  "kvm-ioctls",
  "libc",
+ "proc-macro2",
  "reverie-core",
+ "syn 2.0.119",
  "thiserror 2.0.21",
 ]
 

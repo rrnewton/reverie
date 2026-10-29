@@ -120,7 +120,7 @@ impl TaskCleanup {
             panics: Vec::new(),
         };
         let thread = ChildThread::spawn_owned(
-            std::thread::Builder::new().name("kvm-task-file-exit".into()),
+            crate::supervisor_thread::builder().name("kvm-task-file-exit".into()),
             drive,
             Driver::run,
         )

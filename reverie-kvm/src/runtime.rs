@@ -6024,6 +6024,15 @@ impl KvmBackend {
     /// `SYSRET`s) and the guest exits via `exit`/`exit_group` rather than `HLT`.
     ///
     /// Returns the tool's global state, guest exit code, stdout, and stderr.
+    ///
+    /// The guest's first process runs on the thread that polls this future,
+    /// not on a supervisor thread of its own, so that thread needs as much
+    /// stack as one: about 2.3 MiB for a large Tool in a debug build, more
+    /// than Rust's 2 MiB default for a spawned thread. Poll it from a thread
+    /// with at least
+    /// [`KVM_SUPERVISOR_THREAD_STACK_BYTES`](reverie_kvm_core::supervisor_thread::KVM_SUPERVISOR_THREAD_STACK_BYTES)
+    /// of stack; every process and thread the guest creates later gets that
+    /// much on its own.
     pub async fn run_static_elf_with_tool<T>(
         &mut self,
         config: <T::GlobalState as GlobalTool>::Config,
@@ -6051,6 +6060,12 @@ impl KvmBackend {
     /// failure, so its owner can finish scheduler/global cleanup. An outer
     /// error means setup failed before the global state existed, or ownership
     /// could not be recovered after all owned children were joined.
+    ///
+    /// As with [`Self::run_static_elf_with_tool`], the guest's first process
+    /// runs on the thread that polls this future: poll it from a thread with
+    /// at least
+    /// [`KVM_SUPERVISOR_THREAD_STACK_BYTES`](reverie_kvm_core::supervisor_thread::KVM_SUPERVISOR_THREAD_STACK_BYTES)
+    /// of stack.
     pub async fn run_static_elf_with_tool_completion<T>(
         &mut self,
         config: <T::GlobalState as GlobalTool>::Config,
