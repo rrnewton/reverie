@@ -190,47 +190,15 @@ impl AddressSpace for ProviderMemory<'_> {
         length: u64,
         protection: libc::c_int,
     ) -> std::result::Result<(), MapError> {
-        // The pages' states hold access and write only: a change to the read
-        // or execute permission Linux keeps on the mapping leaves them as they
-        // are, so the change is recorded here whether or not they change. It
-        // is recorded before any refusal below: Linux applies mprotect(2) one
-        // mapping at a time and keeps what it applied when it then fails
-        // (ENOMEM at a hole, EACCES at a mapping it may not change), where
-        // this refuses the whole range first.
-        self.0.note_user_mapping_change(address, length);
-        let Some(address) = self.0.user_range_to_guest(address, length) else {
-            return Err(MapError::Unaddressable);
-        };
-        if !self.0.user_range_is_mapped(address, length) {
-            return Err(MapError::NotMapped);
+        let result = self.protect_whole(address, length, protection);
+        // Linux applies mprotect(2) one mapping at a time and keeps what it
+        // applied when it then fails (ENOMEM at a hole, EACCES at a mapping it
+        // may not change), where this refuses the whole range first: the
+        // part the page states lack is recorded.
+        if result.is_err() {
+            self.0.note_user_mapping_change(address, length);
         }
-        if protection & libc::PROT_EXEC != 0
-            && self.0.range_contains_shared_file(address, length as usize)
-        {
-            // A metadata-only permission upgrade cannot establish the file's
-            // mount noexec policy. Preserve the same named domain as mmap; the
-            // allocation owner publishes this cause only after it unlocks.
-            let _ = self
-                .0
-                .capture_shared_file_error(crate::Error::SharedFileCapability {
-                    operation: "mprotect",
-                    reason: "executable ordinary shared-file mappings are not implemented",
-                });
-            return Err(MapError::Unsupported);
-        }
-        if protection & libc::PROT_WRITE != 0
-            && !self.0.file_write_permitted(address, length as usize)
-        {
-            return Err(MapError::AccessDenied);
-        }
-        self.0
-            .map_user_permissions(
-                address,
-                length,
-                protection != libc::PROT_NONE,
-                protection & libc::PROT_WRITE != 0,
-            )
-            .map_err(|_| MapError::Failed)
+        result
     }
 
     fn unmap(&self, address: u64, length: u64) -> std::result::Result<(), MapError> {
@@ -284,6 +252,48 @@ impl AddressSpace for ProviderMemory<'_> {
         Ok(Discarded {
             had_holes: plan.unmapped,
         })
+    }
+}
+
+impl ProviderMemory<'_> {
+    /// [`AddressSpace::protect`] of the whole range, or a refusal before any
+    /// page changes. The pages keep the protection as declared
+    /// (`GuestMemory::protect_user_range`).
+    fn protect_whole(
+        &self,
+        address: u64,
+        length: u64,
+        protection: libc::c_int,
+    ) -> std::result::Result<(), MapError> {
+        let Some(address) = self.0.user_range_to_guest(address, length) else {
+            return Err(MapError::Unaddressable);
+        };
+        if !self.0.user_range_is_mapped(address, length) {
+            return Err(MapError::NotMapped);
+        }
+        if protection & libc::PROT_EXEC != 0
+            && self.0.range_contains_shared_file(address, length as usize)
+        {
+            // A metadata-only permission upgrade cannot establish the file's
+            // mount noexec policy. Preserve the same named domain as mmap; the
+            // allocation owner publishes this cause only after it unlocks.
+            let _ = self
+                .0
+                .capture_shared_file_error(crate::Error::SharedFileCapability {
+                    operation: "mprotect",
+                    reason: "executable ordinary shared-file mappings are not implemented",
+                });
+            return Err(MapError::Unsupported);
+        }
+        if protection & libc::PROT_WRITE != 0
+            && !self.0.file_write_permitted(address, length as usize)
+        {
+            return Err(MapError::AccessDenied);
+        }
+        // The protection bits were validated by the caller, so they fit a byte.
+        self.0
+            .protect_user_range(address, length, protection as u8)
+            .map_err(|_| MapError::Failed)
     }
 }
 
