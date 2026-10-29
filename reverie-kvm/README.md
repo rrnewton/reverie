@@ -634,46 +634,84 @@ provided, where Linux shows them to a reader it lets read them.
 `Guest::memory_map` lists only what the executor can establish exactly, and
 says that the list is not complete (`MemoryMap::complete` is false). Each
 listed entry is exact for the executor's own address space, which differs from
-a native process's where this section says so. The executor keeps the address
-space as pages, each with what it was reserved for and whether it is
-accessible and writable. That holds neither a mapping's read and execute
-permissions nor the history that decides where Linux splits and merges
-mappings (https://github.com/rrnewton/reverie/issues/1211). So the list holds
-one mapping, the process's `[stack]`, and only while nothing has changed the
-stack window since the image started. The entry is the window: from its start
-(the loader maps it whole, 8 MiB less its top page, where Linux maps the
-stack's arguments and 128 KiB below them and grows the stack on demand) to the
-top of the user address space; read-write, and executable for an image whose
-last `PT_GNU_STACK` header has `PF_X`, as Linux maps it; private, with no
-file. Once any page of the window has changed state, been reserved for another
-use, or been named by an accepted call that changes what Linux keeps on the
-mapping without changing the pages (`mprotect(2)`, madvise advice other than
-`MADV_WILLNEED`, `MADV_DONTNEED`, `MADV_FREE`, `MADV_COLD` and
-`MADV_PAGEOUT`, `munlock(2)`, and `munlockall(2)` for every mapping), the
-list is empty, also in a child forked afterwards; a new image starts it again.
-An `mprotect(2)` range that overlaps the window is recorded before any
-refusal: Linux protects the mappings before a hole and keeps that when it
-then fails with `ENOMEM`, where the executor refuses the whole range. A vfork
-child (`vfork(2)`, or `clone(2)` and `clone3(2)` with `CLONE_VM|CLONE_VFORK`)
-runs on a copy of its parent's memory, but the two share the record, as on
-Linux they share the address space: a change either makes empties both lists,
-until the child executes another image, which leaves its parent's entry, as a
-`posix_spawn(3)` child does. A guest that changes its own stack, for example
-protecting a page of it, even only to set it back, therefore loses its
-`[stack]` entry where Linux still shows one. A call the executor refuses where
-Linux applies it (`mlock(2)` and `mlock2(2)`, `ENOSYS`; `mprotect(2)` with
-`PROT_GROWSDOWN`, `EINVAL`; a `MAP_FIXED` mapping or an `mremap(2)` destination
-in the window, `ENOMEM` and `EINVAL`) leaves the entry listed where Linux
-shows the stack changed: the entry is exact for the executor's address space,
-which the call left as it was, and the refusal is the difference the guest
-sees. A tool that renders the list as `/proc/<pid>/maps` must name the
-omitted mappings as a difference of this backend: rendered so, the file is the
-one `[stack]` line, as the executor's own synthetic `/proc/self/maps` already
-is today, or empty once the window changed. The guest's page tables map every user page
-without the no-execute bit, so a guest can execute on a stack that Linux maps
-non-executable. The fact answers for any live thread of the asking thread's
-process, whose address space they share, and a live thread of another process
-is not provided, where Linux shows its map to a reader it lets read it.
+a native process's where this section says so. The guest memory keeps the
+address space as pages: what each was reserved for, whether it is accessible
+and writable, and the mapping the executor declared for it, which it stores and
+copies without deciding anything from it: the protection the guest asked for
+(`mmap(2)`, `mprotect(2)`, `brk(2)` and the loader's stack), the mapping flags
+of the madvise hints the executor accepts (`MADV_NORMAL`, `MADV_RANDOM`,
+`MADV_SEQUENTIAL`, `MADV_HUGEPAGE`, `MADV_NOHUGEPAGE`, `MADV_MERGEABLE`,
+`MADV_UNMERGEABLE`), and a lineage. The executor decides from those pages
+which mappings Linux would keep. That holds no file identity and none of the
+history that decides where Linux splits and merges most mappings
+(https://github.com/rrnewton/reverie/issues/1211), but it does for the stack
+window: the loader maps it whole as one mapping, no other mapping can be
+placed in it, and its pages split and merge only as the guest changes their
+protection, mapping and flags. So the list holds the window's mappings, each a
+run of adjacent mapped pages with the same protection, flags and lineage, as
+Linux splits the stack: a run that holds the initial stack pointer, counting
+one that ends or starts at it, is `[stack]` (two runs are when the pointer is
+page aligned and a split falls on it, as Linux prints them), the others have
+no name, and the lowest starts at the window's start (the loader maps it
+whole, 8 MiB less its top page, where Linux maps the stack's arguments and
+128 KiB below them and grows the stack on demand). The stack is read-write,
+and executable for an image whose last `PT_GNU_STACK` header has `PF_X`, as
+Linux maps it; private, with no file. A forked child keeps apart the mappings
+it inherited, as Linux does, where each has an `anon_vma` of its own: the
+executor gives each run of a forked child's window a lineage of its own, so a
+part its parent's split left stays a mapping of its own in the child even once
+set back. The whole list is empty when one page of the window has a mapping
+that is not known (declared by no call, or reserved for another use, which no
+path makes today), and once something changed that the pages do not hold: an
+`mprotect(2)` range the executor refuses whole where Linux protects the
+mappings before a hole and then fails with `ENOMEM`; or, for a vfork child
+(`vfork(2)`, or `clone(2)` and `clone3(2)` with `CLONE_VM|CLONE_VFORK`), which
+runs on a copy of its parent's memory and shares a record with it as on Linux
+they share the address space, a change the other made, which this copy lacks.
+A new image, such as a `posix_spawn(3)` child's, starts it again and leaves its
+parent's list. A call the executor refuses where Linux applies it (`mlock(2)`
+and `mlock2(2)`, madvise with `MADV_DONTFORK`, `MADV_DONTDUMP` or
+`MADV_WIPEONFORK`, `mseal(2)`, `pkey_mprotect(2)`, `mbind(2)` and
+`prctl(PR_SET_VMA)`, `ENOSYS`; `mprotect(2)` with `PROT_GROWSDOWN` or
+`PROT_SEM`, `mremap(2)` with `MREMAP_DONTUNMAP`, and a same-size `mremap(2)`
+move of a range with a hole after its start, which Linux moves, keeping the
+hole, `EINVAL`; a `MAP_FIXED` mapping or an `mremap(2)` destination in the
+window, `ENOMEM` and `EINVAL`; a `munmap(2)` that crosses the window's start,
+`EINVAL`) leaves the window as it was where Linux shows it changed: the list
+is exact for the executor's address space, which the call left as it was, and
+the refusal is the difference the guest sees. So is a call the executor
+applies where Linux refuses it: one on a page of the window below the part
+Linux has mapped for the stack, where Linux answers `ENOMEM` (or, for
+`munmap(2)`, changes nothing), and an `mremap(2)` that grows a range over two
+of the window's mappings, where Linux answers `EFAULT`. A same-size move of
+such a range moves every mapping in it, here as on Linux.
+
+glibc's `pthread_getattr_np` takes the main thread's stack size from the
+stack's soft rlimit less the part of the `[stack]` line above the page that
+holds `__libc_stack_end` (the arguments and environment), in unsigned
+arithmetic, and no more than reaches the end of the line before `[stack]`.
+Where the list has a line of the window below `[stack]`, that line is Linux's,
+and so is the answer at any limit. Where it has none, a reader of the list
+finds no line before `[stack]`, where Linux has the mappings below the stack
+(about 128 MiB below its top, without address randomization), and Linux's
+stack ends there. The answer from the list is then Linux's only while the
+limit is at least that argument area and at most that plus the distance to
+the mapping below. Outside that, three cases differ, each measured with a
+32 KiB argument, where Linux's size is 0x7ff8000 bytes:
+- a larger finite limit gives the limit less the argument area, larger than
+  Linux's but finite (0xfff8000 at 256 MiB);
+- a limit below the argument area, which the subtraction wraps, gives a stack
+  that reaches down to address 0 (0x7fffffff7000 at 4 KiB);
+- no limit (`RLIM_INFINITY`), or one beyond the stack's top, does too
+  (0x7fffffff7000).
+Where a Tool lets a guest raise its stack limit, `ulimit -s unlimited` reaches
+the third case. A tool that renders the list as `/proc/<pid>/maps` must name the
+omitted mappings as a difference of this backend. The guest's page tables map
+every user page without the no-execute bit, so a guest can execute on a stack
+that Linux maps non-executable. The fact answers for any live thread of the
+asking thread's process, whose address space they share, and a live thread of
+another process is not provided, where Linux shows its map to a reader it lets
+read it.
 
 A Tool can reserve one empty host directory on a read-only file system for its
 own use (`KvmBackend::reserve_tool_directory`): the executor hides it from the

@@ -11,27 +11,45 @@
  * maps file of a thread, /proc/<tid>/maps: its text, or the errno of the
  * read. Under a Tool (the mode "tool") it then asks the Tool, with tuxcall,
  * which Linux does not implement, for the map of the same thread; the Tool
- * records what Guest::memory_map answered.
+ * records what Guest::memory_map answered. Where the main thread of a
+ * process asks about itself, it also prints what pthread_getattr_np answers
+ * for it, with __libc_stack_end and the stack's rlimit, from which glibc
+ * computes that answer ("stack POINT RET TOP SIZE END LIMIT").
  *
  * The process asks first as it started. Then forked children each change
- * their copy of the stack one way and ask: madvise advice that keeps the
- * mapping's flags (MADV_WILLNEED and MADV_DONTNEED); a page made read-only,
- * and read-write again; advice that changes them (MADV_RANDOM); mlock, then
- * munlock, of a page (natively without the mlock, which the backend refuses,
- * so that both runs compare the same stack); a page unmapped and mapped
- * again with MAP_FIXED; a child that changes its stack and forks a
- * grandchild, which asks, then executes this program again, which asks as
- * the new image starts; mprotect of the stack's top page and the page past
- * the top of the user address space, which Linux applies to the top page
- * before it fails; a child that shares the address space, made with vfork,
- * with clone and with clone3 (CLONE_VM|CLONE_VFORK), protects a page of the
- * stack and exits; a vfork child asks about itself once a sibling thread of
- * its parent has changed the parent's stack; and a child posix_spawn made
- * executes this program again, which asks as the new image starts, and its
- * parent asks once it exited. The process asks again once its children are
- * done; a sibling thread asks about the leader, then changes the leader's
- * stack, and the leader asks again; last, the process asks about a live
- * child and about a number no task has.
+ * their copy of the stack and ask:
+ * - madvise advice that keeps the mapping's flags (MADV_WILLNEED and
+ *   MADV_DONTNEED);
+ * - a page made read-only, and read-write again;
+ * - a guard zone of four pages made inaccessible, as the JVM protects its
+ *   guard zones, and accessible again;
+ * - two pages made executable as well, as for an executable stack;
+ * - madvise hints: MADV_RANDOM, and MADV_NORMAL undoing it; MADV_HUGEPAGE,
+ *   then MADV_NOHUGEPAGE on the same page; and MADV_DONTFORK, which the
+ *   backend refuses;
+ * - mlock, then munlock, of a page (natively without the mlock, which the
+ *   backend refuses, so that both runs compare the same stack);
+ * - a page unmapped, then mapped again with MAP_FIXED, which the backend
+ *   refuses;
+ * - a child that changes its stack and sets it back, then forks a
+ *   grandchild, which asks, then executes this program again, which asks as
+ *   the new image starts;
+ * - a child that makes a page read-only and forks a grandchild, which asks;
+ *   and one that does the same and makes a vfork child, which asks about
+ *   itself, then asks once the child exited;
+ * - mprotect of the stack's top page and the page past the top of the user
+ *   address space, which Linux applies to the top page before it fails;
+ * - a child that shares the address space, made with vfork, with clone and
+ *   with clone3 (CLONE_VM|CLONE_VFORK), protects a page of the stack and
+ *   exits;
+ * - a vfork child asks about itself once a sibling thread of its parent has
+ *   changed the parent's stack;
+ * - a child posix_spawn made executes this program again, which asks as the
+ *   new image starts, and its parent asks once it exited.
+ * The process asks again once its children are done; a sibling thread asks
+ * about the leader, then changes the leader's stack and sets it back, and
+ * the leader asks again; last, the process asks about a live child and
+ * about a number no task has.
  *
  * A call whose result the test checks prints "result POINT RC ERRNO". The
  * page each change touches lies 32 KiB below the frame that computes it,
@@ -57,6 +75,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/mman.h>
+#include <sys/resource.h>
 #include <sys/syscall.h>
 #include <sys/wait.h>
 #include <unistd.h>
@@ -69,12 +88,23 @@ enum {
   KEPT,
   PROTECTED,
   PROTECTED_BACK,
+  GUARDED,
+  GUARDED_BACK,
+  EXECUTABLE,
   ADVISED,
+  ADVISED_BACK,
+  HUGE,
+  NOHUGE,
+  REFUSED_HINT,
   MLOCKED,
   MUNLOCKED,
+  UNMAPPED,
   REMAPPED,
   FORKED,
   EXECUTED,
+  FORK_AFTER,
+  VFORK_AFTER,
+  VFORK_PARENT_AFTER,
   PARTIAL,
   VFORKED,
   CLONED,
@@ -91,6 +121,7 @@ enum {
 };
 
 extern char **environ;
+extern void *__libc_stack_end;
 
 static void fail(int line) {
   char message[64];
@@ -179,6 +210,36 @@ static void point(int point, long tid) {
   }
 }
 
+/* What pthread_getattr_np answers for this thread, the main thread of its
+ * process, and what glibc computes it from. */
+static void stack(int point) {
+  pthread_attr_t attr;
+  void *low = NULL;
+  size_t size = 0;
+  int ret = pthread_getattr_np(pthread_self(), &attr);
+  if (ret == 0) {
+    CHECK(pthread_attr_getstack(&attr, &low, &size) == 0);
+    CHECK(pthread_attr_destroy(&attr) == 0);
+  }
+  struct rlimit limit = {0, 0};
+  if (getrlimit(RLIMIT_STACK, &limit) != 0) {
+    limit.rlim_cur = 0;
+  }
+  char header[160];
+  snprintf(header, sizeof(header), "stack %d %d %lx %lx %lx %lx\n", point, ret,
+           (unsigned long)((uintptr_t)low + size), (unsigned long)size,
+           (unsigned long)(uintptr_t)__libc_stack_end,
+           (unsigned long)limit.rlim_cur);
+  line(header);
+}
+
+/* A point at which this thread, its process's main thread, asks about
+ * itself, with what pthread_getattr_np answers. */
+static void ask(int at) {
+  point(at, gettid_raw());
+  stack(at);
+}
+
 /* Prints a call's result for the test. */
 static void result(int point, long rc, int error) {
   char header[96];
@@ -217,20 +278,54 @@ static void kept(void) {
   void *page = (void *)stack_page();
   CHECK(madvise(page, PAGE, MADV_WILLNEED) == 0);
   CHECK(madvise(page, PAGE, MADV_DONTNEED) == 0);
-  point(KEPT, gettid_raw());
+  ask(KEPT);
 }
 
 static void protected(void) {
   void *page = (void *)stack_page();
   CHECK(mprotect(page, PAGE, PROT_READ) == 0);
-  point(PROTECTED, gettid_raw());
+  ask(PROTECTED);
   CHECK(mprotect(page, PAGE, PROT_READ | PROT_WRITE) == 0);
-  point(PROTECTED_BACK, gettid_raw());
+  ask(PROTECTED_BACK);
+}
+
+/* Four pages below the page 32 KiB down made inaccessible, as the JVM makes
+ * its guard zones, then accessible again. */
+static void guarded(void) {
+  void *zone = (void *)(stack_page() - 3 * PAGE);
+  CHECK(mprotect(zone, 4 * PAGE, PROT_NONE) == 0);
+  ask(GUARDED);
+  CHECK(mprotect(zone, 4 * PAGE, PROT_READ | PROT_WRITE) == 0);
+  ask(GUARDED_BACK);
+}
+
+static void executable(void) {
+  void *pages = (void *)(stack_page() - PAGE);
+  CHECK(mprotect(pages, 2 * PAGE, PROT_READ | PROT_WRITE | PROT_EXEC) == 0);
+  ask(EXECUTABLE);
 }
 
 static void advised(void) {
-  CHECK(madvise((void *)stack_page(), PAGE, MADV_RANDOM) == 0);
-  point(ADVISED, gettid_raw());
+  void *page = (void *)stack_page();
+  CHECK(madvise(page, PAGE, MADV_RANDOM) == 0);
+  ask(ADVISED);
+  CHECK(madvise(page, PAGE, MADV_NORMAL) == 0);
+  ask(ADVISED_BACK);
+}
+
+static void huge(void) {
+  void *page = (void *)stack_page();
+  CHECK(madvise(page, PAGE, MADV_HUGEPAGE) == 0);
+  ask(HUGE);
+  CHECK(madvise(page, PAGE, MADV_NOHUGEPAGE) == 0);
+  ask(NOHUGE);
+}
+
+/* MADV_DONTFORK, which Linux applies and the backend refuses (ENOSYS). */
+static void refused_hint(void) {
+  long rc = madvise((void *)stack_page(), PAGE, MADV_DONTFORK);
+  result(REFUSED_HINT, rc, errno);
+  ask(REFUSED_HINT);
 }
 
 static void locked(void) {
@@ -239,18 +334,19 @@ static void locked(void) {
     long rc = mlock(page, PAGE);
     result(MLOCKED, rc, errno);
   }
-  point(MLOCKED, gettid_raw());
+  ask(MLOCKED);
   CHECK(munlock(page, PAGE) == 0);
-  point(MUNLOCKED, gettid_raw());
+  ask(MUNLOCKED);
 }
 
 static void remapped(void) {
   void *page = (void *)stack_page();
   CHECK(munmap(page, PAGE) == 0);
+  ask(UNMAPPED);
   void *mapped = mmap(page, PAGE, PROT_READ | PROT_WRITE,
                       MAP_FIXED | MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
   result(REMAPPED, mapped == MAP_FAILED ? -1 : 0, errno);
-  point(REMAPPED, gettid_raw());
+  ask(REMAPPED);
 }
 
 static char *program;
@@ -263,12 +359,38 @@ static void forked(void) {
   pid_t grandchild = fork();
   CHECK(grandchild >= 0);
   if (grandchild == 0) {
-    point(FORKED, gettid_raw());
+    ask(FORKED);
     char *args[] = {program, mode, "exec", NULL};
     execve(program, args, environ);
     fail(__LINE__);
   }
   reap(grandchild);
+}
+
+/* A page made read-only, then a forked grandchild asks. */
+static void fork_after(void) {
+  CHECK(mprotect((void *)stack_page(), PAGE, PROT_READ) == 0);
+  pid_t grandchild = fork();
+  CHECK(grandchild >= 0);
+  if (grandchild == 0) {
+    ask(FORK_AFTER);
+    _exit(0);
+  }
+  reap(grandchild);
+}
+
+/* A page made read-only, then a vfork child asks about itself and exits,
+ * and the parent asks. */
+static void vfork_after(void) {
+  CHECK(mprotect((void *)stack_page(), PAGE, PROT_READ) == 0);
+  pid_t child = vfork();
+  CHECK(child >= 0);
+  if (child == 0) {
+    ask(VFORK_AFTER);
+    _exit(0);
+  }
+  reap(child);
+  ask(VFORK_PARENT_AFTER);
 }
 
 /* The stack's top page and the page past the top of the user address space
@@ -391,7 +513,7 @@ static void spawned(void) {
   pid_t child;
   CHECK(posix_spawn(&child, program, NULL, NULL, args, environ) == 0);
   reap(child);
-  point(SPAWN_PARENT, gettid_raw());
+  ask(SPAWN_PARENT);
 }
 
 static uintptr_t leader_page;
@@ -414,38 +536,44 @@ int main(int argc, char **argv) {
   tool = strcmp(mode, "tool") == 0;
   pid_t tid = gettid_raw();
   if (argc >= 3 && strcmp(argv[2], "exec") == 0) {
-    point(EXECUTED, tid);
+    ask(EXECUTED);
     return 0;
   }
   if (argc >= 3 && strcmp(argv[2], "spawned") == 0) {
-    point(SPAWNED, tid);
+    ask(SPAWNED);
     return 0;
   }
-  point(START, tid);
+  ask(START);
   if (argc >= 3 && strcmp(argv[2], "start") == 0) {
     return 0;
   }
 
   in_child(kept);
   in_child(protected);
+  in_child(guarded);
+  in_child(executable);
   in_child(advised);
+  in_child(huge);
+  in_child(refused_hint);
   in_child(locked);
   in_child(remapped);
   in_child(forked);
+  in_child(fork_after);
+  in_child(vfork_after);
   in_child(partial);
   in_child(vforked);
   in_child(cloned);
   in_child(cloned3);
   in_child(vfork_sees);
   in_child(spawned);
-  point(PARENT_AGAIN, tid);
+  ask(PARENT_AGAIN);
 
   leader_tid = tid;
   leader_page = stack_page();
   pthread_t thread;
   CHECK(pthread_create(&thread, NULL, sibling, NULL) == 0);
   CHECK(pthread_join(thread, NULL) == 0);
-  point(SIBLING_CHANGED, tid);
+  ask(SIBLING_CHANGED);
 
   /* A child process while it waits, then a number no task has. */
   int ready[2], release[2];
