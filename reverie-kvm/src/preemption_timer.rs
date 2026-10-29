@@ -267,10 +267,24 @@
 //!   (late, if it is precise).
 //! - Nothing refuses a PREEMPT_RT kernel or nested virtualization, where the
 //!   kick's latency has not been measured.
-//! - A precise request is late when the PMU interrupt behind its last kick
-//!   comes after the margin, from the hardware's interrupt latency: at the
-//!   2,000 RCB margin on an EPYC 9D85, about one kick in a thousand on an
-//!   idle host, and up to about one in a hundred on a busy one.
+//! - A precise request is late when the PMU interrupt behind the last kick
+//!   before its stepping window comes past the target. On an EPYC 9D85 the host
+//!   now and then holds that interrupt for tens of microseconds while the guest
+//!   runs on, and an exit ends the hold; the longer the guest has run since its
+//!   last exit, the likelier its next interrupt is held. With a two-thread
+//!   spinner whose Tool requests a precise event every 20,000,000 RCBs, kicks
+//!   more than 2,000 RCBs late numbered 5 in 10,000 after about 1.5
+//!   microseconds of running, 19 in 10,000 after about 43, and 23 in 10,000
+//!   after a whole request. A staged request's first stage kick follows the
+//!   guest's whole run since its last exit, and one held past the first stage
+//!   margin of 10,000 RCBs makes the request late (13 of the 14 measured were
+//!   21,000 to 92,000 RCBs late); the second stage kick follows the first
+//!   stage's exit by a few thousand RCBs and is rarely held. Programming the
+//!   first stage farther short of the target does not help: the second stage's
+//!   run grows with it, and its kick is then held about as often. In 7,900
+//!   events per first stage margin, margins of 10,000, 32,768, 131,072 and
+//!   524,288 RCBs left 15, 12, 11 and 13 requests late, 14, 8, 1 and 0 of them
+//!   by the first stage's kick.
 //! - Every other instruction in the stepping window is a step of its own,
 //!   with no block steps yet. In a release build a step costs about 3.3
 //!   microseconds under following placement, and about 17 under pinned
