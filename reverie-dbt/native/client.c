@@ -207,6 +207,7 @@ _Static_assert(offsetof(mapping_capture_arguments_t, release_lease) == 248,
 static int32_t runtime_mapping_capture(uintptr_t, uint32_t, mapping_capture_arguments_t*);
 static bool mapping_capture_active(void);
 static void mapping_capture_terminal(void) __attribute__((noreturn));
+static void mapping_capture_terminal_with_status(int) __attribute__((noreturn));
 static void mapping_capture_withdraw_for_syscall(int sysnum);
 static void runtime_background_init(void* argument);
 
@@ -243,6 +244,14 @@ typedef struct {
   int32_t birth;
   int32_t mediated_pid;
 } capture_owner_t;
+
+typedef struct {
+  uintptr_t context;
+  int32_t pid;
+  int32_t tid;
+  uint64_t image;
+  uint64_t nonce;
+} mapping_capture_refusal_t;
 
 typedef struct {
   uint64_t branches;
@@ -328,7 +337,13 @@ typedef struct {
   bool caller_admitted;
   bool caller_syscall_callback;
   terminal_fact_t caller_terminal;
+  // A withdrawn pre-park capture may make this exact Tool callback fatal.
+  // This is not park/read authority and never survives a callback return.
+  bool mapping_capture_callback_active;
+  mapping_capture_refusal_t mapping_capture_refusal;
 } prototype_counters_t;
+static void mapping_capture_begin_callback(prototype_counters_t*);
+static bool mapping_capture_take_fatal_refusal(prototype_counters_t*, uintptr_t, int32_t);
 _Static_assert(offsetof(prototype_counters_t, branches) == 0, "stable branch prefix");
 _Static_assert(offsetof(prototype_counters_t, observed_syscalls) == 8, "stable observed prefix");
 _Static_assert(offsetof(prototype_counters_t, rewritten_syscalls) == 16, "stable rewritten prefix");
@@ -6734,6 +6749,7 @@ static bool pre_syscall(void* drcontext, int sysnum) {
   int64_t deferred_sysnum = sysnum;
   uint64_t deferred_args[6] = {0};
   counters->caller_syscall_callback = caller_mode();
+  mapping_capture_begin_callback(counters);
   evidence_callback_enter();
   int32_t action = reverie_dbt_runtime_pre_syscall(
       drcontext,
@@ -6755,6 +6771,8 @@ static bool pre_syscall(void* drcontext, int sysnum) {
       reverie_dbt_emit);
   evidence_callback_leave();
   counters->caller_syscall_callback = false;
+  if (mapping_capture_take_fatal_refusal(counters, (uintptr_t)drcontext, action))
+    mapping_capture_terminal_with_status(101);
   DR_ASSERT(evidence_callback_depth == 0);
   if (counters->syscall_interruption != 0) {
     uint64_t token = counters->syscall_interruption;

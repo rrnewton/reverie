@@ -111,14 +111,69 @@ static bool mapping_capture_active(void) {
   return atomic_load_explicit(&mapping_capture_slot->transaction_active, memory_order_acquire);
 }
 
-static void mapping_capture_terminal(void) {
+static void mapping_capture_begin_callback(prototype_counters_t* counters) {
+  counters->mapping_capture_refusal = (mapping_capture_refusal_t){0};
+  counters->mapping_capture_callback_active = true;
+}
+
+static void mapping_capture_record_withdrawn_refusal(
+    uintptr_t context, uint32_t operation, mapping_capture_arguments_t* args) {
+  mapping_capture_slot_t* slot = mapping_capture_slot;
+  if (operation != 0 || slot == NULL || args == NULL ||
+      context != (uintptr_t)slot->application_context ||
+      dr_get_current_drcontext() != slot->application_context ||
+      !runtime_is_root || runtime_process_id != (int32_t)dr_get_process_id() ||
+      runtime_process_id != (int32_t)dr_get_thread_id(slot->application_context) ||
+      runtime_process_epoch != slot->image || args->root_pid != runtime_process_id ||
+      args->nonce == 0 || args->nonce <= slot->last_nonce ||
+      atomic_load_explicit(&slot->eligible, memory_order_acquire) ||
+      atomic_load_explicit(&slot->transaction_active, memory_order_acquire) ||
+      atomic_load_explicit(&runtime_background_state, memory_order_acquire) != 2)
+    return;
+  uint32_t state = atomic_load_explicit(&slot->state, memory_order_acquire);
+  if (state != MAPPING_IDLE && state != MAPPING_RESTORED)
+    return;
+  prototype_counters_t* counters = drmgr_get_tls_field(
+      (void*)context, thread_state_index);
+  if (counters == NULL || !counters->mapping_capture_callback_active)
+    return;
+  counters->mapping_capture_refusal = (mapping_capture_refusal_t){
+      .context = context, .pid = runtime_process_id,
+      .tid = (int32_t)dr_get_thread_id((void*)context),
+      .image = runtime_process_epoch, .nonce = args->nonce};
+}
+
+static bool mapping_capture_take_fatal_refusal(
+    prototype_counters_t* counters, uintptr_t context, int32_t action) {
+  mapping_capture_refusal_t refusal = counters->mapping_capture_refusal;
+  bool active = counters->mapping_capture_callback_active;
+  counters->mapping_capture_refusal = (mapping_capture_refusal_t){0};
+  counters->mapping_capture_callback_active = false;
+  // Rust has returned and released its callback borrow. A prior Prepare still
+  // belongs to the controller; do not enter DR's destructive foreign cleanup
+  // while another application thread can be waiting in its Tool callback.
+  return active && action == -1 && refusal.nonce != 0 && native_runtime_entries == 0 &&
+      mapping_capture_slot != NULL && !mapping_capture_active() && runtime_is_root &&
+      context == refusal.context && context == (uintptr_t)dr_get_current_drcontext() &&
+      context == (uintptr_t)mapping_capture_slot->application_context &&
+      drmgr_get_tls_field((void*)context, thread_state_index) == counters &&
+      refusal.pid == runtime_process_id && refusal.pid == (int32_t)dr_get_process_id() &&
+      refusal.tid == refusal.pid && refusal.tid == (int32_t)dr_get_thread_id((void*)context) &&
+      refusal.image == runtime_process_epoch && refusal.image == mapping_capture_slot->image;
+}
+
+static void mapping_capture_terminal_with_status(int status) {
   if (mapping_capture_slot != NULL)
     atomic_store_explicit(&mapping_capture_slot->state, MAPPING_FAILED, memory_order_release);
   // Pending remains registered at the external controller. No DR cleanup,
   // flush, allocator, logger or Rust unwinder is safe against a masked helper.
-  dr_mapping_capture_control(DR_MAPPING_CAPTURE_EXIT, 125, 0, 0);
+  dr_mapping_capture_control(DR_MAPPING_CAPTURE_EXIT, status, 0, 0);
   for (;;)
     __asm__ volatile("pause" ::: "memory");
+}
+
+static void mapping_capture_terminal(void) {
+  mapping_capture_terminal_with_status(125);
 }
 
 static void mapping_capture_withdraw(void) {
@@ -549,6 +604,7 @@ static int32_t runtime_mapping_capture(uintptr_t context, uint32_t operation,
       runtime_process_epoch != slot->image ||
       !atomic_load_explicit(&slot->eligible, memory_order_acquire) ||
       atomic_load_explicit(&runtime_background_state, memory_order_acquire) != 2) {
+    mapping_capture_record_withdrawn_refusal(context, operation, args);
     if (operation == 0 && test_mapping_capture == MAPPING_TEST_PRIVATE_SPLIT &&
         !mapping_capture_active())
       dr_fprintf(diagnostic_file,
