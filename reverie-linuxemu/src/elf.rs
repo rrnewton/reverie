@@ -2560,6 +2560,14 @@ fn copy_program_headers(memory: &mut GuestMemory, image: &[u8], elf: &Elf<'_>) -
     memory.write_raw(PROGRAM_HEADERS_ADDRESS, headers)
 }
 
+#[cfg(test)]
+thread_local! {
+    /// The most recent host draw on this thread, so a test can compare the
+    /// bytes placed on the guest stack against the actual host draw.
+    static LAST_HOST_RANDOM: std::cell::RefCell<Vec<u8>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
 /// `N` bytes from the host's getrandom(2), the source Linux's
 /// get_random_bytes draws on.
 fn host_random_bytes<const N: usize>() -> Result<[u8; N]> {
@@ -2577,6 +2585,8 @@ fn host_random_bytes<const N: usize>() -> Result<[u8; N]> {
         }
         filled += result as usize;
     }
+    #[cfg(test)]
+    LAST_HOST_RANDOM.with(|last| *last.borrow_mut() = bytes.to_vec());
     Ok(bytes)
 }
 
@@ -3274,6 +3284,11 @@ mod tests {
         );
         assert_eq!(read(platform, 7), b"x86_64\0");
 
+        // AT_RANDOM holds exactly the 16 bytes of this load's host draw.
+        let first_draw = LAST_HOST_RANDOM.with(|last| last.borrow().clone());
+        assert_eq!(first_draw.len(), 16);
+        assert_eq!(read(random, 16), first_draw);
+
         // AT_RANDOM holds 16 bytes from the host's getrandom, as Linux's
         // get_random_bytes fills it, so a second load draws other bytes.
         let mut second_memory = GuestMemory::new(0, TEST_MEMORY_SIZE).unwrap();
@@ -3295,6 +3310,10 @@ mod tests {
         let mut second_bytes = [0; 16];
         let physical = second_memory.user_range_to_guest(random, 16).unwrap();
         second_memory.read_raw(physical, &mut second_bytes).unwrap();
+        // The second stack holds exactly the second host draw, which differs
+        // from the first.
+        let second_draw = LAST_HOST_RANDOM.with(|last| last.borrow().clone());
+        assert_eq!(second_bytes.as_slice(), second_draw.as_slice());
         assert_ne!(read(random, 16), second_bytes);
 
         let words = 1 + 3 + 3 + 2 * loaded.auxv.len() as u64 + 2;
