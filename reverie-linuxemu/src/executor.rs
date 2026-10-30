@@ -11506,15 +11506,28 @@ mod tests {
     }
 
     /// `sched_get_priority_min` and `sched_get_priority_max` stay host
-    /// forwards, because Detcore passes them through: for SCHED_OTHER,
-    /// SCHED_FIFO, SCHED_RR and the invalid policy 999, each answer, an error
-    /// included, is the host's own, and none carries a refusal.
+    /// forwards, because Detcore passes them through: for every policy the
+    /// host accepts or rejects - SCHED_OTHER, SCHED_FIFO, SCHED_RR,
+    /// SCHED_BATCH, SCHED_IDLE, SCHED_DEADLINE, SCHED_EXT (7), the invalid
+    /// policy 999, and a policy word above 32 bits, which the kernel reads
+    /// as its low word - each answer, an error included, is the host's own,
+    /// and none carries a refusal.
     #[test]
     fn scheduling_priority_bounds_are_the_hosts() {
         let root = TestDir::new();
         let memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
         let mut executor = ElfExecutor::new(test_state(&root.0), false);
-        for policy in [libc::SCHED_OTHER, libc::SCHED_FIFO, libc::SCHED_RR, 999] {
+        for policy in [
+            libc::SCHED_OTHER as u64,
+            libc::SCHED_FIFO as u64,
+            libc::SCHED_RR as u64,
+            libc::SCHED_BATCH as u64,
+            libc::SCHED_IDLE as u64,
+            libc::SCHED_DEADLINE as u64,
+            7,
+            999,
+            1_u64 << 32,
+        ] {
             for number in [
                 libc::SYS_sched_get_priority_min,
                 libc::SYS_sched_get_priority_max,
@@ -11528,7 +11541,7 @@ mod tests {
                 };
                 assert_eq!(
                     executor.execute(
-                        &SyscallRequest::new(number as u64, [policy as u64, 0, 0, 0, 0, 0]),
+                        &SyscallRequest::new(number as u64, [policy, 0, 0, 0, 0, 0]),
                         &memory
                     ),
                     host,
