@@ -54,7 +54,7 @@
 //!
 //! Proper use of timers requires that all delivered signals of type
 //! `Timer::signal_type()` be passed through `Timer::handle_signal`, and that
-//! `Timer::observe_event()` be called whenever a Tool-observable reverie event
+//! `Timer::observe_stop()` be called whenever a Tool-observable reverie event
 //! occurs. A caller that observes a stop before it knows whether the Tool
 //! observes it must pass a stop that the Tool does not observe to
 //! `Timer::disregard_stop()`, and finish what of the active event this
@@ -83,15 +83,12 @@ use reverie::SkidOvershootDetail;
 use reverie::SkidOvershootKind;
 use reverie::Tid;
 pub use reverie::pmu_config::*;
-#[cfg(target_arch = "x86_64")]
 use reverie::syscalls::Addr;
 #[cfg(target_arch = "x86_64")]
 use reverie::syscalls::AddrMut;
-#[cfg(target_arch = "x86_64")]
 use reverie::syscalls::MemoryAccess;
 use safeptrace::Error as TraceError;
 use safeptrace::Event as TraceEvent;
-#[cfg(target_arch = "x86_64")]
 use safeptrace::Regs;
 use safeptrace::Running;
 use safeptrace::Stopped;
@@ -151,6 +148,11 @@ thread_local! {
     /// Turns halving on or off on this thread whatever the configuration
     /// says, so that a test does not depend on the architecture's default.
     static HALVED_STAGES_FOR_TEST: std::cell::Cell<Option<bool>> = const { std::cell::Cell::new(None) };
+    /// Makes [`TimerImpl::switch_out`] wait on this thread as where the
+    /// counter's page needs it, whatever this host's page publishes.
+    static SWITCH_OUT_FORCED_FOR_TEST: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// The waits [`TimerImpl::switch_out`] made on this thread.
+    static SWITCH_OUTS_FOR_TEST: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
 }
 
 /// Whether a notification due `notification` RCBs ahead, `margin` short of
@@ -177,6 +179,17 @@ pub(crate) enum StepUnit {
     /// target (see [`TimerImpl::step_unit`]).
     #[cfg(target_arch = "x86_64")]
     Block,
+    /// Up to, not including, the first of `stops[..count]` that the guest
+    /// reaches, each marked by a hardware breakpoint, retiring `branches`
+    /// branches on the way: none from before a stop point, the one branch
+    /// it starts at otherwise (see [`crate::branch_step`] and
+    /// [`TimerImpl::branch_run`]).
+    #[cfg(target_arch = "aarch64")]
+    ToBranch {
+        stops: [u64; 2],
+        count: usize,
+        branches: u64,
+    },
 }
 
 /// Steps of each unit taken toward precise event targets, and lookups in the
@@ -184,16 +197,20 @@ pub(crate) enum StepUnit {
 pub(crate) static INSTRUCTION_STEPS: std::sync::atomic::AtomicU64 =
     std::sync::atomic::AtomicU64::new(0);
 pub(crate) static BLOCK_STEPS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+pub(crate) static BRANCH_RUNS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+/// Branch runs whose counter moved by more branches than their decode
+/// allows, for tests (see [`TimerImpl::check_branch_run`]).
+pub(crate) static BRANCH_RUN_MISMATCHES: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
 pub(crate) static BLOCK_BOUND_HITS: std::sync::atomic::AtomicU64 =
     std::sync::atomic::AtomicU64::new(0);
 pub(crate) static BLOCK_BOUND_MISSES: std::sync::atomic::AtomicU64 =
     std::sync::atomic::AtomicU64::new(0);
 
 /// When set to `0`, every step toward a precise event's target is a single
-/// instruction step, as before block steps existed. Any other value, or none,
+/// instruction step, as before block steps (x86_64) and branch runs
+/// (aarch64) existed. Any other value, or none,
 /// leaves block steps on. For measurement and as an escape hatch.
-// Block steps (`PTRACE_SINGLEBLOCK`) exist only on x86_64.
-#[cfg(target_arch = "x86_64")]
 pub const BLOCK_STEP_ENV: &str = "REVERIE_BLOCK_STEP";
 
 /// When set (to anything), every hit in the block bound cache re-reads the
@@ -212,7 +229,6 @@ pub(crate) static BLOCK_STEPS_OFF_FOR_TESTS: std::sync::atomic::AtomicBool =
 pub(crate) static VERIFY_BLOCK_BOUNDS_FOR_TESTS: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);
 
-#[cfg(target_arch = "x86_64")]
 fn block_steps_enabled() -> bool {
     static ON: OnceLock<bool> = OnceLock::new();
     *ON.get_or_init(|| std::env::var(BLOCK_STEP_ENV).map_or(true, |v| v.trim() != "0"))
@@ -768,13 +784,24 @@ impl Timer {
     /// unless the thread exits before anything decides the event (see
     /// [`Timer::settle_at_exit`]); one that cancels the event instead records
     /// it at once, as does [`Timer::retire`].
-    pub fn observe_event(&mut self, event: &TraceEvent) {
+    ///
+    /// The stop is `task`'s, by `event`, and the clock it may read must be
+    /// current first: the counter's page is current only once the thread is
+    /// switched out (see `PerfCounter::ctr_value_fast`), and a plain signal,
+    /// seccomp or group stop is decoded with no ptrace request that would
+    /// wait for that. A request is made only where the page needs it, and
+    /// only when the event reads the clock: while a precise event is
+    /// scheduled.
+    pub fn observe_stop(&mut self, task: &Stopped, event: &TraceEvent) {
         if let Some(t) = self.inner_mut_noinit() {
+            if t.reads_clock_at(event) {
+                t.switch_out(task);
+            }
             t.observe_event(event);
         }
     }
 
-    /// Undoes what the latest [`Timer::observe_event`] did to the active
+    /// Undoes what the latest [`Timer::observe_stop`] did to the active
     /// event, for a stop that turns out to be one the Tool does not observe,
     /// such as a trap that Reverie consumes without a Tool callback. Such a
     /// stop neither cancels the event nor ends its single steps.
@@ -1221,6 +1248,11 @@ struct TimerImpl {
     /// Decoded block bounds by code address (see [`BlockBounds`]).
     #[cfg(target_arch = "x86_64")]
     block_bounds: BlockBounds,
+    /// Whether this thread's steps toward precise targets are single steps
+    /// only: a branch run's counter check failed, or its hardware breakpoints
+    /// could not be used (see [`TimerImpl::branch_run`]).
+    #[cfg(target_arch = "aarch64")]
+    branch_runs_off: bool,
 
     initial_command: InitialCommand,
 
@@ -1735,6 +1767,8 @@ impl TimerImpl {
             halved: None,
             #[cfg(target_arch = "x86_64")]
             block_bounds: BlockBounds::default(),
+            #[cfg(target_arch = "aarch64")]
+            branch_runs_off: false,
             initial_command: if initial_command {
                 InitialCommand::WaitingForExec
             } else {
@@ -2218,6 +2252,41 @@ impl TimerImpl {
         }
     }
 
+    /// Makes sure the stopped `task` is switched out before the clock is read,
+    /// where reading the clock needs that (see
+    /// `PerfCounter::fast_read_needs_switch_out`): a ptrace request waits for
+    /// it. Only its waiting matters; a thread that died surfaces at the next
+    /// request.
+    fn switch_out(&self, task: &Stopped) {
+        #[cfg(test)]
+        let forced = SWITCH_OUT_FORCED_FOR_TEST.get();
+        #[cfg(not(test))]
+        let forced = false;
+        if forced || self.clock.fast_read_needs_switch_out() {
+            #[cfg(test)]
+            SWITCH_OUTS_FOR_TEST.set(SWITCH_OUTS_FOR_TEST.get() + 1);
+            let _ = task.getsiginfo();
+        }
+    }
+
+    /// The clock at the stop of `task`, read once the thread is switched out
+    /// ([`TimerImpl::switch_out`]). A read that may come before any ptrace
+    /// request at its stop goes through this.
+    #[cfg(any(test, target_arch = "aarch64"))]
+    fn read_clock_at(&self, task: &Stopped) -> u64 {
+        self.switch_out(task);
+        self.read_clock()
+    }
+
+    /// Whether [`TimerImpl::observe_event`] reads the clock at a stop by
+    /// `event`: a scheduled precise event that the stop may find reached.
+    fn reads_clock_at(&self, event: &TraceEvent) -> bool {
+        matches!(self.event, ActiveEvent::Precise { .. })
+            && self.timer_status == EventStatus::Scheduled
+            && self.initial_command == InitialCommand::Ordinary
+            && !matches!(event, TraceEvent::Signal(signal) if *signal == MARKER_SIGNAL)
+    }
+
     pub fn observe_event(&mut self, event: &TraceEvent) {
         // The first stop after a request decides the event: a stop by this
         // timer's signal delivers it, and any other stop cancels it. When that
@@ -2232,10 +2301,7 @@ impl TimerImpl {
             ActiveEvent::Precise {
                 clock_target,
                 offset,
-            } if self.timer_status == EventStatus::Scheduled
-                && self.initial_command == InitialCommand::Ordinary
-                && !matches!(event, TraceEvent::Signal(signal) if *signal == MARKER_SIGNAL) =>
-            {
+            } if self.reads_clock_at(event) => {
                 let clock = self.read_clock();
                 target_reached(clock, clock_target, offset).then(|| MissedTarget {
                     clock,
@@ -3157,8 +3223,10 @@ impl TimerImpl {
         #[cfg(target_arch = "x86_64")]
         let mut guest_trap_flag = regs.eflags & TRAP_FLAG != 0;
         // Steps of each unit this approach takes, for the log.
-        #[cfg_attr(not(target_arch = "x86_64"), allow(unused_mut))]
         let (mut instruction_steps, mut block_steps) = (0u64, 0u64);
+        // The hardware breakpoints branch runs use, once a run needs them.
+        #[cfg(target_arch = "aarch64")]
+        let mut breakpoints: Option<BranchBreakpoints> = None;
         loop {
             if !current
                 .is_behind(target_rcb, target_instr)
@@ -3193,7 +3261,9 @@ impl TimerImpl {
                 current.rcbs(),
                 target_rcb,
             );
-            #[cfg(not(target_arch = "x86_64"))]
+            #[cfg(target_arch = "aarch64")]
+            let unit = self.branch_run(&task, &mut breakpoints, current.rcbs(), target_rcb)?;
+            #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
             let unit = StepUnit::Instruction;
             match unit {
                 StepUnit::Instruction => {
@@ -3205,10 +3275,51 @@ impl TimerImpl {
                     block_steps += 1;
                     &BLOCK_STEPS
                 }
+                #[cfg(target_arch = "aarch64")]
+                StepUnit::ToBranch { .. } => {
+                    block_steps += 1;
+                    &BRANCH_RUNS
+                }
             }
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             let wait = step(task, unit)?.next_state_with_owner(waits).await?;
             observe(&wait)?;
+            // A stop during a branch run that is not its breakpoint's ends
+            // the stepping like any other stop, with the breakpoints gone.
+            // Any stop of a branch run checks its counter first, so a run
+            // that escaped its breakpoints is reported, not passed on as if
+            // stepping had kept short of the target.
+            #[cfg(target_arch = "aarch64")]
+            let wait = match (unit, wait) {
+                (
+                    StepUnit::ToBranch { stops, count, .. },
+                    Wait::Stopped(new_task, TraceEvent::Signal(Signal::SIGTRAP)),
+                ) if !is_branch_run_report(&new_task, &stops[..count]) => {
+                    self.check_branch_run(&new_task, unit, current.rcbs(), target_rcb, false);
+                    restore_breakpoints(&mut breakpoints, &new_task);
+                    return Err(HandleFailure::Event(Wait::Stopped(
+                        new_task,
+                        TraceEvent::Signal(Signal::SIGTRAP),
+                    )));
+                }
+                (_, Wait::Stopped(new_task, event))
+                    if !matches!(event, TraceEvent::Signal(Signal::SIGTRAP)) =>
+                {
+                    // The check reads the clock, at a stop that may not have
+                    // made a ptrace request yet (`read_clock_at`).
+                    self.check_branch_run(&new_task, unit, current.rcbs(), target_rcb, false);
+                    if matches!(event, TraceEvent::Exec(_)) {
+                        // A single-stepped execve: Linux flushed the old
+                        // program's breakpoints, and writing the saved ones
+                        // would register them in the new program.
+                        breakpoints.take();
+                    } else {
+                        restore_breakpoints(&mut breakpoints, &new_task);
+                    }
+                    Wait::Stopped(new_task, event)
+                }
+                (_, wait) => wait,
+            };
             task = match wait {
                 // a successful single step results in SIGTRAP stop
                 #[cfg(target_arch = "x86_64")]
@@ -3218,7 +3329,15 @@ impl TimerImpl {
                     new_task
                 }
                 #[cfg(not(target_arch = "x86_64"))]
-                Wait::Stopped(new_task, TraceEvent::Signal(Signal::SIGTRAP)) => new_task,
+                Wait::Stopped(new_task, TraceEvent::Signal(Signal::SIGTRAP)) => {
+                    // The clock is read below, and nothing at a single step's
+                    // stop has made a ptrace request yet (x86 reads the
+                    // registers here). A branch run's stop has.
+                    if matches!(unit, StepUnit::Instruction) {
+                        self.switch_out(&new_task);
+                    }
+                    new_task
+                }
                 // Any other stop ends the stepping, and so does a SIGTRAP that
                 // the step did not report, such as an `int3`'s, or one whose
                 // siginfo cannot be read. The step's instruction may still
@@ -3279,19 +3398,135 @@ impl TimerImpl {
                 (guest_trap_flag, regs) =
                     remove_stepping_trap_flag(&mut task, &start, guest_trap_flag)?;
             }
+            #[cfg(target_arch = "aarch64")]
+            self.check_branch_run(&task, unit, current.rcbs(), target_rcb, true);
             let clock = self.read_clock();
             if block_step_reached_target(unit, clock, target_rcb) {
                 // Delivered at the observed counter, as a late notification
                 // is; the marker makes the run fail closed.
+                #[cfg(target_arch = "aarch64")]
+                restore_breakpoints(&mut breakpoints, &task);
                 return Ok(task);
             }
             current.single_step_with_clock(clock);
         }
+        #[cfg(target_arch = "aarch64")]
+        restore_breakpoints(&mut breakpoints, &task);
         debug!(
-            "Timer reached its target {} with {} block steps and {} single steps",
+            "Timer reached its target {} with {} block steps or branch runs and {} single steps",
             current, block_steps, instruction_steps
         );
         Ok(task)
+    }
+
+    /// Checks the counter after a branch run from counter `from` stopped, at
+    /// `task`'s stop: at its breakpoint (`at_breakpoint`) it must have moved
+    /// by exactly the branches decoded, at any other stop by no more.
+    /// Anything else ends branch runs for this thread; a counter at or past
+    /// `target_rcb` is also reported as an overshoot
+    /// ([`block_step_reached_target`]). The clock is read only once the
+    /// thread is switched out ([`TimerImpl::read_clock_at`]): a stop other
+    /// than the run's own breakpoint has made no ptrace request before this.
+    #[cfg(target_arch = "aarch64")]
+    fn check_branch_run(
+        &mut self,
+        task: &Stopped,
+        unit: StepUnit,
+        from: u64,
+        target_rcb: u64,
+        at_breakpoint: bool,
+    ) {
+        let StepUnit::ToBranch { branches, .. } = unit else {
+            return;
+        };
+        let clock = self.read_clock_at(task);
+        let moved = clock.wrapping_sub(from);
+        if moved == branches || (!at_breakpoint && moved < branches) {
+            return;
+        }
+        warn!(
+            "A branch run from counter {from} retired {moved} branches, decoded {branches}; \
+             single stepping from now on"
+        );
+        BRANCH_RUN_MISMATCHES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.branch_runs_off = true;
+        if !at_breakpoint {
+            // The breakpoint stop's own path reports this after restoring.
+            block_step_reached_target(unit, clock, target_rcb);
+        }
+    }
+
+    /// The unit of the next step on aarch64, `clock` RCBs into a precise
+    /// event whose target is `target_rcb`, with the hardware breakpoints it
+    /// needs armed and any others of this stepping disarmed.
+    ///
+    /// A branch run lets the guest run until a hardware breakpoint stops it,
+    /// before the instruction there executes (see [`decode_branch_run`] and
+    /// [`crate::branch_step`]):
+    /// - through the first stop point when that is a branch whose
+    ///   successors are known (its encoding's, or the register's for BR, BLR
+    ///   and RET from the branch itself), retiring that one branch, and only
+    ///   when the counter stays short of the target after it;
+    /// - otherwise up to the first stop point, retiring no branch, whenever
+    ///   the counter is short of the target.
+    ///
+    /// The last stretch to the target, and its instruction offset, are then
+    /// single stepped exactly as before, to the same delivery point.
+    /// Everything else is single stepped: a stop point that is not such a
+    /// branch, reached at pc; code that does not decode; a thread with fewer
+    /// than two free breakpoint registers (they belong to someone else, and
+    /// are never written); and a thread whose branch runs are off.
+    #[cfg(target_arch = "aarch64")]
+    fn branch_run(
+        &mut self,
+        task: &Stopped,
+        breakpoints: &mut Option<BranchBreakpoints>,
+        clock: u64,
+        target_rcb: u64,
+    ) -> Result<StepUnit, TraceError> {
+        let run = if !block_steps_enabled() || self.branch_runs_off || clock >= target_rcb {
+            None
+        } else {
+            decode_branch_run(task, &task.getregs()?, clock, target_rcb)
+        };
+        let Some((stops, count, branches)) = run else {
+            // A breakpoint elsewhere stays armed: a single step's trap is
+            // taken before the next instruction's breakpoint could match.
+            // Registers are read only then, so forced single steps take the
+            // path they took before branch runs.
+            if let Some(armed) = breakpoints.as_mut() {
+                armed.disarm_at(task, task.getregs()?.pc)?;
+            }
+            return Ok(StepUnit::Instruction);
+        };
+        if breakpoints.is_none() {
+            match BranchBreakpoints::new(task) {
+                Ok(Some(reserved)) => *breakpoints = Some(reserved),
+                Ok(None) => {
+                    debug!("Fewer than two free hardware breakpoints: single stepping");
+                    self.branch_runs_off = true;
+                    return Ok(StepUnit::Instruction);
+                }
+                Err(TraceError::Errno(error)) => {
+                    warn!("Hardware breakpoints unusable ({error}): single stepping");
+                    self.branch_runs_off = true;
+                    return Ok(StepUnit::Instruction);
+                }
+                Err(error) => return Err(error),
+            }
+        }
+        let armed = breakpoints.as_mut().expect("reserved above");
+        if let Err(error) = armed.arm(task, &stops[..count]) {
+            warn!("Could not arm hardware breakpoints ({error:?}): single stepping");
+            self.branch_runs_off = true;
+            armed.recover(task)?;
+            return Ok(StepUnit::Instruction);
+        }
+        Ok(StepUnit::ToBranch {
+            stops,
+            count,
+            branches,
+        })
     }
 
     /// Records a precise event whose notification found the thread at
@@ -3388,8 +3623,8 @@ fn block_step_reached_target(unit: StepUnit, clock: u64, target_rcb: u64) -> boo
         return false;
     }
     warn!(
-        "A block step reached the precise timer target {} (clock {}), which its decoded bound \
-         rules out; delivering the timer event at the observed counter",
+        "A block step or branch run reached the precise timer target {} (clock {}), which its \
+         decode rules out; delivering the timer event at the observed counter",
         target_rcb, clock
     );
     get_pmu_config().emit_skid_overshoot_marker(clock, target_rcb);
@@ -3522,9 +3757,205 @@ fn decode_block_bound(ip: u64, code: &[u8]) -> BlockBound {
     }
 }
 
+/// `si_code` of a hardware breakpoint's SIGTRAP
+/// (include/uapi/asm-generic/siginfo.h).
+#[cfg(target_arch = "aarch64")]
+const TRAP_HWBKPT: i32 = 4;
+
+/// The branch run from the registers `regs`, `clock` RCBs into a precise
+/// event whose target is `target_rcb` (see [`TimerImpl::branch_run`]): the
+/// addresses whose breakpoints end it, how many of them, and the branches it
+/// retires.
+///
+/// The run from pc meets the first stop point at or after pc, `at`. If that
+/// is a branch whose successors are known, and one more branch leaves the
+/// counter short of the target, the run retires it and ends, for each
+/// successor, at the last address of the straight-line path from it that is
+/// outside `[pc, at]` (a breakpoint inside would stop the run before the
+/// branch): the successor's own first stop point, or, for a path that runs
+/// back into `[pc, at]` (a loop of one block), the instruction just before
+/// pc. Otherwise the run ends at `at`, retiring nothing. A register branch's
+/// successor is known only from `at == pc`, where the register is current.
+///
+/// A run's breakpoint stop is a forced SIGTRAP, which, like a single step's,
+/// resets a blocked or ignored SIGTRAP. The step shield that prepares each
+/// unit decodes only the instruction at pc, and that is enough for a run
+/// too: every instruction that raises SIGTRAP itself (BRK, SVC and the other
+/// exception-generating instructions) is a stop point, so a run neither
+/// starts at nor executes one. The shield leaves SIGTRAP unblocked for the
+/// whole run rather than one instruction; the guest makes no syscall and
+/// takes no trap of its own before the run ends, so it cannot tell.
+///
+/// A guest `rt_sigreturn` is an `svc` (x8 = 139), so it is a stop point as
+/// well, and a run never executes one. That is the only instruction that can
+/// change the guest's signal mask without a stop where no seccomp stop
+/// reports it. So a shield that decides from the instruction at pc whether a
+/// unit can change the mask may treat a run as it treats a single step. A
+/// change that lets a run execute an `svc` must turn such a shortcut off for
+/// runs (`branch_step::tests::an_rt_sigreturn_ends_a_run_before_it`).
+#[cfg(target_arch = "aarch64")]
+fn decode_branch_run(
+    task: &Stopped,
+    regs: &Regs,
+    clock: u64,
+    target_rcb: u64,
+) -> Option<([u64; 2], usize, u64)> {
+    use crate::branch_step::STOP_WINDOW;
+    use crate::branch_step::Stop;
+    use crate::branch_step::first_stop;
+
+    let mut code = [0u8; 4 * STOP_WINDOW];
+    let mut stop_after = |from: u64| {
+        let len = read_code(task, from, &mut code);
+        first_stop(from, &code[..len])
+    };
+    let pc = regs.pc;
+    let (at, stop) = stop_after(pc)?;
+    let through = (clock + 1 < target_rcb)
+        .then(|| match stop {
+            Stop::Register { .. } if at != pc => None,
+            stop => stop.successors(at, &regs.regs),
+        })
+        .flatten()
+        .and_then(|(successors, count)| {
+            let mut ends = [0u64; 2];
+            for (end, &successor) in ends.iter_mut().zip(&successors[..count]) {
+                let (next, _) = stop_after(successor)?;
+                *end = if !(pc..=at).contains(&next) {
+                    next
+                } else if successor < pc {
+                    pc - 4
+                } else {
+                    return None;
+                };
+            }
+            Some(if count == 1 || ends[0] == ends[1] {
+                ([ends[0], ends[0]], 1, 1)
+            } else {
+                (ends, 2, 1)
+            })
+        });
+    through.or_else(|| (at != pc).then_some(([at, at], 1, 0)))
+}
+
+/// Whether the SIGTRAP stop of a branch run is its breakpoint's: a hardware
+/// breakpoint trap at one of the run's stop points.
+#[cfg(target_arch = "aarch64")]
+fn is_branch_run_report(task: &Stopped, stops: &[u64]) -> bool {
+    matches!(task.getsiginfo(), Ok(info) if info.si_code == TRAP_HWBKPT)
+        && matches!(task.getregs(), Ok(regs) if stops.contains(&regs.pc))
+}
+
+/// Two hardware breakpoint registers of a thread that branch runs use, for
+/// one approach to a precise target.
+///
+/// They are two that were not enabled when the approach began. The others
+/// belong to someone else (a debugger of the guest, or the guest's own
+/// breakpoints) and are written back unchanged, as Linux writes registers
+/// from the first. Every return from the approach leaves the two as they
+/// were found ([`restore_breakpoints`]).
+#[cfg(target_arch = "aarch64")]
+#[derive(Debug)]
+struct BranchBreakpoints {
+    /// The registers as the approach found them.
+    saved: safeptrace::HwBreakpoints,
+    /// The registers as last written.
+    current: safeptrace::HwBreakpoints,
+    /// The two registers used.
+    slots: [usize; 2],
+}
+
+#[cfg(target_arch = "aarch64")]
+impl BranchBreakpoints {
+    /// The thread's first two free breakpoint registers, if it has two and
+    /// Linux can reserve both.
+    ///
+    /// Linux registers a ptrace breakpoint for each register written, and
+    /// stops at the first that fails, so the two are first written as they
+    /// are (disabled): that reserves both hardware slots, or fails with
+    /// ENOSPC when others (the guest's own `perf_event_open` breakpoints)
+    /// hold them, before anything is enabled. A later write then only
+    /// changes registered breakpoints.
+    ///
+    /// The two stay registered, disabled, until the thread execs or exits:
+    /// ptrace has no request that unregisters one. From its first branch run
+    /// on, the thread's own `perf_event_open` breakpoints therefore find two
+    /// fewer free slots (of six on Neoverse V2), and may get ENOSPC where a
+    /// run with `REVERIE_BLOCK_STEP=0` would not.
+    fn new(task: &Stopped) -> Result<Option<Self>, TraceError> {
+        let saved = task.hw_breakpoints()?;
+        let enabled = saved.regs[..saved.slots()].iter().map(|reg| reg.enabled());
+        let Some(slots) = crate::branch_step::free_slots(enabled) else {
+            return Ok(None);
+        };
+        match task.set_hw_breakpoints(&saved, slots[1] + 1) {
+            Ok(()) => Ok(Some(Self {
+                saved,
+                current: saved,
+                slots,
+            })),
+            Err(TraceError::Errno(Errno::ENOSPC)) => Ok(None),
+            Err(error) => Err(error),
+        }
+    }
+
+    /// Disarms a used register whose breakpoint is at `pc`, where a single
+    /// step is about to start.
+    fn disarm_at(&mut self, task: &Stopped, pc: u64) -> Result<(), TraceError> {
+        let mut next = self.current;
+        for &slot in &self.slots {
+            if next.regs[slot].enabled() && next.regs[slot].addr == pc {
+                next.regs[slot] = self.saved.regs[slot];
+            }
+        }
+        self.write(task, next)
+    }
+
+    /// After a failed write, which Linux may have applied in part: reads
+    /// the registers back, then disarms both used registers.
+    fn recover(&mut self, task: &Stopped) -> Result<(), TraceError> {
+        self.current = task.hw_breakpoints()?;
+        self.arm(task, &[])
+    }
+
+    /// Writes `next` if it differs from the registers as last written.
+    fn write(&mut self, task: &Stopped, next: safeptrace::HwBreakpoints) -> Result<(), TraceError> {
+        if next != self.current {
+            task.set_hw_breakpoints(&next, self.slots[1] + 1)?;
+            self.current = next;
+        }
+        Ok(())
+    }
+
+    /// Arms breakpoints at `stops` (at most two) and disarms the other used
+    /// register, writing only if that changes a register: a breakpoint
+    /// stays armed while its address stays a stop point.
+    fn arm(&mut self, task: &Stopped, stops: &[u64]) -> Result<(), TraceError> {
+        let mut next = self.current;
+        for (index, &slot) in self.slots.iter().enumerate() {
+            next.regs[slot] = match stops.get(index) {
+                Some(&at) => safeptrace::HwBreakpoint::at(at),
+                None => self.saved.regs[slot],
+            };
+        }
+        self.write(task, next)
+    }
+}
+
+/// Leaves the breakpoint registers branch runs used as the approach found
+/// them. A thread that cannot be written to has left its stop (it is dying),
+/// and its registers go with it.
+#[cfg(target_arch = "aarch64")]
+fn restore_breakpoints(breakpoints: &mut Option<BranchBreakpoints>, task: &Stopped) {
+    if let Some(mut armed) = breakpoints.take()
+        && let Err(error) = armed.arm(task, &[]).or_else(|_| armed.recover(task))
+    {
+        warn!("Could not restore hardware breakpoints after branch runs: {error:?}");
+    }
+}
+
 /// Reads up to `buf.len()` bytes of guest code at `addr`, and returns how
 /// many it read: fewer where the code is unmapped or unreadable.
-#[cfg(target_arch = "x86_64")]
 fn read_code(task: &Stopped, addr: u64, buf: &mut [u8]) -> usize {
     match Addr::<u8>::from_raw(addr as usize) {
         Some(addr) => task.read(addr, buf).unwrap_or(0),
@@ -4123,6 +4554,116 @@ mod tests {
         assert_eq!(this_task.is_some(), listed);
     }
 
+    /// A stopped child of this test's thread with a timer on it, killed and
+    /// reaped when the guard drops; `None` where perf counters are missing.
+    fn timer_on_a_stopped_child() -> Option<(super::Timer, super::Stopped, impl Drop)> {
+        use nix::unistd::ForkResult;
+        use reverie::Pid;
+        use reverie::Tid;
+
+        if !crate::perf::is_perf_supported() || super::try_get_pmu_config().is_none() {
+            eprintln!("skipping: perf counters are not supported here");
+            return None;
+        }
+        struct Reap(i32);
+        impl Drop for Reap {
+            fn drop(&mut self) {
+                // SAFETY: kill and waitpid take plain values and a local status.
+                unsafe {
+                    libc::kill(self.0, libc::SIGKILL);
+                    let mut status = 0;
+                    while libc::waitpid(self.0, &mut status, libc::__WALL) < 0
+                        && *libc::__errno_location() == libc::EINTR
+                    {}
+                }
+            }
+        }
+        // SAFETY: the child calls only `traceme_and_stop` and `_exit`.
+        let raw = match unsafe { nix::unistd::fork() }.expect("fork the tracee") {
+            ForkResult::Child => {
+                safeptrace::traceme_and_stop().expect("TRACEME");
+                // SAFETY: _exit takes a plain value.
+                unsafe { libc::_exit(0) }
+            }
+            ForkResult::Parent { child } => child.as_raw(),
+        };
+        let reap = Reap(raw);
+        let (task, event) = super::Running::new(Pid::from_raw(raw))
+            .wait()
+            .expect("wait")
+            .assume_stopped();
+        assert_eq!(event, super::TraceEvent::Signal(reverie::Signal::SIGSTOP));
+        let timer = super::Timer::new(Pid::from_raw(raw), Tid::from_raw(raw));
+        Some((timer, task, reap))
+    }
+
+    /// A clock read at a stop that may not have made a ptrace request yet
+    /// (`TimerImpl::read_clock_at`, which the branch-run check uses) first
+    /// waits for the stopped thread to be switched out, where the counter's
+    /// page needs that (forced here, since this host's page may publish a
+    /// live counter's index), and only there.
+    #[test]
+    fn a_clock_read_at_a_stop_waits_for_the_switch_out_first() {
+        use super::SWITCH_OUT_FORCED_FOR_TEST;
+        use super::SWITCH_OUTS_FOR_TEST;
+
+        let Some((timer, task, _reap)) = timer_on_a_stopped_child() else {
+            return;
+        };
+        let inner = timer.inner();
+        let waits = || SWITCH_OUTS_FOR_TEST.get();
+
+        SWITCH_OUT_FORCED_FOR_TEST.set(true);
+        let before = waits();
+        let at_stop = inner.read_clock_at(&task);
+        SWITCH_OUT_FORCED_FOR_TEST.set(false);
+        assert_eq!(waits(), before + 1, "the read waited for the switch-out");
+        assert_eq!(
+            at_stop,
+            inner.read_clock(),
+            "a stopped thread's clock holds"
+        );
+
+        let before = waits();
+        inner.read_clock_at(&task);
+        let needs = inner.clock.fast_read_needs_switch_out();
+        assert_eq!(
+            waits(),
+            before + u64::from(needs),
+            "waits only where needed"
+        );
+    }
+
+    /// The branch-run check reads the clock only after the switch-out wait,
+    /// at a stop other than the run's breakpoint as at the breakpoint. A run
+    /// that retired the branches it decoded leaves branch runs on.
+    #[cfg(target_arch = "aarch64")]
+    #[test]
+    fn a_branch_run_check_reads_the_clock_after_the_switch_out() {
+        use super::SWITCH_OUT_FORCED_FOR_TEST;
+        use super::SWITCH_OUTS_FOR_TEST;
+        use super::StepUnit;
+
+        let Some((mut timer, task, _reap)) = timer_on_a_stopped_child() else {
+            return;
+        };
+        let inner = timer.inner_mut_noinit().expect("a timer");
+        let from = inner.read_clock();
+        let unit = StepUnit::ToBranch {
+            stops: [0, 0],
+            count: 1,
+            branches: 0,
+        };
+        SWITCH_OUT_FORCED_FOR_TEST.set(true);
+        for at_breakpoint in [false, true] {
+            let before = SWITCH_OUTS_FOR_TEST.get();
+            inner.check_branch_run(&task, unit, from, from + 1_000, at_breakpoint);
+            assert_eq!(SWITCH_OUTS_FOR_TEST.get(), before + 1, "{at_breakpoint}");
+        }
+        SWITCH_OUT_FORCED_FOR_TEST.set(false);
+        assert!(!inner.branch_runs_off);
+    }
+
     #[test]
     fn terminal_close_attempts_both_counters_after_cancellation_error() {
         use super::*;
@@ -4160,6 +4701,8 @@ mod tests {
                 halved: None,
                 #[cfg(target_arch = "x86_64")]
                 block_bounds: BlockBounds::default(),
+                #[cfg(target_arch = "aarch64")]
+                branch_runs_off: false,
                 initial_command: InitialCommand::Ordinary,
                 held_initial_event: Some(event),
                 interrupted: None,
