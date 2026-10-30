@@ -218,11 +218,18 @@ pub fn guest_personality(launcher: u32) -> u32 {
 }
 
 /// Launcher personality bits a guest may not start with, because LinuxEmu
-/// implements no effect for them: a non-Linux execution domain (the low
-/// byte), ADDR_COMPAT_LAYOUT (legacy bottom-up placement) and
-/// MMAP_PAGE_ZERO. A load under such a launcher is refused rather than
-/// reporting flags with no effect.
-pub const UNIMPLEMENTED_LAUNCHER_PERSONALITY: u32 = 0xff | 0x0020_0000 | 0x0100_0000;
+/// implements no effect for them (include/uapi/linux/personality.h): a
+/// non-Linux execution domain (the low byte), ADDR_COMPAT_LAYOUT (legacy
+/// bottom-up placement), MMAP_PAGE_ZERO and SHORT_INODE. A load under
+/// such a launcher is refused rather than reporting flags with no effect.
+pub const PERSONALITY_EXECUTION_DOMAIN: u32 = 0xff;
+pub const PERSONALITY_ADDR_COMPAT_LAYOUT: u32 = 0x0020_0000;
+pub const PERSONALITY_MMAP_PAGE_ZERO: u32 = 0x0010_0000;
+pub const PERSONALITY_SHORT_INODE: u32 = 0x0100_0000;
+pub const UNIMPLEMENTED_LAUNCHER_PERSONALITY: u32 = PERSONALITY_EXECUTION_DOMAIN
+    | PERSONALITY_ADDR_COMPAT_LAYOUT
+    | PERSONALITY_MMAP_PAGE_ZERO
+    | PERSONALITY_SHORT_INODE;
 
 /// The umask from /proc/self/status, which reads it without the set and
 /// restore that umask(2) needs.
@@ -306,6 +313,22 @@ mod tests {
         }
         .after_exec(RootIds::default());
         assert_eq!((none.permitted, none.effective), (0, 0));
+    }
+
+    #[test]
+    fn unimplemented_launcher_personality_covers_each_refused_bit() {
+        for bit in [
+            PERSONALITY_EXECUTION_DOMAIN,
+            PERSONALITY_ADDR_COMPAT_LAYOUT,
+            PERSONALITY_MMAP_PAGE_ZERO,
+            PERSONALITY_SHORT_INODE,
+        ] {
+            assert_ne!(bit & UNIMPLEMENTED_LAUNCHER_PERSONALITY, 0, "bit {bit:#x}");
+        }
+        // The bits LinuxEmu does implement stay allowed.
+        for bit in [libc::ADDR_NO_RANDOMIZE as u32, 0x0002_0000, 0x0400_0000] {
+            assert_eq!(bit & UNIMPLEMENTED_LAUNCHER_PERSONALITY, 0, "bit {bit:#x}");
+        }
     }
 
     #[test]
