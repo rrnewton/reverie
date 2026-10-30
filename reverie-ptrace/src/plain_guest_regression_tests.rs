@@ -991,6 +991,8 @@ impl Tool for GuestTool {
 
     async fn handle_post_exec<G: Guest<Self>>(&self, guest: &mut G) -> Result<(), Errno> {
         guest.send_rpc("post-exec".to_owned()).await;
+        #[cfg(target_arch = "x86_64")]
+        observe_first_exec_entry(guest).await?;
         Ok(())
     }
 
@@ -1334,6 +1336,229 @@ fn regression_guest() -> &'static std::path::Path {
     GUEST.as_path()
 }
 
+/// The no-CRT entry fixtures are only built by the first-exec test. The
+/// observer never initializes this cell on behalf of another regression.
+#[cfg(target_arch = "x86_64")]
+struct FirstExecGuest {
+    name: &'static str,
+    env: &'static str,
+    path: PathBuf,
+    entry: u64,
+    opcode: &'static [u8],
+    image: Vec<u8>,
+}
+
+#[cfg(target_arch = "x86_64")]
+static FIRST_EXEC_GUESTS: std::sync::OnceLock<Vec<FirstExecGuest>> = std::sync::OnceLock::new();
+
+// The current-thread regression owns this guard. Other libtest threads
+// never perform the added image/memory observations, even after fixture build.
+#[cfg(target_arch = "x86_64")]
+std::thread_local! {
+    static OBSERVE_FIRST_EXEC_ENTRIES: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+#[cfg(target_arch = "x86_64")]
+struct FirstExecObservations(std::marker::PhantomData<std::rc::Rc<()>>);
+
+#[cfg(target_arch = "x86_64")]
+impl FirstExecObservations {
+    fn begin() -> Self {
+        OBSERVE_FIRST_EXEC_ENTRIES.with(|enabled| assert!(!enabled.replace(true)));
+        Self(std::marker::PhantomData)
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+impl Drop for FirstExecObservations {
+    fn drop(&mut self) {
+        OBSERVE_FIRST_EXEC_ENTRIES.with(|enabled| enabled.set(false));
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+fn first_exec_guests() -> &'static [FirstExecGuest] {
+    FIRST_EXEC_GUESTS.get_or_init(|| {
+        let source = crate::tracer::tests::fixture("sigtrap_first_exec.S");
+        let text = std::fs::read(&source).expect("read the first-exec assembly fixture");
+        let directory = std::env::current_exe()
+            .expect("locate the test binary")
+            .parent()
+            .expect("the test binary has a directory")
+            .to_path_buf();
+        let specs: [(&str, &str, &str, &[u8]); 4] = [
+            ("cc", "TP_FIRST_EXEC_CC", "first_exec_cc", &[0xcc]),
+            ("f1", "TP_FIRST_EXEC_F1", "first_exec_f1", &[0xf1]),
+            (
+                "cd03",
+                "TP_FIRST_EXEC_CD03",
+                "first_exec_cd03",
+                &[0xcd, 0x03],
+            ),
+            ("nop", "TP_FIRST_EXEC_NOP", "first_exec_nop", &[0x90]),
+        ];
+        specs
+            .into_iter()
+            .map(|(name, env, selector, opcode)| {
+                // The selector is part of the cache key: the four ELF headers
+                // differ even though their assembly source is the same.
+                let hash = text
+                    .iter()
+                    .chain(selector.as_bytes())
+                    .fold(0xcbf2_9ce4_8422_2325u64, |hash, byte| {
+                        (hash ^ u64::from(*byte)).wrapping_mul(0x0000_0100_0000_01b3)
+                    });
+                let output = directory.join(format!("reverie-first-exec-{hash:016x}"));
+                let staging = directory.join(format!(
+                    "reverie-first-exec-{hash:016x}.{}.tmp",
+                    std::process::id()
+                ));
+                let status = std::process::Command::new("cc")
+                    .args(["-nostdlib", "-static", "-no-pie", "-Wl,--build-id=none"])
+                    .arg(format!("-Wl,-e,{selector}"))
+                    .arg(&source)
+                    .arg("-o")
+                    .arg(&staging)
+                    .status()
+                    .expect("compile the first-exec ELF");
+                assert!(status.success(), "compile first-exec {name}: {status}");
+                std::fs::rename(&staging, &output).expect("publish the first-exec ELF");
+                let path = std::fs::canonicalize(&output).expect("resolve the first-exec ELF");
+                let image = std::fs::read(&path).expect("read the first-exec ELF");
+                let elf = goblin::elf::Elf::parse(&image).expect("parse the first-exec ELF");
+                assert!(elf.is_64 && elf.little_endian, "a little-endian ELF64");
+                assert_eq!(elf.header.e_machine, goblin::elf::header::EM_X86_64);
+                assert_eq!(elf.header.e_type, goblin::elf::header::ET_EXEC);
+                assert!(
+                    !elf.program_headers
+                        .iter()
+                        .any(|p| { p.p_type == goblin::elf::program_header::PT_INTERP }),
+                    "no interpreter may execute before the target entry"
+                );
+                let entry = elf.entry;
+                let offset = elf
+                    .program_headers
+                    .iter()
+                    .find_map(|p| {
+                        if p.p_type != goblin::elf::program_header::PT_LOAD
+                            || p.p_flags & goblin::elf::program_header::PF_X == 0
+                        {
+                            return None;
+                        }
+                        let within = entry.checked_sub(p.p_vaddr)?;
+                        if within.checked_add(opcode.len() as u64)? > p.p_filesz {
+                            return None;
+                        }
+                        usize::try_from(p.p_offset.checked_add(within)?).ok()
+                    })
+                    .expect("entry bytes belong to a file-backed executable segment");
+                assert_eq!(image.get(offset..offset + opcode.len()), Some(opcode));
+                FirstExecGuest {
+                    name,
+                    env,
+                    path,
+                    entry,
+                    opcode,
+                    image,
+                }
+            })
+            .collect()
+    })
+}
+
+/// This is a plain-ptrace test hook, not a portable Tool capability. Authenticate
+/// the stopped image through its owned TID's proc exe before recording bytes.
+/// A wrong entry RIP cannot supply coverage merely by having a post-exec hook.
+#[cfg(target_arch = "x86_64")]
+async fn observe_first_exec_entry<G: Guest<GuestTool>>(guest: &mut G) -> Result<(), Errno> {
+    use reverie::syscalls::MemoryAccess;
+    if !OBSERVE_FIRST_EXEC_ENTRIES.with(std::cell::Cell::get) {
+        return Ok(());
+    }
+    let Some(targets) = FIRST_EXEC_GUESTS.get() else {
+        return Ok(());
+    };
+    let regs = guest.regs().await;
+    if !targets.iter().any(|target| target.entry == regs.rip) {
+        return Ok(());
+    }
+    let proc_exe = format!("/proc/{}/exe", guest.tid());
+    let path = std::fs::read_link(&proc_exe).map_err(|_| Errno::EIO)?;
+    let Some(target) = targets.iter().find(|target| target.path == path) else {
+        return Ok(());
+    };
+    if regs.rip != target.entry || std::fs::read(&proc_exe).map_err(|_| Errno::EIO)? != target.image
+    {
+        return Err(Errno::EIO);
+    }
+    let mut bytes = vec![0; target.opcode.len()];
+    let address =
+        reverie::syscalls::Addr::<u8>::from_raw(regs.rip as usize).ok_or(Errno::EFAULT)?;
+    guest.memory().read_exact(address, &mut bytes)?;
+    let hex = bytes
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<Vec<_>>()
+        .concat();
+    guest
+        .send_rpc(format!(
+            "elf-entry {} rip={:#x} bytes={hex}",
+            target.name, regs.rip
+        ))
+        .await;
+    Ok(())
+}
+
+/// A real, untraced prerequisite. Its private process group has a bounded
+/// kill/reap attempt on timeout; any cleanup uncertainty fails. No perf skip.
+#[cfg(target_arch = "x86_64")]
+fn native_first_exec_report() -> String {
+    use std::os::unix::process::CommandExt;
+    let report = tempfile_path("plain-guest-native-sigtrap-first-exec");
+    let mut command = std::process::Command::new(regression_guest());
+    command
+        .arg("sigtrap_first_exec")
+        .arg(&report)
+        .process_group(0);
+    for target in first_exec_guests() {
+        command.env(target.env, &target.path);
+    }
+    let mut child = command
+        .spawn()
+        .expect("run the real native first-exec prerequisite");
+    let deadline = std::time::Instant::now() + Duration::from_secs(60);
+    let result = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break Ok(status),
+            Ok(None) if std::time::Instant::now() < deadline => {}
+            Ok(None) => {
+                break Err("native first-exec deadline; root known unreaped".to_owned());
+            }
+            Err(error) => panic!(
+                "native first-exec wait error; ownership uncertain; no signal sent: {error:?}"
+            ),
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    };
+    let status = result.unwrap_or_else(|why| {
+        let kill = nix::sys::signal::killpg(
+            nix::unistd::Pid::from_raw(child.id() as i32),
+            nix::sys::signal::Signal::SIGKILL,
+        );
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        let reap = loop {
+            match child.try_wait() {
+                Ok(None) if std::time::Instant::now() < deadline => {}
+                final_state => break final_state,
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        };
+        panic!("{why}; owned group kill={kill:?}; root reap={reap:?}");
+    });
+    assert!(status.success(), "native first-exec prerequisite: {status}");
+    std::fs::read_to_string(&report).expect("read the native first-exec report")
+}
+
 #[derive(Debug)]
 struct GuestRun {
     status: ExitStatus,
@@ -1469,6 +1694,12 @@ async fn run_guest_options(mode: &str, options: GuestOptions) -> Result<GuestRun
     let report_path = tempfile_path(&format!("plain-guest-{mode}"));
     let mut command = Command::new(regression_guest());
     command.arg(mode).arg(&report_path);
+    #[cfg(target_arch = "x86_64")]
+    if mode == "sigtrap_first_exec" {
+        for target in first_exec_guests() {
+            command.env(target.env, &target.path);
+        }
+    }
     if let Some(order) = options.order {
         command.env("TP_ORDER", order);
     }
@@ -3339,6 +3570,104 @@ async fn sigtrap_state_survives_reverie_preinit_at_exec() {
             ],
             "{}",
             run.report
+        );
+    }
+}
+
+/// Native force-SIGTRAP behavior at the ELF entry, before any guest opcode
+/// has run. Unlike the timer-window test this requires no perf support.
+#[cfg(target_arch = "x86_64")]
+#[tokio::test(flavor = "current_thread")]
+async fn a_guest_trap_at_elf_entry_takes_sigtraps_default_action() {
+    let targets = first_exec_guests();
+    let expected = [
+        "first-exec cc dfl-blocked signaled=1 sig=5 exited=0 rc=-1",
+        "first-exec cc ign-unblocked signaled=1 sig=5 exited=0 rc=-1",
+        "first-exec cc ign-blocked signaled=1 sig=5 exited=0 rc=-1",
+        "first-exec f1 dfl-blocked signaled=1 sig=5 exited=0 rc=-1",
+        "first-exec f1 ign-unblocked signaled=1 sig=5 exited=0 rc=-1",
+        "first-exec f1 ign-blocked signaled=1 sig=5 exited=0 rc=-1",
+        "first-exec cd03 dfl-blocked signaled=1 sig=5 exited=0 rc=-1",
+        "first-exec cd03 ign-unblocked signaled=1 sig=5 exited=0 rc=-1",
+        "first-exec cd03 ign-blocked signaled=1 sig=5 exited=0 rc=-1",
+        "first-exec nop ign-blocked signaled=0 sig=0 exited=1 rc=99",
+        "done",
+    ];
+    let check_report = |phase: &str, report: &str| {
+        assert!(
+            report
+                .lines()
+                .next()
+                .unwrap_or("")
+                .starts_with("mode sigtrap_first_exec site=0x"),
+            "{phase}: {report}"
+        );
+        assert_eq!(
+            report.lines().skip(1).collect::<Vec<_>>(),
+            expected,
+            "{phase}: {report}"
+        );
+        assert!(report.ends_with("done\n"), "{phase}: {report}");
+    };
+    // A native mismatch fails this prerequisite; it is never a skip.
+    check_report("native", &native_first_exec_report());
+    let _observations = FirstExecObservations::begin();
+    let [inject, tail] = run_both_configurations("sigtrap_first_exec").await;
+    for (phase, run) in [("inject", inject), ("tail", tail)] {
+        check_report(phase, &run.report);
+        assert_eq!(
+            run.count_events("post-exec"),
+            11,
+            "{phase}: launcher plus ten target execs"
+        );
+        let mut actual = Vec::new();
+        for events in run.tool_events.values() {
+            let entries: Vec<_> = events
+                .iter()
+                .filter(|event| event.starts_with("elf-entry "))
+                .collect();
+            if !entries.is_empty() {
+                assert_eq!(
+                    entries.len(),
+                    1,
+                    "{phase}: one entry observation per child: {events:?}"
+                );
+                assert_eq!(
+                    events
+                        .iter()
+                        .filter(|event| event.as_str() == "post-exec")
+                        .count(),
+                    1,
+                    "{phase}: one post-exec per target entry: {events:?}"
+                );
+                actual.push(entries[0].to_owned());
+            }
+        }
+        assert_eq!(
+            actual.len(),
+            10,
+            "{phase}: exactly ten authenticated target-entry observations"
+        );
+        let mut expected_entries = Vec::new();
+        for target in targets {
+            let hex = target
+                .opcode
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect::<Vec<_>>()
+                .concat();
+            for _ in 0..if target.name == "nop" { 1 } else { 3 } {
+                expected_entries.push(format!(
+                    "elf-entry {} rip={:#x} bytes={hex}",
+                    target.name, target.entry
+                ));
+            }
+        }
+        actual.sort_unstable();
+        expected_entries.sort_unstable();
+        assert_eq!(
+            actual, expected_entries,
+            "{phase}: actual stopped RIP/bytes, not callback count alone"
         );
     }
 }
@@ -5485,5 +5814,409 @@ async fn a_guest_seccomp_filter_against_rt_sigaction_never_meets_a_repair() {
                 "{mode}"
             );
         }
+    }
+}
+
+/// Real first-exec transitions when private text changes at the exact decoder
+/// boundary. These tests do not replace the original native/inject/tail oracle.
+#[cfg(target_arch = "x86_64")]
+mod first_exec_boundaries {
+    use std::rc::Rc;
+    use std::sync::Arc;
+    use std::sync::atomic::AtomicBool;
+    use std::sync::atomic::Ordering;
+
+    use reverie::syscalls::Addr;
+    use reverie::syscalls::AddrMut;
+    use reverie::syscalls::MemoryAccess;
+    use safeptrace::Event;
+    use safeptrace::Stopped;
+    use safeptrace::Wait;
+
+    use super::*;
+
+    #[derive(Clone, Copy, Default, Debug, Eq, PartialEq, Serialize, Deserialize)]
+    enum Case {
+        #[default]
+        StepSyscall,
+        ContSyscall,
+        ContGuestTf,
+    }
+
+    impl Case {
+        fn period(self) -> Option<u64> {
+            match self {
+                Self::StepSyscall => None,
+                Self::ContSyscall => Some(8),
+                Self::ContGuestTf => Some(1_000_000),
+            }
+        }
+    }
+
+    #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+    enum Observation {
+        PostExec {
+            rip: u64,
+            clock: Option<u64>,
+            period: Option<u64>,
+        },
+        Timer {
+            rip: u64,
+            clock: u64,
+            rax: u64,
+        },
+        Signal {
+            signal: i32,
+            rip: u64,
+        },
+    }
+
+    #[derive(Default)]
+    struct BoundaryLog(Mutex<Vec<(Pid, Observation)>>);
+
+    #[reverie::global_tool]
+    impl GlobalTool for BoundaryLog {
+        type Config = Case;
+        type Request = Observation;
+        type Response = ();
+
+        async fn receive_rpc(&self, from: Pid, observation: Observation) {
+            self.0.lock().unwrap().push((from, observation));
+        }
+    }
+
+    #[derive(Default)]
+    struct BoundaryTool;
+
+    #[reverie::tool]
+    impl Tool for BoundaryTool {
+        type GlobalState = BoundaryLog;
+        type ThreadState = ();
+
+        fn subscriptions(_config: &Case) -> Subscription {
+            // In particular, getpid is not subscribed. A controller syscall
+            // step must not be lent the native first-exec CONT authority.
+            Subscription::none()
+        }
+
+        fn enforces_serialized_execution(_config: &Case) -> bool {
+            true
+        }
+
+        async fn handle_post_exec<G: Guest<Self>>(&self, guest: &mut G) -> Result<(), Errno> {
+            let period = guest.config().period();
+            let rip = guest.regs().await.rip;
+            let clock = period.map(|_| guest.read_clock().expect("read the post-exec timer clock"));
+            if let Some(period) = period {
+                guest
+                    .set_timer_precise(reverie::TimerSchedule::Rcbs(period))
+                    .expect("accept the actual post-exec precise timer request");
+            }
+            guest
+                .send_rpc(Observation::PostExec { rip, clock, period })
+                .await;
+            Ok(())
+        }
+
+        async fn handle_timer_event<G: Guest<Self>>(&self, guest: &mut G) {
+            let regs = guest.regs().await;
+            let clock = guest.read_clock().expect("read the delivered timer clock");
+            guest
+                .send_rpc(Observation::Timer {
+                    rip: regs.rip,
+                    clock,
+                    rax: regs.rax,
+                })
+                .await;
+        }
+
+        async fn handle_signal_event<G: Guest<Self>>(
+            &self,
+            guest: &mut G,
+            signal: reverie::Signal,
+        ) -> Result<Option<reverie::Signal>, Errno> {
+            let rip = guest.regs().await.rip;
+            guest
+                .send_rpc(Observation::Signal {
+                    signal: signal as i32,
+                    rip,
+                })
+                .await;
+            Ok(Some(signal))
+        }
+    }
+
+    struct TransitionHook(std::marker::PhantomData<Rc<()>>);
+
+    impl TransitionHook {
+        fn install(hook: crate::task::FirstExecTransitionForTest) -> Self {
+            crate::task::FIRST_EXEC_TRANSITION_FOR_TEST.with(|slot| {
+                assert!(slot.borrow_mut().replace(hook).is_none());
+            });
+            Self(std::marker::PhantomData)
+        }
+    }
+
+    impl Drop for TransitionHook {
+        fn drop(&mut self) {
+            crate::task::FIRST_EXEC_TRANSITION_FOR_TEST.with(|slot| {
+                slot.borrow_mut().take();
+            });
+        }
+    }
+
+    fn authenticate_entry(
+        task: &Stopped,
+        target: &FirstExecGuest,
+    ) -> Result<(), safeptrace::Error> {
+        let regs = task.getregs()?;
+        assert_eq!(regs.rip, target.entry);
+        assert_eq!(
+            regs.eflags & 0x100,
+            0,
+            "TF must be established by guest POPFQ, not ptrace"
+        );
+        assert_ne!(task.getsigmask()? & (1 << (libc::SIGTRAP - 1)), 0);
+        let proc_exe = format!("/proc/{}/exe", task.pid());
+        assert_eq!(
+            std::fs::read_link(&proc_exe).expect("resolve the owned image"),
+            target.path
+        );
+        assert_eq!(
+            std::fs::read(&proc_exe).expect("read the owned image"),
+            target.image
+        );
+        let mut bytes = vec![0; target.opcode.len()];
+        task.read_exact(Addr::from_raw(target.entry as usize).unwrap(), &mut bytes)?;
+        assert_eq!(bytes, target.opcode);
+        Ok(())
+    }
+
+    /// The exact eight-byte Stopped write uses forced POKEDATA on this private
+    /// RX mapping. Keep the untouched tail of the final word and read it back.
+    /// No ToolMemory permission or production memory API is changed.
+    fn write_private_text(
+        task: &mut Stopped,
+        entry: u64,
+        bytes: &[u8],
+    ) -> Result<(), safeptrace::Error> {
+        for (index, chunk) in bytes.chunks(8).enumerate() {
+            let at = entry
+                .checked_add((index * 8) as u64)
+                .expect("bounded text offset");
+            let mut word = [0; 8];
+            task.read_exact(Addr::from_raw(at as usize).unwrap(), &mut word)?;
+            word[..chunk.len()].copy_from_slice(chunk);
+            task.write_exact(AddrMut::from_raw(at as usize).unwrap(), &word)?;
+            let mut actual = [0; 8];
+            task.read_exact(Addr::from_raw(at as usize).unwrap(), &mut actual)?;
+            assert_eq!(actual, word, "forced write at {at:#x}");
+        }
+        Ok(())
+    }
+
+    // syscall; cmp r12,rax; jne failure; mov ecx,1024; dec ecx; jne loop;
+    // exit(99); ud2; failure: exit(98); ud2. The live RAX is SYS_getpid,
+    // and R12 is the actual owned root PID. The timer target is eight RCBs;
+    // every early loop-branch target is the instruction at entry + 12.
+    const SYSCALL_LOOP: &[u8] = &[
+        0x0f, 0x05, 0x4c, 0x39, 0xe0, 0x75, 0x17, 0xb9, 0x00, 0x04, 0x00, 0x00, 0xff, 0xc9, 0x75,
+        0xfc, 0xbf, 0x63, 0x00, 0x00, 0x00, 0xb8, 0x3c, 0x00, 0x00, 0x00, 0x0f, 0x05, 0x0f, 0x0b,
+        0xbf, 0x62, 0x00, 0x00, 0x00, 0xb8, 0x3c, 0x00, 0x00, 0x00, 0x0f, 0x05, 0x0f, 0x0b,
+    ];
+
+    // pushfq; orq $0x100,(rsp); popfq; nop; exit(99); ud2. Only guest
+    // execution sets TF. The resulting TRACE must stop at entry + 11.
+    const GUEST_TF: &[u8] = &[
+        0x9c, 0x48, 0x81, 0x0c, 0x24, 0x00, 0x01, 0x00, 0x00, 0x9d, 0x90, 0xbf, 0x63, 0x00, 0x00,
+        0x00, 0xb8, 0x3c, 0x00, 0x00, 0x00, 0x0f, 0x05, 0x0f, 0x0b,
+    ];
+
+    fn install_syscall(task: &mut Stopped, entry: u64) -> Result<(), safeptrace::Error> {
+        write_private_text(task, entry, SYSCALL_LOOP)?;
+        let mut regs = task.getregs()?;
+        regs.rax = libc::SYS_getpid as u64;
+        regs.r12 = task.pid().as_raw() as u64;
+        task.setregs(&regs)?;
+        Ok(())
+    }
+
+    async fn run_case(case: Case) {
+        if case.period().is_some() {
+            assert!(
+                crate::perf::is_perf_supported(),
+                "this case requires actual timer coverage"
+            );
+        }
+        let target = first_exec_guests()
+            .iter()
+            .find(|target| {
+                target.name
+                    == if case == Case::StepSyscall {
+                        "nop"
+                    } else {
+                        "f1"
+                    }
+            })
+            .expect("the exact no-CRT target");
+        let selected = Arc::new(Mutex::new(None));
+        let waited = Arc::new(AtomicBool::new(false));
+        let selected_hook = selected.clone();
+        let waited_hook = waited.clone();
+        let _hook = TransitionHook::install(crate::task::FirstExecTransitionForTest {
+            before_decode: Box::new(move |task| {
+                authenticate_entry(task, target)?;
+                if case == Case::StepSyscall {
+                    install_syscall(task, target.entry)?;
+                }
+                Ok(())
+            }),
+            after_decision: Box::new(move |task, continued| {
+                assert_eq!(
+                    continued,
+                    case != Case::StepSyscall,
+                    "actual STEP/CONT selection"
+                );
+                assert!(selected_hook.lock().unwrap().replace(continued).is_none());
+                let tid = task.pid();
+                assert_eq!(task.getregs()?.rip, target.entry);
+                if case == Case::ContSyscall {
+                    install_syscall(task, target.entry)?;
+                } else if case == Case::ContGuestTf {
+                    write_private_text(task, target.entry, GUEST_TF)?;
+                }
+                let hook: crate::task::FirstExecWaitForTest = Box::new(move |wait| {
+                    assert!(
+                        !waited_hook.swap(true, Ordering::SeqCst),
+                        "one actual immediate wait"
+                    );
+                    let Wait::Stopped(stopped, event) = wait else {
+                        panic!("{case:?}: expected an actual stopped event, got {wait:?}");
+                    };
+                    assert_eq!(stopped.pid(), tid, "the actual target of this transition");
+                    let regs = stopped.getregs()?;
+                    eprintln!(
+                        "first-exec-boundary {case:?} cont={continued} tid={tid} event={event:?} rip={:#x} rax={:#x}",
+                        regs.rip, regs.rax
+                    );
+                    if case == Case::ContSyscall {
+                        assert_ne!(
+                            *event,
+                            Event::Signal(Signal::SIGTRAP),
+                            "CONT may not manufacture a controller syscall trap"
+                        );
+                    } else {
+                        assert_eq!(*event, Event::Signal(Signal::SIGTRAP));
+                        let info = stopped.getsiginfo()?;
+                        assert_eq!(info.si_signo, libc::SIGTRAP);
+                        let (code, rip) = if case == Case::StepSyscall {
+                            (libc::TRAP_BRKPT, target.entry + 2)
+                        } else {
+                            (libc::TRAP_TRACE, target.entry + 11)
+                        };
+                        assert_eq!(info.si_code, code, "actual immediate trap kind");
+                        // SAFETY: the checks above establish a kernel trap's
+                        // fault-address member, not a queued signal payload.
+                        assert_eq!(unsafe { info.si_addr() } as u64, rip);
+                        assert_eq!(regs.rip, rip);
+                        if case == Case::StepSyscall {
+                            assert_eq!(
+                                regs.rax,
+                                tid.as_raw() as u64,
+                                "the unsubscribed syscall ran"
+                            );
+                        } else {
+                            assert_ne!(regs.eflags & 0x100, 0, "guest POPFQ established TF");
+                        }
+                    }
+                    Ok(())
+                });
+                Ok(hook)
+            }),
+        });
+        let mut command = Command::new(&target.path);
+        // SAFETY: this pre-exec callback only calls signal-state syscalls.
+        // Exec preserves the blocked bit and the default disposition.
+        unsafe {
+            command.pre_exec(|| {
+                let mut action: libc::sigaction = std::mem::zeroed();
+                action.sa_sigaction = libc::SIG_DFL;
+                libc::sigemptyset(&mut action.sa_mask);
+                let mut mask: libc::sigset_t = std::mem::zeroed();
+                libc::sigemptyset(&mut mask);
+                libc::sigaddset(&mut mask, libc::SIGTRAP);
+                if libc::sigaction(libc::SIGTRAP, &action, std::ptr::null_mut()) != 0
+                    || libc::sigprocmask(libc::SIG_BLOCK, &mask, std::ptr::null_mut()) != 0
+                {
+                    return Err(Errno::last());
+                }
+                Ok(())
+            });
+        }
+        let tracer = TracerBuilder::<BoundaryTool>::new(command)
+            .config(case)
+            .spawn()
+            .await
+            .expect("spawn the real first-exec boundary guest");
+        let (status, log) = tokio::time::timeout(Duration::from_secs(60), tracer.wait())
+            .await
+            .expect("first-exec boundary guest hung")
+            .expect("first-exec boundary guest failed");
+        assert_eq!(*selected.lock().unwrap(), Some(case != Case::StepSyscall));
+        assert!(
+            waited.load(Ordering::SeqCst),
+            "the real immediate wait must be observed"
+        );
+        let observations = log.0.into_inner().unwrap();
+        let tid = observations.first().expect("post-exec callback").0;
+        assert!(observations.iter().all(|(from, _)| *from == tid));
+        let actual: Vec<_> = observations.into_iter().map(|(_, row)| row).collect();
+        let Observation::PostExec { rip, clock, period } = actual[0] else {
+            panic!("first observation is not post-exec: {actual:?}");
+        };
+        assert_eq!(rip, target.entry);
+        assert_eq!(period, case.period());
+        let mut expected = vec![actual[0]];
+        match case {
+            Case::StepSyscall => {
+                assert_eq!(clock, None);
+                assert_eq!(status, ExitStatus::Exited(99));
+            }
+            Case::ContSyscall => {
+                assert_eq!(status, ExitStatus::Exited(99));
+                expected.push(Observation::Timer {
+                    rip: target.entry + 12,
+                    clock: clock.expect("measured post-exec clock") + 8,
+                    rax: tid.as_raw() as u64,
+                });
+            }
+            Case::ContGuestTf => {
+                assert!(matches!(status, ExitStatus::Signaled(Signal::SIGTRAP, _)));
+                assert!(clock.is_some());
+                expected.push(Observation::Signal {
+                    signal: libc::SIGTRAP,
+                    rip: target.entry + 11,
+                });
+            }
+        }
+        assert_eq!(
+            actual, expected,
+            "{case:?}: actual Tool event order and precise coordinate"
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn an_unsubscribed_syscall_step_is_not_a_guest_breakpoint() {
+        run_case(Case::StepSyscall).await;
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_changed_native_entry_cont_delivers_its_post_exec_timer() {
+        run_case(Case::ContSyscall).await;
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_guest_popfq_after_native_entry_cont_delivers_trace() {
+        run_case(Case::ContGuestTf).await;
     }
 }
