@@ -1731,9 +1731,32 @@ pub fn load_static_elf_with_execfn(
     result
 }
 
+/// Loads the image read from `file` as exec'd by the filename `argv[0]`; see
+/// [`load_static_elf_file_with_execfn`].
 pub fn load_static_elf_file(
     memory: &mut GuestMemory,
     file: File,
+    argv: &[&str],
+    envp: &[&str],
+    cwd: &Path,
+) -> Result<LoadedStaticElf> {
+    load_static_elf_file_with_execfn(memory, file, None, argv, envp, cwd)
+}
+
+/// Loads the image read from `file`, keeping `file` as the process's
+/// executable, as `execve(execfn, argv, envp)` would. The retained file is
+/// what an exec or a following stat of `/proc/self/exe` reaches. For a
+/// `#!` script, each interpreter is read from a file of its own, and the
+/// final interpreter's file is retained instead. `execfn` is as
+/// [`load_static_elf_with_execfn`] takes it: the filename Linux names in
+/// `AT_EXECFN` and copies to the top of the new stack, and a script's own
+/// argument after its interpreter; `None` means `argv[0]` and, for a script,
+/// the path of `file`. Either way the new task is named by the path of
+/// `file`.
+pub fn load_static_elf_file_with_execfn(
+    memory: &mut GuestMemory,
+    file: File,
+    execfn: Option<&[u8]>,
     argv: &[&str],
     envp: &[&str],
     cwd: &Path,
@@ -1744,11 +1767,12 @@ pub fn load_static_elf_file(
     let owner = memory.clone();
     let _transaction = owner.allocation_guard();
     begin_image(memory)?;
+    let script_name = execfn.map(|execfn| String::from_utf8_lossy(execfn).into_owned());
     let result = load_executable(
         memory,
         &image,
-        None,
-        None,
+        execfn,
+        script_name.as_deref(),
         argv,
         envp,
         cwd,
