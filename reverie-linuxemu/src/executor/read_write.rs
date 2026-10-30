@@ -1926,6 +1926,20 @@ fn staged_vectored_transfer<M: GuestMemoryAccess<Error = crate::Error> + Address
         return with_guest_sigpipe(state, written, sigpipe);
     }
 
+    // A vectored inotify read can leave bytes past its count: see
+    // vector_faulted_after_count. The host instance's count of queued bytes
+    // before and after the read says whether it did.
+    let inotify_queued = if inotify
+        && staged_vectors
+            .iter()
+            .filter(|vector| vector.guest.length != 0)
+            .count()
+            > 1
+    {
+        host_inotify_queued(host_fd).ok()
+    } else {
+        None
+    };
     let result = invoke_vectored_read(number, host_fd, &mut host_iovecs, args);
     if result >= 0 {
         let mut remaining = result as usize;
@@ -1945,6 +1959,35 @@ fn staged_vectored_transfer<M: GuestMemoryAccess<Error = crate::Error> + Address
             }
         }
         debug_assert_eq!(remaining, 0, "host returned more bytes than requested");
+        // The read took events past its count only when the read of the
+        // vector after it copied them before a fault: inotify_read dequeues an
+        // event before it copies it. Those events stay in that vector, as on
+        // Linux; publish its accessible prefix, all of which the kernel wrote
+        // (it copies events from the vector's start up to the first byte it
+        // cannot write, the end of that prefix).
+        //
+        // The two counts measure this read alone only while no other task
+        // reads the same instance between them. A guest that reads one
+        // instance from two threads at once (possible only where the Tool lets
+        // guest threads run concurrently) can raise the measured loss; the
+        // vector is then published as it was staged before the read, which
+        // can overwrite bytes an overlapping earlier vector received. A rename
+        // in a watched directory by a process outside the guest can only lower
+        // the measured loss, which withholds a publication but never causes a
+        // wrong one.
+        if let Some(before) = inotify_queued
+            && let Some(vector) = vector_faulted_after_count(&staged_vectors, result as usize)
+            && host_inotify_queued(host_fd)
+                .is_ok_and(|after| i64::from(before) - i64::from(after) > result)
+            && memory
+                .write_exact(
+                    vector.guest.base,
+                    vector.accessible_slice(vector.accessible_length),
+                )
+                .is_err()
+        {
+            return negative_errno(libc::EFAULT);
+        }
     } else if result == negative_errno(libc::EFAULT) {
         // Linux may modify an accessible prefix before reporting EFAULT. In
         // particular eventfd consumes its counter and datagram sockets discard
@@ -1969,6 +2012,50 @@ fn staged_vectored_transfer<M: GuestMemoryAccess<Error = crate::Error> + Address
         }
     }
     result
+}
+
+/// The staged vector into which a successful vectored read of `count` bytes
+/// from a file without `read_iter`, such as an inotify instance, may have
+/// copied bytes past its count: the nonempty vector after the ones the count
+/// fills, when the count ends exactly at its start and the vector has an
+/// accessible prefix followed by an inaccessible suffix.
+///
+/// Linux reads such a file one iovec at a time (`do_loop_readv_writev`,
+/// <https://github.com/torvalds/linux/blob/v6.17/fs/read_write.c#L835-L866>,
+/// chosen at
+/// <https://github.com/torvalds/linux/blob/v6.17/fs/read_write.c#L1017-L1020>).
+/// When the read of an iovec fails after an earlier one succeeded, it returns
+/// the earlier iovecs' count and drops the error, and whatever the failed read
+/// copied stays in that iovec. `inotify_read`
+/// (<https://github.com/torvalds/linux/blob/v6.17/fs/notify/inotify/inotify_user.c#L249-L299>)
+/// copies whole events from the start of its buffer and fails with EFAULT at
+/// the event whose copy faults, having dequeued it first (`get_one_event`,
+/// <https://github.com/torvalds/linux/blob/v6.17/fs/notify/inotify/inotify_user.c#L170-L191>).
+/// Only a vector with an inaccessible suffix can fault, and one whose
+/// accessible prefix is empty faults at its first byte, copying nothing.
+fn vector_faulted_after_count(
+    staged_vectors: &[StagedIoVector],
+    count: usize,
+) -> Option<&StagedIoVector> {
+    if count == 0 {
+        return None;
+    }
+    let mut filled = 0usize;
+    for vector in staged_vectors {
+        if vector.guest.length == 0 {
+            continue;
+        }
+        if filled == count {
+            return (vector.accessible_length != 0
+                && vector.accessible_length < vector.guest.length)
+                .then_some(vector);
+        }
+        filled = filled.checked_add(vector.guest.length)?;
+        if filled > count {
+            return None;
+        }
+    }
+    None
 }
 
 /// A host file backs a regular (or memfd) object when its mode is `S_IFREG`.
