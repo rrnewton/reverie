@@ -559,21 +559,31 @@ pub(super) fn ppoll(memory: &mut GuestMemory, state: &LoadedStaticElf, args: &[u
         if ready != 0 {
             return ready;
         }
-        // Nothing is ready. A call that would wait is declined; a zero
-        // timeout returns now, as Linux's do_poll does after one sample:
-        // ERESTARTNOHAND if a signal the temporary mask lets in is pending,
-        // else 0. The Tool runs every masked wait as zero-timeout probes.
-        if !zero_timeout {
-            return negative_errno(libc::ENOSYS);
-        }
+        // Nothing is ready, so the pending signals decide before any wait, as
+        // in Linux's do_poll, which tests for one after a sample that found
+        // nothing ready, whatever the timeout: ERESTARTNOHAND if a signal the
+        // temporary mask lets in is pending. The descriptors were sampled
+        // above, before signal_transaction is taken; the classification of the
+        // pending signals and the mask's installation below are made under it,
+        // as for pselect6. With no such signal, a zero timeout returns 0 and a
+        // call that would wait is declined (ENOSYS): keeping the mask in place
+        // across a parked wait needs scheduler-level pending-signal state. A
+        // Tool that runs a masked wait as zero-timeout probes never asks for
+        // that wait; one that passes the call on with its own timeout gets the
+        // ENOSYS, which Linux's ppoll never returns.
         let transaction = state.signal_transaction.clone();
         let _transaction = transaction.lock().unwrap_or_else(|p| p.into_inner());
         return match temporary_mask_signal(state, signal_mask) {
-            TemporaryMaskSignal::None => 0,
+            TemporaryMaskSignal::None if zero_timeout => 0,
+            TemporaryMaskSignal::None => negative_errno(libc::ENOSYS),
             TemporaryMaskSignal::Interrupts => {
                 install_temporary_mask_for_delivery(state, signal_mask);
                 negative_errno(libc::EINTR)
             }
+            // A signal Linux would discard (an ignored one) or stop on: Linux
+            // then restarts or stops the call, which this scalar return cannot
+            // express. Nothing is dequeued or installed; the Tool decides, by
+            // its own rule, whether to discard ignored signals and ask again.
             TemporaryMaskSignal::Unrepresentable => negative_errno(libc::ENOSYS),
         };
     }
