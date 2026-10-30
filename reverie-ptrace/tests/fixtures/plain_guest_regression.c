@@ -993,6 +993,55 @@ static void mode_segv_quiet(void) {
   segv_full_state("quiet dfl");
 }
 
+static volatile sig_atomic_t segv_loop_deliveries;
+
+static void segv_loop_handler(int sig) {
+  (void)sig;
+  ++segv_loop_deliveries;
+}
+
+/* Compare semantic signal masks, not the padding of libc's sigset_t. */
+static int segv_same_mask(const sigset_t* left, const sigset_t* right) {
+  for (int sig = 1; sig < NSIG; ++sig) {
+    int a = sigismember(left, sig), b = sigismember(right, sig);
+    if (a < 0 || b < 0)
+      die("decode sigsegv loop mask");
+    if (a != b)
+      return 0;
+  }
+  return 1;
+}
+
+/* Repeated forced faults must keep the entire default/caught/ignored action
+ * and mask. The default needs only its mask restored; its neighbors still
+ * need the authenticated action-query/write path. */
+static void mode_segv_blocked_loop(void (*action)(int), const char* name) {
+  segv_set(action, 1);
+  sigset_t extra, before_mask, after_mask, pending;
+  struct sigaction before, after;
+  if (sigemptyset(&extra) != 0 || sigaddset(&extra, SIGUSR2) != 0 ||
+      sigaddset(&extra, SIGTERM) != 0 ||
+      sigprocmask(SIG_BLOCK, &extra, NULL) != 0 ||
+      sigprocmask(SIG_SETMASK, NULL, &before_mask) != 0 ||
+      sigaction(SIGSEGV, NULL, &before) != 0 || sigpending(&pending) != 0)
+    die("prepare sigsegv blocked loop");
+  if (sigismember(&before_mask, SIGSEGV) != 1 ||
+      sigismember(&pending, SIGSEGV) != 0 || before.sa_handler != action)
+    die("initial sigsegv blocked loop state");
+  for (int i = 0; i < 200; ++i)
+    segv_trapped_instruction(0);
+  if (sigprocmask(SIG_SETMASK, NULL, &after_mask) != 0 ||
+      sigaction(SIGSEGV, NULL, &after) != 0 || sigpending(&pending) != 0)
+    die("read sigsegv blocked loop state");
+  if (!segv_same_mask(&before_mask, &after_mask) ||
+      !segv_same_mask(&before.sa_mask, &after.sa_mask) ||
+      before.sa_handler != after.sa_handler || before.sa_flags != after.sa_flags ||
+      before.sa_restorer != after.sa_restorer || segv_loop_deliveries != 0 ||
+      sigismember(&pending, SIGSEGV) != 0)
+    die("changed sigsegv blocked loop state");
+  say("blocked-loop sigsegv=%s full-state=kept reads=200 deliveries=0 pending=0\n", name);
+}
+
 /* SIGTRAP blocked through each handler shape, with the thread named by raw
  * bytes that are not UTF-8: procfs reports the name as set, and Reverie's
  * reads of the thread's status must still parse. */
@@ -5096,6 +5145,12 @@ int main(int argc, char** argv) {
     mode_segv_ppoll_handler();
   else if (!strcmp(m, "segv_quiet"))
     mode_segv_quiet();
+  else if (!strcmp(m, "segv_blocked_dfl_loop"))
+    mode_segv_blocked_loop(SIG_DFL, "dfl");
+  else if (!strcmp(m, "segv_blocked_caught_loop"))
+    mode_segv_blocked_loop(segv_loop_handler, "caught");
+  else if (!strcmp(m, "segv_blocked_ignored_loop"))
+    mode_segv_blocked_loop(SIG_IGN, "ign");
   else if (!strcmp(m, "segv_resume_signal_dropped"))
     mode_segv_resume_signal_dropped();
   else if (!strcmp(m, "sigtrap_raw_name"))
