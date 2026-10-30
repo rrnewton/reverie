@@ -32,6 +32,14 @@ pub(super) fn ioctl(
     // Linux ioctl takes an unsigned-int command even on the 64-bit syscall ABI.
     // Keep this limited support independent of the other ioctl dispatch arms.
     if args[1] as u32 == libc::FIONREAD as u32 {
+        // AUTONOMOUS-BOT-IMPLEMENTED
+        // A guest inotify instance is a host inotify instance, so its count is
+        // the host's own; every other descriptor keeps the FIFO-only support.
+        match host_fd_is_inotify(host_fd) {
+            Ok(true) => return inotify_fionread(&ProviderMemory(memory), host_fd, args[2]),
+            Ok(false) => {}
+            Err(error) => return error,
+        }
         return pipe_fionread(
             &ProviderMemory(memory),
             state,

@@ -18,22 +18,26 @@
 //
 // - reads go through the same staged host buffers as readv, whose inaccessible
 //   guest suffix is PROT_NONE, so the kernel stops and faults at the guest's own
-//   boundary and an event that does not fit the count is refused natively;
+//   boundary and an event that does not fit the count is refused natively; the
+//   bytes the kernel wrote reach the guest exactly as it wrote them, rename
+//   cookies and the bytes of an event a fault cut short included (the copy-back
+//   in read_write.rs, which also publishes the events a vectored read copies
+//   into the iovec after its count before a fault there);
+// - FIONREAD is the host instance's own count of queued bytes;
 // - watches attach to the inode selected by one guest-namespace lookup (held as
 //   O_PATH), never to a second lookup of the pathname.
 //
-// Two things are not left to the host:
+// Rename cookies are the host kernel's. Linux draws IN_MOVED_FROM/IN_MOVED_TO
+// cookies from one host-wide counter that every process's renames advance;
+// what the guest sees of them is the Tool's decision, as on every other
+// backend, so this executor neither renumbers a cookie nor restores any byte
+// of an event.
 //
-// - Blocking mode. A blocking read waits for an event that only another guest
-//   task can produce, in a host wait that Detcore's scheduler cannot see or
-//   order. As for signalfd, creating or switching an instance into blocking mode
-//   is refused with ENOSYS, and the read path refuses a blocking instance as a
-//   defensive invariant.
-// - Rename cookies. Linux draws IN_MOVED_FROM/IN_MOVED_TO cookies from one
-//   host-wide counter that every process's renames advance, so the values are
-//   host state, like the TCP_INFO counters. Reads pass the host cookies
-//   through unchanged; a Tool that needs reproducible values renumbers them
-//   after the call, as on every backend.
+// One thing is not left to the host: blocking mode. A blocking read waits for
+// an event that only another guest task can produce, in a host wait that the
+// Tool cannot see or order. As for signalfd, creating or switching an instance
+// into blocking mode is refused with ENOSYS, and the read path refuses a
+// blocking instance as a defensive invariant.
 
 pub(super) fn host_fd_is_inotify(host_fd: RawFd) -> Result<bool, i64> {
     host_fd_mode_is_inotify(host_fd, fd_mode(host_fd)?)
@@ -51,12 +55,46 @@ pub(super) fn host_fd_mode_is_inotify(host_fd: RawFd, mode: libc::mode_t) -> Res
 }
 
 /// Refuse a blocking inotify wait: no event can arrive while the reading task
-/// holds its turn, and a host wait would escape Detcore's scheduler.
+/// holds its turn, and a host wait would escape the Tool.
 pub(super) fn ensure_inotify_nonblocking(host_fd: RawFd) -> Result<(), i64> {
     if fd_status_flags(host_fd)? & libc::O_NONBLOCK == 0 {
         return Err(negative_errno(libc::ENOSYS));
     }
     Ok(())
+}
+
+/// The bytes queued on the host inotify instance `host_fd`, as FIONREAD there
+/// reports them: the size of every queued event, as a read that took them all
+/// would return them (`inotify_ioctl`, fs/notify/inotify/inotify_user.c).
+pub(super) fn host_inotify_queued(host_fd: RawFd) -> Result<libc::c_int, i64> {
+    let mut count: libc::c_int = 0;
+    // SAFETY: count is supervisor storage for one int, and FIONREAD on an
+    // inotify instance only sums the sizes of its queued events.
+    if unsafe { libc::ioctl(host_fd, libc::FIONREAD, &mut count) } != 0 {
+        return Err(io_error(std::io::Error::last_os_error()));
+    }
+    Ok(count)
+}
+
+// TODO-HUMAN-REVIEW(https://github.com/rrnewton/hermit/issues/4793): Review
+// forwarding FIONREAD on an inotify descriptor to the host instance.
+/// FIONREAD on a guest inotify descriptor: the host instance's count, stored
+/// as an int. `do_vfs_ioctl` (fs/ioctl.c) hands FIONREAD on an anonymous-inode
+/// file to `inotify_ioctl`, which stores the count with `put_user`, so a
+/// destination the guest cannot write is EFAULT.
+pub(super) fn inotify_fionread<M: GuestMemoryAccess<Error = crate::Error>>(
+    memory: &M,
+    host_fd: RawFd,
+    address: u64,
+) -> i64 {
+    let count = match host_inotify_queued(host_fd) {
+        Ok(count) => count,
+        Err(error) => return error,
+    };
+    if memory.put_user_i32(address, count).is_err() {
+        return negative_errno(libc::EFAULT);
+    }
+    0
 }
 
 pub(super) fn inotify_init1(state: &mut LoadedStaticElf, raw_flags: u64) -> i64 {
