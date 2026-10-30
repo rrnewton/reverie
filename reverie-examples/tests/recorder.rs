@@ -178,7 +178,21 @@ fn descriptor_frontend(backend: &str, output_path: &Path) -> Command {
 }
 
 fn descriptor_command(backend: &str, guest: &Path, mode: &str, output_path: &Path) -> Command {
+    use std::os::unix::process::CommandExt as _;
+
     let mut command = descriptor_frontend(backend, output_path);
+    // The lowest-free-descriptor fixture starts with only its standard streams.
+    // Mark the fork copy only; retain the parent's lease and Rust's exec-error
+    // pipe until the recorder is successfully exec'd.
+    unsafe {
+        command.pre_exec(|| {
+            const CLOSE_RANGE_CLOEXEC: libc::c_uint = 1 << 2;
+            if libc::syscall(libc::SYS_close_range, 3u32, u32::MAX, CLOSE_RANGE_CLOEXEC) != 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
     command.arg(guest).arg(mode);
     command
 }
