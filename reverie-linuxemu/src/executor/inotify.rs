@@ -30,52 +30,10 @@
 //   is refused with ENOSYS, and the read path refuses a blocking instance as a
 //   defensive invariant.
 // - Rename cookies. Linux draws IN_MOVED_FROM/IN_MOVED_TO cookies from one
-//   host-wide counter that every process's renames advance. Reads replace each
-//   nonzero host cookie with a run-wide virtual cookie numbered in the order the
-//   guest first observes it, so pairing is preserved and the values depend only
-//   on the guest's deterministic schedule.
-
-/// `sizeof(struct inotify_event)`: `wd`, `mask`, `cookie`, `len`.
-const INOTIFY_EVENT_HEADER: usize = 16;
-/// Offset of `cookie` within `struct inotify_event`.
-const INOTIFY_EVENT_COOKIE: usize = 8;
-/// Offset of `len` within `struct inotify_event`.
-const INOTIFY_EVENT_LENGTH: usize = 12;
-/// Host cookies remembered for pairing. A pair is normally read together; the
-/// bound only limits memory for programs that rename without ever reading.
-pub(super) const INOTIFY_COOKIE_CAPACITY: usize = 1 << 16;
-
-/// Run-wide map from host rename cookies to deterministic virtual cookies.
-#[derive(Debug, Default)]
-pub struct InotifyCookieTable {
-    pub(super) last: u32,
-    pub(super) virtual_by_host: std::collections::BTreeMap<u32, u32>,
-    pub(super) host_by_age: std::collections::VecDeque<u32>,
-}
-
-impl InotifyCookieTable {
-    pub(super) fn virtualize(&mut self, host: u32) -> u32 {
-        if host == 0 {
-            // Events that are not part of a rename carry no cookie.
-            return 0;
-        }
-        if let Some(&virtual_cookie) = self.virtual_by_host.get(&host) {
-            return virtual_cookie;
-        }
-        self.last = self.last.wrapping_add(1);
-        if self.last == 0 {
-            self.last = 1;
-        }
-        if self.host_by_age.len() == INOTIFY_COOKIE_CAPACITY
-            && let Some(oldest) = self.host_by_age.pop_front()
-        {
-            self.virtual_by_host.remove(&oldest);
-        }
-        self.virtual_by_host.insert(host, self.last);
-        self.host_by_age.push_back(host);
-        self.last
-    }
-}
+//   host-wide counter that every process's renames advance, so the values are
+//   host state, like the TCP_INFO counters. Reads pass the host cookies
+//   through unchanged; a Tool that needs reproducible values renumbers them
+//   after the call, as on every backend.
 
 pub(super) fn host_fd_is_inotify(host_fd: RawFd) -> Result<bool, i64> {
     host_fd_mode_is_inotify(host_fd, fd_mode(host_fd)?)
@@ -99,90 +57,6 @@ pub(super) fn ensure_inotify_nonblocking(host_fd: RawFd) -> Result<(), i64> {
         return Err(negative_errno(libc::ENOSYS));
     }
     Ok(())
-}
-
-/// Replace host cookies in kernel-written inotify records. `bytes` starts at a
-/// record boundary. A trailing partial record exists only after EFAULT; if its
-/// cookie field was partly written, `restore` (the destination's bytes before
-/// the read) supplies those bytes, so no host cookie bits reach the guest.
-pub(super) fn virtualize_inotify_cookies(
-    bytes: &mut [u8],
-    restore: Option<&[u8]>,
-    table: &mut InotifyCookieTable,
-) {
-    let mut offset = 0usize;
-    while offset < bytes.len() {
-        let cookie = offset + INOTIFY_EVENT_COOKIE;
-        if offset + INOTIFY_EVENT_HEADER > bytes.len() {
-            if cookie < bytes.len() {
-                let end = (cookie + 4).min(bytes.len());
-                match restore {
-                    Some(original) => bytes[cookie..end].copy_from_slice(&original[cookie..end]),
-                    None => bytes[cookie..end].fill(0),
-                }
-            }
-            return;
-        }
-        let host = u32::from_ne_bytes(bytes[cookie..cookie + 4].try_into().unwrap());
-        bytes[cookie..cookie + 4].copy_from_slice(&table.virtualize(host).to_ne_bytes());
-        let length = u32::from_ne_bytes(
-            bytes[offset + INOTIFY_EVENT_LENGTH..offset + INOTIFY_EVENT_HEADER]
-                .try_into()
-                .unwrap(),
-        ) as usize;
-        offset = match offset
-            .checked_add(INOTIFY_EVENT_HEADER)
-            .and_then(|end| end.checked_add(length))
-        {
-            Some(next) => next,
-            None => return,
-        };
-    }
-}
-
-/// Virtualize cookies in exactly the staged bytes that the copy-back publishes.
-/// Linux's readv calls inotify's read once per iovec and every successful call
-/// writes whole records, so each vector's transferred prefix starts at a record
-/// boundary. EFAULT is returned only when the first nonempty vector's read
-/// faults, so that vector holds every byte the kernel wrote.
-pub(super) fn virtualize_staged_inotify_cookies(
-    staged_vectors: &mut [StagedIoVector],
-    result: i64,
-    original: &[u8],
-    state: &LoadedStaticElf,
-) {
-    let mut identity = state
-        .file_identity_table
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let table = &mut identity.inotify_cookies;
-    if result >= 0 {
-        let mut remaining = result as usize;
-        for vector in staged_vectors.iter_mut() {
-            if remaining == 0 {
-                break;
-            }
-            let transferred = remaining.min(vector.guest.length);
-            let visible = transferred.min(vector.accessible_length);
-            if visible != 0 {
-                virtualize_inotify_cookies(vector.accessible_slice_mut(visible), None, table);
-            }
-            remaining -= transferred;
-        }
-    } else if result == negative_errno(libc::EFAULT)
-        && let Some(vector) = staged_vectors
-            .iter_mut()
-            .find(|vector| vector.guest.length != 0)
-    {
-        let visible = vector.accessible_length;
-        if visible != 0 {
-            virtualize_inotify_cookies(
-                vector.accessible_slice_mut(visible),
-                Some(&original[..visible]),
-                table,
-            );
-        }
-    }
 }
 
 pub(super) fn inotify_init1(state: &mut LoadedStaticElf, raw_flags: u64) -> i64 {
