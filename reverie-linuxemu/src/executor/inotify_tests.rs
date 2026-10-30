@@ -126,18 +126,6 @@ mod inotify_tests {
         result
     }
 
-    fn without_cookies(records: &[u8]) -> Vec<u8> {
-        let mut bytes = records.to_vec();
-        let mut offset = 0;
-        while offset < bytes.len() {
-            let length =
-                u32::from_ne_bytes(bytes[offset + 12..offset + 16].try_into().unwrap()) as usize;
-            bytes[offset + 8..offset + 12].fill(0);
-            offset += 16 + length;
-        }
-        bytes
-    }
-
     #[test]
     fn inotify_descriptor_detection_names_only_inotify() {
         let root = TestDir::new();
@@ -632,8 +620,12 @@ mod inotify_tests {
         assert_eq!(queued(host), 0);
     }
 
+    /// Rename cookies reach the guest as the host kernel wrote them: what the
+    /// guest sees of them is the Tool's decision. A read, and a readv through a
+    /// second instance that watches only the destination, return exactly the
+    /// native instance's records, cookies included.
     #[test]
-    fn inotify_rename_cookies_are_the_hosts_and_paired() {
+    fn inotify_rename_cookies_reach_the_guest_as_the_host_wrote_them() {
         let root = TestDir::new();
         let mut state = test_state(&root.0);
         let mut memory = GuestMemory::new(0, 4 * PAGE_SIZE as usize).unwrap();
@@ -662,24 +654,25 @@ mod inotify_tests {
         std::fs::rename(root.0.join("b"), root.0.join("other/c")).unwrap();
 
         let (native_result, native_records) = drain(native.as_raw_fd());
-        let (guest_result, guest_records) = guest_read(&mut state, &mut memory, fd, 4096);
-        assert_eq!(guest_result, native_result);
-        // Apart from cookies, the records are the native records.
-        assert_eq!(
-            without_cookies(&guest_records),
-            without_cookies(&native_records)
-        );
         let native_cookies = cookies(&native_records);
         assert_eq!(native_cookies.len(), 4);
-        assert_eq!(native_cookies[0].1, 0, "IN_CREATE has no cookie");
+        assert_eq!(
+            native_cookies[0],
+            (libc::IN_CREATE, 0),
+            "IN_CREATE has no cookie"
+        );
+        assert_eq!(native_cookies[1].0, libc::IN_MOVED_FROM);
         assert_ne!(native_cookies[1].1, 0);
-        assert_eq!(native_cookies[1].1, native_cookies[2].1);
-        // The guest sees the host's own cookies, unchanged: renumbering is
-        // the Tool's decision, made after the call on every backend.
-        assert_eq!(cookies(&guest_records), native_cookies);
-        assert_eq!(guest_records, native_records);
-        // The destination half, read through another instance and readv,
-        // pairs with the source half's virtual cookie.
+        assert_eq!(native_cookies[2], (libc::IN_MOVED_TO, native_cookies[1].1));
+        assert_eq!(native_cookies[3].0, libc::IN_MOVED_FROM);
+        assert_ne!(native_cookies[3].1, native_cookies[1].1);
+        // Every byte is the host kernel's, the host cookies included.
+        assert_eq!(
+            guest_read(&mut state, &mut memory, fd, 4096),
+            (native_result, native_records)
+        );
+        // The destination half, read through the other instance with readv,
+        // carries its rename's host cookie.
         let iovec = libc::iovec {
             iov_base: BUFFER as *mut libc::c_void,
             iov_len: 4096,
@@ -694,10 +687,390 @@ mod inotify_tests {
         assert_eq!(count, 32);
         let mut records = vec![0_u8; count as usize];
         memory.read(BUFFER, &mut records).unwrap();
-        // The destination half pairs with the source half's host cookie.
         assert_eq!(
             cookies(&records),
             [(libc::IN_MOVED_TO, native_cookies[3].1)]
         );
+    }
+
+    /// Guest memory whose pages 0 and 1 are writable and page 2 inaccessible,
+    /// so a buffer that ends at 2 * PAGE_SIZE faults there, as a native buffer
+    /// that ends at `NativeFaultBuffer::invalid` does.
+    fn fault_memory() -> GuestMemory {
+        let memory = GuestMemory::new(0, 4 * PAGE_SIZE as usize).unwrap();
+        memory.enable_user_access();
+        memory.map_user_range(0, 2 * PAGE_SIZE, false).unwrap();
+        memory
+            .map_user_range(2 * PAGE_SIZE, PAGE_SIZE, true)
+            .unwrap();
+        memory
+    }
+
+    /// One guest read of `count` bytes from `fd`, and one native read of the
+    /// same count from `native`, each into `writable` bytes filled with 0xa5
+    /// before an inaccessible page: the results, the writable bytes and the
+    /// queues afterwards must be equal.
+    fn compare_faulting_read(
+        state: &mut LoadedStaticElf,
+        fd: u64,
+        native: &std::fs::File,
+        writable: usize,
+        count: usize,
+    ) -> i64 {
+        let host = host_fd(state, fd as i32).unwrap();
+        let mut memory = fault_memory();
+        let native_fault = NativeFaultBuffer::new();
+        let guest_address = 2 * PAGE_SIZE - writable as u64;
+        // SAFETY: the writable prefix lies in the native buffer's first page.
+        let native_address = unsafe { native_fault.invalid.sub(writable) };
+        // SAFETY: only the live writable prefix is initialized.
+        unsafe { std::ptr::write_bytes(native_address, 0xa5, writable) };
+        memory
+            .write_raw(guest_address, &vec![0xa5; writable])
+            .unwrap();
+        let native_result = native_read(native.as_raw_fd(), native_address, count);
+        let guest_result = syscall_result(
+            &mut memory,
+            state,
+            libc::SYS_read,
+            [fd, guest_address, count as u64, 0, 0, 0],
+        );
+        let mut native_prefix = vec![0_u8; writable];
+        // SAFETY: copy only the writable prefix, never the protected page.
+        unsafe {
+            std::ptr::copy_nonoverlapping(native_address, native_prefix.as_mut_ptr(), writable)
+        };
+        let mut guest_prefix = vec![0_u8; writable];
+        memory.read(guest_address, &mut guest_prefix).unwrap();
+        assert_eq!(
+            (guest_result, guest_prefix, queued(host)),
+            (native_result, native_prefix, queued(native.as_raw_fd())),
+            "writable {writable} count {count}"
+        );
+        guest_result
+    }
+
+    /// Reads that fault inside an event leave exactly the bytes the kernel
+    /// copied before the fault: whole events with their host cookies, then the
+    /// next event's header as far as it was written (a rename cookie written
+    /// whole, or only its first bytes), or the zeros of an IN_IGNORED event's
+    /// cookie. Nothing is renumbered, cleared or put back.
+    #[test]
+    fn inotify_faulting_reads_leave_the_bytes_the_kernel_copied() {
+        let root = TestDir::new();
+        let mut state = test_state(&root.0);
+        let mut setup = GuestMemory::new(0, 4 * PAGE_SIZE as usize).unwrap();
+        let native = native_instance();
+        let fd = create(&mut state, &mut setup) as u64;
+        let root_bytes = root.0.as_os_str().as_bytes().to_vec();
+        let mask = libc::IN_MOVED_FROM | libc::IN_MOVED_TO;
+        let wd = add_watch(&mut state, &mut setup, fd, &root_bytes, mask);
+        assert_eq!(wd, native_watch(&native, &root.0, mask));
+        let host = host_fd(&state, fd as i32).unwrap();
+        // Three renames queue six 32-byte events: every name has two
+        // characters, which Linux pads to 16 bytes.
+        std::fs::write(root.0.join("f0"), b"").unwrap();
+        for (from, to) in [("f0", "f1"), ("f1", "f2"), ("f2", "f3")] {
+            std::fs::rename(root.0.join(from), root.0.join(to)).unwrap();
+        }
+        assert_eq!(queued(host), 192);
+        assert_eq!(queued(native.as_raw_fd()), 192);
+        // 40 writable bytes: one event, then the next event's wd and mask.
+        assert_eq!(
+            compare_faulting_read(&mut state, fd, &native, 40, 64),
+            negative_errno(libc::EFAULT)
+        );
+        // 44: the next event's cookie written whole, its length cut.
+        assert_eq!(
+            compare_faulting_read(&mut state, fd, &native, 44, 64),
+            negative_errno(libc::EFAULT)
+        );
+        // 42: the next event's cookie cut after two bytes.
+        assert_eq!(
+            compare_faulting_read(&mut state, fd, &native, 42, 64),
+            negative_errno(libc::EFAULT)
+        );
+        assert_eq!(queued(host), 0);
+
+        // An IN_IGNORED event, whose cookie is 0, cut inside its cookie: the
+        // two cookie bytes the kernel wrote are zeros.
+        assert_eq!(
+            add_watch(&mut state, &mut setup, fd, &root_bytes, libc::IN_ATTRIB),
+            wd
+        );
+        assert_eq!(native_watch(&native, &root.0, libc::IN_ATTRIB), wd);
+        assert_eq!(
+            syscall_result(
+                &mut setup,
+                &mut state,
+                libc::SYS_inotify_rm_watch,
+                [fd, wd as u64, 0, 0, 0, 0],
+            ),
+            0
+        );
+        // SAFETY: native is a live inotify instance and wd its watch.
+        assert_eq!(
+            unsafe { libc::inotify_rm_watch(native.as_raw_fd(), wd as i32) },
+            0
+        );
+        assert_eq!(
+            compare_faulting_read(&mut state, fd, &native, 10, 16),
+            negative_errno(libc::EFAULT)
+        );
+        assert_eq!(queued(host), 0);
+    }
+
+    /// Where an iovec of a readv lies: in its own buffer, or `k` bytes before
+    /// the inaccessible page.
+    #[derive(Clone, Copy, Debug)]
+    enum IovecPlace {
+        Separate,
+        BeforeFault(usize),
+    }
+
+    /// One readv of an instance that has seen `renames` renames, after a read
+    /// of `before` bytes: its two iovecs, and the count it returns.
+    struct ReadvCase {
+        iovecs: [(IovecPlace, usize); 2],
+        renames: usize,
+        before: usize,
+        count: i64,
+    }
+
+    /// A readv whose second iovec faults after the first one filled returns the
+    /// first iovec's count, and the events inotify_read copied into the second
+    /// iovec before its fault stay there, as on the native instance, whether or
+    /// not the iovecs overlap. A second iovec whose read copied nothing (no
+    /// event left, or the next one longer than the iovec) keeps its bytes, so a
+    /// first iovec that it overlaps keeps the event it received.
+    #[test]
+    fn inotify_readv_leaves_the_events_copied_into_a_faulting_later_iovec() {
+        use IovecPlace::BeforeFault;
+        use IovecPlace::Separate;
+        const IOV: u64 = 0x400;
+        let root = TestDir::new();
+        let mut state = test_state(&root.0);
+        let root_bytes = root.0.as_os_str().as_bytes().to_vec();
+        let mask = libc::IN_MOVED_FROM | libc::IN_MOVED_TO;
+        let cases = [
+            // The second iovec holds one event and the next one's wd and mask.
+            ReadvCase {
+                iovecs: [(Separate, 32), (BeforeFault(40), 64)],
+                renames: 2,
+                before: 0,
+                count: 32,
+            },
+            // The same, overlapping the first iovec, whose event it overwrites.
+            ReadvCase {
+                iovecs: [(BeforeFault(48), 32), (BeforeFault(40), 64)],
+                renames: 2,
+                before: 0,
+                count: 32,
+            },
+            // No event left for the overlapping second iovec.
+            ReadvCase {
+                iovecs: [(BeforeFault(48), 32), (BeforeFault(40), 64)],
+                renames: 2,
+                before: 96,
+                count: 32,
+            },
+            // The next event is longer than the second iovec: EINVAL there.
+            ReadvCase {
+                iovecs: [(Separate, 32), (BeforeFault(8), 16)],
+                renames: 2,
+                before: 0,
+                count: 32,
+            },
+            // The same, with the second iovec overlapping the first.
+            ReadvCase {
+                iovecs: [(BeforeFault(36), 32), (BeforeFault(8), 16)],
+                renames: 2,
+                before: 0,
+                count: 32,
+            },
+        ];
+        for (index, case) in cases.into_iter().enumerate() {
+            let ReadvCase {
+                iovecs,
+                renames,
+                before,
+                count: expected,
+            } = case;
+            let mut setup = GuestMemory::new(0, 4 * PAGE_SIZE as usize).unwrap();
+            let native = native_instance();
+            let fd = create(&mut state, &mut setup) as u64;
+            assert_eq!(
+                add_watch(&mut state, &mut setup, fd, &root_bytes, mask),
+                native_watch(&native, &root.0, mask)
+            );
+            let host = host_fd(&state, fd as i32).unwrap();
+            let first = format!("c{index}");
+            std::fs::write(root.0.join(&first), b"").unwrap();
+            let mut name = first;
+            for step in 0..renames {
+                let next = format!("c{index}{step}");
+                std::fs::rename(root.0.join(&name), root.0.join(&next)).unwrap();
+                name = next;
+            }
+            if before != 0 {
+                let mut native_bytes = vec![0_u8; before];
+                let native_result =
+                    native_read(native.as_raw_fd(), native_bytes.as_mut_ptr(), before);
+                assert_eq!(
+                    guest_read(&mut state, &mut setup, fd, before),
+                    (native_result, native_bytes)
+                );
+            }
+
+            let native_fault = NativeFaultBuffer::new();
+            let mut native_separate = vec![0xa5_u8; 64];
+            let mut memory = GuestMemory::new(0, 4 * PAGE_SIZE as usize).unwrap();
+            let place = |(where_, length): (IovecPlace, usize)| match where_ {
+                Separate => (BUFFER, length.min(64), length),
+                BeforeFault(k) => (2 * PAGE_SIZE - k as u64, k.min(length), length),
+            };
+            let guest_vectors: Vec<(u64, usize)> = iovecs
+                .iter()
+                .map(|&iovec| {
+                    let (address, _, length) = place(iovec);
+                    (address, length)
+                })
+                .collect();
+            for &iovec in &iovecs {
+                let (address, writable, _) = place(iovec);
+                memory.write(address, &vec![0xa5; writable]).unwrap();
+            }
+            write_guest_iovecs(&mut memory, IOV, &guest_vectors);
+            memory.enable_user_access();
+            memory.map_user_range(0, 2 * PAGE_SIZE, false).unwrap();
+            memory
+                .map_user_range(2 * PAGE_SIZE, PAGE_SIZE, true)
+                .unwrap();
+            let separate = native_separate.as_mut_ptr();
+            let invalid = native_fault.invalid;
+            let native_place = move |where_: IovecPlace| -> *mut u8 {
+                match where_ {
+                    Separate => separate,
+                    // SAFETY: k bytes before the inaccessible page lie in the
+                    // buffer's writable first page.
+                    BeforeFault(k) => unsafe { invalid.sub(k) },
+                }
+            };
+            let mut native_iovecs: Vec<libc::iovec> = iovecs
+                .iter()
+                .map(|&(where_, length)| libc::iovec {
+                    iov_base: native_place(where_).cast(),
+                    iov_len: length,
+                })
+                .collect();
+            for &(where_, length) in &iovecs {
+                if let BeforeFault(k) = where_ {
+                    // SAFETY: only the live writable bytes are initialized.
+                    unsafe { std::ptr::write_bytes(native_place(where_), 0xa5, k.min(length)) };
+                }
+            }
+            let native_result =
+                raw_vectored_call(libc::SYS_readv, native.as_raw_fd(), &mut native_iovecs);
+            let guest_result = syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_readv,
+                [fd, IOV, 2, 0, 0, 0],
+            );
+            assert_eq!((index, guest_result), (index, native_result));
+            assert_eq!((index, guest_result), (index, expected));
+            assert_eq!((index, queued(host)), (index, queued(native.as_raw_fd())));
+            for &(where_, length) in &iovecs {
+                let (address, writable, _) = place((where_, length));
+                let mut guest_bytes = vec![0_u8; writable];
+                memory.read(address, &mut guest_bytes).unwrap();
+                let mut native_bytes = vec![0_u8; writable];
+                // SAFETY: copy only the live writable bytes.
+                unsafe {
+                    std::ptr::copy_nonoverlapping(
+                        native_place(where_),
+                        native_bytes.as_mut_ptr(),
+                        writable,
+                    )
+                };
+                assert_eq!(
+                    guest_bytes, native_bytes,
+                    "case {index} iovec at {where_:?}"
+                );
+            }
+        }
+    }
+
+    /// FIONREAD on an inotify descriptor is the host instance's count of
+    /// queued bytes, as on the native instance, through a duplicate too. A
+    /// destination the guest cannot write is EFAULT, and the query consumes
+    /// nothing.
+    #[test]
+    fn inotify_fionread_reports_the_host_instance_queue() {
+        let root = TestDir::new();
+        let mut state = test_state(&root.0);
+        let mut memory = GuestMemory::new(0, 4 * PAGE_SIZE as usize).unwrap();
+        let native = native_instance();
+        let fd = create(&mut state, &mut memory) as u64;
+        let mask = libc::IN_CREATE;
+        assert_eq!(
+            add_watch(
+                &mut state,
+                &mut memory,
+                fd,
+                root.0.as_os_str().as_bytes(),
+                mask
+            ),
+            native_watch(&native, &root.0, mask)
+        );
+        let fionread =
+            |state: &mut LoadedStaticElf, memory: &mut GuestMemory, fd: u64, address: u64| {
+                syscall_result(
+                    memory,
+                    state,
+                    libc::SYS_ioctl,
+                    [fd, libc::FIONREAD, address, 0, 0, 0],
+                )
+            };
+        let count = |state: &mut LoadedStaticElf, memory: &mut GuestMemory, fd: u64| {
+            assert_eq!(fionread(state, memory, fd, BUFFER), 0);
+            let mut bytes = [0_u8; 4];
+            memory.read(BUFFER, &mut bytes).unwrap();
+            i32::from_ne_bytes(bytes)
+        };
+        assert_eq!(count(&mut state, &mut memory, fd), 0);
+        assert_eq!(queued(native.as_raw_fd()), 0);
+        // A short name and one that needs a second 16-byte block.
+        std::fs::File::create(root.0.join("alpha")).unwrap();
+        std::fs::File::create(root.0.join("bravo-name-that-needs-two-blocks")).unwrap();
+        let expected = queued(native.as_raw_fd());
+        assert_eq!(expected, 32 + 64);
+        assert_eq!(count(&mut state, &mut memory, fd), expected);
+        let duplicate = syscall_result(&mut memory, &mut state, libc::SYS_dup, [fd, 0, 0, 0, 0, 0]);
+        assert!(duplicate > fd as i64);
+        assert_eq!(count(&mut state, &mut memory, duplicate as u64), expected);
+        // An unwritable destination is EFAULT, natively too.
+        assert_eq!(
+            fionread(&mut state, &mut memory, fd, 64 * PAGE_SIZE),
+            negative_errno(libc::EFAULT)
+        );
+        let native_fault = NativeFaultBuffer::new();
+        // SAFETY: the kernel checks the destination; this one is inaccessible.
+        assert_eq!(
+            unsafe { libc::ioctl(native.as_raw_fd(), libc::FIONREAD, native_fault.invalid) },
+            -1
+        );
+        assert_eq!(
+            std::io::Error::last_os_error().raw_os_error(),
+            Some(libc::EFAULT)
+        );
+        // Nothing was consumed: one read returns every record, as native, and
+        // the counts drop to zero together.
+        assert_eq!(
+            guest_read(&mut state, &mut memory, fd, 4096),
+            drain(native.as_raw_fd())
+        );
+        assert_eq!(count(&mut state, &mut memory, fd), 0);
+        assert_eq!(queued(native.as_raw_fd()), 0);
     }
 }
