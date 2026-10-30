@@ -39132,6 +39132,58 @@ mod tests {
         );
     }
 
+    #[test]
+    fn mincore_vector_must_be_writable_when_user_access_is_enforced() {
+        let root = TestDir::new();
+        let mut state = test_state(&root.0);
+        // Pages: 1 target (writable), 2 writable vector, 3 read-only vector,
+        // 4 PROT_NONE vector, 5-6 straddling vector (writable, PROT_NONE).
+        let mut memory = GuestMemory::new(0, 7 * PAGE_SIZE as usize).unwrap();
+        memory.map_user_range(PAGE_SIZE, PAGE_SIZE, false).unwrap();
+        memory
+            .map_user_range(2 * PAGE_SIZE, PAGE_SIZE, false)
+            .unwrap();
+        memory
+            .map_user_permissions(3 * PAGE_SIZE, PAGE_SIZE, true, false)
+            .unwrap();
+        memory
+            .map_user_range(4 * PAGE_SIZE, PAGE_SIZE, true)
+            .unwrap();
+        memory
+            .map_user_range(5 * PAGE_SIZE, PAGE_SIZE, false)
+            .unwrap();
+        memory
+            .map_user_range(6 * PAGE_SIZE, PAGE_SIZE, true)
+            .unwrap();
+        memory.enable_user_access();
+        memory.write(2 * PAGE_SIZE, &[7_u8; 4]).unwrap();
+        for vector in [3 * PAGE_SIZE, 4 * PAGE_SIZE] {
+            assert_eq!(
+                syscall_result(
+                    &mut memory,
+                    &mut state,
+                    libc::SYS_mincore,
+                    [PAGE_SIZE, PAGE_SIZE, vector, 0, 0, 0],
+                ),
+                negative_errno(libc::EFAULT),
+                "vector {vector:#x}",
+            );
+        }
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_mincore,
+                [PAGE_SIZE, PAGE_SIZE, 2 * PAGE_SIZE, 0, 0, 0],
+            ),
+            0,
+        );
+        assert_eq!(
+            read_guest_bytes::<4>(&ProviderMemory(&memory), 2 * PAGE_SIZE).unwrap(),
+            [7, 7, 7, 7]
+        );
+    }
+
     include!("wait4_copyout_tests.rs");
     include!("waitid_copyout_tests.rs");
 

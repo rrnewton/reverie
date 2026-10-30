@@ -1154,8 +1154,9 @@ pub struct LoadedStaticElf {
     /// so conflating the two makes the root guest invisible to the tool.
     pub is_traced_tree_root: bool,
     pub umask: libc::mode_t,
-    /// Per-task ELF64 Linux personality. Only UNAME26 can change within the
-    /// fixed ADDR_NO_RANDOMIZE layout. Fork and clone copy it by value; ordinary
+    /// Per-task ELF64 Linux personality. It starts as the launcher's plus
+    /// ADDR_NO_RANDOMIZE, and only UNAME26 can change within that base.
+    /// Fork and clone copy it by value; ordinary
     /// supported exec preserves the calling task's value.
     pub(crate) linux_personality: u32,
     /// Task IDs each new task spends (`reverie::task_ids`): Linux's 1 unless
@@ -2130,6 +2131,12 @@ fn load_executable(
     // in-guest exec replaces these with its caller's, put through the same
     // rule, in `inherit_process_state_locked`.
     let launcher = crate::credentials::LauncherCredentials::get()?;
+    if launcher.personality & crate::credentials::UNIMPLEMENTED_LAUNCHER_PERSONALITY != 0 {
+        return Err(Error::UnsupportedElf(format!(
+            "launcher personality {:#x} has bits LinuxEmu does not implement",
+            launcher.personality
+        )));
+    }
     let capabilities = launcher.guest_capabilities();
 
     memory.set_allocation_cursors(AllocationCursors {

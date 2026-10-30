@@ -193,9 +193,11 @@ fn read_capability_sets() -> std::io::Result<CapabilitySets> {
     })
 }
 
-/// The launching process's personality, queried as Linux queries it
-/// (`personality(0xffffffff)` in kernel/sys.c). A guest this process spawns
-/// inherits it, as a child process would.
+/// The launching process's personality, queried as Linux queries it: the
+/// query form of `personality(2)`
+/// (<https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git/tree/kernel/exec_domain.c?h=v6.17#n38>).
+/// A guest this process spawns inherits it, as a child process does at
+/// fork (task copy in kernel/fork.c) and exec (fs/exec.c, binfmt_elf).
 fn read_personality() -> std::io::Result<u32> {
     // SAFETY: the query sentinel takes no pointer.
     let result = unsafe { libc::personality(u32::MAX as libc::c_ulong) };
@@ -214,6 +216,13 @@ fn read_personality() -> std::io::Result<u32> {
 pub fn guest_personality(launcher: u32) -> u32 {
     launcher | libc::ADDR_NO_RANDOMIZE as u32
 }
+
+/// Launcher personality bits a guest may not start with, because LinuxEmu
+/// implements no effect for them: a non-Linux execution domain (the low
+/// byte), ADDR_COMPAT_LAYOUT (legacy bottom-up placement) and
+/// MMAP_PAGE_ZERO. A load under such a launcher is refused rather than
+/// reporting flags with no effect.
+pub const UNIMPLEMENTED_LAUNCHER_PERSONALITY: u32 = 0xff | 0x0020_0000 | 0x0100_0000;
 
 /// The umask from /proc/self/status, which reads it without the set and
 /// restore that umask(2) needs.

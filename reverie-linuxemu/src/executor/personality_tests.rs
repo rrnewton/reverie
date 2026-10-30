@@ -1,6 +1,6 @@
 // Run the same controls through the existing syscall and lifecycle APIs on
 // both source variants. No control calls the supervisor's personality syscall.
-const TEST_FIXED_PERSONALITY: u64 = 0x0004_0000;
+const TEST_BASE_PERSONALITY: u64 = 0x0004_0000;
 const TEST_UNAME26_PERSONALITY: u64 = 0x0006_0000;
 const TEST_PERSONALITY_QUERY: u64 = u32::MAX as u64;
 
@@ -35,7 +35,7 @@ fn host_utsname() -> [u8; 65 * 6] {
 }
 
 #[test]
-fn personality_fixed_profile_round_trip_uses_low_word_and_refuses_unmodeled_flags() {
+fn personality_profile_round_trip_uses_low_word_and_refuses_unmodeled_flags() {
     const HIGH_WORD: u64 = 0xcafe_babe_0000_0000;
     let root = TestDir::new();
     let mut state = test_state(&root.0);
@@ -47,12 +47,12 @@ fn personality_fixed_profile_round_trip_uses_low_word_and_refuses_unmodeled_flag
     ] {
         assert_eq!(
             test_personality_call(&mut memory, &mut state, query),
-            TEST_FIXED_PERSONALITY as i64,
+            TEST_BASE_PERSONALITY as i64,
         );
     }
     assert_eq!(
         test_personality_call(&mut memory, &mut state, TEST_UNAME26_PERSONALITY),
-        TEST_FIXED_PERSONALITY as i64,
+        TEST_BASE_PERSONALITY as i64,
     );
     assert_eq!(
         test_personality_call(&mut memory, &mut state, TEST_PERSONALITY_QUERY),
@@ -63,17 +63,17 @@ fn personality_fixed_profile_round_trip_uses_low_word_and_refuses_unmodeled_flag
         TEST_UNAME26_PERSONALITY as i64,
     );
     assert_eq!(
-        test_personality_call(&mut memory, &mut state, HIGH_WORD | TEST_FIXED_PERSONALITY),
+        test_personality_call(&mut memory, &mut state, HIGH_WORD | TEST_BASE_PERSONALITY),
         TEST_UNAME26_PERSONALITY as i64,
     );
     // Explicit unsupported KVM profiles; these are not Linux-invalid flags.
     for request in [
         0,
         0x0002_0000,
-        TEST_FIXED_PERSONALITY | 1,
-        TEST_FIXED_PERSONALITY | 0x0040_0000,
-        TEST_FIXED_PERSONALITY | 0x0020_0000,
-        TEST_FIXED_PERSONALITY | 0x8000_0000,
+        TEST_BASE_PERSONALITY | 1,
+        TEST_BASE_PERSONALITY | 0x0040_0000,
+        TEST_BASE_PERSONALITY | 0x0020_0000,
+        TEST_BASE_PERSONALITY | 0x8000_0000,
     ] {
         assert_eq!(
             test_personality_call(&mut memory, &mut state, request),
@@ -81,7 +81,7 @@ fn personality_fixed_profile_round_trip_uses_low_word_and_refuses_unmodeled_flag
         );
         assert_eq!(
             test_personality_call(&mut memory, &mut state, TEST_PERSONALITY_QUERY),
-            TEST_FIXED_PERSONALITY as i64,
+            TEST_BASE_PERSONALITY as i64,
         );
     }
 }
@@ -95,13 +95,13 @@ fn uname_forwards_the_hosts_answer_under_every_personality() {
     let mut memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
     assert_eq!(
         test_personality_call(&mut memory, &mut state, TEST_PERSONALITY_QUERY),
-        TEST_FIXED_PERSONALITY as i64,
+        TEST_BASE_PERSONALITY as i64,
     );
     let host = host_utsname();
     assert_eq!(test_personality_uname(&mut memory, &mut state), host);
     assert_eq!(
         test_personality_call(&mut memory, &mut state, TEST_UNAME26_PERSONALITY),
-        TEST_FIXED_PERSONALITY as i64,
+        TEST_BASE_PERSONALITY as i64,
     );
     assert_eq!(test_personality_uname(&mut memory, &mut state), host);
     for address in [u64::MAX, PAGE_SIZE - (65 * 6 - 1)] {
@@ -120,20 +120,51 @@ fn uname_forwards_the_hosts_answer_under_every_personality() {
         );
     }
     assert_eq!(
-        test_personality_call(&mut memory, &mut state, TEST_FIXED_PERSONALITY),
+        test_personality_call(&mut memory, &mut state, TEST_BASE_PERSONALITY),
         TEST_UNAME26_PERSONALITY as i64,
     );
     assert_eq!(test_personality_uname(&mut memory, &mut state), host);
 }
 
 #[test]
-fn personality_fixed_profile_is_task_local_and_survives_fork_thread_exec() {
+fn personality_inherited_base_allows_only_uname26_toggling() {
+    // A starting value inherited from a launcher that itself ran with
+    // UNAME26 and STICKY_TIMEOUTS set: only the UNAME26 bit may move.
+    const STICKY: u64 = 0x0400_0000;
+    let root = TestDir::new();
+    let mut state = test_state(&root.0);
+    state.linux_personality = (TEST_BASE_PERSONALITY | TEST_UNAME26_PERSONALITY | STICKY) as u32;
+    let mut memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
+    assert_eq!(
+        test_personality_call(&mut memory, &mut state, TEST_PERSONALITY_QUERY),
+        (TEST_BASE_PERSONALITY | TEST_UNAME26_PERSONALITY | STICKY) as i64,
+    );
+    assert_eq!(
+        test_personality_call(
+            &mut memory,
+            &mut state,
+            TEST_BASE_PERSONALITY | STICKY
+        ),
+        (TEST_BASE_PERSONALITY | TEST_UNAME26_PERSONALITY | STICKY) as i64,
+    );
+    assert_eq!(
+        test_personality_call(&mut memory, &mut state, TEST_BASE_PERSONALITY),
+        negative_errno(libc::ENOSYS),
+    );
+    assert_eq!(
+        test_personality_call(&mut memory, &mut state, TEST_PERSONALITY_QUERY),
+        (TEST_BASE_PERSONALITY | STICKY) as i64,
+    );
+}
+
+#[test]
+fn personality_profile_is_task_local_and_survives_fork_thread_exec() {
     let root = TestDir::new();
     let mut state = test_state(&root.0);
     let mut memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
     assert_eq!(
         test_personality_call(&mut memory, &mut state, TEST_UNAME26_PERSONALITY),
-        TEST_FIXED_PERSONALITY as i64,
+        TEST_BASE_PERSONALITY as i64,
     );
     let mut forked = state.try_clone_for_fork(2).unwrap();
     assert_eq!(
@@ -141,7 +172,7 @@ fn personality_fixed_profile_is_task_local_and_survives_fork_thread_exec() {
         TEST_UNAME26_PERSONALITY as i64,
     );
     assert_eq!(
-        test_personality_call(&mut memory, &mut state, TEST_FIXED_PERSONALITY),
+        test_personality_call(&mut memory, &mut state, TEST_BASE_PERSONALITY),
         TEST_UNAME26_PERSONALITY as i64,
     );
     let mut replacement = test_state(&root.0);
@@ -152,12 +183,12 @@ fn personality_fixed_profile_is_task_local_and_survives_fork_thread_exec() {
     );
     assert_eq!(
         test_personality_call(&mut memory, &mut state, TEST_UNAME26_PERSONALITY),
-        TEST_FIXED_PERSONALITY as i64,
+        TEST_BASE_PERSONALITY as i64,
     );
     let mut leader = ElfExecutor::new(state, false);
     let mut sibling = leader.thread_child(3).unwrap();
     assert_eq!(
-        test_personality_call(&mut memory, &mut sibling.state, TEST_FIXED_PERSONALITY),
+        test_personality_call(&mut memory, &mut sibling.state, TEST_BASE_PERSONALITY),
         TEST_UNAME26_PERSONALITY as i64,
     );
     assert_eq!(
@@ -167,12 +198,12 @@ fn personality_fixed_profile_is_task_local_and_survives_fork_thread_exec() {
     let mut worker_fork = sibling.state.try_clone_for_fork(4).unwrap();
     assert_eq!(
         test_personality_call(&mut memory, &mut worker_fork, TEST_PERSONALITY_QUERY),
-        TEST_FIXED_PERSONALITY as i64,
+        TEST_BASE_PERSONALITY as i64,
     );
     let mut worker_replacement = test_state(&root.0);
     worker_replacement.inherit_process_state(worker_fork);
     assert_eq!(
         test_personality_call(&mut memory, &mut worker_replacement, TEST_PERSONALITY_QUERY),
-        TEST_FIXED_PERSONALITY as i64,
+        TEST_BASE_PERSONALITY as i64,
     );
 }

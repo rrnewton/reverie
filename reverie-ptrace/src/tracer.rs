@@ -3688,8 +3688,7 @@ fn init_tracee(intercept_rdtsc: bool) -> Result<(), Errno> {
     // Allocating between a fork() and execve() can cause deadlocks in glibc
     // when using jemalloc.
 
-    // hardcoded because `libc` does not export these.
-    const PER_LINUX: u64 = 0x0;
+    // hardcoded because `libc` does not export this.
     const ADDR_NO_RANDOMIZE: u64 = 0x0004_0000;
 
     if intercept_rdtsc {
@@ -3710,7 +3709,14 @@ fn init_tracee(intercept_rdtsc: bool) -> Result<(), Errno> {
                 b"ERROR: Reverie could not enable PR_SET_NO_NEW_PRIVS for seccomp interception\n",
             ));
         }
-        if libc::personality(PER_LINUX | ADDR_NO_RANDOMIZE) == -1 {
+        // Inherit the launcher's personality, as a child process does, and
+        // add the one bit this launcher implements: no address-space
+        // randomization for the tracee's fixed layout.
+        let inherited = libc::personality(0xffff_ffff);
+        if inherited == -1
+            || libc::personality(inherited as libc::c_ulong | ADDR_NO_RANDOMIZE as libc::c_ulong)
+                == -1
+        {
             return Err(report_pre_exec_capability_error(
                 b"ERROR: Reverie could not disable address-space randomization with personality(2)\n",
             ));
