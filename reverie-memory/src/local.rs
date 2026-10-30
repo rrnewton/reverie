@@ -294,6 +294,41 @@ mod tests {
         assert_eq!(unsafe { libc::munmap(mapping, page_size) }, 0);
     }
 
+    /// Why the in-process backends, whose tools read guest memory through
+    /// this type, report `BackendCapabilities::tool_reads_every_guest_writable_page`
+    /// false: `process_vm_writev` writes a write-only page, which the process
+    /// can write, but `process_vm_readv` refuses to read it.
+    #[test]
+    fn a_write_only_page_takes_a_write_but_refuses_a_read() {
+        let page_size = unsafe { libc::sysconf(libc::_SC_PAGESIZE) };
+        assert!(page_size > 0);
+        let page_size = page_size as usize;
+        let mapping = unsafe {
+            libc::mmap(
+                core::ptr::null_mut(),
+                page_size,
+                libc::PROT_READ | libc::PROT_WRITE,
+                libc::MAP_PRIVATE | libc::MAP_ANONYMOUS,
+                -1,
+                0,
+            )
+        };
+        assert_ne!(mapping, libc::MAP_FAILED);
+        assert_eq!(
+            unsafe { libc::mprotect(mapping, page_size, libc::PROT_WRITE) },
+            0
+        );
+
+        let mut m = LocalMemory::new();
+        let bytes = 0x0123_4567_89ab_cdef_u64.to_ne_bytes();
+        let addr = AddrMut::from_raw(mapping as usize).unwrap();
+        assert_eq!(m.write_with_user_access(addr, &bytes), Ok(bytes.len()));
+        let value = m.read_value(Addr::<u64>::from_raw(mapping as usize).unwrap());
+        assert_eq!(value, Err(Errno::EFAULT));
+
+        assert_eq!(unsafe { libc::munmap(mapping, page_size) }, 0);
+    }
+
     #[test]
     fn read_exact_with_user_access_rejects_address_overflow() {
         let m = LocalMemory::new();

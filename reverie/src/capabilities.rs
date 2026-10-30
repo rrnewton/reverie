@@ -359,6 +359,28 @@ pub struct BackendCapabilities {
     /// Whether a hit can change a timer event is a per-thread fact,
     /// [`Guest::watch_hits_keep_timer_events`](crate::Guest::watch_hits_keep_timer_events).
     pub hardware_watchpoints: u8,
+
+    /// Every guest address the guest can write, the tool can read: an aligned
+    /// eight-byte [`MemoryAccess::read_value`](crate::syscalls::MemoryAccess::read_value)
+    /// through [`Guest::memory`](crate::Guest::memory) fails only at an
+    /// address the guest cannot write either. A tool can then take a page it
+    /// cannot read as one the guest cannot write: for example, as a bound on
+    /// what a kernel copy into guest memory wrote before it faulted, since
+    /// such a copy stops at the first byte the guest cannot write.
+    ///
+    /// - reverie-ptrace, and e9patch preprocessing, which runs under it, read
+    ///   eight bytes with `PTRACE_PEEKDATA`, which reads every mapped page,
+    ///   write-only and `PROT_NONE` pages included; only an unmapped address
+    ///   fails.
+    /// - reverie-kvm reads through the guest's user-page map, which lets the
+    ///   tool read every page the guest can access and lets the guest write
+    ///   only the writable ones, so every page the guest can write is one the
+    ///   tool can read. The tool cannot read a `PROT_NONE` page there, which
+    ///   the guest cannot write either.
+    /// - The in-process backends (the in-guest backends, SaBRe and DBT) read
+    ///   with `process_vm_readv`, which refuses a write-only page that the
+    ///   guest can write, so they report false.
+    pub tool_reads_every_guest_writable_page: bool,
 }
 
 impl BackendCapabilities {
@@ -393,6 +415,8 @@ impl BackendCapabilities {
         reports_sigreturns: cfg!(target_arch = "x86_64"),
         // DR0-DR3 on x86-64; arm64 watchpoints are not implemented yet.
         hardware_watchpoints: if cfg!(target_arch = "x86_64") { 4 } else { 0 },
+        // PTRACE_PEEKDATA reads every mapped page.
+        tool_reads_every_guest_writable_page: true,
     };
 
     /// `reverie-e9patch`: the guest is rewritten ahead of time and then run
@@ -426,6 +450,8 @@ impl BackendCapabilities {
         promotes_open_files_before_native_lifecycle: true,
         reports_sigreturns: false,
         hardware_watchpoints: 0,
+        // process_vm_readv refuses a write-only page the guest can write.
+        tool_reads_every_guest_writable_page: false,
         ..Self::PTRACE
     };
 
@@ -450,6 +476,8 @@ impl BackendCapabilities {
         runs_guest_code_between_injections: true,
         reports_sigreturns: false,
         hardware_watchpoints: 0,
+        // process_vm_readv refuses a write-only page the guest can write.
+        tool_reads_every_guest_writable_page: false,
         ..Self::PTRACE
     };
 
@@ -476,6 +504,8 @@ impl BackendCapabilities {
         promotes_open_files_before_native_lifecycle: true,
         reports_sigreturns: false,
         hardware_watchpoints: 0,
+        // process_vm_readv refuses a write-only page the guest can write.
+        tool_reads_every_guest_writable_page: false,
         ..Self::PTRACE
     };
 
@@ -541,6 +571,7 @@ mod tests {
             "promotes_open_files_before_native_lifecycle": false,
             "reports_sigreturns": cfg!(target_arch = "x86_64"),
             "hardware_watchpoints": if cfg!(target_arch = "x86_64") { 4 } else { 0 },
+            "tool_reads_every_guest_writable_page": true,
         })
     }
 
@@ -603,6 +634,7 @@ mod tests {
                 "promotes_open_files_before_native_lifecycle": true,
                 "reports_sigreturns": false,
                 "hardware_watchpoints": 0,
+                "tool_reads_every_guest_writable_page": false,
             }))
         );
     }
@@ -630,6 +662,7 @@ mod tests {
                 "runs_guest_code_between_injections": true,
                 "reports_sigreturns": false,
                 "hardware_watchpoints": 0,
+                "tool_reads_every_guest_writable_page": false,
             }))
         );
     }
@@ -657,6 +690,7 @@ mod tests {
                 "promotes_open_files_before_native_lifecycle": true,
                 "reports_sigreturns": false,
                 "hardware_watchpoints": 0,
+                "tool_reads_every_guest_writable_page": false,
             }))
         );
     }

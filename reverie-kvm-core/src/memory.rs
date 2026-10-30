@@ -9216,3 +9216,57 @@ mod rebind_tests {
         assert!(!first.same_as(&other.owner().origin()));
     }
 }
+
+#[cfg(test)]
+mod writable_page_read_tests {
+    use reverie::BackendCapabilities;
+    use reverie::syscalls::Addr;
+    use reverie::syscalls::AddrMut;
+
+    use super::*;
+
+    const BASE: u64 = 0x1000;
+
+    /// [`BackendCapabilities::tool_reads_every_guest_writable_page`] holds on
+    /// KVM: through [`UserMemory`], the memory a tool gets from the guest,
+    /// every page the guest can write (accessible and writable) is one the
+    /// tool can read, so a page the tool cannot read (no access, or no user
+    /// mapping at all) is one the guest cannot write either. A read-only page
+    /// is readable and not writable.
+    #[test]
+    fn the_tool_reads_every_page_the_guest_can_write() {
+        const { assert!(BackendCapabilities::KVM.tool_reads_every_guest_writable_page) };
+        let memory = GuestMemory::new(BASE, 4 * PAGE_SIZE).unwrap();
+        memory.write_raw(BASE, &vec![0xa5; 4 * PAGE_SIZE]).unwrap();
+        // Page 0 is writable, page 1 read-only and page 2 inaccessible; page
+        // 3 has no user mapping.
+        let page = PAGE_SIZE as u64;
+        memory.map_user_permissions(BASE, page, true, true).unwrap();
+        memory
+            .map_user_permissions(BASE + page, page, true, false)
+            .unwrap();
+        memory
+            .map_user_permissions(BASE + 2 * page, page, false, false)
+            .unwrap();
+        memory.enable_user_access();
+        let mut user = memory.user();
+        for (index, readable, writable) in [
+            (0, true, true),
+            (1, true, false),
+            (2, false, false),
+            (3, false, false),
+        ] {
+            let address = BASE as usize + index * PAGE_SIZE + 8;
+            let read = user.read_value(Addr::<u64>::from_raw(address).unwrap());
+            assert_eq!(read.is_ok(), readable, "page {index}: {read:?}");
+            if let Ok(value) = read {
+                assert_eq!(value, u64::from_ne_bytes([0xa5; 8]), "page {index}");
+            }
+            // The page's own bytes, written back unchanged.
+            let written =
+                user.write_with_user_access(AddrMut::from_raw(address).unwrap(), &[0xa5; 8]);
+            assert_eq!(written.is_ok(), writable, "page {index}: {written:?}");
+            assert!(written.is_err() || read.is_ok(), "page {index}");
+        }
+    }
+}

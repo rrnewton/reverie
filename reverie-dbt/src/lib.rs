@@ -3437,6 +3437,40 @@ mod tests {
         assert!(auxv_after_initial_stack(0, word_of(&cut)).is_none());
     }
 
+    /// Why DBT reports
+    /// [`reverie::BackendCapabilities::tool_reads_every_guest_writable_page`]
+    /// false: through the guest memory a tool gets, a write-only page, which
+    /// the guest can write, takes a write but refuses a read.
+    #[test]
+    fn guest_memory_writes_a_write_only_page_it_cannot_read() {
+        const { assert!(!reverie::BackendCapabilities::DBT.tool_reads_every_guest_writable_page) };
+        let page = 4096;
+        // SAFETY: a fresh private anonymous mapping, used only below.
+        let mapping = unsafe {
+            libc::mmap(
+                core::ptr::null_mut(),
+                page,
+                libc::PROT_WRITE,
+                libc::MAP_PRIVATE | libc::MAP_ANONYMOUS,
+                -1,
+                0,
+            )
+        };
+        assert_ne!(mapping, libc::MAP_FAILED);
+        let mut memory = DbtMemory::new();
+        let address = mapping as usize + 8;
+        assert_eq!(
+            memory.write_with_user_access(AddrMut::from_raw(address).unwrap(), &[0x5a; 8]),
+            Ok(8)
+        );
+        assert_eq!(
+            memory.read_value::<_, u64>(Addr::from_raw(address).unwrap()),
+            Err(Errno::EFAULT)
+        );
+        // SAFETY: the mapping above, which nothing uses any more.
+        assert_eq!(unsafe { libc::munmap(mapping, page) }, 0);
+    }
+
     /// `pairs` as `/proc/<pid>/auxv` bytes.
     fn auxv_bytes(pairs: &[(u64, u64)]) -> Vec<u8> {
         pairs
