@@ -2594,6 +2594,134 @@ static void mode_timer_execute_only(void) {
     die("snippet munmap");
 }
 
+/* A synchronous-class signal that a handler queues for itself under a mask
+ * that blocks it, as a crash handler does before it returns, with a precise
+ * timer armed in the handler whose steps run through the rest of it. The
+ * kernel takes the blocked SIGFPE ahead of each step's report, and a step
+ * must not leave that report queued: the handler's mask, which blocks
+ * SIGTRAP, would keep it, and the next private injection, here or in the
+ * SIGFPE handler, would meet a pending blocked SIGTRAP. Natively, and so
+ * under the Tool, the SIGFPE handler runs once per round, after the handler
+ * that queued it returned, with the si_code queued, and SIGTRAP's handler
+ * and mask are as installed. */
+static volatile int sbs_fpe, sbs_fpe_code;
+static void sbs_fpe_handler(int sig, siginfo_t* si, void* uc) {
+  (void)sig;
+  (void)uc;
+  sbs_fpe++;
+  sbs_fpe_code = si->si_code;
+  SITEM(SYS_getppid, 0, 0, 0, 0, 0, SHAPE_PRIVATE);
+}
+static volatile int sbs_c;
+static void sbs_usr1_handler(int sig) {
+  (void)sig;
+  siginfo_t si;
+  memset(&si, 0, sizeof si);
+  si.si_signo = SIGFPE;
+  si.si_code = FPE_INTDIV;
+  long pid = getpid(), tid = syscall(SYS_gettid);
+  /* Run in place: a private injection's step would make the kernel take the
+   * blocked SIGFPE ahead of the step's report at once. */
+  if (SITEM(SYS_rt_tgsigqueueinfo, pid, tid, SIGFPE, (long)&si, 0, SHAPE_TAIL) != 0)
+    die("queue SIGFPE");
+  /* The target lies sbs_c branches past this loop, beyond the handler's
+   * return, so the steps toward it start in the loop and run through the
+   * return. The arming call runs in place: a private injection's step would
+   * stop at the queued SIGFPE, which the kernel takes ahead of the step's
+   * report, and that stop would cancel the timer. */
+  SITEM(SYS_getppid, 0, 0, 0, 0, PM_BRANCHES + 1 + sbs_c, ARM_TIMER | SHAPE_TAIL);
+  for (volatile int j = 0; j < PM_BRANCHES; j++)
+    ;
+  /* Odd rounds make a private injection here, under this handler's mask,
+   * which blocks SIGTRAP; even rounds return at once, so that the steps
+   * reach the handler's rt_sigreturn. */
+  if (sbs_c & 1)
+    SITEM(SYS_getppid, 0, 0, 0, 0, 0, SHAPE_PRIVATE);
+}
+static void mode_sync_signal_behind_sigreturn(void) {
+  warm();
+  /* Caught and unblocked: a step's trap that met SIGTRAP blocked would
+   * reset this handler to SIG_DFL. */
+  sigtrap_set(trap_handler, 0);
+  struct sigaction fpe, usr1;
+  /* Both handlers block every signal but the precise timer's own
+   * (SIGSTKFLT), which must stay deliverable for the timer to fire. */
+  memset(&fpe, 0, sizeof fpe);
+  fpe.sa_sigaction = sbs_fpe_handler;
+  fpe.sa_flags = SA_SIGINFO;
+  sigfillset(&fpe.sa_mask);
+  sigdelset(&fpe.sa_mask, SIGSTKFLT);
+  memset(&usr1, 0, sizeof usr1);
+  usr1.sa_handler = sbs_usr1_handler;
+  usr1.sa_mask = fpe.sa_mask;
+  if (sigaction(SIGFPE, &fpe, NULL) != 0 || sigaction(SIGUSR1, &usr1, NULL) != 0)
+    die("sigaction");
+  for (sbs_c = 2; sbs_c < 6; sbs_c++) {
+    raise(SIGUSR1);
+    for (volatile int j = 0; j < 200; j++)
+      ;
+  }
+  say("sync behind sigreturn fpe=%d code=%d\n", sbs_fpe, sbs_fpe_code);
+  sigtrap_full_state("sync behind sigreturn state");
+}
+
+/* A SIGUSR1 handler in assembly that queues itself a blocked SIGFPE, arms an
+ * instruction-precise timer (r8: one branch, then the instruction count in
+ * the upper half) with a getppid run in place, and returns. After the call,
+ * the handler retires its one branch (jl) and three instructions (ret, then
+ * the restorer's mov and its rt_sigreturn syscall), so that a count of three
+ * or so ends the sequence exactly at the rt_sigreturn; the mode tries
+ * several. */
+long sbs_arm_r8, sbs_arm_r9;
+void sbs_queue_fpe(void) {
+  siginfo_t si;
+  memset(&si, 0, sizeof si);
+  si.si_signo = SIGFPE;
+  si.si_code = FPE_INTDIV;
+  long pid = getpid(), tid = syscall(SYS_gettid);
+  if (SITEM(SYS_rt_tgsigqueueinfo, pid, tid, SIGFPE, (long)&si, 0, SHAPE_TAIL) != 0)
+    die("queue SIGFPE");
+  sbs_arm_r9 = TP_MAGIC | ((++tp_seq) << 16) | ARM_TIMER | SHAPE_TAIL;
+}
+extern void sbs_last_handler(int);
+__asm__(".text\n.globl sbs_last_handler\n.type sbs_last_handler,@function\n"
+        "sbs_last_handler:\n"
+        "push %rbx\n"
+        "call sbs_queue_fpe\n"
+        "mov sbs_arm_r8(%rip),%r8\n"
+        "mov sbs_arm_r9(%rip),%r9\n"
+        "mov $110,%eax\n"
+        "syscall\n"
+        "pop %rbx\n"
+        "cmp $0,%rax\n"
+        "jl 1f\n"
+        "1: ret\n"
+        ".size sbs_last_handler,.-sbs_last_handler\n");
+
+static void mode_sync_signal_at_last_sigreturn(void) {
+  warm();
+  sigtrap_set(trap_handler, 0);
+  struct sigaction fpe, usr1;
+  memset(&fpe, 0, sizeof fpe);
+  fpe.sa_sigaction = sbs_fpe_handler;
+  fpe.sa_flags = SA_SIGINFO;
+  sigfillset(&fpe.sa_mask);
+  sigdelset(&fpe.sa_mask, SIGSTKFLT);
+  memset(&usr1, 0, sizeof usr1);
+  usr1.sa_handler = sbs_last_handler;
+  usr1.sa_mask = fpe.sa_mask;
+  if (sigaction(SIGFPE, &fpe, NULL) != 0 || sigaction(SIGUSR1, &usr1, NULL) != 0)
+    die("sigaction");
+  for (long k = 1; k <= 8; k++) {
+    sbs_arm_r8 = 1 | (k << 32);
+    raise(SIGUSR1);
+    for (volatile int j = 0; j < 200; j++)
+      ;
+  }
+  say("last sigreturn fpe=%d code=%d\n", sbs_fpe, sbs_fpe_code);
+  sigtrap_full_state("last sigreturn state");
+}
+
 /* Each SIGTRAP state across a precise timer's single-steps: the timer is
  * armed PM_BRANCHES + 1 branches out and fires in the branch loop, whose
  * last branches it single-steps
@@ -2613,6 +2741,29 @@ static void mode_sigtrap_timer(void) {
   };
   for (unsigned i = 0; i < sizeof states / sizeof states[0]; i++) {
     sigtrap_set(states[i].action, states[i].block);
+    SITEM(SYS_getppid, 0, 0, 0, 0, PM_BRANCHES + 1, ARM_TIMER);
+    for (volatile int j = 0; j < 3 * PM_BRANCHES; j++)
+      ;
+    char tag[64];
+    snprintf(tag, sizeof tag, "timer %s", states[i].name);
+    sigtrap_full_state(tag);
+  }
+}
+
+/* A precise timer's single-steps with SIGTRAP caught or default and
+ * unblocked, as in mode_sigtrap_timer: no step can reset it, and none
+ * runs an rt_sigreturn, so no step reads SIGTRAP's state. */
+static void mode_sigtrap_timer_unblocked(void) {
+  warm();
+  static const struct {
+    const char* name;
+    void (*action)(int);
+  } states[] = {
+      {"handler", trap_handler},
+      {"dfl", SIG_DFL},
+  };
+  for (unsigned i = 0; i < sizeof states / sizeof states[0]; i++) {
+    sigtrap_set(states[i].action, 0);
     SITEM(SYS_getppid, 0, 0, 0, 0, PM_BRANCHES + 1, ARM_TIMER);
     for (volatile int j = 0; j < 3 * PM_BRANCHES; j++)
       ;
@@ -2654,8 +2805,83 @@ static void mode_sigtrap_sigreturn_timer(void) {
   }
 }
 
+/* As arming_handler, after unblocking SIGTRAP, which the frame's mask still
+ * blocks: the timer's sequence starts with SIGTRAP unblocked, and its steps
+ * run the handler's rt_sigreturn, which blocks it again. */
+static void unblocking_arming_handler(int sig) {
+  (void)sig;
+  sigset_t trap;
+  sigemptyset(&trap);
+  sigaddset(&trap, SIGTRAP);
+  if (sigprocmask(SIG_UNBLOCK, &trap, NULL) != 0)
+    die("unblock SIGTRAP");
+  SITEM(SYS_getppid, 0, 0, 0, 0, sigreturn_k, ARM_TIMER);
+}
+
+/* A guest rt_sigreturn single-stepped by a precise timer whose sequence
+ * started with SIGTRAP caught and unblocked, from a frame whose mask blocks
+ * it. */
+static void mode_sigtrap_sigreturn_handover_timer(void) {
+  warm();
+  struct sigaction usr1;
+  memset(&usr1, 0, sizeof usr1);
+  usr1.sa_handler = unblocking_arming_handler;
+  if (sigaction(SIGUSR1, &usr1, NULL) != 0)
+    die("install SIGUSR1");
+  sigtrap_set(trap_handler, 1);
+  for (int k = 1; k <= 8; k++) {
+    sigreturn_k = k;
+    raise(SIGUSR1);
+    for (volatile int j = 0; j < 16; j++)
+      ;
+    char tag[64];
+    snprintf(tag, sizeof tag, "handover k=%d", k);
+    sigtrap_full_state(tag);
+  }
+}
+
 static void quiet_usr1(int sig) {
   (void)sig;
+}
+
+/* A timer sequence whose first step is taken while a temporary mask's
+ * restore is pending. SIGURG is blocked and pending before an epoll_pwait
+ * whose temporary mask admits it, so the wait returns EINTR at once with the
+ * restore pending (an EINTR from epoll_pwait is not restarted). The Tool
+ * suppresses SIGURG and arms a short precise timer from its callback, whose
+ * artificial notification is taken at that same pending restore. Resuming
+ * for the first step performs the restore, so the step's trap meets the
+ * guest's mask, which blocks a caught SIGTRAP. */
+static void mode_sigtrap_pending_restore_timer(void) {
+  warm();
+  struct sigaction urg;
+  memset(&urg, 0, sizeof urg);
+  urg.sa_handler = quiet_usr1;
+  if (sigaction(SIGURG, &urg, NULL) != 0)
+    die("install SIGURG");
+  int ep = epoll_create1(0);
+  if (ep < 0)
+    die("epoll_create1");
+  sigtrap_set(trap_handler, 1);
+  sigset_t urg_set;
+  sigemptyset(&urg_set);
+  sigaddset(&urg_set, SIGURG);
+  if (sigprocmask(SIG_BLOCK, &urg_set, NULL) != 0)
+    die("block SIGURG");
+  raise(SIGURG);
+  uint64_t admit_all = 0;
+  struct epoll_event event;
+  long r = syscall(SYS_epoll_pwait, ep, &event, 1, 1000, &admit_all, 8);
+  int err = errno;
+  for (volatile int j = 0; j < 64; j++)
+    ;
+  char tag[64];
+  snprintf(tag, sizeof tag, "pending-restore-timer r=%s",
+           r == -1 && err == EINTR ? "eintr" : "other");
+  sigtrap_full_state(tag);
+  if (sigprocmask(SIG_UNBLOCK, &urg_set, NULL) != 0)
+    die("unblock SIGURG");
+  close(ep);
 }
 
 /* SIGTRAP's state across a mask-swapping wait that a handled SIGUSR1
@@ -3799,6 +4025,31 @@ static void mode_sigtrap_caught_blocked_injections(void) {
   for (int i = 0; i < 200; i++)
     SITEM(SYS_getppid, 0, 0, 0, 0, 0, SHAPE_PRIVATE);
   sigtrap_full_state("caught-blocked after 200");
+}
+
+/* A caught SIGTRAP that the guest leaves unblocked, as Android's debuggerd
+ * installs one in every process, through `count` private injections. A
+ * step's trap resets the handler only while SIGTRAP is blocked or ignored, so
+ * none of them reads or repairs SIGTRAP's state, and the handler and the mask
+ * stay the guest's. */
+static void sigtrap_caught_unblocked_injections(int count) {
+  for (int i = 0; i < 3; i++)
+    SITE(SYS_getppid, 0, 0, 0, 0, 0);
+  sigtrap_set(trap_handler, 0);
+  for (int i = 0; i < count; i++)
+    SITEM(SYS_getppid, 0, 0, 0, 0, 0, SHAPE_PRIVATE);
+  char label[64];
+  snprintf(label, sizeof label, "caught-unblocked after %d", count);
+  sigtrap_full_state(label);
+}
+
+static void mode_sigtrap_caught_unblocked_injections(void) {
+  sigtrap_caught_unblocked_injections(200);
+}
+
+/* The same guest without the injections: what its setup and report cost. */
+static void mode_sigtrap_caught_unblocked_no_injections(void) {
+  sigtrap_caught_unblocked_injections(0);
 }
 
 /* A caught SIGTRAP that the guest blocks, after the guest installs a
@@ -5112,8 +5363,18 @@ int main(int argc, char** argv) {
     mode_sigtrap_ppoll_hold_then_read();
   else if (!strcmp(m, "sigtrap_callback_restore"))
     mode_sigtrap_callback_restore();
+  else if (!strcmp(m, "sigtrap_pending_restore_timer"))
+    mode_sigtrap_pending_restore_timer();
   else if (!strcmp(m, "sigtrap_caught_blocked_injections"))
     mode_sigtrap_caught_blocked_injections();
+  else if (!strcmp(m, "sigtrap_sigreturn_handover_timer"))
+    mode_sigtrap_sigreturn_handover_timer();
+  else if (!strcmp(m, "sigtrap_timer_unblocked"))
+    mode_sigtrap_timer_unblocked();
+  else if (!strcmp(m, "sigtrap_caught_unblocked_injections"))
+    mode_sigtrap_caught_unblocked_injections();
+  else if (!strcmp(m, "sigtrap_caught_unblocked_no_injections"))
+    mode_sigtrap_caught_unblocked_no_injections();
   else if (!strcmp(m, "sigtrap_caught_blocked_no_repair"))
     mode_sigtrap_caught_blocked_no_repair();
   else if (!strcmp(m, "sigtrap_caught_blocked_filter_install"))
@@ -5258,6 +5519,10 @@ int main(int argc, char** argv) {
     mode_timer_loop();
   else if (!strcmp(m, "timer_execute_only"))
     mode_timer_execute_only();
+  else if (!strcmp(m, "sync_signal_behind_sigreturn"))
+    mode_sync_signal_behind_sigreturn();
+  else if (!strcmp(m, "sync_signal_at_last_sigreturn"))
+    mode_sync_signal_at_last_sigreturn();
   else if (!strcmp(m, "perf_marker"))
     mode_perf_marker();
   else if (!strcmp(m, "timer_allow"))
