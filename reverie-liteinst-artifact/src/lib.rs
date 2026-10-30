@@ -10045,7 +10045,7 @@ const FIXED_READONLY_SPECS: &[FixedReadonlySpec] = &[
     FixedReadonlySpec {
         key: "publication_dev_data_369138",
         kind: "location",
-        hex: "00000000000000002e00000000000000de00000013000000",
+        hex: "00000000000000002e00000000000000e300000013000000",
         file_hex: "726576657269652d696e67756573742f7372632f67756573742f746f6f6c5f726567696f6e5f6172656e612e7273",
         owner: "",
         switch: &[],
@@ -17478,9 +17478,9 @@ fn fixed_role_symbols(elf: &Elf<'_>) -> Result<BTreeMap<String, sym::Sym>> {
     Ok(result)
 }
 
-// Both observed equality cohorts can coexist in one DSO. This finite census
+// Three observed equality cohorts can coexist in one DSO. This finite census
 // grants byte coverage only; admission chooses one pair from complete callers.
-const FIXED_HEAP_EQUAL_COHORTS: [(&str, &str); 2] = [
+const FIXED_HEAP_EQUAL_COHORTS: [(&str, &str); 3] = [
     (
         "_RNvXsf_NtCs_4core6optionINtB5_6OptionjENtNtB7_3cmp9PartialEq2eqCs_12regex_syntax",
         "_RNvXsj_NtNtCs_4core3cmp5implsjNtB7_9PartialEq2eqCs_12regex_syntax",
@@ -17488,6 +17488,10 @@ const FIXED_HEAP_EQUAL_COHORTS: [(&str, &str); 2] = [
     (
         "_RNvXsf_NtCs_4core6optionINtB5_6OptionjENtNtB7_3cmp9PartialEq2eqCs_10safeptrace",
         "_RNvXsj_NtNtCs_4core3cmp5implsjNtB7_9PartialEq2eqCs_10safeptrace",
+    ),
+    (
+        "_RNvXsf_NtCs_4core6optionINtB5_6OptionjENtNtB7_3cmp9PartialEq2eqCs_15reverie_inguest",
+        "_RNvXsj_NtNtCs_4core3cmp5implsjNtB7_9PartialEq2eqCs_15reverie_inguest",
     ),
 ];
 
@@ -38773,6 +38777,132 @@ mod tests {
             )
             .is_err()
         );
+        // Measured standalone diagnostic Location from the reviewed arena source.
+        // The input is retained ELF data, not generated from the selected spec.
+        // These physical controls do not qualify a whole runtime or authorize execution.
+        {
+            const KEY: &str = "publication_dev_data_369138";
+            fn bind_location(
+                bytes: &[u8],
+                relocation_count: usize,
+            ) -> Result<FixedReadonlyEvidence> {
+                let mut elf = Elf::parse(bytes).map_err(|e| e.to_string())?;
+                elf.dynrelas = goblin::elf::reloc::RelocSection::parse(
+                    bytes,
+                    0x3400,
+                    relocation_count * 24,
+                    true,
+                    goblin::container::Ctx::new(
+                        goblin::container::Container::Big,
+                        goblin::container::Endian::Little,
+                    ),
+                )
+                .map_err(|e| e.to_string())?;
+                let mut evidence = BTreeMap::new();
+                fixed_bind_operand_data(
+                    &elf,
+                    bytes,
+                    KEY,
+                    0x1200,
+                    &mut BTreeMap::new(),
+                    &mut BTreeMap::new(),
+                    &mut evidence,
+                )?;
+                evidence
+                    .remove(KEY)
+                    .ok_or("Location evidence absent".into())
+            }
+            let mut location = fixture();
+            location[0x1200..0x1218].copy_from_slice(&fixed_hex(
+                "00000000000000002e00000000000000e300000013000000",
+            ));
+            location[0x1300..0x132e]
+                .copy_from_slice(b"reverie-inguest/src/guest/tool_region_arena.rs");
+            put(&mut location, 0x3400, 8, 0x1200);
+            put(
+                &mut location,
+                0x3408,
+                8,
+                u64::from(reloc::R_X86_64_RELATIVE),
+            );
+            put(&mut location, 0x3410, 8, 0x1300);
+            let observed = bind_location(&location, 1).unwrap();
+            assert_eq!(observed.size, 24);
+            assert_eq!(observed.relative_pointer_slot, Some(0x1200));
+            assert_eq!(observed.file_address, Some(0x1300));
+            assert_eq!(
+                observed.sha256,
+                "8b21b3868610fdf144fc00bdce9f6b32da312087ee7f8b16d67e531729bd684b"
+            );
+            assert_eq!(
+                observed.file_sha256.as_deref(),
+                Some("a13d1d5966ffa80325d65ae12985a3531af936cc0f1e0ab1cfd91c963a31a36c")
+            );
+            let mut protected = location.clone();
+            put(&mut protected, 68, 4, 6);
+            put(
+                &mut protected,
+                120,
+                4,
+                u64::from(program_header::PT_GNU_RELRO),
+            );
+            put(&mut protected, 136, 8, 0x1000);
+            put(&mut protected, 160, 8, 0x2000);
+            assert_eq!(bind_location(&protected, 1).unwrap(), observed);
+            for byte in 0..24 {
+                for bit in 0..8 {
+                    let mut bad = location.clone();
+                    bad[0x1200 + byte] ^= 1 << bit;
+                    assert_eq!(
+                        bind_location(&bad, 1).unwrap_err(),
+                        "wrong complete Fixed source Location",
+                        "complete Location mutation {byte}/{bit}"
+                    );
+                }
+            }
+            // The former line 222 expectation and historical line 203 do not
+            // describe this exact source. Adjacent locations are not alternatives.
+            for line in [203, 222, 226, 228] {
+                let mut bad = location.clone();
+                put(&mut bad, 0x1210, 4, line);
+                assert_eq!(
+                    bind_location(&bad, 1).unwrap_err(),
+                    "wrong complete Fixed source Location"
+                );
+            }
+            for column in [18, 20] {
+                let mut bad = location.clone();
+                put(&mut bad, 0x1214, 4, column);
+                assert_eq!(
+                    bind_location(&bad, 1).unwrap_err(),
+                    "wrong complete Fixed source Location"
+                );
+            }
+            let mut wrong_file = location.clone();
+            wrong_file[0x1300] ^= 1;
+            assert_eq!(
+                bind_location(&wrong_file, 1).unwrap_err(),
+                "Fixed Location filename differs from exact source role"
+            );
+            assert!(bind_location(&location, 0).is_err());
+            for (offset, value) in [
+                (0x3400, 0x1208),
+                (0x3408, u64::from(reloc::R_X86_64_GLOB_DAT)),
+                (0x3408, (1u64 << 32) | u64::from(reloc::R_X86_64_RELATIVE)),
+                (0x3410, 0x1301),
+            ] {
+                let mut bad = location.clone();
+                put(&mut bad, offset, 8, value);
+                assert!(bind_location(&bad, 1).is_err());
+            }
+            let mut duplicate = location.clone();
+            duplicate.copy_within(0x3400..0x3418, 0x3418);
+            assert!(bind_location(&duplicate, 2).is_err());
+            let mut file_writer = duplicate;
+            put(&mut file_writer, 0x3418, 8, 0x1300);
+            put(&mut file_writer, 0x3428, 8, 0);
+            assert!(bind_location(&file_writer, 2).is_err());
+        }
         // The full census cannot silently omit the return or a direct call.
         let code = [0xe8, 0, 0, 0, 0, 0xc3];
         let instructions = vec![
@@ -45774,9 +45904,11 @@ mod tests {
                 FIXED_HEAP_EQUAL_COHORTS[0].1.replace("Cs_", "Cs1_"),
                 FIXED_HEAP_EQUAL_COHORTS[1].0.replace("Cs_", "Cs1_"),
                 FIXED_HEAP_EQUAL_COHORTS[1].1.replace("Cs_", "Cs1_"),
+                FIXED_HEAP_EQUAL_COHORTS[2].0.replace("Cs_", "Cs1_"),
+                FIXED_HEAP_EQUAL_COHORTS[2].1.replace("Cs_", "Cs1_"),
             ];
-            let addresses = [0x1000, 0x2000, 0x2100, 0x2200, 0x2300];
-            let sizes = [2690, 124, 22, 124, 22];
+            let addresses = [0x1000, 0x2000, 0x2100, 0x2200, 0x2300, 0x2400, 0x2500];
+            let sizes = [2690, 124, 22, 124, 22, 124, 22];
             let mut strings = vec![0];
             for (index, name) in names.iter().enumerate() {
                 let row = 0x6000 + (index + 1) * 24;
@@ -45789,7 +45921,7 @@ mod tests {
                 strings.push(0);
             }
             bytes[0x5000..0x5000 + strings.len()].copy_from_slice(&strings);
-            for (option, scalar) in [(0x2000, 0x2100), (0x2200, 0x2300)] {
+            for (option, scalar) in [(0x2000, 0x2100), (0x2200, 0x2300), (0x2400, 0x2500)] {
                 let mut body = fixed_hex(DEV_FIXED_HEAP_HEX_23);
                 relative(&mut body, option, 105, 109, scalar);
                 bytes[option as usize..option as usize + body.len()].copy_from_slice(&body);
@@ -45800,7 +45932,7 @@ mod tests {
                 let row = 0x6500 + index * 24;
                 put(&mut bytes, row, 8, slot);
                 put(&mut bytes, row + 8, 8, 8);
-                put(&mut bytes, row + 16, 8, [0x2000, 0x2200][cohort]);
+                put(&mut bytes, row + 16, 8, [0x2000, 0x2200, 0x2400][cohort]);
             }
             // One null dynamic symbol. Mutation controls expose a real provider.
             for (index, word) in [1, 1, 0, 0, 0].into_iter().enumerate() {
@@ -45827,7 +45959,7 @@ mod tests {
                 (1, 1, 6, 0x1000, 0x3000, 0, 0),
                 (2, 1, 3, 0x4000, 0x1000, 0, 0),
                 (3, 3, 0, 0x5000, strings.len() as u64, 0, 0),
-                (4, 2, 0, 0x6000, 24 * 6, 3, 24),
+                (4, 2, 0, 0x6000, 24 * 8, 3, 24),
                 (5, 4, 2, 0x6500, 48, 7, 24),
                 (6, 6, 3, 0x4200, 16 * 9, 3, 16),
                 (7, 11, 2, 0x6800, 48, 3, 24),
@@ -45859,9 +45991,9 @@ mod tests {
                 ),
                 ("fixed_heap_usize_equal".into(), elf.syms.get(3).unwrap()),
             ]);
-            let code = [0x1000, 0x2000, 0x2100, 0x2200, 0x2300]
+            let code = [0x1000, 0x2000, 0x2100, 0x2200, 0x2300, 0x2400, 0x2500]
                 .into_iter()
-                .zip([2690, 124, 22, 124, 22])
+                .zip([2690, 124, 22, 124, 22, 124, 22])
                 .map(|(address, size)| {
                     (
                         address,
@@ -45879,21 +46011,21 @@ mod tests {
             fixed_select_heap_equal_cohort(&elf, bytes, &code, &got, &mut roles)?;
             Ok(roles)
         }
-        for cohort in [0, 1] {
+        for cohort in [0, 1, 2] {
             let bytes = fixture(cohort);
             let selected = select(&bytes, false).unwrap();
             assert_eq!(
                 selected["fixed_heap_option_usize_equal"].st_value,
-                [0x2000, 0x2200][cohort]
+                [0x2000, 0x2200, 0x2400][cohort]
             );
             assert_eq!(
                 selected["fixed_heap_usize_equal"].st_value,
-                [0x2100, 0x2300][cohort]
+                [0x2100, 0x2300, 0x2500][cohort]
             );
             assert!(select(&bytes, true).is_err());
             for (offset, width, value) in [
                 (0x4000, 8, 1),
-                (0x6528, 8, [0x2200, 0x2000][cohort]),
+                (0x6528, 8, [0x2200, 0x2000, 0x2000][cohort]),
                 (0x6508, 8, 6),
                 (64 + 4 * 56 + 40, 8, 0x800),
                 (64 + 56 + 4, 4, 4),
@@ -45907,17 +46039,36 @@ mod tests {
                     "accepted cohort metadata mutation {offset:#x}"
                 );
             }
-            let option = [0x2000, 0x2200][cohort];
-            let scalar = [0x2100, 0x2300][cohort];
+            let option = [0x2000, 0x2200, 0x2400][cohort];
+            let scalar = [0x2100, 0x2300, 0x2500][cohort];
             let mut cross = bytes.clone();
             relative(
                 &mut cross[option as usize..option as usize + 124],
                 option,
                 105,
                 109,
-                [0x2300, 0x2100][cohort],
+                [0x2300, 0x2100, 0x2100][cohort],
             );
             assert!(select(&cross, false).is_err());
+            // Pairwise alternatives keep the two caller operands and the
+            // provider's scalar call bound to one complete declared pair.
+            for other in [0, 1, 2] {
+                if other == cohort {
+                    continue;
+                }
+                let mut split = bytes.clone();
+                put(&mut split, 0x6528, 8, [0x2000, 0x2200, 0x2400][other]);
+                assert!(select(&split, false).is_err());
+                let mut mixed = bytes.clone();
+                relative(
+                    &mut mixed[option as usize..option as usize + 124],
+                    option,
+                    105,
+                    109,
+                    [0x2100, 0x2300, 0x2500][other],
+                );
+                assert!(select(&mixed, false).is_err());
+            }
             for address in [option, scalar] {
                 let mut bad = bytes.clone();
                 bad[address as usize] ^= 1;
@@ -45937,11 +46088,7 @@ mod tests {
                         "implsj"
                     },
                     "2eq",
-                    if cohort == 0 {
-                        "regex_syntax"
-                    } else {
-                        "safeptrace"
-                    },
+                    ["regex_syntax", "safeptrace", "reverie_inguest"][cohort],
                 ] {
                     let mut bad = bytes.clone();
                     let offset = name + spelling.find(pattern).unwrap() + pattern.len() - 1;
@@ -45958,7 +46105,7 @@ mod tests {
             put(&mut exposed, 0x6a04, 4, 2);
             assert!(select(&exposed, false).is_err());
             let mut duplicate = bytes.clone();
-            let other = 0x6000 + (4 - cohort * 2) * 24;
+            let other = 0x6000 + [4, 2, 2][cohort] * 24;
             duplicate[other..other + 4].copy_from_slice(&bytes[row..row + 4]);
             assert!(select(&duplicate, false).is_err());
             // An inactive selector does not admit a different caller body:
