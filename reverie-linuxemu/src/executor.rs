@@ -124,7 +124,7 @@ use proc::*;
 mod read_write;
 use read_write::*;
 mod file;
-pub use file::*;
+use file::*;
 mod event_fds;
 use event_fds::*;
 mod facts;
@@ -542,7 +542,6 @@ pub fn native_loaded_state(cwd: &std::path::Path) -> LoadedStaticElf {
         fdinfo_table: std::sync::Weak::new(),
         fd_object_inodes: std::collections::BTreeMap::new(),
         file_identity_table: Arc::new(std::sync::Mutex::new(crate::elf::GuestFileIdentityTable {
-            inotify_cookies: InotifyCookieTable::default(),
             next_inode: 0x2100_0000,
             objects: std::collections::BTreeMap::new(),
             proc_transfers: std::collections::BTreeMap::new(),

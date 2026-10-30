@@ -18,64 +18,26 @@
 //
 // - reads go through the same staged host buffers as readv, whose inaccessible
 //   guest suffix is PROT_NONE, so the kernel stops and faults at the guest's own
-//   boundary and an event that does not fit the count is refused natively;
+//   boundary and an event that does not fit the count is refused natively; the
+//   bytes the kernel wrote reach the guest exactly as it wrote them, rename
+//   cookies and the bytes of an event a fault cut short included (the copy-back
+//   in read_write.rs, which also publishes the events a vectored read copies
+//   into the iovec after its count before a fault there);
+// - FIONREAD is the host instance's own count of queued bytes;
 // - watches attach to the inode selected by one guest-namespace lookup (held as
 //   O_PATH), never to a second lookup of the pathname.
 //
-// Two things are not left to the host:
+// Rename cookies are the host kernel's. Linux draws IN_MOVED_FROM/IN_MOVED_TO
+// cookies from one host-wide counter that every process's renames advance;
+// what the guest sees of them is the Tool's decision, as on every other
+// backend, so this executor neither renumbers a cookie nor restores any byte
+// of an event.
 //
-// - Blocking mode. A blocking read waits for an event that only another guest
-//   task can produce, in a host wait that Detcore's scheduler cannot see or
-//   order. As for signalfd, creating or switching an instance into blocking mode
-//   is refused with ENOSYS, and the read path refuses a blocking instance as a
-//   defensive invariant.
-// - Rename cookies. Linux draws IN_MOVED_FROM/IN_MOVED_TO cookies from one
-//   host-wide counter that every process's renames advance. Reads replace each
-//   nonzero host cookie with a run-wide virtual cookie numbered in the order the
-//   guest first observes it, so pairing is preserved and the values depend only
-//   on the guest's deterministic schedule.
-
-/// `sizeof(struct inotify_event)`: `wd`, `mask`, `cookie`, `len`.
-const INOTIFY_EVENT_HEADER: usize = 16;
-/// Offset of `cookie` within `struct inotify_event`.
-const INOTIFY_EVENT_COOKIE: usize = 8;
-/// Offset of `len` within `struct inotify_event`.
-const INOTIFY_EVENT_LENGTH: usize = 12;
-/// Host cookies remembered for pairing. A pair is normally read together; the
-/// bound only limits memory for programs that rename without ever reading.
-pub(super) const INOTIFY_COOKIE_CAPACITY: usize = 1 << 16;
-
-/// Run-wide map from host rename cookies to deterministic virtual cookies.
-#[derive(Debug, Default)]
-pub struct InotifyCookieTable {
-    pub(super) last: u32,
-    pub(super) virtual_by_host: std::collections::BTreeMap<u32, u32>,
-    pub(super) host_by_age: std::collections::VecDeque<u32>,
-}
-
-impl InotifyCookieTable {
-    pub(super) fn virtualize(&mut self, host: u32) -> u32 {
-        if host == 0 {
-            // Events that are not part of a rename carry no cookie.
-            return 0;
-        }
-        if let Some(&virtual_cookie) = self.virtual_by_host.get(&host) {
-            return virtual_cookie;
-        }
-        self.last = self.last.wrapping_add(1);
-        if self.last == 0 {
-            self.last = 1;
-        }
-        if self.host_by_age.len() == INOTIFY_COOKIE_CAPACITY
-            && let Some(oldest) = self.host_by_age.pop_front()
-        {
-            self.virtual_by_host.remove(&oldest);
-        }
-        self.virtual_by_host.insert(host, self.last);
-        self.host_by_age.push_back(host);
-        self.last
-    }
-}
+// One thing is not left to the host: blocking mode. A blocking read waits for
+// an event that only another guest task can produce, in a host wait that the
+// Tool cannot see or order. As for signalfd, creating or switching an instance
+// into blocking mode is refused with ENOSYS, and the read path refuses a
+// blocking instance as a defensive invariant.
 
 pub(super) fn host_fd_is_inotify(host_fd: RawFd) -> Result<bool, i64> {
     host_fd_mode_is_inotify(host_fd, fd_mode(host_fd)?)
@@ -93,7 +55,7 @@ pub(super) fn host_fd_mode_is_inotify(host_fd: RawFd, mode: libc::mode_t) -> Res
 }
 
 /// Refuse a blocking inotify wait: no event can arrive while the reading task
-/// holds its turn, and a host wait would escape Detcore's scheduler.
+/// holds its turn, and a host wait would escape the Tool.
 pub(super) fn ensure_inotify_nonblocking(host_fd: RawFd) -> Result<(), i64> {
     if fd_status_flags(host_fd)? & libc::O_NONBLOCK == 0 {
         return Err(negative_errno(libc::ENOSYS));
@@ -101,88 +63,38 @@ pub(super) fn ensure_inotify_nonblocking(host_fd: RawFd) -> Result<(), i64> {
     Ok(())
 }
 
-/// Replace host cookies in kernel-written inotify records. `bytes` starts at a
-/// record boundary. A trailing partial record exists only after EFAULT; if its
-/// cookie field was partly written, `restore` (the destination's bytes before
-/// the read) supplies those bytes, so no host cookie bits reach the guest.
-pub(super) fn virtualize_inotify_cookies(
-    bytes: &mut [u8],
-    restore: Option<&[u8]>,
-    table: &mut InotifyCookieTable,
-) {
-    let mut offset = 0usize;
-    while offset < bytes.len() {
-        let cookie = offset + INOTIFY_EVENT_COOKIE;
-        if offset + INOTIFY_EVENT_HEADER > bytes.len() {
-            if cookie < bytes.len() {
-                let end = (cookie + 4).min(bytes.len());
-                match restore {
-                    Some(original) => bytes[cookie..end].copy_from_slice(&original[cookie..end]),
-                    None => bytes[cookie..end].fill(0),
-                }
-            }
-            return;
-        }
-        let host = u32::from_ne_bytes(bytes[cookie..cookie + 4].try_into().unwrap());
-        bytes[cookie..cookie + 4].copy_from_slice(&table.virtualize(host).to_ne_bytes());
-        let length = u32::from_ne_bytes(
-            bytes[offset + INOTIFY_EVENT_LENGTH..offset + INOTIFY_EVENT_HEADER]
-                .try_into()
-                .unwrap(),
-        ) as usize;
-        offset = match offset
-            .checked_add(INOTIFY_EVENT_HEADER)
-            .and_then(|end| end.checked_add(length))
-        {
-            Some(next) => next,
-            None => return,
-        };
+/// The bytes queued on the host inotify instance `host_fd`, as FIONREAD there
+/// reports them: the size of every queued event, as a read that took them all
+/// would return them (`inotify_ioctl`, fs/notify/inotify/inotify_user.c).
+pub(super) fn host_inotify_queued(host_fd: RawFd) -> Result<libc::c_int, i64> {
+    let mut count: libc::c_int = 0;
+    // SAFETY: count is supervisor storage for one int, and FIONREAD on an
+    // inotify instance only sums the sizes of its queued events.
+    if unsafe { libc::ioctl(host_fd, libc::FIONREAD, &mut count) } != 0 {
+        return Err(io_error(std::io::Error::last_os_error()));
     }
+    Ok(count)
 }
 
-/// Virtualize cookies in exactly the staged bytes that the copy-back publishes.
-/// Linux's readv calls inotify's read once per iovec and every successful call
-/// writes whole records, so each vector's transferred prefix starts at a record
-/// boundary. EFAULT is returned only when the first nonempty vector's read
-/// faults, so that vector holds every byte the kernel wrote.
-pub(super) fn virtualize_staged_inotify_cookies(
-    staged_vectors: &mut [StagedIoVector],
-    result: i64,
-    original: &[u8],
-    state: &LoadedStaticElf,
-) {
-    let mut identity = state
-        .file_identity_table
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let table = &mut identity.inotify_cookies;
-    if result >= 0 {
-        let mut remaining = result as usize;
-        for vector in staged_vectors.iter_mut() {
-            if remaining == 0 {
-                break;
-            }
-            let transferred = remaining.min(vector.guest.length);
-            let visible = transferred.min(vector.accessible_length);
-            if visible != 0 {
-                virtualize_inotify_cookies(vector.accessible_slice_mut(visible), None, table);
-            }
-            remaining -= transferred;
-        }
-    } else if result == negative_errno(libc::EFAULT)
-        && let Some(vector) = staged_vectors
-            .iter_mut()
-            .find(|vector| vector.guest.length != 0)
-    {
-        let visible = vector.accessible_length;
-        if visible != 0 {
-            virtualize_inotify_cookies(
-                vector.accessible_slice_mut(visible),
-                Some(&original[..visible]),
-                table,
-            );
-        }
+// TODO-HUMAN-REVIEW(https://github.com/rrnewton/hermit/issues/4793): Review
+// forwarding FIONREAD on an inotify descriptor to the host instance.
+/// FIONREAD on a guest inotify descriptor: the host instance's count, stored
+/// as an int. `do_vfs_ioctl` (fs/ioctl.c) hands FIONREAD on an anonymous-inode
+/// file to `inotify_ioctl`, which stores the count with `put_user`, so a
+/// destination the guest cannot write is EFAULT.
+pub(super) fn inotify_fionread<M: GuestMemoryAccess<Error = crate::Error>>(
+    memory: &M,
+    host_fd: RawFd,
+    address: u64,
+) -> i64 {
+    let count = match host_inotify_queued(host_fd) {
+        Ok(count) => count,
+        Err(error) => return error,
+    };
+    if memory.put_user_i32(address, count).is_err() {
+        return negative_errno(libc::EFAULT);
     }
+    0
 }
 
 pub(super) fn inotify_init1(state: &mut LoadedStaticElf, raw_flags: u64) -> i64 {
