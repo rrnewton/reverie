@@ -14875,6 +14875,41 @@ mod tests {
         // The host's retransmission timeout and send MSS pass through.
         assert_ne!(info.tcpi_rto, 0, "tcpi_rto should be the host's");
         assert_ne!(info.tcpi_snd_mss, 0, "tcpi_snd_mss should be the host's");
+        // Native oracle: the same host socket's own TCP_INFO. The guest
+        // answer must preserve the host bytes for every field that cannot
+        // change on an idle loopback connection between the two calls, so
+        // fabricated or zeroed counters would fail here.
+        let client_host_fd = host_fd(&executor.state, client as libc::c_int).unwrap();
+        // SAFETY: a zeroed tcp_info is a valid output buffer.
+        let mut native: libc::tcp_info = unsafe { std::mem::zeroed() };
+        let mut native_len = info_size as libc::socklen_t;
+        // SAFETY: native is writable for native_len bytes; client_host_fd is
+        // the live host socket behind the guest descriptor.
+        assert_eq!(
+            unsafe {
+                libc::getsockopt(
+                    client_host_fd,
+                    libc::IPPROTO_TCP,
+                    libc::TCP_INFO,
+                    (&mut native as *mut libc::tcp_info).cast::<libc::c_void>(),
+                    &mut native_len,
+                )
+            },
+            0
+        );
+        assert_eq!(info.tcpi_state, native.tcpi_state);
+        assert_eq!(info.tcpi_ca_state, native.tcpi_ca_state);
+        assert_eq!(info.tcpi_retransmits, native.tcpi_retransmits);
+        assert_eq!(info.tcpi_probes, native.tcpi_probes);
+        assert_eq!(info.tcpi_backoff, native.tcpi_backoff);
+        assert_eq!(info.tcpi_options, native.tcpi_options);
+        assert_eq!(info.tcpi_snd_mss, native.tcpi_snd_mss);
+        assert_eq!(info.tcpi_rcv_mss, native.tcpi_rcv_mss);
+        assert_eq!(info.tcpi_snd_cwnd, native.tcpi_snd_cwnd);
+        assert_eq!(info.tcpi_snd_ssthresh, native.tcpi_snd_ssthresh);
+        assert_eq!(info.tcpi_rcv_ssthresh, native.tcpi_rcv_ssthresh);
+        assert_eq!(info.tcpi_advmss, native.tcpi_advmss);
+        assert_eq!(info.tcpi_reordering, native.tcpi_reordering);
 
         for fd in [accepted, client, server] {
             assert_eq!(
