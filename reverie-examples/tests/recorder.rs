@@ -15,8 +15,6 @@
 use std::path::Path;
 use std::process::Command;
 
-use reverie::GlobalTool;
-
 /// Every run gets the sanitizer settings reverie-ptrace adds to its guest's
 /// environment (tracer.rs), so that ptrace's guest has the native one: the
 /// number of variables decides when `sh -c` grows its heap.
@@ -287,31 +285,6 @@ fn assert_descriptor_records(mode: &str, native: DescriptorRecord, dbt: Descript
     );
     // Retain all results too: the recorder must report the actual guest fd.
     assert_eq!(dbt.threads, native.threads, "{dbt:?}\n{native:?}");
-}
-
-// Keep CounterLocal's real RPC-before-tail-inject path. The coordinator below
-// observes real requests; it does not implement another guest Tool or protocol.
-#[path = "../counter1_tool.rs"]
-mod descriptor_counter1;
-
-type ExactDescriptorCounter = <descriptor_counter1::CounterLocal as reverie::Tool>::GlobalState;
-
-#[derive(Debug, Default)]
-struct DescriptorCounterObserver {
-    counter: ExactDescriptorCounter,
-    events: std::sync::Mutex<Vec<(i32, reverie::syscalls::Sysno)>>,
-}
-
-#[reverie::global_tool]
-impl GlobalTool for DescriptorCounterObserver {
-    type Request = <ExactDescriptorCounter as reverie::GlobalTool>::Request;
-    type Response = ();
-    type Config = ();
-
-    async fn receive_rpc(&self, from: reverie::Pid, request: descriptor_counter1::IncrMsg) {
-        self.events.lock().unwrap().push((from.as_raw(), request.0));
-        reverie::GlobalTool::receive_rpc(&self.counter, from, request).await;
-    }
 }
 
 fn check_ptrace_first_descriptor(mode: &str) {
