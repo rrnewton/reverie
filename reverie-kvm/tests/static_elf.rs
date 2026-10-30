@@ -1438,6 +1438,165 @@ int main(int argc, char **argv) {
 }
 "###;
 
+/// A launcher installs a file as exec'd by a filename of its own, here a
+/// link to the file: the process's executable is the file from the first
+/// instruction, so it can exec `/proc/self/exe`, and its stack names the
+/// filename in `AT_EXECFN`.
+#[test]
+fn initial_exec_file_with_execfn_self_execs() {
+    initial_exec_file_with_execfn_control("initial_exec_file_with_execfn_self_execs", "file");
+}
+
+/// The same for a `#!` script that a launcher has already rewritten to its
+/// interpreter: the interpreter's file is the executable, the script's
+/// filename is `AT_EXECFN`, and the self-exec runs the interpreter again.
+#[test]
+fn initial_exec_file_with_execfn_script_self_execs() {
+    initial_exec_file_with_execfn_control(
+        "initial_exec_file_with_execfn_script_self_execs",
+        "script",
+    );
+}
+
+/// The control: the bytes entry, given the same image, filename and
+/// arguments, retains no file, so the following stat and the self-exec of
+/// `/proc/self/exe` both fail with ENOENT.
+#[test]
+fn initial_exec_bytes_with_execfn_cannot_self_exec() {
+    initial_exec_file_with_execfn_control(
+        "initial_exec_bytes_with_execfn_cannot_self_exec",
+        "bytes",
+    );
+}
+
+fn initial_exec_file_with_execfn_control(test: &str, case: &str) {
+    if !leader_self_exec_bounded(test) {
+        return;
+    }
+    let directory = TestDirectory::new();
+    let program = compile_c_program(
+        &directory.0,
+        "image-file",
+        INITIAL_EXEC_FILE_WITH_EXECFN_PROGRAM,
+    );
+    let canonical = std::fs::canonicalize(&program).unwrap();
+    let execfn = if case == "script" {
+        let script = directory.0.join("launched-script");
+        std::fs::write(&script, format!("#!{}\n", program.display())).unwrap();
+        script
+    } else {
+        let alias = directory.0.join("launched-alias");
+        std::os::unix::fs::symlink(&program, &alias).unwrap();
+        alias
+    };
+    let program_text = program.to_str().unwrap();
+    let execfn_text = execfn.to_str().unwrap();
+    let argv = if case == "script" {
+        vec![program_text, execfn_text, "argument-preserved"]
+    } else {
+        vec![execfn_text, "argument-preserved"]
+    };
+    let environment = [format!("EXEC_IMAGE={program_text}")];
+    let envp = environment.iter().map(String::as_str).collect::<Vec<_>>();
+    let mut backend = KvmBackend::new(256 * 1024 * 1024).unwrap();
+    if case == "bytes" {
+        backend
+            .install_static_elf_with_exec_context(
+                &std::fs::read(&program).unwrap(),
+                execfn.as_os_str(),
+                &argv,
+                &envp,
+                &directory.0,
+            )
+            .unwrap();
+    } else {
+        backend
+            .install_static_elf_file_with_exec_context(
+                std::fs::File::open(&program).unwrap(),
+                execfn.as_os_str(),
+                &argv,
+                &envp,
+                &directory.0,
+            )
+            .unwrap();
+    }
+    let (code, stdout, stderr) = backend.run_static_elf_captured().unwrap();
+    let arguments = argv.join(" ");
+    let exe = canonical.display();
+    // The first image's `comm=image-file` is a known deviation from Linux,
+    // pinned here as the value both entries give today: Linux names the task
+    // by the last component of the filename it was exec'd by
+    // (`launched-alias`, `launched-script`), and these entries name it by the
+    // file's path (https://github.com/rrnewton/reverie/issues/1106). A fix
+    // for that issue changes this expectation. The self-exec names it `exe`,
+    // as Linux does.
+    let expected = if case == "bytes" {
+        format!(
+            "before argv={arguments} execfn={execfn_text} comm=image-file exe={exe} stat errno=2\n\
+             self-exec errno=2\n"
+        )
+    } else {
+        format!(
+            "before argv={arguments} execfn={execfn_text} comm=image-file exe={exe} same_file=1\n\
+             after argv={arguments} execfn=/proc/self/exe comm=exe exe={exe} same_file=1\n"
+        )
+    };
+    assert_eq!(
+        (code, String::from_utf8_lossy(&stdout).into_owned()),
+        (0, expected),
+        "stderr={}",
+        String::from_utf8_lossy(&stderr)
+    );
+    assert!(
+        stderr.is_empty(),
+        "stderr={}",
+        String::from_utf8_lossy(&stderr)
+    );
+}
+
+const INITIAL_EXEC_FILE_WITH_EXECFN_PROGRAM: &str = r###"
+#define _GNU_SOURCE
+#include <errno.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/auxv.h>
+#include <sys/prctl.h>
+#include <sys/stat.h>
+#include <unistd.h>
+
+extern char **environ;
+
+int main(int argc, char **argv) {
+    int after = getenv("EXEC_AFTER") != NULL;
+    printf("%s argv=", after ? "after" : "before");
+    for (int i = 0; i < argc; ++i) printf(i ? " %s" : "%s", argv[i]);
+    const char *execfn = (const char *)getauxval(AT_EXECFN);
+    char name[17] = {0};
+    if (prctl(PR_GET_NAME, name)) return 10;
+    char link[4096];
+    ssize_t length = readlink("/proc/self/exe", link, sizeof(link) - 1);
+    if (length < 0) return 11;
+    link[length] = 0;
+    printf(" execfn=%s comm=%s exe=%s", execfn ? execfn : "(none)", name, link);
+    struct stat self, image;
+    if (stat(getenv("EXEC_IMAGE"), &image)) return 12;
+    if (stat("/proc/self/exe", &self)) {
+        int error = errno;
+        printf(" stat errno=%d\n", error);
+    } else {
+        printf(" same_file=%d\n", self.st_dev == image.st_dev && self.st_ino == image.st_ino);
+    }
+    if (after) return 0;
+    if (setenv("EXEC_AFTER", "1", 1)) return 13;
+    fflush(stdout);
+    execve("/proc/self/exe", argv, environ);
+    int error = errno;
+    printf("self-exec errno=%d\n", error);
+    return 0;
+}
+"###;
+
 #[test]
 fn leader_self_exec_output_permissions() {
     if !leader_self_exec_bounded("leader_self_exec_output_permissions") {
