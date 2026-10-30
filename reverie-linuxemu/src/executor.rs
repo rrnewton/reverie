@@ -33070,6 +33070,105 @@ mod tests {
         assert!(thread_signals.pending.contains(libc::SIGUSR1));
     }
 
+    /// With nothing ready, a masked ppoll tests the pending signals before it
+    /// would wait, as Linux's do_poll does at any timeout: a call with a
+    /// timeout answers EINTR for a pending caught signal its mask lets in,
+    /// with that mask installed for the delivery, and is declined (ENOSYS)
+    /// only when no such signal is pending. A pending ignored signal the mask
+    /// lets in leaves ENOSYS at either timeout, read only: nothing is
+    /// dequeued and the thread's mask stays its own.
+    #[test]
+    fn masked_ppoll_tests_pending_signals_before_it_would_wait() {
+        const TIMEOUT: u64 = 0x100;
+        const MASK: u64 = 0x180;
+
+        let root = TestDir::new();
+        let mut state = test_state(&root.0);
+        let (pid, tid) = (state.pid, state.tid);
+        let mut memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
+        let own = test_sigset(&[libc::SIGUSR1, libc::SIGWINCH]);
+        state.thread_signals.lock().blocked = own;
+        test_catch_signal(&state, libc::SIGUSR1);
+        let ppoll = [0, 0, TIMEOUT, MASK, KERNEL_SIGSET_SIZE as u64, 0];
+        let set_timeout = |memory: &GuestMemory, nanoseconds: i64| {
+            assert_eq!(
+                write_struct(
+                    &mut ProviderMemory(memory),
+                    TIMEOUT,
+                    &libc::timespec {
+                        tv_sec: 0,
+                        tv_nsec: nanoseconds
+                    }
+                ),
+                0
+            );
+        };
+        memory
+            .write(MASK, &test_sigset(&[libc::SIGTERM]).to_bytes())
+            .unwrap();
+
+        // Nothing pending: 0 at a zero timeout, a wait declined.
+        set_timeout(&memory, 0);
+        assert_eq!(
+            syscall_result(&mut memory, &mut state, libc::SYS_ppoll, ppoll),
+            0
+        );
+        set_timeout(&memory, 100_000_000);
+        assert_eq!(
+            syscall_result(&mut memory, &mut state, libc::SYS_ppoll, ppoll),
+            negative_errno(libc::ENOSYS)
+        );
+
+        // SIGWINCH, ignored by default, pending under the thread's mask and
+        // let in by the temporary one: ENOSYS at both timeouts, read only.
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_tgkill,
+                [pid as u64, tid as u64, libc::SIGWINCH as u64, 0, 0, 0],
+            ),
+            0
+        );
+        for nanoseconds in [0, 100_000_000] {
+            set_timeout(&memory, nanoseconds);
+            assert_eq!(
+                syscall_result(&mut memory, &mut state, libc::SYS_ppoll, ppoll),
+                negative_errno(libc::ENOSYS),
+                "{nanoseconds}"
+            );
+            let thread_signals = state.thread_signals.lock();
+            assert_eq!(thread_signals.blocked, own);
+            assert_eq!(thread_signals.saved_sigmask, None);
+            assert!(thread_signals.pending.contains(libc::SIGWINCH));
+        }
+
+        // A caught SIGUSR1 pending too, with SIGWINCH blocked by the temporary
+        // mask: a call with a timeout answers EINTR, the mask installed for
+        // the delivery and the thread's own saved.
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_tgkill,
+                [pid as u64, tid as u64, libc::SIGUSR1 as u64, 0, 0, 0],
+            ),
+            0
+        );
+        let temporary = test_sigset(&[libc::SIGTERM, libc::SIGWINCH]);
+        memory.write(MASK, &temporary.to_bytes()).unwrap();
+        set_timeout(&memory, 100_000_000);
+        assert_eq!(
+            syscall_result(&mut memory, &mut state, libc::SYS_ppoll, ppoll),
+            negative_errno(libc::EINTR)
+        );
+        let thread_signals = state.thread_signals.lock();
+        assert_eq!(thread_signals.blocked, temporary);
+        assert_eq!(thread_signals.saved_sigmask, Some(own));
+        assert!(thread_signals.pending.contains(libc::SIGUSR1));
+        assert!(thread_signals.pending.contains(libc::SIGWINCH));
+    }
+
     #[test]
     fn standard_input_access_checks_precede_memory_validation() {
         const PAYLOAD: u64 = 0x100;
