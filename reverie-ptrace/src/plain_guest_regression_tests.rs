@@ -602,6 +602,10 @@ struct GuestConfig {
     /// does not enforce it: the tests run guest threads at once, and install
     /// guest filters, to exercise the repair beyond the contract.
     serialized: bool,
+    /// Suppresses SIGURG and arms a short precise timer from its callback
+    /// (`a_timer_step_at_a_pending_restore_keeps_a_blocked_sigtrap`). Every
+    /// other run delivers SIGURG.
+    urg_arms_timer: bool,
 }
 
 /// The `rt_sigreturn` reports the regression Tool was given, as (thread,
@@ -1290,8 +1294,17 @@ impl Tool for GuestTool {
             }
             _ => {}
         }
-        if signal == reverie::Signal::SIGWINCH {
-            // Suppressed: the interrupted call restarts.
+        let urg_arms_timer = signal == reverie::Signal::SIGURG && guest.config().urg_arms_timer;
+        if urg_arms_timer {
+            // `sigtrap_pending_restore_timer`: a short precise timer, whose
+            // artificial notification is taken at this stop's pending mask
+            // restore once SIGURG is suppressed.
+            guest
+                .set_timer_precise(reverie::TimerSchedule::Rcbs(3))
+                .expect("arm the precise timer");
+        }
+        if signal == reverie::Signal::SIGWINCH || urg_arms_timer {
+            // Suppressed: an interrupted call restarts, or returns EINTR.
             Ok(None)
         } else {
             Ok(Some(signal))
@@ -1414,6 +1427,8 @@ struct GuestOptions {
     /// (`GuestConfig::serialized`), as a plain Reverie Tool: SIGTRAP is left
     /// as at base.
     no_serialization_contract: bool,
+    /// `GuestConfig::urg_arms_timer`.
+    urg_arms_timer: bool,
 }
 
 /// Installs a seccomp filter on the calling thread that returns `action` for
@@ -1485,6 +1500,7 @@ async fn run_guest_options(mode: &str, options: GuestOptions) -> Result<GuestRun
             partial: options.partial,
             sigreturns: options.sigreturns,
             serialized: !options.no_serialization_contract,
+            urg_arms_timer: options.urg_arms_timer,
         })
         .backend_stats(BackendStatsRequest::ENABLED)
         .final_resume_signal_for_test(resume_recorder(resumes.clone()))
@@ -4619,6 +4635,7 @@ async fn a_guest_elf_segment_at_the_repair_page_address_keeps_every_byte() {
                 partial: false,
                 sigreturns: false,
                 serialized: true,
+                urg_arms_timer: false,
             })
             .spawn()
             .await
@@ -4730,7 +4747,6 @@ async fn timer_steps_in_an_execute_only_page_survive_trace_logging() {
 /// (`TIMER_SEQUENCES_STEPPED_FOR_TEST`).
 #[tokio::test(flavor = "current_thread")]
 async fn sigtrap_state_survives_timer_steps() {
-    use std::sync::atomic::Ordering;
     if !crate::perf::is_perf_supported() {
         eprintln!("skipping: perf counters are not supported here");
         return;
@@ -4753,9 +4769,10 @@ async fn sigtrap_state_survives_timer_steps() {
     // stepped all five, so that each state is shown to survive real steps.
     const ATTEMPTS: usize = 4;
     for attempt in 1..=ATTEMPTS {
-        let before = crate::task::TIMER_SEQUENCES_STEPPED_FOR_TEST.load(Ordering::SeqCst);
+        let before = crate::task::TIMER_SEQUENCES_STEPPED_FOR_TEST.with(|count| count.get());
         let run = run_guest("sigtrap_timer", false).await;
-        let stepped = crate::task::TIMER_SEQUENCES_STEPPED_FOR_TEST.load(Ordering::SeqCst) - before;
+        let stepped =
+            crate::task::TIMER_SEQUENCES_STEPPED_FOR_TEST.with(|count| count.get()) - before;
         assert_eq!(run.status, ExitStatus::Exited(0), "{}", run.report);
         let timers = timer_events(&run);
         assert_eq!(timers.len(), 5, "{timers:#?}");
@@ -4775,6 +4792,59 @@ async fn sigtrap_state_survives_timer_steps() {
     panic!("no run in {ATTEMPTS} stepped all five timer sequences");
 }
 
+/// A timer sequence's first step taken while a temporary mask's restore is
+/// pending keeps a caught SIGTRAP that the guest blocks
+/// (`unblock_sigtrap_for_timer_step`). The guest's `epoll_pwait` returns
+/// EINTR at once with its restore pending, and the Tool arms a short precise
+/// timer from the interrupting signal's callback, whose artificial
+/// notification is taken at that same stop. Resuming for the first step
+/// performs the restore before the step's instruction, so without the shield
+/// the trap met the guest's mask, which blocks SIGTRAP, reset the handler to
+/// `SIG_DFL` and unblocked it. In the tail configuration, where the guest's
+/// own wait runs in place. (This module runs on x86-64; the shield's code is
+/// the same on aarch64.)
+#[tokio::test(flavor = "current_thread")]
+async fn a_timer_step_at_a_pending_restore_keeps_a_blocked_sigtrap() {
+    if !crate::perf::is_perf_supported() {
+        eprintln!("skipping: perf counters are not supported here");
+        return;
+    }
+    let shields = || crate::task::TIMER_STEP_RESTORE_SHIELDS_FOR_TEST.with(|count| count.get());
+    let before = shields();
+    let options = GuestOptions {
+        tail: true,
+        urg_arms_timer: true,
+        ..GuestOptions::default()
+    };
+    let run = run_guest_options("sigtrap_pending_restore_timer", options)
+        .await
+        .expect("run the pending-restore timer fixture");
+    assert_eq!(run.status, ExitStatus::Exited(0), "{}", run.report);
+    assert!(
+        !timer_events(&run).is_empty(),
+        "no timer event: {}",
+        run.report
+    );
+    assert!(
+        shields() > before,
+        "no timer step was shielded at a pending restore: {}",
+        run.report
+    );
+    let lines: Vec<&str> = run
+        .report
+        .lines()
+        .filter(|line| line.starts_with("pending-restore-timer "))
+        .collect();
+    assert_eq!(
+        lines,
+        [
+            "pending-restore-timer r=eintr sigtrap=trap_handler flags=0x50000000 usr2-in-mask=1 blocked=1"
+        ],
+        "{}",
+        run.report
+    );
+}
+
 /// A caught, blocked SIGTRAP survives a timer step over a guest
 /// `rt_sigreturn` whose frame blocks SIGTRAP: the step clears SIGTRAP from the
 /// frame for its trap and blocks it again after
@@ -4784,14 +4854,13 @@ async fn sigtrap_state_survives_timer_steps() {
 /// (`FRAME_SHIELDS_FOR_TEST`).
 #[tokio::test(flavor = "current_thread")]
 async fn sigtrap_state_survives_a_timer_step_over_sigreturn() {
-    use std::sync::atomic::Ordering;
     if !crate::perf::is_perf_supported() {
         eprintln!("skipping: perf counters are not supported here");
         return;
     }
-    let before = crate::task::FRAME_SHIELDS_FOR_TEST.load(Ordering::SeqCst);
+    let before = crate::task::FRAME_SHIELDS_FOR_TEST.with(|count| count.get());
     let run = run_guest("sigtrap_sigreturn_timer", false).await;
-    let shields = crate::task::FRAME_SHIELDS_FOR_TEST.load(Ordering::SeqCst) - before;
+    let shields = crate::task::FRAME_SHIELDS_FOR_TEST.with(|count| count.get()) - before;
     assert_eq!(run.status, ExitStatus::Exited(0), "{}", run.report);
     eprintln!("sigreturn timer events: {:#?}", timer_events(&run));
     assert!(
