@@ -77,6 +77,7 @@ use crate::elf::TaskLifecycleTable;
 use crate::elf::initial_thread_name;
 use crate::elf::load_static_elf;
 use crate::elf::load_static_elf_file;
+use crate::elf::load_static_elf_file_with_execfn;
 use crate::elf::load_static_elf_with_execfn;
 use crate::error::ErrorExt;
 use crate::executor::AbandonedRuns;
@@ -2629,7 +2630,9 @@ impl KvmBackend {
     /// initial stack and names it in `AT_EXECFN`. When a launcher has
     /// already rewritten a `#!` script's `argv` to its interpreter, `execfn`
     /// is still the script's filename, as `execve` gave it to the kernel, so
-    /// the guest's stack matches a traced guest's.
+    /// the guest's stack matches a traced guest's. Like that entry, this one
+    /// establishes no backing file; to retain one, use
+    /// [`Self::install_static_elf_file_with_exec_context`].
     pub fn install_static_elf_with_exec_context(
         &mut self,
         image: &[u8],
@@ -2699,6 +2702,39 @@ impl KvmBackend {
         AbandonedRuns::admit(&self.abandoned_runs)?;
         self.vcpu.check_initial_elf_install()?;
         let loaded = load_static_elf_file(&mut self.memory, file, argv, envp, cwd)?;
+        self.install_loaded_static_elf(loaded)
+    }
+
+    /// As [`Self::install_static_elf_file_with_context`], for an image exec'd
+    /// by the filename `execfn`, which Linux copies to the top of the initial
+    /// stack and names in `AT_EXECFN`, as
+    /// [`Self::install_static_elf_with_exec_context`] takes it. Unlike that
+    /// entry, this one retains `file` as the process's executable, so that an
+    /// exec or a following stat of `/proc/self/exe` reaches it from the first
+    /// instruction. A launcher that has already rewritten a `#!` script's
+    /// `argv` to its interpreter passes the interpreter's file and the
+    /// script's filename as `execfn`, so that the guest's stack and its
+    /// executable both match what `execve` of the script gives a native
+    /// process. The new task is named by the path of `file`, as
+    /// [`Self::install_static_elf_file_with_context`] names it.
+    pub fn install_static_elf_file_with_exec_context(
+        &mut self,
+        file: File,
+        execfn: &std::ffi::OsStr,
+        argv: &[&str],
+        envp: &[&str],
+        cwd: &Path,
+    ) -> Result<()> {
+        AbandonedRuns::admit(&self.abandoned_runs)?;
+        self.vcpu.check_initial_elf_install()?;
+        let loaded = load_static_elf_file_with_execfn(
+            &mut self.memory,
+            file,
+            Some(std::os::unix::ffi::OsStrExt::as_bytes(execfn)),
+            argv,
+            envp,
+            cwd,
+        )?;
         self.install_loaded_static_elf(loaded)
     }
 
