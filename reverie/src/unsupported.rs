@@ -84,6 +84,16 @@ pub enum UnsupportedOperation {
     /// signal, created nothing and registered nothing; the refusal's
     /// diagnostic names the operation.
     Signalfd,
+    /// An operation Linux would perform for the guest, which the backend could
+    /// not carry out because a host resource of its own ran out: for example
+    /// host address space, when the host refuses the memory the backend
+    /// reserves for an `execve` under the supervisor's `RLIMIT_AS`. The guest's
+    /// request was valid, and the errno says nothing Linux would report for
+    /// the guest's own reasons. A backend that refuses it performed none of
+    /// the operation: an exec ran none of the new image and left the old
+    /// image, its threads and its address space in place. The refusal's
+    /// diagnostic names the resource, the request and the limit.
+    HostResources,
 }
 
 /// A backend's refusal of an injected syscall, or of a `Guest` operation,
