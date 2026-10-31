@@ -742,7 +742,9 @@ impl Default for CounterPlacement {
                 && !pmus.join("cpu_core").exists()
                 && !pmus.join("cpu_atom").exists()
             {
-                CounterPlacement::FollowTask
+                // SCRATCH, never committed: force pinned placement, the
+                // default on Intel and hybrid hosts.
+                CounterPlacement::PinEachEntry
             } else {
                 CounterPlacement::PinEachEntry
             }
