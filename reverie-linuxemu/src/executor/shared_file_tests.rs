@@ -1149,7 +1149,7 @@ mod shared_file_dispatch_tests {
                 &file[PAGE_SIZE as usize + 17..PAGE_SIZE as usize + 23],
                 b"shared"
             );
-            child.return_vfork_changes(BOOT_RESERVED_END).unwrap();
+            child.return_vfork_changes(BOOT_RESERVED_END, None).unwrap();
             f.memory.read_raw(private, &mut bytes).unwrap();
             assert_eq!(&bytes, b"child!", "{label}");
             assert!(f.memory.entry_gate().pending_failure().is_none(), "{label}");
@@ -1302,7 +1302,7 @@ mod shared_file_dispatch_tests {
             let (mut state, _) = child_state(&f, &child);
             let result = syscall_result(&mut child, &mut state, number, args);
             assert!(result >= 0, "{label}: {result}");
-            let error = child.return_vfork_changes(BOOT_RESERVED_END).unwrap_err();
+            let error = child.return_vfork_changes(BOOT_RESERVED_END, None).unwrap_err();
             vfork_child_refusal(
                 &error,
                 "vfork write-back",
@@ -1374,7 +1374,7 @@ mod shared_file_dispatch_tests {
         );
         let mut unmapped_before = [0; 7];
         f.memory.read_raw(scratch, &mut unmapped_before).unwrap();
-        let returned = child.return_vfork_changes(BOOT_RESERVED_END).unwrap();
+        let returned = child.return_vfork_changes(BOOT_RESERVED_END, None).unwrap();
         // Only the zeroed page; the removed scratch mapping's stores stay
         // behind.
         assert_eq!(returned.bytes_written, PAGE_SIZE as usize);
