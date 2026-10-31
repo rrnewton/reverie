@@ -3617,8 +3617,10 @@ mod tests {
 
     /// A memory of `SPARSE_PAGES` pages that holds a two-page shared view at
     /// page 10, a private page with a backing of its own at page 20, and
-    /// private bytes the guest wrote at pages 3 and 40, all in its first
-    /// 2 MiB; every other page was never written.
+    /// private bytes the guest wrote at pages 3 and 40, in its first 2 MiB,
+    /// and at each edge of the three runs of base pages a copy copies
+    /// (`[0, 10)`, `[12, 20)` and `[21, SPARSE_PAGES)`): pages 9, 12, 19, 21
+    /// and the last page. Every other page was never written.
     fn sparse_snapshot_fixture() -> (GuestMemory, File) {
         let memory = fixture(SPARSE_PAGES);
         let original = file(2);
@@ -3626,8 +3628,17 @@ mod tests {
         replace(&memory, BASE + 20 * P, 1, Some(b"own-backing"), true);
         memory.write_raw(BASE + 3 * P + 7, b"early").unwrap();
         memory.write_raw(BASE + 40 * P, b"late").unwrap();
+        for page in SPARSE_EDGE_PAGES {
+            memory
+                .write_raw(BASE + page * P + P - 8, &page.to_ne_bytes())
+                .unwrap();
+        }
         (memory, original)
     }
+
+    /// The first and last page of each run of base pages in
+    /// [`sparse_snapshot_fixture`].
+    const SPARSE_EDGE_PAGES: [u64; 5] = [9, 12, 19, 21, SPARSE_PAGES as u64 - 1];
 
     fn assert_private_pages_match(memory: &GuestMemory, child: &GuestMemory) {
         let mut source = vec![0; PAGE_SIZE];
@@ -3640,6 +3651,13 @@ mod tests {
         assert_eq!(read(child, BASE + 3 * P + 7, 5), b"early");
         assert_eq!(read(child, BASE + 20 * P, 11), b"own-backing");
         assert_eq!(read(child, BASE + 40 * P, 4), b"late");
+        for page in SPARSE_EDGE_PAGES {
+            assert_eq!(
+                read(child, BASE + page * P + P - 8, 8),
+                page.to_ne_bytes(),
+                "page {page}"
+            );
+        }
     }
 
     /// A copy of a memory that holds shared views, a fork's or a vfork
@@ -3654,8 +3672,8 @@ mod tests {
             memory.snapshot().unwrap(),
             memory.snapshot_sharing_address_space().unwrap(),
         ] {
-            // Before any read of the copy: at most the first two regions of
-            // the eight.
+            // Before any read of the copy: at most the first region and the
+            // last of the eight.
             let allocated = allocated_bytes(&child);
             assert!(allocated <= 4 << 20, "{allocated} bytes allocated");
             assert_private_pages_match(&memory, &child);
