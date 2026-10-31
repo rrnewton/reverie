@@ -47,6 +47,8 @@ use shared_file::MemoryCopyAccess;
 pub use shared_file::PrivateRangePlan;
 pub use shared_file::SharedFileRangePlan;
 pub use vfork::VforkWriteBack;
+#[cfg(any(test, feature = "test-support"))]
+pub use vfork::vfork_window_steps;
 
 #[cfg(any(test, feature = "test-support"))]
 type SyscallDispatchObserver = Arc<dyn Fn(&crate::SyscallRequest) + Send + Sync>;
@@ -333,6 +335,11 @@ impl UserWindow {
 static NEXT_MAPPING_INCARNATION: std::sync::atomic::AtomicU64 =
     std::sync::atomic::AtomicU64::new(1);
 
+/// A mapping incarnation no page has had.
+fn fresh_mapping_incarnation() -> u64 {
+    NEXT_MAPPING_INCARNATION.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+}
+
 #[derive(Clone, Debug)]
 struct AddressSpaceState {
     coverage: IdentityCoverage,
@@ -353,12 +360,16 @@ struct AddressSpaceState {
     /// The incarnation of the mapping each page belongs to, by physical page:
     /// one value per new mapping ([`GuestMemory::record_page_backing`]),
     /// unique in the process, which a move keeps and an unmap removes, and
-    /// which a protection change does not touch. A page that holds the same
+    /// which a protection change does not touch. The pages a remap grows a
+    /// mapping by are new pages, with an incarnation of their own
+    /// ([`GuestMemory::remap_user_range`]). A page that holds the same
     /// state in two copies of one address space but another incarnation was
     /// mapped again in one of them, though nothing else about it differs: a
     /// vfork child's write-back compares them
-    /// ([`GuestMemory::return_vfork_changes`]).
-    mapping_incarnations: BTreeMap<u64, u64>,
+    /// ([`GuestMemory::return_vfork_changes`]). Copies of an address space
+    /// share the map until one of them changes it, so a fork does not copy
+    /// it page by page.
+    mapping_incarnations: Arc<BTreeMap<u64, u64>>,
     /// Facts about hidden Tool-scratch pages that let the next expose and
     /// hide skip every tree; see [`ScratchCache`].
     scratch_cache: ScratchCache,
@@ -562,7 +573,7 @@ impl AddressSpaceState {
             pages: UserPages::new(),
             file_pages: Versioned::new(BTreeMap::new()),
             shared_anonymous_pages: Versioned::new(BTreeSet::new()),
-            mapping_incarnations: BTreeMap::new(),
+            mapping_incarnations: Arc::default(),
             scratch_cache: ScratchCache::default(),
             backing_pages: BTreeMap::new(),
         }
@@ -2324,7 +2335,7 @@ impl GuestMemory {
         access.pages.clear();
         access.file_pages.edit().clear();
         access.shared_anonymous_pages.edit().clear();
-        access.mapping_incarnations.clear();
+        access.mapping_incarnations = Arc::default();
         access.reservations.edit().clear();
         access.cursors = None;
     }
@@ -2633,7 +2644,7 @@ impl GuestMemory {
             access.pages.remove(&page);
             access.file_pages.edit().remove(&page);
             access.shared_anonymous_pages.edit().remove(&page);
-            access.mapping_incarnations.remove(&page);
+            Arc::make_mut(&mut access.mapping_incarnations).remove(&page);
             if !access
                 .reservations
                 .get(&page)
@@ -2686,10 +2697,10 @@ impl GuestMemory {
                 access.shared_anonymous_pages.edit().remove(&page);
             }
         }
-        let incarnation =
-            NEXT_MAPPING_INCARNATION.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let incarnation = fresh_mapping_incarnation();
+        let incarnations = Arc::make_mut(&mut access.mapping_incarnations);
         for page in first_page..=last_page {
-            access.mapping_incarnations.insert(page, incarnation);
+            incarnations.insert(page, incarnation);
         }
     }
 
@@ -2941,16 +2952,21 @@ impl GuestMemory {
         let old_shared_anonymous = (old_first..=old_last)
             .map(|page| access.shared_anonymous_pages.contains(&page))
             .collect::<Vec<_>>();
-        // A moved mapping is the same mapping, and a grown one grows its last
-        // page's.
+        // A moved mapping is the same mapping, and so are the pages a shrink
+        // keeps. The pages a grow adds are new, as on Linux, where they are
+        // fresh pages: they take an incarnation of their own, as a new mapping
+        // does, so a page that a shrink removed and a grow brought back is not
+        // the page it replaced (a vfork write-back compares them).
         let old_incarnations = (old_first..=old_last)
             .map(|page| access.mapping_incarnations.get(&page).copied())
             .collect::<Vec<_>>();
+        let grown_incarnation =
+            (new_last - new_first > old_last - old_first).then(fresh_mapping_incarnation);
         for page in old_first..=old_last {
             access.pages.remove(&page);
             access.file_pages.edit().remove(&page);
             access.shared_anonymous_pages.edit().remove(&page);
-            access.mapping_incarnations.remove(&page);
+            Arc::make_mut(&mut access.mapping_incarnations).remove(&page);
             if !access
                 .reservations
                 .get(&page)
@@ -2988,14 +3004,14 @@ impl GuestMemory {
             } else {
                 access.shared_anonymous_pages.edit().remove(&page);
             }
+            let incarnations = Arc::make_mut(&mut access.mapping_incarnations);
             match old_incarnations
                 .get(index)
-                .or(old_incarnations.last())
                 .copied()
-                .flatten()
+                .unwrap_or(grown_incarnation)
             {
-                Some(incarnation) => access.mapping_incarnations.insert(page, incarnation),
-                None => access.mapping_incarnations.remove(&page),
+                Some(incarnation) => incarnations.insert(page, incarnation),
+                None => incarnations.remove(&page),
             };
             if !access
                 .reservations
