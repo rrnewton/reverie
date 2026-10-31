@@ -733,15 +733,19 @@ std::thread_local! {
 }
 
 /// Refuse unsupported external waits before creating a reader or injecting a
-/// host read. Detcore currently retains its runnable turn around zero-count
-/// injection, so a guest peer cannot supply data or commit group exit:
-/// https://github.com/rrnewton/hermit/issues/3498.
+/// host read. A zero-count read that waited in the host would hold the
+/// executor's task there, out of the Tool's sight, where a Tool that keeps its
+/// turn around the injection also keeps a guest peer from supplying data or
+/// committing group exit: https://github.com/rrnewton/hermit/issues/3498.
 ///
 /// This checks the owned endpoint selected by the shared-table snapshot, not
 /// its guest fd number or modeled stdin type. O_NONBLOCK is deliberately not an
 /// admission proof: another alias of the same open-file description can change
 /// it after F_GETFL. Even a currently nonblocking inotify is therefore
-/// outside this supported surface. Known local regular files retain the
+/// outside this supported surface, including every instance this executor
+/// created nonblocking (inotify.rs): the executor never clears O_NONBLOCK on
+/// one, but an alias outside the guest, to which the guest sent it, can.
+/// Known local regular files retain the
 /// backend's existing filesystem-I/O contract; arbitrary pseudo/FUSE files and
 /// unknown drivers are not assumed to have regular-file zero-read semantics.
 /// Whether the host's random pool is initialized, so that reading
@@ -1042,8 +1046,11 @@ pub(super) fn read(
     }
     match host_fd_mode_is_inotify(host_fd, mode) {
         // Linux's readv calls inotify's read once with the same buffer and
-        // count, so the staged readv path applies scalar read semantics.
+        // count, so the staged readv path applies scalar read semantics. An
+        // instance that is blocking on the host is refused first: its read
+        // would wait there (inotify.rs).
         Ok(true) => {
+            refuse_blocking_inotify_read(host_fd, fd)?;
             return Ok(staged_vectored_transfer(
                 &mut ProviderMemory(memory),
                 state,
