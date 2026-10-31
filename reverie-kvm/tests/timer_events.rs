@@ -300,6 +300,11 @@ struct Plan {
     signal_registers: bool,
     /// Hold a new thread's start until another thread's `tgkill` has run.
     hold_thread_start: bool,
+    /// PERMIT-PROBE (scratch): take the backend's process signal control
+    /// (`ToolControlled`) and decline every boundary authorization, as a
+    /// Tool does that allows one outstanding delivery permit per process
+    /// while another thread of the process holds one.
+    decline_controlled: bool,
 }
 
 /// The two points a [`Plan::rendezvous`] orders.
@@ -339,6 +344,9 @@ enum Event {
     Registers(Registers),
     /// The result of an injection from a timer event.
     Injected(String),
+    /// PERMIT-PROBE (scratch): one boundary authorization of this task id,
+    /// declined.
+    Declined(i32),
 }
 
 /// The user registers a timer event's callback sees (`Guest::regs`), and the
@@ -380,6 +388,8 @@ struct Log {
     events: Mutex<Vec<Event>>,
     timer: Latch,
     sent: Latch,
+    /// PERMIT-PROBE (scratch): [`Plan::decline_controlled`].
+    decline: bool,
 }
 
 /// A gate that opens once and stays open.
@@ -411,6 +421,35 @@ impl GlobalTool for Log {
     type Config = Plan;
     type Request = Event;
     type Response = ();
+
+    async fn init_global_state(plan: &Plan) -> Self {
+        Self {
+            decline: plan.decline_controlled,
+            ..Self::default()
+        }
+    }
+
+    fn install_backend_signal_control(
+        &self,
+        control: Option<reverie::BackendSignalControl>,
+    ) -> Result<reverie::BackendSignalControlMode, reverie::Error> {
+        if self.decline && control.is_some() {
+            Ok(reverie::BackendSignalControlMode::ToolControlled)
+        } else {
+            Ok(reverie::BackendSignalControlMode::Unchanged)
+        }
+    }
+
+    fn authorize_backend_signal_boundary(
+        &self,
+        task: reverie::SignalTaskIdentity,
+    ) -> Result<Option<reverie::SignalDeliveryPermit>, reverie::Error> {
+        self.events
+            .lock()
+            .unwrap()
+            .push(Event::Declined(task.tid.as_raw()));
+        Ok(None)
+    }
 
     async fn receive_rpc(&self, _from: Pid, event: Event) {
         let latch = |gate| match gate {
@@ -2221,6 +2260,53 @@ fn a_spinner_signalled_by_a_sibling_gets_its_handler_at_the_next_timer_boundary(
         }
     }
     println!("delivered at the timer boundary with {first:x?}");
+}
+
+/// PERMIT-PROBE (scratch): the spinner of the test above, under a Tool that
+/// holds the backend's signal control and declines every authorization. The
+/// one boundary with an eligible signal is the timer boundary right after
+/// branch 1,000; a declined authorization there leaves SIGUSR1 eligible, so
+/// the bounded selection loop asks again, 64 times, and fails the run.
+#[test]
+fn permit_probe_a_declined_timer_boundary_fails_the_run() {
+    if bounded("permit_probe_a_declined_timer_boundary_fails_the_run") {
+        return;
+    }
+    let program = spinner(HANDLER_FLAGS, false);
+    let plan = Plan {
+        decline_controlled: true,
+        ..spinner_plan()
+    };
+    let (events, ending) = run_ending(&program, plan);
+    let failure = match ending {
+        Ok(ending) => panic!("a declined timer boundary exited: {ending:?} {events:?}"),
+        Err(failure) => failure,
+    };
+    let (timer_at, timer_clock) = first_timer(&events);
+    let pid = registers_of(&events).pid as i32;
+    let declined = |range: &[Event]| {
+        let mut by_task = std::collections::BTreeMap::<i32, usize>::new();
+        for event in range {
+            if let Event::Declined(tid) = event {
+                *by_task.entry(*tid).or_default() += 1;
+            }
+        }
+        by_task
+    };
+    let before = declined(&events[..timer_at]);
+    let after = declined(&events[timer_at..]);
+    let signalled = sigusr1_clocks(&events);
+    println!(
+        "PERMIT-PROBE spinner tid {pid}; timer event #{timer_at} at clock {timer_clock}; \
+         declined authorizations by task id before the timer event: {before:?}, after it: \
+         {after:?}; SIGUSR1 callbacks: {signalled:?}; run failure: {failure}"
+    );
+    assert!(
+        failure.contains("KVM signal hook exhausted one return boundary without selecting delivery"),
+        "{failure}: {events:?}"
+    );
+    assert_eq!(after.get(&pid), Some(&64), "{events:?}");
+    assert!(signalled.is_empty(), "{events:?}");
 }
 
 /// Sets the FS base to the address of `record`, kept in r13, and the GS base
