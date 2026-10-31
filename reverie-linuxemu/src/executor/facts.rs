@@ -3529,10 +3529,12 @@ mod memory_map_tests {
     /// A vfork child shares its parent's address space on Linux. The backend
     /// gives it a copy of the memory that shares the stack window's record
     /// with the parent's (`GuestMemory::snapshot_sharing_address_space`), so
-    /// a change the child makes to the window, which the parent's copy
-    /// lacks, empties the parent's map, and one the parent's other threads
-    /// make while the child runs empties the child's; the one that made the
-    /// change lists it.
+    /// a change the parent's other threads make to the window while the
+    /// child runs, which the child's copy lacks, empties the child's map, and
+    /// the parent lists it. The child itself may not change the window: the
+    /// copy refuses every mapping change by name until the child execs
+    /// (`dispatch::vfork_child_layout_change`), and both maps stay as they
+    /// were.
     #[test]
     fn a_vfork_child_and_its_parent_share_the_stack_windows_record() {
         let protect = [STACK_PAGE, PAGE_SIZE, libc::PROT_READ as u64];
@@ -3546,11 +3548,24 @@ mod memory_map_tests {
             let child_memory = memory.snapshot_sharing_address_space().unwrap();
             let child_tid = child.state.tid;
             assert_eq!(child.memory_map(&child_memory, child_tid), Ok(stack(RW)));
-            let result = if child_changes {
-                change(&mut child, &child_memory, libc::SYS_mprotect, protect)
-            } else {
-                change(&mut executor, &memory, libc::SYS_mprotect, protect)
-            };
+            if child_changes {
+                let mut args = [0; 6];
+                args[..protect.len()].copy_from_slice(&protect);
+                match child.execute_checked(
+                    &SyscallRequest::new(libc::SYS_mprotect as u64, args),
+                    &child_memory,
+                ) {
+                    Err(crate::Error::VforkChildCapability {
+                        operation: "mprotect in a vfork child",
+                        ..
+                    }) => {}
+                    other => panic!("expected the vfork child refusal, got {other:?}"),
+                }
+                assert_eq!(executor.memory_map(&memory, tid), Ok(stack(RW)));
+                assert_eq!(child.memory_map(&child_memory, child_tid), Ok(stack(RW)));
+                continue;
+            }
+            let result = change(&mut executor, &memory, libc::SYS_mprotect, protect);
             assert_eq!(result, 0, "child changes: {child_changes}");
             let read_only = split(libc::PROT_READ as u32);
             let (parent, child) = (
@@ -3580,6 +3595,8 @@ mod memory_map_tests {
             let (mut executor, memory) = loaded(&directory);
             let tid = executor.state.tid;
             let mut child_memory = memory.snapshot_sharing_address_space().unwrap();
+            // What an exec does first: the new image is another address space.
+            child_memory.retire_shared_files_for_exec().unwrap();
             let mut state = crate::elf::load_static_elf(
                 &mut child_memory,
                 &crate::elf::minimal_test_elf(&[0xf4]),

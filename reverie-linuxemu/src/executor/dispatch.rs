@@ -28,6 +28,65 @@ pub(crate) fn is_process_syscall(number: u64) -> bool {
         || number == libc::SYS_waitid as u64
 }
 
+/// Why a vfork child may not change its mappings before it execs
+/// ([`vfork_child_layout_change`]).
+pub(super) const VFORK_CHILD_LAYOUT_REASON: &str = concat!(
+    "a vfork child shares its parent's address space until it execs or exits, and runs on ",
+    "a copy here whose changes to private memory go back to the parent, but whose mappings ",
+    "cannot: on Linux this call would change the parent's mappings too"
+);
+
+/// The call, if any, by which a vfork child's copy of its parent's address
+/// space ([`GuestMemory::shares_parent_address_space`]) would change its
+/// mappings before the child execs: an `mmap` or `mremap` of any kind, an
+/// `munmap` or `mprotect` of a range holding a mapping (or one this cannot
+/// place), and a `brk` that moves the break. The copy's private memory goes
+/// back to the parent when the window ends, page by page, so its mappings
+/// must stay the parent's. A call that changes no mapping (an `munmap` of a
+/// hole, `brk(0)`, a call with an invalid address or length) goes on, and
+/// `madvise(MADV_DONTNEED)`, which changes only contents, goes back with
+/// them.
+pub(super) fn vfork_child_layout_change(
+    owner: &GuestMemory,
+    state: &LoadedStaticElf,
+    number: u64,
+    args: &[u64; 6],
+) -> Option<&'static str> {
+    if !owner.shares_parent_address_space() {
+        return None;
+    }
+    let holds_mapping = |address: u64, length: u64| {
+        if length == 0 || !address.is_multiple_of(PAGE_SIZE) {
+            return false;
+        }
+        let Some(end) = address
+            .checked_add(length)
+            .and_then(|end| align_up(end, PAGE_SIZE))
+        else {
+            return false;
+        };
+        owner
+            .user_range_to_guest(address, end - address)
+            .is_none_or(|physical| owner.user_range_has_mapping(physical, end - address))
+    };
+    if number == libc::SYS_mmap as u64 {
+        Some("mmap in a vfork child")
+    } else if number == libc::SYS_mremap as u64 {
+        Some("mremap in a vfork child")
+    } else if number == libc::SYS_munmap as u64 && holds_mapping(args[0], args[1]) {
+        Some("munmap in a vfork child")
+    } else if number == libc::SYS_mprotect as u64 && holds_mapping(args[0], args[1]) {
+        Some("mprotect in a vfork child")
+    } else if number == libc::SYS_brk as u64
+        && args[0] >= state.min_break
+        && args[0] != state.program_break
+    {
+        Some("brk in a vfork child")
+    } else {
+        None
+    }
+}
+
 /// Whether a `clone` or `clone3` with `flags` would run its child in the
 /// caller's address space beside the caller: a thread (`CLONE_THREAD`), or a
 /// `CLONE_VM` process that the caller does not wait for (no `CLONE_VFORK`).
@@ -161,6 +220,13 @@ fn execute_basic_syscall_dispatch(
     state.mmap_limit = cursors.mmap_limit;
     let number = request.number();
     let args = request.args();
+    if let Some(operation) = vfork_child_layout_change(&owner, state, number, args) {
+        drop(transaction);
+        return SyscallAction::Failure(crate::Error::VforkChildCapability {
+            operation,
+            reason: VFORK_CHILD_LAYOUT_REASON,
+        });
+    }
     let new_shared_file = number == libc::SYS_mmap as u64
         && args[3] & libc::MAP_ANONYMOUS as u64 == 0
         && args[3] & libc::MAP_SHARED as u64 != 0;
