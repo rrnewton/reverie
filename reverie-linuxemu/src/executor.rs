@@ -37947,6 +37947,161 @@ mod tests {
     }
 
     #[test]
+    fn sigaltstack_follows_do_sigaltstack() {
+        // Linux's do_sigaltstack (kernel/signal.c), in its order: EPERM while
+        // running on the stack, EINVAL for a mode other than 0, SS_ONSTACK or
+        // SS_DISABLE (SS_AUTODISARM aside), no change for a request equal to
+        // the stack held, SS_DISABLE keeping the flags as given, and ENOMEM
+        // only when enabling a stack below MINSIGSTKSZ.
+        const REQUEST: u64 = 0x100;
+        const OLD: u64 = 0x180;
+        let enabled = GuestStack {
+            sp: 0x8000,
+            flags: 0,
+            size: libc::MINSIGSTKSZ as u64,
+        };
+        let disabled_autodisarm = GuestStack {
+            sp: 0,
+            flags: libc::SS_DISABLE | SS_AUTODISARM,
+            size: 0,
+        };
+        let call = |state: &mut LoadedStaticElf,
+                    memory: &mut GuestMemory,
+                    stack_pointer: u64,
+                    requested: Option<GuestStack>| {
+            if let Some(requested) = requested {
+                memory.write(REQUEST, &requested.encode()).unwrap();
+            }
+            let request = if requested.is_some() { REQUEST } else { 0 };
+            let result = sigaltstack(
+                memory,
+                state,
+                Some(stack_pointer),
+                &[request, OLD, 0, 0, 0, 0],
+            );
+            let old =
+                GuestStack::decode(read_guest_bytes::<24>(&ProviderMemory(memory), OLD).unwrap());
+            (result, old)
+        };
+        let root = TestDir::new();
+        let mut state = test_state(&root.0);
+        let mut memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
+
+        // SS_DISABLE with SS_AUTODISARM is a valid request: the stack keeps
+        // those flags with no address or size, and reports and saves them.
+        state.thread_signals.lock().altstack = Some(enabled);
+        assert_eq!(
+            call(&mut state, &mut memory, 0x4000, Some(disabled_autodisarm)).0,
+            0
+        );
+        assert_eq!(
+            state.thread_signals.lock().altstack,
+            Some(disabled_autodisarm)
+        );
+        assert_eq!(
+            call(&mut state, &mut memory, 0x4000, None),
+            (0, disabled_autodisarm)
+        );
+        // A frame saves it as held.
+        let saved = test_state(&root.0);
+        saved.thread_signals.lock().altstack = Some(disabled_autodisarm);
+        assert_eq!(
+            ElfExecutor::new(saved, false).signal_altstack(),
+            disabled_autodisarm
+        );
+
+        // A request equal to the stack held changes nothing, before the size
+        // check: here the stack exec leaves, with no address or size.
+        for flags in [0, SS_AUTODISARM] {
+            let after_exec = GuestStack {
+                sp: 0,
+                flags,
+                size: 0,
+            };
+            state.thread_signals.lock().altstack = Some(after_exec);
+            assert_eq!(
+                call(&mut state, &mut memory, 0x4000, Some(after_exec)).0,
+                0,
+                "{flags:#x}"
+            );
+            assert_eq!(state.thread_signals.lock().altstack, Some(after_exec));
+            // What a query then reports can be given back: SS_DISABLE with the
+            // stored SS_AUTODISARM.
+            let (result, reported) = call(&mut state, &mut memory, 0x4000, None);
+            assert_eq!(result, 0);
+            assert_eq!(
+                reported,
+                GuestStack {
+                    sp: 0,
+                    flags: libc::SS_DISABLE | flags,
+                    size: 0,
+                }
+            );
+            assert_eq!(
+                call(&mut state, &mut memory, 0x4000, Some(reported)).0,
+                0,
+                "{flags:#x}"
+            );
+            let held = (flags != 0).then_some(disabled_autodisarm);
+            assert_eq!(state.thread_signals.lock().altstack, held, "{flags:#x}");
+        }
+
+        // SS_ONSTACK is an input mode, stored as given; the report shows
+        // SS_ONSTACK only while the caller runs on the stack.
+        state.thread_signals.lock().altstack = None;
+        let onstack = GuestStack {
+            flags: libc::SS_ONSTACK,
+            ..enabled
+        };
+        assert_eq!(call(&mut state, &mut memory, 0x4000, Some(onstack)).0, 0);
+        assert_eq!(state.thread_signals.lock().altstack, Some(onstack));
+        assert_eq!(call(&mut state, &mut memory, 0x4000, None).1, enabled);
+        assert_eq!(
+            call(&mut state, &mut memory, enabled.sp + 1, None).1,
+            onstack
+        );
+        // EPERM on the stack comes before the no-change return.
+        assert_eq!(
+            call(&mut state, &mut memory, enabled.sp + 1, Some(onstack)).0,
+            negative_errno(libc::EPERM)
+        );
+
+        // Any other mode is EINVAL, and the stack stays.
+        for flags in [
+            libc::SS_ONSTACK | libc::SS_DISABLE,
+            4,
+            0x1234,
+            libc::SS_ONSTACK | libc::SS_DISABLE | SS_AUTODISARM,
+        ] {
+            let request = GuestStack { flags, ..enabled };
+            assert_eq!(
+                call(&mut state, &mut memory, 0x4000, Some(request)).0,
+                negative_errno(libc::EINVAL),
+                "{flags:#x}"
+            );
+            assert_eq!(state.thread_signals.lock().altstack, Some(onstack));
+        }
+
+        // ENOMEM only when enabling below MINSIGSTKSZ; disabling ignores the
+        // size and the address.
+        let small = GuestStack {
+            size: libc::MINSIGSTKSZ as u64 - 1,
+            ..enabled
+        };
+        assert_eq!(
+            call(&mut state, &mut memory, 0x4000, Some(small)).0,
+            negative_errno(libc::ENOMEM)
+        );
+        assert_eq!(state.thread_signals.lock().altstack, Some(onstack));
+        let disable = GuestStack {
+            flags: libc::SS_DISABLE,
+            ..small
+        };
+        assert_eq!(call(&mut state, &mut memory, 0x4000, Some(disable)).0, 0);
+        assert_eq!(state.thread_signals.lock().altstack, None);
+    }
+
+    #[test]
     fn rt_sigreturn_ignores_invalid_altstack_restore_but_restores_the_mask() {
         let root = TestDir::new();
         let mut executor = ElfExecutor::new(test_state(&root.0), false);
@@ -38035,7 +38190,9 @@ mod tests {
     }
 
     #[test]
-    fn rt_sigreturn_ignores_ss_onstack_altstack_input() {
+    fn rt_sigreturn_restores_an_ss_onstack_altstack_input() {
+        // Linux's do_sigaltstack takes SS_ONSTACK as an input mode, as 0, and
+        // stores the flags as given; restore_altstack goes through it too.
         let root = TestDir::new();
         let mut executor = ElfExecutor::new(test_state(&root.0), false);
         let original_stack = GuestStack {
@@ -38046,15 +38203,15 @@ mod tests {
         executor.state.thread_signals.lock().altstack = Some(original_stack);
         let mut restored_mask = KernelSigset::default();
         restored_mask.insert(libc::SIGUSR2);
-        let invalid_stack = GuestStack {
+        let onstack_input = GuestStack {
             sp: 0x20_000,
             flags: libc::SS_ONSTACK,
             size: libc::MINSIGSTKSZ as u64,
         };
-        executor.restore_signal_thread_state(restored_mask, invalid_stack, original_stack.sp);
+        executor.restore_signal_thread_state(restored_mask, onstack_input, original_stack.sp);
         assert_eq!(
             executor.state.thread_signals.lock().altstack,
-            Some(original_stack)
+            Some(onstack_input)
         );
 
         assert!(

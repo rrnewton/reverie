@@ -3467,9 +3467,12 @@ const ENTRY_QUADS: usize = 40;
 /// Entries a stacked-signal guest's log holds.
 const MAX_ENTRIES: usize = 8;
 /// Quads before the entries: their count, the signal mask and the alternate
-/// stack (sp, flags, size) once the handlers have returned, and the alternate
-/// stack as [`QUERY_STACK`] found it, if the guest ran it (zeros otherwise).
-const HEADER_QUADS: usize = 8;
+/// stack (sp, flags, size) once the handlers have returned, the alternate
+/// stack as [`QUERY_STACK`] found it, if the guest ran it (zeros otherwise),
+/// and [`RESULTS`] syscall results the guest kept with [`keep_result`].
+const HEADER_QUADS: usize = 8 + RESULTS;
+/// The syscall results a stacked-signal guest can keep in its header.
+const RESULTS: usize = 4;
 /// The bytes a stacked-signal guest writes to stdout before it exits.
 const LOG_BYTES: usize = 8 * (HEADER_QUADS + MAX_ENTRIES * ENTRY_QUADS);
 
@@ -3780,6 +3783,27 @@ fn unblocked_at_syscall_return(sends: &str) -> String {
 /// the guest finds it there, which [`StackedLog::queried_stack`] reads.
 const QUERY_STACK: &str = "xor %edi,%edi\nlea header+40(%rip),%rsi\nmov $131,%eax\nsyscall\n";
 
+/// Keeps rax, a syscall's result, as result `index` of the guest's header
+/// ([`StackedLog::results`]).
+fn keep_result(index: usize) -> String {
+    assert!(index < RESULTS);
+    format!("mov %rax,header+{}(%rip)\n", 8 * (8 + index))
+}
+
+/// sigaltstack(the stack_t at `label`, NULL), its result kept as result
+/// `index`.
+fn set_altstack(label: &str, index: usize) -> String {
+    format!(
+        "lea {label}(%rip),%rdi\nxor %esi,%esi\nmov $131,%eax\nsyscall\n{}",
+        keep_result(index)
+    )
+}
+
+/// A stack_t at `label`: `sp` (an address or label), `flags` and `size`.
+fn stack_t(label: &str, sp: &str, flags: u64, size: u64) -> String {
+    format!("{label}: .quad {sp}\n.long {flags:#x}, 0\n.quad {size}\n")
+}
+
 /// Installs the alternate stack that [`altstack_data`] describes, exiting with
 /// status 1 if that fails.
 const ARM_ALTSTACK: &str = "lea altstack_desc(%rip),%rdi\nxor %esi,%esi\nmov $131,%eax\nsyscall\n\
@@ -3825,6 +3849,8 @@ struct StackedLog {
     /// The alternate stack where the guest ran [`QUERY_STACK`]: sp, flags
     /// and size, or zeros.
     queried_stack: [u64; 3],
+    /// The syscall results the guest kept with [`keep_result`], or zeros.
+    results: [u64; RESULTS],
 }
 
 impl StackedLog {
@@ -3844,6 +3870,7 @@ impl StackedLog {
             final_mask: quad(1),
             final_stack: [quad(2), quad(3) & u64::from(u32::MAX), quad(4)],
             queried_stack: [quad(5), quad(6) & u64::from(u32::MAX), quad(7)],
+            results: std::array::from_fn(|i| quad(8 + i)),
         }
     }
 
@@ -3997,6 +4024,96 @@ enum Tracing {
 struct TracedRun {
     stdout: Vec<u8>,
     delivered: Vec<i32>,
+    /// The synthetic SIGSTOPs of new threads that the tracer suppressed.
+    synthetic_stops: usize,
+}
+
+/// What PTRACE_GETSIGINFO shows for a stop that is not a ptrace event.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum StopInfo {
+    /// A signal-delivery stop: the signal, its si_code and its si_pid.
+    Signal { signo: i32, code: i32, sender: i32 },
+    /// A group-stop report, which has no siginfo (EINVAL).
+    GroupStop,
+}
+
+/// Reads the siginfo of thread `tid`'s stop.
+fn stop_info(tid: libc::pid_t) -> StopInfo {
+    // SAFETY: an all-zero siginfo_t is valid, and PTRACE_GETSIGINFO writes
+    // one siginfo_t into it.
+    let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
+    let got = unsafe {
+        libc::ptrace(
+            libc::PTRACE_GETSIGINFO,
+            tid,
+            0,
+            &mut info as *mut libc::siginfo_t,
+        )
+    };
+    if got == 0 {
+        StopInfo::Signal {
+            signo: info.si_signo,
+            code: info.si_code,
+            // SAFETY: the kill, tkill and queue layouts, the only ones
+            // classify_sigstop accepts a sender from, hold si_pid here.
+            sender: unsafe { info.si_pid() },
+        }
+    } else {
+        let error = std::io::Error::last_os_error();
+        assert_eq!(
+            error.raw_os_error(),
+            Some(libc::EINVAL),
+            "PTRACE_GETSIGINFO of thread {tid}: {error}"
+        );
+        StopInfo::GroupStop
+    }
+}
+
+/// What the native tracer does with a SIGSTOP stop.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SigstopAction {
+    /// Suppresses the SIGSTOP the tracer's own PTRACE_O_TRACECLONE queued for
+    /// a new thread, which no guest sent.
+    SuppressSynthetic,
+    /// Forwards a SIGSTOP that a task sent, as any other signal.
+    Forward,
+}
+
+/// Classifies a SIGSTOP stop of thread `tid` of process `pid` by where the
+/// signal came from, its si_code and si_pid. PTRACE_O_TRACECLONE adds SIGSTOP
+/// to a new thread's pending set with no siginfo (`ptrace_init_task`,
+/// <https://github.com/gregkh/linux/blob/v7.1.3/include/linux/ptrace.h#L200-L216>),
+/// and `collect_signal` reports a signal with no siginfo as SI_USER from pid
+/// 0 (<https://github.com/gregkh/linux/blob/v7.1.3/kernel/signal.c#L588-L600>),
+/// whenever the thread dequeues it; a signal that a task sent with kill,
+/// tkill, tgkill or rt_sigqueueinfo carries the sender's pid. So the
+/// synthetic stop is known by its provenance, not by being a thread's first
+/// SIGSTOP, and a sent SIGSTOP is forwarded even when it is. Anything else is
+/// refused, as is a second synthetic stop or one for the main thread, which
+/// the tracer never gets one for. A SIGSTOP a task sends while a new thread's
+/// synthetic one is still pending merges into it (`legacy_queue`,
+/// <https://github.com/gregkh/linux/blob/v7.1.3/kernel/signal.c#L1035-L1038>),
+/// so the kernel itself keeps no trace of that send.
+fn classify_sigstop(
+    tid: libc::pid_t,
+    pid: libc::pid_t,
+    code: i32,
+    sender: libc::pid_t,
+    synthetic: &[libc::pid_t],
+) -> Result<SigstopAction, String> {
+    match (code, sender) {
+        (libc::SI_USER, 0) if tid != pid && !synthetic.contains(&tid) => {
+            Ok(SigstopAction::SuppressSynthetic)
+        }
+        (libc::SI_USER, 0) if tid == pid => {
+            Err("SI_USER from pid 0 for the main thread".to_owned())
+        }
+        (libc::SI_USER, 0) => Err("a second SI_USER stop from pid 0".to_owned()),
+        (libc::SI_USER | libc::SI_TKILL | libc::SI_QUEUE, sender) if sender > 0 => {
+            Ok(SigstopAction::Forward)
+        }
+        (code, sender) => Err(format!("si_code {code} from pid {sender}")),
+    }
 }
 
 /// Waits until every one of `signals` is pending for thread `tid` of process
@@ -4073,8 +4190,11 @@ fn traced_native(program: &Program, tracing: Tracing) -> TracedRun {
     );
     resume(pid, 0);
     let mut threads = vec![pid];
-    // The cloned threads whose initial SIGSTOP the tracer has suppressed.
-    let mut started = Vec::new();
+    // The cloned threads whose synthetic SIGSTOP the tracer has suppressed.
+    let mut synthetic = Vec::new();
+    // Whether the tracer has forwarded a stop signal, which group-stop
+    // reports then follow.
+    let mut stop_forwarded = false;
     let mut delivered = Vec::new();
     let (mut held, mut faulted) = (false, false);
     let ending = loop {
@@ -4097,17 +4217,42 @@ fn traced_native(program: &Program, tracing: Tracing) -> TracedRun {
                 wait_pending(pid, tid, &others);
             }
         }
-        let deliver = if status >> 16 != 0 {
+        // A clone or exec event stop has no siginfo of its own to read.
+        let info = (status >> 16 == 0).then(|| stop_info(tid));
+        let deliver = if info.is_none() {
             // A clone or exec event stop.
             0
-        } else if tid != pid && signal == libc::SIGSTOP && !started.contains(&tid) {
-            // A cloned thread's initial SIGSTOP (PTRACE_O_TRACECLONE's). It is
-            // usually the thread's first stop, but a signal with a lower
-            // number that was sent before the thread first ran is dequeued
-            // before it.
-            started.push(tid);
+        } else if let Some(StopInfo::GroupStop) = info {
+            // A group-stop report: it delivers nothing, and resuming from it
+            // continues the thread.
+            assert!(
+                stop_forwarded,
+                "a group-stop of thread {tid} with no stop signal forwarded"
+            );
             0
+        } else if let Some(StopInfo::Signal {
+            signo,
+            code,
+            sender,
+        }) = info
+            && signal == libc::SIGSTOP
+        {
+            assert_eq!(signo, signal, "thread {tid}'s siginfo");
+            match classify_sigstop(tid, pid, code, sender, &synthetic) {
+                Ok(SigstopAction::SuppressSynthetic) => {
+                    synthetic.push(tid);
+                    0
+                }
+                Ok(SigstopAction::Forward) => {
+                    stop_forwarded = true;
+                    signal
+                }
+                Err(why) => panic!("an unclassifiable SIGSTOP stop of thread {tid}: {why}"),
+            }
         } else {
+            if [libc::SIGTSTP, libc::SIGTTIN, libc::SIGTTOU].contains(&signal) {
+                stop_forwarded = true;
+            }
             match tracing {
                 Tracing::HoldUntilPending { first, then }
                     if tid == pid && signal == first && !held =>
@@ -4156,7 +4301,11 @@ fn traced_native(program: &Program, tracing: Tracing) -> TracedRun {
         "native: status {ending:#x}: {}",
         String::from_utf8_lossy(&stderr)
     );
-    TracedRun { stdout, delivered }
+    TracedRun {
+        stdout,
+        delivered,
+        synthetic_stops: synthetic.len(),
+    }
 }
 
 /// The order of the Tool's signal hooks in a run's events.
@@ -4202,11 +4351,17 @@ fn stacked_matches_native(
             "runtime {log:#x?}, native {native_log:#x?}"
         );
         assert_eq!(
-            (log.final_mask, log.final_stack, log.queried_stack),
+            (
+                log.final_mask,
+                log.final_stack,
+                log.queried_stack,
+                log.results
+            ),
             (
                 native_log.final_mask,
                 native_log.final_stack,
-                native_log.queried_stack
+                native_log.queried_stack,
+                native_log.results
             ),
             "runtime"
         );
@@ -4223,11 +4378,17 @@ fn stacked_matches_native(
         "tool {log:#x?}, native {native_log:#x?}, {events:?}"
     );
     assert_eq!(
-        (log.final_mask, log.final_stack, log.queried_stack),
+        (
+            log.final_mask,
+            log.final_stack,
+            log.queried_stack,
+            log.results
+        ),
         (
             native_log.final_mask,
             native_log.final_stack,
-            native_log.queried_stack
+            native_log.queried_stack,
+            native_log.results
         ),
         "tool"
     );
@@ -5028,4 +5189,194 @@ fn exec_keeps_the_alternate_stacks_flags_for_later_frames() {
         assert_eq!(log.queried_stack, [0, SS_DISABLE | flags, 0], "{context}");
         assert_eq!(log.final_stack, [0, SS_DISABLE, 0], "{context}");
     }
+}
+
+#[test]
+fn sigaltstack_takes_back_what_it_reports_for_the_stack_exec_leaves() {
+    if bounded("sigaltstack_takes_back_what_it_reports_for_the_stack_exec_leaves") {
+        return;
+    }
+    // The guest arms an alternate stack with `flags` and executes itself;
+    // exec keeps the flags and clears the address and size. The new image
+    // then, comparing each result with Linux's do_sigaltstack:
+    // - asks for that stack unchanged, which returns 0 before any size check;
+    // - queries it (SS_DISABLE, with any SS_AUTODISARM) and gives back what
+    //   the query reported, which a disabling mode keeps as given;
+    // - asks for a stack with an invalid mode (EINVAL) and queries again;
+    // - takes SIGUSR1, whose frame saves the stack as held.
+    let einval = (-i64::from(libc::EINVAL)) as u64;
+    for flags in [0, SS_AUTODISARM] {
+        let program = stacked_program(
+            &[Handler::new(SIGUSR1)],
+            &format!(
+                "cmpq $1,argc(%rip)\njne 3f\n{ARM_ALTSTACK}\
+                 lea self_exe(%rip),%rdi\nlea exec_argv(%rip),%rsi\nlea exec_envp(%rip),%rdx\n\
+                 mov $59,%eax\nsyscall\njmp 99f\n3:\n{}{QUERY_STACK}{}{}\
+                 xor %edi,%edi\nlea second_query(%rip),%rsi\nmov $131,%eax\nsyscall\n\
+                 mov second_query+8(%rip),%eax\n{}{}",
+                set_altstack("unchanged", 0),
+                set_altstack("header+40", 1),
+                set_altstack("bad_mode", 2),
+                keep_result(3),
+                unblocked_at_syscall_return(&tgkill_self(SIGUSR1))
+            ),
+            &format!(
+                "pending: .quad {:#x}\n{}{}{}self_exe: .asciz \"/proc/self/exe\"\n\
+                 exec_arg: .asciz \"x\"\n.balign 8\nexec_argv: .quad self_exe, exec_arg, 0\n\
+                 exec_envp: .quad 0\nsecond_query: .zero 24\n",
+                bit(SIGUSR1),
+                altstack_data(flags),
+                stack_t("unchanged", "0", flags, 0),
+                stack_t("bad_mode", "0", 4, 0),
+            ),
+            ALTSTACK,
+        );
+        let log = stacked_at_syscall_returns_matches_native(&program);
+        let context = format!("native, ss_flags {flags:#x}: {log:#x?}");
+        let reported = [0, SS_DISABLE | flags, 0];
+        assert_eq!(log.signals(), [SIGUSR1], "{context}");
+        assert_eq!(log.queried_stack, reported, "{context}");
+        assert_eq!(log.results, [0, 0, einval, SS_DISABLE | flags], "{context}");
+        let entry = log.entry(0);
+        assert_eq!(
+            [entry[q::SS_SP], entry[q::SS_FLAGS], entry[q::SS_SIZE]],
+            reported,
+            "{context}"
+        );
+        assert_eq!(log.final_stack, reported, "{context}");
+    }
+}
+
+#[test]
+fn sigaltstack_takes_ss_onstack_as_an_input_mode() {
+    if bounded("sigaltstack_takes_ss_onstack_as_an_input_mode") {
+        return;
+    }
+    // The guest asks for an alternate stack with SS_ONSTACK as its mode,
+    // which Linux's do_sigaltstack takes as it takes 0 and stores as given,
+    // then for one with an invalid mode (EINVAL) and for one below
+    // MINSIGSTKSZ (ENOMEM), which leave the stack as it is. SIGUSR1's handler
+    // is SA_ONSTACK: its frame goes on the stack and saves the flags as
+    // given; on the stack, the handler queries it (SS_ONSTACK, which the
+    // report shows while the caller runs on it) and asks for another (EPERM).
+    let errno = |value: i32| (-i64::from(value)) as u64;
+    let ss_onstack = libc::SS_ONSTACK as u64;
+    let program = stacked_program(
+        &[Handler::new(SIGUSR1)
+            .flags(SA_ONSTACK)
+            .actions(&format!("{QUERY_STACK}{}", set_altstack("plain", 3)))],
+        &format!(
+            "{}{}{}{}",
+            set_altstack("onstack_mode", 0),
+            set_altstack("bad_mode", 1),
+            set_altstack("too_small", 2),
+            unblocked_at_syscall_return(&tgkill_self(SIGUSR1))
+        ),
+        &format!(
+            "pending: .quad {:#x}\n{}{}{}{}",
+            bit(SIGUSR1),
+            stack_t("onstack_mode", "altstack", ss_onstack, 65536),
+            stack_t("bad_mode", "altstack", 4, 65536),
+            stack_t("too_small", "altstack", 0, 1024),
+            stack_t("plain", "altstack", 0, 65536),
+        ),
+        ALTSTACK,
+    );
+    let log = stacked_at_syscall_returns_matches_native(&program);
+    assert_eq!(log.signals(), [SIGUSR1], "{log:#x?}");
+    assert_interrupted_at_mark(&log, 0, "native");
+    let entry = log.entry(0);
+    let sp = entry[q::SS_SP];
+    assert_ne!(sp, 0, "{log:#x?}");
+    assert_eq!(
+        [entry[q::SS_SP], entry[q::SS_FLAGS], entry[q::SS_SIZE]],
+        [sp, ss_onstack, 65536],
+        "{log:#x?}"
+    );
+    assert!((sp..sp + 65536).contains(&entry[q::ENTRY_RSP]), "{log:#x?}");
+    assert_eq!(log.queried_stack, [sp, ss_onstack, 65536], "{log:#x?}");
+    assert_eq!(
+        log.results,
+        [
+            0,
+            errno(libc::EINVAL),
+            errno(libc::ENOMEM),
+            errno(libc::EPERM)
+        ],
+        "{log:#x?}"
+    );
+    assert_eq!(log.final_stack, [sp, 0, 65536], "{log:#x?}");
+}
+
+#[test]
+fn the_native_tracer_classifies_sigstop_by_provenance() {
+    // What PTRACE_GETSIGINFO shows decides, not the order of the stops: the
+    // synthetic SIGSTOP of a new thread is suppressed wherever it comes, once,
+    // and a sent SIGSTOP is forwarded, also as a thread's first SIGSTOP (as
+    // when SIGCONT cleared the synthetic one before the thread dequeued it).
+    let (pid, child) = (100, 101);
+    use SigstopAction::*;
+    assert_eq!(
+        classify_sigstop(child, pid, libc::SI_USER, 0, &[]),
+        Ok(SuppressSynthetic)
+    );
+    for (code, synthetic) in [
+        (libc::SI_TKILL, &[][..]),
+        (libc::SI_TKILL, &[child][..]),
+        (libc::SI_USER, &[][..]),
+        (libc::SI_QUEUE, &[child][..]),
+    ] {
+        assert_eq!(
+            classify_sigstop(child, pid, code, pid, synthetic),
+            Ok(Forward),
+            "si_code {code}"
+        );
+    }
+    assert_eq!(
+        classify_sigstop(pid, pid, libc::SI_TKILL, pid, &[]),
+        Ok(Forward)
+    );
+    // Refused: a second synthetic stop, one for the main thread, a send with
+    // no sender, and any other provenance.
+    for (tid, code, sender, synthetic) in [
+        (child, libc::SI_USER, 0, &[child][..]),
+        (pid, libc::SI_USER, 0, &[][..]),
+        (child, libc::SI_TKILL, 0, &[][..]),
+        (child, libc::SI_KERNEL, 0, &[][..]),
+        (child, libc::SI_KERNEL, pid, &[][..]),
+    ] {
+        assert!(
+            classify_sigstop(tid, pid, code, sender, synthetic).is_err(),
+            "tid {tid} si_code {code} from {sender}"
+        );
+    }
+}
+
+#[test]
+fn the_native_tracer_forwards_a_sent_sigstop_and_suppresses_only_the_synthetic_one() {
+    if bounded("the_native_tracer_forwards_a_sent_sigstop_and_suppresses_only_the_synthetic_one") {
+        return;
+    }
+    // Native only: KVM supports no stopped state, so a stop signal a guest
+    // sends ends a KVM run. The guest clones a thread, which sends itself
+    // SIGSTOP with tgkill and then lets the main thread finish. The tracer
+    // suppresses the thread's synthetic SIGSTOP (SI_USER from pid 0), forwards
+    // the sent one (SI_TKILL from the guest), which stops the whole process,
+    // and resumes each thread from the group-stop that follows, which
+    // delivers nothing.
+    let program = stacked_program(
+        &[],
+        "mov $0x50f00,%edi\nlea sibling_stack_end(%rip),%rsi\nxor %edx,%edx\n\
+         xor %r10d,%r10d\nxor %r8d,%r8d\nmov $56,%eax\nsyscall\n\
+         test %rax,%rax\njz 7f\n\
+         5: cmpb $0,done(%rip)\nje 5b\njmp 4f\n\
+         7: mov $186,%eax\nsyscall\nmov pid(%rip),%rdi\nmov %rax,%rsi\nmov $19,%edx\n\
+         mov $234,%eax\nsyscall\nmovb $1,done(%rip)\nxor %edi,%edi\nmov $60,%eax\nsyscall\nud2\n\
+         4:\n",
+        "done: .byte 0\n",
+        SIBLING_STACK,
+    );
+    let native = traced_native(&program, Tracing::Deliver);
+    assert_eq!(native.delivered, [libc::SIGSTOP]);
+    assert_eq!(native.synthetic_stops, 1);
 }
