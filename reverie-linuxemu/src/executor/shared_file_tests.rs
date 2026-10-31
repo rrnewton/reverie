@@ -1061,8 +1061,8 @@ mod shared_file_dispatch_tests {
     /// its own and with CLONE_CLEAR_SIGHAND) is admitted while the caller
     /// holds a shared-file view: one task ID, one process action that shares
     /// the address space, and no change to the caller's layout. The backend's
-    /// copy for it shares stores through the view and keeps private memory
-    /// apart.
+    /// copy for it shares stores through the view at once, and its private
+    /// stores reach the parent when the window ends.
     #[test]
     fn shared_file_vfork_style_clones_admit_a_child_that_shares_the_address_space() {
         let vm_vfork = (libc::CLONE_VM | libc::CLONE_VFORK) as u64;
@@ -1149,22 +1149,37 @@ mod shared_file_dispatch_tests {
                 &file[PAGE_SIZE as usize + 17..PAGE_SIZE as usize + 23],
                 b"shared"
             );
+            child.return_vfork_changes(BOOT_RESERVED_END).unwrap();
+            f.memory.read_raw(private, &mut bytes).unwrap();
+            assert_eq!(&bytes, b"child!", "{label}");
             assert!(f.memory.entry_gate().pending_failure().is_none(), "{label}");
             assert!(child.entry_gate().pending_failure().is_none(), "{label}");
         }
     }
 
-    const VFORK_VIEW_REASON: &str = "a vfork child shares its parent's address space until it \
-        execs or exits, and runs on a copy here, so it cannot change a shared view it inherited \
-        or map a new one";
+    fn vfork_child_refusal(error: &crate::Error, operation: &str) {
+        match error.primary() {
+            crate::Error::VforkChildCapability {
+                operation: actual,
+                reason,
+            } => {
+                assert_eq!(*actual, operation);
+                assert_eq!(*reason, super::dispatch::VFORK_CHILD_LAYOUT_REASON);
+            }
+            other => panic!("expected the vfork child refusal of {operation}; got {other:?}"),
+        }
+    }
 
     /// In a vfork child's copy, before its exec, every system call that would
-    /// change a shared view is refused by name before it changes anything:
-    /// munmap of an inherited view, a private MAP_FIXED mapping over one,
-    /// mprotect of one, and mmap of a new MAP_SHARED view. Linux applies
-    /// each to the parent's address space too. The same calls on private
-    /// memory go ahead. After the exec the new image maps files again. The
-    /// parent's layout and file are unchanged throughout.
+    /// change a mapping is refused by name before it changes anything, over
+    /// an inherited view and over private memory alike: munmap, a private
+    /// MAP_FIXED mapping, mprotect, mmap of a new MAP_SHARED view, an
+    /// anonymous mmap, mremap and a brk that moves the break. Linux applies
+    /// each to the parent's address space too, and the copy's private memory
+    /// goes back to the parent page by page, so its mappings must stay the
+    /// parent's. Calls that change no mapping go on. After the exec the new
+    /// image maps files again. The parent's layout and file are unchanged
+    /// throughout.
     #[test]
     fn shared_file_vfork_child_view_changes_refuse_before_any_effect() {
         let mut f = Fixture::new();
@@ -1186,12 +1201,13 @@ mod shared_file_dispatch_tests {
             let fd = insert_file_with_flags(&mut state, file, false, None);
             (state, fd as u64)
         };
-        let cases: [(&str, i64, [u64; 6], &str); 4] = [
+        let anonymous = (libc::MAP_PRIVATE | libc::MAP_ANONYMOUS) as u64;
+        let cases: [(&str, i64, [u64; 6], &str); 9] = [
             (
                 "munmap",
                 libc::SYS_munmap,
                 [shared, PAGE_SIZE, 0, 0, 0, 0],
-                "mapping change in a vfork child",
+                "munmap in a vfork child",
             ),
             (
                 "fixed",
@@ -1200,11 +1216,11 @@ mod shared_file_dispatch_tests {
                     shared,
                     PAGE_SIZE,
                     rw,
-                    (libc::MAP_PRIVATE | libc::MAP_ANONYMOUS | libc::MAP_FIXED) as u64,
+                    anonymous | libc::MAP_FIXED as u64,
                     u64::MAX,
                     0,
                 ],
-                "mapping change in a vfork child",
+                "mmap in a vfork child",
             ),
             (
                 "mprotect",
@@ -1223,7 +1239,37 @@ mod shared_file_dispatch_tests {
                     0,
                     0,
                 ],
-                "mapping change in a vfork child",
+                "mmap in a vfork child",
+            ),
+            (
+                "private munmap",
+                libc::SYS_munmap,
+                [private, PAGE_SIZE, 0, 0, 0, 0],
+                "munmap in a vfork child",
+            ),
+            (
+                "private mprotect",
+                libc::SYS_mprotect,
+                [private, PAGE_SIZE, libc::PROT_READ as u64, 0, 0, 0],
+                "mprotect in a vfork child",
+            ),
+            (
+                "anonymous mmap",
+                libc::SYS_mmap,
+                [0, PAGE_SIZE, rw, anonymous, u64::MAX, 0],
+                "mmap in a vfork child",
+            ),
+            (
+                "mremap",
+                libc::SYS_mremap,
+                [private, PAGE_SIZE, 2 * PAGE_SIZE, libc::MREMAP_MAYMOVE as u64, 0, 0],
+                "mremap in a vfork child",
+            ),
+            (
+                "brk",
+                libc::SYS_brk,
+                [0, 0, 0, 0, 0, 0],
+                "brk in a vfork child",
             ),
         ];
         for (label, number, mut args, operation) in cases {
@@ -1232,40 +1278,55 @@ mod shared_file_dispatch_tests {
             if label == "map" {
                 args[4] = fd;
             }
+            if label == "brk" {
+                args[0] = state.program_break + PAGE_SIZE;
+            }
             let before = layout(&child, &state);
             let error = failure(execute_basic_syscall(
                 &mut child,
                 &mut state,
                 &SyscallRequest::new(number as u64, args),
             ));
-            capability(&error, operation, VFORK_VIEW_REASON);
+            vfork_child_refusal(&error, operation);
             assert_eq!(layout(&child, &state), before, "{label}");
             assert!(
                 child.range_contains_shared_file(shared, PAGE_SIZE as usize),
                 "{label}"
             );
         }
-        // Private memory changes as before.
+        // Calls that change no mapping go on: the break asked for, an munmap
+        // of a hole, and MADV_DONTNEED, whose zeroed page goes back with the
+        // rest of the child's private memory.
         let mut child = f.memory.snapshot_sharing_address_space().unwrap();
         let (mut state, fd) = child_state(&f, &child);
+        let program_break = state.program_break;
         assert_eq!(
-            syscall_result(
-                &mut child,
-                &mut state,
-                libc::SYS_mprotect,
-                [private, PAGE_SIZE, libc::PROT_READ as u64, 0, 0, 0]
-            ),
-            0
+            syscall_result(&mut child, &mut state, libc::SYS_brk, [0, 0, 0, 0, 0, 0]),
+            program_break as i64
         );
+        let hole = state.mmap_next;
         assert_eq!(
             syscall_result(
                 &mut child,
                 &mut state,
                 libc::SYS_munmap,
-                [private, PAGE_SIZE, 0, 0, 0, 0]
+                [hole, PAGE_SIZE, 0, 0, 0, 0]
             ),
             0
         );
+        child.write_raw(private, b"zeroed").unwrap();
+        assert_eq!(
+            syscall_result(
+                &mut child,
+                &mut state,
+                libc::SYS_madvise,
+                [private, PAGE_SIZE, libc::MADV_DONTNEED as u64, 0, 0, 0]
+            ),
+            0
+        );
+        let mut zeroed = [0xff; 6];
+        child.read_raw(private, &mut zeroed).unwrap();
+        assert_eq!(zeroed, [0; 6]);
         // The exec ends the window: the new image is another address space.
         child.retire_shared_files_for_exec().unwrap();
         assert!(!child.shares_parent_address_space());
