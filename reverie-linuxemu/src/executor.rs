@@ -37835,6 +37835,94 @@ mod tests {
     }
 
     #[test]
+    fn every_delivery_disarms_an_autodisarm_stack() {
+        // Linux's signal_delivered resets an SS_AUTODISARM stack after every
+        // delivery (sas_ss_reset), also for a handler that does not run on it
+        // and for a stack exec left without a size; a stack without the flag
+        // stays as it was.
+        let stack = GuestStack {
+            sp: 0x8000,
+            flags: 0,
+            size: libc::MINSIGSTKSZ as u64,
+        };
+        let autodisarm = GuestStack {
+            flags: SS_AUTODISARM,
+            ..stack
+        };
+        let after_exec = GuestStack {
+            sp: 0,
+            flags: SS_AUTODISARM,
+            size: 0,
+        };
+        for (before, after) in [(stack, Some(stack)), (autodisarm, None), (after_exec, None)] {
+            let root = TestDir::new();
+            let mut state = test_state(&root.0);
+            let (pid, tid) = (state.pid, state.tid);
+            let mut memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
+            test_catch_signal(&state, libc::SIGUSR1);
+            state.thread_signals.lock().altstack = Some(before);
+            assert_eq!(
+                syscall_result(
+                    &mut memory,
+                    &mut state,
+                    libc::SYS_tgkill,
+                    [pid as u64, tid as u64, libc::SIGUSR1 as u64, 0, 0, 0],
+                ),
+                0
+            );
+            let mut executor = ElfExecutor::new(state, false);
+            let pending = executor
+                .take_pending_signal_for_delivery()
+                .unwrap()
+                .expect("SIGUSR1 is pending");
+            let action = executor.signal_action(libc::SIGUSR1);
+            assert_eq!(action.flags & libc::SA_ONSTACK as u64, 0);
+            assert_eq!(
+                executor.signal_altstack(),
+                before,
+                "the frame saves it first"
+            );
+            executor.enter_signal_handler(pending, action, false);
+            assert_eq!(
+                executor.state.thread_signals.lock().altstack,
+                after,
+                "{before:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn sigaltstack_reports_a_stack_exec_left_as_disabled_with_its_autodisarm() {
+        // Linux reports sas_ss_flags, SS_DISABLE for a stack with no size,
+        // with the stored SS_AUTODISARM: exec keeps the flags and clears the
+        // address and size.
+        const OLD: u64 = 0x180;
+        for flags in [0, SS_AUTODISARM] {
+            let root = TestDir::new();
+            let mut state = test_state(&root.0);
+            let mut memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
+            state.thread_signals.lock().altstack = Some(GuestStack {
+                sp: 0,
+                flags,
+                size: 0,
+            });
+            assert_eq!(
+                sigaltstack(&mut memory, &mut state, Some(0x4000), &[0, OLD, 0, 0, 0, 0]),
+                0,
+            );
+            assert_eq!(
+                GuestStack::decode(read_guest_bytes::<24>(&ProviderMemory(&memory), OLD).unwrap()),
+                GuestStack {
+                    sp: 0,
+                    flags: libc::SS_DISABLE | flags,
+                    size: 0,
+                },
+                "flags {flags:#x}",
+            );
+        }
+    }
+
+    #[test]
     fn rt_sigreturn_ignores_invalid_altstack_restore_but_restores_the_mask() {
         let root = TestDir::new();
         let mut executor = ElfExecutor::new(test_state(&root.0), false);
