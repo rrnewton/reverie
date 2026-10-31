@@ -5029,3 +5029,32 @@ fn exec_keeps_the_alternate_stacks_flags_for_later_frames() {
         assert_eq!(log.final_stack, [0, SS_DISABLE, 0], "{context}");
     }
 }
+
+// The round-3 live tracer test, run against the round-2 tracer (scratch).
+#[test]
+fn the_native_tracer_forwards_a_sent_sigstop_and_suppresses_only_the_synthetic_one() {
+    if bounded("the_native_tracer_forwards_a_sent_sigstop_and_suppresses_only_the_synthetic_one") {
+        return;
+    }
+    // Native only: KVM supports no stopped state, so a stop signal a guest
+    // sends ends a KVM run. The guest clones a thread, which sends itself
+    // SIGSTOP with tgkill and then lets the main thread finish. The tracer
+    // suppresses the thread's synthetic SIGSTOP (SI_USER from pid 0), forwards
+    // the sent one (SI_TKILL from the guest), which stops the whole process,
+    // and resumes each thread from the group-stop that follows, which
+    // delivers nothing.
+    let program = stacked_program(
+        &[],
+        "mov $0x50f00,%edi\nlea sibling_stack_end(%rip),%rsi\nxor %edx,%edx\n\
+         xor %r10d,%r10d\nxor %r8d,%r8d\nmov $56,%eax\nsyscall\n\
+         test %rax,%rax\njz 7f\n\
+         5: cmpb $0,done(%rip)\nje 5b\njmp 4f\n\
+         7: mov $186,%eax\nsyscall\nmov pid(%rip),%rdi\nmov %rax,%rsi\nmov $19,%edx\n\
+         mov $234,%eax\nsyscall\nmovb $1,done(%rip)\nxor %edi,%edi\nmov $60,%eax\nsyscall\nud2\n\
+         4:\n",
+        "done: .byte 0\n",
+        SIBLING_STACK,
+    );
+    let native = traced_native(&program, Tracing::Deliver);
+    assert_eq!(native.delivered, [libc::SIGSTOP]);
+}
