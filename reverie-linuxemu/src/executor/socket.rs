@@ -1127,7 +1127,8 @@ pub(super) fn install_received_rights(
             )
         })
         .collect();
-    let guest_fds = match available_guest_fds_with_limit(state, rights.len(), GUEST_NOFILE_LIMIT) {
+    let guest_fds = match available_guest_fds_with_limit(state, rights.len(), guest_nofile_limit())
+    {
         Ok(guest_fds) => guest_fds,
         Err(error) => {
             release_dropped_proc_transfers(
@@ -1856,7 +1857,8 @@ pub(super) fn recvmmsg(
 
 // General FIONREAD support was withdrawn in 345681e44bf9d07f8c9f52138ce2682633adfffe:
 // SCM_RIGHTS does not retain synthetic proc-file semantics. Only an actual host
-// pipe/FIFO can use this operation without that missing descriptor metadata.
+// pipe/FIFO can use this operation without that missing descriptor metadata, and
+// an actual host inotify instance, which ioctl serves with inotify_fionread.
 pub(super) fn pipe_fionread<M: GuestMemoryAccess<Error = crate::Error>>(
     memory: &M,
     state: &LoadedStaticElf,

@@ -553,7 +553,7 @@ pub(super) fn fdinfo_path_target(state: &LoadedStaticElf, path: &[u8]) -> Option
         .filter(|s| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit()))
         .and_then(|s| s.parse::<i32>().ok())
     {
-        Some(fd) if fd < GUEST_NOFILE_LIMIT && fd.to_string().as_bytes() == suffix => fd,
+        Some(fd) if fd < GUEST_FD_TABLE_CAPACITY && fd.to_string().as_bytes() == suffix => fd,
         // Linux v6.3 fs/proc/fd.c returns ENOENT directly when its fd lookup
         // cannot resolve the final component. That precedes lookup_open's
         // create-error fallback even with O_CREAT|O_DIRECTORY|O_EXCL.

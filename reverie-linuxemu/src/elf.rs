@@ -59,8 +59,6 @@ pub(crate) mod parent_death;
 
 const PAGE_SIZE: u64 = 4096;
 pub(crate) const TASK_COMM_LEN: usize = 16;
-/// The fixed ELF64 layout also used by the ptrace tracee initializer.
-pub(crate) const LINUX_FIXED_PERSONALITY: u32 = 0x0004_0000;
 pub const STACK_LIMIT: u64 = 8 * 1024 * 1024;
 
 /// The PID-namespace init process seen by the deterministic container. The
@@ -349,8 +347,6 @@ pub struct GuestFileIdentityTable {
     /// keyed by their pinned backing memfd.
     pub proc_transfers:
         std::collections::BTreeMap<(libc::dev_t, libc::ino_t), crate::executor::ProcTransfer>,
-    /// Run-wide virtual inotify rename cookies; see executor/inotify.rs.
-    pub inotify_cookies: crate::executor::InotifyCookieTable,
 }
 
 /// Process-tree-wide state whose lifetime follows a guest task rather than an
@@ -1163,8 +1159,9 @@ pub struct LoadedStaticElf {
     /// so conflating the two makes the root guest invisible to the tool.
     pub is_traced_tree_root: bool,
     pub umask: libc::mode_t,
-    /// Per-task ELF64 Linux personality. Only UNAME26 can change within the
-    /// fixed ADDR_NO_RANDOMIZE layout. Fork and clone copy it by value; ordinary
+    /// Per-task ELF64 Linux personality. It starts as the launcher's plus
+    /// ADDR_NO_RANDOMIZE, and only UNAME26 can change within that base.
+    /// Fork and clone copy it by value; ordinary
     /// supported exec preserves the calling task's value.
     pub(crate) linux_personality: u32,
     /// Task IDs each new task spends (`reverie::task_ids`): Linux's 1 unless
@@ -1731,9 +1728,32 @@ pub fn load_static_elf_with_execfn(
     result
 }
 
+/// Loads the image read from `file` as exec'd by the filename `argv[0]`; see
+/// [`load_static_elf_file_with_execfn`].
 pub fn load_static_elf_file(
     memory: &mut GuestMemory,
     file: File,
+    argv: &[&str],
+    envp: &[&str],
+    cwd: &Path,
+) -> Result<LoadedStaticElf> {
+    load_static_elf_file_with_execfn(memory, file, None, argv, envp, cwd)
+}
+
+/// Loads the image read from `file`, keeping `file` as the process's
+/// executable, as `execve(execfn, argv, envp)` would. The retained file is
+/// what an exec or a following stat of `/proc/self/exe` reaches. For a
+/// `#!` script, each interpreter is read from a file of its own, and the
+/// final interpreter's file is retained instead. `execfn` is as
+/// [`load_static_elf_with_execfn`] takes it: the filename Linux names in
+/// `AT_EXECFN` and copies to the top of the new stack, and a script's own
+/// argument after its interpreter; `None` means `argv[0]` and, for a script,
+/// the path of `file`. Either way the new task is named by the path of
+/// `file`.
+pub fn load_static_elf_file_with_execfn(
+    memory: &mut GuestMemory,
+    file: File,
+    execfn: Option<&[u8]>,
     argv: &[&str],
     envp: &[&str],
     cwd: &Path,
@@ -1744,11 +1764,12 @@ pub fn load_static_elf_file(
     let owner = memory.clone();
     let _transaction = owner.allocation_guard();
     begin_image(memory)?;
+    let script_name = execfn.map(|execfn| String::from_utf8_lossy(execfn).into_owned());
     let result = load_executable(
         memory,
         &image,
-        None,
-        None,
+        execfn,
+        script_name.as_deref(),
         argv,
         envp,
         cwd,
@@ -1776,10 +1797,11 @@ pub fn load_static_elf_file(
 // this only after its existing fatal point of no return.
 fn begin_image(memory: &GuestMemory) -> Result<()> {
     // The new image is a new address space. A vfork child that shares its
-    // parent's stack-window record (`GuestMemory::share_user_stack_window_watch`)
-    // takes one of its own first, so clearing the old image here, which
-    // records a change, leaves the parent's entry, as Linux leaves the
-    // parent's mappings when the child execs.
+    // parent's stack-window record
+    // (`GuestMemory::snapshot_sharing_address_space`) takes one of its own
+    // first, so clearing the old image here, which counts a change, leaves
+    // the parent's list, as Linux leaves the parent's mappings when the
+    // child execs.
     memory.detach_user_stack_window_watch();
     memory.clear_user_access();
     // The new image's layout replaces the old one whole: its identity end and
@@ -2102,16 +2124,24 @@ fn load_executable(
         at_base,
         main_entry,
     )?;
-    memory.map_user_range(memory.guest_end() - STACK_LIMIT, STACK_LIMIT, false)?;
-    // The window as this image starts with it: from here on, any change to it
-    // is recorded (`GuestMemory::unchanged_user_stack_window`).
-    memory.watch_user_stack_window();
     // Linux takes the last PT_GNU_STACK header's PF_X.
     let stack_executable = elf
         .program_headers
         .iter()
         .rfind(|header| header.p_type == PT_GNU_STACK)
         .is_some_and(|header| header.p_flags & PF_X != 0);
+    // The stack's mapping as Linux's setup_arg_pages makes it: read-write,
+    // and executable for a PT_GNU_STACK with PF_X.
+    let stack_prot =
+        libc::PROT_READ | libc::PROT_WRITE | if stack_executable { libc::PROT_EXEC } else { 0 };
+    memory.map_user_protection(
+        memory.guest_end() - STACK_LIMIT,
+        STACK_LIMIT,
+        stack_prot as u8,
+    )?;
+    // The window as this image starts with it: from here on, every change to
+    // it is counted (`GuestMemory::user_stack_window_pages`).
+    memory.watch_user_stack_window();
     let program_break = align_up(main_end, PAGE_SIZE)?;
     // Mappings are placed top-down in the mmap window, [mmap_base, mmap_limit)
     // physically; the program break grows up to the end of the identity
@@ -2155,6 +2185,12 @@ fn load_executable(
     // in-guest exec replaces these with its caller's, put through the same
     // rule, in `inherit_process_state_locked`.
     let launcher = crate::credentials::LauncherCredentials::get()?;
+    if launcher.personality & crate::credentials::UNIMPLEMENTED_LAUNCHER_PERSONALITY != 0 {
+        return Err(Error::UnsupportedElf(format!(
+            "launcher personality {:#x} has bits LinuxEmu does not implement",
+            launcher.personality
+        )));
+    }
     let capabilities = launcher.guest_capabilities();
 
     memory.set_allocation_cursors(AllocationCursors {
@@ -2196,7 +2232,7 @@ fn load_executable(
         // must not change this.
         is_traced_tree_root: true,
         umask: launcher.umask,
-        linux_personality: LINUX_FIXED_PERSONALITY,
+        linux_personality: crate::credentials::guest_personality(launcher.personality),
         ids_per_task: reverie::task_ids::LINUX_IDS_PER_TASK,
         host_metadata_timestamps: false,
         tool_directory: None,
@@ -2239,7 +2275,6 @@ fn load_executable(
         fdinfo_table: std::sync::Weak::new(),
         fd_object_inodes: std::collections::BTreeMap::new(),
         file_identity_table: std::sync::Arc::new(std::sync::Mutex::new(GuestFileIdentityTable {
-            inotify_cookies: crate::executor::InotifyCookieTable::default(),
             next_inode: 0x2100_0000,
             objects: std::collections::BTreeMap::new(),
             proc_transfers: std::collections::BTreeMap::new(),
@@ -2555,6 +2590,14 @@ fn copy_program_headers(memory: &mut GuestMemory, image: &[u8], elf: &Elf<'_>) -
     memory.write_raw(PROGRAM_HEADERS_ADDRESS, headers)
 }
 
+#[cfg(test)]
+thread_local! {
+    /// The most recent host draw on this thread, so a test can compare the
+    /// bytes placed on the guest stack against the actual host draw.
+    static LAST_HOST_RANDOM: std::cell::RefCell<Vec<u8>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
 /// `N` bytes from the host's getrandom(2), the source Linux's
 /// get_random_bytes draws on.
 fn host_random_bytes<const N: usize>() -> Result<[u8; N]> {
@@ -2572,6 +2615,8 @@ fn host_random_bytes<const N: usize>() -> Result<[u8; N]> {
         }
         filled += result as usize;
     }
+    #[cfg(test)]
+    LAST_HOST_RANDOM.with(|last| *last.borrow_mut() = bytes.to_vec());
     Ok(bytes)
 }
 
@@ -3214,6 +3259,10 @@ mod tests {
         );
         assert_eq!(loaded.credential_root, launcher.root);
         assert_eq!(loaded.umask, launcher.umask);
+        assert_eq!(
+            loaded.linux_personality,
+            crate::credentials::guest_personality(launcher.personality)
+        );
     }
 
     /// The initial stack follows Linux's exec layout at Linux's addresses, so
@@ -3265,6 +3314,11 @@ mod tests {
         );
         assert_eq!(read(platform, 7), b"x86_64\0");
 
+        // AT_RANDOM holds exactly the 16 bytes of this load's host draw.
+        let first_draw = LAST_HOST_RANDOM.with(|last| last.borrow().clone());
+        assert_eq!(first_draw.len(), 16);
+        assert_eq!(read(random, 16), first_draw);
+
         // AT_RANDOM holds 16 bytes from the host's getrandom, as Linux's
         // get_random_bytes fills it, so a second load draws other bytes.
         let mut second_memory = GuestMemory::new(0, TEST_MEMORY_SIZE).unwrap();
@@ -3286,6 +3340,10 @@ mod tests {
         let mut second_bytes = [0; 16];
         let physical = second_memory.user_range_to_guest(random, 16).unwrap();
         second_memory.read_raw(physical, &mut second_bytes).unwrap();
+        // The second stack holds exactly the second host draw, which differs
+        // from the first.
+        let second_draw = LAST_HOST_RANDOM.with(|last| last.borrow().clone());
+        assert_eq!(second_bytes.as_slice(), second_draw.as_slice());
         assert_ne!(read(random, 16), second_bytes);
 
         let words = 1 + 3 + 3 + 2 * loaded.auxv.len() as u64 + 2;

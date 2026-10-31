@@ -1053,8 +1053,8 @@ const CONTENT_REVERIE_CATALOG: [(&str, u64, &str); 77] = [
     ),
     (
         "reverie/src/pmu_config.rs",
-        35867,
-        "2177a7d5c770e972b10ef717b51001a82639cc291ab7b2002b1f08d894dca7d7",
+        36433,
+        "abbbd3e01ed11ea87cadea9ae2fe7832d07e1ce7972e9ac1c607f80e51ecd9fc",
     ),
     (
         "reverie/src/in_guest_rcb.rs",
@@ -17431,6 +17431,13 @@ fn fixed_role_symbols(elf: &Elf<'_>) -> Result<BTreeMap<String, sym::Sym>> {
         !FIXED_EMITTED_ROLE_SYMBOLS.is_empty(),
         "fixed allocator/setup emitted-role census is pending actual release/dev ELF evidence",
     )?;
+    // Resolve the dynamic symbol names once, instead of rescanning the
+    // dynamic symbol table for every matched Fixed role below.
+    let dynamic_names: BTreeSet<&str> = elf
+        .dynsyms
+        .iter()
+        .filter_map(|dynamic| elf.dynstrtab.get_at(dynamic.st_name))
+        .collect();
     let mut result = BTreeMap::new();
     for symbol in elf
         .syms
@@ -17455,11 +17462,7 @@ fn fixed_role_symbols(elf: &Elf<'_>) -> Result<BTreeMap<String, sym::Sym>> {
             continue;
         }
         require(
-            symbol.st_bind() == sym::STB_LOCAL
-                && !elf
-                    .dynsyms
-                    .iter()
-                    .any(|dynamic| elf.dynstrtab.get_at(dynamic.st_name) == Some(name)),
+            symbol.st_bind() == sym::STB_LOCAL && !dynamic_names.contains(name),
             format!("Fixed emitted function {name} is dynamically visible/preemptible"),
         )?;
         for role in aliases {
@@ -17647,43 +17650,43 @@ fn fixed_select_heap_equal_cohort(
 }
 
 fn compiler_shim_symbols(elf: &Elf<'_>) -> Result<BTreeMap<String, sym::Sym>> {
+    // Resolve the named executable symbols, the dynamic symbol names and the
+    // relocation-target names once, instead of rescanning the symbol, dynamic
+    // symbol and relocation tables for every shim.
+    let executable: Vec<(&str, sym::Sym)> = elf
+        .syms
+        .iter()
+        .filter(|s| executable_symbol(elf, s))
+        .filter_map(|s| elf.strtab.get_at(s.st_name).map(|name| (name, s)))
+        .collect();
+    let dynamic_names: BTreeSet<&str> = elf
+        .dynsyms
+        .iter()
+        .filter_map(|s| elf.dynstrtab.get_at(s.st_name))
+        .collect();
+    let relocated_names: BTreeSet<&str> = elf
+        .dynrelas
+        .iter()
+        .chain(elf.dynrels.iter())
+        .chain(elf.pltrelocs.iter())
+        .filter_map(|r| elf.dynsyms.get(r.r_sym))
+        .filter_map(|s| elf.dynstrtab.get_at(s.st_name))
+        .collect();
     let mut result = BTreeMap::new();
     for shim in SHIMS {
-        let candidates: Vec<_> = elf
-            .syms
+        let candidates: Vec<_> = executable
             .iter()
-            .filter(|s| executable_symbol(elf, s))
-            .filter(|s| {
-                elf.strtab
-                    .get_at(s.st_name)
-                    .is_some_and(|name| name == shim || name.ends_with(shim))
-            })
+            .filter(|(name, _)| *name == shim || name.ends_with(shim))
             .collect();
         require(
             candidates.len() == 1,
             format!("required unique compiler-selected shim {shim} absent/ambiguous"),
         )?;
-        let symbol = candidates[0];
-        let name = elf
-            .strtab
-            .get_at(symbol.st_name)
-            .ok_or("allocation shim name absent")?;
+        let &(name, symbol) = candidates[0];
         require(
             symbol.st_bind() == sym::STB_LOCAL
-                && !elf
-                    .dynsyms
-                    .iter()
-                    .any(|s| elf.dynstrtab.get_at(s.st_name) == Some(name))
-                && !elf
-                    .dynrelas
-                    .iter()
-                    .chain(elf.dynrels.iter())
-                    .chain(elf.pltrelocs.iter())
-                    .any(|r| {
-                        elf.dynsyms
-                            .get(r.r_sym)
-                            .is_some_and(|s| elf.dynstrtab.get_at(s.st_name) == Some(name))
-                    }),
+                && !dynamic_names.contains(name)
+                && !relocated_names.contains(name),
             format!("compiler allocation shim {shim} is dynamically visible/preemptible"),
         )?;
         result.insert(shim.to_owned(), symbol);
@@ -29569,22 +29572,24 @@ fn proof_functions(elf: &Elf<'_>, initializer_name: &str) -> Result<BTreeMap<u64
     if initializer_name == STANDALONE_ROOT {
         require_legacy_standalone_gate(elf)?;
     }
-    let mut addresses: BTreeSet<_> = elf
+    // Resolve the named executable symbols once; the endpoint scan below and
+    // the shim scan further down both walk this list.
+    let named_executable: Vec<(&str, sym::Sym)> = elf
         .syms
         .iter()
         .filter(|s| executable_symbol(elf, s))
-        .filter_map(|s| {
-            elf.strtab
-                .get_at(s.st_name)
-                .filter(|name| {
-                    allocation_wrapper(name)
-                        || qualifies_owned_endpoint(name)
-                        || (s.st_bind() == sym::STB_LOCAL
-                            && (name.contains("PrivatePatchAllocator")
-                                || name.contains("PrivateToolAllocator")))
-                })
-                .map(|_| s.st_value)
+        .filter_map(|s| elf.strtab.get_at(s.st_name).map(|name| (name, s)))
+        .collect();
+    let mut addresses: BTreeSet<_> = named_executable
+        .iter()
+        .filter(|(name, s)| {
+            allocation_wrapper(name)
+                || qualifies_owned_endpoint(name)
+                || (s.st_bind() == sym::STB_LOCAL
+                    && (name.contains("PrivatePatchAllocator")
+                        || name.contains("PrivateToolAllocator")))
         })
+        .map(|(_, s)| s.st_value)
         .collect();
     addresses.extend(
         fixed_role_symbols(elf)?
@@ -29604,21 +29609,15 @@ fn proof_functions(elf: &Elf<'_>, initializer_name: &str) -> Result<BTreeMap<u64
     }
     addresses.extend(generic_symbols(elf)?.values().map(|s| s.st_value));
     for shim in SHIMS {
-        let candidates: Vec<_> = elf
-            .syms
+        let candidates: Vec<_> = named_executable
             .iter()
-            .filter(|s| executable_symbol(elf, s))
-            .filter(|s| {
-                elf.strtab
-                    .get_at(s.st_name)
-                    .is_some_and(|name| name == shim || name.ends_with(shim))
-            })
+            .filter(|(name, _)| *name == shim || name.ends_with(shim))
             .collect();
         require(
             candidates.len() == 1,
             format!("required unique compiler-selected shim {shim} absent/ambiguous"),
         )?;
-        addresses.insert(candidates[0].st_value);
+        addresses.insert(candidates[0].1.st_value);
     }
     selected_function_ranges(elf, addresses)
 }
@@ -29664,19 +29663,20 @@ fn detcore_proof_functions(elf: &Elf<'_>) -> Result<BTreeMap<u64, u64>> {
 }
 
 fn selected_function_ranges(elf: &Elf<'_>, addresses: BTreeSet<u64>) -> Result<BTreeMap<u64, u64>> {
+    // Collect every defined function size per address in one pass, instead of
+    // rescanning both symbol tables once per selected address.
+    let mut sizes_by_address: BTreeMap<u64, BTreeSet<u64>> = BTreeMap::new();
+    for s in elf.syms.iter().chain(elf.dynsyms.iter()) {
+        if s.st_type() == sym::STT_FUNC && s.st_shndx != section_header::SHN_UNDEF as usize {
+            sizes_by_address
+                .entry(s.st_value)
+                .or_default()
+                .insert(s.st_size);
+        }
+    }
     let mut functions = BTreeMap::new();
     for address in addresses {
-        let sizes: BTreeSet<_> = elf
-            .syms
-            .iter()
-            .chain(elf.dynsyms.iter())
-            .filter(|s| {
-                s.st_type() == sym::STT_FUNC
-                    && s.st_shndx != section_header::SHN_UNDEF as usize
-                    && s.st_value == address
-            })
-            .map(|s| s.st_size)
-            .collect();
+        let sizes: BTreeSet<_> = sizes_by_address.get(&address).cloned().unwrap_or_default();
         require(
             sizes.len() == 1 && !sizes.contains(&0),
             format!("selected function {address:#x} has absent/conflicting alias sizes"),
@@ -31924,47 +31924,52 @@ fn qualify_elf_from_evidence_in_source_context(
         .iter()
         .map(|name| export(&elf, name).map(|(_, s)| symbol_evidence(name, &s)))
         .collect::<Result<Vec<_>>>()?;
+    // Resolve the named executable symbols, the dynamic symbol names and the
+    // relocation-target names once, instead of rescanning the symbol, dynamic
+    // symbol and relocation tables for every shim below.
+    let executable: Vec<(&str, sym::Sym)> = elf
+        .syms
+        .iter()
+        .filter(|s| executable_symbol(&elf, s))
+        .filter_map(|s| elf.strtab.get_at(s.st_name).map(|name| (name, s)))
+        .collect();
+    let dynamic_names: BTreeSet<&str> = elf
+        .dynsyms
+        .iter()
+        .filter_map(|d| elf.dynstrtab.get_at(d.st_name))
+        .collect();
+    let relocated_names: BTreeSet<&str> = elf
+        .dynrelas
+        .iter()
+        .chain(elf.dynrels.iter())
+        .chain(elf.pltrelocs.iter())
+        .filter_map(|r| elf.dynsyms.get(r.r_sym))
+        .filter_map(|s| elf.dynstrtab.get_at(s.st_name))
+        .collect();
     let mut allocation_shims = BTreeMap::new();
     for shim in SHIMS {
         // rustc's v0 symbol names end in the allocation shim identifier; older
         // compilers emit the unmangled identifier. Require the exact suffix,
         // not a broad `alloc` substring that might name an unrelated helper.
-        let candidates: Vec<_> = elf
-            .syms
+        let candidates: Vec<_> = executable
             .iter()
-            .filter(|s| executable_symbol(&elf, s))
-            .filter_map(|s| {
-                elf.strtab
-                    .get_at(s.st_name)
-                    .filter(|name| *name == shim || name.ends_with(shim))
-                    .map(|name| (name, s))
-            })
+            .filter(|(name, _)| *name == shim || name.ends_with(shim))
             .collect();
         require(
             candidates.len() == 1,
             format!("required unique compiler-selected shim {shim} absent/ambiguous"),
         )?;
-        let (name, s) = candidates[0];
+        let &(name, s) = candidates[0];
         require(
             s.st_bind() == sym::STB_LOCAL,
             format!("allocation shim {name} is not LOCAL"),
         )?;
         require(
-            !elf.dynsyms
-                .iter()
-                .any(|d| elf.dynstrtab.get_at(d.st_name) == Some(name)),
+            !dynamic_names.contains(name),
             format!("allocation shim {name} appears in dynamic symbol table"),
         )?;
         require(
-            !elf.dynrelas
-                .iter()
-                .chain(elf.dynrels.iter())
-                .chain(elf.pltrelocs.iter())
-                .any(|r| {
-                    elf.dynsyms
-                        .get(r.r_sym)
-                        .is_some_and(|s| elf.dynstrtab.get_at(s.st_name) == Some(name))
-                }),
+            !relocated_names.contains(name),
             format!("allocation shim {name} has a dynamic preemption route"),
         )?;
         allocation_shims.insert(shim.to_owned(), symbol_evidence(name, &s));

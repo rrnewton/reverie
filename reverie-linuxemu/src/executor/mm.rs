@@ -61,8 +61,11 @@ pub(super) fn brk(memory: &mut GuestMemory, state: &mut LoadedStaticElf, request
             else {
                 return state.program_break as i64;
             };
+            let prot = (libc::PROT_READ | libc::PROT_WRITE) as u8;
             if memory.zero_raw(physical, length).is_err()
-                || memory.map_user_range(physical, end - first, false).is_err()
+                || memory
+                    .map_user_protection(physical, end - first, prot)
+                    .is_err()
             {
                 return state.program_break as i64;
             }
@@ -524,13 +527,9 @@ pub(super) fn mmap(memory: &mut GuestMemory, state: &mut LoadedStaticElf, args: 
             }
         }
     }
+    // The protection bits were validated above, so they fit a byte.
     if memory
-        .map_user_permissions(
-            address,
-            length as u64,
-            prot != libc::PROT_NONE as u64,
-            prot & libc::PROT_WRITE as u64 != 0,
-        )
+        .map_user_protection(address, length as u64, prot as u8)
         .is_err()
     {
         return abandon_mapping(
@@ -1044,20 +1043,6 @@ pub(super) const MADVISE_KNOWN: [libc::c_int; 27] = [
     103, // MADV_GUARD_REMOVE
 ];
 
-/// Advice that never changes the flags Linux keeps on a mapping (`vm_flags`),
-/// so never splits a mapping or merges two: Linux acts on the pages
-/// (`madvise_vma_behavior` in `mm/madvise.c`) without `madvise_update_vma`.
-/// Every other advice this backend accepts (the access-pattern, KSM and
-/// huge-page advice) sets or clears such a flag on Linux, which this backend
-/// does not keep: [`madvise_flag_change`] names its range.
-pub(super) const MADVISE_KEEPS_MAPPING_FLAGS: [libc::c_int; 5] = [
-    libc::MADV_WILLNEED,
-    libc::MADV_DONTNEED,
-    libc::MADV_FREE,
-    libc::MADV_COLD,
-    libc::MADV_PAGEOUT,
-];
-
 /// Linux's argument checks for madvise(2) (mm/madvise.c): an advice outside
 /// [`MADVISE_KNOWN`] is EINVAL, the start must be page aligned, the length is
 /// rounded up to whole pages, and a length that rounds to zero or a range
@@ -1085,16 +1070,38 @@ fn madvise_arguments(args: &[u64; 6]) -> Result<Option<(libc::c_int, u64, u64)>,
     Ok(Some((advice, start, length)))
 }
 
-/// The range, rounded as Linux rounds it, of a madvise(2) call that this
-/// backend accepts as a hint and that changes the flags Linux keeps on the
-/// mappings it covers: advice outside [`MADVISE_KEEPS_MAPPING_FLAGS`] and
-/// [`MADVISE_UNIMPLEMENTED`], with arguments Linux accepts. Linux applies it
-/// to the mapped part of the range even when it reports a hole. `None` for
-/// any other call.
-pub(super) fn madvise_flag_change(args: &[u64; 6]) -> Option<(u64, u64)> {
+// The mapping flags of the hints this backend accepts, as it keeps them on
+// the pages (`DeclaredMapping::flags`): Linux's VM_RAND_READ, VM_SEQ_READ,
+// VM_HUGEPAGE, VM_NOHUGEPAGE and VM_MERGEABLE.
+pub(super) const FLAG_RANDOM: u8 = 1;
+pub(super) const FLAG_SEQUENTIAL: u8 = 2;
+pub(super) const FLAG_HUGEPAGE: u8 = 4;
+pub(super) const FLAG_NOHUGEPAGE: u8 = 8;
+pub(super) const FLAG_MERGEABLE: u8 = 16;
+
+/// The flags a madvise(2) call that this backend accepts as a hint sets and
+/// clears on the mappings it covers, as `(start, length, set, clear)` with
+/// the range rounded as Linux rounds it (`madvise_vma_behavior`, with
+/// `hugepage_madvise` and `ksm_madvise`, Linux 7.1.3). Linux applies it to
+/// the mapped part of the range even when it reports a hole. `None` for any
+/// other call: advice that acts on the pages without changing the mapping's
+/// flags (`MADV_WILLNEED`, `MADV_DONTNEED`, `MADV_FREE`, `MADV_COLD` and
+/// `MADV_PAGEOUT`, which Linux applies without `madvise_update_vma`, so
+/// they never split a mapping), advice this backend refuses, and arguments
+/// Linux refuses.
+pub(super) fn madvise_flag_change(args: &[u64; 6]) -> Option<(u64, u64, u8, u8)> {
     let (advice, start, length) = madvise_arguments(args).ok().flatten()?;
-    (!MADVISE_UNIMPLEMENTED.contains(&advice) && !MADVISE_KEEPS_MAPPING_FLAGS.contains(&advice))
-        .then_some((start, length))
+    let (set, clear) = match advice {
+        libc::MADV_NORMAL => (0, FLAG_RANDOM | FLAG_SEQUENTIAL),
+        libc::MADV_RANDOM => (FLAG_RANDOM, FLAG_SEQUENTIAL),
+        libc::MADV_SEQUENTIAL => (FLAG_SEQUENTIAL, FLAG_RANDOM),
+        libc::MADV_HUGEPAGE => (FLAG_HUGEPAGE, FLAG_NOHUGEPAGE),
+        libc::MADV_NOHUGEPAGE => (FLAG_NOHUGEPAGE, FLAG_HUGEPAGE),
+        libc::MADV_MERGEABLE => (FLAG_MERGEABLE, 0),
+        libc::MADV_UNMERGEABLE => (0, FLAG_MERGEABLE),
+        _ => return None,
+    };
+    Some((start, length, set, clear))
 }
 
 /// madvise(2). `MADV_DONTNEED` drops the range's private anonymous pages,
@@ -1160,6 +1167,15 @@ pub(super) fn munlock_range(address: u64, length: u64) -> Option<(u64, u64)> {
     (page_start.wrapping_add(page_length) >= page_start).then_some((page_start, page_length))
 }
 
+/// `mincore(2)` range validation only. Residency is the Tool's decision,
+/// because host page residency is nondeterministic: a Tool that answers
+/// mincore writes the residency bytes after this call. LinuxEmu keeps
+/// Linux's pointer and mapping validation (EINVAL for a bad address or
+/// length, ENOMEM for an unmapped range, EFAULT for a vector it cannot
+/// write) and leaves the residency bytes untouched, so the Tool's answer
+/// is the only one the guest sees. A run with no Tool that answers
+/// residency therefore gets no residency bytes from LinuxEmu; that is
+/// the named cost of keeping the policy in one place.
 pub(super) fn mincore<M: GuestMemoryAccess<Error = crate::Error> + AddressSpace>(
     memory: &mut M,
     args: &[u64; 6],
@@ -1175,15 +1191,17 @@ pub(super) fn mincore<M: GuestMemoryAccess<Error = crate::Error> + AddressSpace>
         RangeState::Unaddressable => return negative_errno(libc::EINVAL),
         RangeState::Unmapped | RangeState::Mixed => return negative_errno(libc::ENOMEM),
     }
+    // Linux faults a residency vector it cannot write (EFAULT), including
+    // one on a PROT_NONE or read-only page, without deciding any residency
+    // byte. Probe the whole vector's writability and write nothing.
     let Some(page_count) = length.checked_add(PAGE_SIZE - 1).map(|n| n / PAGE_SIZE) else {
         return negative_errno(libc::ENOMEM);
     };
     let Ok(page_count) = usize::try_from(page_count) else {
         return negative_errno(libc::ENOMEM);
     };
-    let residency = vec![1_u8; page_count];
-    match memory.write_exact(args[2], &residency) {
-        Ok(()) => 0,
-        Err(_) => negative_errno(libc::EFAULT),
+    match memory.accessible_prefix(args[2], page_count, Access::Write) {
+        Ok(writable) if writable == page_count => 0,
+        _ => negative_errno(libc::EFAULT),
     }
 }

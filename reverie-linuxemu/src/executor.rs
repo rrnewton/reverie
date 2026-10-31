@@ -87,7 +87,12 @@ pub(crate) mod pipe_owner;
 
 #[cfg(test)]
 #[path = "executor/entry_host_wait_tests.rs"]
+#[allow(clippy::disallowed_methods, reason = "tests may make threads freely")]
 mod entry_host_wait_tests;
+
+#[cfg(test)]
+#[path = "executor/reaper_stack_tests.rs"]
+mod reaper_stack_tests;
 
 use capture_identity::CaptureMetadata;
 use capture_identity::CaptureObjectIdentity;
@@ -119,7 +124,7 @@ use proc::*;
 mod read_write;
 use read_write::*;
 mod file;
-pub use file::*;
+use file::*;
 mod event_fds;
 use event_fds::*;
 mod facts;
@@ -490,7 +495,7 @@ pub fn native_loaded_state(cwd: &std::path::Path) -> LoadedStaticElf {
         orphan_reaper_pid: Arc::new(AtomicI32::new(0)),
         is_traced_tree_root: true,
         umask: 0o022,
-        linux_personality: crate::elf::LINUX_FIXED_PERSONALITY,
+        linux_personality: libc::ADDR_NO_RANDOMIZE as u32,
         ids_per_task: reverie::task_ids::LINUX_IDS_PER_TASK,
         host_metadata_timestamps: false,
         tool_directory: None,
@@ -537,7 +542,6 @@ pub fn native_loaded_state(cwd: &std::path::Path) -> LoadedStaticElf {
         fdinfo_table: std::sync::Weak::new(),
         fd_object_inodes: std::collections::BTreeMap::new(),
         file_identity_table: Arc::new(std::sync::Mutex::new(crate::elf::GuestFileIdentityTable {
-            inotify_cookies: InotifyCookieTable::default(),
             next_inode: 0x2100_0000,
             objects: std::collections::BTreeMap::new(),
             proc_transfers: std::collections::BTreeMap::new(),
@@ -558,6 +562,7 @@ pub fn test_loaded_state_for_vm(cwd: &std::path::Path) -> LoadedStaticElf {
 }
 
 #[cfg(test)]
+#[allow(clippy::disallowed_methods, reason = "tests may make threads freely")]
 mod tests {
     include!("../tests/support/executor_terminal_tests.rs");
     include!("executor/parent_death_tests.rs");
@@ -3090,7 +3095,7 @@ mod tests {
 
         for (path, dirfd, control_error) in [
             ("", libc::AT_FDCWD, libc::ENOENT),
-            ("missing", GUEST_NOFILE_LIMIT, libc::EBADF),
+            ("missing", guest_nofile_limit(), libc::EBADF),
             ("missing", libc::AT_FDCWD, libc::ENOENT),
             ("/proc/self/fdinfo/999", libc::AT_FDCWD, libc::ENOENT),
             ("/proc/self/fd/999", libc::AT_FDCWD, libc::ENOENT),
@@ -3706,7 +3711,7 @@ mod tests {
 
         for (path, dirfd, control_error) in [
             ("", libc::AT_FDCWD, libc::ENOENT),
-            ("missing", GUEST_NOFILE_LIMIT, libc::EBADF),
+            ("missing", guest_nofile_limit(), libc::EBADF),
             ("missing", libc::AT_FDCWD, libc::ENOENT),
             ("/proc/self/fdinfo/999", libc::AT_FDCWD, libc::ENOENT),
             ("/proc/self/fd/999", libc::AT_FDCWD, libc::ENOENT),
@@ -11500,15 +11505,28 @@ mod tests {
     }
 
     /// `sched_get_priority_min` and `sched_get_priority_max` stay host
-    /// forwards, because Detcore passes them through: for SCHED_OTHER,
-    /// SCHED_FIFO, SCHED_RR and the invalid policy 999, each answer, an error
-    /// included, is the host's own, and none carries a refusal.
+    /// forwards, because Detcore passes them through: for every policy the
+    /// host accepts or rejects - SCHED_OTHER, SCHED_FIFO, SCHED_RR,
+    /// SCHED_BATCH, SCHED_IDLE, SCHED_DEADLINE, SCHED_EXT (7), the invalid
+    /// policy 999, and a policy word above 32 bits, which the kernel reads
+    /// as its low word - each answer, an error included, is the host's own,
+    /// and none carries a refusal.
     #[test]
     fn scheduling_priority_bounds_are_the_hosts() {
         let root = TestDir::new();
         let memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
         let mut executor = ElfExecutor::new(test_state(&root.0), false);
-        for policy in [libc::SCHED_OTHER, libc::SCHED_FIFO, libc::SCHED_RR, 999] {
+        for policy in [
+            libc::SCHED_OTHER as u64,
+            libc::SCHED_FIFO as u64,
+            libc::SCHED_RR as u64,
+            libc::SCHED_BATCH as u64,
+            libc::SCHED_IDLE as u64,
+            libc::SCHED_DEADLINE as u64,
+            7,
+            999,
+            1_u64 << 32,
+        ] {
             for number in [
                 libc::SYS_sched_get_priority_min,
                 libc::SYS_sched_get_priority_max,
@@ -11522,7 +11540,7 @@ mod tests {
                 };
                 assert_eq!(
                     executor.execute(
-                        &SyscallRequest::new(number as u64, [policy as u64, 0, 0, 0, 0, 0]),
+                        &SyscallRequest::new(number as u64, [policy, 0, 0, 0, 0, 0]),
                         &memory
                     ),
                     host,
@@ -12197,7 +12215,7 @@ mod tests {
                     (1, 0, &[0]),
                     (3, 2, &[0, libc::POLLNVAL, libc::POLLIN]),
                     (
-                        GUEST_NOFILE_LIMIT as u64 + 1,
+                        guest_nofile_limit() as u64 + 1,
                         negative_errno(libc::EINVAL),
                         &[],
                     ),
@@ -14869,6 +14887,41 @@ mod tests {
         // The host's retransmission timeout and send MSS pass through.
         assert_ne!(info.tcpi_rto, 0, "tcpi_rto should be the host's");
         assert_ne!(info.tcpi_snd_mss, 0, "tcpi_snd_mss should be the host's");
+        // Native oracle: the same host socket's own TCP_INFO. The guest
+        // answer must preserve the host bytes for every field that cannot
+        // change on an idle loopback connection between the two calls, so
+        // fabricated or zeroed counters would fail here.
+        let client_host_fd = host_fd(&executor.state, client as libc::c_int).unwrap();
+        // SAFETY: a zeroed tcp_info is a valid output buffer.
+        let mut native: libc::tcp_info = unsafe { std::mem::zeroed() };
+        let mut native_len = info_size as libc::socklen_t;
+        // SAFETY: native is writable for native_len bytes; client_host_fd is
+        // the live host socket behind the guest descriptor.
+        assert_eq!(
+            unsafe {
+                libc::getsockopt(
+                    client_host_fd,
+                    libc::IPPROTO_TCP,
+                    libc::TCP_INFO,
+                    (&mut native as *mut libc::tcp_info).cast::<libc::c_void>(),
+                    &mut native_len,
+                )
+            },
+            0
+        );
+        assert_eq!(info.tcpi_state, native.tcpi_state);
+        assert_eq!(info.tcpi_ca_state, native.tcpi_ca_state);
+        assert_eq!(info.tcpi_retransmits, native.tcpi_retransmits);
+        assert_eq!(info.tcpi_probes, native.tcpi_probes);
+        assert_eq!(info.tcpi_backoff, native.tcpi_backoff);
+        assert_eq!(info.tcpi_options, native.tcpi_options);
+        assert_eq!(info.tcpi_snd_mss, native.tcpi_snd_mss);
+        assert_eq!(info.tcpi_rcv_mss, native.tcpi_rcv_mss);
+        assert_eq!(info.tcpi_snd_cwnd, native.tcpi_snd_cwnd);
+        assert_eq!(info.tcpi_snd_ssthresh, native.tcpi_snd_ssthresh);
+        assert_eq!(info.tcpi_rcv_ssthresh, native.tcpi_rcv_ssthresh);
+        assert_eq!(info.tcpi_advmss, native.tcpi_advmss);
+        assert_eq!(info.tcpi_reordering, native.tcpi_reordering);
 
         for fd in [accepted, client, server] {
             assert_eq!(
@@ -20746,7 +20799,7 @@ mod tests {
             ("bad-pointer", info, native, bad_address, 1, 0, libc::ESPIPE),
             (
                 "invalid-fd",
-                GUEST_NOFILE_LIMIT as i64,
+                guest_nofile_limit() as i64,
                 -1,
                 BUFFER,
                 1,
@@ -20755,7 +20808,7 @@ mod tests {
             ),
             (
                 "invalid-fd-negative",
-                GUEST_NOFILE_LIMIT as i64,
+                guest_nofile_limit() as i64,
                 -1,
                 BUFFER,
                 1,
@@ -21466,6 +21519,38 @@ mod tests {
             .flatten()
             .map(|&(fd, _)| fd)
             .collect()
+    }
+
+    #[test]
+    fn dup_to_self_at_the_allocation_bound_is_not_an_allocation() {
+        let root = TestDir::new();
+        let mut state = test_state(&root.0);
+        let mut memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
+        // Place a descriptor at the current bound directly: it stands for
+        // one allocated while RLIMIT_NOFILE was higher, then lowered.
+        let bound = guest_nofile_limit();
+        state
+            .files
+            .insert(bound, std::fs::File::open("/dev/null").unwrap());
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_dup2,
+                [bound as u64, bound as u64, 0, 0, 0, 0],
+            ),
+            i64::from(bound)
+        );
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_dup3,
+                [bound as u64, bound as u64, 0, 0, 0, 0],
+            ),
+            negative_errno(libc::EINVAL)
+        );
+        state.files.remove(&bound);
     }
 
     #[test]
@@ -37152,7 +37237,14 @@ mod tests {
                 &mut memory,
                 &mut state,
                 libc::SYS_fcntl,
-                [4, libc::F_DUPFD as u64, GUEST_NOFILE_LIMIT as u64, 0, 0, 0,],
+                [
+                    4,
+                    libc::F_DUPFD as u64,
+                    guest_nofile_limit() as u64,
+                    0,
+                    0,
+                    0,
+                ],
             ),
             negative_errno(libc::EINVAL)
         );
@@ -38954,7 +39046,7 @@ mod tests {
     }
 
     #[test]
-    fn memory_residency_is_deterministic() {
+    fn mincore_validates_without_writing_residency() {
         const VECTOR: u64 = 4 * PAGE_SIZE;
 
         let root = TestDir::new();
@@ -39049,6 +39141,9 @@ mod tests {
             syscall_result(&mut memory, &mut state, libc::SYS_munlockall, [u64::MAX; 6],),
             0
         );
+        // Residency is the Tool's decision; LinuxEmu only validates and
+        // leaves the vector's bytes as the guest left them.
+        memory.write(VECTOR, &[7_u8, 7]).unwrap();
         assert_eq!(
             syscall_result(
                 &mut memory,
@@ -39060,7 +39155,16 @@ mod tests {
         );
         assert_eq!(
             read_guest_bytes::<2>(&ProviderMemory(&memory), VECTOR).unwrap(),
-            [1, 1]
+            [7, 7]
+        );
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_mincore,
+                [PAGE_SIZE, PAGE_SIZE, 10 * PAGE_SIZE, 0, 0, 0],
+            ),
+            negative_errno(libc::EFAULT)
         );
         assert_eq!(
             syscall_result(
@@ -39079,6 +39183,58 @@ mod tests {
                 [PAGE_SIZE + 1, PAGE_SIZE, VECTOR, 0, 0, 0],
             ),
             negative_errno(libc::EINVAL)
+        );
+    }
+
+    #[test]
+    fn mincore_vector_must_be_writable_when_user_access_is_enforced() {
+        let root = TestDir::new();
+        let mut state = test_state(&root.0);
+        // Pages: 1 target (writable), 2 writable vector, 3 read-only vector,
+        // 4 PROT_NONE vector, 5-6 straddling vector (writable, PROT_NONE).
+        let mut memory = GuestMemory::new(0, 7 * PAGE_SIZE as usize).unwrap();
+        memory.map_user_range(PAGE_SIZE, PAGE_SIZE, false).unwrap();
+        memory
+            .map_user_range(2 * PAGE_SIZE, PAGE_SIZE, false)
+            .unwrap();
+        memory
+            .map_user_permissions(3 * PAGE_SIZE, PAGE_SIZE, true, false)
+            .unwrap();
+        memory
+            .map_user_range(4 * PAGE_SIZE, PAGE_SIZE, true)
+            .unwrap();
+        memory
+            .map_user_range(5 * PAGE_SIZE, PAGE_SIZE, false)
+            .unwrap();
+        memory
+            .map_user_range(6 * PAGE_SIZE, PAGE_SIZE, true)
+            .unwrap();
+        memory.enable_user_access();
+        memory.write(2 * PAGE_SIZE, &[7_u8; 4]).unwrap();
+        for vector in [3 * PAGE_SIZE, 4 * PAGE_SIZE] {
+            assert_eq!(
+                syscall_result(
+                    &mut memory,
+                    &mut state,
+                    libc::SYS_mincore,
+                    [PAGE_SIZE, PAGE_SIZE, vector, 0, 0, 0],
+                ),
+                negative_errno(libc::EFAULT),
+                "vector {vector:#x}",
+            );
+        }
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_mincore,
+                [PAGE_SIZE, PAGE_SIZE, 2 * PAGE_SIZE, 0, 0, 0],
+            ),
+            0,
+        );
+        assert_eq!(
+            read_guest_bytes::<4>(&ProviderMemory(&memory), 2 * PAGE_SIZE).unwrap(),
+            [7, 7, 7, 7]
         );
     }
 
@@ -44533,6 +44689,7 @@ mod child_panic_owner_tests {
 
 #[cfg(test)]
 #[path = "executor/exit_descriptor_tests.rs"]
+#[allow(clippy::disallowed_methods, reason = "tests may make threads freely")]
 mod exit_descriptor_tests;
 
 #[cfg(test)]

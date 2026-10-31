@@ -91,7 +91,7 @@ fn syncfs_closed_and_path_only_precede_private_refusal_without_host_call() {
         u32::MAX as u64,
         i32::MIN as u32 as u64,
         i32::MAX as u64,
-        GUEST_NOFILE_LIMIT as u64,
+        guest_nofile_limit() as u64,
     ] {
         assert_eq!(
             syncfs_call(&mut memory, &mut state, raw),

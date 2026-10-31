@@ -6,30 +6,36 @@
  * LICENSE file in the root directory of this source tree.
  */
 
-//! `Guest::memory_map` on a KVM guest lists the one mapping the backend can
-//! establish exactly, the process's `[stack]`, while nothing has changed the
-//! stack window since the image started, and says that the list is not
-//! complete. The same C guest (`fixtures/memory_map.c`), run natively without
-//! address randomization and with an empty environment (the layout and the
-//! environment the backend gives every guest), reads `/proc/<tid>/maps` at
-//! the points where the KVM run asks the Tool.
+//! `Guest::memory_map` on a KVM guest lists the mappings of the stack window,
+//! the process's `[stack]` and the parts a split left of it, as Linux lists
+//! them, and says that the list is not complete. The same C guest
+//! (`fixtures/memory_map.c`), run natively without address randomization and
+//! with an empty environment (the layout and the environment the backend
+//! gives every guest), reads `/proc/<tid>/maps` at the points where the KVM
+//! run asks the Tool, and where the main thread of a process asks about
+//! itself, what `pthread_getattr_np` answers for it.
 //!
-//! While the window is unchanged, the entry is Linux's `[stack]` line but
-//! for where it starts: the backend maps the whole window at load, where
-//! Linux maps the stack's arguments and 128 KiB below them and grows the
-//! stack on demand. Once a page of the window is protected (even if it is
-//! then set back, and even by an mprotect that fails part way, which Linux
-//! applies to the mappings before the hole), unmapped, advised with a
-//! flag-changing madvise, or munlocked, the list is empty in that process
-//! and in a child forked after it, where Linux shows a split stack or, once
-//! it merged the parts back again, the stack's one line. A child that shares
-//! the address space (vfork, and clone or clone3 with CLONE_VM|CLONE_VFORK)
-//! and changes the stack empties its parent's list too, and a change the
-//! parent's other threads make while it runs empties the child's. A new
-//! image starts it again, and a posix_spawn child's new image leaves its
-//! parent's entry. Advice that keeps the mapping's flags keeps it, and so
-//! does mlock, which the backend refuses: there the comparison is with
-//! Linux's stack without the mlock, since the backend's did not change.
+//! The listed mappings are Linux's stack lines field by field, but for where
+//! the lowest starts: the backend maps the whole window at load, where Linux
+//! maps the stack's arguments and 128 KiB below them and grows the stack on
+//! demand. That holds as the process starts and after each change it makes
+//! to its own stack: a page made read-only, a guard zone made inaccessible
+//! and an executable range, each split and then merged back when set back;
+//! madvise hints that split the stack and an undo that merges it; munlock; a
+//! page unmapped; in a forked child, a vfork child and a new image; and in a
+//! forked child that sets back a guard zone its parent made, which stays a
+//! mapping of its own there, as each mapping a child inherits does on Linux.
+//! And
+//! glibc's answer for the main thread's stack, computed from the listed
+//! mappings as `pthread_getattr_np` computes it from the maps file (it ends
+//! the stack at the line before `[stack]`), is Linux's answer. The list is
+//! empty after an mprotect that fails part way, which Linux applies to the
+//! mappings before the hole and the backend refuses whole, and after a change
+//! a child sharing the address space (vfork, and clone or clone3 with
+//! CLONE_VM|CLONE_VFORK) makes, which its parent's copy lacks, or the
+//! reverse. A call the backend refuses where Linux applies it (MADV_DONTFORK,
+//! and a MAP_FIXED mapping in the window) leaves the list as it was, and mlock,
+//! which it refuses too, is compared with Linux's stack without the mlock.
 //! Another process's map is not provided, and a number no task has is ESRCH.
 //! For an image whose `PT_GNU_STACK` asks for an executable stack the entry
 //! is executable, as Linux maps that stack.
@@ -70,25 +76,36 @@ const START: u64 = 1;
 const KEPT: u64 = 2;
 const PROTECTED: u64 = 3;
 const PROTECTED_BACK: u64 = 4;
-const ADVISED: u64 = 5;
-const MLOCKED: u64 = 6;
-const MUNLOCKED: u64 = 7;
-const REMAPPED: u64 = 8;
-const FORKED: u64 = 9;
-const EXECUTED: u64 = 10;
-const PARTIAL: u64 = 11;
-const VFORKED: u64 = 12;
-const CLONED: u64 = 13;
-const CLONED3: u64 = 14;
-const VFORK_SEES: u64 = 15;
-const SPAWNED: u64 = 16;
-const SPAWN_PARENT: u64 = 17;
-const PARENT_AGAIN: u64 = 18;
-const SIBLING: u64 = 19;
-const SIBLING_CHANGED: u64 = 20;
-const CHILD: u64 = 21;
-const NO_TASK: u64 = 22;
-const POINTS: u64 = 22;
+const GUARDED: u64 = 5;
+const GUARDED_BACK: u64 = 6;
+const EXECUTABLE: u64 = 7;
+const ADVISED: u64 = 8;
+const ADVISED_BACK: u64 = 9;
+const HUGE: u64 = 10;
+const NOHUGE: u64 = 11;
+const REFUSED_HINT: u64 = 12;
+const MLOCKED: u64 = 13;
+const MUNLOCKED: u64 = 14;
+const UNMAPPED: u64 = 15;
+const REMAPPED: u64 = 16;
+const FORKED: u64 = 17;
+const EXECUTED: u64 = 18;
+const FORK_AFTER: u64 = 19;
+const VFORK_AFTER: u64 = 20;
+const VFORK_PARENT_AFTER: u64 = 21;
+const PARTIAL: u64 = 22;
+const VFORKED: u64 = 23;
+const CLONED: u64 = 24;
+const CLONED3: u64 = 25;
+const VFORK_SEES: u64 = 26;
+const SPAWNED: u64 = 27;
+const SPAWN_PARENT: u64 = 28;
+const PARENT_AGAIN: u64 = 29;
+const SIBLING: u64 = 30;
+const SIBLING_CHANGED: u64 = 31;
+const CHILD: u64 = 32;
+const NO_TASK: u64 = 33;
+const POINTS: u64 = 33;
 
 /// The top of the user address space with four-level paging, where both
 /// Linux without randomization and the backend end the stack.
@@ -176,6 +193,19 @@ struct Listing {
     reads: BTreeMap<u64, Result<Vec<u8>, i32>>,
     asked: Vec<u64>,
     results: BTreeMap<u64, (i64, i32)>,
+    stacks: BTreeMap<u64, MainStack>,
+}
+
+/// What `pthread_getattr_np` answered for the main thread at a point (its
+/// return value, and the stack's top and size), and what glibc computes it
+/// from: `__libc_stack_end` and the stack's rlimit.
+#[derive(Clone, Copy, Debug)]
+struct MainStack {
+    ret: i32,
+    top: u64,
+    size: u64,
+    stack_end: u64,
+    limit: u64,
 }
 
 impl Listing {
@@ -204,6 +234,19 @@ fn listing(stdout: &str) -> Listing {
                 );
             }
             ["point", point, "asked"] => listing.asked.push(point.parse().unwrap()),
+            ["stack", point, ret, top, size, stack_end, limit] => {
+                let hex = |field: &str| u64::from_str_radix(field, 16).unwrap();
+                listing.stacks.insert(
+                    point.parse().unwrap(),
+                    MainStack {
+                        ret: ret.parse().unwrap(),
+                        top: hex(top),
+                        size: hex(size),
+                        stack_end: hex(stack_end),
+                        limit: hex(limit),
+                    },
+                );
+            }
             ["point", point, "errno", errno] => {
                 listing
                     .reads
@@ -253,11 +296,15 @@ fn stack(prot: u32) -> MemoryMap {
     .unwrap()
 }
 
-/// Compiles the fixture into `directory` as `name`, with `flags`.
-fn compile(directory: &Directory, name: &str, flags: &[&str]) -> PathBuf {
-    let source = directory.0.join("memory_map.c");
+/// The fixture `fixtures/memory_map.c`.
+const MEMORY_MAP_C: &str = include_str!("fixtures/memory_map.c");
+
+/// Compiles the C source `source` into `directory` as `name`, with `flags`.
+fn compile(directory: &Directory, name: &str, source: &str, flags: &[&str]) -> PathBuf {
     let executable = directory.0.join(name);
-    std::fs::write(&source, include_str!("fixtures/memory_map.c")).unwrap();
+    let source_path = directory.0.join(format!("{name}.c"));
+    std::fs::write(&source_path, source).unwrap();
+    let source = source_path;
     let compiled = std::process::Command::new("/usr/bin/gcc")
         .args(["-O2", "-std=c11", "-pthread", "-Wall", "-Wextra", "-Werror"])
         .args(flags)
@@ -275,15 +322,30 @@ fn compile(directory: &Directory, name: &str, flags: &[&str]) -> PathBuf {
 }
 
 /// Runs `executable` natively, as the backend runs the guest: without
-/// address randomization, and with an empty environment.
+/// address randomization, with an empty environment, and with the stack's
+/// soft rlimit at 8 MiB (no more than its hard limit), whatever the runner's
+/// is: the limit the test applies to the backend's list too, since the
+/// backend's guest cannot read its own here, and one that keeps Linux's
+/// usual top-down layout, which an unlimited stack changes.
 fn native(executable: &Path, args: &[&str]) -> Listing {
     let mut command = std::process::Command::new(executable);
     command.args(args).env_clear();
-    // SAFETY: personality(2) changes only the child about to exec, and is
-    // async-signal-safe.
+    // SAFETY: personality(2), getrlimit(2) and setrlimit(2) change only the
+    // child about to exec, and are async-signal-safe.
     unsafe {
         command.pre_exec(|| {
             if libc::personality(libc::ADDR_NO_RANDOMIZE as libc::c_ulong) == -1 {
+                return Err(std::io::Error::last_os_error());
+            }
+            let mut limit = libc::rlimit {
+                rlim_cur: 0,
+                rlim_max: 0,
+            };
+            if libc::getrlimit(libc::RLIMIT_STACK, &mut limit) == -1 {
+                return Err(std::io::Error::last_os_error());
+            }
+            limit.rlim_cur = limit.rlim_max.min(8 << 20);
+            if libc::setrlimit(libc::RLIMIT_STACK, &limit) == -1 {
                 return Err(std::io::Error::last_os_error());
             }
             Ok(())
@@ -328,96 +390,181 @@ fn kvm(directory: &Directory, executable: &Path, args: &[&str]) -> (Listing, BTr
     (kvm, facts)
 }
 
-/// Checks that `fact`, a list with the stack, is Linux's `[stack]` line in
-/// `linux` but for its start, and that Linux's stack is one mapping.
-fn assert_linux_stack(point: u64, fact: &MemoryMap, linux: &MemoryMap) {
-    let linux_stack = stack_area(linux);
-    assert_eq!(linux_stack.len(), 1, "point {point}: {linux:?}");
-    assert_eq!(fact.mappings.len(), 1, "point {point}: {fact:?}");
-    let (ours, theirs) = (&fact.mappings[0], &linux_stack[0]);
-    assert_eq!(without_start(ours), without_start(theirs), "point {point}");
+/// Checks that `fact` lists Linux's mappings of the stack window in
+/// `linux`, `[stack]` and the parts a split left of it, field by field but
+/// for where the lowest starts.
+fn assert_window(point: u64, fact: &MemoryMap, linux: &MemoryMap) {
+    let linux = stack_area(linux);
+    assert_eq!(
+        fact.mappings.len(),
+        linux.len(),
+        "point {point}: {fact:?} {linux:?}"
+    );
+    assert!(!linux.is_empty(), "point {point}");
+    for (ours, theirs) in fact.mappings.iter().zip(&linux) {
+        assert_eq!(without_start(ours), without_start(theirs), "point {point}");
+    }
+    for (ours, theirs) in fact.mappings.iter().zip(&linux).skip(1) {
+        assert_eq!(ours.start, theirs.start, "point {point}");
+    }
     // Named difference: the window's start, below Linux's.
-    assert_eq!(ours.start, WINDOW_START, "point {point}");
-    assert!(theirs.start > WINDOW_START, "point {point}: {theirs:?}");
+    assert_eq!(fact.mappings[0].start, WINDOW_START, "point {point}");
+    assert!(linux[0].start > WINDOW_START, "point {point}: {linux:?}");
+}
+
+/// The stack's top and size that glibc's `pthread_getattr_np` computes for
+/// the main thread from a maps file listing `mappings`, with
+/// `__libc_stack_end` at `stack_end` and the stack's rlimit `limit`
+/// (nptl/pthread_getattr_np.c, the same in glibc 2.34 and 2.42): the top is
+/// the end of the page that holds `stack_end`; the size is the limit less
+/// the part of the `[stack]` line above that page, rounded down to a page,
+/// and no more than reaches the end of the line before it. `None` when no
+/// line holds `stack_end`, where glibc answers ENOENT.
+fn glibc_main_stack(mappings: &[MappingFact], stack_end: u64, limit: u64) -> Option<(u64, u64)> {
+    let page = 4096_u64;
+    let top = (stack_end & !(page - 1)) + page;
+    let mut last_to = 0;
+    for mapping in mappings {
+        if mapping.start <= stack_end && stack_end < mapping.end {
+            let size = limit.wrapping_sub(mapping.end - top) & !(page - 1);
+            return Some((top, size.min(top - last_to)));
+        }
+        last_to = mapping.end;
+    }
+    None
+}
+
+/// Checks that glibc's answer for the main thread's stack computed from the
+/// fact, with `__libc_stack_end` as the KVM guest has it and the rlimit the
+/// native run had, is `pthread_getattr_np`'s native answer, after checking
+/// that the same computation from the native maps text gives that answer.
+fn assert_main_stack(point: u64, fact: &MemoryMap, native: &Listing, kvm: &Listing) {
+    let linux = native.stacks[&point];
+    assert_eq!(linux.ret, 0, "point {point}: {linux:?}");
+    assert_eq!(
+        glibc_main_stack(&native.map(point).mappings, linux.stack_end, linux.limit),
+        Some((linux.top, linux.size)),
+        "point {point}: the computation is glibc's"
+    );
+    let guest = kvm.stacks[&point];
+    assert_eq!(
+        glibc_main_stack(&fact.mappings, guest.stack_end, linux.limit),
+        Some((linux.top, linux.size)),
+        "point {point}: {fact:?}"
+    );
 }
 
 #[test]
-fn a_kvm_guest_reports_its_stack_while_nothing_changed_it() {
+fn a_kvm_guest_lists_its_stack_window_as_linux_does() {
     Kvm::new().expect("memory map test requires usable /dev/kvm");
     let directory = Directory::new();
-    let executable = compile(&directory, "memory_map", &[]);
+    let executable = compile(&directory, "memory_map", MEMORY_MAP_C, &[]);
     let native = native(&executable, &["native"]);
     assert_eq!(native.reads.len() as u64, POINTS, "{native:?}");
     let (kvm, facts) = kvm(&directory, &executable, &["tool"]);
     assert_eq!(kvm.asked, (START..=NO_TASK).collect::<Vec<_>>());
     assert_eq!(facts.len() as u64, POINTS, "{facts:?}");
-    for (point, fact) in &facts {
-        if let Ok(map) = fact {
+    let fact = |point: u64| match &facts[&point] {
+        Ok(map) => {
             assert!(!map.complete, "point {point}: {map:?}");
+            map.clone()
         }
-    }
+        other => panic!("point {point}: {other:?}"),
+    };
 
-    // While the window is unchanged: as the process started, after advice
-    // that keeps the mapping's flags, after an mlock the backend refuses
-    // (ENOSYS), as a new image starts, as the image a posix_spawn child
-    // executed starts and in its parent afterwards, in the process once its
-    // children are done, and asked by a sibling thread before it changes
-    // anything. Each is Linux's `[stack]` but for its start. The native run
-    // leaves the mlock out, since the backend's stack did not change.
-    let listed = [
+    // Exact: the window's mappings are Linux's stack lines, and glibc's
+    // answer for the main thread's stack is Linux's. As the process started;
+    // after advice that keeps the mapping's flags; around a page made
+    // read-only (three lines: the window below it, the page, `[stack]`), and
+    // as one line again once it is read-write; around a guard zone of four
+    // inaccessible pages, which ends glibc's stack at the zone, and merged
+    // again; around two pages made executable; around a page advised
+    // MADV_RANDOM, and merged by MADV_NORMAL; around a page advised
+    // MADV_HUGEPAGE, and then MADV_NOHUGEPAGE; after an mlock the backend
+    // refuses (ENOSYS), compared with Linux's stack without the mlock, and
+    // after munlock; with a page unmapped (two lines); in a grandchild forked
+    // after its parent set a page back, and in the image it executed; in a
+    // grandchild forked after a page was made read-only, and in a vfork child
+    // made after that, and its parent once it exited; as the image a
+    // posix_spawn child executed starts, and in its parent afterwards; in the
+    // process once its children are done; and once a sibling thread set a
+    // page of the leader's stack back.
+    for point in [
         START,
         KEPT,
+        PROTECTED,
+        PROTECTED_BACK,
+        GUARDED,
+        GUARDED_BACK,
+        EXECUTABLE,
+        ADVISED,
+        ADVISED_BACK,
+        HUGE,
+        NOHUGE,
         MLOCKED,
+        MUNLOCKED,
+        UNMAPPED,
+        FORKED,
         EXECUTED,
+        FORK_AFTER,
+        VFORK_AFTER,
+        VFORK_PARENT_AFTER,
         SPAWNED,
         SPAWN_PARENT,
         PARENT_AGAIN,
-        SIBLING,
-    ];
-    for point in listed {
-        assert_eq!(facts[&point], Ok(stack(RW)), "point {point}");
-        assert_linux_stack(point, &stack(RW), &native.map(point));
+        SIBLING_CHANGED,
+    ] {
+        let fact = fact(point);
+        assert_window(point, &fact, &native.map(point));
+        assert_main_stack(point, &fact, &native, &kvm);
     }
+    // Asked by a sibling thread about the leader, before it changes anything.
+    assert_window(SIBLING, &fact(SIBLING), &native.map(SIBLING));
+    assert_eq!(fact(START), stack(RW));
+    // The guard zone ends glibc's stack: on Linux the stack then reaches
+    // only down to the zone.
+    let guarded = native.stacks[&GUARDED];
+    assert_eq!(guarded.top - guarded.size, fact(GUARDED).mappings[1].end);
+    assert!(guarded.size < native.stacks[&START].size);
     assert_eq!(kvm.results[&MLOCKED], (-1, libc::ENOSYS));
     assert!(!native.results.contains_key(&MLOCKED), "{native:?}");
     // The guest's own read on KVM is the executor's one synthetic line
-    // today, the same range and protection.
+    // today, the same range and protection as the stack as it started.
     assert_eq!(
         kvm.reads[&START],
         Ok(format!("{WINDOW_START:012x}-{TOP:012x} rw-p 00000000 00:00 0 [stack]\n").into_bytes())
     );
 
-    // Once the window changed, nothing is listed. Linux's stack at the same
-    // points: split around a read-only page, and one mapping again once the
-    // page is read-write again (the named difference: the backend cannot
-    // tell the two apart, so it stays silent); split by MADV_RANDOM; one
-    // mapping after munlock, which the backend records to be safe; split
-    // around the page mapped again with MAP_FIXED, which the backend refuses
-    // (ENOMEM) after the munmap; one mapping in a grandchild forked after its
-    // parent set a page back, which inherits the change; split in two by an
-    // mprotect of the top page and the page past it, which fails on both
-    // with ENOMEM; split around the page that a child sharing the address
-    // space made executable, made with vfork, with clone and with clone3, in
-    // the parent once the child exited; the same, in a vfork child, around
-    // the page a sibling thread of its parent made executable; one mapping
-    // after the sibling set the leader's page back.
+    // Refused: a call Linux applies and the backend refuses leaves the
+    // backend's list as it was. MADV_DONTFORK (ENOSYS), where Linux splits
+    // the stack in three; a MAP_FIXED mapping where a page was unmapped
+    // (ENOMEM), where Linux maps a third line in the hole.
+    assert_eq!(fact(REFUSED_HINT), stack(RW));
+    assert_eq!(kvm.results[&REFUSED_HINT], (-1, libc::ENOSYS));
+    assert_eq!(native.results[&REFUSED_HINT], (0, 0));
+    assert_eq!(stack_area(&native.map(REFUSED_HINT)).len(), 3);
+    assert_eq!(fact(REMAPPED), fact(UNMAPPED));
+    assert_eq!(kvm.results[&REMAPPED], (-1, libc::ENOMEM));
+    assert_eq!(native.results[&REMAPPED], (0, 0));
+    assert_eq!(stack_area(&native.map(REMAPPED)).len(), 3);
+
+    // Unknown: nothing is listed where the backend's pages do not hold what
+    // Linux did. An mprotect of the top page and the page past it, which
+    // fails on both with ENOMEM after Linux protected the top page (two
+    // lines); a page made executable by a child sharing the address space,
+    // made with vfork, with clone and with clone3, asked in the parent once
+    // the child exited (three lines each); the same, in a vfork child,
+    // around the page a sibling thread of its parent made executable.
     for (point, linux_parts) in [
-        (PROTECTED, 3),
-        (PROTECTED_BACK, 1),
-        (ADVISED, 3),
-        (MUNLOCKED, 1),
-        (REMAPPED, 3),
-        (FORKED, 1),
         (PARTIAL, 2),
         (VFORKED, 3),
         (CLONED, 3),
         (CLONED3, 3),
         (VFORK_SEES, 3),
-        (SIBLING_CHANGED, 1),
     ] {
         assert_eq!(
-            facts[&point],
-            Ok(MemoryMap::new(Vec::new(), false).unwrap()),
+            fact(point),
+            MemoryMap::new(Vec::new(), false).unwrap(),
             "point {point}"
         );
         assert_eq!(
@@ -427,12 +574,10 @@ fn a_kvm_guest_reports_its_stack_while_nothing_changed_it() {
             native.map(point)
         );
     }
-    assert_eq!(kvm.results[&REMAPPED], (-1, libc::ENOMEM));
-    assert_eq!(native.results[&REMAPPED], (0, 0));
     assert_eq!(kvm.results[&PARTIAL], (-1, libc::ENOMEM));
     assert_eq!(native.results[&PARTIAL], (-1, libc::ENOMEM));
     // The vfork child asked about itself; the posix_spawn child's image did.
-    for point in [VFORK_SEES, SPAWNED] {
+    for point in [VFORK_SEES, VFORK_AFTER, SPAWNED] {
         assert_ne!(kvm.tids[&point], kvm.tids[&START], "point {point}");
         assert_ne!(native.tids[&point], native.tids[&START], "point {point}");
     }
@@ -452,10 +597,150 @@ fn a_kvm_guest_reports_its_stack_while_nothing_changed_it() {
 fn a_kvm_guest_with_an_executable_stack_reports_it() {
     Kvm::new().expect("memory map test requires usable /dev/kvm");
     let directory = Directory::new();
-    let executable = compile(&directory, "memory_map_execstack", &["-z", "execstack"]);
+    let executable = compile(
+        &directory,
+        "memory_map_execstack",
+        MEMORY_MAP_C,
+        &["-z", "execstack"],
+    );
     let native = native(&executable, &["native", "start"]);
     let (kvm, facts) = kvm(&directory, &executable, &["tool", "start"]);
     assert_eq!(kvm.asked, [START]);
     assert_eq!(facts[&START], Ok(stack(RWX)));
-    assert_linux_stack(START, &stack(RWX), &native.map(START));
+    assert_window(START, &stack(RWX), &native.map(START));
+}
+
+/// A program that keeps a guard zone on its main thread's stack, as a JVM
+/// does (`fixtures/guard_zone.c`), run with a 32 KiB argument: before the
+/// zone, with it, after running down to it, and after removing it, the
+/// listed mappings are Linux's, and glibc's answer for the main thread's
+/// stack computed from them is Linux's, which with the zone ends at the
+/// zone. So in a child forked with the zone, which removes its copy of the
+/// zone: on Linux the zone stays a mapping of its own there, each mapping
+/// the child inherited having an anon_vma of its own, and glibc still ends
+/// the child's stack at it; and in the parent once it removes its own zone,
+/// which merges again.
+///
+/// Then the named difference at the stack's rlimit: with the stack whole the
+/// list has no line before `[stack]`, where Linux has the mappings below the
+/// stack. Natively the stack then ends at the mapping below it. From the
+/// list, at a limit of one page, less than the arguments above the stack's
+/// first page (glibc's subtraction wraps), and with no limit, it reaches down
+/// to address 0; at a limit of 256 MiB, more than the distance to the mapping
+/// below, it is that limit less the arguments, larger than Linux's but
+/// finite. With the zone again, and no limit, the answers agree, since the
+/// list has the line below `[stack]`.
+#[test]
+fn a_kvm_guest_with_a_guard_zone_on_its_stack_reads_it_as_linux_does() {
+    const BEFORE: u64 = 1;
+    const GUARDED: u64 = 2;
+    const USED: u64 = 3;
+    const UNGUARDED: u64 = 4;
+    const CHILD_UNGUARDED: u64 = 5;
+    const PARENT_UNGUARDED: u64 = 6;
+    const LOWERED: u64 = 7;
+    const RAISED: u64 = 8;
+    const UNLIMITED: u64 = 9;
+    const UNLIMITED_GUARDED: u64 = 10;
+    const AGREEING: [u64; 7] = [
+        BEFORE,
+        GUARDED,
+        USED,
+        UNGUARDED,
+        CHILD_UNGUARDED,
+        PARENT_UNGUARDED,
+        UNLIMITED_GUARDED,
+    ];
+    Kvm::new().expect("memory map test requires usable /dev/kvm");
+    let directory = Directory::new();
+    let executable = compile(
+        &directory,
+        "guard_zone",
+        include_str!("fixtures/guard_zone.c"),
+        &[],
+    );
+    let argument = "x".repeat(32 * 1024);
+    let native = native(&executable, &["native", &argument]);
+    let (kvm, facts) = kvm(&directory, &executable, &["tool", &argument]);
+    assert_eq!(kvm.asked, (BEFORE..=UNLIMITED_GUARDED).collect::<Vec<_>>());
+    for step in AGREEING {
+        let fact = facts[&step].as_ref().unwrap();
+        assert_window(step, fact, &native.map(step));
+        assert_main_stack(step, fact, &native, &kvm);
+    }
+    assert_eq!(native.stacks[&BEFORE].limit, 8 << 20);
+    assert_eq!(native.stacks[&LOWERED].limit, 4096);
+    assert_eq!(native.stacks[&RAISED].limit, 256 << 20);
+    assert_eq!(
+        native.stacks[&UNLIMITED].limit,
+        u64::MAX,
+        "the unlimited step needs an unlimited hard RLIMIT_STACK"
+    );
+    for step in [LOWERED, RAISED, UNLIMITED] {
+        let fact = facts[&step].as_ref().unwrap();
+        assert_window(step, fact, &native.map(step));
+        let linux = native.stacks[&step];
+        assert_eq!(linux.ret, 0, "step {step}: {linux:?}");
+        // The arguments above the stack's first page exceed one page.
+        assert!(TOP - linux.top > 4096, "step {step}: {linux:?}");
+        assert_eq!(
+            glibc_main_stack(&native.map(step).mappings, linux.stack_end, linux.limit),
+            Some((linux.top, linux.size)),
+            "step {step}: the computation is glibc's"
+        );
+        // Natively the stack ends at the mapping below it, about 128 MiB
+        // below its top.
+        let below = native
+            .map(step)
+            .mappings
+            .iter()
+            .filter(|mapping| mapping.end <= WINDOW_START)
+            .map(|mapping| mapping.end)
+            .max()
+            .unwrap();
+        assert_eq!(linux.size, linux.top - below, "step {step}");
+        // From the list, it is the limit less the arguments, or reaches down
+        // to address 0 where the subtraction wraps or there is no limit.
+        let guest = kvm.stacks[&step];
+        let from_list = if step == RAISED {
+            (linux.limit - (TOP - linux.top)) & !4095
+        } else {
+            linux.top
+        };
+        assert!(from_list > linux.size, "step {step}");
+        assert_eq!(
+            glibc_main_stack(&fact.mappings, guest.stack_end, linux.limit),
+            Some((linux.top, from_list)),
+            "step {step}: {fact:?}"
+        );
+    }
+    let guarded = facts[&GUARDED].as_ref().unwrap();
+    assert_eq!(guarded.mappings.len(), 3);
+    assert_eq!(guarded.mappings[1].prot, 0);
+    for step in [GUARDED, USED] {
+        let linux = native.stacks[&step];
+        assert_eq!(
+            linux.top - linux.size,
+            guarded.mappings[1].end,
+            "step {step}"
+        );
+    }
+    assert_eq!(native.stacks[&BEFORE].size, native.stacks[&UNGUARDED].size);
+    assert!(native.stacks[&GUARDED].size < native.stacks[&BEFORE].size);
+    // The child's zone, accessible again, is still a mapping of its own,
+    // and the child's stack still ends at it; the parent's merges again.
+    let child = facts[&CHILD_UNGUARDED].as_ref().unwrap();
+    assert_eq!(child.mappings.len(), 3);
+    assert!(child.mappings.iter().all(|mapping| mapping.prot == RW));
+    assert_eq!(
+        native.stacks[&CHILD_UNGUARDED].size,
+        native.stacks[&GUARDED].size
+    );
+    assert_ne!(kvm.tids[&CHILD_UNGUARDED], kvm.tids[&BEFORE]);
+    assert_ne!(native.tids[&CHILD_UNGUARDED], native.tids[&BEFORE]);
+    assert_eq!(facts[&PARENT_UNGUARDED], Ok(stack(RW)));
+    assert_eq!(
+        native.stacks[&PARENT_UNGUARDED].size,
+        native.stacks[&BEFORE].size
+    );
 }

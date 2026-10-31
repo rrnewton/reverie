@@ -11,13 +11,13 @@ license = "BSD-2-Clause"
 publish = false
 
 [dependencies]
+libc = "0.2.186"
+nix = { version = "0.30.1", features = ["fs", "process", "signal"] }
 reverie = { version = "0.5.4", path = "../reverie", package = "reverie-core" }
 reverie-ptrace = { version = "0.5.4", path = "../reverie-ptrace" }
 
 [dev-dependencies]
 close-err = "1.0.2"
-libc = "0.2.186"
-nix = { version = "0.30.1", features = ["fs", "process", "signal"] }
 # Inherited function guests must clear libtest's thread-local output capture.
 # The workspace already pins nightly; ordinary library users need no feature.
 reverie-ptrace = { version = "0.5.4", path = "../reverie-ptrace", features = ["nightly"] }
@@ -47,3 +47,63 @@ path = "../tests/vdso.rs"
 [[test]]
 name = "inject_then_tail"
 path = "../tests/inject_then_tail.rs"
+
+[[test]]
+name = "at_random"
+path = "../tests/at_random.rs"
+
+[[test]]
+name = "stack"
+path = "../tests/stack.rs"
+
+[[test]]
+name = "thread_start"
+path = "../tests/thread_start.rs"
+
+[[bin]]
+name = "stat-rust-command-guest"
+path = "../tests/fixtures/stat-rust-command.rs"
+test = false
+bench = false
+
+[[bin]]
+name = "exit-rust-command-guest"
+path = "../tests/fixtures/exit-rust-command.rs"
+test = false
+bench = false
+
+[[bin]]
+name = "basics-rust-command-guest"
+path = "../tests/fixtures/basics-rust-command.rs"
+test = false
+bench = false
+
+[[bin]]
+name = "vdso-rust-command-guest"
+path = "../tests/fixtures/vdso-rust-command.rs"
+test = false
+bench = false
+
+[[bin]]
+name = "inject-then-tail-rust-command-guest"
+path = "../tests/fixtures/inject-then-tail-rust-command.rs"
+test = false
+bench = false
+
+[[bin]]
+name = "at-random-rust-command-guest"
+path = "../tests/fixtures/at-random-rust-command.rs"
+test = false
+bench = false
+
+[[bin]]
+name = "thread-start-rust-command-guest"
+path = "../tests/fixtures/thread-start-rust-command.rs"
+test = false
+bench = false
+
+[[bin]]
+name = "stack-rust-command-guest"
+path = "../tests/fixtures/stack-rust-command.rs"
+test = false
+bench = false

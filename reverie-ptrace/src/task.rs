@@ -123,6 +123,7 @@ use crate::sigtrap_state::mask_after_sigprocmask;
 use crate::sigtrap_state::parse_sigtrap_disposition;
 use crate::sigtrap_state::step_kind;
 use crate::stack::GuestStack;
+use crate::stack::StackArena;
 use crate::timer::HandleFailure;
 use crate::timer::OwnNotification;
 use crate::timer::StepUnit;
@@ -4289,9 +4290,9 @@ pub struct TracedTask<L: Tool> {
     /// causing others to miss the breakpoint.
     needs_step_over: Arc<Mutex<()>>,
 
-    /// Whether or not the tool is currently holding a handle on the guest Stack (and thus
-    /// potentially using actual stack memory within the guest).
-    stack_checked_out: Arc<AtomicBool>,
+    /// Live bounded scratch frames for this task's current image. Guards keep
+    /// their arena alive across nested callbacks and release only their frame.
+    stack_arena: Arc<StackArena>,
 }
 
 impl<L: Tool> fmt::Debug for TracedTask<L> {
@@ -4499,7 +4500,7 @@ impl<L: Tool> TracedTask<L> {
             exit_suspend_rx: Some(exit_suspend_rx),
             needs_step_over: Arc::new(Mutex::new(())),
             suspended_tasks: BTreeMap::new(),
-            stack_checked_out: Arc::new(AtomicBool::new(false)),
+            stack_arena: Arc::new(StackArena::default()),
         }
     }
 
@@ -4608,7 +4609,7 @@ impl<L: Tool> TracedTask<L> {
             exit_suspend_rx: Some(exit_suspend_rx),
             needs_step_over: self.needs_step_over.clone(),
             suspended_tasks: BTreeMap::new(),
-            stack_checked_out: Arc::new(AtomicBool::new(false)),
+            stack_arena: Arc::new(StackArena::default()),
         }
     }
 
@@ -4754,7 +4755,7 @@ impl<L: Tool> TracedTask<L> {
                 Arc::new(Mutex::new(()))
             },
             suspended_tasks: BTreeMap::new(),
-            stack_checked_out: Arc::new(AtomicBool::new(false)),
+            stack_arena: Arc::new(StackArena::default()),
         }
     }
 
@@ -7559,6 +7560,10 @@ impl<L: Tool + 'static> TracedTask<L> {
 
     // handle ptrace exec event
     async fn handle_exec_event(&mut self, task: Stopped) -> Result<Wait, TraceError> {
+        // Successful exec replaced the old scratch memory. Its callback can
+        // still own guards until the injected exec unwinds; those retain the
+        // old Arc, so their Drop cannot release a frame of this new image.
+        self.stack_arena = Arc::new(StackArena::default());
         // Linux enables CPUID again on every successful replacement exec.
         // This old-image fact must not survive until the new arm is verified.
         self.has_cpuid_interception = false;
@@ -14599,10 +14604,7 @@ impl<L: Tool + 'static> Guest<L> for TracedTask<L> {
     }
 
     async fn stack(&mut self) -> Self::Stack {
-        match GuestStack::new_on_ptracer_thread(
-            self.assume_stopped(),
-            self.stack_checked_out.clone(),
-        ) {
+        match GuestStack::new_on_ptracer_thread(self.assume_stopped(), self.stack_arena.clone()) {
             Ok(ret) => ret,
             Err(err) => self.abort(Err(err)).await,
         }

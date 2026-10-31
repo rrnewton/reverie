@@ -567,7 +567,7 @@ pub(super) fn insert_file_with_identity(
     output_alias: Option<OutputAlias>,
     timestamps: IdentityTimestamps,
 ) -> i64 {
-    let Some(fd) = (0..GUEST_NOFILE_LIMIT)
+    let Some(fd) = (0..guest_nofile_limit())
         .find(|fd| !is_open_standard(state, *fd) && !state.files.contains_key(fd))
     else {
         state.file_retirement.retire([file]);
@@ -707,11 +707,12 @@ pub(super) fn duplicate_fd_at_or_above(
     let transaction = state.signal_transaction.clone();
     let _transaction = transaction.lock().unwrap_or_else(|p| p.into_inner());
     let minimum = raw_minimum as libc::c_int;
-    if !(0..GUEST_NOFILE_LIMIT).contains(&minimum) {
+    let limit = guest_nofile_limit();
+    if !(0..limit).contains(&minimum) {
         return negative_errno(libc::EINVAL);
     }
-    let Some(fd) = (minimum..GUEST_NOFILE_LIMIT)
-        .find(|fd| !is_open_standard(state, *fd) && !state.files.contains_key(fd))
+    let Some(fd) =
+        (minimum..limit).find(|fd| !is_open_standard(state, *fd) && !state.files.contains_key(fd))
     else {
         return negative_errno(libc::EMFILE);
     };
@@ -795,15 +796,19 @@ pub(super) fn duplicate_fd(
     let new_fd = match raw_new_fd {
         Some(raw_new_fd) => {
             let new_fd = raw_new_fd as libc::c_int;
-            if !(0..GUEST_NOFILE_LIMIT).contains(&new_fd) {
-                return negative_errno(libc::EBADF);
-            }
+            // Linux tests oldfd == newfd before the allocation bound
+            // (ksys_dup3 and dup2 in fs/file.c): dup2 to itself returns the
+            // descriptor even at or above the current RLIMIT_NOFILE, and
+            // dup3 to itself is EINVAL there.
             if new_fd == old_fd {
                 return if is_dup3 {
                     negative_errno(libc::EINVAL)
                 } else {
                     i64::from(new_fd)
                 };
+            }
+            if !(0..guest_nofile_limit()).contains(&new_fd) {
+                return negative_errno(libc::EBADF);
             }
             Some(new_fd)
         }

@@ -724,6 +724,53 @@ impl SharedThreadSignalState {
     }
 }
 
+/// The five signal sets Linux reports for one thread in its `status` file
+/// (`task_sig` in Linux's `fs/proc/array.c`), from the thread's state and its
+/// process's, as `reverie::SignalSets` holds them:
+///
+/// - `SigPnd`: the thread's own queue (`ThreadSignalState::pending`);
+/// - `ShdPnd`: its process's shared queue (`ProcessSignalState::shared_pending`);
+/// - `SigBlk`: the thread's mask (`ThreadSignalState::blocked`);
+/// - `SigIgn` and `SigCgt`: its process's actions, as Linux's
+///   `collect_sigign_sigcatch` builds them: `SIG_IGN` is ignored, and any
+///   handler but `SIG_DFL` and `SIG_IGN` is caught.
+///
+/// A queue's set holds only its current entries: an entry queued before an
+/// action that discards the signal (`pending_generations`) is no longer
+/// pending. The caller holds both states' locks, the process's before the
+/// thread's, so the answer is the state between two of its changes. Both
+/// `ElfExecutor::signal_sets` (the `reverie::Guest` fact) and the run-scoped
+/// `reverie::ProcessSignalControl::signal_sets` answer through this one
+/// function, so the two answers cannot drift apart.
+pub(crate) fn task_signal_sets(
+    process: &ProcessSignalState,
+    thread: &ThreadSignalState,
+) -> reverie::SignalSets {
+    let generations = &process.pending_generations;
+    let mut ignored = KernelSigset::default();
+    let mut caught = KernelSigset::default();
+    for (&signal, action) in &process.dispositions {
+        if action.is_ignored() {
+            ignored.insert(signal);
+        } else if action.handler != libc::SIG_DFL as u64 {
+            caught.insert(signal);
+        }
+    }
+    reverie::SignalSets::new(
+        signal_set_bits(thread.pending.pending_mask(generations)),
+        signal_set_bits(process.shared_pending.pending_mask(generations)),
+        signal_set_bits(thread.blocked),
+        signal_set_bits(ignored),
+        signal_set_bits(caught),
+    )
+}
+
+/// `set` as `reverie::SignalSets` holds it: signal `n` at bit `n - 1`, the bit
+/// `KernelSigset` keeps in byte `(n - 1) / 8`.
+fn signal_set_bits(set: KernelSigset) -> u64 {
+    u64::from_le_bytes(set.to_bytes())
+}
+
 /// The x86-64 kernel `sigcontext` embedded in `ucontext`.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct Sigcontext {

@@ -10,6 +10,8 @@
 
 #[path = "support/basics_commands.rs"]
 mod commands;
+#[path = "support/basics_rust_guest.rs"]
+mod rust_guest;
 #[path = "tool_fixtures/basics.rs"]
 mod tools;
 
@@ -59,15 +61,7 @@ fn error_exit_test() {
 
 #[allow(dead_code)]
 fn fn_test() {
-    let (output, state) = test_fn::<CounterLocal, _>(|| {
-        let pid = nix::unistd::getpid();
-        println!("Hello world1!  Pid = {:?}", pid);
-        unsafe {
-            libc::syscall(libc::SYS_write, 1, "Hello world2!\n", 14);
-        }
-        let _gid = nix::unistd::getgid();
-    })
-    .unwrap();
+    let (output, state) = test_fn::<CounterLocal, _>(rust_guest::run_fn_body).unwrap();
 
     println!(
         " >>> Command complete, stdout len {}, stderr len {}",
@@ -83,6 +77,76 @@ fn fn_test() {
 #[test]
 fn run_fn_test() {
     fn_test();
+    rust_command_test();
+}
+
+#[cfg(not(sanitized))]
+fn assert_rust_marker(stdout: &[u8]) {
+    const MARKER: &[u8] = b"basics-rust-body-complete\n";
+    assert_eq!(
+        stdout
+            .windows(MARKER.len())
+            .filter(|part| *part == MARKER)
+            .count(),
+        1,
+    );
+}
+
+#[cfg(not(sanitized))]
+fn assert_rust_counter(output: &reverie::process::Output, state: &tools::CounterGlobal) {
+    // The original fn_test predicates, applied to the actual returned state.
+    assert_eq!(output.status, ExitStatus::Exited(0));
+    assert_eq!(output.stderr.len(), 0);
+    assert!(AtomicU64::load(&state.num_syscalls, Ordering::SeqCst) > 1);
+}
+
+#[cfg(not(sanitized))]
+fn record_rust_command(
+    label: &str,
+    output: &reverie::process::Output,
+    state: &tools::CounterGlobal,
+) {
+    eprintln!(
+        "basics Rust command {label}: status={:?} syscalls={} stdout={:02x?} stderr={:02x?}",
+        output.status,
+        state.num_syscalls.load(Ordering::SeqCst),
+        output.stdout,
+        output.stderr,
+    );
+    // The command and controller have completed before this snapshot or output.
+    let (count, sequence) = {
+        let sequence = state.syscall_sequence.lock().unwrap();
+        (state.num_syscalls.load(Ordering::SeqCst), sequence.clone())
+    };
+    let entries: Vec<_> = sequence
+        .iter()
+        .enumerate()
+        .map(|(ordinal, (sender, sysno))| (ordinal, sender, *sysno as usize, sysno))
+        .collect();
+    eprintln!("basics Rust syscall sequence {label}: count={count} entries={entries:?}");
+    assert_eq!(count, u64::try_from(sequence.len()).unwrap());
+    assert_eq!(output.status, ExitStatus::Exited(0));
+    assert_eq!(output.stderr.len(), 0);
+    assert_rust_marker(&output.stdout);
+}
+
+#[cfg(not(sanitized))]
+fn rust_command_test() {
+    let program = env!("CARGO_BIN_EXE_basics-rust-command-guest");
+    eprintln!("basics Rust command image={program}");
+    let output = std::process::Command::new(program).output().unwrap();
+    eprintln!(
+        "basics Rust command native: status={:?} stdout={:02x?} stderr={:02x?}",
+        output.status, output.stdout, output.stderr,
+    );
+    assert_eq!(output.status.code(), Some(0));
+    assert_eq!(output.stderr.len(), 0);
+    assert_rust_marker(&output.stdout);
+
+    let (output, state) = test_cmd::<CounterLocal>(program, &[]).unwrap();
+    record_rust_command("ptrace", &output, &state);
+    assert_rust_counter(&output, &state);
+
 }
 
 #[cfg(not(sanitized))]
@@ -223,3 +287,4 @@ fn child_should_inherit_fds() {
         }
     });
 }
+

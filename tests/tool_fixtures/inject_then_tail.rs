@@ -6,8 +6,6 @@
  * LICENSE file in the root directory of this source tree.
  */
 
-use std::mem;
-
 use reverie::Error;
 use reverie::GlobalTool;
 use reverie::Guest;
@@ -32,8 +30,10 @@ impl GlobalTool for TestTool {
     async fn receive_rpc(&self, _from: Pid, _message: ()) {}
 }
 
-/// How many bytes of randomness to peak at.
-pub const RAND_SIZE: usize = mem::size_of::<u64>();
+#[path = "inject_then_tail_constants.rs"]
+mod constants;
+
+pub use constants::RAND_SIZE;
 
 /// How many times to DUPLICATE select system calls that are intercepted.
 pub const NUM_REPS: Dupcount = 3;

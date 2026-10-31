@@ -77,6 +77,7 @@ use crate::elf::TaskLifecycleTable;
 use crate::elf::initial_thread_name;
 use crate::elf::load_static_elf;
 use crate::elf::load_static_elf_file;
+use crate::elf::load_static_elf_file_with_execfn;
 use crate::elf::load_static_elf_with_execfn;
 use crate::error::ErrorExt;
 use crate::executor::AbandonedRuns;
@@ -2629,7 +2630,9 @@ impl KvmBackend {
     /// initial stack and names it in `AT_EXECFN`. When a launcher has
     /// already rewritten a `#!` script's `argv` to its interpreter, `execfn`
     /// is still the script's filename, as `execve` gave it to the kernel, so
-    /// the guest's stack matches a traced guest's.
+    /// the guest's stack matches a traced guest's. Like that entry, this one
+    /// establishes no backing file; to retain one, use
+    /// [`Self::install_static_elf_file_with_exec_context`].
     pub fn install_static_elf_with_exec_context(
         &mut self,
         image: &[u8],
@@ -2699,6 +2702,39 @@ impl KvmBackend {
         AbandonedRuns::admit(&self.abandoned_runs)?;
         self.vcpu.check_initial_elf_install()?;
         let loaded = load_static_elf_file(&mut self.memory, file, argv, envp, cwd)?;
+        self.install_loaded_static_elf(loaded)
+    }
+
+    /// As [`Self::install_static_elf_file_with_context`], for an image exec'd
+    /// by the filename `execfn`, which Linux copies to the top of the initial
+    /// stack and names in `AT_EXECFN`, as
+    /// [`Self::install_static_elf_with_exec_context`] takes it. Unlike that
+    /// entry, this one retains `file` as the process's executable, so that an
+    /// exec or a following stat of `/proc/self/exe` reaches it from the first
+    /// instruction. A launcher that has already rewritten a `#!` script's
+    /// `argv` to its interpreter passes the interpreter's file and the
+    /// script's filename as `execfn`, so that the guest's stack and its
+    /// executable both match what `execve` of the script gives a native
+    /// process. The new task is named by the path of `file`, as
+    /// [`Self::install_static_elf_file_with_context`] names it.
+    pub fn install_static_elf_file_with_exec_context(
+        &mut self,
+        file: File,
+        execfn: &std::ffi::OsStr,
+        argv: &[&str],
+        envp: &[&str],
+        cwd: &Path,
+    ) -> Result<()> {
+        AbandonedRuns::admit(&self.abandoned_runs)?;
+        self.vcpu.check_initial_elf_install()?;
+        let loaded = load_static_elf_file_with_execfn(
+            &mut self.memory,
+            file,
+            Some(std::os::unix::ffi::OsStrExt::as_bytes(execfn)),
+            argv,
+            envp,
+            cwd,
+        )?;
         self.install_loaded_static_elf(loaded)
     }
 
@@ -2907,10 +2943,19 @@ impl KvmBackend {
         Ok(())
     }
 
-    fn snapshot_process(&self) -> Result<KvmProcessSnapshot> {
+    /// The child's copy of the process. A child that shares the address space
+    /// on Linux (`share_address_space`, a vfork) runs on a copy here, which
+    /// shares the stack window's record with the parent's memory
+    /// (`GuestMemory::snapshot_sharing_address_space`) until the child's exec
+    /// gives it a record of its own.
+    fn snapshot_process(&self, share_address_space: bool) -> Result<KvmProcessSnapshot> {
         #[cfg(test)]
         tests::entry_action_tests::observe("snapshot");
-        let mut memory = self.memory.snapshot()?;
+        let mut memory = if share_address_space {
+            self.memory.snapshot_sharing_address_space()?
+        } else {
+            self.memory.snapshot()?
+        };
         #[cfg(test)]
         tests::entry_action_tests::observe_fork_memory(&memory.entry_gate());
         // Snapshot preparation is still part of the issuing operation. The
@@ -3421,12 +3466,17 @@ impl KvmBackend {
         {
             return Ok(None);
         }
-        let child_snapshot = self.snapshot_process()?;
+        let child_snapshot = self.snapshot_process(share_address_space)?;
         if !shared_file_snapshot {
             write_tid_best_effort(&mut self.memory, parent_tid, child_pid);
         }
 
         let mut child = Self::from_process_snapshot(child_snapshot)?;
+        if !share_address_space {
+            // The Linux provider keeps apart the stack window's mappings a
+            // forked child inherits.
+            ElfExecutor::keep_inherited_stack_mappings_apart(&child.memory);
+        }
         if let Some(child_executor) = prepared_executor.as_mut() {
             child_executor.set_clear_child_tid(clear_child_tid);
         }
@@ -3487,12 +3537,6 @@ impl KvmBackend {
         child.independent_process_mm = !share_address_space;
         if share_address_space {
             self.independent_process_mm = false;
-            // The child runs on a copy of the memory, but on Linux it shares
-            // the parent's address space: a change to the stack window either
-            // makes is the other's too, so they share the window's record
-            // (`GuestMemory::unchanged_user_stack_window`) from here on, until
-            // the child's exec gives it a record of its own.
-            child.memory.share_user_stack_window_watch(&self.memory);
         }
         if shared_file_snapshot {
             // Child TID may itself lie in a shared file, so neither TID store
@@ -3836,7 +3880,7 @@ impl KvmBackend {
                 let returning = completion_notice.returning.clone();
                 #[cfg(test)]
                 tests::entry_action_tests::observe("host_spawn");
-                let handle = std::thread::Builder::new()
+                let handle = crate::supervisor_thread::builder()
                     .name(format!("reverie-kvm-guest-{child_tid}"))
                     .spawn(move || {
                         let _completion_notice = completion_notice;
@@ -4311,7 +4355,7 @@ impl KvmBackend {
                 let (start_sender, start_receiver) = std::sync::mpsc::channel();
                 let start_gate = ChildStartGate::new(start_sender);
                 let handle = ChildThread::spawn_owned(
-                    std::thread::Builder::new()
+                    crate::supervisor_thread::builder()
                         .name(format!("reverie-kvm-process-{raw_child_pid}")),
                     (
                         child,
@@ -4643,7 +4687,8 @@ impl KvmBackend {
                 #[cfg(test)]
                 tests::entry_action_tests::observe("tool_spawn");
                 let handle = crate::failure::spawn_owned(
-                    std::thread::Builder::new().name(format!("reverie-kvm-guest-{child_tid}")),
+                    crate::supervisor_thread::builder()
+                        .name(format!("reverie-kvm-guest-{child_tid}")),
                     (
                         child,
                         child_executor,
@@ -7189,6 +7234,7 @@ fn supported_hypercall_instruction(cpuid: &CpuId) -> Result<[u8; 3]> {
 
 #[cfg(test)]
 #[path = "vm/worker_panic_tests.rs"]
+#[allow(clippy::disallowed_methods, reason = "tests may make threads freely")]
 mod worker_panic_tests;
 
 #[cfg(test)]
@@ -7245,6 +7291,7 @@ mod user_trap_signal_tests {
 }
 
 #[cfg(test)]
+#[allow(clippy::disallowed_methods, reason = "tests may make threads freely")]
 mod tests {
     /// The stack window's first page in a 16 MiB test memory: the user address
     /// of physical 0x80_0000, which these tests use as scratch memory.
@@ -9569,32 +9616,68 @@ mod tests {
         assert!(!child.backend.independent_process_mm);
     }
 
+    /// The stack window's pages as extents of equal declared mapping, `(user
+    /// start, user end, declared)`; `None` while the window's record is not
+    /// certain. Every page of these windows is declared.
+    fn window_extents(
+        memory: &crate::memory::GuestMemory,
+    ) -> Option<Vec<(u64, u64, crate::memory::DeclaredMapping)>> {
+        let mut extents: Vec<(u64, u64, crate::memory::DeclaredMapping)> = Vec::new();
+        for page in memory.user_stack_window_pages()? {
+            let declared = page.declared.unwrap();
+            match extents.last_mut() {
+                Some((_, end, last)) if *end == page.user_address && *last == declared => {
+                    *end += PAGE_SIZE;
+                }
+                _ => extents.push((page.user_address, page.user_address + PAGE_SIZE, declared)),
+            }
+        }
+        Some(extents)
+    }
+
+    /// A parent backend at its first syscall boundary, with its executor.
+    fn stack_window_parent() -> (KvmBackend, ElfExecutor) {
+        let mut parent =
+            KvmBackend::new(64 * 1024 * 1024).expect("stack window record control requires KVM");
+        parent
+            .install_static_elf(&minimal_test_elf(&[0xf4]), "/bin/stack-window")
+            .unwrap();
+        let executor = ElfExecutor::new(parent.static_elf.take().unwrap(), false);
+        let registers = parent.vcpu.get_regs().unwrap();
+        stage_process_syscall_return(
+            &mut parent.memory,
+            &parent.vcpu,
+            parent.syscall_frame_address,
+            registers,
+        )
+        .unwrap();
+        (parent, executor)
+    }
+
+    /// Makes the page at user address `page` of `memory` read-only.
+    fn protect_read_only(memory: &crate::memory::GuestMemory, page: u64) {
+        let physical = memory.user_range_to_guest(page, PAGE_SIZE).unwrap();
+        memory
+            .protect_user_range(physical, PAGE_SIZE, libc::PROT_READ as u8)
+            .unwrap();
+    }
+
     /// A child that shares its parent's address space on Linux (vfork, and
     /// a process clone with CLONE_VM|CLONE_VFORK) runs on a copy of the
     /// parent's memory here, and shares the stack window's record with it:
-    /// a change to the window either makes, child or parent, empties the
-    /// answer for both. A forked child's record is its own.
+    /// a change to the window either makes, child or parent, leaves the
+    /// other's pages unknown, while the one that made it holds it. A forked
+    /// child's record is its own.
     #[test]
     fn a_vfork_child_shares_the_stack_windows_record_with_its_parent() {
         for share_address_space in [true, false] {
             for child_changes in [true, false] {
                 let label = format!("vfork: {share_address_space}, child changes: {child_changes}");
-                let mut parent = KvmBackend::new(64 * 1024 * 1024)
-                    .expect("stack window record control requires KVM");
-                parent
-                    .install_static_elf(&minimal_test_elf(&[0xf4]), "/bin/stack-window")
-                    .unwrap();
-                let executor = ElfExecutor::new(parent.static_elf.take().unwrap(), false);
-                let registers = parent.vcpu.get_regs().unwrap();
-                stage_process_syscall_return(
-                    &mut parent.memory,
-                    &parent.vcpu,
-                    parent.syscall_frame_address,
-                    registers,
-                )
-                .unwrap();
-                let window = parent.memory.unchanged_user_stack_window();
-                assert!(window.is_some(), "{label}");
+                let (mut parent, executor) = stack_window_parent();
+                let window = window_extents(&parent.memory);
+                let &[(start, end, mapping)] = window.as_deref().unwrap() else {
+                    panic!("{label}: {window:?}");
+                };
                 let child = parent
                     .prepare_forked_process(
                         &executor,
@@ -9609,21 +9692,95 @@ mod tests {
                         None,
                     )
                     .unwrap();
-                assert_eq!(
-                    child.backend.memory.unchanged_user_stack_window(),
-                    window,
-                    "{label}"
-                );
+                assert_eq!(window_extents(&child.backend.memory), window, "{label}");
                 let (changing, other) = if child_changes {
                     (&child.backend.memory, &parent.memory)
                 } else {
                     (&parent.memory, &child.backend.memory)
                 };
-                changing.note_user_mapping_change(window.unwrap().0, 4096);
-                assert_eq!(changing.unchanged_user_stack_window(), None, "{label}");
+                // A page of the window well below the initial stack, read-only.
+                let page = start + 16 * PAGE_SIZE;
+                protect_read_only(changing, page);
+                let read_only = crate::memory::DeclaredMapping {
+                    prot: libc::PROT_READ as u8,
+                    ..mapping
+                };
+                assert_eq!(
+                    window_extents(changing),
+                    Some(vec![
+                        (start, page, mapping),
+                        (page, page + PAGE_SIZE, read_only),
+                        (page + PAGE_SIZE, end, mapping),
+                    ]),
+                    "{label}"
+                );
                 let expected = if share_address_space { None } else { window };
-                assert_eq!(other.unchanged_user_stack_window(), expected, "{label}");
+                assert_eq!(window_extents(other), expected, "{label}");
             }
+        }
+    }
+
+    /// The Linux provider keeps apart the stack window's mappings a forked
+    /// child inherits (`ElfExecutor::keep_inherited_stack_mappings_apart`):
+    /// a parent's split gives the child three parts with lineages that
+    /// differ from their neighbours', which stay apart once the child sets
+    /// the page back, while the parent keeps its own lineage and a vfork
+    /// child, which shares the address space, keeps the parent's.
+    #[test]
+    fn a_forked_child_keeps_the_stack_mappings_it_inherited_apart() {
+        for share_address_space in [false, true] {
+            let label = format!("vfork: {share_address_space}");
+            let (mut parent, executor) = stack_window_parent();
+            let window = window_extents(&parent.memory);
+            let &[(start, _, mapping)] = window.as_deref().unwrap() else {
+                panic!("{label}: {window:?}");
+            };
+            let page = start + 16 * PAGE_SIZE;
+            protect_read_only(&parent.memory, page);
+            let child = parent
+                .prepare_forked_process(
+                    &executor,
+                    2,
+                    None,
+                    None,
+                    None,
+                    None,
+                    false,
+                    share_address_space,
+                    false,
+                    None,
+                )
+                .unwrap();
+            let lineages = |memory: &crate::memory::GuestMemory| {
+                window_extents(memory)
+                    .unwrap()
+                    .iter()
+                    .map(|extent| extent.2.lineage)
+                    .collect::<Vec<_>>()
+            };
+            assert_eq!(lineages(&parent.memory), [0, 0, 0], "{label}");
+            if share_address_space {
+                assert_eq!(lineages(&child.backend.memory), [0, 0, 0], "{label}");
+                continue;
+            }
+            let inherited = lineages(&child.backend.memory);
+            assert!(
+                inherited.windows(2).all(|pair| pair[0] != pair[1]),
+                "{label}: {inherited:?}"
+            );
+            let physical = child
+                .backend
+                .memory
+                .user_range_to_guest(page, PAGE_SIZE)
+                .unwrap();
+            child
+                .backend
+                .memory
+                .protect_user_range(physical, PAGE_SIZE, mapping.prot)
+                .unwrap();
+            let set_back = window_extents(&child.backend.memory).unwrap();
+            assert_eq!(set_back.len(), 3, "{label}: {set_back:?}");
+            assert!(set_back.iter().all(|extent| extent.2.prot == mapping.prot));
         }
     }
 
@@ -11628,7 +11785,8 @@ mod tests {
         match mode {
             "fork" => {
                 let child =
-                    KvmBackend::from_process_snapshot(parent.snapshot_process().unwrap()).unwrap();
+                    KvmBackend::from_process_snapshot(parent.snapshot_process(false).unwrap())
+                        .unwrap();
                 let mut after = [0_u8; PAGE_SIZE as usize];
                 parent.memory.read_raw(0, &mut after).unwrap();
                 assert_eq!(after, before);
@@ -13402,9 +13560,11 @@ mod tests {
 
 #[cfg(test)]
 #[path = "terminal_vm_tests.rs"]
+#[allow(clippy::disallowed_methods, reason = "tests may make threads freely")]
 mod terminal_tests;
 
 #[cfg(test)]
+#[allow(clippy::disallowed_methods, reason = "tests may make threads freely")]
 mod terminal_direct_error_tests {
     use std::os::fd::FromRawFd;
     use std::sync::mpsc;
@@ -13517,6 +13677,7 @@ mod entry_owner_tests;
 
 #[cfg(test)]
 #[path = "vm/exec_wait_tests.rs"]
+#[allow(clippy::disallowed_methods, reason = "tests may make threads freely")]
 mod exec_wait_tests;
 
 /// Milliseconds a dying task sleeps after its clear_child_tid wake (tests).

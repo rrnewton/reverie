@@ -1,20 +1,25 @@
-# Generic command tests
+# First-party command tests
 
-This package registers the existing `tests/basics.rs` source. Its command
-helpers delegate to ptrace's existing runtime, output capture and caller-owned
-Tool configuration. The Tools live once in `tests/tool_fixtures/basics.rs`.
-Inherited function tests still use the original ptrace helpers.
+This package registers the existing first-party test sources in
+`tests/basics.rs`, `exit.rs`, `stat.rs`, `vdso.rs`, `inject_then_tail.rs`,
+`at_random.rs`, `stack.rs`, and `thread_start.rs`. Command helpers delegate to
+ptrace's runtime, output capture, and caller-owned Tool configuration. Shared
+Tools remain in `tests/tool_fixtures/`; inherited function tests keep the
+original ptrace helpers and assertions.
+
 The test dependency enables ptrace's existing `nightly` output-capture reset,
 so inherited `println!` output reaches the guest pipe under ordinary libtest
 capture. The workspace's pinned nightly toolchain supplies that API.
 
-Run the complete registered target with ordinary libtest capture:
+Run the registered targets with ordinary libtest capture:
 
 ```sh
-cargo test -p reverie-test-support --test basics
+cargo test -p reverie-test-support --test basics --test exit --test stat \
+  --test vdso --test inject_then_tail --test at_random --test stack \
+  --test thread_start -- --test-threads=1
 ```
 
-The initial command selection is:
+The initial basics command selection remains:
 
 ```sh
 cargo test -p reverie-test-support --test basics -- \
@@ -22,29 +27,44 @@ cargo test -p reverie-test-support --test basics -- \
   run_guest_command_test run_guest_command_test_closure
 ```
 
-The target also discovers the other existing basics declarations; running the
-five command tests does not establish those other results. Sanitizer exclusions
-remain unchanged.
+The complete basics target also discovers the inherited function declarations;
+the five command tests alone do not establish those other results. Existing
+sanitizer exclusions and `should_panic` expectations remain unchanged.
 
-Only ptrace is implemented here. DBT and in-guest adapters must install the
-same caller-owned Tool and return its real global state before they can run
-these tests. No backend selector, name-based Tool substitution or fallback is
-provided by this package.
+## Rust guest commands and native fixtures
 
-## Shared command fixtures
+The eight Rust guest binaries are first-party test inputs. Cargo's explicit
+`[[bin]]` declarations do not require an external backend feature. The native
+BUCK declarations provide matching `rust_binary` targets and explicit
+`CARGO_BIN_EXE_*` artifact paths to the corresponding `rust_unittest` targets.
+`thread_start` has its own explicit test registration in both build descriptions.
+These declarations describe source dependencies, not a configured or executed
+native build result.
 
-The `exit`, `stat`, `vdso` and `inject_then_tail` integration targets also run
-through ptrace. They reuse the original Tools and preserve the original function
-controls. Their checked assembly/C fixtures are compiled in test-owned temporary
-directories, run natively first, then run with the actual Tool. Missing compiler
-capability or an unavailable required vDSO entry fails the relevant test.
+The Rust commands retain the original native/ptrace checks where the existing
+oracle uses both. The AT_RANDOM and vDSO Rust command checks retain their
+Tool-specific ptrace oracles; they do not gain an invented native equality
+oracle. Checked assembly/C fixtures in `exit`, `stat`, `vdso`, and
+`inject_then_tail` retain their native-first and actual-Tool checks. Missing
+compiler capability or an unavailable required vDSO entry fails the relevant
+test. Commands require x86-64 Linux, a C toolchain selected by `CC` or `cc`, and
+executable temporary storage where the original fixture uses them. Helpers
+retain their existing logging and have no local timeout; an enclosing validation
+runner owns the deadline.
 
-```sh
-cargo test -p reverie-test-support --test exit --test stat --test vdso --test inject_then_tail -- --test-threads=1
-```
+## Separate backend ownership
 
-These commands require an x86-64 Linux C toolchain selected by `CC` or `cc` and
-executable temporary storage. The helpers retain the existing logging and have
-no local timeout; an enclosing validation runner owns their deadline. External
-caller adapters and their source-matched artifacts belong to the backend
-extensions, and are not selected by this core package.
+Only ptrace is implemented by this core package. External DBT and in-guest
+adapters, their source-matched artifacts, and their positive, negative, and
+missing-artifact controls belong to separate backend extensions. They must
+install the caller-owned Tool and return its real global state. This package
+provides no backend selector, name-based Tool substitution, silent fallback, or
+physical qualification for those adapters.
+
+The split retains the complete external sources and mixed-test controls by
+immutable revision/blob records. Actual external adoption and its CI or nightly
+execution are pending asynchronous owner work and do not block the core source
+composition. Retention does not claim that an extension or nightly route has
+been installed, run, or passed. All first-party test identities and original
+assertions remain in the core projection; external controls remain explicit
+transfer obligations rather than core test results.
