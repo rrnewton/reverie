@@ -4748,13 +4748,13 @@ int main(int argc, char **argv) {
 }
 "###;
 
+/// What a run of [`EXEC_COMMIT_PROGRAM`] gives: the tool's log, the exit
+/// code, stdout and stderr.
+type ExecCommitRun = Result<(ExecCommitLog, i32, Vec<u8>, Vec<u8>), Error>;
+
 /// Installs [`EXEC_COMMIT_PROGRAM`] in a fresh directory and runs it under
-/// `T`, returning the tool's log, the exit code, stdout and stderr, and the
-/// program's path.
-fn run_exec_commit_program<T>() -> (
-    Result<(ExecCommitLog, i32, Vec<u8>, Vec<u8>), Error>,
-    String,
-)
+/// `T`, returning the run and the program's path.
+fn run_exec_commit_program<T>() -> (ExecCommitRun, String)
 where
     T: Tool<GlobalState = ExecCommitLog> + 'static,
     T::ThreadState: 'static,
