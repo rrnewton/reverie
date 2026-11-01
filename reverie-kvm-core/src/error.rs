@@ -367,6 +367,20 @@ pub enum Error {
         reason: &'static str,
     },
 
+    /// A shared-file operation Linux would perform that this backend does not
+    /// implement, refused by name before any effect. It is terminal like
+    /// [`Self::SharedFileCapability`], which also reports the backend's
+    /// internal guards; this one never does, so a run that ends with it ends
+    /// with a named refusal
+    /// ([`Self::is_unsupported_shared_file_refusal`]).
+    #[error("unsupported KVM shared-file operation {operation}: {reason}")]
+    UnsupportedSharedFile {
+        /// Operation refused before its effect.
+        operation: &'static str,
+        /// What the backend does not implement.
+        reason: &'static str,
+    },
+
     /// A fault-contained copy involving mutable ordinary-file backing stopped.
     /// The recorded prefix is real and is never rolled back or reported as a
     /// complete copy; source preserves the actual host errno on a failed call.
@@ -574,6 +588,13 @@ impl Error {
     /// past the point where the backend could answer the guest.
     pub fn is_host_resources_refusal(&self) -> bool {
         matches!(self.primary(), Self::HostResources { .. })
+    }
+
+    /// Whether this error's [`Self::primary`] cause is the named refusal
+    /// [`Self::UnsupportedSharedFile`]: a shared-file operation the backend
+    /// does not implement, refused before any effect.
+    pub fn is_unsupported_shared_file_refusal(&self) -> bool {
+        matches!(self.primary(), Self::UnsupportedSharedFile { .. })
     }
 
     /// The host resource this error reports running out of, when it is a
