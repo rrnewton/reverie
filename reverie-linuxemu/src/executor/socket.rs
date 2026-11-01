@@ -524,7 +524,7 @@ pub(super) fn socketpair(
     // MSG_TRUNC returns a record's whole length.
     if !matches!(
         base_type,
-        libc::SOCK_DGRAM | libc::SOCK_STREAM | libc::SOCK_SEQPACKET
+        libc::SOCK_DGRAM | libc::SOCK_STREAM
     ) {
         return negative_errno(libc::EPROTONOSUPPORT);
     }
