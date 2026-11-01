@@ -1300,7 +1300,6 @@ pub struct LoadedStaticElf {
     pub regular_create_directory_policy: RegularCreateDirectoryPolicy,
     pub fdinfo_files:
         std::collections::BTreeMap<i32, std::sync::Arc<crate::executor::FdinfoDescription>>,
-    pub fdinfo_table: std::sync::Weak<std::sync::Mutex<crate::executor::FileTableState>>,
     // AUTONOMOUS-BOT-IMPLEMENTED: Preserve deterministic file-object identity.
     // TODO-HUMAN-REVIEW(PR-136): Review descriptor identity and fork inheritance.
     // Every live descriptor strongly holds its identity; the process-shared
@@ -1470,7 +1469,6 @@ impl LoadedStaticElf {
             synthetic_proc_nofollow_fds: self.synthetic_proc_nofollow_fds.clone(),
             regular_create_directory_policy: self.regular_create_directory_policy,
             fdinfo_files: self.fdinfo_files.clone(),
-            fdinfo_table: self.fdinfo_table.clone(),
             fd_object_inodes: self.fd_object_inodes.clone(),
             file_identity_table: self.file_identity_table.clone(),
         })
@@ -1691,7 +1689,6 @@ impl LoadedStaticElf {
         self.synthetic_proc_nofollow_fds = synthetic_proc_nofollow_fds;
         self.regular_create_directory_policy = regular_create_directory_policy;
         self.fdinfo_files = fdinfo_files;
-        self.fdinfo_table = previous.fdinfo_table;
         self.fd_object_inodes = fd_object_inodes;
         self.file_identity_table = file_identity_table;
         // The caller releases both descriptor and transaction guards before close.
@@ -2296,7 +2293,6 @@ fn load_executable(
         synthetic_proc_nofollow_fds: std::collections::BTreeSet::new(),
         regular_create_directory_policy: initialize_regular_create_directory_policy()?,
         fdinfo_files: std::collections::BTreeMap::new(),
-        fdinfo_table: std::sync::Weak::new(),
         fd_object_inodes: std::collections::BTreeMap::new(),
         file_identity_table: std::sync::Arc::new(std::sync::Mutex::new(GuestFileIdentityTable {
             next_inode: 0x2100_0000,
