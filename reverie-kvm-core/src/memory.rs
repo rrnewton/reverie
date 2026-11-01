@@ -1306,9 +1306,13 @@ impl UserPageState {
 // split at mmap page boundaries with the exact live pointer for that page.
 // Truncate-capable ordinary files are accessed only by fault-contained kernel
 // copies using retained raw addresses, never Rust slices or raw memcpy.
-// The KVM backend
-// exposes handles only while its single vCPU is stopped at an exit; the host
-// mutex does not stop vCPU access.
+// The host mutex does not stop vCPU access: other vCPUs of the address space
+// may run while a host copy reads or writes guest bytes, as another thread's
+// stores race a kernel copy on Linux, so host code copies bytes and never
+// holds a Rust reference into guest memory. The views themselves change only
+// by publication, under a Closed entry gate: every vCPU of the address space
+// is outside the guest, no host copy is admitted, and no retained operand
+// covers the replaced range (`EntryGate::close_blocking`, `Closed::publish`).
 unsafe impl Send for Mapping {}
 // SAFETY: See the Send implementation. All host reads and writes take the
 // backing's mutex before dereferencing fixed RAM or issuing a contained file copy.
@@ -1768,7 +1772,14 @@ impl GuestMemory {
         if self.contains_retained_shared() {
             return self.snapshot_with_shared_files(_allocation, share_record);
         }
-        if self.entry_gate().single_member_domain_active() {
+        // No publication is under way while this copy reads the image: one
+        // needs a close, and every closer holds the allocation transaction
+        // held here, so a close found now bypassed it.
+        if !self
+            .entry_gate()
+            .admission_open()
+            .map_err(|failure| failure.error())?
+        {
             return Err(Error::SharedFileCapability {
                 operation: "memory snapshot",
                 reason: "shared-file publication is not quiescent",
@@ -3650,11 +3661,13 @@ impl GuestMemory {
     pub(crate) fn writable_alias(&self, address: u64, length: usize) -> Result<UserWriteAlias<'_>> {
         // Retire the short copy before taking either alias lock: retirement
         // notifies subscribers synchronously and their wakers may read memory.
-        // The retained operand still prevents a mapping-generation change.
+        // The retained operand still prevents a publication over its range,
+        // the bytes the syscall may write.
+        let range = self.arena_range(address, length);
         let retained = self.with_copy(|copy| {
             self.mapping
                 .entry_gate
-                .retain_operand_with(copy, || self.entry_origin())
+                .retain_operand_with(copy, range.clone(), || self.entry_origin())
                 .map_err(|failure| failure.error())
         })?;
         let mut alias = UserWriteAlias {
@@ -3843,6 +3856,22 @@ impl GuestMemory {
         Ok(relative.unwrap() as usize)
     }
 
+    /// The arena byte range of the guest-physical range
+    /// `[guest_address, guest_address + length)`, clipped to the arena: what
+    /// a host operation on that range may touch here. Empty where none of it
+    /// lies in the arena.
+    fn arena_range(&self, guest_address: u64, length: usize) -> std::ops::Range<usize> {
+        let start = guest_address.max(self.mapping.guest_base);
+        let end = guest_address
+            .saturating_add(length as u64)
+            .min(self.mapping.guest_base + self.mapping.slice.length as u64);
+        if start >= end {
+            return 0..0;
+        }
+        let relative = |address: u64| (address - self.mapping.guest_base) as usize;
+        relative(start)..relative(end)
+    }
+
     fn checked_page_range(&self, guest_address: u64, length: u64) -> Result<Option<(u64, u64)>> {
         if length == 0 {
             return Ok(None);
@@ -3898,69 +3927,78 @@ impl PendingBackingPage<'_> {
         let origin = self.memory.entry_origin();
         let memory = self.memory;
         let allocation = self._allocation;
-        let mut prepared = mapping.address_space.lock().unwrap().clone();
-        prepared.backing_pages.insert(
-            page,
-            InstalledBackingPage {
-                _generation: expected_generation,
-                _slice: slice.clone(),
-                mapping: mapping.original_pages[offset / PAGE_SIZE],
-            },
-        );
-        let ledger = self.memory.prepare_mapping_retirement(&prepared);
+        let (mut prepared, ledger) = {
+            let old = mapping.address_space.lock().unwrap();
+            let mut prepared = old.clone();
+            prepared.backing_pages.insert(
+                page,
+                InstalledBackingPage {
+                    _generation: expected_generation,
+                    _slice: slice.clone(),
+                    mapping: mapping.original_pages[offset / PAGE_SIZE],
+                },
+            );
+            let ledger = self.memory.prepare_mapping_retirement(&prepared, &old);
+            (prepared, ledger)
+        };
         let generation = closed
-            .publish(origin, expected_generation, move |generation| {
-                let outcome = (|| {
-                    let mut ownership = mapping.retirement.lock().unwrap();
-                    *ownership = Some(ledger);
-                    let target_address = mapping.base_address + offset;
-                    // All cleanup authority and metadata nodes are already
-                    // allocated. The target becomes ambiguous on any failure.
-                    ownership
-                        .as_mut()
-                        .unwrap()
-                        .lose_fixed_target(offset, PAGE_SIZE, None);
-                    let installed = memory.map_shared_image(
-                        target_address,
-                        &slice,
-                        libc::PROT_READ | libc::PROT_WRITE,
-                    );
-                    let installed = match installed {
-                        Ok(installed) => installed,
-                        Err(error) => {
-                            ownership.as_mut().unwrap().mapping_errno = error.raw_os_error();
-                            return Err(Error::MemoryMapping(error));
-                        }
-                    };
-                    if installed.expose_provenance() != target_address {
+            .publish(
+                origin,
+                expected_generation,
+                offset..offset + PAGE_SIZE,
+                move |generation| {
+                    let outcome = (|| {
+                        let mut ownership = mapping.retirement.lock().unwrap();
+                        *ownership = Some(ledger);
+                        let target_address = mapping.base_address + offset;
+                        // All cleanup authority and metadata nodes are already
+                        // allocated. The target becomes ambiguous on any failure.
                         ownership
                             .as_mut()
                             .unwrap()
-                            .note_unexpected_address(installed.expose_provenance(), PAGE_SIZE);
-                        return Err(Error::MemoryMapping(io::Error::other(
-                            "MAP_FIXED installed a guest page at an unexpected address",
-                        )));
-                    }
-                    let owner = ownership.as_mut().unwrap();
-                    owner.ambiguous = None;
-                    owner.owned = [
-                        Some(WriteAliasRange {
-                            address: mapping.base_address,
-                            length: mapping.slice.length,
-                        }),
-                        None,
-                        None,
-                    ];
-                    let page_state = prepared.backing_pages.get_mut(&page).unwrap();
-                    page_state._generation = generation;
-                    page_state.mapping =
-                        NonNull::new(installed.cast()).expect("nonzero fixed arena");
-                    *mapping.address_space.lock().unwrap() = prepared;
-                    Ok(InstalledMapping::new(generation))
-                })();
-                drop(allocation);
-                outcome
-            })
+                            .lose_fixed_target(offset, PAGE_SIZE, None);
+                        let installed = memory.map_shared_image(
+                            target_address,
+                            &slice,
+                            libc::PROT_READ | libc::PROT_WRITE,
+                        );
+                        let installed = match installed {
+                            Ok(installed) => installed,
+                            Err(error) => {
+                                ownership.as_mut().unwrap().mapping_errno = error.raw_os_error();
+                                return Err(Error::MemoryMapping(error));
+                            }
+                        };
+                        if installed.expose_provenance() != target_address {
+                            ownership
+                                .as_mut()
+                                .unwrap()
+                                .note_unexpected_address(installed.expose_provenance(), PAGE_SIZE);
+                            return Err(Error::MemoryMapping(io::Error::other(
+                                "MAP_FIXED installed a guest page at an unexpected address",
+                            )));
+                        }
+                        let owner = ownership.as_mut().unwrap();
+                        owner.ambiguous = None;
+                        owner.owned = [
+                            Some(WriteAliasRange {
+                                address: mapping.base_address,
+                                length: mapping.slice.length,
+                            }),
+                            None,
+                            None,
+                        ];
+                        let page_state = prepared.backing_pages.get_mut(&page).unwrap();
+                        page_state._generation = generation;
+                        page_state.mapping =
+                            NonNull::new(installed.cast()).expect("nonzero fixed arena");
+                        *mapping.address_space.lock().unwrap() = prepared;
+                        Ok(InstalledMapping::new(generation))
+                    })();
+                    drop(allocation);
+                    outcome
+                },
+            )
             .map_err(|failure| failure.error())?;
         Ok(generation)
     }
@@ -4051,7 +4089,7 @@ impl UserMemory {
             .memory
             .mapping
             .entry_gate
-            .retain_operand_with(copy, || self.memory.entry_origin())
+            .retain_operand_with(copy, offset..offset + length, || self.memory.entry_origin())
             .map_err(|failure| failure.error())?;
         Ok(HostMemoryOperand {
             _memory: self.memory.clone(),
