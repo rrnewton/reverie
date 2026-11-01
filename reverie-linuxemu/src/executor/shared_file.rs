@@ -183,8 +183,7 @@ pub(super) fn mmap_with_shared_files(
         | libc::MAP_FIXED_NOREPLACE
         | libc::MAP_ANONYMOUS
         | libc::MAP_DENYWRITE
-        | libc::MAP_EXECUTABLE
-        | libc::MAP_NORESERVE) as u64;
+        | libc::MAP_EXECUTABLE) as u64;
     let writable = prot & libc::PROT_WRITE as u64 != 0;
     let mut cursors = AllocationCursors::from_elf(state);
     if !fixed {
