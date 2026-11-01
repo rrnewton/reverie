@@ -376,6 +376,31 @@ pub struct BackendCapabilities {
     /// - reverie-sabre returns one frame, the site of the trapped syscall;
     /// - reverie-kvm and reverie-liteinst's in-guest runtime never return one.
     pub provides_guest_backtraces: bool,
+
+    /// The backend's process signal control (see
+    /// [`provides_process_signal_control`](Self::provides_process_signal_control))
+    /// lets a tool name the new parent of each child of an exiting process:
+    /// after [`ProcessSignalControl::enable_orphan_placement`](crate::ProcessSignalControl::enable_orphan_placement),
+    /// a process's exit leaves its children waiting for
+    /// [`ProcessSignalControl::place_orphans`](crate::ProcessSignalControl::place_orphans),
+    /// which moves each one to a live process of the run (a child subreaper,
+    /// as Linux's `find_new_reaper` chooses one) or to the PID namespace's
+    /// init. A tool that models `PR_SET_CHILD_SUBREAPER` on a backend that
+    /// emulates child waits itself (`emulates_child_waits`) needs this, so
+    /// that the backend's waits, `SIGCHLD` and `getppid` follow the parent the
+    /// tool chose.
+    pub places_orphans: bool,
+
+    /// The backend's process signal control publishes a parent-death signal
+    /// that the tool decided
+    /// ([`ProcessSignalControl::publish_parent_death_signal`](crate::ProcessSignalControl::publish_parent_death_signal)):
+    /// any standard signal (1 to 31) except the stop signals (`SIGSTOP`,
+    /// `SIGTSTP`, `SIGTTIN`, `SIGTTOU`), with Linux's siginfo, to an exact
+    /// process lifetime. `SIGKILL` among them, which ends the process at the
+    /// recipient's next delivery boundary. A tool that holds
+    /// `PR_SET_PDEATHSIG` values itself can then send them on a backend whose
+    /// guest threads no host signal reaches.
+    pub publishes_parent_death_signals: bool,
 }
 
 impl BackendCapabilities {
@@ -411,6 +436,9 @@ impl BackendCapabilities {
         // DR0-DR3 on x86-64; arm64 watchpoints are not implemented yet.
         hardware_watchpoints: if cfg!(target_arch = "x86_64") { 4 } else { 0 },
         provides_guest_backtraces: true,
+        // The kernel re-parents orphans and sends parent-death signals itself.
+        places_orphans: false,
+        publishes_parent_death_signals: false,
     };
 
     /// `reverie-e9patch`: the guest is rewritten ahead of time and then run
@@ -516,6 +544,8 @@ impl BackendCapabilities {
         reports_sigreturns: false,
         hardware_watchpoints: 0,
         provides_guest_backtraces: false,
+        places_orphans: true,
+        publishes_parent_death_signals: true,
         ..Self::PTRACE
     };
 }
@@ -561,6 +591,8 @@ mod tests {
             "reports_sigreturns": cfg!(target_arch = "x86_64"),
             "hardware_watchpoints": if cfg!(target_arch = "x86_64") { 4 } else { 0 },
             "provides_guest_backtraces": true,
+            "places_orphans": false,
+            "publishes_parent_death_signals": false,
         })
     }
 
@@ -701,6 +733,8 @@ mod tests {
                 "reports_sigreturns": false,
                 "hardware_watchpoints": 0,
                 "provides_guest_backtraces": false,
+                "places_orphans": true,
+                "publishes_parent_death_signals": true,
             }))
         );
     }
