@@ -395,9 +395,9 @@ pub struct BackendCapabilities {
     /// that the tool decided
     /// ([`ProcessSignalControl::publish_parent_death_signal`](crate::ProcessSignalControl::publish_parent_death_signal)):
     /// any standard signal (1 to 31) except the stop signals (`SIGSTOP`,
-    /// `SIGTSTP`, `SIGTTIN`, `SIGTTOU`), with Linux's siginfo, to an exact
-    /// process lifetime. `SIGKILL` among them, which ends the process at the
-    /// recipient's next delivery boundary. A tool that holds
+    /// `SIGTSTP`, `SIGTTIN`, `SIGTTOU`) and `SIGCHLD`, with Linux's siginfo,
+    /// to an exact process lifetime. `SIGKILL` among them, which ends the
+    /// process at the recipient's next delivery boundary. A tool that holds
     /// `PR_SET_PDEATHSIG` values itself can then send them on a backend whose
     /// guest threads no host signal reaches.
     pub publishes_parent_death_signals: bool,

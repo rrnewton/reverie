@@ -455,7 +455,8 @@ pub trait ProcessSignalControl: Debug + Send + Sync {
     /// Publish one parent-death signal the Tool decided to an exact process
     /// lifetime: a complete process-directed event for a standard signal (1
     /// to 31, never a stop signal: `SIGSTOP`, `SIGTSTP`, `SIGTTIN` or
-    /// `SIGTTOU`) whose siginfo has `si_code` `SI_USER`, as Linux's
+    /// `SIGTTOU`, and not `SIGCHLD`, which a backend may reserve for child
+    /// exits) whose siginfo has `si_code` `SI_USER`, as Linux's
     /// `group_send_sig_info` builds it for the exiting parent thread (its
     /// tgid in `si_pid`, its real uid in `si_uid`).
     ///
