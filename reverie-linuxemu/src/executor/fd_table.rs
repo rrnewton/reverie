@@ -90,6 +90,22 @@ impl FileTableState {
             });
         }
         let retired = std::mem::replace(self, next);
+        {
+            use std::os::fd::AsRawFd as _;
+            eprintln!(
+                "SP1DBG publish tid={} retired={:?} now={:?}",
+                state.tid,
+                retired
+                    .files
+                    .iter()
+                    .map(|(&fd, file)| (fd, file.as_raw_fd()))
+                    .collect::<Vec<_>>(),
+                self.files
+                    .iter()
+                    .map(|(&fd, file)| (fd, file.as_raw_fd()))
+                    .collect::<Vec<_>>()
+            );
+        }
         retired.retire(&state.file_retirement);
         Ok(())
     }
@@ -252,6 +268,16 @@ impl FileTableState {
             .into_iter()
             .map(|(fd, file)| (fd, file.into_file()))
             .collect();
+        {
+            use std::os::fd::AsRawFd as _;
+            let added: Vec<_> = installed_files
+                .iter()
+                .map(|(&fd, file)| (fd, file.as_raw_fd()))
+                .collect();
+            if !added.is_empty() {
+                eprintln!("SP1DBG install tid={} added={:?}", state.tid, added);
+            }
+        }
         let mut previous_files = std::mem::take(&mut state.files);
         for &fd in self.files.keys() {
             installed_files.entry(fd).or_insert_with(|| {
@@ -259,6 +285,19 @@ impl FileTableState {
                     .remove(&fd)
                     .expect("unchanged descriptor entry has its original host fd")
             });
+        }
+        {
+            use std::os::fd::AsRawFd as _;
+            if !previous_files.is_empty() {
+                eprintln!(
+                    "SP1DBG install tid={} removed={:?}",
+                    state.tid,
+                    previous_files
+                        .iter()
+                        .map(|(&fd, file)| (fd, file.as_raw_fd()))
+                        .collect::<Vec<_>>()
+                );
+            }
         }
         let retired_stdin = if same_stdin {
             None

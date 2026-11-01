@@ -727,6 +727,13 @@ impl std::fmt::Debug for FileRetirement {
 
 pub(crate) struct FileRetirementScope(FileRetirement);
 
+fn sp1dbg_raw(file: &RetiredFile) -> RawFd {
+    match file {
+        RetiredFile::Owned(file) => file.as_raw_fd(),
+        RetiredFile::Shared(file) => file.as_raw_fd(),
+    }
+}
+
 pub(crate) struct StagedFile {
     file: Option<File>,
     retirement: FileRetirement,
@@ -747,8 +754,17 @@ impl FileRetirement {
     }
 
     fn retire_inner(&self, files: impl IntoIterator<Item = RetiredFile>) {
+        let files: Vec<RetiredFile> = files.into_iter().collect();
         let retired = {
             let mut state = self.0.lock().unwrap_or_else(|p| p.into_inner());
+            if !files.is_empty() {
+                eprintln!(
+                    "SP1DBG retire q={:p} scopes={} fds={:?}",
+                    Arc::as_ptr(&self.0),
+                    state.scopes,
+                    files.iter().map(sp1dbg_raw).collect::<Vec<_>>()
+                );
+            }
             state.files.extend(files);
             if state.scopes == 0 {
                 std::mem::take(&mut state.files)
@@ -773,6 +789,11 @@ impl FileRetirement {
         if files.is_empty() {
             return;
         }
+        eprintln!(
+            "SP1DBG destroy q={:p} fds={:?}",
+            Arc::as_ptr(&self.0),
+            files.iter().map(sp1dbg_raw).collect::<Vec<_>>()
+        );
         #[cfg(any(test, feature = "test-support"))]
         {
             let probe = self
@@ -1381,6 +1402,16 @@ impl LoadedStaticElf {
             .iter()
             .map(|(&fd, file)| Ok((fd, self.file_retirement.stage_clone(file)?)))
             .collect::<Result<std::collections::BTreeMap<_, _>>>()?;
+        eprintln!(
+            "SP1DBG fork-clone tid={} child={} q={:p} files={:?}",
+            self.tid,
+            child_pid,
+            Arc::as_ptr(&self.file_retirement.0),
+            self.files
+                .iter()
+                .map(|(&fd, file)| (fd, file.as_raw_fd(), files[&fd].as_file().as_raw_fd()))
+                .collect::<Vec<_>>()
+        );
         let cwd_fd = self.file_retirement.stage_clone(&self.cwd_fd)?;
         let stdin = self
             .stdin
