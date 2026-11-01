@@ -1032,11 +1032,12 @@ impl ProcessSignalControl {
 
     /// A parent-death signal the Tool decided
     /// ([`reverie::ProcessSignalControl::publish_parent_death_signal`]): a
-    /// process-directed standard signal other than a stop signal, whose
-    /// siginfo has `SI_USER` (the sender's tgid and uid are the Tool's).
+    /// process-directed standard signal other than a stop signal and SIGCHLD,
+    /// whose siginfo has `SI_USER` (the sender's tgid and uid are the Tool's).
     /// Everything after validation is the alarm's publication. SIGKILL among
     /// them: its disposition cannot change, so its delivery at any thread's
-    /// next boundary ends the process.
+    /// next boundary ends the process (the delivery hook passes a published
+    /// SIGKILL, `validate_deferred_signal_event`).
     fn publish_active_parent_death_signal(
         &self,
         target: SignalProcessId,
@@ -1045,8 +1046,17 @@ impl ProcessSignalControl {
         let signal = event.signal();
         let info = event.siginfo();
         let field = |at: usize| i32::from_ne_bytes(info[at..at + 4].try_into().unwrap());
+        // No stop signal (no stopped state here) and no SIGCHLD, which this
+        // backend's queues carry only for a child's exit.
         if !(1..=31).contains(&signal)
-            || [libc::SIGSTOP, libc::SIGTSTP, libc::SIGTTIN, libc::SIGTTOU].contains(&signal)
+            || [
+                libc::SIGSTOP,
+                libc::SIGTSTP,
+                libc::SIGTTIN,
+                libc::SIGTTOU,
+                libc::SIGCHLD,
+            ]
+            .contains(&signal)
             || field(0) != signal
             || field(8) != libc::SI_USER
             || event.target() != (reverie::SignalTarget::Process { pid: target.tgid })

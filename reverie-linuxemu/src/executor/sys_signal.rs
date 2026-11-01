@@ -54,8 +54,15 @@ impl ElfExecutor {
             (code, _) if code < 0 && !matches!(code, libc::SI_TKILL | libc::SI_TIMER) => true,
             _ => false,
         };
+        // A process-directed SIGKILL a Tool published with `SI_USER` (a
+        // parent-death signal, `publish_parent_death_signal`) reaches the
+        // delivery hook as itself, and is delivered by its default action,
+        // which no handler, mask or ignored disposition changes on Linux.
+        let published_sigkill = signal == libc::SIGKILL
+            && code == libc::SI_USER
+            && matches!(event.target(), reverie::SignalTarget::Process { .. });
         if signal > 31
-            || matches!(signal, libc::SIGKILL | libc::SIGSTOP | libc::SIGCHLD)
+            || (matches!(signal, libc::SIGKILL | libc::SIGSTOP | libc::SIGCHLD) && !published_sigkill)
             || !supported_provenance
         {
             return Err(reverie::syscalls::Errno::ENOSYS);

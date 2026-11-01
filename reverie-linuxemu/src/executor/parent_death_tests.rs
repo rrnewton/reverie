@@ -1178,9 +1178,9 @@ fn pdeath_adopted_control_without_terminal_cleanup_refuses_before_enrollment() {
 
 /// Without its parent-death protocol the executor holds no parent-death
 /// signal, so PR_SET_PDEATHSIG with any signal from 1 to 64 arms nothing and
-/// answers ENOSYS with the typed refusal `ParentDeathSignal`: a stop signal and
-/// a real-time signal by their own reasons, every other signal by the reason
-/// that no tool sends it. Linux accepts all of them, so the refusal must not
+/// answers ENOSYS with the typed refusal `ParentDeathSignal`: a stop signal, a
+/// real-time signal and SIGCHLD by their own reasons, every other signal by the
+/// reason that no tool sends it. Linux accepts all of them, so the refusal must not
 /// read as a kernel answer. 0 is accepted and a value above 64 is EINVAL, as
 /// on Linux, and neither records a refusal.
 #[test]
@@ -1204,6 +1204,8 @@ fn pdeath_refusals_without_the_protocol_are_typed_and_named() {
             ParentDeathSignalRefusal::STOP
         } else if signal >= 32 {
             ParentDeathSignalRefusal::REALTIME
+        } else if signal == libc::SIGCHLD as u64 {
+            ParentDeathSignalRefusal::SIGCHLD
         } else {
             ParentDeathSignalRefusal::UNSENT
         };

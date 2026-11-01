@@ -484,6 +484,7 @@ mod orphan_placement_tests {
             libc::SIGTSTP,
             libc::SIGTTIN,
             libc::SIGTTOU,
+            libc::SIGCHLD,
             libc::SIGRTMIN(),
         ] {
             assert_eq!(
@@ -575,5 +576,34 @@ mod orphan_placement_tests {
             .unwrap()
             .unwrap();
         assert_eq!(pending.event, event);
+        // The delivery hook passes the published SIGKILL on as itself, under
+        // the mask that blocks every other signal.
+        assert_eq!(
+            executor.prepare_filtered_signal_delivery(pending.event, pending.domain),
+            Ok(Some(pending)),
+        );
+        // A SIGKILL from anywhere else, and a stop signal, still is not one
+        // this hook delivers.
+        let mut tkill = event.siginfo();
+        tkill[8..12].copy_from_slice(&libc::SI_TKILL.to_ne_bytes());
+        let thread = reverie::SignalTarget::Thread {
+            pid: id.tgid,
+            tid: id.tgid,
+        };
+        for (signal, info, target) in [
+            (libc::SIGKILL, tkill, thread),
+            (
+                libc::SIGSTOP,
+                parent_death_event(id, libc::SIGSTOP, libc::SI_USER).siginfo(),
+                event.target(),
+            ),
+        ] {
+            let other = SignalEvent::new(signal, info, target).unwrap();
+            assert_eq!(
+                executor.prepare_filtered_signal_delivery(other, pending.domain),
+                Err(Errno::ENOSYS),
+                "{signal}",
+            );
+        }
     }
 }

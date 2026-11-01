@@ -406,6 +406,8 @@ impl ParentDeathSignalRefusal {
          stop signal (SIGSTOP, SIGTSTP, SIGTTIN or SIGTTOU), because it has no stopped state";
     pub(crate) const REALTIME: &'static str = "KVM parent-death signal refused: KVM cannot \
          send a real-time signal, because its signal queues hold standard signals only";
+    pub(crate) const SIGCHLD: &'static str = "KVM parent-death signal refused: KVM cannot \
+         send SIGCHLD, which its signal queues carry only for a child's exit";
     pub(crate) const UNSENT: &'static str = "KVM parent-death signal refused: KVM sends a \
          parent-death signal only for a tool that publishes it or that adopted KVM's \
          parent-death protocol, and this run's tool did neither";
@@ -425,6 +427,7 @@ pub(super) fn parent_death_signal_refusal(signal: u64) -> reverie::UnsupportedRe
             ParentDeathSignalRefusal::STOP
         }
         32..=64 => ParentDeathSignalRefusal::REALTIME,
+        sigchld if sigchld == libc::SIGCHLD as u64 => ParentDeathSignalRefusal::SIGCHLD,
         _ => ParentDeathSignalRefusal::UNSENT,
     };
     reverie::UnsupportedRefusal::new(
