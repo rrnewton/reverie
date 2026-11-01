@@ -62,7 +62,8 @@ impl ElfExecutor {
             && code == libc::SI_USER
             && matches!(event.target(), reverie::SignalTarget::Process { .. });
         if signal > 31
-            || (matches!(signal, libc::SIGKILL | libc::SIGSTOP | libc::SIGCHLD) && !published_sigkill)
+            || (matches!(signal, libc::SIGKILL | libc::SIGSTOP | libc::SIGCHLD)
+                && !published_sigkill)
             || !supported_provenance
         {
             return Err(reverie::syscalls::Errno::ENOSYS);

@@ -91,8 +91,7 @@ impl ProcessSignalRegistry {
         {
             return Err(Errno::EBUSY);
         }
-        self.orphan_placement_adopted
-            .store(true, Ordering::Release);
+        self.orphan_placement_adopted.store(true, Ordering::Release);
         Ok(())
     }
 

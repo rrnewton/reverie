@@ -1190,16 +1190,27 @@ fn pdeath_refusals_without_the_protocol_are_typed_and_named() {
     let mut memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
     let armed = |executor: &mut ElfExecutor, memory: &mut GuestMemory| {
         memory.write(0x100, &[0xa5; 4]).unwrap();
-        assert_eq!(executor.execute(&SyscallRequest::new(libc::SYS_prctl as u64,
-            [libc::PR_GET_PDEATHSIG as u64, 0x100, 0, 0, 0, 0]), memory), 0);
+        assert_eq!(
+            executor.execute(
+                &SyscallRequest::new(
+                    libc::SYS_prctl as u64,
+                    [libc::PR_GET_PDEATHSIG as u64, 0x100, 0, 0, 0, 0]
+                ),
+                memory
+            ),
+            0
+        );
         let mut bytes = [0; 4];
         memory.read(0x100, &mut bytes).unwrap();
         i32::from_ne_bytes(bytes)
     };
     let stop = [libc::SIGSTOP, libc::SIGTSTP, libc::SIGTTIN, libc::SIGTTOU];
     for signal in 1..=64_u64 {
-        assert_eq!(pdeath_set(&mut executor, &memory, signal), -i64::from(libc::ENOSYS),
-            "signal {signal}");
+        assert_eq!(
+            pdeath_set(&mut executor, &memory, signal),
+            -i64::from(libc::ENOSYS),
+            "signal {signal}"
+        );
         let reason = if stop.iter().any(|stop| *stop as u64 == signal) {
             ParentDeathSignalRefusal::STOP
         } else if signal >= 32 {
@@ -1209,17 +1220,33 @@ fn pdeath_refusals_without_the_protocol_are_typed_and_named() {
         } else {
             ParentDeathSignalRefusal::UNSENT
         };
-        assert_eq!(executor.take_unsupported_refusal(), Some(reverie::UnsupportedRefusal::new(
-            reverie::UnsupportedOperation::ParentDeathSignal, reverie::Errno::ENOSYS, reason)),
-            "signal {signal}");
+        assert_eq!(
+            executor.take_unsupported_refusal(),
+            Some(reverie::UnsupportedRefusal::new(
+                reverie::UnsupportedOperation::ParentDeathSignal,
+                reverie::Errno::ENOSYS,
+                reason
+            )),
+            "signal {signal}"
+        );
         assert_eq!(executor.take_unsupported_refusal(), None, "signal {signal}");
-        assert_eq!(armed(&mut executor, &mut memory), 0, "signal {signal} armed something");
+        assert_eq!(
+            armed(&mut executor, &mut memory),
+            0,
+            "signal {signal} armed something"
+        );
         assert_eq!(executor.take_unsupported_refusal(), None, "signal {signal}");
     }
-    for (signal, answer) in [(0, 0), (65, -i64::from(libc::EINVAL)),
-        (u64::MAX, -i64::from(libc::EINVAL))]
-    {
-        assert_eq!(pdeath_set(&mut executor, &memory, signal), answer, "signal {signal}");
+    for (signal, answer) in [
+        (0, 0),
+        (65, -i64::from(libc::EINVAL)),
+        (u64::MAX, -i64::from(libc::EINVAL)),
+    ] {
+        assert_eq!(
+            pdeath_set(&mut executor, &memory, signal),
+            answer,
+            "signal {signal}"
+        );
         assert_eq!(executor.take_unsupported_refusal(), None, "signal {signal}");
     }
     assert!(!executor.parent_death_enrolled());

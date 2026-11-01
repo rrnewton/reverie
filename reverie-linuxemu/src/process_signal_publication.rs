@@ -297,8 +297,13 @@ pub struct ProcessFamilyState {
     orphan_placement: bool,
     awaiting_placement: BTreeMap<ProcessKey, orphan_placement::AwaitingOrphans>,
     // Each placement's request and retained result, by exited generation.
-    placement_results:
-        BTreeMap<ProcessKey, (Vec<reverie::OrphanPlacement>, reverie::OrphanPlacementResult)>,
+    placement_results: BTreeMap<
+        ProcessKey,
+        (
+            Vec<reverie::OrphanPlacement>,
+            reverie::OrphanPlacementResult,
+        ),
+    >,
 }
 
 impl ProcessFamilyState {
@@ -1034,10 +1039,10 @@ impl ProcessSignalControl {
     /// ([`reverie::ProcessSignalControl::publish_parent_death_signal`]): a
     /// process-directed standard signal other than a stop signal and SIGCHLD,
     /// whose siginfo has `SI_USER` (the sender's tgid and uid are the Tool's).
-    /// Everything after validation is the alarm's publication. SIGKILL among
-    /// them: its disposition cannot change, so its delivery at any thread's
-    /// next boundary ends the process (the delivery hook passes a published
-    /// SIGKILL, `validate_deferred_signal_event`).
+    /// Everything after validation is the alarm's publication. SIGKILL is
+    /// one of them: its disposition cannot change, so its delivery at any
+    /// thread's next boundary ends the process (the delivery hook passes a
+    /// published SIGKILL, `validate_deferred_signal_event`).
     fn publish_active_parent_death_signal(
         &self,
         target: SignalProcessId,

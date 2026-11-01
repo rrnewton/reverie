@@ -470,7 +470,8 @@ mod orphan_placement_tests {
     }
 
     /// A Tool-decided parent-death signal is a process-directed standard
-    /// signal with SI_USER, never a stop signal, queued like an alarm.
+    /// signal with SI_USER, never a stop signal or SIGCHLD, queued like an
+    /// alarm.
     #[test]
     fn a_parent_death_signal_is_published_to_its_process() {
         use reverie::ProcessSignalPublicationResult::Committed;
