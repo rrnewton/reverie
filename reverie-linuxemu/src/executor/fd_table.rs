@@ -409,7 +409,9 @@ impl PrivateCopies {
         retired: &[(i32, Option<Arc<crate::elf::FdEntry>>)],
         retired_stdin: Option<&Arc<()>>,
     ) -> std::io::Result<()> {
-        if retired.is_empty() && retired_stdin.is_none() {
+        if retired.is_empty() && retired_stdin.is_none() || true {
+            // MUTANT (not for landing): revoke no other task's copy; only the
+            // closing task's own copy and the published clone go, as before.
             return Ok(());
         }
         let mut result = Ok(());
