@@ -3771,6 +3771,10 @@ mod tests {
             let closing = controller_gate.try_close().unwrap().unwrap();
             block_on(closing.finish()).unwrap()
         });
+        // Whether the byte was set once the late kick's handler had run, read
+        // before the exit is decoded.
+        let stored = std::rc::Rc::new(std::cell::Cell::new(None));
+        let hook_stored = stored.clone();
         super::vcpu_run::set_after_run_for_test(move || {
             let before = delivered_for_test();
             close.send(()).unwrap();
@@ -3785,14 +3789,18 @@ mod tests {
                 // SAFETY: getppid has no arguments and no memory effects.
                 unsafe { libc::syscall(libc::SYS_getppid) };
             }
+            hook_stored.set(Some(immediate_exit.get()));
         });
         let exit = entry.run_vcpu(&mut vcpu);
         assert!(matches!(exit, Ok(kvm_ioctls::VcpuExit::Hlt)), "{exit:?}");
-        // The handler ran for the kick, after the byte was taken back.
-        assert!(
-            !immediate_exit.get(),
+        // The handler ran for the kick, after the byte was taken back, and
+        // stored nothing into the kvm_run page that is then decoded.
+        assert_eq!(
+            stored.get(),
+            Some(false),
             "the late kick's handler stored into the kvm_run page"
         );
+        assert!(!immediate_exit.get());
         entry.finish(Ok(())).unwrap();
         let closed = controller.join().unwrap();
         drop(closed);
