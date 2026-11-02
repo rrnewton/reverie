@@ -3580,9 +3580,10 @@ mod tests {
     }
 
     /// A host copy that does not retire within the publication's bound (here
-    /// the test's own, which it holds through the call) refuses the
-    /// publication by name, with no reservation or byte effect; the close is
-    /// abandoned, so admission reopens and nothing is poisoned.
+    /// the test's own, which it holds through the call) ends the publication
+    /// as the backend's own failure, not a refusal by name, with no
+    /// reservation or byte effect; the close is abandoned, so admission
+    /// reopens and nothing is poisoned.
     #[test]
     fn busy_copy_refuses_publication_without_reservation_or_byte_effect() {
         let memory = fixture(1);

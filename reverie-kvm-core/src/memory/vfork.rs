@@ -77,6 +77,16 @@
 //! was cannot be told from no store, so the child's change to that byte goes
 //! back over it.
 //!
+//! The same holds for another thread's mapping changes during the window. On
+//! Linux the child sees them at once; here its copy keeps the mappings it
+//! started with. A change to a shared view (a new view, or a private mapping
+//! or a hole in place of one) would show the child a page Linux would not, so
+//! it is refused by name before it takes effect: the window is open over the
+//! parent from before the copy reads its image until the child's changes go
+//! back (`GuestMemory::publish_range_from`). A new private mapping, in
+//! place of private memory or not, is a documented limit like a store: the
+//! child that reads it sees the memory from before the window.
+//!
 //! Comparing the end of the window with its start cannot see what happened in
 //! between, so three more cases are documented limits rather than refusals: a
 //! byte the child changed and changed back (or another thread did, an ABA),

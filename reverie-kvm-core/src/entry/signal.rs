@@ -9,8 +9,10 @@
 //! The embedding process reserves Linux signal 64 for KVM entry control.
 //! SIGURG remains the independent worker-cancellation signal.
 //!
-//! A closer interrupts a running vCPU by sending signal 64 to its thread, and
-//! the thread's handler stops the vCPU as QEMU's and Firecracker's do. Signal
+//! A closer interrupts a running vCPU by sending signal 64 to its thread
+//! (`tgkill(2)` to the kernel's thread ID, which the entry read on the thread:
+//! see `HostThread`), and the thread's handler stops the vCPU as QEMU's and
+//! Firecracker's do. Signal
 //! 64 is unblocked on a vCPU thread from its first entry on. The handler
 //! counts the delivery and, while an entry is published on the thread, sets
 //! that vCPU's `kvm_run.immediate_exit` byte. An instance arriving inside
@@ -249,8 +251,7 @@ pub struct ImmediateExit(std::ptr::NonNull<u8>);
 // sent after KVM_RUN returned, is still counted, and stores nothing. A closer
 // waits a bounded time for a kick to take effect
 // (EntryGate::close_blocking), so one that never does fails with a typed
-// error (https://github.com/rrnewton/reverie/issues/1051). Moving the value
-// between threads moves only the address.
+// error. Moving the value between threads moves only the address.
 //
 // A foreign signal 64 breaks the embedding contract and makes the thread's
 // next entry refuse.

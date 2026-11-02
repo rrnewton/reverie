@@ -301,7 +301,7 @@ struct Mapping {
     /// a vfork child reads the image
     /// ([`GuestMemory::snapshot_sharing_address_space`]) to the window's end.
     /// While one is open over the current image, a guest's own change to a
-    /// shared view here is refused ([`GuestMemory::publish_range_from`]): on
+    /// shared view here is refused (`GuestMemory::publish_range_from`): on
     /// Linux the child shares this address space and would see the change,
     /// and its copy cannot. A window over an image an exec replaced does not
     /// count, since the new image is another address space on Linux too.
@@ -7671,8 +7671,10 @@ mod tests {
 
     /// A snapshot holds the allocation transaction, as every production
     /// closer does, so a close it finds held bypassed that transaction and a
-    /// publication may be changing the image: it refuses by name and copies
-    /// nothing. Once admission reopens, the same snapshot succeeds.
+    /// publication may be changing the image: the snapshot fails, as the
+    /// backend's own failure (`Error::SharedFileCapability`, not a refusal by
+    /// name), and copies nothing. Once admission reopens, the same snapshot
+    /// succeeds.
     #[test]
     fn snapshot_refuses_while_a_close_is_held() {
         let mut parent = GuestMemory::new(0x1000, PAGE_SIZE * 2).unwrap();

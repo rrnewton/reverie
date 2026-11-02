@@ -2000,9 +2000,12 @@ pub struct KvmBackend {
     completed_tool_panics: Mutex<Vec<CompletedToolPanic>>,
     thread_slot: Option<usize>,
     is_guest_thread: bool,
-    // Conservative certificate for a non-CLONE_VM process snapshot. The
-    // ordinary shared-file domain separately excludes additional same-mm
-    // participants. Initial roots and legacy vfork snapshots have no certificate;
+    // Conservative certificate for a non-CLONE_VM process snapshot. Other
+    // users of the same mm are the threads of this process, which the entry
+    // gate counts: each thread's vCPU registers when the thread is created
+    // and stops counting at its retirement, in the guest's order
+    // (`clear_registered_worker_tid_before_exit`). Initial roots and legacy
+    // vfork snapshots have no certificate;
     // a later CLONE_VM process preparation revokes it instead of guessing when
     // the other process has stopped using the guest mm.
     independent_process_mm: bool,
@@ -3571,10 +3574,12 @@ impl KvmBackend {
         // provider's vfork-style child (it admits CLONE_VM only with
         // CLONE_VFORK), whose parent waits for its exec or exit. Like a
         // fork's, its copy of shared-file views gets an arena and entry gate
-        // of its own (`GuestMemory::snapshot_sharing_address_space`), so this
-        // gate keeps its one participant, and the copy refuses changes to the
-        // views until the child execs. Thread creation is refused before any
-        // process action exists.
+        // of its own (`GuestMemory::snapshot_sharing_address_space`), so the
+        // child adds no participant to this gate; the copy refuses changes to
+        // the views until the child execs, and this memory refuses another
+        // thread's changes to its views while the child's window is open. A
+        // thread created by the child is refused before any process action
+        // exists.
         let shared_file_snapshot = self.memory.contains_shared_file();
         // Preserve the existing private-fork preparation order. For real file
         // views, duplication may fail after unmapping a child destination;
@@ -7186,10 +7191,11 @@ impl KvmBackend {
 
     /// Runs until the guest halts, invoking `handler` for each syscall vmcall.
     ///
-    /// Actual KVM_RUN interruption remains an error on this raw interface.
-    /// A private close against a running vCPU can also cause EINTR; this loop
-    /// does not distinguish that kick from a foreign interrupt. A production
-    /// closer must not use this driver without defining that distinction.
+    /// Actual KVM_RUN interruption remains an error on this raw interface. It
+    /// runs one vCPU, and no other thread of its address space, so no close
+    /// of the entry gate by a publication kicks it; a caller that closes the
+    /// gate against it from another thread must not use this driver, which
+    /// does not tell such a kick from a foreign interrupt.
     pub fn run<F>(&mut self, handler: F) -> Result<()>
     where
         F: FnMut(Syscall, &GuestMemory) -> i64,
