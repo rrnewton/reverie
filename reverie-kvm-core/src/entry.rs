@@ -334,6 +334,7 @@ pub struct Member {
     /// counts as a user of the address space, though its host thread may
     /// still be tearing down and stays registered until it drops.
     retired: bool,
+    diag_tid: libc::pid_t,
 }
 
 pub struct State {
@@ -547,7 +548,10 @@ impl State {
 
     /// The members whose guest thread has not retired.
     fn live_members(&self) -> usize {
-        self.members.values().filter(|member| !member.retired).count()
+        self.members
+            .values()
+            .filter(|member| !member.retired)
+            .count()
     }
 
     fn stopped(&self) -> bool {
@@ -813,6 +817,7 @@ impl EntryGate {
                             activity: Activity::Stopped,
                             kicks: 0,
                             retired: false,
+                            diag_tid: 0,
                         },
                     );
                     Ok(Participant {
@@ -1134,12 +1139,29 @@ impl EntryGate {
         // Keep an operation's unwind from poisoning the registry mutex:
         // entry destructors still need it to withdraw and retire their target.
         let send_error = catch_unwind(AssertUnwindSafe(|| {
-            state.members.values_mut().find_map(|member| {
+            state.members.iter_mut().find_map(|(id, member)| {
                 if let Activity::Running(thread) = member.activity {
                     // Record before sending: the entry's cleanup refuses any
                     // instance beyond the kicks recorded.
                     member.kicks = member.kicks.saturating_add(1);
-                    send(thread).err()
+                    let result = send(thread).err();
+                    if let Some(error) = &result {
+                        let tid = member.diag_tid;
+                        let exists = std::path::Path::new(&format!("/proc/self/task/{tid}")).exists();
+                        let comm = std::fs::read_to_string(format!("/proc/self/task/{tid}/comm")).unwrap_or_default();
+                        let status = std::fs::read_to_string(format!("/proc/{tid}/status")).unwrap_or_default();
+                        let tgid = status.lines().find(|l| l.starts_with("Tgid:")).unwrap_or("").to_owned();
+                        let state_line = status.lines().find(|l| l.starts_with("State:")).unwrap_or("").to_owned();
+                        eprintln!(
+                            "DIAG-ESRCH kick member {id} failed: {error}; pthread {thread:#x} tid {tid} (task exists {exists} comm {comm:?} {tgid} {state_line}); closer pid {} tid {} pthread {:#x}; run {} retired {}",
+                            unsafe { libc::getpid() },
+                            unsafe { libc::gettid() },
+                            unsafe { libc::pthread_self() },
+                            member.run,
+                            member.retired,
+                        );
+                    }
+                    result
                 } else {
                     None
                 }
@@ -1427,6 +1449,7 @@ impl Entry<'_> {
         // and signal cleanup. The numeric pthread identity never escapes the
         // serialized sender path.
         member.activity = Activity::Running(unsafe { libc::pthread_self() });
+        member.diag_tid = unsafe { libc::gettid() };
         member.generation = Some(self.generation);
         Ok(true)
     }

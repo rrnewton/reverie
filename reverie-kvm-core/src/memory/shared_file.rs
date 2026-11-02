@@ -4025,7 +4025,12 @@ mod tests {
             .expect("the publication deadlocked in a subscriber's waker");
         assert!(published);
         assert_eq!(*waker.reads.lock().unwrap(), vec![(true, true)]);
-        assert!(change.as_mut().poll(&mut Context::from_waker(&Waker::noop())).is_ready());
+        assert!(
+            change
+                .as_mut()
+                .poll(&mut Context::from_waker(&Waker::noop()))
+                .is_ready()
+        );
         assert!(memory.contains_shared_file());
         drop((one, two));
     }
