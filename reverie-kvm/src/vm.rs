@@ -624,8 +624,8 @@ pub(crate) struct GuestThreadGroup {
     // AUTONOMOUS-BOT-IMPLEMENTED: Propagate worker exit_group to the root vCPU.
     // TODO-HUMAN-REVIEW(PR-177): Review KVM thread-group exit ordering.
     exit_status: Mutex<Option<ExitStatus>>,
-    root: Mutex<Option<libc::pthread_t>>,
-    workers: Mutex<Vec<libc::pthread_t>>,
+    root: Mutex<Option<GuestThreadTarget>>,
+    workers: Mutex<Vec<GuestThreadTarget>>,
     // AUTONOMOUS-BOT-IMPLEMENTED: Join cancelled KVM workers before root teardown returns.
     // TODO-HUMAN-REVIEW(PR-178): Review KVM worker join ordering.
     worker_handles: Mutex<Vec<GuestWorkerHandle>>,
@@ -860,17 +860,13 @@ impl GuestThreadGroup {
         self.terminal_reads.request_exit_group(status);
 
         if let Some(root) = *self.root.lock().expect("KVM guest root lock poisoned") {
-            // SAFETY: root is registered for the lifetime of its run loop.
-            unsafe {
-                libc::pthread_kill(root, worker_interrupt_signal());
-            }
+            // Root is registered for the lifetime of its run loop.
+            let _ = root.interrupt();
         }
         let workers = self.workers.lock().expect("KVM guest worker lock poisoned");
-        for &worker in workers.iter() {
-            // SAFETY: the registry lock keeps each pthread ID live for this call.
-            unsafe {
-                libc::pthread_kill(worker, worker_interrupt_signal());
-            }
+        for worker in workers.iter() {
+            // The registry lock keeps each thread registered for this call.
+            let _ = worker.interrupt();
         }
         drop(workers);
         self.notify_cancellation();
@@ -1046,11 +1042,9 @@ impl GuestThreadGroup {
             .workers
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        for &worker in workers.iter() {
-            // SAFETY: the registry lock keeps each pthread ID live for this call.
-            unsafe {
-                libc::pthread_kill(worker, worker_interrupt_signal());
-            }
+        for worker in workers.iter() {
+            // The registry lock keeps each thread registered for this call.
+            let _ = worker.interrupt();
         }
         drop(workers);
         self.notify_cancellation();
@@ -1108,9 +1102,37 @@ impl GuestThreadGroup {
     }
 }
 
+/// A registered guest thread's host thread: its pthread identity, which the
+/// registry compares, and the kernel's process and thread IDs, to which the
+/// worker interrupt is sent (`tgkill(2)`). glibc's `pthread_kill` sends to
+/// the thread ID cached in the thread's descriptor, which the initial thread
+/// of a process created by a raw `clone(2)` holds from its parent, so a kick
+/// of that thread would fail with ESRCH (see `crate::entry::HostThread`).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct GuestThreadTarget {
+    pthread: libc::pthread_t,
+    host: crate::entry::HostThread,
+}
+
+impl GuestThreadTarget {
+    /// The calling thread.
+    fn current() -> Self {
+        Self {
+            // SAFETY: pthread_self identifies this live calling thread.
+            pthread: unsafe { libc::pthread_self() },
+            host: crate::entry::HostThread::current(),
+        }
+    }
+
+    /// Sends the worker interrupt to this thread.
+    fn interrupt(self) -> std::io::Result<()> {
+        self.host.signal(worker_interrupt_signal())
+    }
+}
+
 pub(crate) struct GuestThreadRegistration {
     group: Arc<GuestThreadGroup>,
-    pthread: libc::pthread_t,
+    target: GuestThreadTarget,
     root: bool,
     restore_blocked_signal: bool,
 }
@@ -1118,25 +1140,24 @@ pub(crate) struct GuestThreadRegistration {
 impl GuestThreadRegistration {
     fn register(group: Arc<GuestThreadGroup>, root: bool) -> Result<Self> {
         let restore_blocked_signal = set_guest_interrupt_signal_mask(libc::SIG_UNBLOCK)?;
-        // SAFETY: pthread_self identifies this live calling thread.
-        let pthread = unsafe { libc::pthread_self() };
+        let target = GuestThreadTarget::current();
         if root {
             let previous = group
                 .root
                 .lock()
                 .expect("KVM guest root lock poisoned")
-                .replace(pthread);
+                .replace(target);
             assert!(previous.is_none(), "KVM guest root already registered");
         } else {
             group
                 .workers
                 .lock()
                 .expect("KVM guest worker lock poisoned")
-                .push(pthread);
+                .push(target);
         }
         Ok(Self {
             group,
-            pthread,
+            target,
             root,
             restore_blocked_signal,
         })
@@ -1149,7 +1170,7 @@ impl GuestThreadRegistration {
         panics: Arc<crate::failure::tool_panics::ToolPanics>,
     ) -> Result<GuestInterruptSuspension<'_>> {
         // Only the private synchronous Direct driver supplies this owner.
-        if unsafe { libc::pthread_equal(libc::pthread_self(), self.pthread) } == 0 {
+        if unsafe { libc::pthread_equal(libc::pthread_self(), self.target.pthread) } == 0 {
             return Err(interrupt_ownership_error(
                 "Direct fork moved off its registered pthread",
             ));
@@ -1166,7 +1187,7 @@ impl GuestThreadRegistration {
         };
         let withdrawn = if self.root {
             match self.group.root.lock() {
-                Ok(mut root) if *root == Some(self.pthread) => {
+                Ok(mut root) if *root == Some(self.target) => {
                     *root = None;
                     suspended.detached = true;
                     Ok(())
@@ -1178,10 +1199,8 @@ impl GuestThreadRegistration {
             }
         } else {
             match self.group.workers.lock() {
-                Ok(mut workers)
-                    if workers.iter().filter(|&&id| id == self.pthread).count() == 1 =>
-                {
-                    workers.retain(|id| *id != self.pthread);
+                Ok(mut workers) if workers.iter().filter(|&&id| id == self.target).count() == 1 => {
+                    workers.retain(|id| *id != self.target);
                     suspended.detached = true;
                     Ok(())
                 }
@@ -1191,7 +1210,7 @@ impl GuestThreadRegistration {
                 Err(_) => Err(interrupt_ownership_error("Direct worker registry poisoned")),
             }
         };
-        // Senders hold these same locks through pthread_kill. No old-parent
+        // Senders hold these same locks through each send. No old-parent
         // send remains in flight, and no registry lock crosses the child await.
         if let Err(error) = withdrawn.and_then(|()| deliver_guest_interrupt_at_neutral_boundary()) {
             return suspended.finish(Err(error));
@@ -1249,7 +1268,7 @@ struct GuestInterruptSuspension<'a> {
 impl GuestInterruptSuspension<'_> {
     fn restore(&mut self) -> Result<()> {
         let registration = self.registration;
-        if unsafe { libc::pthread_equal(libc::pthread_self(), registration.pthread) } == 0 {
+        if unsafe { libc::pthread_equal(libc::pthread_self(), registration.target.pthread) } == 0 {
             return Err(interrupt_ownership_error(
                 "Direct restoration moved off its registered pthread",
             ));
@@ -1277,7 +1296,7 @@ impl GuestInterruptSuspension<'_> {
                     }
                 };
                 if root.is_none() {
-                    *root = Some(registration.pthread);
+                    *root = Some(registration.target);
                 } else {
                     errors.push(interrupt_ownership_error(
                         "Direct root was replaced while suspended",
@@ -1293,8 +1312,8 @@ impl GuestInterruptSuspension<'_> {
                         poisoned.into_inner()
                     }
                 };
-                if !workers.contains(&registration.pthread) {
-                    workers.push(registration.pthread);
+                if !workers.contains(&registration.target) {
+                    workers.push(registration.target);
                 } else {
                     errors.push(interrupt_ownership_error(
                         "Direct worker was replaced while suspended",
@@ -1346,7 +1365,7 @@ impl Drop for GuestThreadRegistration {
                 .root
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
-            if *root == Some(self.pthread) {
+            if *root == Some(self.target) {
                 *root = None;
             }
         } else {
@@ -1354,7 +1373,7 @@ impl Drop for GuestThreadRegistration {
                 .workers
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .retain(|worker| *worker != self.pthread);
+                .retain(|worker| *worker != self.target);
         }
         if self.restore_blocked_signal {
             let _ = set_guest_interrupt_signal_mask(libc::SIG_BLOCK);

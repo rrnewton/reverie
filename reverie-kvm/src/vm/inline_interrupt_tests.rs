@@ -126,11 +126,11 @@ pub(crate) mod inline_interrupt_tests {
         }
     }
     fn registered(group: &GuestThreadGroup, root: bool) -> bool {
-        let pthread = unsafe { libc::pthread_self() };
+        let target = GuestThreadTarget::current();
         if root {
-            *group.root.lock().unwrap() == Some(pthread)
+            *group.root.lock().unwrap() == Some(target)
         } else {
-            group.workers.lock().unwrap().contains(&pthread)
+            group.workers.lock().unwrap().contains(&target)
         }
     }
     fn suspend(registration: &GuestThreadRegistration) -> GuestInterruptSuspension<'_> {
@@ -287,7 +287,7 @@ pub(crate) mod inline_interrupt_tests {
             let suspended = suspend(&registration);
             // A real contradictory registry state must refuse restoration,
             // not erase the child error or silently bless ownership replacement.
-            *group.root.lock().unwrap() = Some(registration.pthread);
+            *group.root.lock().unwrap() = Some(registration.target);
             let original = Arc::new(Error::UnexpectedVcpuExit(
                 "original child failure".to_owned(),
             ));
@@ -301,7 +301,7 @@ pub(crate) mod inline_interrupt_tests {
             assert_eq!(cleanup.len(), 1);
             assert!(matches!(cleanup[0].primary(), Error::EntryControl { .. }));
             let suspended = suspend(&registration);
-            *group.root.lock().unwrap() = Some(registration.pthread);
+            *group.root.lock().unwrap() = Some(registration.target);
             let error = suspended.finish::<()>(Err(Error::RunAborted)).unwrap_err();
             assert!(matches!(error.primary(), Error::EntryControl { .. }));
             let Error::WithCleanup { cleanup, .. } = error else {
@@ -321,7 +321,7 @@ pub(crate) mod inline_interrupt_tests {
                     panics.clone(),
                 )
                 .unwrap();
-            *group.root.lock().unwrap() = Some(registration.pthread);
+            *group.root.lock().unwrap() = Some(registration.target);
             drop(suspended);
             let pending = gate
                 .pending_failure()
