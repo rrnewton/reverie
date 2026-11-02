@@ -13255,6 +13255,9 @@ int main(void) {
 
 const TERMINAL_RECEIPT_CHILD_TID: u64 = 0x0800_3000;
 static TERMINAL_RECEIPT_MEMORY: Mutex<Option<reverie_kvm::GuestMemory>> = Mutex::new(None);
+/// Held by each test that installs `TERMINAL_RECEIPT_MEMORY`, so tests in one
+/// process take turns with it.
+static TERMINAL_RECEIPT_EXCLUSIVE: Mutex<()> = Mutex::new(());
 
 /// Reserves a permit for a worker's `SYS_exit`, as Detcore does for exit
 /// boundaries, and records the worker's CLONE_CHILD_CLEARTID word at the
@@ -13363,6 +13366,9 @@ fn worker_exit_clears_child_tid_before_terminal_receipt() {
     if !kvm_available("worker exit CHILD_CLEARTID terminal receipt ordering test") {
         return;
     }
+    let _exclusive = TERMINAL_RECEIPT_EXCLUSIVE
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
 
     let directory = TestDirectory::new();
     let executable = compile_c_program(
@@ -13420,6 +13426,127 @@ int main(void) {
 
     let completion = futures::executor::block_on(
         backend.run_static_elf_with_tool_completion::<TerminalReceiptTool>((), true),
+    );
+    *TERMINAL_RECEIPT_MEMORY
+        .lock()
+        .expect("terminal-receipt memory lock poisoned") = None;
+    let completion = completion.unwrap();
+    let global = completion.global_state;
+    let (status, stdout, stderr) = completion.result.unwrap();
+    assert_eq!(status, reverie::ExitStatus::Exited(0));
+    assert!(stdout.is_empty());
+    assert!(stderr.is_empty());
+    assert!(global.permit.into_inner().unwrap().is_none());
+    assert_eq!(
+        global.receipts.into_inner().unwrap(),
+        vec![(
+            reverie::SignalBoundaryOutcome::Terminated {
+                group: false,
+                wait_status: 0,
+            },
+            0,
+        )],
+    );
+}
+
+/// Reserves a permit for the leader's own `SYS_exit` (the main thread's
+/// `pthread_exit`), as Detcore does for exit boundaries.
+#[derive(Default)]
+struct LeaderTerminalReceiptTool;
+
+#[reverie::tool]
+impl Tool for LeaderTerminalReceiptTool {
+    type GlobalState = TerminalReceiptGlobal;
+    type ThreadState = ();
+
+    async fn handle_syscall_event<G: Guest<Self>>(
+        &self,
+        guest: &mut G,
+        call: Syscall,
+    ) -> Result<i64, reverie::Error> {
+        if call.number() == Sysno::exit && guest.tid() == guest.pid() {
+            let task = guest
+                .signal_task_identity()
+                .expect("a running leader has a task identity");
+            guest.send_rpc(task).await;
+        }
+        guest.tail_inject(call).await
+    }
+}
+
+/// A process leader that exits by itself while another of its threads lives
+/// (the main thread's `pthread_exit`) has its CLONE_CHILD_CLEARTID word
+/// cleared before its terminal receipt is published, as a worker's is: Linux
+/// runs `mm_release` at every thread's `exit_mm`, before the exit is
+/// observable, and a Tool may wake the leader's joiner from that receipt. The
+/// other thread waits for the word to become zero and then ends the group.
+#[test]
+fn leader_exit_clears_child_tid_before_terminal_receipt() {
+    if !kvm_available("leader exit CHILD_CLEARTID terminal receipt ordering test") {
+        return;
+    }
+    let _exclusive = TERMINAL_RECEIPT_EXCLUSIVE
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+
+    let directory = TestDirectory::new();
+    let executable = compile_c_program(
+        &directory.0,
+        "leader-exit-cleartid-receipt",
+        r#"
+#define _GNU_SOURCE
+#include <sched.h>
+#include <stdint.h>
+#include <sys/mman.h>
+#include <sys/syscall.h>
+#include <unistd.h>
+
+#define TID_WORD ((volatile int *)UINT64_C(0x08003000))
+static _Alignas(16) unsigned char worker_stack[1 << 20];
+
+static int worker_main(void *unused) {
+  (void)unused;
+  // Bounded, so that a word nobody clears ends the run instead of hanging it.
+  for (long spins = 0; *TID_WORD != 0; spins++) {
+    if (spins == 1000000) syscall(SYS_exit_group, 3);
+    syscall(SYS_sched_yield);
+  }
+  syscall(SYS_exit_group, 0);
+  return 44;
+}
+
+int main(void) {
+  void *mapped = mmap((void *)TID_WORD, 4096, PROT_READ | PROT_WRITE,
+                      MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED, -1, 0);
+  if (mapped != (void *)TID_WORD) return 20;
+  *TID_WORD = (int)syscall(SYS_gettid);
+  syscall(SYS_set_tid_address, (int *)TID_WORD);
+  int flags = CLONE_VM | CLONE_FS | CLONE_FILES | CLONE_SIGHAND |
+              CLONE_THREAD | CLONE_SYSVSEM;
+  if (clone(worker_main, worker_stack + sizeof(worker_stack), flags, 0) < 0)
+    return 22;
+  syscall(SYS_exit, 0);
+  return 23;
+}
+"#,
+    );
+    let executable = executable.to_str().unwrap();
+    let image = std::fs::read(executable).unwrap();
+    let mut backend = KvmBackend::new(256 * 1024 * 1024).unwrap();
+    backend
+        .install_static_elf_with_context(
+            &image,
+            &[executable],
+            &["PATH=/usr/bin:/bin"],
+            &directory.0,
+        )
+        .unwrap();
+    *TERMINAL_RECEIPT_MEMORY
+        .lock()
+        .expect("terminal-receipt memory lock poisoned") = Some(backend.memory().unwrap().clone());
+
+    let completion = futures::executor::block_on(
+        backend.run_static_elf_with_tool_completion::<LeaderTerminalReceiptTool>((), true),
     );
     *TERMINAL_RECEIPT_MEMORY
         .lock()
