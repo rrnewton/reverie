@@ -6840,6 +6840,9 @@ impl<L: Tool + 'static> TracedTask<L> {
                 }
                 return Err(e);
             }
+            Err(HandleFailure::PendingSigtrap(_)) => {
+                return Err(self.fail_pending_sigtrap(self.tid(), "precise timer"));
+            }
             Err(HandleFailure::Event(wait)) => self.abort(Ok(wait)).await,
             Err(HandleFailure::SeccompStop(task)) => {
                 // A step onto a traced syscall: re-dispatch it.
