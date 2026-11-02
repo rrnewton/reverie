@@ -49,6 +49,58 @@ static long call(long number, uint64_t a0, uint64_t a1, uint64_t a2,
   return m6_guest_syscall(number, args);
 }
 
+
+#ifdef REVERIE_MAPPING_FULLTOOL
+/* Use the genuine installed FullTool in this exact qualified Fixed leaf.
+   Every sampled window contains only the explicitly counted C syscall(s). */
+typedef uint64_t (*syscall_counter_fn)(int64_t);
+typedef uint64_t (*total_counter_fn)(void);
+static syscall_counter_fn full_tool_callbacks, fallback_syscalls;
+static total_counter_fn fallback_total;
+static counter_fn full_tool_traps, full_tool_hooks;
+struct full_tool_probe { uint64_t total, syscall, callbacks; };
+
+static int install_full_tool(const char *runtime) {
+  finish_fn install = (finish_fn)owned("m6_mapping_fixture_install_full_tool", runtime);
+  full_tool_callbacks = (syscall_counter_fn)owned(
+      "m6_mapping_fixture_full_tool_callback_count", runtime);
+  fallback_syscalls = (syscall_counter_fn)owned(
+      "reverie_liteinst_fallback_syscall_count", runtime);
+  fallback_total = (total_counter_fn)owned(
+      "reverie_liteinst_fallback_dispatch_count", runtime);
+  full_tool_traps = (counter_fn)owned("reverie_liteinst_site_trap_count", runtime);
+  full_tool_hooks = (counter_fn)owned("reverie_liteinst_site_hook_count", runtime);
+  if (!install || !full_tool_callbacks || !fallback_syscalls || !fallback_total ||
+      !full_tool_traps || !full_tool_hooks)
+    return 91;
+  int result = install();
+  if (result)
+    fprintf(stderr, "mapping FullTool bootstrap returned %d\n", result);
+  return result;
+}
+
+static struct full_tool_probe full_tool_before(long number) {
+  return (struct full_tool_probe){fallback_total(), fallback_syscalls(number),
+                                  full_tool_callbacks(number)};
+}
+
+static int full_tool_after(const char *label, long number,
+                           struct full_tool_probe before, uint64_t expected,
+                           uint64_t expected_callbacks) {
+  uint64_t total = fallback_total() - before.total;
+  uint64_t syscall = fallback_syscalls(number) - before.syscall;
+  uint64_t callbacks = full_tool_callbacks(number) - before.callbacks;
+  uint64_t site = (uintptr_t)m6_guest_syscall_site;
+  uint64_t traps = full_tool_traps(site), hooks = full_tool_hooks(site);
+  printf("MAPPING_FULLTOOL_PROOF label=%s number=%ld total=%" PRIu64
+         " syscall=%" PRIu64 " callbacks=%" PRIu64 " sites=%" PRIu64
+         " hooks=%" PRIu64 "\n", label, number, total, syscall, callbacks,
+         traps, hooks);
+  return total == expected && syscall == expected &&
+         callbacks == expected_callbacks && traps == 0 && hooks == 0;
+}
+#endif
+
 /* Compare actual owner VMAs, including coverage, permissions and map identity. */
 static int owner_maps(char *signature, size_t capacity, uint64_t probe,
                       char permissions[5]) {
@@ -97,6 +149,10 @@ int main(int argc, char **argv) {
   if (argc != 3 || (strcmp(argv[2], "mprotect") && strcmp(argv[2], "munmap")))
     return 90;
   const char *runtime = argv[1], *operation = argv[2];
+#ifdef REVERIE_MAPPING_FULLTOOL
+  if (install_full_tool(runtime))
+    return 98;
+#endif
   action_fn prepare = (action_fn)owned("m6_mapping_fixture_prepare", runtime);
   action_fn observe = (action_fn)owned("m6_mapping_fixture_observe", runtime);
   action_fn reuse = (action_fn)owned("m6_mapping_fixture_reuse", runtime);
@@ -110,9 +166,16 @@ int main(int argc, char **argv) {
     return 91;
 
   /* Warm the genuine dispatcher before choosing any spare/free extent. */
+#ifdef REVERIE_MAPPING_FULLTOOL
+  struct full_tool_probe warmup = full_tool_before(SYS_getpid);
+#endif
   long pid = call(SYS_getpid, 0, 0, 0, 0, 0, 0);
   if (pid <= 0 || call(SYS_getpid, 0, 0, 0, 0, 0, 0) != pid)
     return 92;
+#ifdef REVERIE_MAPPING_FULLTOOL
+  if (!full_tool_after("warmup", SYS_getpid, warmup, 2, 2))
+    return 99;
+#endif
   struct snapshot before = {0}, after = {0}, reused = {0};
   int setup = prepare(&before, sizeof before);
   printf("MAPPING_SETUP operation=%s result=%d\n", operation, setup);
@@ -136,9 +199,15 @@ int main(int argc, char **argv) {
   long number = !strcmp(operation, "mprotect") ? SYS_mprotect : SYS_munmap;
   uint64_t site = (uintptr_t)m6_guest_syscall_site;
   uint64_t trap_before = traps(site), hook_before = hooks(site);
+#ifdef REVERIE_MAPPING_FULLTOOL
+  struct full_tool_probe measured = full_tool_before(number);
+#endif
   long raw = call(number, before.free_base, PAGE,
                   number == SYS_mprotect ? PROT_READ | PROT_WRITE : 0, 0, 0, 0);
   uint64_t trap_after = traps(site), hook_after = hooks(site);
+#ifdef REVERIE_MAPPING_FULLTOOL
+  int trap_routed = full_tool_after("protected", number, measured, 1, 1);
+#endif
   int maps_result = owner_maps(owner_after, sizeof owner_after, before.free_base, free_after);
   int maps_equal = !maps_result && !strcmp(owner_before, owner_after);
   int observed = observe(&after, sizeof after);
@@ -176,7 +245,12 @@ int main(int argc, char **argv) {
                reused.free_unowned && reused.reuse_base == before.free_base &&
                reused.reuse_count == 2 && outside_separate && outside_result == 0 &&
                outside_cleanup == 0 &&
+#ifdef REVERIE_MAPPING_FULLTOOL
+               trap_routed && trap_before == 0 && trap_after == 0 &&
+               hook_before == 0 && hook_after == 0;
+#else
                (trap_after > trap_before || hook_after > hook_before);
+#endif
   if (!passed)
     return 1; /* Literal old-source mutations remain failures, never relabelled. */
   return finish() ? 97 : 0;

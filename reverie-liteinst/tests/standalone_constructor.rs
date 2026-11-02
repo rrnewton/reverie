@@ -77,6 +77,8 @@ enum Expected {
     Active,
     Inert,
     Refused,
+    #[cfg(not(feature = "liteinst"))]
+    LegacyRefused(&'static str),
     Generic,
 }
 
@@ -257,7 +259,13 @@ fn verify_active_runtime(
             stderr.contains("[liteinst strace pid "),
             "raw strace selector did not install the genuine Strace runtime",
         )?,
-        "passthrough" | "spoof-getpid" => need(
+        "passthrough"
+        | "spoof-getpid"
+        | "builtin-root"
+        | "builtin-hide"
+        | "builtin-replace"
+        | "builtin-first-valid"
+        | "builtin-generic" => need(
             !stderr.contains("tool=compat") && !stderr.contains("[liteinst strace pid "),
             "built-in selector installed a native tracing mode",
         )?,
@@ -314,7 +322,7 @@ fn trial(case: &str, expected: Expected) -> Result<(), String> {
         "guest_source":guest_receipt.source, "root_interposer":root_receipt.binary,
         "root_source":root_receipt.source, "constructor_snapshot":"main-time retained record",
         "first_instruction_credit":false, "whole_window_credit":false,
-        "site_patching":true, "alt_stack":true, "stdin":"closed"
+        "site_patching":cfg!(feature = "liteinst"), "alt_stack":true, "stdin":"closed"
     }))
     .map_err(|e| e.to_string())?;
     let mut held = liteinst_runtime::held_environment(policy);
@@ -329,7 +337,10 @@ fn trial(case: &str, expected: Expected) -> Result<(), String> {
     ] {
         environment.remove(&OsString::from(name));
     }
-    environment.insert(reverie_liteinst::SITE_PATCHING_ENV.into(), "1".into());
+    environment.insert(
+        reverie_liteinst::SITE_PATCHING_ENV.into(),
+        if cfg!(feature = "liteinst") { "1" } else { "0" }.into(),
+    );
     environment.insert(reverie_liteinst::ALT_STACK_ENV.into(), "1".into());
     held.environment = environment.into_iter().collect();
     let mut command = Command::new(&guest);
@@ -337,7 +348,7 @@ fn trial(case: &str, expected: Expected) -> Result<(), String> {
         .arg("prepare")
         .arg(case)
         .arg(&runtime.path)
-        .arg(if case == "root" {
+        .arg(if matches!(case, "root" | "builtin-root") {
             root.as_os_str()
         } else {
             std::ffi::OsStr::new("-")
@@ -360,6 +371,17 @@ fn trial(case: &str, expected: Expected) -> Result<(), String> {
                 && !run.output_truncated,
             "actual leaf exceeded capture bounds or had unexpected stdin",
         )?;
+        #[cfg(not(feature = "liteinst"))]
+        if let Expected::LegacyRefused(selector) = expected {
+            return need(
+                run.status.is_some_and(|status| status.code() == Some(127))
+                    && run.stdout.is_empty()
+                    && String::from_utf8_lossy(&run.stderr).contains(&format!(
+                        "legacy {selector} runtime was built without LiteInst; enable the `liteinst` Cargo feature or use the in-guest FullTool installation route"
+                    )),
+                "legacy raw selector must refuse clearly before main; refusal is not positive runtime coverage",
+            );
+        }
         if matches!(expected, Expected::Refused) {
             let stderr = String::from_utf8_lossy(&run.stderr);
             return need(run.status.is_some_and(|status| status.code() == Some(127)) && run.stdout.is_empty()
@@ -405,7 +427,12 @@ fn trial(case: &str, expected: Expected) -> Result<(), String> {
                 verify_owned(&observation, &runtime.path)?;
                 verify_active_runtime(&observation, &run)?;
                 need(
-                    observation.root_calls == if case == "root" { 0 } else { -1 },
+                    observation.root_calls
+                        == if matches!(case, "root" | "builtin-root") {
+                            0
+                        } else {
+                            -1
+                        },
                     "actual hidden leaf root was replaced by public-symbol interposition",
                 )
             }
@@ -437,12 +464,23 @@ fn trial(case: &str, expected: Expected) -> Result<(), String> {
                         && observation.getpid == observation.kernel_pid,
                     "public generic initializer no longer acquires its getter-selected runtime",
                 )?;
-                need(
-                    String::from_utf8_lossy(&run.stderr).contains("[liteinst strace pid "),
-                    "direct public generic initializer did not run genuine getter-selected Strace",
-                )
+                if case == "builtin-generic" {
+                    let stderr = String::from_utf8_lossy(&run.stderr);
+                    need(
+                        !stderr.contains("[liteinst strace pid ")
+                            && !stderr.contains("tool=compat"),
+                        "direct public generic initializer did not retain its getter-selected builtin route",
+                    )
+                } else {
+                    need(
+                        String::from_utf8_lossy(&run.stderr).contains("[liteinst strace pid "),
+                        "direct public generic initializer did not run genuine getter-selected Strace",
+                    )
+                }
             }
             Expected::Refused => unreachable!(),
+            #[cfg(not(feature = "liteinst"))]
+            Expected::LegacyRefused(_) => unreachable!(),
         }
     })();
     let recorded = m1_artifact::write_new(
@@ -492,6 +530,7 @@ fn group(cases: &[(&str, Expected)]) {
 }
 
 #[test]
+#[cfg(feature = "liteinst")]
 fn active_leaf_has_returned_authenticated_bootstrap() {
     group(&[
         ("strace", Expected::Active),
@@ -502,7 +541,19 @@ fn active_leaf_has_returned_authenticated_bootstrap() {
 }
 
 #[test]
+#[cfg(not(feature = "liteinst"))]
+fn builtin_leaf_has_returned_authenticated_bootstrap_and_legacy_modes_refuse() {
+    group(&[
+        ("strace", Expected::LegacyRefused("strace")),
+        ("compat", Expected::LegacyRefused("compat")),
+        ("passthrough", Expected::Active),
+        ("spoof-getpid", Expected::Active),
+    ]);
+}
+
+#[test]
 fn raw_selector_presence_overrides_getenv_provider() {
+    #[cfg(feature = "liteinst")]
     group(&[
         ("absent", Expected::Inert),
         ("synthesize", Expected::Inert),
@@ -510,10 +561,19 @@ fn raw_selector_presence_overrides_getenv_provider() {
         ("hide", Expected::Active),
         ("replace", Expected::Active),
     ]);
+    #[cfg(not(feature = "liteinst"))]
+    group(&[
+        ("absent", Expected::Inert),
+        ("synthesize", Expected::Inert),
+        ("lookalikes", Expected::Inert),
+        ("builtin-hide", Expected::Active),
+        ("builtin-replace", Expected::Active),
+    ]);
 }
 
 #[test]
 fn raw_selector_refusals_and_first_duplicate() {
+    #[cfg(feature = "liteinst")]
     group(&[
         ("empty", Expected::Refused),
         ("invalid", Expected::Refused),
@@ -521,14 +581,28 @@ fn raw_selector_refusals_and_first_duplicate() {
         ("first-invalid", Expected::Refused),
         ("first-valid", Expected::Active),
     ]);
+    #[cfg(not(feature = "liteinst"))]
+    group(&[
+        ("empty", Expected::Refused),
+        ("invalid", Expected::Refused),
+        ("non-utf8", Expected::Refused),
+        ("first-invalid", Expected::Refused),
+        ("builtin-first-valid", Expected::Active),
+    ]);
 }
 
 #[test]
 fn local_leaf_root_survives_public_symbol_interposition() {
+    #[cfg(feature = "liteinst")]
     group(&[("root", Expected::Active)]);
+    #[cfg(not(feature = "liteinst"))]
+    group(&[("builtin-root", Expected::Active)]);
 }
 
 #[test]
 fn generic_initializer_keeps_getenv_acquisition() {
+    #[cfg(feature = "liteinst")]
     group(&[("generic", Expected::Generic)]);
+    #[cfg(not(feature = "liteinst"))]
+    group(&[("builtin-generic", Expected::Generic)]);
 }

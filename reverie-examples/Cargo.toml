@@ -40,6 +40,10 @@ runtime = [
 path = "src/lib.rs"
 crate-type = ["cdylib", "rlib"]
 
+[features]
+default = ["liteinst"]
+liteinst = ["reverie-liteinst/liteinst"]
+
 [[bin]]
 name = "chaos"
 required-features = ["runtime"]
