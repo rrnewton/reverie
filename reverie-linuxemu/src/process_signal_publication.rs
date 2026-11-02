@@ -298,6 +298,9 @@ pub struct ProcessFamilyState {
     // `awaiting_placement` until the Tool places them (`place_orphans`).
     orphan_placement: bool,
     awaiting_placement: BTreeMap<ProcessKey, orphan_placement::AwaitingOrphans>,
+    // Traced roots that were their namespace's init and have exited: the
+    // namespace ended with them (`await_namespace_end`).
+    namespace_ended: BTreeSet<ProcessKey>,
     // Each placement's request and retained result, by exited generation.
     placement_results: BTreeMap<
         ProcessKey,
@@ -761,7 +764,13 @@ impl ProcessSignalRegistry {
         };
         family.terminal.insert(process_key(process), exit);
         self.wait_changed.notify_all();
-        if matches!(exit, ProcessFamilyExit::Root | ProcessFamilyExit::Child(_))
+        if matches!(exit, ProcessFamilyExit::Root)
+            && family.orphan_placement
+            && family.reaper == NamespaceReaper::TracedRoot
+        {
+            // The namespace ends with its init (`await_namespace_end`).
+            family.await_namespace_end(process_key(process));
+        } else if matches!(exit, ProcessFamilyExit::Root | ProcessFamilyExit::Child(_))
             && family.orphan_placement
         {
             // The Tool names each child's new parent (`place_orphans`).

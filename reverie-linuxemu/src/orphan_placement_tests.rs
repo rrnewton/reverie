@@ -123,6 +123,81 @@ mod orphan_placement_tests {
         );
     }
 
+    /// The traced root is its namespace's init (pid 1, no parent): its exit
+    /// ends the namespace, so its live child and its zombie go to the init,
+    /// which is that teardown, even before the zombie's exit is claimed, and
+    /// nothing moves: both keep their edges to the root, whose executor still
+    /// joins them, and the live child's exit is a `RunTeardownChild`, as
+    /// without placement. No process can adopt them.
+    #[test]
+    fn the_orphans_of_a_root_that_is_namespace_init_are_torn_down() {
+        let mut state = native_loaded_state(std::path::Path::new("/tmp"));
+        state.task_lifecycle = Arc::new(Mutex::new(TaskLifecycleTable::with_root(1, 1, 1, true)));
+        let root = ElfExecutor::new(state, false);
+        enable_placement(&root);
+        let root_id = identity(&root);
+        let mut zombie = root.fork_child(2, false, false).unwrap();
+        let zombie_id = identity(&zombie);
+        let mut live = root.fork_child(3, false, false).unwrap();
+        let live_id = identity(&live);
+        zombie.retire_current_thread(reverie::ExitStatus::Exited(2), false);
+
+        let mut root = root;
+        root.retire_current_thread(reverie::ExitStatus::Exited(0), false);
+        assert_eq!(awaiting(&root, root_id), Some(vec![2, 3]));
+        assert_eq!(
+            place(&root, root_id, &[to(live_id, zombie_id)]),
+            OrphanPlacementResult::RejectedBeforeCommit(Errno::EINVAL),
+            "no process survives the namespace to adopt an orphan",
+        );
+        let init = |child| OrphanPlacement {
+            child,
+            reaper: OrphanReaper::NamespaceInit,
+        };
+        assert_eq!(
+            committed(place(&root, root_id, &[init(zombie_id), init(live_id)])),
+            vec![
+                PlacedOrphan {
+                    child: zombie_id,
+                    reaper: OrphanReaper::NamespaceInit,
+                    effect: PlacedOrphanEffect::NamespaceInit,
+                },
+                PlacedOrphan {
+                    child: live_id,
+                    reaper: OrphanReaper::NamespaceInit,
+                    effect: PlacedOrphanEffect::NamespaceInit,
+                },
+            ],
+        );
+        assert_eq!(awaiting(&root, root_id), None);
+        assert_eq!(wait_parent(&root, zombie_id), Some((1, WaitPhase::Pending)));
+        assert_eq!(wait_parent(&root, live_id), Some((1, WaitPhase::Pending)));
+        let (edges, orphans) = family_snapshot(&root);
+        assert_eq!(
+            edges[&process_key(root_id)].get(&process_key(zombie_id)),
+            Some(&DirectChildState::WaitableZombie)
+        );
+        assert_eq!(
+            edges[&process_key(root_id)].get(&process_key(live_id)),
+            Some(&DirectChildState::Live)
+        );
+        assert!(orphans.is_empty(), "no init orphan record");
+        assert!(
+            !root
+                .signal_registry
+                .transferred_children_to_namespace_init(root_id),
+            "the root's executor joins its own host children",
+        );
+        assert_eq!(getppid(&mut live), 1);
+        live.retire_current_thread(reverie::ExitStatus::Exited(3), false);
+        assert!(matches!(
+            live.signal_registry.process_family_exit(live_id),
+            Some(ProcessFamilyExit::RunTeardownChild {
+                status: reverie::ExitStatus::Exited(3)
+            })
+        ));
+    }
+
     /// Root (pid 3, a child subreaper in the Tool's model) forks a parent
     /// (6) that forks a live child (7): the parent's exit leaves the child
     /// waiting, and the placement makes it the root's, for its waits, its
