@@ -840,6 +840,14 @@ unsafe impl PatchHost for LiteinstPatchHost {
         Some(self.site_patching())
     }
 
+    #[cfg(feature = "liteinst")]
+    fn preflight_site_patching(&self) -> Option<io::Result<bool>> {
+        // Invalid selectors must return before fixed-gate publication makes
+        // installation failures terminal. Valid ON selections retain their
+        // original late installation point.
+        self.site_patching().err().map(Err)
+    }
+
     fn initialize_continuation(&self) -> io::Result<()> {
         crate::syscall_fallback::initialize()
     }
@@ -3451,8 +3459,12 @@ unsafe impl TrapSeam for LiteinstSeam {
             // AUTONOMOUS-BOT-IMPLEMENTED
             (event.number() == libc::SYS_clone && clone_is_fork_like(args[0], args[1]))
             // AUTONOMOUS-BOT-IMPLEMENTED
-            || event.number() == libc::SYS_wait4;
-        // TODO-HUMAN-REVIEW(PR-127): Review fork and wait libc-wrapper trap fallbacks.
+            || event.number() == libc::SYS_wait4
+            // brk must retain its pointer-valued raw ABI even when its libc
+            // site cannot be patched. The existing shared mapping guard and
+            // physical forwarding path decide the actual operation/result.
+            || event.number() == libc::SYS_brk;
+        // TODO-HUMAN-REVIEW(PR-127): Review libc-wrapper trap forwarding.
         if mode != TOOL_REVERIE && compatibility_trap_fallback {
             let mut trapped = SyscallEvent {
                 number: event.number(),
