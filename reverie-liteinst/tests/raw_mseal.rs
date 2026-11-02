@@ -130,7 +130,7 @@ fn plain_fulltool_raw_mseal_protects_owner_before_unknown_syscall_refusal() -> R
             "plain FullTool regression source changed",
         )
     })();
-    let result = (|| match (result, after) {
+    let result = match (result, after) {
         (Ok(()), Ok(())) => Ok(()),
         (Err(error), Ok(())) | (Ok(()), Err(error)) => {
             Err(format!("{error}; evidence {}", evidence.display()))
@@ -139,7 +139,7 @@ fn plain_fulltool_raw_mseal_protects_owner_before_unknown_syscall_refusal() -> R
             "{error}; final guard: {after}; evidence {}",
             evidence.display()
         )),
-    })();
+    };
     let retired = leaf.retire(&evidence);
     match (result, retired) {
         (Ok(()), Ok(())) => Ok(()),

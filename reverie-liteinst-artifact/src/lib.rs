@@ -77071,7 +77071,7 @@ mod tests {
                 },
             );
         }
-        let backing = AllocatorBackingEvidence {
+        AllocatorBackingEvidence {
             fixed_native_syscalls: None,
             fixed_arena_version: 1,
             descriptor: AllocatorDescriptorEvidence {
@@ -77133,8 +77133,7 @@ mod tests {
             functions,
             owned_setup_transfers: BTreeMap::from([("fixed_arena_setup".to_owned(), vec![])]),
             owned_setup_got_edges: vec![],
-        };
-        backing
+        }
     }
 
     fn dev_scalar_backing_emitter_control() -> AllocatorBackingEvidence {
