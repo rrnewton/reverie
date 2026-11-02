@@ -514,7 +514,7 @@ mod shared_file_dispatch_tests {
         let view = f.shared(fd, 0, 0, true);
         assert_eq!(f.memory.file_offset(view), Some(0));
         let observed = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
-        let mut map_over = |f: &mut Fixture, flags: libc::c_int, offset: u64| {
+        let map_over = |f: &mut Fixture, flags: libc::c_int, offset: u64| {
             let memory = f.memory.clone();
             let seen = observed.clone();
             let hook = crate::memory::after_allocation_release_for_test(move || {

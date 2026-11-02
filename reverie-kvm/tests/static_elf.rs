@@ -22544,8 +22544,8 @@ fn shared_file_views_with_threads_match_native() {
         };
         assert!(
             error.contains(
-                "unsupported KVM shared-file operation shared-file fork snapshot: requires one \
-                 stopped vCPU"
+                "unsupported KVM shared-file operation shared-file fork snapshot: another thread \
+                 of the process is alive"
             ),
             "fork mode={name}: {error}"
         );

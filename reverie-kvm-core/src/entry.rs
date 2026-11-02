@@ -994,6 +994,14 @@ impl EntryGate {
             .map(std::result::Result::ok)
     }
 
+    /// How many members' guest threads have not retired: the threads that
+    /// use the address space, in the guest's order.
+    pub(crate) fn live_members(&self) -> GateResult<usize> {
+        let state = self.state.lock().unwrap();
+        state.check()?;
+        Ok(state.live_members())
+    }
+
     /// As [`Self::try_close_quiescent_single`], reporting instead of a
     /// refusal how many live members the gate had (members whose guest thread
     /// has not retired, [`Participant::retire_from_guest`]), read under the
