@@ -99,6 +99,13 @@ impl RunProbe {
             .store(true, std::sync::atomic::Ordering::Release);
     }
 
+    /// Runs `hook` once, after the next entry is prepared and activated and
+    /// before its `KVM_RUN`.
+    pub(crate) fn after_prepare(&self, hook: impl FnOnce() + Send + 'static) {
+        let previous = self.after_prepare.lock().unwrap().replace(Box::new(hook));
+        assert!(previous.is_none(), "entry control replaced an armed hook");
+    }
+
     fn run_hook(&self) {
         let hook = self.before_run.lock().unwrap().take();
         if let Some(hook) = hook {
