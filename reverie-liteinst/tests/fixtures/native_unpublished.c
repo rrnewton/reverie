@@ -10,6 +10,12 @@
 #include <ucontext.h>
 #include <dlfcn.h>
 
+#ifndef REVERIE_EXPECTED_SITE_TRAPS
+#error "the Rust consumer must select the expected LiteInst site count"
+#endif
+_Static_assert(REVERIE_EXPECTED_SITE_TRAPS == 0 || REVERIE_EXPECTED_SITE_TRAPS == 2,
+               "only enabled and disabled LiteInst fixtures are supported");
+
 extern long raw_call(long,long,long,long,long,long,long);
 extern long split_call(long,long,long,long,long,long,long);
 extern long contrast_call(long,long,long,long,long,long,long);
@@ -218,7 +224,7 @@ static void cached_refusal_case(const char*name){
  uint64_t(*trap_count)(uint64_t)=dlsym(RTLD_DEFAULT,"reverie_liteinst_site_trap_count");
  uint64_t(*hook_count)(uint64_t)=dlsym(RTLD_DEFAULT,"reverie_liteinst_site_hook_count");
  need((trap_count!=0)==(hook_count!=0),"both-route-counters-required");
- if(trap_count){uint64_t traps=trap_count((uintptr_t)site),hooks=hook_count((uintptr_t)site);text("COUNTS present=1 trap=");number(traps);text(" hook=");number(hooks);text("\n");obs("cache-traps",traps,2);obs("cache-installed-hooks",hooks,0);}
+ if(trap_count){uint64_t traps=trap_count((uintptr_t)site),hooks=hook_count((uintptr_t)site);text("COUNTS present=1 trap=");number(traps);text(" hook=");number(hooks);text("\n");obs("cache-traps",traps,REVERIE_EXPECTED_SITE_TRAPS);obs("cache-installed-hooks",hooks,0);}
  else text("COUNTS present=0\n");
  if(same(name,"cache-mutate"))site[3]=0xd2;
  else if(same(name,"metadata-replace"))replace_page((uintptr_t)__GNU_EH_FRAME_HDR&~(uintptr_t)4095,site,0,0);

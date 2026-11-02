@@ -11,6 +11,8 @@ description = "Guest preload leaf for Reverie LiteInst"
 crate-type = ["cdylib"]
 
 [features]
+default = ["liteinst"]
+liteinst = ["reverie-liteinst/liteinst"]
 allocator-fixture = ["reverie-liteinst/allocator-fixture"]
 
 [dependencies]

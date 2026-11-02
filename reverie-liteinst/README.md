@@ -10,6 +10,26 @@ Hermit's `liteinst` feature is optional and off by default.
 standalone `liteinst2` patching library, the shared `reverie-inguest` runtime,
 and `reverie-rpc-transport`.
 
+## Optional site patching
+
+The core crate, preload leaf and examples retain LiteInst site patching by
+default. Build with `--no-default-features` for the shared in-guest trap runtime
+without `liteinst2`; explicitly select the `liteinst` feature to restore it.
+The trap runtime keeps Tool installation, RPC, instruction emulation, allocator
+ownership and lifecycle services. It creates no executable patch arenas or
+LiteInst SIGTRAP guard router.
+
+Without LiteInst, an unset site-patching selector selects the trap runtime;
+explicit `1` returns `Unsupported`, and `0` is accepted. Legacy standalone
+Strace/Compatibility launchers also return `Unsupported` before activation.
+These negative controls do not establish parity with their ON comparison legs.
+Installed FullTool tests retain their own strict callback, fallback, state,
+owner, mapping, sentinel and lease assertions in either configuration.
+
+The raw-mseal behavior fixture is source-built and NONQUALIFIED, not an M1 or
+native artifact admission. Its nested preload build follows the test's actual
+compiled LiteInst feature in both ON and OFF configurations.
+
 ## Preload and allocator ownership
 
 The `reverie-liteinst` core is an allocator-neutral rlib. The standalone runtime
@@ -565,3 +585,30 @@ LiteInst-only defect; such a repeat comparison does not establish correct
 thread or process behavior. Current support is described above. The
 rejection itself is covered by `unsafe_clone_is_rejected_in_compatibility_and_strace_modes`
 and the compatibility-fork tests in `tests/strace.rs`.
+
+## Source-bound finite artifact policies
+
+The host-only `reverie-liteinst-artifact` crate validates retained ELF metadata,
+allocator and TLS instruction recipes against closed generic mechanisms. A
+consumer using the current-Cargo build adapter supplies its own package,
+workspace-role, feature, profile and evidence-label policy through
+`ConsumerPolicySpec`. The policy definition is a separate physical source
+identity, matched against independently compiled bytes by
+`VerifiedConsumerPolicy::resolve`; a serialized receipt cannot create that
+authority. `VerifiedCompiledSources::with_consumer_build` joins the policy to
+the actual successful command, complete Cargo events and selected output.
+
+The standalone producer may also name its artifact crate as a test dependency
+to exercise real publication-close controls. The Cargo adapter first accepts
+the existing single build dependency, then exactly one build and one test entry
+bound to the same independent full pin without aliases or paths. The runtime
+leaf still requires exactly one ordinary preload dependency.
+
+The consumer retains that enriched source context through qualification,
+staging and receipt publication. Receipt verification receives the independently
+resolved current policy through `ConsumerExpectation::expected_current_policy`
+and closes its file identity after use. Policy data cannot supply custom
+instructions, offsets, masks, callbacks, fallback recipes or relaxed checks.
+These are static build/ELF qualifications, with no executed workload, runtime
+parity or whole-suite claim. Non-Cargo provenance adapters remain separate;
+ordinary evidence qualification does not acquire a universal Cargo requirement.

@@ -11,7 +11,7 @@
 //! libc = "0.2"
 //! ```
 //!
-//! Usage: build-liteinst-test-runtime.rs --for-ci /absolute/unique-generation
+//! Usage: build-liteinst-test-runtime.rs --for-ci /absolute/unique-generation [--no-liteinst]
 //! Or: build-liteinst-test-runtime.rs /absolute/producer-config.json
 //! Config contains explicit workspace, separate target, unique bundle, profile,
 //! exact Cargo profile object, oracle paths/hashes and source HEAD/tree/lock hash.
@@ -51,7 +51,7 @@ struct Config {
     rust_exports: PathBuf,
     c_workload: PathBuf,
     oracle_sha256: BTreeMap<String, String>,
-    /// The leaf has exactly allocator-fixture; no default feature exists.
+    /// The exact explicit leaf features: allocator-fixture, optionally liteinst.
     expected_features: Vec<String>,
     /// The standalone RV producer requires the ordinary dev profile.
     /// H can reuse m1_artifact directly for its independent release producer.
@@ -87,7 +87,7 @@ fn dev_profile() -> Value {
                        "overflow_checks":true, "test":false})
 }
 
-fn ci_config(generation: PathBuf) -> Result<Config> {
+fn ci_config(generation: PathBuf, liteinst: bool) -> Result<Config> {
     check(
         generation.is_absolute(),
         "CI generation must be an absolute unique path",
@@ -122,7 +122,11 @@ fn ci_config(generation: PathBuf) -> Result<Config> {
         rust_exports,
         c_workload,
         oracle_sha256: oracle_hashes(),
-        expected_features: vec!["allocator-fixture".to_owned()],
+        expected_features: if liteinst {
+            vec!["allocator-fixture".to_owned(), "liteinst".to_owned()]
+        } else {
+            vec!["allocator-fixture".to_owned()]
+        },
         profile_name: "dev".to_owned(),
         expected_cargo_profile: dev_profile(),
         deadline_seconds: 540,
@@ -346,10 +350,11 @@ fn produce(
         config.max_command_stream_bytes,
     )?;
     check(
-        config.expected_features == ["allocator-fixture"]
+        (config.expected_features == ["allocator-fixture"]
+            || config.expected_features == ["allocator-fixture", "liteinst"])
             && config.profile_name == "dev"
             && config.expected_cargo_profile == dev_profile(),
-        "RV diagnostic leaf requires independent singleton fixture features and the ordinary dev profile",
+        "RV diagnostic leaf requires exact allocator-fixture features with optional liteinst and the ordinary dev profile",
     )?;
     check(
         config.oracle_sha256 == oracle_hashes(),
@@ -385,7 +390,12 @@ fn produce(
             "--no-deps".to_owned(),
             "--format-version=1".to_owned(),
             "--manifest-path".to_owned(),
-            root.join("Cargo.toml").to_string_lossy().into_owned(),
+            root.join("reverie-liteinst-preload/Cargo.toml")
+                .to_string_lossy()
+                .into_owned(),
+            "--no-default-features".to_owned(),
+            "--features".to_owned(),
+            config.expected_features.join(","),
         ],
         &root,
     )?;
@@ -439,8 +449,9 @@ fn produce(
         "-p".to_owned(),
         "reverie-liteinst-preload".to_owned(),
         "--lib".to_owned(),
+        "--no-default-features".to_owned(),
         "--features".to_owned(),
-        "allocator-fixture".to_owned(),
+        config.expected_features.join(","),
         "--profile".to_owned(),
         config.profile_name.clone(),
         "--target-dir".to_owned(),
@@ -676,16 +687,18 @@ fn run() -> Result<()> {
     let args: Vec<_> = std::env::args_os().skip(1).collect();
     if args.len() == 1 && args[0] == "--help" {
         println!(
-            "Usage: build-liteinst-test-runtime.rs --for-ci /absolute/unique-generation\n       build-liteinst-test-runtime.rs /absolute/producer-config.json\nRun from the clean RV checkout root. The producer executes zero tests."
+            "Usage: build-liteinst-test-runtime.rs --for-ci /absolute/unique-generation [--no-liteinst]\n       build-liteinst-test-runtime.rs /absolute/producer-config.json\nRun from the clean RV checkout root. The producer executes zero tests."
         );
         return Ok(());
     }
-    let config = if args.len() == 2 && args[0] == "--for-ci" {
-        ci_config(PathBuf::from(&args[1]))?
+    let config = if (args.len() == 2 || args.len() == 3 && args[2] == "--no-liteinst")
+        && args[0] == "--for-ci"
+    {
+        ci_config(PathBuf::from(&args[1]), args.len() == 2)?
     } else {
         check(
             args.len() == 1,
-            "usage: build-liteinst-test-runtime.rs --for-ci /absolute/unique-generation",
+            "usage: build-liteinst-test-runtime.rs --for-ci /absolute/unique-generation [--no-liteinst]",
         )?;
         let path = PathBuf::from(&args[0]);
         check(
