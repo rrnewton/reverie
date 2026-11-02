@@ -3464,7 +3464,8 @@ unsafe impl TrapSeam for LiteinstSeam {
             // site cannot be patched. The existing shared mapping guard and
             // physical forwarding path decide the actual operation/result.
             || event.number() == libc::SYS_brk;
-        // TODO-HUMAN-REVIEW(PR-127): Review libc-wrapper trap forwarding.
+        // TODO-HUMAN-REVIEW(PR-127): Review fork and wait libc-wrapper trap fallbacks.
+        // Built-in brk uses this transport to preserve its pointer-valued raw ABI.
         if mode != TOOL_REVERIE && compatibility_trap_fallback {
             let mut trapped = SyscallEvent {
                 number: event.number(),
