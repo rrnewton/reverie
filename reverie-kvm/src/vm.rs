@@ -6162,23 +6162,26 @@ impl KvmBackend {
         }
     }
 
-    /// Clears a CLONE_THREAD worker's CLONE_CHILD_CLEARTID word before the
-    /// worker's non-group terminal signal-boundary receipt is published.
+    /// Clears a thread's CLONE_CHILD_CLEARTID word before its non-group
+    /// terminal signal-boundary receipt is published: a CLONE_THREAD worker's,
+    /// and a process leader's that exits by itself (`pthread_exit` of the main
+    /// thread) while other threads of its process may live.
     ///
     /// Linux clears and wakes this word in `mm_release`, called from `exit_mm`,
-    /// before `exit_notify` makes the task's death observable. A receipt is
-    /// how a Tool observes that death; Detcore, for example, retires the task
-    /// and wakes a `pthread_join` waiter from it. If the clear waited for
-    /// `finish_tool_process`, the woken joiner would read the stale TID and
-    /// retry `FUTEX_WAIT` a host-timing-dependent number of times.
+    /// before `exit_notify` makes the task's death observable, for a leader as
+    /// for any other thread. A receipt is how a Tool observes that death;
+    /// Detcore, for example, retires the task and wakes a `pthread_join`
+    /// waiter from it. If the clear waited for `finish_tool_process`, the
+    /// woken joiner would read the stale TID and retry `FUTEX_WAIT` a
+    /// host-timing-dependent number of times, or wait for a wake that comes
+    /// only when the whole process finishes.
     ///
     /// The clear consumes the registered address, so the later call in
-    /// `finish_tool_process` does nothing. A process leader keeps its existing
-    /// discard-or-clear policy at the signal-return and finish sites.
-    pub(crate) fn clear_worker_tid_before_terminal_receipt(&mut self, executor: &mut ElfExecutor) {
-        if self.is_guest_thread {
-            self.clear_registered_worker_tid_before_exit(executor);
-        }
+    /// `finish_tool_process` does nothing. Only a thread's own exit has a
+    /// non-group receipt: a process killed by a signal keeps its discard
+    /// policy at the signal-return site.
+    pub(crate) fn clear_thread_tid_before_terminal_receipt(&mut self, executor: &mut ElfExecutor) {
+        self.clear_registered_worker_tid_before_exit(executor);
     }
 
     pub(crate) fn clear_registered_worker_tid_before_exit(&mut self, executor: &mut ElfExecutor) {
