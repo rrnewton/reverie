@@ -542,6 +542,18 @@ impl Drop for WorkerCompletionNotice {
     }
 }
 
+/// What one entry toward a process action's park did
+/// (`KvmBackend::try_park_process_action`).
+#[derive(Debug)]
+enum ParkAttempt {
+    /// The vCPU exited: at its park (`Ok`), or elsewhere (`Err`).
+    Parked(Result<()>),
+    /// Admission was closed, so no entry was made.
+    AdmissionClosed,
+    /// A signal interrupted the entry before the vCPU reached its park.
+    Interrupted,
+}
+
 /// How an inline (Direct) fork child's completion resolved for its caller.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum ForkedProcessCompletion {
@@ -3451,11 +3463,20 @@ impl KvmBackend {
                     }
                     Ok(None) => {}
                 }
-            } else if let Some(actual) = self.try_park_process_action(phase)? {
-                // This is an owned result, not a borrowed VcpuExit. Retain it
-                // across an unpark wait and never execute this entry twice.
-                parked = Some(actual);
-                continue;
+            } else {
+                match self.try_park_process_action(phase)? {
+                    // This is an owned result, not a borrowed VcpuExit. Retain
+                    // it across an unpark wait and never execute this entry
+                    // twice.
+                    ParkAttempt::Parked(actual) => {
+                        parked = Some(actual);
+                        continue;
+                    }
+                    // Enter again at once, as the run loop does, after the
+                    // checks above: a closing gate refuses the next entry.
+                    ParkAttempt::Interrupted => continue,
+                    ParkAttempt::AdmissionClosed => {}
+                }
             }
             match futures::future::select(
                 futures::future::select(changed, cancelled),
@@ -3473,12 +3494,23 @@ impl KvmBackend {
         }
     }
 
-    fn try_park_process_action(&mut self, phase: &'static str) -> Result<Option<Result<()>>> {
-        let Some(exit) = self.vcpu.run()? else {
-            return Ok(None);
+    fn try_park_process_action(&mut self, phase: &'static str) -> Result<ParkAttempt> {
+        let exit = match self.vcpu.run() {
+            Ok(Some(exit)) => exit,
+            Ok(None) => return Ok(ParkAttempt::AdmissionClosed),
+            // A signal ended KVM_RUN before the vCPU reached its park: the
+            // reserved signal of another thread's close of admission, which
+            // kicks every running vCPU, or another. The entry left the guest
+            // where a later one resumes it.
+            Err(Error::Kvm(error)) if error.errno() == libc::EINTR => {
+                #[cfg(test)]
+                tests::entry_action_tests::observe("park_interrupted");
+                return Ok(ParkAttempt::Interrupted);
+            }
+            Err(error) => return Err(error),
         };
         Self::record_exit(self.exit_collector.as_deref(), &exit);
-        Ok(Some(match exit {
+        Ok(ParkAttempt::Parked(match exit {
             VcpuExit::Hlt => {
                 #[cfg(test)]
                 tests::entry_action_tests::observe("park_hlt");

@@ -22553,6 +22553,62 @@ fn shared_file_views_with_threads_match_native() {
     }
 }
 
+/// A publication interrupts every vCPU that runs guest code
+/// (`fixtures/shared_file_threads.c`): in mode "spin" a worker spins in user
+/// code, making no system call, while the main thread maps a view, so the
+/// publication's close must kick that vCPU out of the guest by the reserved
+/// signal; in mode "publish-vs-clone" a publisher maps and unmaps a view 200
+/// times while the main thread creates and joins 200 short threads, so
+/// closes meet vCPUs that are starting, running and retiring. Each matches
+/// native Linux on KVM, without a tool and with the strace tool owning
+/// threads on the host or through the tool.
+#[test]
+fn shared_file_publications_kick_running_and_new_vcpus_as_natively() {
+    const TEST: &str = "shared_file_publications_kick_running_and_new_vcpus_as_natively";
+    if !leader_self_exec_bounded(TEST) {
+        return;
+    }
+    let directory = TestDirectory::new();
+    let program = compile_c_program(
+        &directory.0,
+        "shared-file-threads",
+        include_str!("fixtures/shared_file_threads.c"),
+    );
+    for (mode, expected) in [
+        (
+            "spin",
+            "mapped a shared view with 2 threads alive\na thread spinning in user code through \
+             the mapping went on\nthreads joined\n",
+        ),
+        (
+            "publish-vs-clone",
+            "200 threads came and went beside 200 mappings; the file counts 200\n",
+        ),
+    ] {
+        let native = run_shared_file_vfork_natively(
+            &directory.0,
+            &program,
+            &format!("native-{mode}"),
+            &[mode],
+        );
+        assert_eq!(native.status.code(), Some(0), "{mode}: {native:?}");
+        assert_eq!(String::from_utf8_lossy(&native.stdout), expected, "{mode}");
+        for kvm_mode in SHARED_FILE_VFORK_MODES {
+            let name = kvm_mode.0;
+            let (_, code, stdout, stderr) =
+                run_shared_file_vfork_on_kvm(&directory.0, &program, kvm_mode, &[mode])
+                    .unwrap_or_else(|error| panic!("{mode} mode={name}: {error}"));
+            assert_eq!(
+                code, 0,
+                "{mode} mode={name}: stdout={stdout:?} stderr={stderr:?}"
+            );
+            assert_eq!(stdout, native.stdout, "{mode} mode={name}");
+            assert_eq!(stderr, native.stderr, "{mode} mode={name}");
+            eprintln!("shared-file-threads completed {mode} {name}");
+        }
+    }
+}
+
 /// A view mapped with MAP_FIXED over the page of another thread's host
 /// FUTEX_WAIT (`fixtures/shared_file_threads.c`, mode "futex") is refused by
 /// name on KVM after the publication's bound: the wait holds a host pointer
@@ -22602,6 +22658,63 @@ fn shared_file_view_over_a_waiting_futex_word_is_refused_by_name() {
         ),
         "{error}"
     );
+}
+
+/// While a vfork child runs, another thread of its parent maps a shared view
+/// of a file with MAP_FIXED over a private page
+/// (`fixtures/shared_file_vfork.c`, mode "sibling-map"). On Linux the child
+/// shares the address space and reads the file's byte through the new view.
+/// On KVM the child runs on a copy, which the view would not reach, so the
+/// mapping is refused by name before it takes effect; the child never reads
+/// the page from before as if it were Linux's.
+#[test]
+fn shared_file_view_mapped_beside_a_vfork_child_is_refused_by_name() {
+    const TEST: &str = "shared_file_view_mapped_beside_a_vfork_child_is_refused_by_name";
+    if !leader_self_exec_bounded(TEST) {
+        return;
+    }
+    let directory = TestDirectory::new();
+    let program = compile_c_program(
+        &directory.0,
+        "shared-file-vfork",
+        include_str!("fixtures/shared_file_vfork.c"),
+    );
+    let native = run_shared_file_vfork_natively(
+        &directory.0,
+        &program,
+        "native-sibling-map",
+        &["sibling-map"],
+    );
+    assert_eq!(native.status.code(), Some(0), "{native:?}");
+    assert_eq!(
+        String::from_utf8_lossy(&native.stdout),
+        "shared-file vfork sibling-map child=B parent=B\n"
+    );
+    for mode in SHARED_FILE_VFORK_MODES {
+        let name = mode.0;
+        let error = match run_shared_file_vfork_on_kvm(&directory.0, &program, mode, &["sibling-map"])
+        {
+            Ok((_, code, stdout, stderr)) => panic!(
+                "mode={name}: expected the refusal, got code={code} stdout={:?} stderr={:?}",
+                String::from_utf8_lossy(&stdout),
+                String::from_utf8_lossy(&stderr)
+            ),
+            // The program's doing (a mapping beside a vfork child), so a
+            // refusal by name rather than a failure of the backend.
+            Err(error) => {
+                assert!(refused_by_name(&error), "mode={name}: {error:?}");
+                error.to_string()
+            }
+        };
+        assert!(
+            error.contains(
+                "unsupported KVM shared-file operation mapping publication: a vfork child of \
+                 this process runs on a copy of its address space"
+            ),
+            "mode={name}: {error}"
+        );
+        eprintln!("shared-file-vfork refused sibling-map {name}");
+    }
 }
 
 /// A vfork child that changes a shared view it inherited is refused by name
