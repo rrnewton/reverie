@@ -46,6 +46,7 @@ use crate::failure::FailureContext;
 pub mod driver;
 pub mod owner;
 pub mod signal;
+mod vcpu_run;
 pub use signal::ImmediateExit;
 #[cfg(any(test, feature = "test-support"))]
 pub use signal::accept_delivered_for_test;
@@ -328,6 +329,11 @@ pub struct Member {
     /// current entry. Counted under the registry lock before each send and
     /// taken by withdrawal, after which no closer can send to it.
     pub kicks: usize,
+    /// Whether the member's guest thread has retired
+    /// ([`Participant::retire_from_guest`]): it enters no more, and no longer
+    /// counts as a user of the address space, though its host thread may
+    /// still be tearing down and stays registered until it drops.
+    retired: bool,
 }
 
 pub struct State {
@@ -513,10 +519,35 @@ impl State {
         }
     }
 
+    /// For a change a closer makes on its own stack while admission is
+    /// closing or closed, holding its memory's allocation transaction: parked
+    /// copies and closers recheck, as they would for any change (they wait on
+    /// the condition variable and run no caller code), but no subscriber is
+    /// completed. A subscriber's waker is caller code, and one that reads
+    /// guest memory would wait for admission to reopen on the very stack that
+    /// must reopen it. The change future stays taken, so the next change
+    /// completes it: reopening admission (`Closed`'s drop, or an abandoned
+    /// close) or a failure, each notified after the closer released its locks.
+    fn changed_without_subscribers(&mut self) -> ChangeSignal {
+        ChangeSignal {
+            sender: None,
+            failed: None,
+            copies: (self.blocked_copiers != 0 || self.blocked_closers != 0)
+                .then(|| self.copy_changed.clone()),
+            owners: Vec::new(),
+            origins: Vec::new(),
+        }
+    }
+
     /// The current change future, marked as taken so the next change
     /// completes it. Every subscriber goes through here, under the lock.
     fn subscribe(&mut self) -> Change {
         self.change.subscribe()
+    }
+
+    /// The members whose guest thread has not retired.
+    fn live_members(&self) -> usize {
+        self.members.values().filter(|member| !member.retired).count()
     }
 
     fn stopped(&self) -> bool {
@@ -781,6 +812,7 @@ impl EntryGate {
                             generation: None,
                             activity: Activity::Stopped,
                             kicks: 0,
+                            retired: false,
                         },
                     );
                     Ok(Participant {
@@ -814,15 +846,6 @@ impl EntryGate {
         Ok(state.admission == Admission::Open)
     }
 
-    /// How many vCPUs are registered in this gate's address space now. A
-    /// vCPU registers when it is created and leaves when it is dropped. A
-    /// recorded failure is returned instead.
-    pub(crate) fn member_count(&self) -> GateResult<usize> {
-        let state = self.state.lock().unwrap();
-        state.check()?;
-        Ok(state.members.len())
-    }
-
     /// Close synchronously only when the sole participant is already stopped
     /// and no copy or retained host pointer exists. Unlike `try_close`, this
     /// never interrupts, waits, or notifies: `None` changes no state. Callers
@@ -841,22 +864,47 @@ impl EntryGate {
     }
 
     fn try_close_quiescent_members(self: &Arc<Self>, members: usize) -> GateResult<Option<Closed>> {
+        self.try_close_quiescent_counting(members)
+            .map(std::result::Result::ok)
+    }
+
+    /// As [`Self::try_close_quiescent_single`], reporting instead of a
+    /// refusal how many live members the gate had (members whose guest thread
+    /// has not retired, [`Participant::retire_from_guest`]), read under the
+    /// same lock as the attempt, so a caller can tell another live thread from
+    /// the backend's own transient state (a copy or retained operand beside
+    /// the one live member) without a second look that could see a different
+    /// gate. A thread's vCPU registers when the thread is created and stops
+    /// counting at the thread's retirement, which precedes everything that
+    /// makes its exit observable, so the count follows the guest's order, not
+    /// when a retired thread's host side finishes tearing down.
+    pub(crate) fn try_close_quiescent_single_counting(
+        self: &Arc<Self>,
+    ) -> GateResult<std::result::Result<Closed, usize>> {
+        self.try_close_quiescent_counting(1)
+    }
+
+    fn try_close_quiescent_counting(
+        self: &Arc<Self>,
+        members: usize,
+    ) -> GateResult<std::result::Result<Closed, usize>> {
         let mut state = self.state.lock().unwrap();
         state.check()?;
+        let live = state.live_members();
         if state.admission != Admission::Open
-            || state.members.len() != members
+            || live != members
             || !state.stopped()
             || !state.retained_operands.is_empty()
             || state.generation.next().is_none()
         {
-            return Ok(None);
+            return Ok(Err(live));
         }
         let Some(id) = state.next_close.checked_add(1) else {
-            return Ok(None);
+            return Ok(Err(live));
         };
         state.next_close = id;
         state.admission = Admission::Closed(id);
-        Ok(Some(Closed {
+        Ok(Ok(Closed {
             gate: self.clone(),
             id,
             published: false,
@@ -1107,15 +1155,22 @@ impl EntryGate {
                 resume_unwind(payload);
             }
         };
-        let result = match send_error {
-            Some(error) => Err(state.fail(None, failure("interrupt running vCPU", error))),
-            None => Ok(Some(Closing {
-                gate: self.clone(),
-                id,
-                complete: false,
-            })),
+        let (result, sender) = match send_error {
+            Some(error) => {
+                let failure = state.fail(None, failure("interrupt running vCPU", error));
+                (Err(failure), state.changed())
+            }
+            // Admission is closing on the caller's stack, which may hold its
+            // memory's allocation transaction: wake no subscriber here.
+            None => (
+                Ok(Some(Closing {
+                    gate: self.clone(),
+                    id,
+                    complete: false,
+                })),
+                state.changed_without_subscribers(),
+            ),
         };
-        let sender = state.changed();
         drop(state);
         notify(sender);
         result
@@ -1189,12 +1244,39 @@ impl Participant {
         update(&mut self.origin);
     }
 
-    /// Whether this participant is the only member of its gate now, so that
-    /// no other vCPU is registered in its address space. A vCPU registers
-    /// when it is created and leaves when it is dropped.
+    /// Whether this participant's thread is the only one using its address
+    /// space now: every other member's thread has retired
+    /// ([`Self::retire_from_guest`]). A thread's vCPU registers when the
+    /// thread is created and stops counting at the thread's retirement, in
+    /// the guest's order, so the answer does not depend on when a retired
+    /// thread's host side finishes tearing down.
     pub fn is_sole_member(&self) -> bool {
         let state = self.gate.state.lock().unwrap();
-        state.members.len() == 1 && state.members.contains_key(&self.id)
+        state.members.contains_key(&self.id)
+            && state
+                .members
+                .iter()
+                .all(|(id, member)| *id == self.id || member.retired)
+    }
+
+    /// The participant's guest thread has retired: it has made its last
+    /// guest-visible change, and what makes its exit observable to other
+    /// threads (its clear_child_tid store and wake, its terminal receipt, a
+    /// Tool's deregistration) comes after this. From here on it enters no
+    /// more ([`Self::try_enter`] fails), and it no longer counts as a user of
+    /// the address space ([`Self::is_sole_member`], the quiescent closes and
+    /// their live count), though it stays
+    /// registered, and protected like every member, until it drops. Must be
+    /// called with no entry outstanding; idempotent.
+    pub fn retire_from_guest(&mut self) {
+        assert!(
+            !self.entry_outstanding,
+            "participant retired from the guest with an entry outstanding"
+        );
+        let mut state = self.gate.state.lock().unwrap();
+        let member = state.members.get_mut(&self.id).unwrap();
+        assert_eq!(member.activity, Activity::Stopped);
+        member.retired = true;
     }
 
     pub fn try_enter(&mut self) -> GateResult<Option<Entry<'_>>> {
@@ -1206,6 +1288,17 @@ impl Participant {
         let generation = state.generation;
         let member = state.members.get_mut(&self.id).unwrap();
         assert_eq!(member.activity, Activity::Stopped);
+        if member.retired {
+            let origin = self.origin.clone();
+            let error = state.fail(
+                origin,
+                protocol_failure("entry after the participant's thread retired"),
+            );
+            let sender = state.changed();
+            drop(state);
+            notify(sender);
+            return Err(error);
+        }
         let Some(run) = member.run.checked_add(1) else {
             let origin = self.origin.clone();
             let error = state.fail(origin, protocol_failure("entry identity exhausted"));
@@ -1427,6 +1520,29 @@ pub struct RunEntry<'a> {
 }
 
 impl RunEntry<'_> {
+    /// Run this entry's vCPU once (`KVM_RUN`) and decode the exit it
+    /// reports, as kvm-ioctls' `VcpuFd::run` does, taking the vCPU's
+    /// `immediate_exit` byte back from the kick handler in between. The
+    /// handler stores to that byte of the mapped `kvm_run` page while an entry
+    /// is published, and decoding forms a `&mut kvm_run` over the whole page,
+    /// which no other store may overlap. The handler runs on this thread, so
+    /// once the byte is taken back it stores there no more: a kick delivered
+    /// afterwards is still counted, as every delivery is, and finds the vCPU
+    /// already outside the guest, which is all a kick asks. An entry runs
+    /// `KVM_RUN` once, so nothing needs the byte after this.
+    pub fn run_vcpu<'f>(
+        &mut self,
+        fd: &'f mut kvm_ioctls::VcpuFd,
+    ) -> std::result::Result<kvm_ioctls::VcpuExit<'f>, kvm_ioctls::Error> {
+        let raw = vcpu_run::kvm_run(fd);
+        if let Some(control) = self.control.as_mut() {
+            control.retract();
+        }
+        #[cfg(test)]
+        vcpu_run::after_run_for_test();
+        vcpu_run::decode_exit(fd.get_kvm_run(), raw)
+    }
+
     pub fn finish(mut self, clock: crate::Result<()>) -> GateResult<()> {
         self.cleanup(clock)
     }
@@ -1908,7 +2024,9 @@ impl Closed {
             assert_eq!(state.generation.next(), Some(next));
             state.generation = next;
             self.published = true;
-            state.changed()
+            // Admission stays closed until this token drops: subscribers
+            // learn of the new generation when it reopens.
+            state.changed_without_subscribers()
         };
         notify(sender);
         Ok(next)
@@ -2718,15 +2836,33 @@ mod tests {
                 }
             });
             assert_eq!(result.is_ok(), succeeds);
-            assert_eq!(observer.calls.load(std::sync::atomic::Ordering::SeqCst), 1);
             assert_eq!(gate.pending_failure().is_none(), succeeds);
+            if succeeds {
+                // A success wakes no subscriber while admission is still
+                // closed: the waker is caller code, and the token's holder
+                // may still own locks a waker's read would need. Reopening
+                // admission wakes it, after every owned lock dropped.
+                assert_eq!(observer.calls.load(std::sync::atomic::Ordering::SeqCst), 0);
+                assert!(
+                    changed
+                        .as_mut()
+                        .poll(&mut Context::from_waker(&waker))
+                        .is_pending()
+                );
+                drop(closed);
+                assert_eq!(observer.calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+            } else {
+                // A failure is notified at once, after the operation's locks
+                // dropped.
+                assert_eq!(observer.calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+                drop(closed);
+            }
             assert!(
                 changed
                     .as_mut()
                     .poll(&mut Context::from_waker(&waker))
                     .is_ready()
             );
-            drop(closed);
         }
     }
 
@@ -3353,6 +3489,112 @@ mod tests {
             .unwrap();
         let closed = controller.join().unwrap();
         assert!(participant.prepare(Some(immediate_exit)).unwrap().is_none());
+        drop(closed);
+        participant
+            .prepare(Some(immediate_exit))
+            .unwrap()
+            .unwrap()
+            .finish(Ok(()))
+            .unwrap();
+        drop(vcpu);
+        drop(vm);
+        drop(memory);
+    }
+
+    /// A kick that lands after `KVM_RUN` returned, while the entry is still
+    /// published, goes through the real path, a closer's `pthread_kill` and
+    /// the reserved signal's handler on the vCPU thread, and stores nothing
+    /// into the `kvm_run` page: `RunEntry::run_vcpu` took the
+    /// `immediate_exit` byte back from the handler before it decodes the exit
+    /// through a `&mut kvm_run`. The kick is still counted, so the entry's
+    /// cleanup accepts it and the close completes once the entry has retired.
+    #[cfg(feature = "native-test-support")]
+    #[test]
+    fn a_kick_after_kvm_run_returned_stores_nothing_into_the_decoded_page() {
+        const CHILD: &str = "REVERIE_KVM_ENTRY_LATE_KICK_CHILD";
+        if std::env::var_os(CHILD).is_none() {
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "entry::tests::a_kick_after_kvm_run_returned_stores_nothing_into_the_decoded_page",
+                    "--nocapture",
+                ])
+                .env(CHILD, "1")
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{}{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            return;
+        }
+
+        let kvm = kvm_ioctls::Kvm::new().expect("this control requires /dev/kvm");
+        let vm = kvm.create_vm().unwrap();
+        let mut memory = crate::GuestMemory::new(0, 4096).unwrap();
+        // Real-mode HLT: the run returns at once with a Hlt exit.
+        memory.write(0, &[0xf4]).unwrap();
+        let region = kvm_bindings::kvm_userspace_memory_region {
+            slot: 0,
+            guest_phys_addr: 0,
+            memory_size: 4096,
+            userspace_addr: memory.host_address(),
+            flags: 0,
+        };
+        // SAFETY: memory retains this aligned mapping until after vCPU/VM
+        // destruction, and this control never changes its address or length.
+        unsafe { vm.set_user_memory_region(region).unwrap() };
+        let mut vcpu = vm.create_vcpu(0).unwrap();
+        let mut segments = vcpu.get_sregs().unwrap();
+        segments.cs.base = 0;
+        segments.cs.selector = 0;
+        vcpu.set_sregs(&segments).unwrap();
+        vcpu.set_regs(&kvm_bindings::kvm_regs {
+            rip: 0,
+            rflags: 2,
+            ..Default::default()
+        })
+        .unwrap();
+
+        let gate = EntryGate::new();
+        let mut participant = gate.register().unwrap();
+        // SAFETY: vcpu outlives every entry prepared below.
+        let immediate_exit = unsafe { ImmediateExit::new(&mut vcpu) };
+        let mut entry = participant.prepare(Some(immediate_exit)).unwrap().unwrap();
+        let (close, close_requested) = std::sync::mpsc::channel::<()>();
+        let controller_gate = gate.clone();
+        let controller = std::thread::spawn(move || {
+            close_requested.recv().unwrap();
+            // The member is still Running: the kick goes to the vCPU thread.
+            let closing = controller_gate.try_close().unwrap().unwrap();
+            block_on(closing.finish()).unwrap()
+        });
+        super::vcpu_run::set_after_run_for_test(move || {
+            let before = delivered_for_test();
+            close.send(()).unwrap();
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+            while delivered_for_test() == before {
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "the closer's kick was never delivered"
+                );
+                // A real system call returns through the kernel, which
+                // delivers the pending reserved signal to its handler here.
+                // SAFETY: getppid has no arguments and no memory effects.
+                unsafe { libc::syscall(libc::SYS_getppid) };
+            }
+        });
+        let exit = entry.run_vcpu(&mut vcpu);
+        assert!(matches!(exit, Ok(kvm_ioctls::VcpuExit::Hlt)), "{exit:?}");
+        // The handler ran for the kick, after the byte was taken back.
+        assert!(
+            !immediate_exit.get(),
+            "the late kick's handler stored into the kvm_run page"
+        );
+        entry.finish(Ok(())).unwrap();
+        let closed = controller.join().unwrap();
         drop(closed);
         participant
             .prepare(Some(immediate_exit))

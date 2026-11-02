@@ -292,6 +292,16 @@ struct Mapping {
     /// How many times this memory's image has been replaced by an exec
     /// ([`GuestMemory::retire_shared_files_for_exec`]).
     exec_count: std::sync::atomic::AtomicU64,
+    /// The vfork windows open over this memory, as the exec count of the
+    /// image each is open over, one entry per window: from before a copy for
+    /// a vfork child reads the image
+    /// ([`GuestMemory::snapshot_sharing_address_space`]) to the window's end.
+    /// While one is open over the current image, a guest's own change to a
+    /// shared view here is refused ([`GuestMemory::publish_range_from`]): on
+    /// Linux the child shares this address space and would see the change,
+    /// and its copy cannot. A window over an image an exec replaced does not
+    /// count, since the new image is another address space on Linux too.
+    open_vfork_windows: Mutex<Vec<u64>>,
 }
 
 /// The end of the x86-64 user address space with 4-level paging.
@@ -1449,6 +1459,7 @@ impl GuestMemory {
                 shares_parent_address_space: std::sync::atomic::AtomicBool::new(false),
                 vfork_parent: Mutex::new(None),
                 exec_count: std::sync::atomic::AtomicU64::new(0),
+                open_vfork_windows: Mutex::new(Vec::new()),
             }),
             failure_context: None,
             operation_origin: None,
@@ -1746,8 +1757,14 @@ impl GuestMemory {
     /// once the copy maps its pages as this memory did when the copy was
     /// taken ([`GuestMemory::shares_parent_address_space`]).
     pub fn snapshot_sharing_address_space(&self) -> Result<Self> {
+        // The window opens before the copy reads the image. A publication
+        // looks for it holding its allocation transaction, which the copy
+        // holds while it reads: one that looks later finds it and is refused,
+        // and one that looked earlier finished before the copy read the
+        // image, so the copy has its change.
+        let window = vfork::OpenVforkWindow::open(self);
         let copy = self.snapshot_keeping(copy_sparse_file, true)?;
-        copy.link_vfork_parent(self);
+        copy.link_vfork_parent(self, window);
         Ok(copy)
     }
 

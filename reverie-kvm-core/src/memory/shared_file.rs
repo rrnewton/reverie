@@ -47,6 +47,11 @@ const PUBLICATION_STOP_FAILURE: &str = "the address space's other vCPUs or host 
      stop within the publication's bound; this is a defect of the backend to report, not a \
      refusal of the program";
 
+/// Why a publication is refused while a vfork child's window is open over
+/// the memory it would change.
+const VFORK_WINDOW_PUBLICATION: &str = "a vfork child of this process runs on a copy of its \
+     address space until it execs or exits, which a changed shared view would not reach";
+
 /// What a fork's snapshot of an address space that holds shared views needs.
 const FORK_SNAPSHOT_REQUIREMENT: &str =
     "requires one stopped vCPU (or unattached memory), no copies and no retained operands";
@@ -540,19 +545,34 @@ impl GuestMemory {
         source: InstallSource,
     ) -> Result<()> {
         self.check_copy_failure()?;
-        // A vfork child's copy may not change its shared views: on Linux the
-        // change would reach its parent's address space too. Only a guest's
-        // own mapping change is a Fresh publication; a fork's inheritance and
-        // the sharing of anonymous memory before a fork change no mapping the
-        // guest can see. The allocation guard excludes a concurrent change.
-        if matches!(source, InstallSource::Fresh)
-            && self.shares_parent_address_space()
+        // Only a guest's own mapping change is a Fresh publication; a fork's
+        // inheritance and the sharing of anonymous memory before a fork change
+        // no mapping the guest can see. The allocation guard excludes a
+        // concurrent change.
+        let changes_a_view = matches!(source, InstallSource::Fresh)
             && (slice.backing.kind.retained_shared()
-                || self.range_contains_retained_shared(address, slice.length))
-        {
+                || self.range_contains_retained_shared(address, slice.length));
+        // A vfork child's copy may not change its shared views: on Linux the
+        // change would reach its parent's address space too.
+        if changes_a_view && self.shares_parent_address_space() {
             return Err(Self::vfork_shared_view_change(
                 "mapping change in a vfork child",
             ));
+        }
+        // The other direction: another thread of a parent whose vfork child
+        // runs on a copy of this memory. On Linux the child shares the address
+        // space and sees the change at once (a new shared view, or a private
+        // mapping or a hole in place of one); its copy here cannot, so the
+        // change is refused before it takes effect. The allocation guard,
+        // which a vfork copy holds while it reads the image, orders this
+        // check against the window's start (snapshot_sharing_address_space).
+        // An exec's retirement of the outgoing image's views follows the
+        // exec count's increment, so a window over that image refuses none.
+        if changes_a_view && self.vfork_window_open() {
+            return Err(Error::UnsupportedSharedFile {
+                operation: "mapping publication",
+                reason: VFORK_WINDOW_PUBLICATION,
+            });
         }
         if self.mapping.sync_mmu.lock().unwrap().as_ref() == Some(&false) {
             return Err(Error::SynchronousMmuUnsupported);
@@ -948,24 +968,30 @@ impl GuestMemory {
             return Err(Error::MappingPublicationGateMismatch);
         }
         let gate = self.entry_gate();
-        let closed = match gate.try_close_quiescent_single().map_err(|e| e.error())? {
-            Some(closed) => closed,
-            None => match gate
+        let closed = match gate
+            .try_close_quiescent_single_counting()
+            .map_err(|e| e.error())?
+        {
+            Ok(closed) => closed,
+            Err(live) => match gate
                 .try_close_quiescent_unattached()
                 .map_err(|e| e.error())?
             {
                 Some(closed) => closed,
-                // Another vCPU of the address space lives: the program forked
-                // a process that holds views while another of its threads
-                // runs, which this backend does not implement, so the refusal
-                // is a named one. Anything else (a host copy or a retained
-                // operand beside the one vCPU) is the backend's own state.
-                None if gate.member_count().map_err(|e| e.error())? > 1 => {
+                // Another thread of the program lives (its vCPU is registered
+                // and the thread has not retired, in the guest's order): the
+                // program forked a process that holds views while another of
+                // its threads runs, which this backend does not implement, so
+                // the refusal is a named one. A thread that has exited counts
+                // no more, whenever its host side finishes tearing down.
+                None if live > 1 => {
                     return Err(Error::UnsupportedSharedFile {
                         operation: "shared-file fork snapshot",
                         reason: FORK_SNAPSHOT_REQUIREMENT,
                     });
                 }
+                // The one live thread is the forking one: what stood in the way
+                // (a host copy or a retained operand) is the backend's own state.
                 None => {
                     return Err(Error::SharedFileCapability {
                         operation: "shared-file fork snapshot",
@@ -3830,6 +3856,178 @@ mod tests {
         assert_eq!(threaded.entry_gate().generation().unwrap().get(), 1);
         assert!(threaded.entry_gate().admission_open().unwrap());
         drop((one, two, participant));
+    }
+
+    /// While a vfork child's window is open over a memory, another thread's
+    /// change to a shared view there is refused by name before it changes
+    /// anything: on Linux the child shares the address space and reads the
+    /// new view's bytes at once, and its copy here still holds the page from
+    /// before. A withdrawal of a view is refused the same way; a private
+    /// mapping over private memory, which changes no view, is not. Once the
+    /// window ends, the change goes ahead; and a window over an image that an
+    /// exec has since replaced, which on Linux is another address space,
+    /// refuses nothing.
+    #[test]
+    fn a_shared_view_change_beside_an_open_vfork_window_is_refused_by_name() {
+        let refused = |result: Result<()>| match result {
+            Err(error @ Error::UnsupportedSharedFile { .. }) => {
+                assert!(error.is_named_refusal());
+                assert!(
+                    matches!(
+                        &error,
+                        Error::UnsupportedSharedFile {
+                            operation: "mapping publication",
+                            reason: VFORK_WINDOW_PUBLICATION,
+                        }
+                    ),
+                    "{error}"
+                );
+            }
+            other => panic!("expected the vfork window's refusal, got {other:?}"),
+        };
+        let memory = fixture(3);
+        memory.record_kvm_sync_mmu(true).unwrap();
+        memory.write_raw(BASE, &[0xaa; 8]).unwrap();
+        // The vfork caller and another thread of the parent.
+        let caller = memory.entry_gate().register().unwrap();
+        let sibling = memory.entry_gate().register().unwrap();
+        let view = file(1);
+        let child = memory.snapshot_sharing_address_space().unwrap();
+        let before = (access_maps(&memory), memory.separately_backed_pages());
+        refused(memory.publish_shared_file_range(
+            memory.allocation_guard(),
+            SharedFileRangePlan {
+                address: BASE,
+                length: PAGE_SIZE,
+                file: view.try_clone().unwrap().into(),
+                offset: 0,
+                readable: true,
+                writable: true,
+                max_writable: true,
+                cursors: None,
+            },
+        ));
+        assert_eq!(
+            (access_maps(&memory), memory.separately_backed_pages()),
+            before
+        );
+        assert_eq!(read(&memory, BASE, 8), [0xaa; 8]);
+        assert_eq!(read(&child, BASE, 8), [0xaa; 8]);
+        assert!(memory.entry_gate().admission_open().unwrap());
+        assert!(memory.entry_gate().pending_failure().is_none());
+        // The window ends with the child's exit; the view goes in.
+        child.return_vfork_changes(BASE).unwrap();
+        install(&memory, &view, BASE, 1, 0);
+        assert_eq!(read(&memory, BASE, 8), [0x11; 8]);
+        // A second window; the view may not be withdrawn while it is open.
+        let child = memory.snapshot_sharing_address_space();
+        // Two participants hold a view now: the vfork itself is refused, as
+        // a fork's snapshot is, before any window opens.
+        assert!(
+            matches!(child, Err(Error::UnsupportedSharedFile { .. })),
+            "{child:?}"
+        );
+        drop(sibling);
+        let child = memory.snapshot_sharing_address_space().unwrap();
+        // A private mapping over private memory changes no view: it goes
+        // ahead, and the child's copy keeps the page from before, as it keeps
+        // the parent's stores (the documented limits of a vfork window).
+        replace(&memory, BASE + 2 * P, 1, Some(b"private"), true);
+        assert_eq!(read(&memory, BASE + 2 * P, 7), b"private");
+        assert_eq!(read(&child, BASE + 2 * P, 7), [0; 7]);
+        // The parent's other thread is gone, but the window holds against
+        // any publisher.
+        refused(memory.publish_private_range(
+            memory.allocation_guard(),
+            PrivateRangePlan {
+                address: BASE,
+                length: PAGE_SIZE,
+                contents: None,
+                permissions: None,
+                cursors: None,
+            },
+        ));
+        assert!(memory.range_contains_shared_file(BASE, PAGE_SIZE));
+        // An exec of the parent replaces the image the window is open over:
+        // the new image's changes go ahead, and the child's go nowhere.
+        memory.retire_shared_files_for_exec().unwrap();
+        assert!(!memory.contains_shared_file());
+        install(&memory, &view, BASE + P, 1, 0);
+        assert_eq!(child.return_vfork_changes(BASE).unwrap(), None);
+        assert!(memory.mapping.open_vfork_windows.lock().unwrap().is_empty());
+        drop(caller);
+    }
+
+    /// A subscriber whose waker reads guest memory is woken only once a
+    /// publication with several vCPUs has reopened admission and released
+    /// its locks. The publication closes admission with the general close on
+    /// the publishing thread, holding the allocation transaction; waking the
+    /// subscriber there would run its read, which waits for admission to
+    /// reopen, on the one stack that reopens it.
+    #[test]
+    fn a_memory_reading_waker_runs_only_after_a_publication_reopens_admission() {
+        struct ReadingWake {
+            memory: GuestMemory,
+            /// Whether admission was open when the waker read, and whether
+            /// the read was admitted.
+            reads: Mutex<Vec<(bool, bool)>>,
+        }
+        impl Wake for ReadingWake {
+            fn wake(self: Arc<Self>) {
+                self.wake_by_ref();
+            }
+            fn wake_by_ref(self: &Arc<Self>) {
+                let gate = self.memory.entry_gate();
+                let open = gate.admission_open().unwrap();
+                // A copy admission waits while admission is closing or
+                // closed, as every guest-memory read does.
+                let admitted = gate.copy_blocking(None).is_ok();
+                self.reads.lock().unwrap().push((open, admitted));
+            }
+        }
+
+        let memory = fixture(2);
+        memory.record_kvm_sync_mmu(true).unwrap();
+        let file = file(1);
+        let one = memory.entry_gate().register().unwrap();
+        let two = memory.entry_gate().register().unwrap();
+        let waker = Arc::new(ReadingWake {
+            memory: memory.clone(),
+            reads: Mutex::new(Vec::new()),
+        });
+        let mut change = Box::pin(memory.entry_gate().subscribe());
+        assert!(
+            change
+                .as_mut()
+                .poll(&mut Context::from_waker(&Waker::from(waker.clone())))
+                .is_pending()
+        );
+        let publisher = memory.clone();
+        let (done, published) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let result = publisher.publish_shared_file_range(
+                publisher.allocation_guard(),
+                SharedFileRangePlan {
+                    address: BASE,
+                    length: PAGE_SIZE,
+                    file: file.try_clone().unwrap().into(),
+                    offset: 0,
+                    readable: true,
+                    writable: true,
+                    max_writable: true,
+                    cursors: None,
+                },
+            );
+            done.send(result.is_ok()).unwrap();
+        });
+        let published = published
+            .recv_timeout(std::time::Duration::from_secs(30))
+            .expect("the publication deadlocked in a subscriber's waker");
+        assert!(published);
+        assert_eq!(*waker.reads.lock().unwrap(), vec![(true, true)]);
+        assert!(change.as_mut().poll(&mut Context::from_waker(&Waker::noop())).is_ready());
+        assert!(memory.contains_shared_file());
+        drop((one, two));
     }
 
     /// The bytes the host has allocated for the base backing of `memory`.

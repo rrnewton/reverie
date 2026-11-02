@@ -6128,6 +6128,13 @@ impl KvmBackend {
     pub(crate) fn clear_registered_worker_tid_before_exit(&mut self, executor: &mut ElfExecutor) {
         #[cfg(test)]
         clear_tid_diagnostic::begin();
+        // The thread has made its last guest-visible change. Before anything
+        // makes its exit observable (the store and wake below, a terminal
+        // receipt, a Tool's deregistration), it stops counting as a user of
+        // the address space, so a sibling that sees the exit sees that too:
+        // the sole-member decision below and a later fork's do not depend on
+        // when this host thread finishes tearing down.
+        self.vcpu.retire_participant_from_guest();
         self.release_thread_slot();
         if executor.vfork_window_holds_clear_child_tid(&self.memory) {
             // A vfork child's word lies in memory its parent shares: the end
@@ -6148,15 +6155,18 @@ impl KvmBackend {
             && self.vcpu.is_sole_participant()
         {
             // Linux mm_release discards clear_child_tid in either case, but
-            // stores/wakes only for mm_users > 1. File pages shared with a
+            // stores/wakes only for mm_users > 1; an exiting thread drops its
+            // mm reference in exit_mm right after its mm_release, before
+            // anything makes its exit observable. File pages shared with a
             // different process do not share the guest mm. This certificate,
-            // with this vCPU the only one registered in the address space now
-            // (each thread's vCPU registers when the thread is created and
-            // leaves when it is dropped), proves the virtual last-user case;
-            // it is not a general model of host mm_users, which temporary
-            // /proc readers can also increment. No virtual observer owns such
-            // a reference here. Consume the registration without accessing its
-            // address; existing gate failures remain pending and unchanged.
+            // with every other thread of the address space retired (each
+            // thread's vCPU registers when the thread is created and stops
+            // counting at the thread's retirement above, in the guest's
+            // order), proves the virtual last-user case; it is not a general
+            // model of host mm_users, which temporary /proc readers can also
+            // increment. No virtual observer owns such a reference here.
+            // Consume the registration without accessing its address;
+            // existing gate failures remain pending and unchanged.
             // https://github.com/gregkh/linux/blob/v7.1.3/kernel/fork.c#L1463
             #[cfg(test)]
             clear_tid_diagnostic::stopped("single-owner shared-file process mm");
