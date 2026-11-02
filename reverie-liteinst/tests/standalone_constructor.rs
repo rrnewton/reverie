@@ -11,7 +11,7 @@ use std::process::Command;
 
 #[allow(dead_code)]
 #[path = "support/liteinst_runtime.rs"]
-mod liteinst_runtime;
+pub mod liteinst_runtime;
 use liteinst_runtime::artifact as m1_artifact;
 use liteinst_runtime::contract;
 #[path = "../../scripts/standalone_constructor_fixture.rs"]

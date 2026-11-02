@@ -38,7 +38,7 @@ use reverie_liteinst::configure_command;
 
 #[allow(dead_code)]
 #[path = "support/liteinst_runtime.rs"]
-mod runtime;
+pub mod runtime;
 
 const C_SOURCE: &[u8] = include_bytes!("fixtures/native_unpublished.c");
 const ASM_SOURCE: &[u8] = include_bytes!("fixtures/native_unpublished.S");

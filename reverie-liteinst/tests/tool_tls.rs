@@ -14,7 +14,7 @@ use goblin::elf::sym;
 
 #[allow(dead_code)]
 #[path = "support/liteinst_runtime.rs"]
-mod liteinst_runtime;
+pub mod liteinst_runtime;
 
 use liteinst_runtime::artifact;
 

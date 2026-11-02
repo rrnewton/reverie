@@ -36,7 +36,7 @@ use reverie_liteinst::configure_command_builtin;
 mod fulltool_capture;
 #[allow(dead_code)]
 #[path = "support/liteinst_runtime.rs"]
-mod liteinst_runtime;
+pub mod liteinst_runtime;
 
 #[cfg(feature = "liteinst")]
 const TEST_EVENT_COOKIE: u64 = 7_915_913_731_959_187_131;

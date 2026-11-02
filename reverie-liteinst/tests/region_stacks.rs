@@ -10,7 +10,7 @@ use std::process::Command;
 
 #[allow(dead_code)]
 #[path = "support/liteinst_runtime.rs"]
-mod liteinst_runtime;
+pub mod liteinst_runtime;
 #[path = "support/stack_observation.rs"]
 mod stack_observation;
 

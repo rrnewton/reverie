@@ -381,6 +381,20 @@ fn produce(
         observed_oracles == config.oracle_sha256,
         "required unchanged Rust/C oracle hashes differ",
     )?;
+    // Independently resolve the clean Git blobs and canonical Cargo packages
+    // whose relative filenames occur in the physical publication recipes.
+    // Serialized receipt data cannot supply this source authority.
+    let manifest = root.join("Cargo.toml");
+    let compiled_sources = m1_artifact::VerifiedCompiledSources::resolve(
+        &m1_artifact::CompiledSourceExpectation {
+            layout: m1_artifact::CompiledSourceLayout::ReverieWorkspace,
+            image_kind: m1_artifact::FixedImageKind::Standalone,
+            workspace_root: &root,
+            manifest: &manifest,
+            reverie_pin: &before.head,
+        },
+        &mut runner,
+    )?;
     let metadata_bytes = runner.run(
         "cargo",
         &[
@@ -498,8 +512,12 @@ fn produce(
         artifact.sha256 == current.sha256,
         "staged/current artifact hashes differ",
     )?;
-    let qualification =
-        m1_artifact::qualify_elf(&stage, m1_artifact::STANDALONE_ROOT, &mut runner)?;
+    let qualification = m1_artifact::qualify_elf_with_sources(
+        &stage,
+        m1_artifact::STANDALONE_ROOT,
+        &mut runner,
+        &compiled_sources,
+    )?;
     let compiler = std::env::var("CC").unwrap_or_else(|_| "cc".to_owned());
     let compiler_version = runner.text(&compiler, &["--version"], &root)?;
     let guest_path = bundle.join("m1_allocator_guest");
@@ -550,8 +568,9 @@ fn produce(
     )?;
     current.verify()?;
     artifact.verify()?;
+    compiled_sources.verify_unchanged(&mut runner)?;
     let receipt = RuntimeReceipt {
-        compiled_sources: None,
+        compiled_sources: Some(compiled_sources.record().clone()),
         schema_version: m1_artifact::SCHEMA,
         source_before: before,
         source_after: after,

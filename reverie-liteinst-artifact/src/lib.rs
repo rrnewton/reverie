@@ -4404,6 +4404,9 @@ pub struct NoInstallationScopeEvidence {
     native_tls_layout100: Option<NativeNoScopeLayout100Evidence>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     native_tls_layout130_owner138: Option<NativeNoScopeLayout130Owner138Evidence>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    native_tls_layout140_owner130_callbacke9:
+        Option<NativeNoScopeLayout140Owner130CallbackE9Evidence>,
 }
 
 // This distinct optional payload is emitted only for the complete new native
@@ -4431,6 +4434,14 @@ struct NativeNoScopeLayout100Evidence {
 struct NativeNoScopeLayout130Owner138Evidence {
     layout: NativeNoScopeLayout100Evidence,
     tls_population: Vec<NativeNoScopeCellEvidence>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct NativeNoScopeLayout140Owner130CallbackE9Evidence {
+    layout: NativeNoScopeLayout100Evidence,
+    tls_population: Vec<NativeNoScopeCellEvidence>,
+    initialized_template_sha256: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -4756,6 +4767,257 @@ const NATIVE130_OWNER138_TLS_POPULATION: [(&str, u64, u64, u8, u32); 29] = [
     ),
 ];
 
+// Independently measured current native OFF vector: callback e9, OWNER130,
+// PENDING0, DISPATCH140. Same PT_TLS size as v4 does not identify this cohort.
+// All29 typed cells, full initialized template and the exact getter/provider
+// census are mandatory; historical140/100/130-owner138 contracts stay exact.
+const NATIVE140_OWNER130_CALLBACK_E9_NO_SCOPE_POLICY: &str =
+    "allocation101_layout_a_tls140_owner130_callbacke9_legacy_v5";
+const NATIVE140_OWNER130_CALLBACK_E9_NO_SCOPE_OTHER_GETTERS: [(&str, u64); 4] = [
+    (NO_SCOPE_OTHER_GETTERS[0].0, 0xe9),
+    (NO_SCOPE_OTHER_GETTERS[1].0, 0x130),
+    (NO_SCOPE_OTHER_GETTERS[2].0, 0),
+    (NO_SCOPE_OTHER_GETTERS[3].0, 0x140),
+];
+const NATIVE140_OWNER130_CALLBACK_E9_GETTER_VISIBILITY: [u8; 4] = [
+    sym::STV_HIDDEN,
+    sym::STV_HIDDEN,
+    sym::STV_DEFAULT,
+    sym::STV_HIDDEN,
+];
+const NATIVE140_OWNER130_CALLBACK_E9_NO_SCOPE_CELLS: [(&str, u64, u64, u32); 4] = [
+    (
+        NATIVE100_NO_SCOPE_CELLS[0].0,
+        0xe9,
+        1,
+        section_header::SHT_NOBITS,
+    ),
+    (
+        NATIVE100_NO_SCOPE_CELLS[1].0,
+        0x130,
+        8,
+        section_header::SHT_NOBITS,
+    ),
+    (
+        NATIVE100_NO_SCOPE_CELLS[2].0,
+        0,
+        16,
+        section_header::SHT_PROGBITS,
+    ),
+    (
+        NATIVE100_NO_SCOPE_CELLS[3].0,
+        0x140,
+        8,
+        section_header::SHT_NOBITS,
+    ),
+];
+const NATIVE140_OWNER130_CALLBACK_E9_TLS_POPULATION: [(&str, u64, u64, u8, u32); 29] = [
+    (
+        "_RNvNCNKNvNtNtCs_15reverie_inguest5guest12continuation7PENDING0s_023___RUST_STD_INTERNAL_VAL",
+        0x0,
+        16,
+        sym::STV_DEFAULT,
+        section_header::SHT_PROGBITS,
+    ),
+    (
+        "_RNvNCNKNvNtCs_15reverie_process13launch_window12AFTER_GUARDS0023___RUST_STD_INTERNAL_VAL",
+        0x10,
+        40,
+        sym::STV_DEFAULT,
+        section_header::SHT_PROGBITS,
+    ),
+    (
+        "_RNvNCNKNvNtNtCs_5tokio7runtime7context7CONTEXT0023___RUST_STD_INTERNAL_VAL",
+        0x38,
+        80,
+        sym::STV_DEFAULT,
+        section_header::SHT_PROGBITS,
+    ),
+    (
+        "_RNvNCNKNvNtCs_12tracing_core10dispatcher13CURRENT_STATE0023___RUST_STD_INTERNAL_VAL",
+        0x88,
+        48,
+        sym::STV_DEFAULT,
+        section_header::SHT_PROGBITS,
+    ),
+    (
+        "_RNvNCNKNvNtNtCs_3std2io5stdio14OUTPUT_CAPTURE0023___RUST_STD_INTERNAL_VAL",
+        0xb8,
+        16,
+        sym::STV_DEFAULT,
+        section_header::SHT_PROGBITS,
+    ),
+    (
+        "_RNvNtNtNtNtCs_3std3sys12thread_local11destructors4list5DTORS",
+        0xc8,
+        32,
+        sym::STV_DEFAULT,
+        section_header::SHT_PROGBITS,
+    ),
+    (
+        "_RNvNCNKNvNtCs_15reverie_inguest4trap10IN_HANDLER0s_023___RUST_STD_INTERNAL_VAL",
+        0xe8,
+        1,
+        sym::STV_HIDDEN,
+        section_header::SHT_NOBITS,
+    ),
+    (
+        "_RNvNCNKNvNtNtCs_15reverie_inguest5guest7support20TOOL_CALLBACK_ACTIVE0s_023___RUST_STD_INTERNAL_VAL",
+        0xe9,
+        1,
+        sym::STV_DEFAULT,
+        section_header::SHT_NOBITS,
+    ),
+    (
+        "_RNvNCNKNvNtNtCs_15reverie_inguest5guest5clock15RCB_CLOCK_OWNER0s_023___RUST_STD_INTERNAL_VAL",
+        0xec,
+        4,
+        sym::STV_HIDDEN,
+        section_header::SHT_NOBITS,
+    ),
+    (
+        "_RNvNCNKNvNtNtCs_15reverie_inguest5guest5clock16RCB_CLOCK_OFFSET0s_023___RUST_STD_INTERNAL_VAL",
+        0xf0,
+        8,
+        sym::STV_HIDDEN,
+        section_header::SHT_NOBITS,
+    ),
+    (
+        "_RNvNCNKNvNtNtCs_15reverie_inguest5guest5clock17RCB_HANDLER_DEPTH0s_023___RUST_STD_INTERNAL_VAL",
+        0xf8,
+        4,
+        sym::STV_HIDDEN,
+        section_header::SHT_NOBITS,
+    ),
+    (
+        "_RNvNCNKNvNtNtCs_15reverie_inguest5guest5clock17RCB_HANDLER_ENTRY0s_023___RUST_STD_INTERNAL_VAL",
+        0x100,
+        8,
+        sym::STV_HIDDEN,
+        section_header::SHT_NOBITS,
+    ),
+    (
+        "_RNvNCNKNvNtNtCs_15reverie_inguest5guest5clock18RCB_CLOCK_RESTORED0s_023___RUST_STD_INTERNAL_VAL",
+        0x108,
+        1,
+        sym::STV_DEFAULT,
+        section_header::SHT_NOBITS,
+    ),
+    (
+        "_RNvNCNKNvNtNtCs_15reverie_inguest5guest5clock18RCB_COUNTER_ORIGIN0s_023___RUST_STD_INTERNAL_VAL",
+        0x110,
+        8,
+        sym::STV_HIDDEN,
+        section_header::SHT_NOBITS,
+    ),
+    (
+        "_RNvNCNKNvNtNtCs_15reverie_inguest5guest5clock21RCB_HANDLER_DEDUCTION0s_023___RUST_STD_INTERNAL_VAL",
+        0x118,
+        8,
+        sym::STV_HIDDEN,
+        section_header::SHT_NOBITS,
+    ),
+    (
+        "_RNvNCNKNvNtNtCs_15reverie_inguest5guest5clock22RCB_CLOCK_AVAILABILITY0s_023___RUST_STD_INTERNAL_VAL",
+        0x120,
+        1,
+        sym::STV_HIDDEN,
+        section_header::SHT_NOBITS,
+    ),
+    (
+        "_RNvNCNKNvNtNtCs_15reverie_inguest5guest5clock9RCB_CLOCK0s_023___RUST_STD_INTERNAL_VAL",
+        0x128,
+        8,
+        sym::STV_HIDDEN,
+        section_header::SHT_NOBITS,
+    ),
+    (
+        "_RNvNCNKNvNtNtCs_15reverie_inguest5guest12continuation5OWNER0s_023___RUST_STD_INTERNAL_VAL",
+        0x130,
+        8,
+        sym::STV_DEFAULT,
+        section_header::SHT_NOBITS,
+    ),
+    (
+        "_RNvNCNKNvNtNtCs_15reverie_inguest5guest12continuation5READY0s_023___RUST_STD_INTERNAL_VAL",
+        0x138,
+        1,
+        sym::STV_HIDDEN,
+        section_header::SHT_NOBITS,
+    ),
+    (
+        "_RNvNCNKNvNtNtCs_15reverie_inguest5guest5alloc14DISPATCH_DEPTH0s_023___RUST_STD_INTERNAL_VAL",
+        0x140,
+        8,
+        sym::STV_DEFAULT,
+        section_header::SHT_NOBITS,
+    ),
+    (
+        "_RNvNCNKNvNtCs_15reverie_process13launch_window10OPENS_HELD0s_023___RUST_STD_INTERNAL_VAL",
+        0x148,
+        4,
+        sym::STV_HIDDEN,
+        section_header::SHT_NOBITS,
+    ),
+    (
+        "_RNvNCNKNvNtCs_15reverie_process13launch_window12LAUNCH_DEPTH0s_023___RUST_STD_INTERNAL_VAL",
+        0x14c,
+        4,
+        sym::STV_HIDDEN,
+        section_header::SHT_NOBITS,
+    ),
+    (
+        "_RNvNCNKNvNtCs_15reverie_process13launch_window15OPENS_IN_LAUNCH0s_023___RUST_STD_INTERNAL_VAL",
+        0x150,
+        4,
+        sym::STV_HIDDEN,
+        section_header::SHT_NOBITS,
+    ),
+    (
+        "_RNvNCNKNvNtCs_15reverie_process13launch_window8DEFERRED0s_023___RUST_STD_INTERNAL_VAL",
+        0x154,
+        1,
+        sym::STV_DEFAULT,
+        section_header::SHT_NOBITS,
+    ),
+    (
+        "_RNvNCNKNvNvNtCs_16parking_lot_core11parking_lot16with_thread_data11THREAD_DATA0023___RUST_STD_INTERNAL_VAL",
+        0x158,
+        48,
+        sym::STV_DEFAULT,
+        section_header::SHT_NOBITS,
+    ),
+    (
+        "_RNvNCNKNvNtNtCs_3std9panicking11panic_count17LOCAL_PANIC_COUNT0s_023___RUST_STD_INTERNAL_VAL",
+        0x188,
+        16,
+        sym::STV_DEFAULT,
+        section_header::SHT_NOBITS,
+    ),
+    (
+        "_RNvNCNKNvNvMNtNtCs_3std4hash6randomNtBa_11RandomState3new4KEYS0s_023___RUST_STD_INTERNAL_VAL",
+        0x198,
+        24,
+        sym::STV_DEFAULT,
+        section_header::SHT_NOBITS,
+    ),
+    (
+        "_RNvNtNtCs_3std6thread7current7CURRENT",
+        0x1b0,
+        8,
+        sym::STV_DEFAULT,
+        section_header::SHT_NOBITS,
+    ),
+    (
+        "_RNvNtNtNtCs_3std6thread7current2id2ID",
+        0x1b8,
+        8,
+        sym::STV_DEFAULT,
+        section_header::SHT_NOBITS,
+    ),
+];
+const NATIVE140_OWNER130_CALLBACK_E9_TLS_TEMPLATE_HEX: &str = "0000000000000000fe00000000000000000000000000000000000000000000000800000000000000000000000000000001000000000000000000000000000000020000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000002000100000000000000000000000000000002000000000000000000000000000000000000000000000001000000000000000100000000000000000000000000000001000000000000000000000000000000000000000000000008000000000000000000000000000000";
+
 // The ordinary OFF image has the same101B allocation body, but its complete
 // typed getter population has different OWNER/DISPATCH offsets. These are
 // distinct measured cohorts, not interchangeable TLS layouts.
@@ -4795,6 +5057,7 @@ impl ConsumerRecipe {
                 SEMANTIC_NATIVE140_NO_SCOPE_POLICY,
                 SEMANTIC_NATIVE100_NO_SCOPE_POLICY,
                 NATIVE130_OWNER138_NO_SCOPE_POLICY,
+                NATIVE140_OWNER130_CALLBACK_E9_NO_SCOPE_POLICY,
             ],
             Self::Allocation101LayoutB => &[
                 "allocation101_layout_b_legacy_v1",
@@ -11579,7 +11842,7 @@ fn dev_fixed_heap_recipe(
         let resolved = fixed_rip_target(address, bytes, op.displacement, op.next)?;
         match op.kind {
             0 => {
-                dev_fixed_heap_readonly(
+                dev_fixed_heap_readonly_in_source_profile(
                     op.key,
                     dev_fixed_heap_target(targets, op.key)?,
                     targets,
@@ -11658,6 +11921,429 @@ struct FixedWrapperRecipe {
     hex: &'static str,
     operands: &'static [FixedWrapperOperand],
     transfers: &'static [(usize, usize, &'static str, bool)],
+}
+
+// The current standalone dev family has a separate complete readonly source
+// profile. These are measured whole24B Locations and exact source filenames,
+// not a line-number delta or a tolerance. Historical specs and recipes above
+// retain their original bytes. Operand request aliases are private to the
+// machine context; serialized readonly evidence uses only these current keys.
+struct FixedDevScalarLocation {
+    request: &'static str,
+    spec: FixedReadonlySpec,
+}
+const FIXED_DEV_SCALAR_ALLOC_LOCATIONS: &[FixedDevScalarLocation] = &[
+    FixedDevScalarLocation {
+        request: "fixed_heap_location_alloc_160_34",
+        spec: FixedReadonlySpec {
+            key: "fixed_dev_scalar_alloc_149_34",
+            kind: "location",
+            hex: "000000000000000022000000000000009500000022000000",
+            file_hex: "726576657269652d696e67756573742f7372632f67756573742f616c6c6f632e7273",
+            owner: "",
+            switch: &[],
+        },
+    },
+    FixedDevScalarLocation {
+        request: "fixed_heap_location_alloc_172_36",
+        spec: FixedReadonlySpec {
+            key: "fixed_dev_scalar_alloc_161_36",
+            kind: "location",
+            hex: "00000000000000002200000000000000a100000024000000",
+            file_hex: "726576657269652d696e67756573742f7372632f67756573742f616c6c6f632e7273",
+            owner: "",
+            switch: &[],
+        },
+    },
+    FixedDevScalarLocation {
+        request: "fixed_heap_location_alloc_177_42",
+        spec: FixedReadonlySpec {
+            key: "fixed_dev_scalar_alloc_166_42",
+            kind: "location",
+            hex: "00000000000000002200000000000000a60000002a000000",
+            file_hex: "726576657269652d696e67756573742f7372632f67756573742f616c6c6f632e7273",
+            owner: "",
+            switch: &[],
+        },
+    },
+    FixedDevScalarLocation {
+        request: "fixed_heap_location_alloc_177_57",
+        spec: FixedReadonlySpec {
+            key: "fixed_dev_scalar_alloc_166_57",
+            kind: "location",
+            hex: "00000000000000002200000000000000a600000039000000",
+            file_hex: "726576657269652d696e67756573742f7372632f67756573742f616c6c6f632e7273",
+            owner: "",
+            switch: &[],
+        },
+    },
+    FixedDevScalarLocation {
+        request: "fixed_heap_location_alloc_188_42",
+        spec: FixedReadonlySpec {
+            key: "fixed_dev_scalar_alloc_177_42",
+            kind: "location",
+            hex: "00000000000000002200000000000000b10000002a000000",
+            file_hex: "726576657269652d696e67756573742f7372632f67756573742f616c6c6f632e7273",
+            owner: "",
+            switch: &[],
+        },
+    },
+    FixedDevScalarLocation {
+        request: "fixed_heap_location_alloc_190_35",
+        spec: FixedReadonlySpec {
+            key: "fixed_dev_scalar_alloc_179_35",
+            kind: "location",
+            hex: "00000000000000002200000000000000b300000023000000",
+            file_hex: "726576657269652d696e67756573742f7372632f67756573742f616c6c6f632e7273",
+            owner: "",
+            switch: &[],
+        },
+    },
+    FixedDevScalarLocation {
+        request: "fixed_heap_location_alloc_193_25",
+        spec: FixedReadonlySpec {
+            key: "fixed_dev_scalar_alloc_182_25",
+            kind: "location",
+            hex: "00000000000000002200000000000000b600000019000000",
+            file_hex: "726576657269652d696e67756573742f7372632f67756573742f616c6c6f632e7273",
+            owner: "",
+            switch: &[],
+        },
+    },
+    FixedDevScalarLocation {
+        request: "fixed_heap_location_alloc_193_41",
+        spec: FixedReadonlySpec {
+            key: "fixed_dev_scalar_alloc_182_41",
+            kind: "location",
+            hex: "00000000000000002200000000000000b600000029000000",
+            file_hex: "726576657269652d696e67756573742f7372632f67756573742f616c6c6f632e7273",
+            owner: "",
+            switch: &[],
+        },
+    },
+    FixedDevScalarLocation {
+        request: "fixed_heap_location_alloc_201_25",
+        spec: FixedReadonlySpec {
+            key: "fixed_dev_scalar_alloc_190_25",
+            kind: "location",
+            hex: "00000000000000002200000000000000be00000019000000",
+            file_hex: "726576657269652d696e67756573742f7372632f67756573742f616c6c6f632e7273",
+            owner: "",
+            switch: &[],
+        },
+    },
+    FixedDevScalarLocation {
+        request: "fixed_heap_location_alloc_203_25",
+        spec: FixedReadonlySpec {
+            key: "fixed_dev_scalar_alloc_192_25",
+            kind: "location",
+            hex: "00000000000000002200000000000000c000000019000000",
+            file_hex: "726576657269652d696e67756573742f7372632f67756573742f616c6c6f632e7273",
+            owner: "",
+            switch: &[],
+        },
+    },
+    FixedDevScalarLocation {
+        request: "fixed_heap_location_alloc_217_31",
+        spec: FixedReadonlySpec {
+            key: "fixed_dev_scalar_alloc_206_31",
+            kind: "location",
+            hex: "00000000000000002200000000000000ce0000001f000000",
+            file_hex: "726576657269652d696e67756573742f7372632f67756573742f616c6c6f632e7273",
+            owner: "",
+            switch: &[],
+        },
+    },
+    FixedDevScalarLocation {
+        request: "fixed_heap_location_alloc_232_23",
+        spec: FixedReadonlySpec {
+            key: "fixed_dev_scalar_alloc_221_23",
+            kind: "location",
+            hex: "00000000000000002200000000000000dd00000017000000",
+            file_hex: "726576657269652d696e67756573742f7372632f67756573742f616c6c6f632e7273",
+            owner: "",
+            switch: &[],
+        },
+    },
+    FixedDevScalarLocation {
+        request: "fixed_heap_location_alloc_239_13",
+        spec: FixedReadonlySpec {
+            key: "fixed_dev_scalar_alloc_228_13",
+            kind: "location",
+            hex: "00000000000000002200000000000000e40000000d000000",
+            file_hex: "726576657269652d696e67756573742f7372632f67756573742f616c6c6f632e7273",
+            owner: "",
+            switch: &[],
+        },
+    },
+    FixedDevScalarLocation {
+        request: "fixed_heap_location_alloc_253_28",
+        spec: FixedReadonlySpec {
+            key: "fixed_dev_scalar_alloc_242_28",
+            kind: "location",
+            hex: "00000000000000002200000000000000f20000001c000000",
+            file_hex: "726576657269652d696e67756573742f7372632f67756573742f616c6c6f632e7273",
+            owner: "",
+            switch: &[],
+        },
+    },
+    FixedDevScalarLocation {
+        request: "fixed_heap_location_alloc_256_24",
+        spec: FixedReadonlySpec {
+            key: "fixed_dev_scalar_alloc_245_24",
+            kind: "location",
+            hex: "00000000000000002200000000000000f500000018000000",
+            file_hex: "726576657269652d696e67756573742f7372632f67756573742f616c6c6f632e7273",
+            owner: "",
+            switch: &[],
+        },
+    },
+    FixedDevScalarLocation {
+        request: "fixed_heap_location_alloc_259_13",
+        spec: FixedReadonlySpec {
+            key: "fixed_dev_scalar_alloc_248_13",
+            kind: "location",
+            hex: "00000000000000002200000000000000f80000000d000000",
+            file_hex: "726576657269652d696e67756573742f7372632f67756573742f616c6c6f632e7273",
+            owner: "",
+            switch: &[],
+        },
+    },
+    FixedDevScalarLocation {
+        request: "fixed_heap_location_alloc_261_17",
+        spec: FixedReadonlySpec {
+            key: "fixed_dev_scalar_alloc_250_17",
+            kind: "location",
+            hex: "00000000000000002200000000000000fa00000011000000",
+            file_hex: "726576657269652d696e67756573742f7372632f67756573742f616c6c6f632e7273",
+            owner: "",
+            switch: &[],
+        },
+    },
+    FixedDevScalarLocation {
+        request: "fixed_heap_location_alloc_263_17",
+        spec: FixedReadonlySpec {
+            key: "fixed_dev_scalar_alloc_252_17",
+            kind: "location",
+            hex: "00000000000000002200000000000000fc00000011000000",
+            file_hex: "726576657269652d696e67756573742f7372632f67756573742f616c6c6f632e7273",
+            owner: "",
+            switch: &[],
+        },
+    },
+    FixedDevScalarLocation {
+        request: "fixed_heap_location_alloc_269_41",
+        spec: FixedReadonlySpec {
+            key: "fixed_dev_scalar_alloc_258_41",
+            kind: "location",
+            hex: "000000000000000022000000000000000201000029000000",
+            file_hex: "726576657269652d696e67756573742f7372632f67756573742f616c6c6f632e7273",
+            owner: "",
+            switch: &[],
+        },
+    },
+    FixedDevScalarLocation {
+        request: "fixed_heap_location_alloc_270_41",
+        spec: FixedReadonlySpec {
+            key: "fixed_dev_scalar_alloc_259_41",
+            kind: "location",
+            hex: "000000000000000022000000000000000301000029000000",
+            file_hex: "726576657269652d696e67756573742f7372632f67756573742f616c6c6f632e7273",
+            owner: "",
+            switch: &[],
+        },
+    },
+    FixedDevScalarLocation {
+        request: "fixed_heap_location_alloc_270_73",
+        spec: FixedReadonlySpec {
+            key: "fixed_dev_scalar_alloc_259_73",
+            kind: "location",
+            hex: "000000000000000022000000000000000301000049000000",
+            file_hex: "726576657269652d696e67756573742f7372632f67756573742f616c6c6f632e7273",
+            owner: "",
+            switch: &[],
+        },
+    },
+    FixedDevScalarLocation {
+        request: "fixed_heap_location_alloc_272_21",
+        spec: FixedReadonlySpec {
+            key: "fixed_dev_scalar_alloc_261_21",
+            kind: "location",
+            hex: "000000000000000022000000000000000501000015000000",
+            file_hex: "726576657269652d696e67756573742f7372632f67756573742f616c6c6f632e7273",
+            owner: "",
+            switch: &[],
+        },
+    },
+    FixedDevScalarLocation {
+        request: "fixed_heap_location_alloc_273_21",
+        spec: FixedReadonlySpec {
+            key: "fixed_dev_scalar_alloc_262_21",
+            kind: "location",
+            hex: "000000000000000022000000000000000601000015000000",
+            file_hex: "726576657269652d696e67756573742f7372632f67756573742f616c6c6f632e7273",
+            owner: "",
+            switch: &[],
+        },
+    },
+    FixedDevScalarLocation {
+        request: "fixed_heap_location_alloc_278_67",
+        spec: FixedReadonlySpec {
+            key: "fixed_dev_scalar_alloc_267_67",
+            kind: "location",
+            hex: "000000000000000022000000000000000b01000043000000",
+            file_hex: "726576657269652d696e67756573742f7372632f67756573742f616c6c6f632e7273",
+            owner: "",
+            switch: &[],
+        },
+    },
+    FixedDevScalarLocation {
+        request: "fixed_heap_location_alloc_280_37",
+        spec: FixedReadonlySpec {
+            key: "fixed_dev_scalar_alloc_269_37",
+            kind: "location",
+            hex: "000000000000000022000000000000000d01000025000000",
+            file_hex: "726576657269652d696e67756573742f7372632f67756573742f616c6c6f632e7273",
+            owner: "",
+            switch: &[],
+        },
+    },
+    FixedDevScalarLocation {
+        request: "fixed_heap_location_alloc_280_64",
+        spec: FixedReadonlySpec {
+            key: "fixed_dev_scalar_alloc_269_64",
+            kind: "location",
+            hex: "000000000000000022000000000000000d01000040000000",
+            file_hex: "726576657269652d696e67756573742f7372632f67756573742f616c6c6f632e7273",
+            owner: "",
+            switch: &[],
+        },
+    },
+    FixedDevScalarLocation {
+        request: "fixed_heap_location_alloc_281_21",
+        spec: FixedReadonlySpec {
+            key: "fixed_dev_scalar_alloc_270_21",
+            kind: "location",
+            hex: "000000000000000022000000000000000e01000015000000",
+            file_hex: "726576657269652d696e67756573742f7372632f67756573742f616c6c6f632e7273",
+            owner: "",
+            switch: &[],
+        },
+    },
+    FixedDevScalarLocation {
+        request: "fixed_heap_location_alloc_282_21",
+        spec: FixedReadonlySpec {
+            key: "fixed_dev_scalar_alloc_271_21",
+            kind: "location",
+            hex: "000000000000000022000000000000000f01000015000000",
+            file_hex: "726576657269652d696e67756573742f7372632f67756573742f616c6c6f632e7273",
+            owner: "",
+            switch: &[],
+        },
+    },
+    FixedDevScalarLocation {
+        request: "fixed_heap_location_alloc_282_38",
+        spec: FixedReadonlySpec {
+            key: "fixed_dev_scalar_alloc_271_38",
+            kind: "location",
+            hex: "000000000000000022000000000000000f01000026000000",
+            file_hex: "726576657269652d696e67756573742f7372632f67756573742f616c6c6f632e7273",
+            owner: "",
+            switch: &[],
+        },
+    },
+    FixedDevScalarLocation {
+        request: "fixed_heap_location_alloc_732_22",
+        spec: FixedReadonlySpec {
+            key: "fixed_dev_scalar_alloc_721_22",
+            kind: "location",
+            hex: "00000000000000002200000000000000d102000016000000",
+            file_hex: "726576657269652d696e67756573742f7372632f67756573742f616c6c6f632e7273",
+            owner: "",
+            switch: &[],
+        },
+    },
+    FixedDevScalarLocation {
+        request: "fixed_heap_location_alloc_733_35",
+        spec: FixedReadonlySpec {
+            key: "fixed_dev_scalar_alloc_722_35",
+            kind: "location",
+            hex: "00000000000000002200000000000000d202000023000000",
+            file_hex: "726576657269652d696e67756573742f7372632f67756573742f616c6c6f632e7273",
+            owner: "",
+            switch: &[],
+        },
+    },
+    FixedDevScalarLocation {
+        request: "fixed_operation_data_13",
+        spec: FixedReadonlySpec {
+            key: "fixed_dev_scalar_alloc_279_16",
+            kind: "location",
+            hex: "000000000000000022000000000000001701000010000000",
+            file_hex: "726576657269652d696e67756573742f7372632f67756573742f616c6c6f632e7273",
+            owner: "",
+            switch: &[],
+        },
+    },
+];
+
+fn fixed_dev_scalar_readonly_profile(targets: &BTreeMap<String, u64>) -> Result<()> {
+    let mut locations = BTreeSet::new();
+    for binding in FIXED_DEV_SCALAR_ALLOC_LOCATIONS {
+        let current = *targets
+            .get(binding.spec.key)
+            .ok_or("complete dev scalar current source Location absent")?;
+        let file = *targets
+            .get(&format!("{}_file", binding.spec.key))
+            .ok_or("complete dev scalar current source filename absent")?;
+        require(
+            current != 0
+                && file != 0
+                && locations.insert(current)
+                && targets.get(binding.request) == Some(&current)
+                && targets.get(&format!("{}_file", binding.request)) == Some(&file),
+            "dev scalar current source Location aliases/mixes another profile",
+        )?;
+    }
+    Ok(())
+}
+
+fn fixed_dev_scalar_location_readonly(
+    binding: &FixedDevScalarLocation,
+    address: u64,
+    targets: &BTreeMap<String, u64>,
+    readonly: &BTreeMap<u64, Vec<u8>>,
+) -> Result<()> {
+    fixed_dev_scalar_readonly_profile(targets)?;
+    let spec = &binding.spec;
+    require(
+        targets.get(spec.key) == Some(&address)
+            && targets.get(binding.request) == Some(&address)
+            && readonly.get(&address) == Some(&fixed_hex(spec.hex)),
+        "dev scalar complete current Location payload differs",
+    )?;
+    let file = *targets
+        .get(&format!("{}_file", spec.key))
+        .ok_or("dev scalar current Location filename absent")?;
+    require(
+        readonly.get(&file) == Some(&fixed_hex(spec.file_hex)),
+        "dev scalar complete current Location filename differs",
+    )
+}
+
+fn dev_fixed_heap_readonly_in_source_profile(
+    key: &str,
+    address: u64,
+    targets: &BTreeMap<String, u64>,
+    readonly: &BTreeMap<u64, Vec<u8>>,
+) -> Result<()> {
+    if let Some(binding) = FIXED_DEV_SCALAR_ALLOC_LOCATIONS
+        .iter()
+        .find(|b| b.request == key && targets.contains_key(b.spec.key))
+    {
+        return fixed_dev_scalar_location_readonly(binding, address, targets, readonly);
+    }
+    dev_fixed_heap_readonly(key, address, targets, readonly)
 }
 
 // Authentication of data addresses is independent of instruction-template matching.
@@ -12012,6 +12698,60 @@ fn fixed_bind_operand_data(
         None,
     )
 }
+// Only the complete current standalone dev shape and a fresh source factory
+// activate this profile. The unchanged physical binder still checks full bytes,
+// mapped readonly extents, exact filename and the sole RELATIVE pointer writer.
+fn fixed_bind_operand_data_for_profile(
+    image: (&Elf<'_>, &[u8]),
+    key: &str,
+    address: u64,
+    targets: &mut BTreeMap<String, u64>,
+    readonly: &mut BTreeMap<u64, Vec<u8>>,
+    evidence: &mut BTreeMap<String, FixedReadonlyEvidence>,
+    source_profile: (Option<&VerifiedCompiledSources>, bool),
+) -> Result<()> {
+    let (sources, current_dev) = source_profile;
+    if current_dev {
+        let source = sources.ok_or("dev scalar readonly profile lacks fresh source authority")?;
+        require(
+            source.record.layout == CompiledSourceLayout::ReverieWorkspace
+                && source.record.image_kind == FixedImageKind::Standalone,
+            "dev scalar readonly profile belongs to a different source/image layout",
+        )?;
+        if let Some(binding) = FIXED_DEV_SCALAR_ALLOC_LOCATIONS
+            .iter()
+            .find(|b| b.request == key)
+        {
+            fixed_bind_readonly_in_source_context(
+                image,
+                &binding.spec,
+                address,
+                targets,
+                readonly,
+                evidence,
+                sources,
+            )?;
+            for (request, current) in [
+                (key.to_owned(), binding.spec.key.to_owned()),
+                (format!("{key}_file"), format!("{}_file", binding.spec.key)),
+            ] {
+                let physical = *targets
+                    .get(&current)
+                    .ok_or("current source binding absent")?;
+                require(
+                    targets.get(&request).is_none_or(|prior| *prior == physical),
+                    "dev scalar internal operand request has conflicting physical identities",
+                )?;
+                targets.insert(request, physical);
+            }
+            return Ok(());
+        }
+    }
+    fixed_bind_operand_data_in_source_context(
+        image, key, address, targets, readonly, evidence, sources,
+    )
+}
+
 fn fixed_bind_operand_data_in_source_context(
     (elf, bytes): (&Elf<'_>, &[u8]),
     key: &str,
@@ -20234,38 +20974,52 @@ enum NativeNoScopeTlsLayout {
     Dispatch140,
     Dispatch100,
     Dispatch130Owner138,
+    Dispatch140Owner130CallbackE9,
 }
 
-// Only the two independently measured layouts sharing the complete physical
+// Only the independently measured layouts sharing the complete physical
 // recipe enter this private helper. The historical140 path stays outside it.
 #[derive(Clone, Copy)]
 enum NativeNoScopeMeasuredLayout {
     Dispatch100,
     Dispatch130Owner138,
+    Dispatch140Owner130CallbackE9,
 }
 impl NativeNoScopeMeasuredLayout {
     fn cells(self) -> &'static [(&'static str, u64, u64, u32); 4] {
         match self {
             Self::Dispatch100 => &NATIVE100_NO_SCOPE_CELLS,
             Self::Dispatch130Owner138 => &NATIVE130_OWNER138_NO_SCOPE_CELLS,
+            Self::Dispatch140Owner130CallbackE9 => &NATIVE140_OWNER130_CALLBACK_E9_NO_SCOPE_CELLS,
         }
     }
     fn memory_size(self) -> u64 {
         match self {
             Self::Dispatch100 => 0x1c8,
             Self::Dispatch130Owner138 => 0x1c0,
+            Self::Dispatch140Owner130CallbackE9 => 0x1c0,
         }
     }
     fn zero_fill_size(self) -> u64 {
         match self {
             Self::Dispatch100 => 0xe0,
             Self::Dispatch130Owner138 => 0xd8,
+            Self::Dispatch140Owner130CallbackE9 => 0xd8,
+        }
+    }
+    fn population_message(self, old100: &'static str) -> String {
+        match self {
+            Self::Dispatch130Owner138 => old100.replace("native100", "native130"),
+            _ => self.message(old100),
         }
     }
     fn message(self, old100: &'static str) -> String {
         match self {
             Self::Dispatch100 => old100.into(),
             Self::Dispatch130Owner138 => old100.replace("native100", "native130-owner138"),
+            Self::Dispatch140Owner130CallbackE9 => {
+                old100.replace("native100", "native140-owner130-callbacke9")
+            }
         }
     }
 }
@@ -20371,6 +21125,13 @@ fn native_no_scope_tls_layout_with_getters(
             .collect::<Vec<_>>()
     {
         Ok(NativeNoScopeTlsLayout::Dispatch130Owner138)
+    } else if observed
+        == NATIVE140_OWNER130_CALLBACK_E9_NO_SCOPE_OTHER_GETTERS
+            .iter()
+            .map(|entry| entry.1)
+            .collect::<Vec<_>>()
+    {
+        Ok(NativeNoScopeTlsLayout::Dispatch140Owner130CallbackE9)
     } else {
         Err("native TLS population has no exact complete measured vector".into())
     }
@@ -20734,24 +21495,42 @@ fn validate_native_no_scope_measured_layout(
     Ok(())
 }
 
-// The complete29 tuple check is130-only. Old100/140 retain their original
-// acceptance. Actual extraction still independently authenticates the ELF and
-// zero dynamic population; a decoded receipt never grants physical authority.
+// Dispatch130Owner138 v4 uses its complete 29-tuple population. The separate
+// Dispatch140Owner130CallbackE9 v5 population uses the shared validator below.
+// Historical Dispatch100 v2 and Dispatch140 v1 retain their original checks.
+// Actual extraction independently authenticates the ELF and zero dynamic
+// population; a decoded receipt never grants physical authority.
 fn validate_native130_tls_population(
     layout: &NativeNoScopeLayout100Evidence,
     population: &[NativeNoScopeCellEvidence],
 ) -> Result<()> {
+    validate_native_complete_tls_population(
+        layout,
+        population,
+        &NATIVE130_OWNER138_TLS_POPULATION,
+        NativeNoScopeMeasuredLayout::Dispatch130Owner138,
+    )
+}
+
+fn validate_native_complete_tls_population(
+    layout: &NativeNoScopeLayout100Evidence,
+    population: &[NativeNoScopeCellEvidence],
+    expected: &[(&str, u64, u64, u8, u32)],
+    spec: NativeNoScopeMeasuredLayout,
+) -> Result<()> {
     require(
-        population.len() == NATIVE130_OWNER138_TLS_POPULATION.len(),
-        "native130 complete typed TLS population length differs",
+        population.len() == expected.len(),
+        spec.population_message("native100 complete typed TLS population length differs"),
     )?;
     let mut sections = BTreeMap::new();
-    for (cell, &(name, offset, size, visibility, kind)) in
-        population.iter().zip(&NATIVE130_OWNER138_TLS_POPULATION)
-    {
+    for (cell, &(name, offset, size, visibility, kind)) in population.iter().zip(expected) {
         let initialized = kind == section_header::SHT_PROGBITS;
         let start = if initialized { 0 } else { 0xe8 };
-        let section_size = if initialized { 0xe8 } else { 0xd8 };
+        let section_size = if initialized {
+            0xe8
+        } else {
+            spec.zero_fill_size()
+        };
         require(
             canonical_rust_symbol(&cell.symbol.name).as_deref() == Some(name)
                 && cell.symbol.address == offset
@@ -20776,12 +21555,14 @@ fn validate_native130_tls_population(
                 && offset
                     .checked_add(size)
                     .is_some_and(|end| end <= start + section_size),
-            "native130 complete normalized typed TLS tuple differs",
+            spec.population_message("native100 complete normalized typed TLS tuple differs"),
         )?;
         if let Some(index) = sections.insert(kind, cell.section_index) {
             require(
                 index == cell.section_index,
-                "native130 population splits one TLS section across aliases",
+                spec.population_message(
+                    "native100 population splits one TLS section across aliases",
+                ),
             )?;
         }
     }
@@ -20792,7 +21573,9 @@ fn validate_native130_tls_population(
                 .cells
                 .iter()
                 .all(|critical| population.contains(critical)),
-        "native130 critical cells do not join the complete physical TLS population",
+        spec.population_message(
+            "native100 critical cells do not join the complete physical TLS population",
+        ),
     )?;
     Ok(())
 }
@@ -20801,28 +21584,85 @@ fn native_no_scope_layout130_owner138_census(
     elf: &Elf<'_>,
     bytes: &[u8],
 ) -> Result<(NoScopeCensus, NativeNoScopeLayout130Owner138Evidence)> {
-    let (census, layout) = native_no_scope_measured_layout_census_with_getters(
+    let (census, layout, tls_population) = native_no_scope_complete_layout_census(
         elf,
         bytes,
         &NATIVE130_OWNER138_NO_SCOPE_OTHER_GETTERS,
+        &NATIVE130_OWNER138_TLS_POPULATION,
         NativeNoScopeMeasuredLayout::Dispatch130Owner138,
     )?;
+    Ok((
+        census,
+        NativeNoScopeLayout130Owner138Evidence {
+            layout,
+            tls_population,
+        },
+    ))
+}
+
+fn native_no_scope_layout140_owner130_callbacke9_census(
+    elf: &Elf<'_>,
+    bytes: &[u8],
+) -> Result<(
+    NoScopeCensus,
+    NativeNoScopeLayout140Owner130CallbackE9Evidence,
+)> {
+    let (census, layout, tls_population) = native_no_scope_complete_layout_census(
+        elf,
+        bytes,
+        &NATIVE140_OWNER130_CALLBACK_E9_NO_SCOPE_OTHER_GETTERS,
+        &NATIVE140_OWNER130_CALLBACK_E9_TLS_POPULATION,
+        NativeNoScopeMeasuredLayout::Dispatch140Owner130CallbackE9,
+    )?;
+    validate_native140_owner130_callbacke9_getters(&census.other_tls_getters)?;
+    let template = loader_meta_slice(
+        bytes,
+        loader_meta_usize(layout.tls_file_offset)?,
+        loader_meta_usize(layout.tls_file_size)?,
+    )?;
+    require(
+        template == fixed_hex(NATIVE140_OWNER130_CALLBACK_E9_TLS_TEMPLATE_HEX),
+        "native140-owner130-callbacke9 full initialized TLS template differs",
+    )?;
+    Ok((
+        census,
+        NativeNoScopeLayout140Owner130CallbackE9Evidence {
+            layout,
+            tls_population,
+            initialized_template_sha256: sha256(template),
+        },
+    ))
+}
+
+fn native_no_scope_complete_layout_census(
+    elf: &Elf<'_>,
+    bytes: &[u8],
+    expected_getters: &[(&str, u64)],
+    expected_population: &[(&str, u64, u64, u8, u32)],
+    spec: NativeNoScopeMeasuredLayout,
+) -> Result<(
+    NoScopeCensus,
+    NativeNoScopeLayout100Evidence,
+    Vec<NativeNoScopeCellEvidence>,
+)> {
+    let (census, layout) =
+        native_no_scope_measured_layout_census_with_getters(elf, bytes, expected_getters, spec)?;
     require(
         !elf.dynsyms
             .iter()
             .any(|symbol| symbol.st_type() == sym::STT_TLS),
-        "native130 requires an empty dynamic TLS population",
+        spec.population_message("native100 requires an empty dynamic TLS population"),
     )?;
     require(
         elf.syms
             .iter()
             .filter(|symbol| symbol.st_type() == sym::STT_TLS)
             .count()
-            == NATIVE130_OWNER138_TLS_POPULATION.len(),
-        "native130 requires the exact complete static TLS population",
+            == expected_population.len(),
+        spec.population_message("native100 requires the exact complete static TLS population"),
     )?;
     let mut population = Vec::new();
-    for entry in &NATIVE130_OWNER138_TLS_POPULATION {
+    for entry in expected_population {
         let name = entry.0;
         let symbols: Vec<_> = elf
             .syms
@@ -20837,17 +21677,17 @@ fn native_no_scope_layout130_owner138_census(
             .collect();
         require(
             symbols.len() == 1,
-            "native130 normalized TLS identity absent/duplicated/aliased",
+            spec.population_message("native100 normalized TLS identity absent/duplicated/aliased"),
         )?;
         let symbol = &symbols[0];
         let section = elf
             .section_headers
             .get(symbol.st_shndx)
-            .ok_or("native130 actual TLS section absent")?;
+            .ok_or(spec.population_message("native100 actual TLS section absent"))?;
         let section_name = elf
             .shdr_strtab
             .get_at(section.sh_name)
-            .ok_or("native130 actual TLS section name absent")?;
+            .ok_or(spec.population_message("native100 actual TLS section name absent"))?;
         population.push(NativeNoScopeCellEvidence {
             symbol: symbol_evidence(elf.strtab.get_at(symbol.st_name).unwrap(), symbol),
             symbol_type: symbol.st_type(),
@@ -20860,7 +21700,7 @@ fn native_no_scope_layout130_owner138_census(
             section_size: section.sh_size,
         });
     }
-    validate_native130_tls_population(&layout, &population)?;
+    validate_native_complete_tls_population(&layout, &population, expected_population, spec)?;
     let actual_sections: BTreeSet<_> = elf
         .section_headers
         .iter()
@@ -20870,15 +21710,9 @@ fn native_no_scope_layout130_owner138_census(
         .collect();
     require(
         actual_sections == population.iter().map(|cell| cell.section_index).collect(),
-        "native130 complete TLS section census differs",
+        spec.population_message("native100 complete TLS section census differs"),
     )?;
-    Ok((
-        census,
-        NativeNoScopeLayout130Owner138Evidence {
-            layout,
-            tls_population: population,
-        },
-    ))
+    Ok((census, layout, population))
 }
 
 fn validate_native_no_scope_layout130_owner138(
@@ -20895,10 +21729,60 @@ fn validate_native_no_scope_layout130_owner138(
     validate_native130_tls_population(&payload.layout, &payload.tls_population)
 }
 
+fn validate_native_no_scope_layout140_owner130_callbacke9(
+    proof: &NoInstallationScopeEvidence,
+    payload: &NativeNoScopeLayout140Owner130CallbackE9Evidence,
+    expected_getters: &[(&str, u64)],
+) -> Result<()> {
+    validate_native140_owner130_callbacke9_getters(&proof.other_tls_getters)?;
+    validate_native_no_scope_measured_layout(
+        proof,
+        &payload.layout,
+        expected_getters,
+        NativeNoScopeMeasuredLayout::Dispatch140Owner130CallbackE9,
+    )?;
+    validate_native_complete_tls_population(
+        &payload.layout,
+        &payload.tls_population,
+        &NATIVE140_OWNER130_CALLBACK_E9_TLS_POPULATION,
+        NativeNoScopeMeasuredLayout::Dispatch140Owner130CallbackE9,
+    )?;
+    require(
+        payload.initialized_template_sha256
+            == sha256(&fixed_hex(NATIVE140_OWNER130_CALLBACK_E9_TLS_TEMPLATE_HEX)),
+        "native140-owner130-callbacke9 retained full TLS initializer differs",
+    )
+}
+
+fn validate_native140_owner130_callbacke9_getters(getters: &[UnisolatedTlsGetter]) -> Result<()> {
+    require(
+        getters.len() == 4,
+        "native140-owner130-callbacke9 getter count differs",
+    )?;
+    for (index, &(name, _)) in NATIVE140_OWNER130_CALLBACK_E9_NO_SCOPE_OTHER_GETTERS
+        .iter()
+        .enumerate()
+    {
+        let selected: Vec<_> = getters
+            .iter()
+            .filter(|getter| canonical_rust_symbol(&getter.getter.name).as_deref() == Some(name))
+            .collect();
+        require(
+            selected.len() == 1
+                && selected[0].getter.visibility
+                    == NATIVE140_OWNER130_CALLBACK_E9_GETTER_VISIBILITY[index],
+            "native140-owner130-callbacke9 exact getter identity/visibility differs",
+        )?;
+    }
+    Ok(())
+}
+
 struct SelectedNoScopeCensus {
     census: NoScopeCensus,
     native_tls_layout100: Option<NativeNoScopeLayout100Evidence>,
     native_tls_layout130_owner138: Option<NativeNoScopeLayout130Owner138Evidence>,
+    native_tls_layout140_owner130_callbacke9:
+        Option<NativeNoScopeLayout140Owner130CallbackE9Evidence>,
     version: u32,
     policy: &'static str,
 }
@@ -20942,13 +21826,26 @@ fn selected_no_scope_census(
     };
     let native100 = native_layout == Some(NativeNoScopeTlsLayout::Dispatch100);
     let native130 = native_layout == Some(NativeNoScopeTlsLayout::Dispatch130Owner138);
+    let native140_e9 = native_layout == Some(NativeNoScopeTlsLayout::Dispatch140Owner130CallbackE9);
     require(
         !native130 || legacy,
         "native130 requires the complete LegacyExact getter encoding",
     )?;
-    let (census, native_tls_layout100, native_tls_layout130_owner138) = if native130 {
+    require(
+        !native140_e9 || legacy,
+        "native140-owner130-callbacke9 requires the complete LegacyExact getter encoding",
+    )?;
+    let (
+        census,
+        native_tls_layout100,
+        native_tls_layout130_owner138,
+        native_tls_layout140_owner130_callbacke9,
+    ) = if native140_e9 {
+        let (census, layout) = native_no_scope_layout140_owner130_callbacke9_census(elf, bytes)?;
+        (census, None, None, Some(layout))
+    } else if native130 {
         let (census, layout) = native_no_scope_layout130_owner138_census(elf, bytes)?;
-        (census, None, Some(layout))
+        (census, None, Some(layout), None)
     } else if native100 {
         let (census, layout) = if legacy {
             native_no_scope_layout100_census(elf, bytes)?
@@ -20959,7 +21856,7 @@ fn selected_no_scope_census(
                 &names.with_offsets(&NATIVE100_NO_SCOPE_OTHER_GETTERS)?,
             )?
         };
-        (census, Some(layout), None)
+        (census, Some(layout), None, None)
     } else {
         (
             if legacy {
@@ -20969,10 +21866,13 @@ fn selected_no_scope_census(
             },
             None,
             None,
+            None,
         )
     };
     names.require_census(&census)?;
-    let (version, policy) = if native130 {
+    let (version, policy) = if native140_e9 {
+        (5, NATIVE140_OWNER130_CALLBACK_E9_NO_SCOPE_POLICY)
+    } else if native130 {
         (4, NATIVE130_OWNER138_NO_SCOPE_POLICY)
     } else {
         no_scope_getter_policy(cohort, names.encoding, native100)?
@@ -20981,6 +21881,7 @@ fn selected_no_scope_census(
         census,
         native_tls_layout100,
         native_tls_layout130_owner138,
+        native_tls_layout140_owner130_callbacke9,
         version,
         policy,
     })
@@ -21052,6 +21953,7 @@ fn derive_no_installation_scope_evidence(
         census,
         native_tls_layout100,
         native_tls_layout130_owner138,
+        native_tls_layout140_owner130_callbacke9,
         version,
         policy,
     } = selected_no_scope_census(elf, bytes, cohort)?;
@@ -21080,6 +21982,7 @@ fn derive_no_installation_scope_evidence(
         other_tls_unisolated: true,
         native_tls_layout100,
         native_tls_layout130_owner138,
+        native_tls_layout140_owner130_callbacke9,
     })
 }
 
@@ -21119,11 +22022,23 @@ fn validate_no_installation_scope_evidence(
             .consumer_policy
             .label(cohort, NATIVE130_OWNER138_NO_SCOPE_POLICY)
             .is_ok_and(|label| label == proof.policy);
+    let native140_e9 = cohort == ConsumerRecipe::Allocation101LayoutA
+        && proof
+            .current_build
+            .consumer_policy
+            .label(cohort, NATIVE140_OWNER130_CALLBACK_E9_NO_SCOPE_POLICY)
+            .is_ok_and(|label| label == proof.policy);
     require(
         !native130 || names.encoding == NoScopeGetterEncoding::LegacyExact,
         "native130 requires the complete LegacyExact getter encoding",
     )?;
-    let (version, policy) = if native130 {
+    require(
+        !native140_e9 || names.encoding == NoScopeGetterEncoding::LegacyExact,
+        "native140-owner130-callbacke9 requires the complete LegacyExact getter encoding",
+    )?;
+    let (version, policy) = if native140_e9 {
+        (5, NATIVE140_OWNER130_CALLBACK_E9_NO_SCOPE_POLICY)
+    } else if native130 {
         (4, NATIVE130_OWNER138_NO_SCOPE_POLICY)
     } else {
         no_scope_getter_policy(cohort, names.encoding, native100)?
@@ -21132,6 +22047,8 @@ fn validate_no_installation_scope_evidence(
         &NATIVE100_NO_SCOPE_OTHER_GETTERS[..]
     } else if native130 {
         &NATIVE130_OWNER138_NO_SCOPE_OTHER_GETTERS[..]
+    } else if native140_e9 {
+        &NATIVE140_OWNER130_CALLBACK_E9_NO_SCOPE_OTHER_GETTERS[..]
     } else {
         cohort.getters()
     })?;
@@ -21142,7 +22059,9 @@ fn validate_no_installation_scope_evidence(
             && proof.policy == proof.current_build.consumer_policy.label(cohort, policy)?
             && proof.native_tls_layout100.is_some() == native100
             && proof.native_tls_layout130_owner138.is_some() == native130
+            && proof.native_tls_layout140_owner130_callbacke9.is_some() == native140_e9
             && !(native100 && native130)
+            && !(native140_e9 && (native100 || native130))
             && proof.other_tls_unisolated
             && hash(&proof.reverie_pin, 40)
             && proof.source.sha256 == NO_INSTALLATION_SCOPE_SOURCE.2
@@ -21240,6 +22159,9 @@ fn validate_no_installation_scope_evidence(
     }
     if let Some(layout) = &proof.native_tls_layout130_owner138 {
         validate_native_no_scope_layout130_owner138(proof, layout, &expected_getters)?;
+    }
+    if let Some(layout) = &proof.native_tls_layout140_owner130_callbacke9 {
+        validate_native_no_scope_layout140_owner130_callbacke9(proof, layout, &expected_getters)?;
     }
     Ok(())
 }
@@ -21895,6 +22817,139 @@ const FIXED_DEV_TLS_TRY_WITH_HEX: &str = "4883ec784889f84889442448c64424470131c9
 
 const FIXED_OPTIMIZED_PATCH_ALLOC_HEX: &str = "41574156415453504889d34989f6ff15a4740a004885c074774c8b78204d85ff746e4989c4488d3d446f0a00e83f080a004883b848000000007463498b542410498b0f498d76ff49f7de31c04889cf4801d7723e4801f772394c21f74989f84929d04901d8410f92c14981f801000002410f93c24508ca75194889c8f04d0fb1074889c1b80000000075c14889f8eb0231c04883c4085b415c415e415fc3bf010000004c89f64889da4883c4085b415c415e415fff2526740a00";
 
+const FIXED_DEV_SCALAR_HELPER_SYMBOLS: &[(&str, &str)] = &[
+    (
+        "fixed_dev_backing_option_identity",
+        "_RINvNtCs_4core4hint9black_boxINtNtB4_6option6OptionRNtNtNtNtCs_15reverie_inguest5guest11tool_region5arena17FixedArenaBackingEEB17_",
+    ),
+    (
+        "prepare_scalar_mut_void_identity",
+        "_RINvNtCs_4core4hint9black_boxONtNtB4_3ffi6c_voidECs_15reverie_inguest",
+    ),
+    (
+        "prepare_scalar_const_void_identity",
+        "_RINvNtCs_4core4hint9black_boxPNtNtB4_3ffi6c_voidECs_15reverie_inguest",
+    ),
+    (
+        "prepare_scalar_usize_identity",
+        "_RINvNtCs_4core4hint9black_boxjECs_15reverie_inguest",
+    ),
+    (
+        "fixed_dev_i32_identity",
+        "_RINvNtCs_4core4hint9black_boxlECs_15reverie_inguest",
+    ),
+    (
+        "fixed_dev_backing_option_map",
+        "_RINvMNtCs_4core6optionINtB3_6OptionRNtNtNtNtCs_15reverie_inguest5guest11tool_region5arena18FixedArenaMetadataE3mapRNtBL_17FixedArenaBackingNCNvBL_19fixed_arena_backing0EBR_",
+    ),
+    (
+        "fixed_dev_heap_metadata_option_branch",
+        "_RNvXsJ_NtCs_4core6optionINtB5_6OptionRNtNtNtCs_15reverie_inguest5guest5alloc16ToolHeapMetadataENtNtNtB7_3ops9try_trait3Try6branchBR_",
+    ),
+    (
+        "fixed_dev_backing_map_closure",
+        "_RNCNvNtNtNtCs_15reverie_inguest5guest11tool_region5arena19fixed_arena_backing0B9_",
+    ),
+    (
+        "prepare_result_pointer_as_ref",
+        "_RNvMNtNtCs_4core3ptr9const_ptrPINtNtB6_6result6ResultNtNtNtCs_15reverie_inguest5guest11tool_region10ToolRegionlE6as_refB16_",
+    ),
+    (
+        "fixed_dev_heap_metadata_pointer_as_ref",
+        "_RNvMNtNtCs_4core3ptr9const_ptrPNtNtNtCs_15reverie_inguest5guest5alloc16ToolHeapMetadata6as_refBK_",
+    ),
+];
+
+fn fixed_dev_scalar_private_helper(role: &str) -> bool {
+    matches!(
+        role,
+        "fixed_dev_backing_option_identity"
+            | "fixed_dev_i32_identity"
+            | "fixed_dev_backing_option_map"
+            | "fixed_dev_heap_metadata_option_branch"
+            | "fixed_dev_backing_map_closure"
+            | "fixed_dev_heap_metadata_pointer_as_ref"
+    )
+}
+
+// These six new source/type identities are private functions, not exported
+// aliases of a function with matching bytes. The four prepare helpers retain
+// their separate existing identity factory below.
+fn fixed_dev_scalar_helper_symbol_identity(
+    elf: &Elf<'_>,
+    role: &str,
+    selected: &sym::Sym,
+) -> Result<()> {
+    require(
+        (fixed_dev_scalar_private_helper(role)
+            || FIXED_DEV_SCALAR_OPERATIONS
+                .iter()
+                .any(|recipe| recipe.role == role))
+            && selected.st_bind() == sym::STB_LOCAL
+            && selected.st_type() == sym::STT_FUNC
+            && selected.st_shndx != section_header::SHN_UNDEF as usize
+            && selected.st_size != 0
+            && executable_symbol(elf, selected)
+            && elf
+                .strtab
+                .get_at(selected.st_name)
+                .and_then(fixed_emitted_role)
+                == Some(role),
+        "dev scalar helper lacks its private defined function identity",
+    )?;
+    let end = selected
+        .st_value
+        .checked_add(selected.st_size)
+        .ok_or("dev scalar helper extent overflows")?;
+    let same_role = |name: Option<&str>| name.and_then(fixed_emitted_role) == Some(role);
+    require(
+        elf.syms
+            .iter()
+            .filter(|s| same_role(elf.strtab.get_at(s.st_name)))
+            .count()
+            == 1,
+        "dev scalar helper has duplicate or ambiguous raw definitions",
+    )?;
+    let overlaps = |other: &sym::Sym| -> Result<bool> {
+        if other.st_shndx == section_header::SHN_UNDEF as usize
+            || !matches!(
+                other.st_type(),
+                sym::STT_FUNC
+                    | sym::STT_OBJECT
+                    | sym::STT_TLS
+                    | sym::STT_NOTYPE
+                    | sym::STT_GNU_IFUNC
+            )
+            || other.st_value >= end
+        {
+            return Ok(false);
+        }
+        if other.st_size == 0 {
+            return Ok(other.st_value >= selected.st_value);
+        }
+        Ok(other
+            .st_value
+            .checked_add(other.st_size)
+            .ok_or("dev scalar helper alias extent overflows")?
+            > selected.st_value)
+    };
+    for other in elf.syms.iter() {
+        if other.st_name != selected.st_name {
+            require(
+                !overlaps(&other)?,
+                "dev scalar helper has a conflicting static entry or extent alias",
+            )?;
+        }
+    }
+    for other in elf.dynsyms.iter() {
+        require(
+            !same_role(elf.dynstrtab.get_at(other.st_name)) && !overlaps(&other)?,
+            "dev scalar helper has a dynamic identity or entry/extent alias",
+        )?;
+    }
+    Ok(())
+}
+
 fn fixed_emitted_role(name: &str) -> Option<&'static str> {
     let canonical = canonical_rust_symbol(name)?;
     FIXED_EMITTED_ROLE_SYMBOLS
@@ -21903,6 +22958,7 @@ fn fixed_emitted_role(name: &str) -> Option<&'static str> {
         .chain(FIXED_SUPPORT_ROLE_SYMBOLS)
         .chain(PUBLICATION_ROLE_SYMBOLS)
         .chain(DETCORE_VALIDATE_ROLE_SYMBOLS)
+        .chain(FIXED_DEV_SCALAR_HELPER_SYMBOLS)
         .find_map(|&(role, observed)| (canonical == observed).then_some(role))
 }
 
@@ -21937,6 +22993,7 @@ fn fixed_role_symbol_candidates(elf: &Elf<'_>) -> Result<FixedRoleSymbolCandidat
             .chain(FIXED_SUPPORT_ROLE_SYMBOLS)
             .chain(PUBLICATION_ROLE_SYMBOLS)
             .chain(DETCORE_VALIDATE_ROLE_SYMBOLS)
+            .chain(FIXED_DEV_SCALAR_HELPER_SYMBOLS)
             .filter_map(|&(role, observed)| (canonical == observed).then_some(role))
             .collect();
         if aliases.is_empty() {
@@ -21946,6 +23003,12 @@ fn fixed_role_symbol_candidates(elf: &Elf<'_>) -> Result<FixedRoleSymbolCandidat
             symbol.st_bind() == sym::STB_LOCAL && !dynamic_names.contains(name),
             format!("Fixed emitted function {name} is dynamically visible/preemptible"),
         )?;
+        for role in aliases
+            .iter()
+            .filter(|role| fixed_dev_scalar_private_helper(role))
+        {
+            fixed_dev_scalar_helper_symbol_identity(elf, role, &symbol)?;
+        }
         for role in aliases {
             if role == "fixed_heap_usize_max" {
                 require(
@@ -22548,6 +23611,9 @@ const FIXED_SCALAR_PUBLICATION_REQUIRED_ROLES: &[&str] = &[
     "fixed_generic_prepare",
 ];
 const FIXED_SCALAR_TEMPLATE_START: usize = 55;
+// The ordinary DEV transport has no REGION/INITIALIZING storage operand.
+// Its full51B identity remains separate from historical optimized raw26/23B.
+const FIXED_DEV_SCALAR_SYSCALL_TEMPLATE: usize = 106;
 fn fixed_scalar_publication_present<'a>(mut roles: impl Iterator<Item = &'a str>) -> bool {
     roles.any(|role| FIXED_SCALAR_PUBLICATION_HELPERS.contains(&role))
 }
@@ -22578,13 +23644,19 @@ const FIXED_PUBLICATION_REQUIRED_ROLES: &[&str] = &[
 
 #[cfg(test)]
 fn validate_fixed_backing_evidence(backing: &AllocatorBackingEvidence) -> Result<()> {
-    validate_fixed_backing_evidence_in_source_context(backing, FixedImageKind::Standalone)
+    validate_fixed_backing_evidence_in_source_context(backing, FixedImageKind::Standalone, None)
 }
 fn validate_fixed_backing_evidence_in_source_context(
     backing: &AllocatorBackingEvidence,
     image_kind: FixedImageKind,
+    source_layout: Option<(CompiledSourceLayout, FixedImageKind)>,
 ) -> Result<()> {
     validate_fixed_native_syscall_evidence(backing, image_kind)?;
+    let dev_terminals = if fixed_dev_scalar_backing_shape_present(backing) {
+        validate_fixed_dev_scalar_backing_shape(backing, image_kind, source_layout)?
+    } else {
+        BTreeSet::new()
+    };
     if fixed_scalar_publication_present(backing.functions.keys().map(String::as_str)) {
         require(
             [
@@ -22674,16 +23746,17 @@ fn validate_fixed_backing_evidence_in_source_context(
             "Fixed readonly object proof is incomplete",
         )?;
     }
-    for terminal in backing.guarded_terminal_edges.values() {
+    for (key, terminal) in &backing.guarded_terminal_edges {
         require(
-            fixed_guarded_terminal_pairs(image_kind).contains(&(
+            (fixed_guarded_terminal_pairs(image_kind).contains(&(
                 terminal.caller_role.as_str(),
                 terminal.terminal_role.as_str(),
                 terminal.premise.as_str(),
-            )) && backing
-                .allocator_transfers
-                .get(&terminal.caller_role)
-                .is_some_and(|edges| edges.contains(&terminal.transfer))
+            )) || dev_terminals.contains(key))
+                && backing
+                    .allocator_transfers
+                    .get(&terminal.caller_role)
+                    .is_some_and(|edges| edges.contains(&terminal.transfer))
                 && backing
                     .functions
                     .get(&terminal.terminal_role)
@@ -23268,13 +24341,19 @@ fn qualify_fixed_allocator_in_source_context(
         if matches!(role, "from_native" | "publish") || owned_fixed_setup_role(role) {
             let instructions = constructor_instructions(disassembly, symbol.st_value)?;
             let function = symbol_evidence(name, symbol);
-            let (transfers, edges) = fixed_setup_preparation_transfers(
+            let (transfers, edges) = fixed_owned_setup_preparation_transfers(
                 role,
                 &function,
                 &instructions,
                 got,
                 &allowed,
-                context.native_syscalls.as_ref(),
+                (
+                    context.native_syscalls.as_ref(),
+                    closure
+                        .current_dev_setter_setup
+                        .as_ref()
+                        .filter(|_| role == "fixed_region_publication_set_opaque"),
+                ),
             )?;
             owned_setup_transfers.insert(role.to_owned(), transfers);
             owned_setup_got_edges.extend(edges);
@@ -23332,7 +24411,11 @@ fn qualify_fixed_allocator_in_source_context(
         owned_setup_transfers,
         owned_setup_got_edges,
     };
-    validate_fixed_backing_evidence_in_source_context(&evidence, image_kind)?;
+    validate_fixed_backing_evidence_in_source_context(
+        &evidence,
+        image_kind,
+        sources.map(|source| (source.record.layout, source.record.image_kind)),
+    )?;
     Ok(evidence)
 }
 
@@ -23806,6 +24889,15 @@ struct DetcoreValidateDataSpec {
     column: u32,
 }
 const DETCORE_VALIDATE_DATA: &[DetcoreValidateDataSpec] = &[
+    DetcoreValidateDataSpec {
+        key: "fixed_dev_publish_payload_location",
+        location: true,
+        hex: "",
+        file_hex: "",
+        source_context_key: Some("rv:reverie-inguest/src/guest/tool_region_constructor.rs"),
+        line: 775,
+        column: 9,
+    },
     DetcoreValidateDataSpec {
         key: "fixed_naked_constructor_record_location",
         location: true,
@@ -28811,6 +29903,1050 @@ const DETCORE_VALIDATE_TEMPLATES: &[DetcoreValidateTemplate] = &[
             (348, 12),
         ],
     },
+    // Separate actual standalone dev/O0 scalar composition. Only these complete
+    // bodies join FIXED_DEV_SCALAR_COHORT; old indices and families are unchanged.
+    // Complete 55B at 0x31e300; SHA256 c2cff4aeecc3281de8d4aa7e1ea17fa2e4d4ccce250f71157b57c6be45bc1215.
+    DetcoreValidateTemplate {
+        role: "fixed_arena_mprotect",
+        hex: "4883ec184889fe4889742410bf0a000000ba00000002b903000000e8a0ef04004889442408eb06ff15bb791b00488b4424084883c418c3",
+        operands: &[
+            DetcoreValidateOperand {
+                displacement: 28,
+                next: 32,
+                key: "fixed_scalar_syscall",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 41,
+                next: 45,
+                key: "fixed_publication_cannot_unwind",
+                got: true,
+            },
+        ],
+        transfers: &[(27, 0), (39, 1)],
+    },
+    // Complete 312B at 0x31e1c0; SHA256 fb684a7e8a1e2cd0bfcfe2b77121fd31b0806c8b86336aee81b75934c45f5c51.
+    DetcoreValidateTemplate {
+        role: "fixed_arena_backing",
+        hex: "4883ec68488d3ddd121d02be02000000e87be80400a801757d488d05d0121d024889442438488d05c4121d024889442460488d05b8121d024889442458488d3dac121d02ff15cef11b004889c748897c2440e8394600004889c748897c244848897c2450ff15b6f11b004889c7ff15b5f11b004889442420488b54242031c0b9010000004883fa00480f44c148a901000000750deb1848c744241000000000eb79ff1589f11b004889442410eb6c488b7c242048897c2428ff157af11b004889c74889d6ff1576f11b004889c7ff1575f11b004889442418488b54241831c0b9010000004883fa00480f44c148a901000000740dff1536f11b004889442410eb19488b442418488944243048b800300200006000004889442410488b7c2410ff153bf11b004889c748897c2408ff1535f11b004883c468c3",
+        operands: &[
+            DetcoreValidateOperand {
+                displacement: 7,
+                next: 11,
+                key: "fixed_initializing",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 17,
+                next: 21,
+                key: "fixed_metadata_atomic_load_bool",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 28,
+                next: 32,
+                key: "fixed_region",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 40,
+                next: 44,
+                key: "fixed_region",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 52,
+                next: 56,
+                key: "fixed_region",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 64,
+                next: 68,
+                key: "fixed_region",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 70,
+                next: 74,
+                key: "prepare_scalar_const_void_identity",
+                got: true,
+            },
+            DetcoreValidateOperand {
+                displacement: 83,
+                next: 87,
+                key: "fixed_region_publication_get_opaque",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 102,
+                next: 106,
+                key: "prepare_result_pointer_as_ref",
+                got: true,
+            },
+            DetcoreValidateOperand {
+                displacement: 111,
+                next: 115,
+                key: "fixed_region_option_result_branch",
+                got: true,
+            },
+            DetcoreValidateOperand {
+                displacement: 163,
+                next: 167,
+                key: "fixed_metadata_option_residual",
+                got: true,
+            },
+            DetcoreValidateOperand {
+                displacement: 186,
+                next: 190,
+                key: "fixed_region_result_as_ref",
+                got: true,
+            },
+            DetcoreValidateOperand {
+                displacement: 198,
+                next: 202,
+                key: "fixed_region_result_ok",
+                got: true,
+            },
+            DetcoreValidateOperand {
+                displacement: 207,
+                next: 211,
+                key: "fixed_region_option_region_branch",
+                got: true,
+            },
+            DetcoreValidateOperand {
+                displacement: 246,
+                next: 250,
+                key: "fixed_metadata_option_residual",
+                got: true,
+            },
+            DetcoreValidateOperand {
+                displacement: 289,
+                next: 293,
+                key: "fixed_dev_backing_option_map",
+                got: true,
+            },
+            DetcoreValidateOperand {
+                displacement: 303,
+                next: 307,
+                key: "fixed_dev_backing_option_identity",
+                got: true,
+            },
+        ],
+        transfers: &[
+            (16, 1),
+            (68, 6),
+            (82, 7),
+            (100, 8),
+            (109, 9),
+            (161, 10),
+            (184, 11),
+            (196, 12),
+            (205, 13),
+            (244, 14),
+            (287, 15),
+            (301, 16),
+        ],
+    },
+    // Complete 607B at 0x31e340; SHA256 26a819efd33e3643247489bcf512acd33f68004e519f80ae12d4583bd070b040.
+    DetcoreValidateTemplate {
+        role: "fixed_tool_heap_metadata",
+        hex: "4881ece8000000488d3d5a111d02be02000000e8f8e6040088442467eb008a442467a8010f85a9000000eb00488d3d3d111d024889bc24b80000004889bc24e00000004889bc24d8000000488b0546f01b00ffd04889442458eb00488b7c24584889bc24c0000000e8a34400004889c74889bc24c80000004889bc24d0000000488b0519f01b00ffd04889442450eb00488b7c2450488b050cf01b00ffd04889442448eb00488b44244848898424a0000000488b9424a000000031c0b9010000004883fa00480f44c148a9010000007513eb3348c784249000000000000000e9e3000000488b05c5ef1b00ffd04889442440eb00488b4424404889842490000000e9c1000000488bbc24a00000004889bc24a8000000488b059bef1b00ffd048895424304889442438eb00488b742430488b7c2438488b0584ef1b00ffd04889442428eb00488b7c2428488b0577ef1b00ffd04889442420eb00488b4424204889842498000000488b94249800000031c0b9010000004883fa00480f44c148a901000000741f488b0523ef1b00ffd04889442418eb00488b4424184889842490000000eb22488b84249800000048898424b000000048b800300200006000004889842490000000488b8424900000004889442410eb06ff15cc771b00488b4424104889442470488b542470b80100000031c94883fa00480f44c148a9010000007419488b442470488944240848894424784889842488000000eb1feb0048c744246800000000488b7c2468488b0566ee1b00ffd048890424eb19488b4424084889842480000000488b4424084889442468ebd3488b04244881c4e8000000c3",
+        operands: &[
+            DetcoreValidateOperand {
+                displacement: 10,
+                next: 14,
+                key: "fixed_initializing",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 20,
+                next: 24,
+                key: "fixed_metadata_atomic_load_bool",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 47,
+                next: 51,
+                key: "fixed_region",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 78,
+                next: 82,
+                key: "prepare_scalar_const_void_identity",
+                got: true,
+            },
+            DetcoreValidateOperand {
+                displacement: 105,
+                next: 109,
+                key: "fixed_region_publication_get_opaque",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 131,
+                next: 135,
+                key: "prepare_result_pointer_as_ref",
+                got: true,
+            },
+            DetcoreValidateOperand {
+                displacement: 152,
+                next: 156,
+                key: "fixed_region_option_result_branch",
+                got: true,
+            },
+            DetcoreValidateOperand {
+                displacement: 231,
+                next: 235,
+                key: "fixed_metadata_option_residual",
+                got: true,
+            },
+            DetcoreValidateOperand {
+                displacement: 281,
+                next: 285,
+                key: "fixed_region_result_as_ref",
+                got: true,
+            },
+            DetcoreValidateOperand {
+                displacement: 312,
+                next: 316,
+                key: "fixed_region_result_ok",
+                got: true,
+            },
+            DetcoreValidateOperand {
+                displacement: 333,
+                next: 337,
+                key: "fixed_region_option_region_branch",
+                got: true,
+            },
+            DetcoreValidateOperand {
+                displacement: 393,
+                next: 397,
+                key: "fixed_metadata_option_residual",
+                got: true,
+            },
+            DetcoreValidateOperand {
+                displacement: 472,
+                next: 476,
+                key: "fixed_publication_cannot_unwind",
+                got: true,
+            },
+            DetcoreValidateOperand {
+                displacement: 558,
+                next: 562,
+                key: "prepare_scalar_const_void_identity",
+                got: true,
+            },
+        ],
+        transfers: &[
+            (19, 1),
+            (82, 3),
+            (104, 4),
+            (135, 5),
+            (156, 6),
+            (235, 7),
+            (285, 8),
+            (316, 9),
+            (337, 10),
+            (397, 11),
+            (470, 12),
+            (562, 13),
+        ],
+    },
+    // Complete 234B at 0x322850; SHA256 a432ff0769858288745d38c7a25db838c525ba6287e3ce41439f7f144dc3cba5.
+    DetcoreValidateTemplate {
+        role: "fixed_region_publication_get_opaque",
+        hex: "4883ec5848897c241048897c242048897c2440eb06ff157d341b00488b4424104883e0074883f8007516488b4424104883f8000f94c024ff34ffa8017519eb35488b742410bf08000000488d15c7551a00ff1561341b00488b7c241048897c24284883c718be02000000e891a104008844240feb0d488d3d9c551a00ff153e341b008a44240fa8017504eb00eb0c488b4424104889442450eb1d48c744241800000000488b7c2418488b05d9aa1b00ffd048890424eb2a488b4424104889442430488b4424104889442448488b4424104889442438488b4424104889442418ebc2488b04244883c458c3",
+        operands: &[
+            DetcoreValidateOperand {
+                displacement: 23,
+                next: 27,
+                key: "fixed_publication_cannot_unwind",
+                got: true,
+            },
+            DetcoreValidateOperand {
+                displacement: 77,
+                next: 81,
+                key: "fixed_scalar_publication_get_location",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 83,
+                next: 87,
+                key: "fixed_heap_panic_misaligned",
+                got: true,
+            },
+            DetcoreValidateOperand {
+                displacement: 107,
+                next: 111,
+                key: "fixed_metadata_atomic_load_bool",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 120,
+                next: 124,
+                key: "fixed_scalar_publication_get_location",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 126,
+                next: 130,
+                key: "fixed_panic_null_reference",
+                got: true,
+            },
+            DetcoreValidateOperand {
+                displacement: 171,
+                next: 175,
+                key: "prepare_scalar_const_void_identity",
+                got: true,
+            },
+        ],
+        transfers: &[(21, 0), (81, 2), (106, 3), (124, 5), (175, 6)],
+    },
+    // Complete 353B at 0x322940; SHA256 b3197fe0caf21d74c2856a65098b3a0fdd3e09f1e8bdf5439c96c8dd09575a6f.
+    DetcoreValidateTemplate {
+        role: "fixed_region_publication_set_opaque",
+        hex: "4881ec8800000048897c2410488974241848897c2440488974244848897c2468eb06ff1580331b00488b4424104883e0074883f8007516488b4424104883f8000f94c024ff34ffa8017519eb35488b742410bf08000000488d15e2541a00ff1564331b00488b7c241048897c24504883c718be02000000e894a004008844240feb0d488d3db7541a00ff1541331b008a44240fa8017511eb00488b4424104889842480000000eb17488b05e9ac1b00bf0b000000ffd089442408e998000000488b4424104889442458488b4424184889442460488b4424184889442470488b0848894c2428488b480848894c2430488b40104889442438488b4424104889442478488b4c2428488908488b4c243048894808488b4c243848894810488b7c24104883c718ba0100000089d6e8d0a00400eb00488b055fac1b0031ffffd089442404eb008b442404894424248b4424244881c488000000c38b44240889442424ebea",
+        operands: &[
+            DetcoreValidateOperand {
+                displacement: 36,
+                next: 40,
+                key: "fixed_publication_cannot_unwind",
+                got: true,
+            },
+            DetcoreValidateOperand {
+                displacement: 90,
+                next: 94,
+                key: "fixed_scalar_publication_set_location",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 96,
+                next: 100,
+                key: "fixed_heap_panic_misaligned",
+                got: true,
+            },
+            DetcoreValidateOperand {
+                displacement: 120,
+                next: 124,
+                key: "fixed_metadata_atomic_load_bool",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 133,
+                next: 137,
+                key: "fixed_scalar_publication_set_location",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 139,
+                next: 143,
+                key: "fixed_panic_null_reference",
+                got: true,
+            },
+            DetcoreValidateOperand {
+                displacement: 171,
+                next: 175,
+                key: "fixed_dev_i32_identity",
+                got: true,
+            },
+            DetcoreValidateOperand {
+                displacement: 300,
+                next: 304,
+                key: "fixed_heap_atomic_bool_store",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 309,
+                next: 313,
+                key: "fixed_dev_i32_identity",
+                got: true,
+            },
+        ],
+        transfers: &[
+            (34, 0),
+            (94, 2),
+            (119, 3),
+            (137, 5),
+            (180, 6),
+            (299, 7),
+            (315, 8),
+        ],
+    },
+    // Complete 254B at 0x328f30; SHA256 2db50ebb2f5c6f1d2ee89c68e0d3b16784a4b3ed1119e7feb115acd55587679f.
+    DetcoreValidateTemplate {
+        role: "fixed_tool_require_owned",
+        hex: "4883ec7848893c2448897c2438e8fe53ffff4889c748897c247048897c2460ff15eb4c1b004889c7ff15ea4c1b004889442440488b54244031c0b9010000004883fa00480f44c148a901000000740d488d7c2420ff15c64c1b00eb45488b442440488944246848b9000000100060000048894c245048c7442458000000024889442448488b4424484889442420488b4424504889442428488b4424584889442430488b542420b80100000031c94883fa00480f44c148a9010000007432488b3424488b4424204889442408488b4424284889442410488b4424304889442418488d7c2408e887fdffffa801750ceb05e89c0a0000e8970a00004883c478c3",
+        operands: &[
+            DetcoreValidateOperand {
+                displacement: 14,
+                next: 18,
+                key: "fixed_tool_heap_metadata",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 33,
+                next: 37,
+                key: "fixed_dev_heap_metadata_pointer_as_ref",
+                got: true,
+            },
+            DetcoreValidateOperand {
+                displacement: 42,
+                next: 46,
+                key: "fixed_dev_heap_metadata_option_branch",
+                got: true,
+            },
+            DetcoreValidateOperand {
+                displacement: 86,
+                next: 90,
+                key: "fixed_tool_heap_option_residual",
+                got: true,
+            },
+            DetcoreValidateOperand {
+                displacement: 229,
+                next: 233,
+                key: "fixed_span_contains",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 240,
+                next: 244,
+                key: "fixed_refuse_foreign",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 245,
+                next: 249,
+                key: "fixed_refuse_foreign",
+                got: false,
+            },
+        ],
+        transfers: &[
+            (13, 0),
+            (31, 1),
+            (40, 2),
+            (84, 3),
+            (228, 4),
+            (239, 5),
+            (244, 6),
+        ],
+    },
+    // Complete 294B at 0x329ce0; SHA256 38ec2a0ecf3aed024d483d126b2d74ee8da74187cb4661871beeaa225933e74d.
+    DetcoreValidateTemplate {
+        role: "fixed_tool_alloc",
+        hex: "4881ec9800000048893424488954240848897c244848897424504889542458e83c46ffff4889c74889bc24900000004889bc2480000000ff15233f1b004889c7ff15223f1b004889442460488b54246031c0b9010000004883fa00480f44c148a901000000740d488d7c2430ff15fe3e1b00eb48488b442460488984248800000048b9000000100060000048894c247048c7442478000000024889442468488b4424684889442430488b4424704889442438488b4424784889442440488b542430b80100000031c94883fa00480f44c148a9010000007438488b542408488b3424488b4424304889442418488b4424384889442420488b4424404889442428488d7c2418e867e6ffff4889442410eb0948c744241000000000488b4424104881c498000000c3",
+        operands: &[
+            DetcoreValidateOperand {
+                displacement: 32,
+                next: 36,
+                key: "fixed_tool_heap_metadata",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 57,
+                next: 61,
+                key: "fixed_dev_heap_metadata_pointer_as_ref",
+                got: true,
+            },
+            DetcoreValidateOperand {
+                displacement: 66,
+                next: 70,
+                key: "fixed_dev_heap_metadata_option_branch",
+                got: true,
+            },
+            DetcoreValidateOperand {
+                displacement: 110,
+                next: 114,
+                key: "fixed_tool_heap_option_residual",
+                got: true,
+            },
+            DetcoreValidateOperand {
+                displacement: 261,
+                next: 265,
+                key: "fixed_heap_allocate",
+                got: false,
+            },
+        ],
+        transfers: &[(31, 0), (55, 1), (64, 2), (108, 3), (260, 4)],
+    },
+    // Complete 59B at 0x329e10; SHA256 11e129e845e8e74e11b707765f00d90823ae996c8952d47c6190d3c777037a39.
+    DetcoreValidateTemplate {
+        role: "fixed_tool_dealloc",
+        hex: "4883ec48488974240848897c24284889742430488954243848894c2440488d7c2410e8e9efffff488b742408488d7c2410e84ad8ffff4883c448c3",
+        operands: &[
+            DetcoreValidateOperand {
+                displacement: 35,
+                next: 39,
+                key: "fixed_tool_owned_heap",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 50,
+                next: 54,
+                key: "fixed_heap_deallocate",
+                got: false,
+            },
+        ],
+        transfers: &[(34, 0), (49, 1)],
+    },
+    // Complete 255B at 0x329e50; SHA256 a588c0b860bc4211c46aa1077ec465c8e80c93c0e349297fdcd55a37de7fac42.
+    DetcoreValidateTemplate {
+        role: "fixed_tool_realloc",
+        hex: "4881ec8800000048897424084c89442410488954241848894c242048897c245848897424604c89442468488d7c2430e89cefffff488d7c2418e8c2010000488b7c24104889c6e8b50000004889442448488954245031c0b90100000048837c244800480f44c148a901000000740b48c744242800000000eb79488b742448488b54245048897424704889542478488d7c2430e869e5ffff4889c748893c244889bc2480000000ff15943d1b00a8017539488d7c2418e836010000488b7424104889c7ff1520be1a00488b3424488b7c24084889c2ff15bec51a00488b742408488d7c2430e857d7ffff488b04244889442428488b4424284881c488000000c3",
+        operands: &[
+            DetcoreValidateOperand {
+                displacement: 48,
+                next: 52,
+                key: "fixed_tool_owned_heap",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 58,
+                next: 62,
+                key: "fixed_heap_layout_align",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 71,
+                next: 75,
+                key: "_RNvMNtNtCs_4core5alloc6layoutNtB2_6Layout15from_size_alignCs_15reverie_inguest",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 147,
+                next: 151,
+                key: "fixed_heap_allocate",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 168,
+                next: 172,
+                key: "_RNvMNtNtCs_4core3ptr7mut_ptrOh7is_nullCs_7futures",
+                got: true,
+            },
+            DetcoreValidateOperand {
+                displacement: 182,
+                next: 186,
+                key: "fixed_heap_layout_size",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 196,
+                next: 200,
+                key: "_RNvYjNtNtCs_4core3cmp3Ord3minCs_10serde_core",
+                got: true,
+            },
+            DetcoreValidateOperand {
+                displacement: 214,
+                next: 218,
+                key: "fixed_copy_bytes",
+                got: true,
+            },
+            DetcoreValidateOperand {
+                displacement: 229,
+                next: 233,
+                key: "fixed_heap_deallocate",
+                got: false,
+            },
+        ],
+        transfers: &[
+            (47, 0),
+            (57, 1),
+            (70, 2),
+            (146, 3),
+            (166, 4),
+            (181, 5),
+            (194, 6),
+            (212, 7),
+            (228, 8),
+        ],
+    },
+    // Complete 39B at 0x32ae40; SHA256 7d00065bf53ffae77ac8b31a569f8a0646d7afd87b7fe9e698505805d251d26f.
+    DetcoreValidateTemplate {
+        role: "fixed_native_owner_gettid",
+        hex: "5031c089c1bfba0000004889ce4889cae86b24040048890424eb06ff1587ae1a00488b042459c3",
+        operands: &[
+            DetcoreValidateOperand {
+                displacement: 17,
+                next: 21,
+                key: "fixed_scalar_syscall",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 29,
+                next: 33,
+                key: "fixed_publication_cannot_unwind",
+                got: true,
+            },
+        ],
+        transfers: &[(16, 0), (27, 1)],
+    },
+    // Complete 1411B at 0x32ae90; SHA256 b66f330c639904a917f694203352c418f972a9803265370e2d723c7bfc3650bf.
+    DetcoreValidateTemplate {
+        role: "fixed_constructor_prepare",
+        hex: "4881ec7802000048897c24604889bc24a80000004889e04889842480000000488b84248000000048894424684889bc24d000000048898424d8000000c68424e3000000014889bc24e8000000488b05dd271b00ffd04889442470eb00488b7c2468488b05d8271b00ffd04889442458eb00488b05c8271b00bf01000000ffd04889442450eb00488dbc24c00000004889bc24f80000004889bc24f0000000488b058b271b00ffd04889442448eb00488b4c2448488b542450488b742458488b7c2470e8a1f3ffff89442444898424e400000083f80074158b44244489842488000000c684249000000000eb2d488b8c24c00000008a8424c800000048898c24000100008884240801000048898c248800000088842490000000eb06ff1537ad1a0031c0b90100000080bc249000000000480f44c148a901000000740dc744247c01000000e92e040000488b442460488b94248800000048895424388a8c2490000000884c244348899424b0000000888c24b80000004883e0074883f8007516488b4424604883f8000f94c024ff34ffa8017519eb34488b742460bf08000000488d150ad91900ff15ccac1a00488b7c24604883c758488bb42480000000ba01000000e849180400eb0d488d3de0d81900ff15aaac1a008a442443488b4c243848898c24680100008884247001000048ba0010000000600000488994245001000048898c245801000088842460010000488b84246001000048898424400100000f108424500100000f29842430010000488d3dea431c024889bc24c8010000488b84244001000048898424e00100000f288424300100000f298424d0010000488b8424e001000048898424300200000f288424d00100000f29842420020000488b84243002000048898424900100000f288424200200000f298424800100004889bc24180200004889bc2408020000488b0593221b00ffd04889442430eb00488b44243048898424f0010000488d8424800100004889842470020000488dbc24800100004889bc24100200004889bc2400020000488b0536251b00ffd04889442428eb00488b742428488b7c24304889b424f8010000e89677ffff83f8000f8492000000488b84248001000048898424b0010000488b84248801000048898424b8010000488b84249001000048898424c0010000488b8424b00100004889842498010000488b8424b801000048898424a0010000488b8424c001000048898424a8010000488b8424980100004889842418010000488b8424a00100004889842420010000488b8424a80100004889842428010000eb08c6842428010000fe488b05bc2b1b00488dbc2418010000ffd08954242089442424eb008b7424208b7c2424488b0571241b00ffd0895424188944241ceb008b4424188b4c241c898c2410010000898424140100008b84241001000048a901000000742d8bb4241401000089b4247c010000488d1523d61900488b05542b1b00488dbc2498000000ffd0eb00e90f010000488b4424384883e0074883f8007517488b4424384883f8000f94c034ffa801751ce9dc000000488b742438bf08000000488d15bcd51900ff15f6a91a00488b7c24384883c748be03000000ba01000000e876150400eb00488d3d75411c0231f6ba01000000e801180400eb00488d3d68411c024889bc24400200004889bc24680200004889bc2460020000488b0571201b00ffd04889442410eb00488b7c24104889bc2448020000e8ce74ffff4889c74889bc24500200004889bc2458020000488b0544201b00ffd04889442408eb00488b7c2408488b056f2a1b00ffd048890424eb00488b3424488b05642a1b00488dbc2498000000ba0b000000ffd0eb00eb0d488d3dead41900ff152ca91a00eb008b84249800000048a901000000740ac744247c01000000eb08c744247c000000008b44247c4881c478020000c3",
+        operands: &[
+            DetcoreValidateOperand {
+                displacement: 79,
+                next: 83,
+                key: "prepare_scalar_mut_void_identity",
+                got: true,
+            },
+            DetcoreValidateOperand {
+                displacement: 100,
+                next: 104,
+                key: "prepare_scalar_usize_identity",
+                got: true,
+            },
+            DetcoreValidateOperand {
+                displacement: 116,
+                next: 120,
+                key: "prepare_scalar_usize_identity",
+                got: true,
+            },
+            DetcoreValidateOperand {
+                displacement: 161,
+                next: 165,
+                key: "prepare_scalar_mut_void_identity",
+                got: true,
+            },
+            DetcoreValidateOperand {
+                displacement: 195,
+                next: 199,
+                key: "fixed_native_from_native",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 285,
+                next: 289,
+                key: "fixed_publication_cannot_unwind",
+                got: true,
+            },
+            DetcoreValidateOperand {
+                displacement: 418,
+                next: 422,
+                key: "fixed_naked_constructor_record_location",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 424,
+                next: 428,
+                key: "fixed_heap_panic_misaligned",
+                got: true,
+            },
+            DetcoreValidateOperand {
+                displacement: 451,
+                next: 455,
+                key: "_RNvMs16_NtNtCs_4core4sync6atomicINtB6_6AtomicjE5storeCs_15reverie_inguest",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 460,
+                next: 464,
+                key: "fixed_naked_constructor_record_location",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 466,
+                next: 470,
+                key: "fixed_panic_null_reference",
+                got: true,
+            },
+            DetcoreValidateOperand {
+                displacement: 562,
+                next: 566,
+                key: "fixed_region",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 689,
+                next: 693,
+                key: "prepare_scalar_const_void_identity",
+                got: true,
+            },
+            DetcoreValidateOperand {
+                displacement: 758,
+                next: 762,
+                key: "prepare_scalar_mut_void_identity",
+                got: true,
+            },
+            DetcoreValidateOperand {
+                displacement: 790,
+                next: 794,
+                key: "fixed_region_publication_set_opaque",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 960,
+                next: 964,
+                key: "fixed_publication_result_map_err",
+                got: true,
+            },
+            DetcoreValidateOperand {
+                displacement: 995,
+                next: 999,
+                key: "_RNvXsp_NtCs_4core6resultINtB5_6ResultulENtNtNtB7_3ops9try_trait3Try6branchCs_15reverie_inguest",
+                got: true,
+            },
+            DetcoreValidateOperand {
+                displacement: 1065,
+                next: 1069,
+                key: "fixed_dev_publish_payload_location",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 1072,
+                next: 1076,
+                key: "_RNvXsq_NtCs_4core6resultINtB5_6ResultRNtNtNtCs_15reverie_inguest5guest11tool_region10ToolRegionlEINtNtNtB7_3ops9try_trait12FromResidualIBy_NtNtB7_7convert10InfalliblelEE13from_residualBR_",
+                got: true,
+            },
+            DetcoreValidateOperand {
+                displacement: 1144,
+                next: 1148,
+                key: "fixed_naked_publish_record_location",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 1150,
+                next: 1154,
+                key: "fixed_heap_panic_misaligned",
+                got: true,
+            },
+            DetcoreValidateOperand {
+                displacement: 1174,
+                next: 1178,
+                key: "_RNvMs16_NtNtCs_4core4sync6atomicINtB6_6AtomicjE5storeCs_15reverie_inguest",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 1183,
+                next: 1187,
+                key: "fixed_initializing",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 1195,
+                next: 1199,
+                key: "fixed_heap_atomic_bool_store",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 1204,
+                next: 1208,
+                key: "fixed_region",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 1235,
+                next: 1239,
+                key: "prepare_scalar_const_void_identity",
+                got: true,
+            },
+            DetcoreValidateOperand {
+                displacement: 1262,
+                next: 1266,
+                key: "fixed_region_publication_get_opaque",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 1288,
+                next: 1292,
+                key: "prepare_result_pointer_as_ref",
+                got: true,
+            },
+            DetcoreValidateOperand {
+                displacement: 1309,
+                next: 1313,
+                key: "fixed_publication_option_and_then",
+                got: true,
+            },
+            DetcoreValidateOperand {
+                displacement: 1328,
+                next: 1332,
+                key: "_RINvMNtCs_4core6optionINtB3_6OptionRNtNtNtCs_15reverie_inguest5guest11tool_region10ToolRegionE5ok_orlEBP_",
+                got: true,
+            },
+            DetcoreValidateOperand {
+                displacement: 1354,
+                next: 1358,
+                key: "fixed_naked_publish_record_location",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 1360,
+                next: 1364,
+                key: "fixed_panic_null_reference",
+                got: true,
+            },
+        ],
+        transfers: &[
+            (83, 0),
+            (104, 1),
+            (125, 2),
+            (165, 3),
+            (194, 4),
+            (283, 5),
+            (422, 7),
+            (450, 8),
+            (464, 10),
+            (693, 12),
+            (762, 13),
+            (789, 14),
+            (972, 15),
+            (999, 16),
+            (1084, 18),
+            (1148, 20),
+            (1173, 21),
+            (1194, 23),
+            (1239, 25),
+            (1261, 26),
+            (1292, 27),
+            (1313, 28),
+            (1345, 29),
+            (1358, 31),
+        ],
+    },
+    // Complete 1411B at 0x32b630; SHA256 a3250aa81bf22f529c70ca039859f8f86d474d3fa4be0072bee54d1ff0f29262.
+    DetcoreValidateTemplate {
+        role: "fixed_generic_prepare",
+        hex: "4881ec7802000048897c24604889bc24a80000004889e04889842480000000488b84248000000048894424684889bc24d000000048898424d8000000c68424e3000000024889bc24e8000000488b053d201b00ffd04889442470eb00488b7c2468488b0538201b00ffd04889442458eb00488b0528201b00bf02000000ffd04889442450eb00488dbc24c00000004889bc24f80000004889bc24f0000000488b05eb1f1b00ffd04889442448eb00488b4c2448488b542450488b742458488b7c2470e801ecffff89442444898424e400000083f80074158b44244489842488000000c684249000000000eb2d488b8c24c00000008a8424c800000048898c24000100008884240801000048898c248800000088842490000000eb06ff1597a51a0031c0b90100000080bc249000000000480f44c148a901000000740dc744247c01000000e92e040000488b442460488b94248800000048895424388a8c2490000000884c244348899424b0000000888c24b80000004883e0074883f8007516488b4424604883f8000f94c024ff34ffa8017519eb34488b742460bf08000000488d1582d11900ff152ca51a00488b7c24604883c758488bb42480000000ba01000000e8a9100400eb0d488d3d58d11900ff150aa51a008a442443488b4c243848898c24680100008884247001000048ba0010000000600000488994245001000048898c245801000088842460010000488b84246001000048898424400100000f108424500100000f29842430010000488d3d4a3c1c024889bc24c8010000488b84244001000048898424e00100000f288424300100000f298424d0010000488b8424e001000048898424300200000f288424d00100000f29842420020000488b84243002000048898424900100000f288424200200000f298424800100004889bc24180200004889bc2408020000488b05f31a1b00ffd04889442430eb00488b44243048898424f0010000488d8424800100004889842470020000488dbc24800100004889bc24100200004889bc2400020000488b05961d1b00ffd04889442428eb00488b742428488b7c24304889b424f8010000e8f66fffff83f8000f8492000000488b84248001000048898424b0010000488b84248801000048898424b8010000488b84249001000048898424c0010000488b8424b00100004889842498010000488b8424b801000048898424a0010000488b8424c001000048898424a8010000488b8424980100004889842418010000488b8424a00100004889842420010000488b8424a80100004889842428010000eb08c6842428010000fe488b051c241b00488dbc2418010000ffd08954242089442424eb008b7424208b7c2424488b05d11c1b00ffd0895424188944241ceb008b4424188b4c241c898c2410010000898424140100008b84241001000048a901000000742d8bb4241401000089b4247c010000488d1583ce1900488b05b4231b00488dbc2498000000ffd0eb00e90f010000488b4424384883e0074883f8007517488b4424384883f8000f94c034ffa801751ce9dc000000488b742438bf08000000488d151cce1900ff1556a21a00488b7c24384883c748be03000000ba01000000e8d60d0400eb00488d3dd5391c0231f6ba01000000e861100400eb00488d3dc8391c024889bc24400200004889bc24680200004889bc2460020000488b05d1181b00ffd04889442410eb00488b7c24104889bc2448020000e82e6dffff4889c74889bc24500200004889bc2458020000488b05a4181b00ffd04889442408eb00488b7c2408488b05cf221b00ffd048890424eb00488b3424488b05c4221b00488dbc2498000000ba0b000000ffd0eb00eb0d488d3d4acd1900ff158ca11a00eb008b84249800000048a901000000740ac744247c01000000eb08c744247c000000008b44247c4881c478020000c3",
+        operands: &[
+            DetcoreValidateOperand {
+                displacement: 79,
+                next: 83,
+                key: "prepare_scalar_mut_void_identity",
+                got: true,
+            },
+            DetcoreValidateOperand {
+                displacement: 100,
+                next: 104,
+                key: "prepare_scalar_usize_identity",
+                got: true,
+            },
+            DetcoreValidateOperand {
+                displacement: 116,
+                next: 120,
+                key: "prepare_scalar_usize_identity",
+                got: true,
+            },
+            DetcoreValidateOperand {
+                displacement: 161,
+                next: 165,
+                key: "prepare_scalar_mut_void_identity",
+                got: true,
+            },
+            DetcoreValidateOperand {
+                displacement: 195,
+                next: 199,
+                key: "fixed_native_from_native",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 285,
+                next: 289,
+                key: "fixed_publication_cannot_unwind",
+                got: true,
+            },
+            DetcoreValidateOperand {
+                displacement: 418,
+                next: 422,
+                key: "fixed_naked_generic_record_location",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 424,
+                next: 428,
+                key: "fixed_heap_panic_misaligned",
+                got: true,
+            },
+            DetcoreValidateOperand {
+                displacement: 451,
+                next: 455,
+                key: "_RNvMs16_NtNtCs_4core4sync6atomicINtB6_6AtomicjE5storeCs_15reverie_inguest",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 460,
+                next: 464,
+                key: "fixed_naked_generic_record_location",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 466,
+                next: 470,
+                key: "fixed_panic_null_reference",
+                got: true,
+            },
+            DetcoreValidateOperand {
+                displacement: 562,
+                next: 566,
+                key: "fixed_region",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 689,
+                next: 693,
+                key: "prepare_scalar_const_void_identity",
+                got: true,
+            },
+            DetcoreValidateOperand {
+                displacement: 758,
+                next: 762,
+                key: "prepare_scalar_mut_void_identity",
+                got: true,
+            },
+            DetcoreValidateOperand {
+                displacement: 790,
+                next: 794,
+                key: "fixed_region_publication_set_opaque",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 960,
+                next: 964,
+                key: "fixed_publication_result_map_err",
+                got: true,
+            },
+            DetcoreValidateOperand {
+                displacement: 995,
+                next: 999,
+                key: "_RNvXsp_NtCs_4core6resultINtB5_6ResultulENtNtNtB7_3ops9try_trait3Try6branchCs_15reverie_inguest",
+                got: true,
+            },
+            DetcoreValidateOperand {
+                displacement: 1065,
+                next: 1069,
+                key: "fixed_dev_publish_payload_location",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 1072,
+                next: 1076,
+                key: "_RNvXsq_NtCs_4core6resultINtB5_6ResultRNtNtNtCs_15reverie_inguest5guest11tool_region10ToolRegionlEINtNtNtB7_3ops9try_trait12FromResidualIBy_NtNtB7_7convert10InfalliblelEE13from_residualBR_",
+                got: true,
+            },
+            DetcoreValidateOperand {
+                displacement: 1144,
+                next: 1148,
+                key: "fixed_naked_publish_record_location",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 1150,
+                next: 1154,
+                key: "fixed_heap_panic_misaligned",
+                got: true,
+            },
+            DetcoreValidateOperand {
+                displacement: 1174,
+                next: 1178,
+                key: "_RNvMs16_NtNtCs_4core4sync6atomicINtB6_6AtomicjE5storeCs_15reverie_inguest",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 1183,
+                next: 1187,
+                key: "fixed_initializing",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 1195,
+                next: 1199,
+                key: "fixed_heap_atomic_bool_store",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 1204,
+                next: 1208,
+                key: "fixed_region",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 1235,
+                next: 1239,
+                key: "prepare_scalar_const_void_identity",
+                got: true,
+            },
+            DetcoreValidateOperand {
+                displacement: 1262,
+                next: 1266,
+                key: "fixed_region_publication_get_opaque",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 1288,
+                next: 1292,
+                key: "prepare_result_pointer_as_ref",
+                got: true,
+            },
+            DetcoreValidateOperand {
+                displacement: 1309,
+                next: 1313,
+                key: "fixed_publication_option_and_then",
+                got: true,
+            },
+            DetcoreValidateOperand {
+                displacement: 1328,
+                next: 1332,
+                key: "_RINvMNtCs_4core6optionINtB3_6OptionRNtNtNtCs_15reverie_inguest5guest11tool_region10ToolRegionE5ok_orlEBP_",
+                got: true,
+            },
+            DetcoreValidateOperand {
+                displacement: 1354,
+                next: 1358,
+                key: "fixed_naked_publish_record_location",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 1360,
+                next: 1364,
+                key: "fixed_panic_null_reference",
+                got: true,
+            },
+        ],
+        transfers: &[
+            (83, 0),
+            (104, 1),
+            (125, 2),
+            (165, 3),
+            (194, 4),
+            (283, 5),
+            (422, 7),
+            (450, 8),
+            (464, 10),
+            (693, 12),
+            (762, 13),
+            (789, 14),
+            (972, 15),
+            (999, 16),
+            (1084, 18),
+            (1148, 20),
+            (1173, 21),
+            (1194, 23),
+            (1239, 25),
+            (1261, 26),
+            (1292, 27),
+            (1313, 28),
+            (1345, 29),
+            (1358, 31),
+        ],
+    },
+    // Complete ordinary DEV51B at 0x36d2c0; SHA256
+    // 97d2f2b95de7118020bad54fd64ed8664e2a74bb9b73398f926f63897f6ad8ea.
+    // The unchanged fixed_scalar_helper_recipe proves this same scalar ABI:
+    // SUB40/ADD40, original number/three arguments, zero remaining arguments,
+    // one local trusted-gate CALL40 and preserved RAX/callee-saved registers.
+    DetcoreValidateTemplate {
+        role: "fixed_scalar_syscall",
+        hex: "4883ec2848897c24084889742410488954241848894c242031c04189c14d89c848c7042400000000ff15a23017004883c428c3",
+        operands: &[DetcoreValidateOperand {
+            displacement: 42,
+            next: 46,
+            key: "reverie_inguest_trusted_syscall",
+            got: true,
+        }],
+        transfers: &[(40, 0)],
+    },
 ];
 // Distinct from every historical TLS-bearing241B recipe. Measured in the true
 // Git840 native OFF DSO c4157195: full101B, b62a329a... before address binding.
@@ -29524,6 +31660,9 @@ fn fixed_detcore_compiled_filenames(
 const FIXED_GUARD_CONTRACT: &str =
     "valid_globalalloc_layout_live_same_owner_pointer_intact_locked_metadata_no_foreign_unwind";
 struct FixedMachineContext {
+    // Derived only from all27 current bodies and freshly verified Standalone
+    // source authority. Receipt fields and isolated names cannot supply it.
+    current_dev_source_profile: bool,
     // Only the actual ELF factory constructs this private witness.
     native_syscalls: Option<FixedNativeSyscallContext>,
     compiled_filenames: BTreeMap<String, Vec<u8>>,
@@ -29657,6 +31796,56 @@ fn fixed_named_selection_object(
     }
     Ok(symbol)
 }
+// This is a preselection of a finite physical family, not qualification:
+// all actual targets/data/transfers and the complete final cohort still close
+// below. Missing/mixed old bodies cannot activate current source Locations.
+fn fixed_standalone_dev_scalar_shape(
+    image_kind: FixedImageKind,
+    roles: &BTreeMap<String, sym::Sym>,
+    code: &BTreeMap<u64, Vec<u8>>,
+) -> bool {
+    if image_kind != FixedImageKind::Standalone {
+        return false;
+    }
+    let matches = |role: &str, hex: &str, fields: Vec<usize>| {
+        roles.get(role).is_some_and(|symbol| {
+            code.get(&symbol.st_value).is_some_and(|actual| {
+                fixed_template_shape(actual, &fixed_hex(hex), fields.into_iter())
+            })
+        })
+    };
+    FIXED_DEV_SCALAR_COHORT
+        .iter()
+        .copied()
+        .chain(std::iter::once((
+            "fixed_scalar_syscall",
+            FIXED_DEV_SCALAR_SYSCALL_TEMPLATE,
+        )))
+        .all(|(role, index)| {
+            let recipe = &DETCORE_VALIDATE_TEMPLATES[index];
+            recipe.role == role
+                && matches(
+                    role,
+                    recipe.hex,
+                    recipe.operands.iter().map(|op| op.displacement).collect(),
+                )
+        })
+        && FIXED_DEV_SCALAR_OPERATIONS.iter().all(|recipe| {
+            matches(
+                recipe.role,
+                recipe.hex,
+                recipe.operands.iter().map(|op| op.displacement).collect(),
+            )
+        })
+        && FIXED_DEV_SCALAR_HELPERS.iter().all(|recipe| {
+            matches(
+                recipe.role,
+                recipe.hex,
+                recipe.operands.iter().map(|op| op.displacement).collect(),
+            )
+        })
+}
+
 fn fixed_machine_context(
     (elf, bytes): (&Elf<'_>, &[u8]),
     code: &BTreeMap<u64, Vec<u8>>,
@@ -29688,6 +31877,16 @@ fn fixed_machine_context(
             "fixed_publication_tls_descriptor".into(),
             tls.tls_module_slot,
         );
+    }
+    let current_dev_source_profile = fixed_standalone_dev_scalar_shape(image_kind, roles, code);
+    if current_dev_source_profile {
+        let source =
+            sources.ok_or("complete standalone dev family lacks fresh source authority")?;
+        require(
+            source.record.layout == CompiledSourceLayout::ReverieWorkspace
+                && source.record.image_kind == FixedImageKind::Standalone,
+            "complete standalone dev family has a different source/image layout",
+        )?;
     }
     let mut readonly = BTreeMap::new();
     let mut readonly_evidence = BTreeMap::new();
@@ -29847,14 +32046,14 @@ fn fixed_machine_context(
                         fixed_rip_target(symbol.st_value, actual, op.displacement, op.next)?,
                         op.target_offset,
                     )?;
-                    fixed_bind_operand_data_in_source_context(
+                    fixed_bind_operand_data_for_profile(
                         (elf, bytes),
                         op.target,
                         address,
                         &mut targets,
                         &mut readonly,
                         &mut readonly_evidence,
-                        sources,
+                        (sources, current_dev_source_profile),
                     )?;
                 }
             }
@@ -29874,14 +32073,14 @@ fn fixed_machine_context(
                         fixed_rip_target(symbol.st_value, actual, op.displacement, op.next)?,
                         op.addend,
                     )?;
-                    fixed_bind_operand_data_in_source_context(
+                    fixed_bind_operand_data_for_profile(
                         (elf, bytes),
                         op.key,
                         address,
                         &mut targets,
                         &mut readonly,
                         &mut readonly_evidence,
-                        sources,
+                        (sources, current_dev_source_profile),
                     )?;
                 }
             }
@@ -29898,9 +32097,47 @@ fn fixed_machine_context(
                         fixed_rip_target(symbol.st_value, actual, op.displacement, op.next)?,
                         op.addend,
                     )?;
-                    fixed_bind_operand_data_in_source_context(
+                    fixed_bind_operand_data_for_profile(
                         (elf, bytes),
                         op.key,
+                        address,
+                        &mut targets,
+                        &mut readonly,
+                        &mut readonly_evidence,
+                        (sources, current_dev_source_profile),
+                    )?;
+                }
+            }
+        }
+        let shim = &shims["__rust_alloc"];
+        let actual = &code[&shim.st_value];
+        if actual.len() == 47 {
+            let address = fixed_rip_target(shim.st_value, actual, 17, 21)?;
+            fixed_bind_operand_data_for_profile(
+                (elf, bytes),
+                "fixed_compiler_layout_location",
+                address,
+                &mut targets,
+                &mut readonly,
+                &mut readonly_evidence,
+                (sources, current_dev_source_profile),
+            )?;
+        }
+    }
+    if current_dev_source_profile {
+        // Bind the actual new bitmap operands using the same unchanged physical
+        // full24B/filename/sole-writer/RELRO source-aware binder as older records.
+        for recipe in FIXED_DEV_SCALAR_OPERATIONS {
+            let symbol = &roles[recipe.role];
+            let actual = &code[&symbol.st_value];
+            for op in recipe.operands {
+                if let Some(spec) = fixed_dev_scalar_operation_data_spec(op.key) {
+                    require(!op.got, "current dev readonly operand is not a GOT call")?;
+                    let address =
+                        fixed_rip_target(symbol.st_value, actual, op.displacement, op.next)?;
+                    fixed_bind_readonly_in_source_context(
+                        (elf, bytes),
+                        spec,
                         address,
                         &mut targets,
                         &mut readonly,
@@ -29910,22 +32147,11 @@ fn fixed_machine_context(
                 }
             }
         }
-        let shim = &shims["__rust_alloc"];
-        let actual = &code[&shim.st_value];
-        if actual.len() == 47 {
-            let address = fixed_rip_target(shim.st_value, actual, 17, 21)?;
-            fixed_bind_operand_data_in_source_context(
-                (elf, bytes),
-                "fixed_compiler_layout_location",
-                address,
-                &mut targets,
-                &mut readonly,
-                &mut readonly_evidence,
-                sources,
-            )?;
-        }
+        fixed_dev_scalar_readonly_profile(&targets)?;
+        fixed_dev_scalar_operation_readonly(&targets, &readonly)?;
     }
     Ok(FixedMachineContext {
+        current_dev_source_profile,
         native_syscalls,
         compiled_filenames,
         targets,
@@ -30117,6 +32343,8 @@ pub struct FixedGuardedTerminal {
 // It is private and derived again during physical ELF requalification.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum AuthenticatedDetcoreOperationKind {
+    DevScalarOperation(usize),
+    DevScalarHelper(usize),
     ValidateTemplate(usize),
     NoInstallationScopeAlloc101,
     NativeFixedSyscall3,
@@ -30132,6 +32360,416 @@ struct AuthenticatedDetcoreOperation {
     // publication/gate address even when the two public maps agree.
     scalar_storage: Option<(u64, u64)>,
 }
+// Exact helper bodies for the source-owned standalone dev scalar composition.
+// Nullable-pointer transport does not prove reference validity: the caller's
+// audited live/aligned publication or metadata lifetime remains a premise.
+// SysV red-zone writes are bounded by24B; only prepare callers additionally
+// inherit the existing owned-stack proof. No arbitrary Rust helper is admitted.
+const FIXED_DEV_SCALAR_HELPERS: &[DetcoreValidateTemplate] = &[
+    // Complete 21B at 0x320a80; SHA256 cea44930d94456e8a453cb12fde2251c92ee0a3f67afbb2c6ef925aaa6a1bacf.
+    DetcoreValidateTemplate {
+        role: "fixed_dev_backing_option_identity",
+        hex: "48897c24f848897c24f0488d4424f0488b4424f0c3",
+        operands: &[],
+        transfers: &[],
+    },
+    // Complete 21B at 0x320aa0; SHA256 cea44930d94456e8a453cb12fde2251c92ee0a3f67afbb2c6ef925aaa6a1bacf.
+    DetcoreValidateTemplate {
+        role: "prepare_scalar_mut_void_identity",
+        hex: "48897c24f848897c24f0488d4424f0488b4424f0c3",
+        operands: &[],
+        transfers: &[],
+    },
+    // Complete 21B at 0x320ac0; SHA256 cea44930d94456e8a453cb12fde2251c92ee0a3f67afbb2c6ef925aaa6a1bacf.
+    DetcoreValidateTemplate {
+        role: "prepare_scalar_const_void_identity",
+        hex: "48897c24f848897c24f0488d4424f0488b4424f0c3",
+        operands: &[],
+        transfers: &[],
+    },
+    // Complete 21B at 0x320b00; SHA256 cea44930d94456e8a453cb12fde2251c92ee0a3f67afbb2c6ef925aaa6a1bacf.
+    DetcoreValidateTemplate {
+        role: "prepare_scalar_usize_identity",
+        hex: "48897c24f848897c24f0488d4424f0488b4424f0c3",
+        operands: &[],
+        transfers: &[],
+    },
+    // Complete 18B at 0x320b20; SHA256 a3dbca2416ab3ebe1a1f3d4371867c04642a393dc3a3621e1c98aea03d51bbaf.
+    DetcoreValidateTemplate {
+        role: "fixed_dev_i32_identity",
+        hex: "897c24fc897c24f8488d4424f88b4424f8c3",
+        operands: &[],
+        transfers: &[],
+    },
+    // Complete 78B at 0x354670; SHA256 0993e40e8072ad72036ee54e03a848fd9e3679bf6945293efd9d9bbbe4b5b010.
+    DetcoreValidateTemplate {
+        role: "fixed_dev_backing_option_map",
+        hex: "4883ec2848897c2408488b542408b80100000031c94883fa00480f44c148a9010000007416488b7c240848897c2420e8dc3500004889442410eb0948c744241000000000488b4424104883c428c3",
+        operands: &[DetcoreValidateOperand {
+            displacement: 48,
+            next: 52,
+            key: "fixed_dev_backing_map_closure",
+            got: false,
+        }],
+        transfers: &[(47, 0)],
+    },
+    // Complete 65B at 0x356760; SHA256 1842c2f60c8fea10cf463a561f3e1d70c15a6ad18504f1dc9bc7cac489a295cf.
+    DetcoreValidateTemplate {
+        role: "fixed_dev_heap_metadata_option_branch",
+        hex: "48897c24e8488b5424e8b80100000031c94883fa00480f44c148a9010000007411488b4424e848894424f848894424f0eb0948c74424f000000000488b4424f0c3",
+        operands: &[],
+        transfers: &[],
+    },
+    // Complete 13B at 0x357c80; SHA256 7294d9ad1b18cbf0b956f5258c661f821bdfa156644efba46af3fd6b013a2a6a.
+    DetcoreValidateTemplate {
+        role: "fixed_dev_backing_map_closure",
+        hex: "48897c24f8488d05ecadd7ffc3",
+        operands: &[DetcoreValidateOperand {
+            displacement: 8,
+            next: 12,
+            key: "fixed_backing_object",
+            got: false,
+        }],
+        transfers: &[],
+    },
+    // Complete 43B at 0x375810; SHA256 7db6c5ae6c204f1344ec256c4f3c5586a3f3eb96756af076526f0eb9139c7c8e.
+    DetcoreValidateTemplate {
+        role: "prepare_result_pointer_as_ref",
+        hex: "48897c24e848897c24f84883ff00740c488b4424e848894424f0eb0948c74424f000000000488b4424f0c3",
+        operands: &[],
+        transfers: &[],
+    },
+    // Complete 43B at 0x37a3f0; SHA256 7db6c5ae6c204f1344ec256c4f3c5586a3f3eb96756af076526f0eb9139c7c8e.
+    DetcoreValidateTemplate {
+        role: "fixed_dev_heap_metadata_pointer_as_ref",
+        hex: "48897c24e848897c24f84883ff00740c488b4424e848894424f0eb0948c74424f000000000488b4424f0c3",
+        operands: &[],
+        transfers: &[],
+    },
+];
+
+// Complete current DEV operations reached outside the original scalar parents.
+// This private table is selected only by the complete27-body Standalone/source
+// context. Historical127B wrappers and175/495B bitmaps retain their own factories.
+const FIXED_DEV_SCALAR_OPERATIONS: &[DetcoreValidateTemplate] = &[
+    // Actual0x328e20, 267B SHA256 2d8f8aeef0ea9e9944e26f83ef704fa2417fd6fc95ae0bae3836ec646dd63b83.
+    DetcoreValidateTemplate {
+        role: "fixed_tool_owned_heap",
+        hex: "4883ec78488974240848897c241048897c24184889742438e80355ffff4889c748897c247048897c2460ff15f04d1b004889c7ff15ef4d1b004889442440488b54244031c0b9010000004883fa00480f44c148a901000000740d488d7c2420ff15cb4d1b00eb45488b442440488944246848b9000000100060000048894c245048c7442458000000024889442448488b4424484889442420488b4424504889442428488b4424584889442430488b542420b80100000031c94883fa00480f44c148a901000000742f488b742408488b7c2410488b442420488907488b44242848894708488b44243048894710e88ffeffffa801750ceb05e8a40b0000e89f0b0000488b4424184883c478c3",
+        operands: &[
+            DetcoreValidateOperand {
+                displacement: 25,
+                next: 29,
+                key: "fixed_tool_heap_metadata",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 44,
+                next: 48,
+                key: "fixed_dev_heap_metadata_pointer_as_ref",
+                got: true,
+            },
+            DetcoreValidateOperand {
+                displacement: 53,
+                next: 57,
+                key: "fixed_dev_heap_metadata_option_branch",
+                got: true,
+            },
+            DetcoreValidateOperand {
+                displacement: 97,
+                next: 101,
+                key: "fixed_tool_heap_option_residual",
+                got: true,
+            },
+            DetcoreValidateOperand {
+                displacement: 237,
+                next: 241,
+                key: "fixed_span_contains",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 248,
+                next: 252,
+                key: "fixed_refuse_foreign",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 253,
+                next: 257,
+                key: "fixed_refuse_foreign",
+                got: false,
+            },
+        ],
+        transfers: &[
+            (24, 0),
+            (42, 1),
+            (51, 2),
+            (95, 3),
+            (236, 4),
+            (247, 5),
+            (252, 6),
+        ],
+    },
+    // Actual0x31ddb0, 520B SHA256 9bddd7e0cb581f12ea514f7ace3096419cbae3eab91c1e559306a09e2414ff42.
+    DetcoreValidateTemplate {
+        role: "fixed_setup_bitmap_range",
+        hex: "4881ecf80000004889542438488974244048897c244888c88844245648897c24604889742468488954247024018844247f4883e7074883ff007516488b4424484883f8000f94c024ff34ffa8017519eb2f488b742448bf08000000488d151e9c1a00ff15f07e1b00488b4424484883c008488944243048898424f0000000eb0d488d3df99b1a00ff15d37e1b00488b44243048898424a0000000488b442440488b4c243048898c24800000004889442458488b44243848394424587207c644245701eb2c488b442430488b4c245848c1e90648898424a800000048898c24b000000048c1e1034801c84889442428eb0c8a4424574881c4f8000000c3488b4424284889842488000000488b4424584883e03f89c748c78424d00000000100000089bc24d800000083e73f897c241c89bc24dc000000488d352c9b1a00e82fd205008b44241c89c089c1b80100000048d3e04889442420488b442428488b4c242048898c249000000048898424b8000000488b0048894424108a442456488b4c241048898c2498000000a8017515488b4c2420488b4424104821c84883f800754deb27488b442428488b542420488b4c24104809d148898424c000000048898c24c8000000488908eb2e488b44245848898424e000000048c78424e8000000010000004883c0014889442408eb0cc644245700e9f9feffffebd0488b4424084889442458e9a9feffff",
+        operands: &[
+            DetcoreValidateOperand {
+                displacement: 94,
+                next: 98,
+                key: "fixed_dev_scalar_bitmap_reference_143_27",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 100,
+                next: 104,
+                key: "fixed_panic_misaligned_reference",
+                got: true,
+            },
+            DetcoreValidateOperand {
+                displacement: 131,
+                next: 135,
+                key: "fixed_dev_scalar_bitmap_reference_143_27",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 137,
+                next: 141,
+                key: "fixed_panic_null_reference",
+                got: true,
+            },
+            DetcoreValidateOperand {
+                displacement: 312,
+                next: 316,
+                key: "fixed_shift_location",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 317,
+                next: 321,
+                key: "fixed_setup_shift_guard",
+                got: false,
+            },
+        ],
+        transfers: &[(98, 1), (135, 3), (316, 5)],
+    },
+];
+// A separate complete current source record; old128:27 remains immutable.
+const FIXED_DEV_SCALAR_BITMAP_REFERENCE: FixedReadonlySpec = FixedReadonlySpec {
+    key: "fixed_dev_scalar_bitmap_reference_143_27",
+    kind: "location",
+    hex: "00000000000000002e000000000000008f0000001b000000",
+    file_hex: "726576657269652d696e67756573742f7372632f67756573742f746f6f6c5f726567696f6e5f6172656e612e7273",
+    owner: "",
+    switch: &[],
+};
+const FIXED_DEV_SCALAR_OPERATION_DATA: &[&str] = &[
+    "fixed_dev_scalar_bitmap_reference_143_27",
+    "fixed_shift_location",
+    "fixed_shift_panic_text",
+];
+fn fixed_dev_operation_symbol_matches(role: &str, name: &str) -> bool {
+    let Some(canonical) = canonical_rust_symbol(name) else {
+        return false;
+    };
+    FIXED_EMITTED_ROLE_SYMBOLS
+        .iter()
+        .chain(FIXED_OPERATION_ROLE_SYMBOLS)
+        .chain(FIXED_SUPPORT_ROLE_SYMBOLS)
+        .chain(PUBLICATION_ROLE_SYMBOLS)
+        .chain(DETCORE_VALIDATE_ROLE_SYMBOLS)
+        .chain(FIXED_DEV_SCALAR_HELPER_SYMBOLS)
+        .any(|&(candidate, observed)| candidate == role && observed == canonical)
+}
+
+fn fixed_dev_scalar_operation_data_spec(key: &str) -> Option<&'static FixedReadonlySpec> {
+    if key == FIXED_DEV_SCALAR_BITMAP_REFERENCE.key {
+        Some(&FIXED_DEV_SCALAR_BITMAP_REFERENCE)
+    } else {
+        FIXED_DEV_SCALAR_OPERATION_DATA.contains(&key).then(|| {
+            FIXED_READONLY_SPECS
+                .iter()
+                .find(|spec| spec.key == key)
+                .expect("finite current operation data")
+        })
+    }
+}
+fn fixed_dev_scalar_operation_readonly(
+    targets: &BTreeMap<String, u64>,
+    readonly: &BTreeMap<u64, Vec<u8>>,
+) -> Result<()> {
+    for key in FIXED_DEV_SCALAR_OPERATION_DATA {
+        let spec = fixed_dev_scalar_operation_data_spec(key).unwrap();
+        let address = *targets
+            .get(*key)
+            .ok_or("current dev operation lacks complete readonly identity")?;
+        require(
+            address != 0
+                && readonly.get(&address).map(Vec::as_slice)
+                    == Some(fixed_hex(spec.hex).as_slice()),
+            "current dev operation complete readonly payload differs",
+        )?;
+        if spec.kind == "location" {
+            let file = *targets
+                .get(&format!("{key}_file"))
+                .ok_or("current dev operation lacks whole filename identity")?;
+            require(
+                file != 0
+                    && readonly.get(&file).map(Vec::as_slice)
+                        == Some(fixed_hex(spec.file_hex).as_slice()),
+                "current dev operation whole readonly filename differs",
+            )?;
+        }
+    }
+    Ok(())
+}
+
+fn fixed_dev_scalar_helper_qualified_operation(
+    role: &str,
+    address: u64,
+    (bytes, instructions): (&[u8], &[EncodedConstructorInstruction]),
+    targets: &BTreeMap<String, u64>,
+    got: &BTreeMap<u64, u64>,
+) -> Result<AuthenticatedDetcoreOperation> {
+    let candidates: Vec<_> = FIXED_DEV_SCALAR_HELPERS
+        .iter()
+        .enumerate()
+        .filter(|(_, recipe)| recipe.role == role)
+        .collect();
+    require(candidates.len() == 1, "unknown dev scalar helper type")?;
+    let (index, recipe) = candidates[0];
+    let mut fields = Vec::new();
+    let mut resolved = Vec::new();
+    for op in recipe.operands {
+        let target = *targets
+            .get(op.key)
+            .ok_or("unbound dev scalar helper operand")?;
+        require(target != 0, "null dev scalar helper operand")?;
+        let operand = fixed_rip_target(address, bytes, op.displacement, op.next)?;
+        let slot = if op.got {
+            require(
+                got.get(&operand) == Some(&target),
+                "dev scalar helper GOT target differs",
+            )?;
+            Some(operand)
+        } else {
+            None
+        };
+        fields.push((op.displacement, op.next, slot.unwrap_or(target)));
+        resolved.push((target, slot));
+    }
+    fixed_whole_recipe(address, bytes, recipe.hex, &fields)?;
+    let edges = recipe
+        .transfers
+        .iter()
+        .map(|&(pc, operand)| {
+            let (target, slot) = *resolved
+                .get(operand)
+                .ok_or("dev scalar helper call lacks operand")?;
+            Ok(ConstructorTransfer {
+                instruction: address
+                    .checked_add(pc as u64)
+                    .ok_or("dev scalar helper PC overflow")?,
+                target,
+                local_got_slot: slot,
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
+    fixed_census_transfers(instructions, address, bytes, &edges, got, false)?;
+    Ok(AuthenticatedDetcoreOperation {
+        role: role.into(),
+        address,
+        kind: AuthenticatedDetcoreOperationKind::DevScalarHelper(index),
+        edges,
+        scalar_storage: Some((
+            *targets
+                .get("fixed_region")
+                .ok_or("dev helper lacks REGION context")?,
+            *targets
+                .get("fixed_initializing")
+                .ok_or("dev helper lacks gate context")?,
+        )),
+    })
+}
+
+fn fixed_dev_scalar_operation_qualified(
+    role: &str,
+    address: u64,
+    (bytes, instructions): (&[u8], &[EncodedConstructorInstruction]),
+    bindings: DetcoreRecipeBindings<'_>,
+    current_dev_source_profile: bool,
+) -> Result<AuthenticatedDetcoreOperation> {
+    require(
+        current_dev_source_profile,
+        "current dev operation lacks complete source/shape context",
+    )?;
+    fixed_dev_scalar_operation_readonly(bindings.targets, bindings.readonly)?;
+    let result: Result<AuthenticatedDetcoreOperation> = (|| {
+        let (index, recipe) = FIXED_DEV_SCALAR_OPERATIONS
+            .iter()
+            .enumerate()
+            .find(|(_, recipe)| recipe.role == role)
+            .ok_or("unknown current dev operation role")?;
+        let mut fields = Vec::new();
+        let mut resolved = Vec::new();
+        for op in recipe.operands {
+            let target = *bindings
+                .targets
+                .get(op.key)
+                .ok_or("unbound current dev operation operand")?;
+            require(target != 0, "null current dev operation operand")?;
+            let operand = fixed_rip_target(address, bytes, op.displacement, op.next)?;
+            let slot = if op.got {
+                require(
+                    bindings.got.get(&operand) == Some(&target),
+                    "current dev operation GOT target differs",
+                )?;
+                Some(operand)
+            } else {
+                None
+            };
+            fields.push((op.displacement, op.next, slot.unwrap_or(target)));
+            resolved.push((target, slot));
+        }
+        fixed_whole_recipe(address, bytes, recipe.hex, &fields)?;
+        let edges = recipe
+            .transfers
+            .iter()
+            .map(|&(pc, operand)| {
+                let (target, slot) = *resolved
+                    .get(operand)
+                    .ok_or("current dev operation call lacks operand")?;
+                Ok(ConstructorTransfer {
+                    instruction: address
+                        .checked_add(pc as u64)
+                        .ok_or("current dev operation PC overflow")?,
+                    target,
+                    local_got_slot: slot,
+                })
+            })
+            .collect::<Result<Vec<_>>>()?;
+        fixed_census_transfers(instructions, address, bytes, &edges, bindings.got, false)?;
+        Ok(AuthenticatedDetcoreOperation {
+            role: role.into(),
+            address,
+            kind: AuthenticatedDetcoreOperationKind::DevScalarOperation(index),
+            edges,
+            scalar_storage: Some((
+                *bindings
+                    .targets
+                    .get("fixed_region")
+                    .ok_or("current dev operation lacks REGION context")?,
+                *bindings
+                    .targets
+                    .get("fixed_initializing")
+                    .ok_or("current dev operation lacks gate context")?,
+            )),
+        })
+    })();
+    result.map_err(|error| format!("current dev operation machine {role}: {error}"))
+}
+
 fn fixed_no_scope_qualified_operation(
     role: &str,
     address: u64,
@@ -30155,7 +32793,8 @@ fn fixed_no_scope_qualified_operation(
     };
     let scalar_storage = match kind {
         AuthenticatedDetcoreOperationKind::ValidateTemplate(index)
-            if index >= FIXED_SCALAR_TEMPLATE_START =>
+            if index >= FIXED_SCALAR_TEMPLATE_START
+                && index != FIXED_DEV_SCALAR_SYSCALL_TEMPLATE =>
         {
             Some((
                 *targets
@@ -30190,7 +32829,9 @@ fn fixed_detcore_qualified_operation(
     let targets = bindings.targets;
     let recipe =
         fixed_detcore_validate_recipe_identity(role, address, bytes, bindings, tls_cell_offset)?;
-    let scalar_storage = if recipe.template_index >= FIXED_SCALAR_TEMPLATE_START {
+    let scalar_storage = if recipe.template_index >= FIXED_SCALAR_TEMPLATE_START
+        && recipe.template_index != FIXED_DEV_SCALAR_SYSCALL_TEMPLATE
+    {
         Some((
             *targets
                 .get("fixed_region")
@@ -30401,6 +33042,882 @@ const FIXED_SCALAR_HOST_NATIVE_INCOMING: &[FixedScalarHelperIncoming] = &[
 ];
 // Exact source-closed scalar-status compositions. A row is indivisible;
 // source/compiler names and isolated helper matches never choose a family.
+// This complete dev tuple is separate from every historical optimized/native
+// composition. The surrounding producer/receipt binds exact dev Cargo profile;
+// compiler/profile names never replace these full machine/source/data proofs.
+const FIXED_DEV_SCALAR_COHORT: &[(&str, usize)] = &[
+    ("fixed_arena_mprotect", 94),
+    ("fixed_arena_backing", 95),
+    ("fixed_arena_setup", 82),
+    ("fixed_tool_heap_metadata", 96),
+    ("fixed_region_publication_get_opaque", 97),
+    ("fixed_region_publication_set_opaque", 98),
+    ("fixed_tool_require_owned", 99),
+    ("fixed_tool_alloc", 100),
+    ("fixed_tool_dealloc", 101),
+    ("fixed_tool_realloc", 102),
+    ("fixed_native_owner_gettid", 103),
+    ("fixed_constructor_prepare", 104),
+    ("fixed_generic_prepare", 105),
+    ("fixed_native_from_native", 78),
+];
+const FIXED_DEV_SCALAR_INCOMING: &[FixedScalarHelperIncoming] = &[
+    (
+        "fixed_arena_mprotect",
+        &[
+            ("fixed_arena_setup", 95, false),
+            ("fixed_arena_setup", 119, false),
+        ],
+    ),
+    (
+        "fixed_arena_setup",
+        &[("fixed_native_from_native", 257, false)],
+    ),
+    (
+        "fixed_tool_heap_metadata",
+        &[
+            ("fixed_tool_require_owned", 13, false),
+            ("fixed_tool_alloc", 31, false),
+            ("fixed_tool_owned_heap", 24, false),
+        ],
+    ),
+    (
+        "fixed_region_publication_get_opaque",
+        &[
+            ("fixed_arena_backing", 82, false),
+            ("fixed_tool_heap_metadata", 104, false),
+            ("fixed_constructor_prepare", 1261, false),
+            ("fixed_generic_prepare", 1261, false),
+            ("fixed_native_from_native", 176, false),
+        ],
+    ),
+    (
+        "fixed_region_publication_set_opaque",
+        &[
+            ("fixed_constructor_prepare", 789, false),
+            ("fixed_generic_prepare", 789, false),
+        ],
+    ),
+    (
+        "fixed_native_owner_gettid",
+        &[("fixed_native_from_native", 116, false)],
+    ),
+    (
+        "fixed_native_from_native",
+        &[
+            ("fixed_constructor_prepare", 194, false),
+            ("fixed_generic_prepare", 194, false),
+        ],
+    ),
+    (
+        "fixed_dev_backing_option_identity",
+        &[("fixed_arena_backing", 301, true)],
+    ),
+    (
+        "prepare_scalar_mut_void_identity",
+        &[
+            ("fixed_constructor_prepare", 83, true),
+            ("fixed_constructor_prepare", 165, true),
+            ("fixed_constructor_prepare", 762, true),
+            ("fixed_generic_prepare", 83, true),
+            ("fixed_generic_prepare", 165, true),
+            ("fixed_generic_prepare", 762, true),
+        ],
+    ),
+    (
+        "prepare_scalar_const_void_identity",
+        &[
+            ("fixed_arena_backing", 68, true),
+            ("fixed_tool_heap_metadata", 82, true),
+            ("fixed_tool_heap_metadata", 562, true),
+            ("fixed_region_publication_get_opaque", 175, true),
+            ("fixed_constructor_prepare", 693, true),
+            ("fixed_constructor_prepare", 1239, true),
+            ("fixed_generic_prepare", 693, true),
+            ("fixed_generic_prepare", 1239, true),
+        ],
+    ),
+    (
+        "prepare_scalar_usize_identity",
+        &[
+            ("fixed_constructor_prepare", 104, true),
+            ("fixed_constructor_prepare", 125, true),
+            ("fixed_generic_prepare", 104, true),
+            ("fixed_generic_prepare", 125, true),
+        ],
+    ),
+    (
+        "fixed_dev_i32_identity",
+        &[
+            ("fixed_region_publication_set_opaque", 180, true),
+            ("fixed_region_publication_set_opaque", 315, true),
+        ],
+    ),
+    (
+        "fixed_dev_backing_option_map",
+        &[("fixed_arena_backing", 287, true)],
+    ),
+    (
+        "fixed_dev_heap_metadata_option_branch",
+        &[
+            ("fixed_tool_require_owned", 40, true),
+            ("fixed_tool_alloc", 64, true),
+            ("fixed_tool_owned_heap", 51, true),
+        ],
+    ),
+    (
+        "fixed_dev_backing_map_closure",
+        &[("fixed_dev_backing_option_map", 47, false)],
+    ),
+    (
+        "prepare_result_pointer_as_ref",
+        &[
+            ("fixed_arena_backing", 100, true),
+            ("fixed_tool_heap_metadata", 135, true),
+            ("fixed_constructor_prepare", 1292, true),
+            ("fixed_generic_prepare", 1292, true),
+        ],
+    ),
+    (
+        "fixed_dev_heap_metadata_pointer_as_ref",
+        &[
+            ("fixed_tool_require_owned", 31, true),
+            ("fixed_tool_alloc", 55, true),
+            ("fixed_tool_owned_heap", 42, true),
+        ],
+    ),
+    (
+        "fixed_scalar_syscall",
+        &[
+            ("fixed_arena_mprotect", 27, false),
+            ("fixed_native_owner_gettid", 16, false),
+        ],
+    ),
+    (
+        "fixed_setup_bitmap_range",
+        &[
+            ("fixed_arena_setup", 16, false),
+            ("fixed_arena_setup", 44, false),
+            ("fixed_arena_setup", 72, false),
+            ("fixed_arena_setup", 184, false),
+            ("fixed_arena_setup", 207, false),
+            ("fixed_arena_setup", 230, false),
+        ],
+    ),
+    (
+        "fixed_tool_owned_heap",
+        &[
+            ("fixed_tool_dealloc", 34, false),
+            ("fixed_tool_realloc", 47, false),
+        ],
+    ),
+    (
+        "fixed_setup_shift_guard",
+        &[("fixed_setup_bitmap_range", 316, false)],
+    ),
+];
+
+fn fixed_dev_scalar_publication_present(
+    witnesses: &BTreeMap<String, AuthenticatedDetcoreOperation>,
+) -> bool {
+    witnesses.values().any(|w| {
+        matches!(
+            w.kind,
+            AuthenticatedDetcoreOperationKind::DevScalarOperation(_)
+                | AuthenticatedDetcoreOperationKind::DevScalarHelper(_)
+                | AuthenticatedDetcoreOperationKind::ValidateTemplate(94..=106)
+        )
+    })
+}
+
+fn fixed_dev_scalar_mode(
+    witnesses: &BTreeMap<String, AuthenticatedDetcoreOperation>,
+    image_kind: FixedImageKind,
+    native_syscalls: bool,
+) -> Result<()> {
+    require(
+        image_kind == FixedImageKind::Standalone
+            && !native_syscalls
+            && witnesses.get("fixed_scalar_syscall").is_some_and(|w| {
+                w.kind
+                    == AuthenticatedDetcoreOperationKind::ValidateTemplate(
+                        FIXED_DEV_SCALAR_SYSCALL_TEMPLATE,
+                    )
+            })
+            && FIXED_DEV_SCALAR_COHORT.iter().all(|&(role, index)| {
+                witnesses.get(role).is_some_and(|w| {
+                    w.kind == AuthenticatedDetcoreOperationKind::ValidateTemplate(index)
+                })
+            })
+            && FIXED_DEV_SCALAR_HELPERS
+                .iter()
+                .enumerate()
+                .all(|(index, recipe)| {
+                    witnesses.get(recipe.role).is_some_and(|w| {
+                        w.kind == AuthenticatedDetcoreOperationKind::DevScalarHelper(index)
+                    })
+                })
+            && FIXED_DEV_SCALAR_OPERATIONS
+                .iter()
+                .enumerate()
+                .all(|(index, recipe)| {
+                    witnesses.get(recipe.role).is_some_and(|w| {
+                        w.kind == AuthenticatedDetcoreOperationKind::DevScalarOperation(index)
+                    })
+                }),
+        "unknown or mixed standalone dev scalar whole composition/profile",
+    )
+}
+
+fn fixed_dev_scalar_publication_cohort(
+    witnesses: &BTreeMap<String, AuthenticatedDetcoreOperation>,
+    transfers: &BTreeMap<String, Vec<ConstructorTransfer>>,
+    selected: &BTreeMap<String, u64>,
+    targets: &BTreeMap<String, u64>,
+    image_kind: FixedImageKind,
+) -> Result<()> {
+    fixed_dev_scalar_mode(witnesses, image_kind, false)?;
+    fixed_dev_scalar_readonly_profile(targets)?;
+    require(
+        [
+            "fixed_region_publication_get",
+            "fixed_region_publication_set",
+            "fixed_tool_heap",
+            "fixed_native_bitmap_range",
+        ]
+        .iter()
+        .all(|role| {
+            !selected.contains_key(*role)
+                && !witnesses.contains_key(*role)
+                && !transfers.contains_key(*role)
+        }),
+        "dev scalar composition mixes historical publication/bitmap ABI",
+    )?;
+    let region = *targets
+        .get("fixed_region")
+        .ok_or("dev scalar REGION absent")?;
+    let init = *targets
+        .get("fixed_initializing")
+        .ok_or("dev scalar gate absent")?;
+    let backing = *targets
+        .get("fixed_backing_object")
+        .ok_or("dev scalar backing absent")?;
+    require(
+        region != 0
+            && init != 0
+            && backing != 0
+            && region & 7 == 0
+            && backing & 7 == 0
+            && BTreeSet::from([region, init, backing]).len() == 3
+            && region
+                .checked_add(32)
+                .is_some_and(|end| init < region || init >= end)
+            && targets.get("fixed_region_ready").copied() == region.checked_add(24)
+            && targets.get("fixed_region_value16").copied() == region.checked_add(16),
+        "dev scalar authentic storage/field identities differ",
+    )?;
+    let mut addresses = BTreeSet::from([region, init, backing]);
+    for role in FIXED_DEV_SCALAR_COHORT
+        .iter()
+        .map(|r| r.0)
+        .chain(FIXED_DEV_SCALAR_HELPERS.iter().map(|r| r.role))
+        .chain(FIXED_DEV_SCALAR_OPERATIONS.iter().map(|r| r.role))
+    {
+        let witness = &witnesses[role];
+        require(
+            witness.role == role
+                && witness.address != 0
+                && addresses.insert(witness.address)
+                && selected.get(role) == Some(&witness.address)
+                && targets.get(role) == Some(&witness.address)
+                && transfers.get(role) == Some(&witness.edges)
+                && witness.scalar_storage == Some((region, init)),
+            "dev scalar complete witness loses physical identity/storage/census",
+        )?;
+    }
+    let raw = &witnesses["fixed_scalar_syscall"];
+    require(
+        raw.role == "fixed_scalar_syscall"
+            && raw.address != 0
+            && addresses.insert(raw.address)
+            && raw.scalar_storage.is_none()
+            && selected.get("fixed_scalar_syscall") == Some(&raw.address)
+            && targets.get("fixed_scalar_syscall") == Some(&raw.address)
+            && transfers.get("fixed_scalar_syscall") == Some(&raw.edges)
+            && raw.edges.len() == 1
+            && raw.edges[0].local_got_slot.is_some()
+            && raw.address.checked_add(40) == Some(raw.edges[0].instruction)
+            && raw.edges[0].target != 0
+            && !addresses.contains(&raw.edges[0].target),
+        "dev scalar ordinary syscall transport differs",
+    )?;
+    // The new opaque operation witness owns the complete520B bitmap. Its
+    // existing whole69B shift guard stays a separately qualified closure node.
+    let shift = *targets
+        .get("fixed_setup_shift_guard")
+        .ok_or("dev scalar shift guard absent")?;
+    require(
+        shift != 0
+            && addresses.insert(shift)
+            && selected.get("fixed_setup_shift_guard") == Some(&shift)
+            && transfers.contains_key("fixed_setup_shift_guard"),
+        "dev scalar setup loses its complete existing shift guard",
+    )?;
+    for &(callee, callers) in FIXED_DEV_SCALAR_INCOMING {
+        let target = *targets
+            .get(callee)
+            .ok_or("dev scalar incoming target absent")?;
+        let mut seen = BTreeSet::new();
+        for (role, edges) in transfers {
+            for edge in edges.iter().filter(|edge| edge.target == target) {
+                let caller = witnesses
+                    .get(role)
+                    .ok_or("dev scalar helper has unqualified caller")?;
+                require(
+                    caller.role == *role
+                        && selected.get(role) == Some(&caller.address)
+                        && targets.get(role) == Some(&caller.address)
+                        && transfers.get(role) == Some(&caller.edges),
+                    "dev scalar incoming caller loses its physical witness",
+                )?;
+                let offset = edge
+                    .instruction
+                    .checked_sub(caller.address)
+                    .ok_or("dev scalar incoming call precedes caller")?;
+                let observed = (role.as_str(), offset, edge.local_got_slot.is_some());
+                require(
+                    callers.contains(&observed) && seen.insert(observed),
+                    "extra duplicate shifted or wrong-mode dev scalar helper edge",
+                )?;
+            }
+        }
+        require(
+            seen == callers.iter().copied().collect::<BTreeSet<_>>(),
+            "missing dev scalar helper incoming edge",
+        )?;
+    }
+    // Whole1411B entries test owner status before reading the authenticated
+    // record, move all24B through the scalar setter, test full setter Result,
+    // store phase READY, release the gate and observe the same publication.
+    // Whole301/250 retain owner/stack/record/bitmap/full-errno setup contracts.
+    // The55B bridge has exact CALL27, EH landing39 and a balanced24B frame.
+    // No isolated helper, old optimized body, source name or profile selects it.
+    Ok(())
+}
+
+fn fixed_dev_scalar_no_unwind_terminal(
+    role: &str,
+    witnesses: &BTreeMap<String, AuthenticatedDetcoreOperation>,
+    aliases: &[&str],
+) -> bool {
+    aliases.contains(&"fixed_publication_cannot_unwind")
+        && matches!(
+            witnesses.get(role).map(|w| w.kind),
+            Some(AuthenticatedDetcoreOperationKind::ValidateTemplate(96..=98))
+        )
+        && matches!(
+            role,
+            "fixed_tool_heap_metadata"
+                | "fixed_region_publication_get_opaque"
+                | "fixed_region_publication_set_opaque"
+        )
+}
+
+const FIXED_DEV_SCALAR_NO_UNWIND_PREMISE: &str = "dev_source_owned_complete_scalar_no_unwind";
+const FIXED_DEV_SCALAR_NO_UNWIND_CALLS: &[(&str, u64)] = &[
+    ("fixed_tool_heap_metadata", 470),
+    ("fixed_region_publication_get_opaque", 21),
+    ("fixed_region_publication_set_opaque", 34),
+];
+
+fn fixed_dev_scalar_backing_shape_present(backing: &AllocatorBackingEvidence) -> bool {
+    // Match the physical closure's authenticated-witness trigger. Selected
+    // but unreached ELF definitions do not choose a machine family.
+    backing
+        .allocator_transfers
+        .keys()
+        .any(|role| fixed_dev_scalar_private_helper(role))
+        || FIXED_DEV_SCALAR_OPERATIONS.iter().any(|recipe| {
+            backing.allocator_transfers.contains_key(recipe.role)
+                && backing
+                    .functions
+                    .get(recipe.role)
+                    .is_some_and(|symbol| symbol.size == (recipe.hex.len() / 2) as u64)
+        })
+        || backing
+            .readonly_objects
+            .contains_key(FIXED_DEV_SCALAR_BITMAP_REFERENCE.key)
+        || FIXED_DEV_SCALAR_ALLOC_LOCATIONS
+            .iter()
+            .any(|binding| backing.readonly_objects.contains_key(binding.spec.key))
+        || backing
+            .guarded_terminal_edges
+            .values()
+            .any(|terminal| terminal.premise == FIXED_DEV_SCALAR_NO_UNWIND_PREMISE)
+}
+
+// Serialized shape only, used by both producer and consumer. The layout comes
+// from the caller's freshly verified sources, never from receipt contents.
+// This does not reconstruct authenticated machine witnesses from hashes: the
+// producer's whole closure and consumer's independent physical requalification
+// must still establish every complete body, operand, source and actual edge.
+fn validate_fixed_dev_scalar_backing_shape(
+    backing: &AllocatorBackingEvidence,
+    image_kind: FixedImageKind,
+    source_layout: Option<(CompiledSourceLayout, FixedImageKind)>,
+) -> Result<BTreeSet<String>> {
+    require(
+        image_kind == FixedImageKind::Standalone
+            && source_layout
+                == Some((
+                    CompiledSourceLayout::ReverieWorkspace,
+                    FixedImageKind::Standalone,
+                ))
+            && backing.fixed_native_syscalls.is_none()
+            && [
+                "fixed_region_publication_get",
+                "fixed_region_publication_set",
+                "fixed_tool_heap",
+                "fixed_native_bitmap_range",
+            ]
+            .iter()
+            .all(|role| {
+                !backing.functions.contains_key(*role)
+                    && !backing.allocator_transfers.contains_key(*role)
+            }),
+        "dev scalar backing has no independent standalone source layout or mixes another family",
+    )?;
+    let recipes = FIXED_DEV_SCALAR_COHORT
+        .iter()
+        .copied()
+        .chain(std::iter::once((
+            "fixed_scalar_syscall",
+            FIXED_DEV_SCALAR_SYSCALL_TEMPLATE,
+        )))
+        .map(|(role, index)| (role, &DETCORE_VALIDATE_TEMPLATES[index]))
+        .chain(
+            FIXED_DEV_SCALAR_HELPERS
+                .iter()
+                .chain(FIXED_DEV_SCALAR_OPERATIONS)
+                .map(|recipe| (recipe.role, recipe)),
+        );
+    let mut ranges = Vec::new();
+    for (role, recipe) in recipes {
+        let symbol = backing
+            .functions
+            .get(role)
+            .ok_or("dev scalar backing lacks a complete family function")?;
+        let end = symbol
+            .address
+            .checked_add(symbol.size)
+            .ok_or("dev scalar backing function extent overflows")?;
+        require(
+            recipe.role == role
+                && symbol.address != 0
+                && symbol.binding == sym::STB_LOCAL
+                && symbol.size == (recipe.hex.len() / 2) as u64
+                && fixed_emitted_role(&symbol.name) == Some(role)
+                && ranges
+                    .iter()
+                    .all(|&(start, prior_end)| end <= start || symbol.address >= prior_end)
+                && backing.allocator_transfers.contains_key(role),
+            "dev scalar backing mixes complete function identity, extent or transfer evidence",
+        )?;
+        ranges.push((symbol.address, end));
+    }
+    // All27 complete current bodies, including bitmap520 and owned_heap267,
+    // are already in ranges. Add the unchanged actual69B shift guard before
+    // comparing the44B gate, so every current owned-code extent is disjoint.
+    let shift = backing
+        .functions
+        .get("fixed_setup_shift_guard")
+        .ok_or("dev scalar backing lacks its complete shift guard")?;
+    let shift_end = shift
+        .address
+        .checked_add(shift.size)
+        .ok_or("dev scalar shift guard extent overflows")?;
+    require(
+        shift.address != 0
+            && shift.size == FIXED_ARENA_BYTES_2.len() as u64
+            && shift.binding == sym::STB_LOCAL
+            && fixed_emitted_role(&shift.name) == Some("fixed_setup_shift_guard")
+            && ranges
+                .iter()
+                .all(|&(start, end)| shift_end <= start || shift.address >= end),
+        "dev scalar backing loses its complete disjoint shift guard",
+    )?;
+    ranges.push((shift.address, shift_end));
+    for recipe in FIXED_DEV_SCALAR_OPERATIONS {
+        let function = &backing.functions[recipe.role];
+        let edges = &backing.allocator_transfers[recipe.role];
+        require(
+            edges.len() == recipe.transfers.len(),
+            "dev scalar operation loses complete actual transfer census",
+        )?;
+        for &(offset, operand) in recipe.transfers {
+            let op = &recipe.operands[operand];
+            let target = backing
+                .functions
+                .get(op.key)
+                .ok_or("dev scalar operation has no typed callee identity")?;
+            require(
+                target.address != 0
+                    && target.size != 0
+                    && target.binding == sym::STB_LOCAL
+                    && fixed_dev_operation_symbol_matches(op.key, &target.name)
+                    && edges
+                        .iter()
+                        .filter(|edge| {
+                            function.address.checked_add(offset as u64) == Some(edge.instruction)
+                                && edge.target == target.address
+                                && if op.got {
+                                    edge.local_got_slot
+                                        .is_some_and(|slot| slot != 0 && slot.is_multiple_of(8))
+                                } else {
+                                    edge.local_got_slot.is_none()
+                                }
+                        })
+                        .count()
+                        == 1,
+                "dev scalar operation loses exact caller/CALL PC/mode/target join",
+            )?;
+        }
+    }
+    let shift_edges = backing
+        .allocator_transfers
+        .get("fixed_setup_shift_guard")
+        .ok_or("dev scalar shift guard loses census")?;
+    let shift_panic = backing
+        .functions
+        .get("fixed_panic_nounwind_fmt")
+        .ok_or("dev scalar shift panic identity absent")?;
+    require(
+        shift_panic.address != 0
+            && fixed_emitted_role(&shift_panic.name) == Some("fixed_panic_nounwind_fmt")
+            && shift_edges.len() == 1
+            && shift.address.checked_add(58) == Some(shift_edges[0].instruction)
+            && shift_edges[0].target == shift_panic.address
+            && shift_edges[0]
+                .local_got_slot
+                .is_some_and(|slot| slot != 0 && slot.is_multiple_of(8)),
+        "dev scalar shift guard loses its actual retained terminal",
+    )?;
+    for key in FIXED_DEV_SCALAR_OPERATION_DATA {
+        let spec = fixed_dev_scalar_operation_data_spec(key).unwrap();
+        let object = backing
+            .readonly_objects
+            .get(*key)
+            .ok_or("dev scalar operation lacks complete physical readonly evidence")?;
+        require(
+            object.address != 0
+                && object.size == spec.hex.len() / 2
+                && object.sha256 == sha256(&fixed_hex(spec.hex))
+                && if spec.kind == "location" {
+                    object.file_address.is_some_and(|address| address != 0)
+                        && object.file_sha256.as_deref()
+                            == Some(sha256(&fixed_hex(spec.file_hex)).as_str())
+                        && object.relative_pointer_slot == Some(object.address)
+                } else {
+                    object.file_address.is_none()
+                        && object.file_sha256.is_none()
+                        && object.relative_pointer_slot.is_none()
+                },
+            "dev scalar operation physical readonly identity differs",
+        )?;
+    }
+    require(
+        !backing
+            .readonly_objects
+            .contains_key("fixed_bitmap_reference_location"),
+        "dev scalar operation mixes historical bitmap source Location",
+    )?;
+    let raw = &backing.functions["fixed_scalar_syscall"];
+    let gate = backing
+        .functions
+        .get(CONSTRUCTOR_GATE_OWNER)
+        .ok_or("dev scalar backing lacks its complete private trusted syscall gate")?;
+    let raw_edges = &backing.allocator_transfers["fixed_scalar_syscall"];
+    require(
+        gate.address != 0
+            && gate.size == 44
+            && gate.name == CONSTRUCTOR_GATE_OWNER
+            && gate.binding == sym::STB_LOCAL
+            && gate.address.checked_add(gate.size).is_some_and(|end| {
+                ranges
+                    .iter()
+                    .all(|&(start, prior_end)| end <= start || gate.address >= prior_end)
+            })
+            && backing
+                .allocator_transfers
+                .get(CONSTRUCTOR_GATE_OWNER)
+                .is_some_and(Vec::is_empty)
+            && raw_edges.len() == 1
+            && raw.address.checked_add(40) == Some(raw_edges[0].instruction)
+            && raw_edges[0].target == gate.address
+            && raw_edges[0]
+                .local_got_slot
+                .is_some_and(|slot| slot != 0 && slot.is_multiple_of(8)),
+        "dev scalar backing loses its exact ordinary51B CALL40/private44B gate join",
+    )?;
+    let mut locations = BTreeSet::new();
+    for binding in FIXED_DEV_SCALAR_ALLOC_LOCATIONS {
+        let object = backing
+            .readonly_objects
+            .get(binding.spec.key)
+            .ok_or("dev scalar backing lacks a complete current source Location")?;
+        require(
+            object.address != 0
+                && object.size == 24
+                && locations.insert(object.address)
+                && object.sha256 == sha256(&fixed_hex(binding.spec.hex))
+                && object.file_address.is_some_and(|address| address != 0)
+                && object.file_sha256.as_deref()
+                    == Some(sha256(&fixed_hex(binding.spec.file_hex)).as_str())
+                && object.relative_pointer_slot == Some(object.address)
+                && !backing.readonly_objects.contains_key(binding.request),
+            "dev scalar backing mixes current source Location/filename/writer identities",
+        )?;
+    }
+    let terminal = backing
+        .functions
+        .get("fixed_publication_cannot_unwind")
+        .ok_or("dev scalar backing lacks its exact no-unwind terminal")?;
+    require(
+        terminal.address != 0
+            && terminal.size != 0
+            && terminal.binding == sym::STB_LOCAL
+            && fixed_emitted_role(&terminal.name) == Some("fixed_publication_cannot_unwind"),
+        "dev scalar backing has a different no-unwind terminal identity",
+    )?;
+    for (role, offset, terminal_role) in [
+        (
+            "fixed_setup_bitmap_range",
+            98_u64,
+            "fixed_panic_misaligned_reference",
+        ),
+        (
+            "fixed_setup_bitmap_range",
+            135,
+            "fixed_panic_null_reference",
+        ),
+        ("fixed_setup_shift_guard", 58, "fixed_panic_nounwind_fmt"),
+    ] {
+        let function = &backing.functions[role];
+        let terminal = &backing.functions[terminal_role];
+        let key = format!("{role}+{offset:#x}");
+        let actual = backing
+            .guarded_terminal_edges
+            .get(&key)
+            .ok_or("dev scalar operation drops physical guarded terminal")?;
+        let premise = fixed_guarded_terminal_pairs(FixedImageKind::Standalone)
+            .iter()
+            .find(|&&(caller, callee, _)| caller == role && callee == terminal_role)
+            .unwrap()
+            .2;
+        require(
+            actual.caller_role == role
+                && actual.terminal_role == terminal_role
+                && actual.premise == premise
+                && function.address.checked_add(offset) == Some(actual.transfer.instruction)
+                && actual.transfer.target == terminal.address
+                && actual
+                    .transfer
+                    .local_got_slot
+                    .is_some_and(|slot| slot != 0 && slot.is_multiple_of(8))
+                && backing.allocator_transfers[role]
+                    .iter()
+                    .filter(|edge| **edge == actual.transfer)
+                    .count()
+                    == 1,
+            "dev scalar operation guarded terminal loses exact physical/source premise",
+        )?;
+    }
+    let mut keys = BTreeSet::new();
+    let mut terminal_slot = None;
+    for &(role, offset) in FIXED_DEV_SCALAR_NO_UNWIND_CALLS {
+        let key = format!("{role}+{offset:#x}");
+        let guarded = backing
+            .guarded_terminal_edges
+            .get(&key)
+            .ok_or("dev scalar backing omits a physical no-unwind edge")?;
+        let slot = guarded
+            .transfer
+            .local_got_slot
+            .ok_or("dev scalar no-unwind transfer loses its actual GOT slot")?;
+        require(
+            guarded.caller_role == role
+                && guarded.terminal_role == "fixed_publication_cannot_unwind"
+                && guarded.premise == FIXED_DEV_SCALAR_NO_UNWIND_PREMISE
+                && backing.functions[role].address.checked_add(offset)
+                    == Some(guarded.transfer.instruction)
+                && guarded.transfer.target == terminal.address
+                && slot != 0
+                && slot.is_multiple_of(8)
+                && terminal_slot.is_none_or(|prior| prior == slot)
+                && backing.allocator_transfers[role]
+                    .iter()
+                    .filter(|edge| **edge == guarded.transfer)
+                    .count()
+                    == 1,
+            "dev scalar no-unwind edge loses its exact caller/premise/CALL PC/GOT/target join",
+        )?;
+        terminal_slot = Some(slot);
+        keys.insert(key);
+    }
+    validate_fixed_dev_setter_setup_evidence(backing)?;
+    Ok(keys)
+}
+
+fn fixed_dev_setter_setup_got_edges(
+    function: &SymbolEvidence,
+    transfers: &[ConstructorTransfer],
+) -> Vec<GotEdge> {
+    transfers
+        .iter()
+        .filter_map(|edge| {
+            edge.local_got_slot.map(|slot| GotEdge {
+                source_function: function.address,
+                instruction: edge.instruction,
+                slot,
+                target_function: edge.target,
+            })
+        })
+        .collect()
+}
+
+fn fixed_dev_setter_setup_shared_slot(
+    function: &SymbolEvidence,
+    transfers: &[ConstructorTransfer],
+    helper: u64,
+) -> Result<u64> {
+    let mut slot = None;
+    for offset in [180, 315] {
+        let matches: Vec<_> = transfers
+            .iter()
+            .filter(|edge| function.address.checked_add(offset) == Some(edge.instruction))
+            .collect();
+        require(
+            matches.len() == 1,
+            "current setter scalar call is missing/duplicated",
+        )?;
+        let edge = matches[0];
+        let actual_slot = edge
+            .local_got_slot
+            .ok_or("current setter scalar call has no local slot")?;
+        require(
+            helper != 0
+                && edge.target == helper
+                && actual_slot != 0
+                && actual_slot.is_multiple_of(8)
+                && slot.is_none_or(|prior| prior == actual_slot),
+            "current setter scalar calls lose their shared private helper slot",
+        )?;
+        slot = Some(actual_slot);
+    }
+    slot.ok_or("current setter scalar slot absent".into())
+}
+
+fn validate_fixed_dev_setter_setup_evidence(backing: &AllocatorBackingEvidence) -> Result<()> {
+    let role = "fixed_region_publication_set_opaque";
+    let function = backing
+        .functions
+        .get(role)
+        .ok_or("dev setter setup function absent")?;
+    let transfers = backing
+        .allocator_transfers
+        .get(role)
+        .ok_or("dev setter setup allocator census absent")?;
+    let recipe = &DETCORE_VALIDATE_TEMPLATES[98];
+    require(
+        transfers.len() == recipe.transfers.len()
+            && recipe
+                .transfers
+                .iter()
+                .zip(transfers)
+                .all(|(&(pc, operand), edge)| {
+                    let op = &recipe.operands[operand];
+                    function.address.checked_add(pc as u64) == Some(edge.instruction)
+                        && edge.target != 0
+                        && (op.key != "fixed_dev_i32_identity"
+                            || backing
+                                .functions
+                                .get(op.key)
+                                .is_some_and(|target| target.address == edge.target))
+                        && if op.got {
+                            edge.local_got_slot
+                                .is_some_and(|slot| slot != 0 && slot.is_multiple_of(8))
+                        } else {
+                            edge.local_got_slot.is_none()
+                        }
+                })
+            && backing.owned_setup_transfers.get(role) == Some(transfers),
+        "dev setter setup loses its exact allocator/owned transfer join",
+    )?;
+    let helper = backing
+        .functions
+        .get("fixed_dev_i32_identity")
+        .ok_or("dev setter setup helper absent")?;
+    fixed_dev_setter_setup_shared_slot(function, transfers, helper.address)
+        .map_err(|error| format!("dev setter setup loses its exact shared helper slot: {error}"))?;
+    let end = function
+        .address
+        .checked_add(function.size)
+        .ok_or("dev setter setup extent overflows")?;
+    let owned_edges: Vec<_> = backing
+        .owned_setup_got_edges
+        .iter()
+        .filter(|edge| {
+            edge.source_function == function.address
+                || (function.address..end).contains(&edge.instruction)
+        })
+        .cloned()
+        .collect();
+    require(
+        owned_edges == fixed_dev_setter_setup_got_edges(function, transfers),
+        "dev setter setup loses its exact owned CALL/GOT projection",
+    )
+}
+
+fn fixed_guarded_terminal_evidence(
+    role: &str,
+    address: u64,
+    edge: &ConstructorTransfer,
+    image_kind: FixedImageKind,
+    witnesses: &BTreeMap<String, AuthenticatedDetcoreOperation>,
+    target_aliases: &[&str],
+) -> Result<Option<(String, FixedGuardedTerminal)>> {
+    let terminal = fixed_guarded_terminal_pairs(image_kind)
+        .iter()
+        .find(|&&(caller, terminal, _)| caller == role && target_aliases.contains(&terminal))
+        .copied()
+        .or_else(|| {
+            fixed_dev_scalar_no_unwind_terminal(role, witnesses, target_aliases).then_some((
+                role,
+                "fixed_publication_cannot_unwind",
+                FIXED_DEV_SCALAR_NO_UNWIND_PREMISE,
+            ))
+        });
+    terminal
+        .map(|(caller, terminal, premise)| {
+            let key = format!(
+                "{role}+{:#x}",
+                edge.instruction
+                    .checked_sub(address)
+                    .ok_or("Fixed guard call precedes function")?
+            );
+            Ok((
+                key,
+                FixedGuardedTerminal {
+                    caller_role: caller.into(),
+                    terminal_role: terminal.into(),
+                    premise: premise.into(),
+                    transfer: edge.clone(),
+                },
+            ))
+        })
+        .transpose()
+}
+
 struct FixedNakedComposition {
     image_kind: FixedImageKind,
     native_syscalls: bool,
@@ -31257,6 +34774,11 @@ fn fixed_scalar_publication_cohort(
     targets: &BTreeMap<String, u64>,
     image_kind: FixedImageKind,
 ) -> Result<()> {
+    if fixed_dev_scalar_publication_present(witnesses) {
+        return fixed_dev_scalar_publication_cohort(
+            witnesses, transfers, selected, targets, image_kind,
+        );
+    }
     if fixed_naked_publication_present(witnesses) {
         return fixed_naked_publication_cohort(witnesses, transfers, selected, targets, image_kind);
     }
@@ -31465,6 +34987,9 @@ fn fixed_scalar_publication_syscall_mode(
     image_kind: FixedImageKind,
     native_syscalls: bool,
 ) -> Result<()> {
+    if fixed_dev_scalar_publication_present(witnesses) {
+        return fixed_dev_scalar_mode(witnesses, image_kind, native_syscalls);
+    }
     if fixed_naked_publication_present(witnesses) {
         let spec = fixed_naked_composition(witnesses, Some(image_kind))?;
         return require(
@@ -31747,6 +35272,15 @@ fn fixed_detcore_full_result_contract(
     selected: &BTreeMap<String, u64>,
     targets: &BTreeMap<String, u64>,
 ) -> Result<()> {
+    if fixed_dev_scalar_publication_present(witnesses) {
+        return fixed_dev_scalar_publication_cohort(
+            witnesses,
+            transfers,
+            selected,
+            targets,
+            FixedImageKind::Standalone,
+        );
+    }
     if fixed_naked_publication_present(witnesses) {
         return fixed_naked_result_contract(witnesses, transfers, selected, targets);
     }
@@ -31973,6 +35507,15 @@ fn fixed_normal_return_contract(
 struct FixedOperationClosure {
     transfers: BTreeMap<String, Vec<ConstructorTransfer>>,
     guarded: BTreeMap<String, FixedGuardedTerminal>,
+    current_dev_setter_setup: Option<FixedDevSetterSetupCensus>,
+}
+// This private physical witness is retained only after the complete current
+// source-owned family closes. It cannot be supplied by a runtime receipt.
+struct FixedDevSetterSetupCensus {
+    function: SymbolEvidence,
+    function_sha256: String,
+    helper: SymbolEvidence,
+    transfers: Vec<ConstructorTransfer>,
 }
 // The finite pair table describes exact unreachable arms of these complete
 // recipes. It grants no permission to execute panic/libunwind/foreign callees.
@@ -32101,6 +35644,57 @@ fn qualify_fixed_operation_closure(
                     chosen = Some((role.clone(), edges));
                     break;
                 }
+            }
+            if context.current_dev_source_profile
+                && FIXED_DEV_SCALAR_OPERATIONS
+                    .iter()
+                    .any(|recipe| recipe.role == role)
+            {
+                require(
+                    image_kind == FixedImageKind::Standalone && scalar_publication,
+                    "current dev operation reached outside standalone scalar composition",
+                )?;
+                fixed_dev_scalar_helper_symbol_identity(elf, role, symbol)?;
+                let witness = fixed_dev_scalar_operation_qualified(
+                    role,
+                    address,
+                    (actual, &instructions),
+                    DetcoreRecipeBindings {
+                        targets: &context.targets,
+                        got,
+                        readonly: &context.readonly,
+                        context: &context.compiled_filenames,
+                    },
+                    true,
+                )?;
+                chosen = Some((role.clone(), witness.edges.clone()));
+                require(
+                    detcore_witnesses.insert(role.clone(), witness).is_none(),
+                    "duplicate current dev operation witness",
+                )?;
+                break;
+            }
+            if FIXED_DEV_SCALAR_HELPER_SYMBOLS
+                .iter()
+                .any(|&(r, _)| r == role)
+            {
+                require(
+                    image_kind == FixedImageKind::Standalone && scalar_publication,
+                    "dev scalar helper reached outside standalone scalar composition",
+                )?;
+                let witness = fixed_dev_scalar_helper_qualified_operation(
+                    role,
+                    address,
+                    (actual, &instructions),
+                    &context.targets,
+                    got,
+                )?;
+                chosen = Some((role.clone(), witness.edges.clone()));
+                require(
+                    detcore_witnesses.insert(role.clone(), witness).is_none(),
+                    "duplicate dev scalar helper witness",
+                )?;
+                break;
             }
             if (image_kind == FixedImageKind::Detcore
                 || (scalar_publication && fixed_scalar_recipe_role(role)))
@@ -32344,30 +35938,16 @@ fn qualify_fixed_operation_closure(
                 !target_aliases.is_empty(),
                 format!("Fixed {role} calls unselected target {:#x}", edge.target),
             )?;
-            if let Some(&(caller, terminal, premise)) = fixed_guarded_terminal_pairs(image_kind)
-                .iter()
-                .find(|&&(caller, terminal, _)| {
-                    caller == role && target_aliases.contains(&terminal)
-                })
-            {
-                let key = format!(
-                    "{role}+{:#x}",
-                    edge.instruction
-                        .checked_sub(address)
-                        .ok_or("Fixed guard call precedes function")?
-                );
+            if let Some((key, terminal)) = fixed_guarded_terminal_evidence(
+                &role,
+                address,
+                edge,
+                image_kind,
+                &detcore_witnesses,
+                &target_aliases,
+            )? {
                 require(
-                    guarded
-                        .insert(
-                            key,
-                            FixedGuardedTerminal {
-                                caller_role: caller.into(),
-                                terminal_role: terminal.into(),
-                                premise: premise.into(),
-                                transfer: edge.clone(),
-                            },
-                        )
-                        .is_none(),
+                    guarded.insert(key, terminal).is_none(),
                     "duplicate Fixed guarded terminal edge",
                 )?;
             } else {
@@ -32385,18 +35965,15 @@ fn qualify_fixed_operation_closure(
             .all(|role| transfers.contains_key(*role)),
         "Fixed closure omits a compiler operation or fresh setup",
     )?;
-    if image_kind == FixedImageKind::Detcore {
-        if existing_tls.is_none() {
-            require(
-                detcore_witnesses
-                    .get("fixed_patch_alloc")
-                    .is_some_and(|witness| {
-                        witness.kind
-                            == AuthenticatedDetcoreOperationKind::NoInstallationScopeAlloc101
-                    }),
-                "no-scope closure lacks its complete authenticated101B allocation",
-            )?;
-        }
+    if image_kind == FixedImageKind::Detcore && existing_tls.is_none() {
+        require(
+            detcore_witnesses
+                .get("fixed_patch_alloc")
+                .is_some_and(|witness| {
+                    witness.kind == AuthenticatedDetcoreOperationKind::NoInstallationScopeAlloc101
+                }),
+            "no-scope closure lacks its complete authenticated101B allocation",
+        )?;
     }
     if scalar_publication {
         let selected = roles
@@ -32451,7 +36028,19 @@ fn qualify_fixed_operation_closure(
             &context.targets,
         )?;
     }
-    Ok(FixedOperationClosure { transfers, guarded })
+    let current_dev_setter_setup = fixed_dev_setter_setup_witness(
+        context,
+        image_kind,
+        (&detcore_witnesses, &transfers),
+        (roles, elf),
+        (code, disassembly),
+        got,
+    )?;
+    Ok(FixedOperationClosure {
+        transfers,
+        guarded,
+        current_dev_setter_setup,
+    })
 }
 
 // Retained Legacy discovery/parser predicate only. Candidate admission and
@@ -33480,6 +37069,255 @@ fn fixed_native_owner_census(
         "native fixed owner loses its unique authenticated page leaf/continuation",
     )
 }
+fn fixed_dev_setter_setup_witness(
+    context: &FixedMachineContext,
+    image_kind: FixedImageKind,
+    (witnesses, transfers): (
+        &BTreeMap<String, AuthenticatedDetcoreOperation>,
+        &BTreeMap<String, Vec<ConstructorTransfer>>,
+    ),
+    (roles, elf): (&BTreeMap<String, sym::Sym>, &Elf<'_>),
+    (code, disassembly): (&BTreeMap<u64, Vec<u8>>, &str),
+    got: &BTreeMap<u64, u64>,
+) -> Result<Option<FixedDevSetterSetupCensus>> {
+    if !context.current_dev_source_profile {
+        return Ok(None);
+    }
+    let result: Result<FixedDevSetterSetupCensus> = (|| {
+        require(
+            image_kind == FixedImageKind::Standalone && context.native_syscalls.is_none(),
+            "current setter setup is outside its source-owned standalone family",
+        )?;
+        let selected = roles
+            .iter()
+            .map(|(role, symbol)| (role.clone(), symbol.st_value))
+            .collect();
+        fixed_dev_scalar_publication_cohort(
+            witnesses,
+            transfers,
+            &selected,
+            &context.targets,
+            image_kind,
+        )?;
+        let setter_role = "fixed_region_publication_set_opaque";
+        let helper_role = "fixed_dev_i32_identity";
+        let setter = roles
+            .get(setter_role)
+            .ok_or("current setter identity absent")?;
+        let helper = roles
+            .get(helper_role)
+            .ok_or("current setter helper identity absent")?;
+        let actual = code
+            .get(&setter.st_value)
+            .ok_or("current setter whole bytes absent")?;
+        let helper_bytes = code
+            .get(&helper.st_value)
+            .ok_or("current setter helper bytes absent")?;
+        let setter_witness = witnesses
+            .get(setter_role)
+            .ok_or("current setter witness absent")?;
+        let helper_witness = witnesses
+            .get(helper_role)
+            .ok_or("current setter helper witness absent")?;
+        require(
+            setter_witness.kind == AuthenticatedDetcoreOperationKind::ValidateTemplate(98)
+                && helper_witness.kind == AuthenticatedDetcoreOperationKind::DevScalarHelper(4)
+                && setter.st_value == setter_witness.address
+                && helper.st_value == helper_witness.address
+                && setter.st_bind() == sym::STB_LOCAL
+                && helper.st_bind() == sym::STB_LOCAL
+                && setter.st_size == 353
+                && helper.st_size == 18
+                && actual.len() == 353
+                && helper_bytes == &fixed_hex(FIXED_DEV_SCALAR_HELPERS[4].hex),
+            "current setter/helper loses its exact private typed whole witness",
+        )?;
+        let instructions = constructor_instructions(disassembly, setter.st_value)?;
+        let rebound = fixed_no_scope_qualified_operation(
+            setter_role,
+            setter.st_value,
+            (actual, &instructions),
+            DetcoreRecipeBindings {
+                targets: &context.targets,
+                got,
+                readonly: &context.readonly,
+                context: &context.compiled_filenames,
+            },
+            false,
+        )?;
+        require(
+            rebound.kind == setter_witness.kind
+                && rebound.edges == setter_witness.edges
+                && rebound.scalar_storage == setter_witness.scalar_storage,
+            "current setter whole rejoin differs from its complete family witness",
+        )?;
+        let setter_name = elf
+            .strtab
+            .get_at(setter.st_name)
+            .ok_or("current setter name absent")?;
+        let helper_name = elf
+            .strtab
+            .get_at(helper.st_name)
+            .ok_or("current setter helper name absent")?;
+        require(
+            fixed_emitted_role(setter_name) == Some(setter_role)
+                && fixed_emitted_role(helper_name) == Some(helper_role),
+            "current setter/helper raw identity differs from its exact typed role",
+        )?;
+        let function = symbol_evidence(setter_name, setter);
+        fixed_dev_setter_setup_shared_slot(&function, &setter_witness.edges, helper.st_value)?;
+        Ok(FixedDevSetterSetupCensus {
+            function,
+            function_sha256: sha256(actual),
+            helper: symbol_evidence(helper_name, helper),
+            transfers: setter_witness.edges.clone(),
+        })
+    })();
+    result
+        .map(Some)
+        .map_err(|error| format!("current dev setter setup witness: {error}"))
+}
+
+// The current setter's two scalar calls already have complete typed operation
+// and helper proofs. Keep their exact load/argument/CALL contexts separate from
+// the constructor helper set and generic register-call vocabulary.
+fn fixed_dev_setter_setup_transfers(
+    role: &str,
+    function: &SymbolEvidence,
+    instructions: &[EncodedConstructorInstruction],
+    got: &BTreeMap<u64, u64>,
+    helpers: &BTreeSet<u64>,
+    current: &FixedDevSetterSetupCensus,
+) -> Result<(Vec<ConstructorTransfer>, Vec<GotEdge>)> {
+    let result: Result<(Vec<ConstructorTransfer>, Vec<GotEdge>)> = (|| {
+        let actual: Vec<_> = instructions
+            .iter()
+            .flat_map(|i| i.bytes.iter().copied())
+            .collect();
+        require(
+            role == "fixed_region_publication_set_opaque"
+                && fixed_emitted_role(&function.name) == Some(role)
+                && function == &current.function
+                && current.function.size == 353
+                && current.helper.size == 18
+                && current.helper.binding == sym::STB_LOCAL
+                && actual.len() == 353
+                && sha256(&actual) == current.function_sha256,
+            "whole setter identity/bytes differ from its private current witness",
+        )?;
+        fixed_dev_setter_setup_shared_slot(function, &current.transfers, current.helper.address)?;
+        let (first, boundaries) = preparation_instruction_boundaries(instructions)?;
+        let entries = preparation_register_entry_targets(instructions, helpers)?;
+        let mut transfers = Vec::new();
+        let mut edges = Vec::new();
+        for (index, instruction) in instructions.iter().enumerate() {
+            let window = [
+                (168_u64, 175_u64, 180_u64, &[0xbf, 11, 0, 0, 0][..]),
+                (306, 313, 315, &[0x31, 0xff][..]),
+            ]
+            .into_iter()
+            .find(|(_, _, call, _)| {
+                function.address.checked_add(*call) == Some(instruction.address)
+            });
+            let Some((load_offset, argument_offset, _, argument_bytes)) = window else {
+                let (next, got_edges) = preparation_instruction_transfer(
+                    instruction,
+                    first,
+                    &boundaries,
+                    got,
+                    helpers,
+                    false,
+                )?;
+                transfers.extend(next);
+                edges.extend(got_edges);
+                continue;
+            };
+            let load = index
+                .checked_sub(2)
+                .and_then(|i| instructions.get(i))
+                .ok_or("current setter has no complete defining load window")?;
+            let argument = &instructions[index - 1];
+            require(
+                instruction.bytes == [0xff, 0xd0]
+                    && function.address.checked_add(load_offset) == Some(load.address)
+                    && load.bytes.len() == 7
+                    && load.bytes.starts_with(&[0x48, 0x8b, 0x05])
+                    && function.address.checked_add(argument_offset) == Some(argument.address)
+                    && argument.bytes == argument_bytes
+                    && load.address.checked_add(7) == Some(argument.address)
+                    && argument.address.checked_add(argument.bytes.len() as u64)
+                        == Some(instruction.address)
+                    && entries
+                        .range((
+                            std::ops::Bound::Excluded(load.address),
+                            std::ops::Bound::Included(instruction.address),
+                        ))
+                        .next()
+                        .is_none(),
+                "current setter scalar call loses its exact defining load/argument/entry window",
+            )?;
+            let slot = fixed_rip_target(load.address, &load.bytes, 3, 7)?;
+            let expected = current
+                .transfers
+                .iter()
+                .find(|edge| edge.instruction == instruction.address)
+                .ok_or("current setter scalar call has no authenticated transfer")?;
+            require(
+                expected.local_got_slot == Some(slot)
+                    && expected.target == current.helper.address
+                    && got.get(&slot) == Some(&current.helper.address),
+                "current setter scalar call loses its exact GOT/typed helper target",
+            )?;
+            transfers.push(expected.clone());
+            edges.push(GotEdge {
+                source_function: first,
+                instruction: instruction.address,
+                slot,
+                target_function: expected.target,
+            });
+        }
+        let expected_edges = fixed_dev_setter_setup_got_edges(function, &current.transfers);
+        require(
+            transfers == current.transfers && edges == expected_edges,
+            "current setter setup loses its complete transfer/GOT census",
+        )?;
+        fixed_census_transfers(
+            instructions,
+            function.address,
+            &actual,
+            &current.transfers,
+            got,
+            false,
+        )?;
+        Ok((transfers, edges))
+    })();
+    result.map_err(|error| format!("current dev setter setup census: {error}"))
+}
+
+fn fixed_owned_setup_preparation_transfers(
+    role: &str,
+    function: &SymbolEvidence,
+    instructions: &[EncodedConstructorInstruction],
+    got: &BTreeMap<u64, u64>,
+    helpers: &BTreeSet<u64>,
+    (native, current): (
+        Option<&FixedNativeSyscallContext>,
+        Option<&FixedDevSetterSetupCensus>,
+    ),
+) -> Result<(Vec<ConstructorTransfer>, Vec<GotEdge>)> {
+    if let Some(current) = current {
+        return fixed_dev_setter_setup_transfers(
+            role,
+            function,
+            instructions,
+            got,
+            helpers,
+            current,
+        );
+    }
+    fixed_setup_preparation_transfers(role, function, instructions, got, helpers, native)
+}
+
 /// Only a fully qualified native scalar wrapper can extend its own setup
 /// census with the independently proved fixed owner. Other preparation roles
 /// retain the original helper set and complete instruction scanner.
@@ -34303,8 +38141,66 @@ fn preparation_role(name: &str) -> Option<&'static str> {
             Some("panic_misaligned_pointer_dereference")
         }
         "reverie_inguest_trusted_syscall" => Some("trusted_syscall"),
+        "_RINvNtCs_4core4hint9black_boxONtNtB4_3ffi6c_voidECs_15reverie_inguest" => {
+            Some("prepare_scalar_mut_void_identity")
+        }
+        "_RINvNtCs_4core4hint9black_boxPNtNtB4_3ffi6c_voidECs_15reverie_inguest" => {
+            Some("prepare_scalar_const_void_identity")
+        }
+        "_RINvNtCs_4core4hint9black_boxjECs_15reverie_inguest" => {
+            Some("prepare_scalar_usize_identity")
+        }
+        "_RNvMNtNtCs_4core3ptr9const_ptrPINtNtB6_6result6ResultNtNtNtCs_15reverie_inguest5guest11tool_region10ToolRegionlE6as_refB16_" => {
+            Some("prepare_result_pointer_as_ref")
+        }
         _ => None,
     }
+}
+
+// Three measured SysV scalar identity instantiations. The complete leaf saves
+// RDI at RSP-8/-16, reloads it into RAX, and returns without changing RSP or
+// making another transfer. These red-zone stores use the existing source-bound
+// owned prepare stack; this is not a general stack/CFG or provider proof.
+const PREPARE_SCALAR_IDENTITY_BYTES: &[u8] = &[
+    0x48, 0x89, 0x7c, 0x24, 0xf8, 0x48, 0x89, 0x7c, 0x24, 0xf0, 0x48, 0x8d, 0x44, 0x24, 0xf0, 0x48,
+    0x8b, 0x44, 0x24, 0xf0, 0xc3,
+];
+
+fn preparation_scalar_identity_role(role: &str) -> bool {
+    matches!(
+        role,
+        "prepare_scalar_mut_void_identity"
+            | "prepare_scalar_const_void_identity"
+            | "prepare_scalar_usize_identity"
+    )
+}
+
+fn preparation_scalar_identity_bytes(code: &[u8]) -> Result<()> {
+    require(
+        code == PREPARE_SCALAR_IDENTITY_BYTES,
+        "prepare scalar identity is not the complete measured red-zone leaf",
+    )
+}
+
+// The measured const_ptr::as_ref for *const Result<ToolRegion, i32> returns
+// the nullable pointer in RAX. Its two branches remain inside this complete
+// leaf; only the source-bound owned prepare stack's red zone is read/written
+// (down to RSP-24). It neither dereferences the pointee nor changes RSP/calls.
+// This is separate from the publication closure's existing result_ref role.
+// The qualified source must still establish that a non-null pointer is aligned,
+// initialized, immutable and live for the returned reference's use. These bytes
+// establish scalar transport, not pointer validity or the reference lifetime.
+const PREPARE_RESULT_POINTER_AS_REF_BYTES: &[u8] = &[
+    0x48, 0x89, 0x7c, 0x24, 0xe8, 0x48, 0x89, 0x7c, 0x24, 0xf8, 0x48, 0x83, 0xff, 0x00, 0x74, 0x0c,
+    0x48, 0x8b, 0x44, 0x24, 0xe8, 0x48, 0x89, 0x44, 0x24, 0xf0, 0xeb, 0x09, 0x48, 0xc7, 0x44, 0x24,
+    0xf0, 0x00, 0x00, 0x00, 0x00, 0x48, 0x8b, 0x44, 0x24, 0xf0, 0xc3,
+];
+
+fn preparation_result_pointer_as_ref_bytes(code: &[u8]) -> Result<()> {
+    require(
+        code == PREPARE_RESULT_POINTER_AS_REF_BYTES,
+        "prepare result pointer as_ref is not the complete measured nullable-pointer leaf",
+    )
 }
 
 fn preparation_symbols(elf: &Elf<'_>, bytes: &[u8]) -> Result<BTreeMap<String, sym::Sym>> {
@@ -34327,6 +38223,39 @@ fn preparation_symbols(elf: &Elf<'_>, bytes: &[u8]) -> Result<BTreeMap<String, s
                 .any(|s| elf.dynstrtab.get_at(s.st_name) == Some(name)),
             "private preparation helper has a dynamic identity",
         )?;
+        if preparation_scalar_identity_role(role) || role == "prepare_result_pointer_as_ref" {
+            require(
+                elf.syms
+                    .iter()
+                    .filter(|other| {
+                        elf.strtab.get_at(other.st_name).and_then(preparation_role) == Some(role)
+                    })
+                    .count()
+                    == 1
+                    && !elf.dynsyms.iter().any(|other| {
+                        elf.dynstrtab
+                            .get_at(other.st_name)
+                            .and_then(preparation_role)
+                            == Some(role)
+                            || other.st_value == symbol.st_value
+                    }),
+                if preparation_scalar_identity_role(role) {
+                    "prepare scalar identity is duplicated or has a dynamic alias"
+                } else {
+                    "prepare result pointer as_ref is duplicated or has a dynamic alias"
+                },
+            )?;
+            let code = proof_function_bytes_after_metadata(
+                elf,
+                bytes,
+                &BTreeMap::from([(symbol.st_value, symbol.st_size)]),
+            )?;
+            if preparation_scalar_identity_role(role) {
+                preparation_scalar_identity_bytes(&code[&symbol.st_value])?;
+            } else {
+                preparation_result_pointer_as_ref_bytes(&code[&symbol.st_value])?;
+            }
+        }
         if let Some(prior) = result.get(name) {
             let prior: &sym::Sym = prior;
             require(
@@ -35789,9 +39718,27 @@ fn preparation_transfers_with_static_tail(
     static_tail: bool,
 ) -> Result<(Vec<ConstructorTransfer>, Vec<GotEdge>)> {
     let (first, boundaries) = preparation_instruction_boundaries(instructions)?;
+    // The static-image diagnostic has no independently authenticated dynamic
+    // RELATIVE slots. It retains the original single-instruction policy.
+    let register_context = !static_tail
+        && instructions
+            .iter()
+            .any(|instruction| instruction.bytes == [0xff, 0xd0]);
+    let entries = if register_context {
+        preparation_register_entry_targets(instructions, helpers)?
+    } else {
+        BTreeSet::new()
+    };
     let mut transfers = Vec::new();
     let mut edges = Vec::new();
-    for instruction in instructions {
+    for (index, instruction) in instructions.iter().enumerate() {
+        if register_context && instruction.bytes == [0xff, 0xd0] {
+            let (transfer, edge) =
+                preparation_register_got_call(instructions, index, first, &entries, got, helpers)?;
+            transfers.push(transfer);
+            edges.push(edge);
+            continue;
+        }
         let (next, got_edges) = preparation_instruction_transfer(
             instruction,
             first,
@@ -35804,6 +39751,161 @@ fn preparation_transfers_with_static_tail(
         edges.extend(got_edges);
     }
     Ok((transfers, edges))
+}
+
+// Newly eligible register-call functions have a finite ordinary-instruction
+// vocabulary as well as the unchanged per-instruction transfer checks. Merely
+// copying the old branch list would miss XBEGIN's abort edge (C7/F8, including
+// 66 rel16), or other unmodeled system/far transfers. Unknown families refuse.
+fn preparation_register_entry_targets(
+    instructions: &[EncodedConstructorInstruction],
+    helpers: &BTreeSet<u64>,
+) -> Result<BTreeSet<u64>> {
+    let mut entries = helpers.clone();
+    for instruction in instructions {
+        let bytes = &instruction.bytes;
+        let prefix = usize::from(bytes.first() == Some(&0x48));
+        let opcode = *bytes
+            .get(prefix)
+            .ok_or("truncated contextual prepare instruction")?;
+        let relative = match opcode {
+            0xe8 | 0xe9 => Some((1, 4)),
+            0xeb | 0x70..=0x7f | 0xe0..=0xe3 => Some((1, 1)),
+            0x0f if bytes
+                .get(prefix + 1)
+                .is_some_and(|second| (0x80..=0x8f).contains(second)) =>
+            {
+                Some((2, 4))
+            }
+            _ => None,
+        };
+        if let Some((offset, width)) = relative {
+            require(
+                prefix == 0 && bytes.len() == offset + width,
+                "prefixed/truncated contextual prepare branch",
+            )?;
+            let displacement = if width == 1 {
+                i64::from(bytes[offset] as i8)
+            } else {
+                i64::from(i32::from_le_bytes(
+                    bytes[offset..offset + 4].try_into().unwrap(),
+                ))
+            };
+            let target = instruction
+                .address
+                .checked_add(bytes.len() as u64)
+                .and_then(|next| next.checked_add_signed(displacement))
+                .ok_or("contextual prepare branch target overflows")?;
+            entries.insert(target);
+            continue;
+        }
+        let ordinary = match opcode {
+            // Architectural data operations only: no control-transfer group.
+            0x24
+            | 0x31
+            | 0x34
+            | 0x80
+            | 0x81
+            | 0x83
+            | 0x88..=0x8b
+            | 0x8d
+            | 0xa8
+            | 0xa9
+            | 0xb9
+            | 0xba
+            | 0xbe
+            | 0xbf => true,
+            0xc6 | 0xc7 => bytes
+                .get(prefix + 1)
+                .is_some_and(|modrm| ((modrm >> 3) & 7) == 0),
+            0x0f => bytes
+                .get(prefix + 1)
+                .is_some_and(|second| matches!(*second, 0x10 | 0x28 | 0x29 | 0x44 | 0x94)),
+            0xc3 => prefix == 0 && bytes.len() == 1,
+            0xff => {
+                prefix == 0
+                    && (bytes == &[0xff, 0xd0]
+                        || (bytes.len() == 6 && bytes.starts_with(&[0xff, 0x15])))
+            }
+            _ => false,
+        };
+        require(
+            ordinary,
+            "unmodeled instruction/flow in contextual prepare function",
+        )?;
+    }
+    Ok(entries)
+}
+
+// Prove one local RAX definition from a unique authenticated GOT load, with
+// at most two exact argument moves and no alternate entry after the definition.
+// This does not admit supplied-body dispatch or arbitrary register calls.
+fn preparation_register_got_call(
+    instructions: &[EncodedConstructorInstruction],
+    call_index: usize,
+    first: u64,
+    entries: &BTreeSet<u64>,
+    got: &BTreeMap<u64, u64>,
+    helpers: &BTreeSet<u64>,
+) -> Result<(ConstructorTransfer, GotEdge)> {
+    let call = &instructions[call_index];
+    require(
+        call.bytes == [0xff, 0xd0],
+        "not the exact contextual CALL RAX",
+    )?;
+    let mut load_index = call_index;
+    let load = loop {
+        load_index = load_index
+            .checked_sub(1)
+            .ok_or("contextual CALL RAX has no defining GOT load")?;
+        let instruction = &instructions[load_index];
+        let bytes = &instruction.bytes;
+        if bytes.len() == 7 && bytes.starts_with(&[0x48, 0x8b, 0x05]) {
+            break instruction;
+        }
+        let argument = (bytes.len() == 5 && matches!(bytes[0], 0xbf | 0xba))
+            || (bytes.len() == 8 && bytes.starts_with(&[0x48, 0x8d, 0xbc, 0x24]));
+        require(
+            call_index - load_index <= 2 && argument,
+            "contextual CALL RAX has an unproved/clobbered argument window",
+        )?;
+    };
+    require(
+        entries
+            .range((
+                std::ops::Bound::Excluded(load.address),
+                std::ops::Bound::Included(call.address),
+            ))
+            .next()
+            .is_none(),
+        "contextual CALL RAX has an entry after its defining load",
+    )?;
+    let displacement = i64::from(i32::from_le_bytes(load.bytes[3..7].try_into().unwrap()));
+    let slot = load
+        .address
+        .checked_add(7)
+        .and_then(|next| next.checked_add_signed(displacement))
+        .ok_or("contextual prepare GOT load address overflows")?;
+    let target = *got
+        .get(&slot)
+        .ok_or("contextual prepare GOT load is unresolved/preemptible")?;
+    require(
+        helpers.contains(&target),
+        "contextual prepare GOT target lacks an exact private helper role",
+    )?;
+    Ok((
+        ConstructorTransfer {
+            instruction: call.address,
+            target,
+            local_got_slot: Some(slot),
+        },
+        GotEdge {
+            source_function: first,
+            instruction: call.address,
+            slot,
+            target_function: target,
+        },
+    ))
 }
 
 fn qualify_prefix_data(
@@ -37488,6 +41590,9 @@ pub fn verify_runtime_receipt(
             } else {
                 FixedImageKind::Standalone
             },
+            expected
+                .compiled_sources
+                .map(|source| (source.record.layout, source.record.image_kind)),
         )?;
         join_fixed_native_syscalls(
             &receipt.qualification.allocator_backing,
@@ -49139,6 +53244,7 @@ mod tests {
             other_tls_unisolated: true,
             native_tls_layout100: None,
             native_tls_layout130_owner138: None,
+            native_tls_layout140_owner130_callbacke9: None,
         };
         let check = |proof: &NoInstallationScopeEvidence| {
             validate_no_installation_scope_evidence(&backing, proof, FixedImageKind::Detcore)
@@ -50717,6 +54823,7 @@ mod tests {
                 census,
                 native_tls_layout100,
                 native_tls_layout130_owner138,
+                native_tls_layout140_owner130_callbacke9,
                 version,
                 policy,
             } = semantic_off_test_census(&bytes, cohort).unwrap();
@@ -50736,6 +54843,8 @@ mod tests {
             proof.other_getter_pointer_slots = census.other_getter_pointer_slots;
             proof.native_tls_layout100 = native_tls_layout100;
             proof.native_tls_layout130_owner138 = native_tls_layout130_owner138;
+            proof.native_tls_layout140_owner130_callbacke9 =
+                native_tls_layout140_owner130_callbacke9;
             let check = |candidate: &NoInstallationScopeEvidence| {
                 validate_no_installation_scope_evidence(backing, candidate, cohort.image_kind())
             };
@@ -50909,6 +55018,9 @@ mod tests {
             NativeNoScopeTlsLayout::Dispatch130Owner138 => {
                 native_no_scope_layout130_owner138_census(&elf, bytes)?;
             }
+            NativeNoScopeTlsLayout::Dispatch140Owner130CallbackE9 => {
+                native_no_scope_layout140_owner130_callbacke9_census(&elf, bytes)?;
+            }
         }
         Ok(layout)
     }
@@ -50965,8 +55077,7 @@ mod tests {
             let mut truncated = good.clone();
             native_no_scope_test_put(&mut truncated, 0x8000 + 10 * 64 + 32, 8, size);
             let failure = native_no_scope_test_select_and_census(&truncated)
-                .err()
-                .expect("truncated pointer section must refuse");
+                .expect_err("truncated pointer section must refuse");
             assert!(
                 failure.contains("Fixed data section/load physical join differs"),
                 "section size {size:#x}: {failure}"
@@ -51316,8 +55427,7 @@ mod tests {
             native_no_scope_test_extra_writer(&mut bad, slot, 1);
             assert_eq!(&bad[0x3600..0x3610], &good[0x3600..0x3610]);
             let failure = native_no_scope_test_select_and_census(&bad)
-                .err()
-                .expect("overlapping template writer must refuse");
+                .expect_err("overlapping template writer must refuse");
             assert!(
                 failure.contains("initialized TLS template"),
                 "{label}: {failure}"
@@ -51345,8 +55455,7 @@ mod tests {
         );
         assert_eq!(symbol.st_shndx, section_header::SHN_UNDEF as usize);
         let failure = native_no_scope_test_select_and_census(&symbolic)
-            .err()
-            .expect("symbol-based initialized-template writer must refuse");
+            .expect_err("symbol-based initialized-template writer must refuse");
         assert!(failure.contains("initialized TLS template"), "{failure}");
         for slot in [0x35f8, 0x36e8, 0x3710] {
             let mut adjacent = good.clone();
@@ -52243,6 +56352,7 @@ mod tests {
             other_tls_unisolated: true,
             native_tls_layout100: None,
             native_tls_layout130_owner138: None,
+            native_tls_layout140_owner130_callbacke9: None,
         };
 
         let old = proof;
@@ -52266,6 +56376,7 @@ mod tests {
             census,
             native_tls_layout100,
             native_tls_layout130_owner138,
+            native_tls_layout140_owner130_callbacke9,
             version,
             policy,
         } = native130_test_selected(&bytes).unwrap();
@@ -52285,6 +56396,7 @@ mod tests {
         proof.other_tls_getters = census.other_tls_getters;
         proof.other_getter_pointer_slots = census.other_getter_pointer_slots;
         proof.native_tls_layout130_owner138 = native_tls_layout130_owner138;
+        proof.native_tls_layout140_owner130_callbacke9 = native_tls_layout140_owner130_callbacke9;
         let check = |candidate: &NoInstallationScopeEvidence| {
             validate_no_installation_scope_evidence(&backing, candidate, FixedImageKind::Detcore)
         };
@@ -52591,6 +56703,468 @@ mod tests {
             check(&ordinary).is_err(),
             "ordinary build cannot carry native130 payload"
         );
+        native140_owner130_callbacke9_complete_wire_controls(&backing, &old, &proof);
+    }
+
+    fn native140_owner130_callbacke9_complete_wire_controls(
+        backing: &AllocatorBackingEvidence,
+        old: &NoInstallationScopeEvidence,
+        old130: &NoInstallationScopeEvidence,
+    ) {
+        let bytes = native140_owner130_callbacke9_test_fixture();
+        let elf = Elf::parse(&bytes).unwrap();
+        let SelectedNoScopeCensus {
+            census,
+            native_tls_layout100,
+            native_tls_layout130_owner138,
+            native_tls_layout140_owner130_callbacke9,
+            version,
+            policy,
+        } = native130_test_selected(&bytes).unwrap();
+        let mut proof = old.clone();
+        proof.version = version;
+        proof.policy = policy.into();
+        proof.elf_sha256 = sha256(&bytes);
+        proof.current_build.artifact.sha256 = proof.elf_sha256.clone();
+        proof.mappings = census.mappings;
+        proof.static_symbol_count = elf.syms.len();
+        proof.dynamic_symbol_count = elf.dynsyms.len();
+        proof.raw_names_sha256 = census.raw_names_sha256;
+        proof.loader_writer_count = census.loader_writer_count;
+        proof.loader_writers_sha256 = census.loader_writers_sha256;
+        proof.other_tls_getters = census.other_tls_getters;
+        proof.other_getter_pointer_slots = census.other_getter_pointer_slots;
+        proof.native_tls_layout100 = native_tls_layout100;
+        proof.native_tls_layout130_owner138 = native_tls_layout130_owner138;
+        proof.native_tls_layout140_owner130_callbacke9 = native_tls_layout140_owner130_callbacke9;
+        let check = |candidate: &NoInstallationScopeEvidence| {
+            validate_no_installation_scope_evidence(backing, candidate, FixedImageKind::Detcore)
+        };
+        check(&proof).unwrap();
+        assert_eq!(proof.version, 5);
+        assert_eq!(proof.policy, NATIVE140_OWNER130_CALLBACK_E9_NO_SCOPE_POLICY);
+        let encoded = serde_json::to_vec(&proof).unwrap();
+        let decoded: NoInstallationScopeEvidence = serde_json::from_slice(&encoded).unwrap();
+        assert_eq!(decoded, proof);
+        check(&decoded).unwrap();
+        assert_eq!(
+            encoded,
+            serde_json::to_vec(&AllocatorInstallationEvidence::NoInstallationScope(
+                Box::new(proof.clone())
+            ))
+            .unwrap()
+        );
+        let old_json = serde_json::to_value(old).unwrap();
+        assert!(
+            old_json
+                .get("native_tls_layout140_owner130_callbacke9")
+                .is_none()
+        );
+        assert_eq!(
+            serde_json::to_vec(old).unwrap(),
+            serde_json::to_vec(
+                &serde_json::from_value::<NoInstallationScopeEvidence>(old_json).unwrap()
+            )
+            .unwrap()
+        );
+        let value = serde_json::to_value(&proof).unwrap();
+        let key = "native_tls_layout140_owner130_callbacke9";
+        let reject_json =
+            |bad: Value| match serde_json::from_value::<NoInstallationScopeEvidence>(bad) {
+                Err(_) => {}
+                Ok(candidate) => {
+                    assert!(check(&candidate).is_err(), "mutated new finite wire record")
+                }
+            };
+        for path in [vec![], vec![key], vec![key, "layout"]] {
+            let mut selected = &value;
+            for field in &path {
+                selected = &selected[*field];
+            }
+            for field in selected.as_object().unwrap().keys() {
+                let mut bad = value.clone();
+                let mut target = &mut bad;
+                for component in &path {
+                    target = &mut target[*component];
+                }
+                target.as_object_mut().unwrap().remove(field);
+                reject_json(bad);
+            }
+            let mut bad = value.clone();
+            let mut target = &mut bad;
+            for component in &path {
+                target = &mut target[*component];
+            }
+            target
+                .as_object_mut()
+                .unwrap()
+                .insert("unknown".into(), Value::Bool(true));
+            reject_json(bad);
+        }
+        for index in 0..29 {
+            for (path, object) in [
+                (
+                    vec![],
+                    value[key]["tls_population"][index].as_object().unwrap(),
+                ),
+                (
+                    vec!["symbol"],
+                    value[key]["tls_population"][index]["symbol"]
+                        .as_object()
+                        .unwrap(),
+                ),
+            ] {
+                for (field, original) in object {
+                    let mut bad = value.clone();
+                    let mut target = &mut bad[key]["tls_population"][index];
+                    for component in &path {
+                        target = &mut target[*component];
+                    }
+                    target.as_object_mut().unwrap().remove(field);
+                    reject_json(bad);
+                    if !original.is_object() {
+                        let mut bad = value.clone();
+                        let mut target = &mut bad[key]["tls_population"][index];
+                        for component in &path {
+                            target = &mut target[*component];
+                        }
+                        target[field] = if let Some(number) = original.as_u64() {
+                            Value::from(number ^ 1)
+                        } else {
+                            Value::from(format!("{}x", original.as_str().unwrap()))
+                        };
+                        reject_json(bad);
+                    }
+                }
+            }
+            let mut bad = value.clone();
+            bad[key]["tls_population"][index]["unknown"] = Value::Bool(true);
+            reject_json(bad);
+        }
+        for mutation in 0..21 {
+            let mut bad = proof.clone();
+            match mutation {
+                0 => bad.version = 4,
+                1 => bad.policy = NATIVE130_OWNER138_NO_SCOPE_POLICY.into(),
+                2 => bad.native_tls_layout140_owner130_callbacke9 = None,
+                3 => {
+                    bad.native_tls_layout130_owner138 = old130.native_tls_layout130_owner138.clone()
+                }
+                4 => {
+                    bad.native_tls_layout140_owner130_callbacke9
+                        .as_mut()
+                        .unwrap()
+                        .initialized_template_sha256 = "0".repeat(64)
+                }
+                5 => bad
+                    .native_tls_layout140_owner130_callbacke9
+                    .as_mut()
+                    .unwrap()
+                    .tls_population
+                    .pop()
+                    .map(|_| ())
+                    .unwrap(),
+                6 => {
+                    let cells = &mut bad
+                        .native_tls_layout140_owner130_callbacke9
+                        .as_mut()
+                        .unwrap()
+                        .tls_population;
+                    cells.push(cells[0].clone());
+                }
+                7 => {
+                    bad.native_tls_layout140_owner130_callbacke9
+                        .as_mut()
+                        .unwrap()
+                        .layout
+                        .tls_memory_size = 0x1c8
+                }
+                8 => {
+                    bad.native_tls_layout140_owner130_callbacke9
+                        .as_mut()
+                        .unwrap()
+                        .layout
+                        .tls_file_size = 0xe7
+                }
+                9 => {
+                    bad.native_tls_layout140_owner130_callbacke9
+                        .as_mut()
+                        .unwrap()
+                        .layout
+                        .tls_alignment = 16
+                }
+                10 => {
+                    bad.native_tls_layout140_owner130_callbacke9
+                        .as_mut()
+                        .unwrap()
+                        .layout
+                        .pending_initializer_sha256 = "0".repeat(64)
+                }
+                11 => bad
+                    .native_tls_layout140_owner130_callbacke9
+                    .as_mut()
+                    .unwrap()
+                    .layout
+                    .getter_pointer_targets
+                    .clear(),
+                12 => bad.other_tls_getters[0].getter.visibility ^= 2,
+                13 => bad.other_tls_getters[1].module_slot += 8,
+                14 => bad.other_tls_getters[2].plt_address += 16,
+                15 => bad.current_build.command.status = 1,
+                16 => bad.current_build.artifact.sha256 = "0".repeat(64),
+                17 => bad.source.sha256 = "0".repeat(64),
+                18 => bad.other_tls_unisolated = false,
+                19 => bad
+                    .current_build
+                    .packages
+                    .get_mut("reverie-liteinst")
+                    .unwrap()
+                    .features
+                    .push("liteinst".into()),
+                20 => {
+                    bad.current_build
+                        .packages
+                        .get_mut("consumer-runtime")
+                        .unwrap()
+                        .profile["test"] = Value::Bool(true)
+                }
+                _ => unreachable!(),
+            }
+            assert!(
+                check(&bad).is_err(),
+                "new complete cohort wire mutation {mutation}"
+            );
+        }
+        let mut old_with_payload = old.clone();
+        old_with_payload.native_tls_layout140_owner130_callbacke9 =
+            proof.native_tls_layout140_owner130_callbacke9.clone();
+        assert!(check(&old_with_payload).is_err());
+        let mut mixed = proof.clone();
+        mixed.native_tls_layout100 =
+            native130_test_selected(&native_no_scope_test_fixture(0x100).bytes)
+                .unwrap()
+                .native_tls_layout100;
+        assert!(check(&mixed).is_err());
+        let mut semantic = proof.clone();
+        for (getter, name) in semantic
+            .other_tls_getters
+            .iter_mut()
+            .zip(SEMANTIC_OFF_TEST_NAMES)
+        {
+            getter.getter.name = name.into();
+        }
+        assert!(
+            check(&semantic).is_err(),
+            "new finite cohort has no unmeasured semantic alias"
+        );
+    }
+
+    // Physical mini-ELF census controls only: no verified-source fabrication,
+    fn native140_owner130_callbacke9_test_fixture() -> Vec<u8> {
+        let mut bytes = native_no_scope_test_fixture(0x100).bytes;
+        for (index, &(_, offset)) in NATIVE140_OWNER130_CALLBACK_E9_NO_SCOPE_OTHER_GETTERS
+            .iter()
+            .enumerate()
+        {
+            native_no_scope_test_put(&mut bytes, 0x1500 + index * 0x40 + 16, 4, offset);
+            native_no_scope_test_put(
+                &mut bytes,
+                0x4000 + (index + 1) * 24 + 5,
+                1,
+                u64::from(NATIVE140_OWNER130_CALLBACK_E9_GETTER_VISIBILITY[index]),
+            );
+        }
+        native_no_scope_test_put(&mut bytes, 64 + 6 * 56 + 40, 8, 0x1c0);
+        native_no_scope_test_put(&mut bytes, 0x8000 + 13 * 64 + 32, 8, 0xd8);
+        for (index, &(name, offset, size, visibility, kind)) in
+            NATIVE140_OWNER130_CALLBACK_E9_TLS_POPULATION
+                .iter()
+                .enumerate()
+        {
+            let name = native130_test_static_name(&mut bytes, &name.replace("Cs_", "Cs1_"));
+            let row = 0x4000 + (index + 5) * 24;
+            for (field, width, value) in [
+                (0, 4, name),
+                (4, 1, u64::from(sym::STT_TLS)),
+                (5, 1, u64::from(visibility)),
+                (
+                    6,
+                    2,
+                    if kind == section_header::SHT_PROGBITS {
+                        12
+                    } else {
+                        13
+                    },
+                ),
+                (8, 8, offset),
+                (16, 8, size),
+            ] {
+                native_no_scope_test_put(&mut bytes, row + field, width, value);
+            }
+        }
+        native_no_scope_test_put(&mut bytes, 0x8000 + 2 * 64 + 32, 8, 34 * 24);
+        bytes[0x3600..0x36e8]
+            .copy_from_slice(&fixed_hex(NATIVE140_OWNER130_CALLBACK_E9_TLS_TEMPLATE_HEX));
+        bytes
+    }
+
+    #[test]
+    fn native140_owner130_callbacke9_complete_physical_controls() {
+        let good = native140_owner130_callbacke9_test_fixture();
+        let selected = native130_test_selected(&good).unwrap();
+        assert_eq!(
+            (selected.version, selected.policy),
+            (5, NATIVE140_OWNER130_CALLBACK_E9_NO_SCOPE_POLICY)
+        );
+        assert!(selected.native_tls_layout100.is_none());
+        assert!(selected.native_tls_layout130_owner138.is_none());
+        let payload = selected.native_tls_layout140_owner130_callbacke9.unwrap();
+        assert_eq!(payload.tls_population.len(), 29);
+        assert_eq!(payload.layout.cells.len(), 4);
+        assert_eq!(payload.layout.getter_pointer_targets.len(), 2);
+        assert_eq!(
+            payload.initialized_template_sha256,
+            sha256(&fixed_hex(NATIVE140_OWNER130_CALLBACK_E9_TLS_TEMPLATE_HEX))
+        );
+        assert_eq!(
+            native_no_scope_test_select_and_census(&good).unwrap(),
+            NativeNoScopeTlsLayout::Dispatch140Owner130CallbackE9
+        );
+        let elf = Elf::parse(&good).unwrap();
+        assert!(
+            derive_no_installation_scope_evidence(
+                &elf,
+                &good,
+                &BTreeMap::new(),
+                &BTreeMap::new(),
+                None
+            )
+            .is_err(),
+            "physical DATA must not manufacture compiled-source authority"
+        );
+        for (bytes, version, policy) in [
+            (
+                native_no_scope_test_fixture(0x140).bytes,
+                1,
+                NO_INSTALLATION_SCOPE_POLICY,
+            ),
+            (
+                native_no_scope_test_fixture(0x100).bytes,
+                2,
+                NATIVE100_NO_SCOPE_POLICY,
+            ),
+            (
+                native130_test_fixture(),
+                4,
+                NATIVE130_OWNER138_NO_SCOPE_POLICY,
+            ),
+        ] {
+            let old = native130_test_selected(&bytes).unwrap();
+            assert_eq!((old.version, old.policy), (version, policy));
+            assert!(old.native_tls_layout140_owner130_callbacke9.is_none());
+        }
+        let reject = |bytes: &[u8], label: &str| {
+            assert!(native130_test_selected(bytes).is_err(), "{label}");
+        };
+        for (index, &(name, offset, size, visibility, kind)) in
+            NATIVE140_OWNER130_CALLBACK_E9_TLS_POPULATION
+                .iter()
+                .enumerate()
+        {
+            let row = 0x4000 + (index + 5) * 24;
+            for (field, width, value) in [
+                (0, 4, 0),
+                (4, 1, u64::from(sym::STT_OBJECT)),
+                (4, 1, u64::from((sym::STB_GLOBAL << 4) | sym::STT_TLS)),
+                (5, 1, u64::from(visibility ^ 2)),
+                (6, 2, 0),
+                (
+                    6,
+                    2,
+                    if kind == section_header::SHT_PROGBITS {
+                        13
+                    } else {
+                        12
+                    },
+                ),
+                (8, 8, offset + 1),
+                (16, 8, size + 1),
+            ] {
+                let mut bad = good.clone();
+                native_no_scope_test_put(&mut bad, row + field, width, value);
+                reject(&bad, &format!("new29 typed row {index} field {field}"));
+            }
+            let mut bad = good.clone();
+            let wrong = native130_test_static_name(&mut bad, &format!("{name}x"));
+            native_no_scope_test_put(&mut bad, row, 4, wrong);
+            reject(&bad, "wrong normalized TLS identity");
+            let mut duplicate = good.clone();
+            duplicate.copy_within(row..row + 24, 0x4000 + 34 * 24);
+            native_no_scope_test_put(&mut duplicate, 0x8000 + 2 * 64 + 32, 8, 35 * 24);
+            reject(&duplicate, "extra static TLS alias");
+        }
+        for getter in 0..4 {
+            for byte in 0..22 {
+                let mut bad = good.clone();
+                bad[0x1500 + getter * 0x40 + byte] ^= 1;
+                reject(&bad, "complete getter instruction mutation");
+            }
+            let mut bad = good.clone();
+            native_no_scope_test_put(
+                &mut bad,
+                0x4000 + (getter + 1) * 24 + 5,
+                1,
+                u64::from(NATIVE140_OWNER130_CALLBACK_E9_GETTER_VISIBILITY[getter] ^ 2),
+            );
+            reject(&bad, "exact getter visibility");
+        }
+        for byte in 0..0xe8 {
+            let mut bad = good.clone();
+            bad[0x3600 + byte] ^= 1;
+            reject(&bad, "complete initialized TLS template mutation");
+        }
+        for (at, width, value) in [
+            (64 + 6 * 56 + 4, 4, 6),
+            (64 + 6 * 56 + 32, 8, 0xe7),
+            (64 + 6 * 56 + 40, 8, 0x1c8),
+            (64 + 6 * 56 + 48, 8, 16),
+            (0x8000 + 12 * 64 + 8, 8, 3),
+            (0x8000 + 13 * 64 + 32, 8, 0xe0),
+            (0x8000 + 13 * 64 + 16, 8, 0x36e9),
+            (0x8000 + 13 * 64 + 24, 8, 0x36e9),
+            (
+                0x4418 + 4,
+                1,
+                u64::from((sym::STB_GLOBAL << 4) | sym::STT_TLS),
+            ),
+            (0x4828, 8, 0x1541),
+            (0x4840, 8, 0x1500),
+        ] {
+            let mut bad = good.clone();
+            native_no_scope_test_put(&mut bad, at, width, value);
+            reject(
+                &bad,
+                &format!(
+                    "new exact PT_TLS/section/provider/pointer population at {at:#x} value {value:#x}"
+                ),
+            );
+        }
+        for slot in [0x3600, 0x3608, 0x36e7, 0x35fc, 0x1f00] {
+            let mut bad = good.clone();
+            native_no_scope_test_extra_writer(&mut bad, slot, 1);
+            reject(&bad, "initialized TLS or RX loader writer");
+        }
+        for vector in [
+            [0xe8, 0x130, 0, 0x140],
+            [0xe9, 0x138, 0, 0x130],
+            [0xe9, 0xf0, 0, 0x100],
+        ] {
+            let mut mixed = good.clone();
+            for (index, offset) in vector.into_iter().enumerate() {
+                native_no_scope_test_put(&mut mixed, 0x1500 + index * 0x40 + 16, 4, offset);
+            }
+            reject(&mixed, "mixed old/current getter and typed-cell vector");
+        }
     }
 
     // Physical mini-ELF census controls only: no verified-source fabrication,
@@ -53121,7 +57695,7 @@ mod tests {
     // The retained two-role Detcore cohort stays a separate unchanged route.
     fn fixed_detcore_tls_direct_schema_controls(retained: &AllocatorBackingEvidence) {
         let check = |b: &AllocatorBackingEvidence| {
-            validate_fixed_backing_evidence_in_source_context(b, FixedImageKind::Detcore)
+            validate_fixed_backing_evidence_in_source_context(b, FixedImageKind::Detcore, None)
         };
         let mut direct = retained.clone();
         let tls = direct.tls_boundary.existing_mut();
@@ -53749,7 +58323,7 @@ mod tests {
             tls.local_key_resolution =
                 key.map(|_| "local_relative_readonly_function_pointer".into());
             let check = |b: &AllocatorBackingEvidence| {
-                validate_fixed_backing_evidence_in_source_context(b, kind)
+                validate_fixed_backing_evidence_in_source_context(b, kind, None)
             };
             check(&sample).unwrap();
             if kind == FixedImageKind::Standalone && matches!(offset, 0x98 | 0xd8) {
@@ -56873,6 +61447,326 @@ mod tests {
     }
 
     #[test]
+    fn preparation_scalar_identity_roles_and_complete_bytes_are_finite() {
+        let roles = [
+            (
+                "_RINvNtCsFixture_4core4hint9black_boxONtNtB4_3ffi6c_voidECsOther_15reverie_inguest",
+                "prepare_scalar_mut_void_identity",
+            ),
+            (
+                "_RINvNtCsFixture_4core4hint9black_boxPNtNtB4_3ffi6c_voidECsOther_15reverie_inguest",
+                "prepare_scalar_const_void_identity",
+            ),
+            (
+                "_RINvNtCsFixture_4core4hint9black_boxjECsOther_15reverie_inguest",
+                "prepare_scalar_usize_identity",
+            ),
+        ];
+        for (name, role) in roles {
+            assert_eq!(preparation_role(name), Some(role));
+            assert_eq!(resolved_preparation_role(name), Some(role));
+            assert!(preparation_scalar_identity_role(role));
+            for bad in [
+                format!("{name}extra"),
+                format!("prefix{name}"),
+                name.replace("15reverie_inguest", "15foreign_inguest"),
+                name.replace("black_box", "black_bog"),
+                name.replace("4core", "4fake"),
+            ] {
+                assert!(preparation_role(&bad).is_none(), "{bad}");
+            }
+        }
+        assert!(
+            preparation_role("_RINvNtCsFixture_4core4hint9black_boxmECsOther_15reverie_inguest")
+                .is_none()
+        );
+        preparation_scalar_identity_bytes(PREPARE_SCALAR_IDENTITY_BYTES).unwrap();
+        for index in 0..PREPARE_SCALAR_IDENTITY_BYTES.len() {
+            let mut changed = PREPARE_SCALAR_IDENTITY_BYTES.to_vec();
+            changed[index] ^= 1;
+            assert!(
+                preparation_scalar_identity_bytes(&changed).is_err(),
+                "{index}"
+            );
+        }
+        for len in 0..PREPARE_SCALAR_IDENTITY_BYTES.len() {
+            assert!(
+                preparation_scalar_identity_bytes(&PREPARE_SCALAR_IDENTITY_BYTES[..len]).is_err()
+            );
+        }
+        let mut extra = PREPARE_SCALAR_IDENTITY_BYTES.to_vec();
+        extra.push(0x90);
+        assert!(preparation_scalar_identity_bytes(&extra).is_err());
+    }
+
+    #[test]
+    fn preparation_result_pointer_as_ref_requires_exact_type_and_complete_leaf() {
+        let name = "_RNvMNtNtCsCore_4core3ptr9const_ptrPINtNtB6_6result6ResultNtNtNtCsGuest_15reverie_inguest5guest11tool_region10ToolRegionlE6as_refB16_";
+        let role = "prepare_result_pointer_as_ref";
+        assert_eq!(preparation_role(name), Some(role));
+        assert_eq!(resolved_preparation_role(name), Some(role));
+        assert!(!preparation_scalar_identity_role(role));
+        for bad in [
+            format!("{name}extra"),
+            format!("prefix{name}"),
+            name.replace("15reverie_inguest", "15foreign_inguest"),
+            name.replace("4core", "4fake"),
+            name.replace("9const_ptrP", "7mut_ptrO"),
+            name.replace("10ToolRegionlE", "10ToolRegionxE"),
+            name.replace("ToolRegion", "GuestArena"),
+            name.replace("6as_ref", "6as_mut"),
+            name.replace("6result6Result", "6option6Option"),
+        ] {
+            assert!(preparation_role(&bad).is_none(), "{bad}");
+            assert!(resolved_preparation_role(&bad).is_none(), "{bad}");
+        }
+        preparation_result_pointer_as_ref_bytes(PREPARE_RESULT_POINTER_AS_REF_BYTES).unwrap();
+        for index in 0..PREPARE_RESULT_POINTER_AS_REF_BYTES.len() {
+            let mut changed = PREPARE_RESULT_POINTER_AS_REF_BYTES.to_vec();
+            changed[index] ^= 1;
+            assert!(
+                preparation_result_pointer_as_ref_bytes(&changed).is_err(),
+                "{index}"
+            );
+        }
+        for len in 0..PREPARE_RESULT_POINTER_AS_REF_BYTES.len() {
+            assert!(
+                preparation_result_pointer_as_ref_bytes(
+                    &PREPARE_RESULT_POINTER_AS_REF_BYTES[..len]
+                )
+                .is_err()
+            );
+        }
+        let mut extra = PREPARE_RESULT_POINTER_AS_REF_BYTES.to_vec();
+        extra.push(0x90);
+        assert!(preparation_result_pointer_as_ref_bytes(&extra).is_err());
+        assert!(preparation_result_pointer_as_ref_bytes(PREPARE_SCALAR_IDENTITY_BYTES).is_err());
+        assert!(preparation_scalar_identity_bytes(PREPARE_RESULT_POINTER_AS_REF_BYTES).is_err());
+    }
+
+    #[test]
+    fn preparation_register_got_context_requires_definition_and_no_alternate_entry() {
+        fn encode(parts: &[Vec<u8>]) -> Vec<EncodedConstructorInstruction> {
+            let mut address = 0x1000;
+            parts
+                .iter()
+                .map(|bytes| {
+                    let instruction = EncodedConstructorInstruction {
+                        address,
+                        bytes: bytes.clone(),
+                    };
+                    address += bytes.len() as u64;
+                    instruction
+                })
+                .collect()
+        }
+        fn load(address: u64, slot: u64) -> Vec<u8> {
+            let mut bytes = vec![0x48, 0x8b, 0x05];
+            bytes.extend(
+                i32::try_from(slot as i64 - address as i64 - 7)
+                    .unwrap()
+                    .to_le_bytes(),
+            );
+            bytes
+        }
+        fn parts(arguments: &[Vec<u8>]) -> Vec<Vec<u8>> {
+            let mut result = vec![load(0x1000, 0x4000)];
+            result.extend_from_slice(arguments);
+            result.extend([vec![0xff, 0xd0], vec![0xc3]]);
+            result
+        }
+        let helpers = BTreeSet::from([0x7000]);
+        let got = BTreeMap::from([(0x4000, 0x7000)]);
+        let edi = fixed_hex("bf01000000");
+        let edx = fixed_hex("ba0b000000");
+        let rdi = fixed_hex("488dbc2498000000");
+        for arguments in [
+            vec![],
+            vec![edi.clone()],
+            vec![fixed_hex("bf02000000")],
+            vec![fixed_hex("488dbc2418010000")],
+            vec![rdi.clone()],
+            vec![rdi.clone(), edx.clone()],
+        ] {
+            let instructions = encode(&parts(&arguments));
+            let call = instructions[instructions.len() - 2].address;
+            let (transfers, edges) = preparation_transfers(&instructions, &got, &helpers).unwrap();
+            assert_eq!(
+                transfers,
+                [ConstructorTransfer {
+                    instruction: call,
+                    target: 0x7000,
+                    local_got_slot: Some(0x4000),
+                }]
+            );
+            assert_eq!(
+                edges,
+                [GotEdge {
+                    source_function: 0x1000,
+                    instruction: call,
+                    slot: 0x4000,
+                    target_function: 0x7000,
+                }]
+            );
+            assert!(
+                preparation_transfers_with_static_tail(&instructions, &got, &helpers, true)
+                    .is_err()
+            );
+            assert!(preparation_transfers(&instructions, &BTreeMap::new(), &helpers).is_err());
+            assert!(preparation_transfers(&instructions, &got, &BTreeSet::new()).is_err());
+            assert!(preparation_transfers(
+                &instructions,
+                &BTreeMap::from([(0x4000, 0x7001)]),
+                &helpers,
+            )
+            .is_err());
+            for entry in (instructions[0].address + 1)..=call {
+                let mut with_entry = helpers.clone();
+                with_entry.insert(entry);
+                assert!(
+                    preparation_transfers(&instructions, &got, &with_entry).is_err(),
+                    "entry {entry:#x}"
+                );
+            }
+        }
+        // Negative signed displacement still uses the defining LOAD's next PC,
+        // not the later CALL (including a nonempty argument window).
+        let mut negative = parts(&[rdi.clone(), edx.clone()]);
+        negative[0] = load(0x1000, 0x800);
+        assert_eq!(
+            preparation_transfers(
+                &encode(&negative),
+                &BTreeMap::from([(0x800, 0x7000)]),
+                &helpers
+            )
+            .unwrap()
+            .1[0]
+                .slot,
+            0x800,
+        );
+        for clobber in [
+            fixed_hex("4831c0"),
+            fixed_hex("31c0"),
+            fixed_hex("6631c0"),
+            fixed_hex("b000"),
+            fixed_hex("b400"),
+            fixed_hex("4889c8"),
+            fixed_hex("e800000000"),
+            fixed_hex("eb00"),
+            fixed_hex("0f1f00"),
+        ] {
+            assert!(preparation_transfers(&encode(&parts(&[clobber])), &got, &helpers).is_err());
+        }
+        assert!(
+            preparation_transfers(
+                &encode(&parts(&[edi.clone(), edx.clone(), edi.clone()])),
+                &got,
+                &helpers,
+            )
+            .is_err()
+        );
+        for bad_call in [
+            fixed_hex("ffd1"),
+            fixed_hex("48ffd0"),
+            fixed_hex("66ffd0"),
+            fixed_hex("ff10"),
+            fixed_hex("ff1424"),
+            fixed_hex("ffe0"),
+            fixed_hex("ffd090"),
+        ] {
+            let mut changed = parts(&[]);
+            changed[1] = bad_call;
+            assert!(preparation_transfers(&encode(&changed), &got, &helpers).is_err());
+        }
+        for bad_load in [
+            fixed_hex("488b0d00000000"),
+            fixed_hex("488b05000000"),
+            fixed_hex("488b050000000090"),
+            fixed_hex("8b0500000000"),
+        ] {
+            let mut changed = parts(&[]);
+            changed[0] = bad_load;
+            assert!(preparation_transfers(&encode(&changed), &got, &helpers).is_err());
+        }
+        // Complete-function entry accounting includes backwards Jcc/LOOP/JMP
+        // edges and even an independently named direct helper entry at CALL.
+        let base = parts(&[rdi, edx]);
+        let instructions = encode(&base);
+        for target in instructions
+            .iter()
+            .skip(1)
+            .take(3)
+            .map(|instruction| instruction.address)
+        {
+            for opcode in [0x75, 0xe3, 0xeb] {
+                let mut changed = base.clone();
+                let branch_address = encode(&changed).last().unwrap().address + 1;
+                let displacement = i8::try_from(target as i64 - branch_address as i64 - 2).unwrap();
+                changed.push(vec![opcode, displacement as u8]);
+                assert!(preparation_transfers(&encode(&changed), &got, &helpers).is_err());
+            }
+            let mut changed = base.clone();
+            let branch_address = encode(&changed).last().unwrap().address + 1;
+            let displacement = i32::try_from(target as i64 - branch_address as i64 - 5).unwrap();
+            let mut branch = vec![0xe8];
+            branch.extend(displacement.to_le_bytes());
+            changed.push(branch);
+            let mut named = helpers.clone();
+            named.insert(target);
+            assert!(preparation_transfers(&encode(&changed), &got, &named).is_err());
+        }
+        // Jumping to the definition itself preserves the proof.
+        let positive = encode(&[
+            vec![0xeb, 0],
+            load(0x1002, 0x4000),
+            vec![0xff, 0xd0],
+            vec![0xc3],
+        ]);
+        preparation_transfers(&positive, &got, &helpers).unwrap();
+        for target_offset in [7, 8] {
+            let bypass = encode(&[
+                vec![0xeb, target_offset],
+                load(0x1002, 0x4000),
+                vec![0xff, 0xd0],
+                vec![0xc3],
+            ]);
+            assert!(preparation_transfers(&bypass, &got, &helpers).is_err());
+        }
+        // An unmodeled flow anywhere in the eligible function refuses, even
+        // when an old direct-branch-only collector would miss its abort edge.
+        for unmodeled in [
+            fixed_hex("c7f800000000"),
+            fixed_hex("66c7f80000"),
+            fixed_hex("c6f800"),
+            fixed_hex("667500"),
+            fixed_hex("660f8400000000"),
+            fixed_hex("67e300"),
+            fixed_hex("0f01d5"),
+            fixed_hex("0f01ec"),
+            fixed_hex("9a"),
+            fixed_hex("ea"),
+        ] {
+            let mut changed = parts(&[]);
+            changed.push(unmodeled);
+            assert!(preparation_transfers(&encode(&changed), &got, &helpers).is_err());
+        }
+        let mut discontinuous = encode(&parts(&[]));
+        discontinuous[1].address += 1;
+        assert!(preparation_transfers(&discontinuous, &got, &helpers).is_err());
+        let overflow = [
+            EncodedConstructorInstruction {
+                address: u64::MAX - 5,
+                bytes: load(0x1000, 0x4000),
+            },
+            EncodedConstructorInstruction {
+                address: u64::MAX,
+                bytes: vec![0xff, 0xd0],
+            },
+        ];
+        assert!(preparation_transfers(&overflow, &got, &helpers).is_err());
+    }
+
+    #[test]
     fn unresolved_or_preemptible_indirect_calls_do_not_earn_a_path() {
         let functions = BTreeMap::from([(0x1000, 16), (0x2000, 16)]);
         for instruction in ["call *%rax", "call *0x2ffa(%rip) # 4000 <malloc@GOT>"] {
@@ -56947,13 +61841,12 @@ mod tests {
         fn caller_row(bytes: &[u8], role: &str) -> usize {
             row(bytes, &spelling(role))
         }
-        fn context(
-            selected: usize,
-        ) -> (
+        type HeapEqualContext = (
             BTreeMap<String, u64>,
             BTreeMap<u64, u64>,
             BTreeMap<u64, Vec<u8>>,
-        ) {
+        );
+        fn context(selected: usize) -> HeapEqualContext {
             let mut targets = BTreeMap::new();
             let mut readonly = BTreeMap::new();
             for op in DEV_FIXED_HEAP_OPERANDS_0
@@ -70470,6 +75363,3828 @@ mod tests {
         assert!(detcore_validate_readonly_recipe(spec, 0x2000, &bad, &readonly, &context).is_err());
         // Writer/mapping/sole-RELATIVE controls continue exercising physical ELF
         // binder fixtures; synthetic readonly maps cannot earn that proof.
+    }
+    // Independently frozen c1 actual ELF 6fa582bd... complete bodies and
+    // objdump instruction cursors. These are pure machine controls, never
+    // physical/source qualification or a producer/runtime receipt.
+    fn dev_scalar_actual_helper_symbol(role: &str) -> &'static str {
+        match role {
+            "fixed_dev_backing_option_identity" => {
+                "_RINvNtCsayI02cGi06u_4core4hint9black_boxINtNtB4_6option6OptionRNtNtNtNtCsjW2rrTC9e82_15reverie_inguest5guest11tool_region5arena17FixedArenaBackingEEB17_"
+            }
+            "prepare_scalar_mut_void_identity" => {
+                "_RINvNtCsayI02cGi06u_4core4hint9black_boxONtNtB4_3ffi6c_voidECsjW2rrTC9e82_15reverie_inguest"
+            }
+            "prepare_scalar_const_void_identity" => {
+                "_RINvNtCsayI02cGi06u_4core4hint9black_boxPNtNtB4_3ffi6c_voidECsjW2rrTC9e82_15reverie_inguest"
+            }
+            "prepare_scalar_usize_identity" => {
+                "_RINvNtCsayI02cGi06u_4core4hint9black_boxjECsjW2rrTC9e82_15reverie_inguest"
+            }
+            "fixed_dev_i32_identity" => {
+                "_RINvNtCsayI02cGi06u_4core4hint9black_boxlECsjW2rrTC9e82_15reverie_inguest"
+            }
+            "fixed_dev_backing_option_map" => {
+                "_RINvMNtCsayI02cGi06u_4core6optionINtB3_6OptionRNtNtNtNtCsjW2rrTC9e82_15reverie_inguest5guest11tool_region5arena18FixedArenaMetadataE3mapRNtBL_17FixedArenaBackingNCNvBL_19fixed_arena_backing0EBR_"
+            }
+            "fixed_dev_heap_metadata_option_branch" => {
+                "_RNvXsJ_NtCsayI02cGi06u_4core6optionINtB5_6OptionRNtNtNtCsjW2rrTC9e82_15reverie_inguest5guest5alloc16ToolHeapMetadataENtNtNtB7_3ops9try_trait3Try6branchBR_"
+            }
+            "fixed_dev_backing_map_closure" => {
+                "_RNCNvNtNtNtCsjW2rrTC9e82_15reverie_inguest5guest11tool_region5arena19fixed_arena_backing0B9_"
+            }
+            "prepare_result_pointer_as_ref" => {
+                "_RNvMNtNtCsayI02cGi06u_4core3ptr9const_ptrPINtNtB6_6result6ResultNtNtNtCsjW2rrTC9e82_15reverie_inguest5guest11tool_region10ToolRegionlE6as_refB16_"
+            }
+            "fixed_dev_heap_metadata_pointer_as_ref" => {
+                "_RNvMNtNtCsayI02cGi06u_4core3ptr9const_ptrPNtNtNtCsjW2rrTC9e82_15reverie_inguest5guest5alloc16ToolHeapMetadata6as_refBK_"
+            }
+            "fixed_tool_owned_heap" => {
+                "_RNvMs6_NtNtCsjW2rrTC9e82_15reverie_inguest5guest5allocNtB5_18FixedToolAllocator10owned_heap"
+            }
+            "fixed_setup_bitmap_range" => {
+                "_RNvNtNtNtCsjW2rrTC9e82_15reverie_inguest5guest11tool_region5arena18fixed_bitmap_range"
+            }
+            _ => panic!("unknown frozen dev helper"),
+        }
+    }
+
+    fn dev_scalar_publication_samples() -> Vec<ScalarPublicationSample> {
+        vec![
+            // 0x31e300, 55B SHA256 c2cff4aeecc3281de8d4aa7e1ea17fa2e4d4ccce250f71157b57c6be45bc1215.
+            (
+                "fixed_arena_mprotect",
+                94,
+                "4883ec184889fe4889742410bf0a000000ba00000002b903000000e8a0ef04004889442408eb06ff15bb791b00488b4424084883c418c3",
+                &[0, 4, 7, 12, 17, 22, 27, 32, 37, 39, 45, 50, 54],
+                &[
+                    (28, 32, "fixed_scalar_syscall", false),
+                    (41, 45, "fixed_publication_cannot_unwind", true),
+                ],
+            ),
+            // 0x31e1c0, 312B SHA256 fb684a7e8a1e2cd0bfcfe2b77121fd31b0806c8b86336aee81b75934c45f5c51.
+            (
+                "fixed_arena_backing",
+                95,
+                "4883ec68488d3ddd121d02be02000000e87be80400a801757d488d05d0121d024889442438488d05c4121d024889442460488d05b8121d024889442458488d3dac121d02ff15cef11b004889c748897c2440e8394600004889c748897c244848897c2450ff15b6f11b004889c7ff15b5f11b004889442420488b54242031c0b9010000004883fa00480f44c148a901000000750deb1848c744241000000000eb79ff1589f11b004889442410eb6c488b7c242048897c2428ff157af11b004889c74889d6ff1576f11b004889c7ff1575f11b004889442418488b54241831c0b9010000004883fa00480f44c148a901000000740dff1536f11b004889442410eb19488b442418488944243048b800300200006000004889442410488b7c2410ff153bf11b004889c748897c2408ff1535f11b004883c468c3",
+                &[
+                    0, 4, 11, 16, 21, 23, 25, 32, 37, 44, 49, 56, 61, 68, 74, 77, 82, 87, 90, 95,
+                    100, 106, 109, 115, 120, 125, 127, 132, 136, 140, 146, 148, 150, 159, 161, 167,
+                    172, 174, 179, 184, 190, 193, 196, 202, 205, 211, 216, 221, 223, 228, 232, 236,
+                    242, 244, 250, 255, 257, 262, 267, 277, 282, 287, 293, 296, 301, 307, 311,
+                ],
+                &[
+                    (7, 11, "fixed_initializing", false),
+                    (17, 21, "fixed_metadata_atomic_load_bool", false),
+                    (28, 32, "fixed_region", false),
+                    (40, 44, "fixed_region", false),
+                    (52, 56, "fixed_region", false),
+                    (64, 68, "fixed_region", false),
+                    (70, 74, "prepare_scalar_const_void_identity", true),
+                    (83, 87, "fixed_region_publication_get_opaque", false),
+                    (102, 106, "prepare_result_pointer_as_ref", true),
+                    (111, 115, "fixed_region_option_result_branch", true),
+                    (163, 167, "fixed_metadata_option_residual", true),
+                    (186, 190, "fixed_region_result_as_ref", true),
+                    (198, 202, "fixed_region_result_ok", true),
+                    (207, 211, "fixed_region_option_region_branch", true),
+                    (246, 250, "fixed_metadata_option_residual", true),
+                    (289, 293, "fixed_dev_backing_option_map", true),
+                    (303, 307, "fixed_dev_backing_option_identity", true),
+                ],
+            ),
+            // 0x31dca8, 250B SHA256 560f15a084c1ff50c494bba936b337e4004c5fa306c1707ce65f197a0274e156.
+            (
+                "fixed_arena_setup",
+                82,
+                "534889fbbeffff0000ba0120010031c9e8f300000084c00f84d20000004889dfbeff3f0100ba0160010031c9e8d700000084c00f84b60000004889dfbeffff0d00ba01f00f0031c9e8bb00000084c00f849a00000048bf0000001000600000e8f40500004885c00f888900000048bf0000001400600000e8dc0500004885c0787548b8003002000060000048c7000000000048c7400800000000c640100048c74018000000004889dfbeffff0000ba01200100b901000000e84b0000004889dfbeff3f0100ba01600100b901000000e8340000004889dfbeffff0d00ba01f00f00b901000000e81d00000031c0eb09b816000000eb02f7d85bc3",
+                &[
+                    0, 1, 4, 9, 14, 16, 21, 23, 29, 32, 37, 42, 44, 49, 51, 57, 60, 65, 70, 72, 77,
+                    79, 85, 95, 100, 103, 109, 119, 124, 127, 129, 139, 146, 154, 158, 166, 169,
+                    174, 179, 184, 189, 192, 197, 202, 207, 212, 215, 220, 225, 230, 235, 237, 239,
+                    244, 246, 248, 249,
+                ],
+                &[
+                    (17, 21, "fixed_setup_bitmap_range", false),
+                    (45, 49, "fixed_setup_bitmap_range", false),
+                    (73, 77, "fixed_setup_bitmap_range", false),
+                    (96, 100, "fixed_arena_mprotect", false),
+                    (120, 124, "fixed_arena_mprotect", false),
+                    (185, 189, "fixed_setup_bitmap_range", false),
+                    (208, 212, "fixed_setup_bitmap_range", false),
+                    (231, 235, "fixed_setup_bitmap_range", false),
+                ],
+            ),
+            // 0x31e340, 607B SHA256 26a819efd33e3643247489bcf512acd33f68004e519f80ae12d4583bd070b040.
+            (
+                "fixed_tool_heap_metadata",
+                96,
+                "4881ece8000000488d3d5a111d02be02000000e8f8e6040088442467eb008a442467a8010f85a9000000eb00488d3d3d111d024889bc24b80000004889bc24e00000004889bc24d8000000488b0546f01b00ffd04889442458eb00488b7c24584889bc24c0000000e8a34400004889c74889bc24c80000004889bc24d0000000488b0519f01b00ffd04889442450eb00488b7c2450488b050cf01b00ffd04889442448eb00488b44244848898424a0000000488b9424a000000031c0b9010000004883fa00480f44c148a9010000007513eb3348c784249000000000000000e9e3000000488b05c5ef1b00ffd04889442440eb00488b4424404889842490000000e9c1000000488bbc24a00000004889bc24a8000000488b059bef1b00ffd048895424304889442438eb00488b742430488b7c2438488b0584ef1b00ffd04889442428eb00488b7c2428488b0577ef1b00ffd04889442420eb00488b4424204889842498000000488b94249800000031c0b9010000004883fa00480f44c148a901000000741f488b0523ef1b00ffd04889442418eb00488b4424184889842490000000eb22488b84249800000048898424b000000048b800300200006000004889842490000000488b8424900000004889442410eb06ff15cc771b00488b4424104889442470488b542470b80100000031c94883fa00480f44c148a9010000007419488b442470488944240848894424784889842488000000eb1feb0048c744246800000000488b7c2468488b0566ee1b00ffd048890424eb19488b4424084889842480000000488b4424084889442468ebd3488b04244881c4e8000000c3",
+                &[
+                    0, 7, 14, 19, 24, 28, 30, 34, 36, 42, 44, 51, 59, 67, 75, 82, 84, 89, 91, 96,
+                    104, 109, 112, 120, 128, 135, 137, 142, 144, 149, 156, 158, 163, 165, 170, 178,
+                    186, 188, 193, 197, 201, 207, 209, 211, 223, 228, 235, 237, 242, 244, 249, 257,
+                    262, 270, 278, 285, 287, 292, 297, 299, 304, 309, 316, 318, 323, 325, 330, 337,
+                    339, 344, 346, 351, 359, 367, 369, 374, 378, 382, 388, 390, 397, 399, 404, 406,
+                    411, 419, 421, 429, 437, 447, 455, 463, 468, 470, 476, 481, 486, 491, 496, 498,
+                    502, 506, 512, 514, 519, 524, 529, 537, 539, 541, 550, 555, 562, 564, 568, 570,
+                    575, 583, 588, 593, 595, 599, 606,
+                ],
+                &[
+                    (10, 14, "fixed_initializing", false),
+                    (20, 24, "fixed_metadata_atomic_load_bool", false),
+                    (47, 51, "fixed_region", false),
+                    (78, 82, "prepare_scalar_const_void_identity", true),
+                    (105, 109, "fixed_region_publication_get_opaque", false),
+                    (131, 135, "prepare_result_pointer_as_ref", true),
+                    (152, 156, "fixed_region_option_result_branch", true),
+                    (231, 235, "fixed_metadata_option_residual", true),
+                    (281, 285, "fixed_region_result_as_ref", true),
+                    (312, 316, "fixed_region_result_ok", true),
+                    (333, 337, "fixed_region_option_region_branch", true),
+                    (393, 397, "fixed_metadata_option_residual", true),
+                    (472, 476, "fixed_publication_cannot_unwind", true),
+                    (558, 562, "prepare_scalar_const_void_identity", true),
+                ],
+            ),
+            // 0x322850, 234B SHA256 a432ff0769858288745d38c7a25db838c525ba6287e3ce41439f7f144dc3cba5.
+            (
+                "fixed_region_publication_get_opaque",
+                97,
+                "4883ec5848897c241048897c242048897c2440eb06ff157d341b00488b4424104883e0074883f8007516488b4424104883f8000f94c024ff34ffa8017519eb35488b742410bf08000000488d15c7551a00ff1561341b00488b7c241048897c24284883c718be02000000e891a104008844240feb0d488d3d9c551a00ff153e341b008a44240fa8017504eb00eb0c488b4424104889442450eb1d48c744241800000000488b7c2418488b05d9aa1b00ffd048890424eb2a488b4424104889442430488b4424104889442448488b4424104889442438488b4424104889442418ebc2488b04244883c458c3",
+                &[
+                    0, 4, 9, 14, 19, 21, 27, 32, 36, 40, 42, 47, 51, 54, 56, 58, 60, 62, 64, 69,
+                    74, 81, 87, 92, 97, 101, 106, 111, 115, 117, 124, 130, 134, 136, 138, 140, 142,
+                    147, 152, 154, 163, 168, 175, 177, 181, 183, 188, 193, 198, 203, 208, 213, 218,
+                    223, 225, 229, 233,
+                ],
+                &[
+                    (23, 27, "fixed_publication_cannot_unwind", true),
+                    (77, 81, "fixed_scalar_publication_get_location", false),
+                    (83, 87, "fixed_heap_panic_misaligned", true),
+                    (107, 111, "fixed_metadata_atomic_load_bool", false),
+                    (120, 124, "fixed_scalar_publication_get_location", false),
+                    (126, 130, "fixed_panic_null_reference", true),
+                    (171, 175, "prepare_scalar_const_void_identity", true),
+                ],
+            ),
+            // 0x322940, 353B SHA256 b3197fe0caf21d74c2856a65098b3a0fdd3e09f1e8bdf5439c96c8dd09575a6f.
+            (
+                "fixed_region_publication_set_opaque",
+                98,
+                "4881ec8800000048897c2410488974241848897c2440488974244848897c2468eb06ff1580331b00488b4424104883e0074883f8007516488b4424104883f8000f94c024ff34ffa8017519eb35488b742410bf08000000488d15e2541a00ff1564331b00488b7c241048897c24504883c718be02000000e894a004008844240feb0d488d3db7541a00ff1541331b008a44240fa8017511eb00488b4424104889842480000000eb17488b05e9ac1b00bf0b000000ffd089442408e998000000488b4424104889442458488b4424184889442460488b4424184889442470488b0848894c2428488b480848894c2430488b40104889442438488b4424104889442478488b4c2428488908488b4c243048894808488b4c243848894810488b7c24104883c718ba0100000089d6e8d0a00400eb00488b055fac1b0031ffffd089442404eb008b442404894424248b4424244881c488000000c38b44240889442424ebea",
+                &[
+                    0, 7, 12, 17, 22, 27, 32, 34, 40, 45, 49, 53, 55, 60, 64, 67, 69, 71, 73, 75,
+                    77, 82, 87, 94, 100, 105, 110, 114, 119, 124, 128, 130, 137, 143, 147, 149,
+                    151, 153, 158, 166, 168, 175, 180, 182, 186, 191, 196, 201, 206, 211, 216, 221,
+                    224, 229, 233, 238, 242, 247, 252, 257, 262, 265, 270, 274, 279, 283, 288, 292,
+                    297, 299, 304, 306, 313, 315, 317, 321, 323, 327, 331, 335, 342, 343, 347, 351,
+                ],
+                &[
+                    (36, 40, "fixed_publication_cannot_unwind", true),
+                    (90, 94, "fixed_scalar_publication_set_location", false),
+                    (96, 100, "fixed_heap_panic_misaligned", true),
+                    (120, 124, "fixed_metadata_atomic_load_bool", false),
+                    (133, 137, "fixed_scalar_publication_set_location", false),
+                    (139, 143, "fixed_panic_null_reference", true),
+                    (171, 175, "fixed_dev_i32_identity", true),
+                    (300, 304, "fixed_heap_atomic_bool_store", false),
+                    (309, 313, "fixed_dev_i32_identity", true),
+                ],
+            ),
+            // 0x328f30, 254B SHA256 2db50ebb2f5c6f1d2ee89c68e0d3b16784a4b3ed1119e7feb115acd55587679f.
+            (
+                "fixed_tool_require_owned",
+                99,
+                "4883ec7848893c2448897c2438e8fe53ffff4889c748897c247048897c2460ff15eb4c1b004889c7ff15ea4c1b004889442440488b54244031c0b9010000004883fa00480f44c148a901000000740d488d7c2420ff15c64c1b00eb45488b442440488944246848b9000000100060000048894c245048c7442458000000024889442448488b4424484889442420488b4424504889442428488b4424584889442430488b542420b80100000031c94883fa00480f44c148a9010000007432488b3424488b4424204889442408488b4424284889442410488b4424304889442418488d7c2408e887fdffffa801750ceb05e89c0a0000e8970a00004883c478c3",
+                &[
+                    0, 4, 8, 13, 18, 21, 26, 31, 37, 40, 46, 51, 56, 58, 63, 67, 71, 77, 79, 84,
+                    90, 92, 97, 102, 112, 117, 126, 131, 136, 141, 146, 151, 156, 161, 166, 171,
+                    173, 177, 181, 187, 189, 193, 198, 203, 208, 213, 218, 223, 228, 233, 235, 237,
+                    239, 244, 249, 253,
+                ],
+                &[
+                    (14, 18, "fixed_tool_heap_metadata", false),
+                    (33, 37, "fixed_dev_heap_metadata_pointer_as_ref", true),
+                    (42, 46, "fixed_dev_heap_metadata_option_branch", true),
+                    (86, 90, "fixed_tool_heap_option_residual", true),
+                    (229, 233, "fixed_span_contains", false),
+                    (240, 244, "fixed_refuse_foreign", false),
+                    (245, 249, "fixed_refuse_foreign", false),
+                ],
+            ),
+            // 0x329ce0, 294B SHA256 38ec2a0ecf3aed024d483d126b2d74ee8da74187cb4661871beeaa225933e74d.
+            (
+                "fixed_tool_alloc",
+                100,
+                "4881ec9800000048893424488954240848897c244848897424504889542458e83c46ffff4889c74889bc24900000004889bc2480000000ff15233f1b004889c7ff15223f1b004889442460488b54246031c0b9010000004883fa00480f44c148a901000000740d488d7c2430ff15fe3e1b00eb48488b442460488984248800000048b9000000100060000048894c247048c7442478000000024889442468488b4424684889442430488b4424704889442438488b4424784889442440488b542430b80100000031c94883fa00480f44c148a9010000007438488b542408488b3424488b4424304889442418488b4424384889442420488b4424404889442428488d7c2418e867e6ffff4889442410eb0948c744241000000000488b4424104881c498000000c3",
+                &[
+                    0, 7, 11, 16, 21, 26, 31, 36, 39, 47, 55, 61, 64, 70, 75, 80, 82, 87, 91, 95,
+                    101, 103, 108, 114, 116, 121, 129, 139, 144, 153, 158, 163, 168, 173, 178, 183,
+                    188, 193, 198, 200, 204, 208, 214, 216, 221, 225, 230, 235, 240, 245, 250, 255,
+                    260, 265, 270, 272, 281, 286, 293,
+                ],
+                &[
+                    (32, 36, "fixed_tool_heap_metadata", false),
+                    (57, 61, "fixed_dev_heap_metadata_pointer_as_ref", true),
+                    (66, 70, "fixed_dev_heap_metadata_option_branch", true),
+                    (110, 114, "fixed_tool_heap_option_residual", true),
+                    (261, 265, "fixed_heap_allocate", false),
+                ],
+            ),
+            // 0x329e10, 59B SHA256 11e129e845e8e74e11b707765f00d90823ae996c8952d47c6190d3c777037a39.
+            (
+                "fixed_tool_dealloc",
+                101,
+                "4883ec48488974240848897c24284889742430488954243848894c2440488d7c2410e8e9efffff488b742408488d7c2410e84ad8ffff4883c448c3",
+                &[0, 4, 9, 14, 19, 24, 29, 34, 39, 44, 49, 54, 58],
+                &[
+                    (35, 39, "fixed_tool_owned_heap", false),
+                    (50, 54, "fixed_heap_deallocate", false),
+                ],
+            ),
+            // 0x329e50, 255B SHA256 a588c0b860bc4211c46aa1077ec465c8e80c93c0e349297fdcd55a37de7fac42.
+            (
+                "fixed_tool_realloc",
+                102,
+                "4881ec8800000048897424084c89442410488954241848894c242048897c245848897424604c89442468488d7c2430e89cefffff488d7c2418e8c2010000488b7c24104889c6e8b50000004889442448488954245031c0b90100000048837c244800480f44c148a901000000740b48c744242800000000eb79488b742448488b54245048897424704889542478488d7c2430e869e5ffff4889c748893c244889bc2480000000ff15943d1b00a8017539488d7c2418e836010000488b7424104889c7ff1520be1a00488b3424488b7c24084889c2ff15bec51a00488b742408488d7c2430e857d7ffff488b04244889442428488b4424284881c488000000c3",
+                &[
+                    0, 7, 12, 17, 22, 27, 32, 37, 42, 47, 52, 57, 62, 67, 70, 75, 80, 85, 87, 92,
+                    98, 102, 108, 110, 119, 121, 126, 131, 136, 141, 146, 151, 154, 158, 166, 172,
+                    174, 176, 181, 186, 191, 194, 200, 204, 209, 212, 218, 223, 228, 233, 237, 242,
+                    247, 254,
+                ],
+                &[
+                    (48, 52, "fixed_tool_owned_heap", false),
+                    (58, 62, "fixed_heap_layout_align", false),
+                    (
+                        71,
+                        75,
+                        "_RNvMNtNtCs_4core5alloc6layoutNtB2_6Layout15from_size_alignCs_15reverie_inguest",
+                        false,
+                    ),
+                    (147, 151, "fixed_heap_allocate", false),
+                    (
+                        168,
+                        172,
+                        "_RNvMNtNtCs_4core3ptr7mut_ptrOh7is_nullCs_7futures",
+                        true,
+                    ),
+                    (182, 186, "fixed_heap_layout_size", false),
+                    (
+                        196,
+                        200,
+                        "_RNvYjNtNtCs_4core3cmp3Ord3minCs_10serde_core",
+                        true,
+                    ),
+                    (214, 218, "fixed_copy_bytes", true),
+                    (229, 233, "fixed_heap_deallocate", false),
+                ],
+            ),
+            // 0x32ae40, 39B SHA256 7d00065bf53ffae77ac8b31a569f8a0646d7afd87b7fe9e698505805d251d26f.
+            (
+                "fixed_native_owner_gettid",
+                103,
+                "5031c089c1bfba0000004889ce4889cae86b24040048890424eb06ff1587ae1a00488b042459c3",
+                &[0, 1, 3, 5, 10, 13, 16, 21, 25, 27, 33, 37, 38],
+                &[
+                    (17, 21, "fixed_scalar_syscall", false),
+                    (29, 33, "fixed_publication_cannot_unwind", true),
+                ],
+            ),
+            // 0x32ae90, 1411B SHA256 b66f330c639904a917f694203352c418f972a9803265370e2d723c7bfc3650bf.
+            (
+                "fixed_constructor_prepare",
+                104,
+                "4881ec7802000048897c24604889bc24a80000004889e04889842480000000488b84248000000048894424684889bc24d000000048898424d8000000c68424e3000000014889bc24e8000000488b05dd271b00ffd04889442470eb00488b7c2468488b05d8271b00ffd04889442458eb00488b05c8271b00bf01000000ffd04889442450eb00488dbc24c00000004889bc24f80000004889bc24f0000000488b058b271b00ffd04889442448eb00488b4c2448488b542450488b742458488b7c2470e8a1f3ffff89442444898424e400000083f80074158b44244489842488000000c684249000000000eb2d488b8c24c00000008a8424c800000048898c24000100008884240801000048898c248800000088842490000000eb06ff1537ad1a0031c0b90100000080bc249000000000480f44c148a901000000740dc744247c01000000e92e040000488b442460488b94248800000048895424388a8c2490000000884c244348899424b0000000888c24b80000004883e0074883f8007516488b4424604883f8000f94c024ff34ffa8017519eb34488b742460bf08000000488d150ad91900ff15ccac1a00488b7c24604883c758488bb42480000000ba01000000e849180400eb0d488d3de0d81900ff15aaac1a008a442443488b4c243848898c24680100008884247001000048ba0010000000600000488994245001000048898c245801000088842460010000488b84246001000048898424400100000f108424500100000f29842430010000488d3dea431c024889bc24c8010000488b84244001000048898424e00100000f288424300100000f298424d0010000488b8424e001000048898424300200000f288424d00100000f29842420020000488b84243002000048898424900100000f288424200200000f298424800100004889bc24180200004889bc2408020000488b0593221b00ffd04889442430eb00488b44243048898424f0010000488d8424800100004889842470020000488dbc24800100004889bc24100200004889bc2400020000488b0536251b00ffd04889442428eb00488b742428488b7c24304889b424f8010000e89677ffff83f8000f8492000000488b84248001000048898424b0010000488b84248801000048898424b8010000488b84249001000048898424c0010000488b8424b00100004889842498010000488b8424b801000048898424a0010000488b8424c001000048898424a8010000488b8424980100004889842418010000488b8424a00100004889842420010000488b8424a80100004889842428010000eb08c6842428010000fe488b05bc2b1b00488dbc2418010000ffd08954242089442424eb008b7424208b7c2424488b0571241b00ffd0895424188944241ceb008b4424188b4c241c898c2410010000898424140100008b84241001000048a901000000742d8bb4241401000089b4247c010000488d1523d61900488b05542b1b00488dbc2498000000ffd0eb00e90f010000488b4424384883e0074883f8007517488b4424384883f8000f94c034ffa801751ce9dc000000488b742438bf08000000488d15bcd51900ff15f6a91a00488b7c24384883c748be03000000ba01000000e876150400eb00488d3d75411c0231f6ba01000000e801180400eb00488d3d68411c024889bc24400200004889bc24680200004889bc2460020000488b0571201b00ffd04889442410eb00488b7c24104889bc2448020000e8ce74ffff4889c74889bc24500200004889bc2458020000488b0544201b00ffd04889442408eb00488b7c2408488b056f2a1b00ffd048890424eb00488b3424488b05642a1b00488dbc2498000000ba0b000000ffd0eb00eb0d488d3dead41900ff152ca91a00eb008b84249800000048a901000000740ac744247c01000000eb08c744247c000000008b44247c4881c478020000c3",
+                &[
+                    0, 7, 12, 20, 23, 31, 39, 44, 52, 60, 68, 76, 83, 85, 90, 92, 97, 104, 106,
+                    111, 113, 120, 125, 127, 132, 134, 142, 150, 158, 165, 167, 172, 174, 179, 184,
+                    189, 194, 199, 203, 210, 213, 215, 219, 226, 234, 236, 244, 251, 259, 266, 274,
+                    281, 283, 289, 291, 296, 304, 308, 314, 316, 324, 329, 334, 342, 347, 354, 358,
+                    366, 373, 377, 381, 383, 388, 392, 395, 397, 399, 401, 403, 405, 410, 415, 422,
+                    428, 433, 437, 445, 450, 455, 457, 464, 470, 474, 479, 487, 494, 504, 512, 520,
+                    527, 535, 543, 551, 559, 566, 574, 582, 590, 598, 606, 614, 622, 630, 638, 646,
+                    654, 662, 670, 678, 686, 693, 695, 700, 702, 707, 715, 723, 731, 739, 747, 755,
+                    762, 764, 769, 771, 776, 781, 789, 794, 797, 803, 811, 819, 827, 835, 843, 851,
+                    859, 867, 875, 883, 891, 899, 907, 915, 923, 931, 939, 947, 949, 957, 964, 972,
+                    974, 978, 982, 984, 988, 992, 999, 1001, 1005, 1009, 1011, 1015, 1019, 1026,
+                    1033, 1040, 1046, 1048, 1055, 1062, 1069, 1076, 1084, 1086, 1088, 1093, 1098,
+                    1102, 1106, 1108, 1113, 1117, 1120, 1122, 1124, 1126, 1131, 1136, 1141, 1148,
+                    1154, 1159, 1163, 1168, 1173, 1178, 1180, 1187, 1189, 1194, 1199, 1201, 1208,
+                    1216, 1224, 1232, 1239, 1241, 1246, 1248, 1253, 1261, 1266, 1269, 1277, 1285,
+                    1292, 1294, 1299, 1301, 1306, 1313, 1315, 1319, 1321, 1325, 1332, 1340, 1345,
+                    1347, 1349, 1351, 1358, 1364, 1366, 1373, 1379, 1381, 1389, 1391, 1399, 1403,
+                    1410,
+                ],
+                &[
+                    (79, 83, "prepare_scalar_mut_void_identity", true),
+                    (100, 104, "prepare_scalar_usize_identity", true),
+                    (116, 120, "prepare_scalar_usize_identity", true),
+                    (161, 165, "prepare_scalar_mut_void_identity", true),
+                    (195, 199, "fixed_native_from_native", false),
+                    (285, 289, "fixed_publication_cannot_unwind", true),
+                    (418, 422, "fixed_naked_constructor_record_location", false),
+                    (424, 428, "fixed_heap_panic_misaligned", true),
+                    (
+                        451,
+                        455,
+                        "_RNvMs16_NtNtCs_4core4sync6atomicINtB6_6AtomicjE5storeCs_15reverie_inguest",
+                        false,
+                    ),
+                    (460, 464, "fixed_naked_constructor_record_location", false),
+                    (466, 470, "fixed_panic_null_reference", true),
+                    (562, 566, "fixed_region", false),
+                    (689, 693, "prepare_scalar_const_void_identity", true),
+                    (758, 762, "prepare_scalar_mut_void_identity", true),
+                    (790, 794, "fixed_region_publication_set_opaque", false),
+                    (960, 964, "fixed_publication_result_map_err", true),
+                    (
+                        995,
+                        999,
+                        "_RNvXsp_NtCs_4core6resultINtB5_6ResultulENtNtNtB7_3ops9try_trait3Try6branchCs_15reverie_inguest",
+                        true,
+                    ),
+                    (1065, 1069, "fixed_dev_publish_payload_location", false),
+                    (
+                        1072,
+                        1076,
+                        "_RNvXsq_NtCs_4core6resultINtB5_6ResultRNtNtNtCs_15reverie_inguest5guest11tool_region10ToolRegionlEINtNtNtB7_3ops9try_trait12FromResidualIBy_NtNtB7_7convert10InfalliblelEE13from_residualBR_",
+                        true,
+                    ),
+                    (1144, 1148, "fixed_naked_publish_record_location", false),
+                    (1150, 1154, "fixed_heap_panic_misaligned", true),
+                    (
+                        1174,
+                        1178,
+                        "_RNvMs16_NtNtCs_4core4sync6atomicINtB6_6AtomicjE5storeCs_15reverie_inguest",
+                        false,
+                    ),
+                    (1183, 1187, "fixed_initializing", false),
+                    (1195, 1199, "fixed_heap_atomic_bool_store", false),
+                    (1204, 1208, "fixed_region", false),
+                    (1235, 1239, "prepare_scalar_const_void_identity", true),
+                    (1262, 1266, "fixed_region_publication_get_opaque", false),
+                    (1288, 1292, "prepare_result_pointer_as_ref", true),
+                    (1309, 1313, "fixed_publication_option_and_then", true),
+                    (
+                        1328,
+                        1332,
+                        "_RINvMNtCs_4core6optionINtB3_6OptionRNtNtNtCs_15reverie_inguest5guest11tool_region10ToolRegionE5ok_orlEBP_",
+                        true,
+                    ),
+                    (1354, 1358, "fixed_naked_publish_record_location", false),
+                    (1360, 1364, "fixed_panic_null_reference", true),
+                ],
+            ),
+            // 0x32b630, 1411B SHA256 a3250aa81bf22f529c70ca039859f8f86d474d3fa4be0072bee54d1ff0f29262.
+            (
+                "fixed_generic_prepare",
+                105,
+                "4881ec7802000048897c24604889bc24a80000004889e04889842480000000488b84248000000048894424684889bc24d000000048898424d8000000c68424e3000000024889bc24e8000000488b053d201b00ffd04889442470eb00488b7c2468488b0538201b00ffd04889442458eb00488b0528201b00bf02000000ffd04889442450eb00488dbc24c00000004889bc24f80000004889bc24f0000000488b05eb1f1b00ffd04889442448eb00488b4c2448488b542450488b742458488b7c2470e801ecffff89442444898424e400000083f80074158b44244489842488000000c684249000000000eb2d488b8c24c00000008a8424c800000048898c24000100008884240801000048898c248800000088842490000000eb06ff1597a51a0031c0b90100000080bc249000000000480f44c148a901000000740dc744247c01000000e92e040000488b442460488b94248800000048895424388a8c2490000000884c244348899424b0000000888c24b80000004883e0074883f8007516488b4424604883f8000f94c024ff34ffa8017519eb34488b742460bf08000000488d1582d11900ff152ca51a00488b7c24604883c758488bb42480000000ba01000000e8a9100400eb0d488d3d58d11900ff150aa51a008a442443488b4c243848898c24680100008884247001000048ba0010000000600000488994245001000048898c245801000088842460010000488b84246001000048898424400100000f108424500100000f29842430010000488d3d4a3c1c024889bc24c8010000488b84244001000048898424e00100000f288424300100000f298424d0010000488b8424e001000048898424300200000f288424d00100000f29842420020000488b84243002000048898424900100000f288424200200000f298424800100004889bc24180200004889bc2408020000488b05f31a1b00ffd04889442430eb00488b44243048898424f0010000488d8424800100004889842470020000488dbc24800100004889bc24100200004889bc2400020000488b05961d1b00ffd04889442428eb00488b742428488b7c24304889b424f8010000e8f66fffff83f8000f8492000000488b84248001000048898424b0010000488b84248801000048898424b8010000488b84249001000048898424c0010000488b8424b00100004889842498010000488b8424b801000048898424a0010000488b8424c001000048898424a8010000488b8424980100004889842418010000488b8424a00100004889842420010000488b8424a80100004889842428010000eb08c6842428010000fe488b051c241b00488dbc2418010000ffd08954242089442424eb008b7424208b7c2424488b05d11c1b00ffd0895424188944241ceb008b4424188b4c241c898c2410010000898424140100008b84241001000048a901000000742d8bb4241401000089b4247c010000488d1583ce1900488b05b4231b00488dbc2498000000ffd0eb00e90f010000488b4424384883e0074883f8007517488b4424384883f8000f94c034ffa801751ce9dc000000488b742438bf08000000488d151cce1900ff1556a21a00488b7c24384883c748be03000000ba01000000e8d60d0400eb00488d3dd5391c0231f6ba01000000e861100400eb00488d3dc8391c024889bc24400200004889bc24680200004889bc2460020000488b05d1181b00ffd04889442410eb00488b7c24104889bc2448020000e82e6dffff4889c74889bc24500200004889bc2458020000488b05a4181b00ffd04889442408eb00488b7c2408488b05cf221b00ffd048890424eb00488b3424488b05c4221b00488dbc2498000000ba0b000000ffd0eb00eb0d488d3d4acd1900ff158ca11a00eb008b84249800000048a901000000740ac744247c01000000eb08c744247c000000008b44247c4881c478020000c3",
+                &[
+                    0, 7, 12, 20, 23, 31, 39, 44, 52, 60, 68, 76, 83, 85, 90, 92, 97, 104, 106,
+                    111, 113, 120, 125, 127, 132, 134, 142, 150, 158, 165, 167, 172, 174, 179, 184,
+                    189, 194, 199, 203, 210, 213, 215, 219, 226, 234, 236, 244, 251, 259, 266, 274,
+                    281, 283, 289, 291, 296, 304, 308, 314, 316, 324, 329, 334, 342, 347, 354, 358,
+                    366, 373, 377, 381, 383, 388, 392, 395, 397, 399, 401, 403, 405, 410, 415, 422,
+                    428, 433, 437, 445, 450, 455, 457, 464, 470, 474, 479, 487, 494, 504, 512, 520,
+                    527, 535, 543, 551, 559, 566, 574, 582, 590, 598, 606, 614, 622, 630, 638, 646,
+                    654, 662, 670, 678, 686, 693, 695, 700, 702, 707, 715, 723, 731, 739, 747, 755,
+                    762, 764, 769, 771, 776, 781, 789, 794, 797, 803, 811, 819, 827, 835, 843, 851,
+                    859, 867, 875, 883, 891, 899, 907, 915, 923, 931, 939, 947, 949, 957, 964, 972,
+                    974, 978, 982, 984, 988, 992, 999, 1001, 1005, 1009, 1011, 1015, 1019, 1026,
+                    1033, 1040, 1046, 1048, 1055, 1062, 1069, 1076, 1084, 1086, 1088, 1093, 1098,
+                    1102, 1106, 1108, 1113, 1117, 1120, 1122, 1124, 1126, 1131, 1136, 1141, 1148,
+                    1154, 1159, 1163, 1168, 1173, 1178, 1180, 1187, 1189, 1194, 1199, 1201, 1208,
+                    1216, 1224, 1232, 1239, 1241, 1246, 1248, 1253, 1261, 1266, 1269, 1277, 1285,
+                    1292, 1294, 1299, 1301, 1306, 1313, 1315, 1319, 1321, 1325, 1332, 1340, 1345,
+                    1347, 1349, 1351, 1358, 1364, 1366, 1373, 1379, 1381, 1389, 1391, 1399, 1403,
+                    1410,
+                ],
+                &[
+                    (79, 83, "prepare_scalar_mut_void_identity", true),
+                    (100, 104, "prepare_scalar_usize_identity", true),
+                    (116, 120, "prepare_scalar_usize_identity", true),
+                    (161, 165, "prepare_scalar_mut_void_identity", true),
+                    (195, 199, "fixed_native_from_native", false),
+                    (285, 289, "fixed_publication_cannot_unwind", true),
+                    (418, 422, "fixed_naked_generic_record_location", false),
+                    (424, 428, "fixed_heap_panic_misaligned", true),
+                    (
+                        451,
+                        455,
+                        "_RNvMs16_NtNtCs_4core4sync6atomicINtB6_6AtomicjE5storeCs_15reverie_inguest",
+                        false,
+                    ),
+                    (460, 464, "fixed_naked_generic_record_location", false),
+                    (466, 470, "fixed_panic_null_reference", true),
+                    (562, 566, "fixed_region", false),
+                    (689, 693, "prepare_scalar_const_void_identity", true),
+                    (758, 762, "prepare_scalar_mut_void_identity", true),
+                    (790, 794, "fixed_region_publication_set_opaque", false),
+                    (960, 964, "fixed_publication_result_map_err", true),
+                    (
+                        995,
+                        999,
+                        "_RNvXsp_NtCs_4core6resultINtB5_6ResultulENtNtNtB7_3ops9try_trait3Try6branchCs_15reverie_inguest",
+                        true,
+                    ),
+                    (1065, 1069, "fixed_dev_publish_payload_location", false),
+                    (
+                        1072,
+                        1076,
+                        "_RNvXsq_NtCs_4core6resultINtB5_6ResultRNtNtNtCs_15reverie_inguest5guest11tool_region10ToolRegionlEINtNtNtB7_3ops9try_trait12FromResidualIBy_NtNtB7_7convert10InfalliblelEE13from_residualBR_",
+                        true,
+                    ),
+                    (1144, 1148, "fixed_naked_publish_record_location", false),
+                    (1150, 1154, "fixed_heap_panic_misaligned", true),
+                    (
+                        1174,
+                        1178,
+                        "_RNvMs16_NtNtCs_4core4sync6atomicINtB6_6AtomicjE5storeCs_15reverie_inguest",
+                        false,
+                    ),
+                    (1183, 1187, "fixed_initializing", false),
+                    (1195, 1199, "fixed_heap_atomic_bool_store", false),
+                    (1204, 1208, "fixed_region", false),
+                    (1235, 1239, "prepare_scalar_const_void_identity", true),
+                    (1262, 1266, "fixed_region_publication_get_opaque", false),
+                    (1288, 1292, "prepare_result_pointer_as_ref", true),
+                    (1309, 1313, "fixed_publication_option_and_then", true),
+                    (
+                        1328,
+                        1332,
+                        "_RINvMNtCs_4core6optionINtB3_6OptionRNtNtNtCs_15reverie_inguest5guest11tool_region10ToolRegionE5ok_orlEBP_",
+                        true,
+                    ),
+                    (1354, 1358, "fixed_naked_publish_record_location", false),
+                    (1360, 1364, "fixed_panic_null_reference", true),
+                ],
+            ),
+            // 0x32a2f8, 301B SHA256 6fbd105211bdafa6f8d27e2b7f6b5b3b3e157a6ea7343da20a3928ded59bbf03.
+            (
+                "fixed_native_from_native",
+                78,
+                "5341544155415641574889fb4989cc4989d54883fa0174164883fa020f85f500000048b8a010020000600000eb0a48b830100200006000004839c30f85d6000000803d68511c02000f84c900000048b800101000006000004839c60f82b600000048b800109000006000004839c60f83a3000000e8cf0a00004885c00f8e95000000483943400f858b00000048837b50010f858000000048837b38007479488b0383e00f83f808756e488d3d08511c02e8a384ffff4885c0755db801000000ba02000000f0480fb15348754b49be001000000060000041803e007542b8000100004889c148c1e906498b54ce08480fa3c2732448ffc0483d0209000072e34c89f7e8aa38ffff85c0751949891c2445886c240831c0eb0cb816000000eb05b80b000000415f415e415d415c5bc3",
+                &[
+                    0, 1, 3, 5, 7, 9, 12, 15, 18, 22, 24, 28, 34, 44, 46, 56, 59, 65, 72, 78, 88,
+                    91, 97, 107, 110, 116, 121, 124, 130, 134, 140, 145, 151, 156, 158, 161, 164,
+                    167, 169, 176, 181, 184, 186, 191, 196, 202, 204, 214, 218, 220, 225, 228, 232,
+                    237, 241, 243, 246, 252, 254, 257, 262, 264, 266, 270, 275, 277, 279, 284, 286,
+                    291, 293, 295, 297, 299, 300,
+                ],
+                &[
+                    (67, 72, "fixed_initializing", false),
+                    (117, 121, "fixed_native_owner_gettid", false),
+                    (172, 176, "fixed_region", false),
+                    (177, 181, "fixed_region_publication_get_opaque", false),
+                    (258, 262, "fixed_arena_setup", false),
+                ],
+            ),
+            // 0x320a80, 21B SHA256 cea44930d94456e8a453cb12fde2251c92ee0a3f67afbb2c6ef925aaa6a1bacf.
+            (
+                "fixed_dev_backing_option_identity",
+                0,
+                "48897c24f848897c24f0488d4424f0488b4424f0c3",
+                &[0, 5, 10, 15, 20],
+                &[],
+            ),
+            // 0x320aa0, 21B SHA256 cea44930d94456e8a453cb12fde2251c92ee0a3f67afbb2c6ef925aaa6a1bacf.
+            (
+                "prepare_scalar_mut_void_identity",
+                1,
+                "48897c24f848897c24f0488d4424f0488b4424f0c3",
+                &[0, 5, 10, 15, 20],
+                &[],
+            ),
+            // 0x320ac0, 21B SHA256 cea44930d94456e8a453cb12fde2251c92ee0a3f67afbb2c6ef925aaa6a1bacf.
+            (
+                "prepare_scalar_const_void_identity",
+                2,
+                "48897c24f848897c24f0488d4424f0488b4424f0c3",
+                &[0, 5, 10, 15, 20],
+                &[],
+            ),
+            // 0x320b00, 21B SHA256 cea44930d94456e8a453cb12fde2251c92ee0a3f67afbb2c6ef925aaa6a1bacf.
+            (
+                "prepare_scalar_usize_identity",
+                3,
+                "48897c24f848897c24f0488d4424f0488b4424f0c3",
+                &[0, 5, 10, 15, 20],
+                &[],
+            ),
+            // 0x320b20, 18B SHA256 a3dbca2416ab3ebe1a1f3d4371867c04642a393dc3a3621e1c98aea03d51bbaf.
+            (
+                "fixed_dev_i32_identity",
+                4,
+                "897c24fc897c24f8488d4424f88b4424f8c3",
+                &[0, 4, 8, 13, 17],
+                &[],
+            ),
+            // 0x354670, 78B SHA256 0993e40e8072ad72036ee54e03a848fd9e3679bf6945293efd9d9bbbe4b5b010.
+            (
+                "fixed_dev_backing_option_map",
+                5,
+                "4883ec2848897c2408488b542408b80100000031c94883fa00480f44c148a9010000007416488b7c240848897c2420e8dc3500004889442410eb0948c744241000000000488b4424104883c428c3",
+                &[
+                    0, 4, 9, 14, 19, 21, 25, 29, 35, 37, 42, 47, 52, 57, 59, 68, 73, 77,
+                ],
+                &[(48, 52, "fixed_dev_backing_map_closure", false)],
+            ),
+            // 0x356760, 65B SHA256 1842c2f60c8fea10cf463a561f3e1d70c15a6ad18504f1dc9bc7cac489a295cf.
+            (
+                "fixed_dev_heap_metadata_option_branch",
+                6,
+                "48897c24e8488b5424e8b80100000031c94883fa00480f44c148a9010000007411488b4424e848894424f848894424f0eb0948c74424f000000000488b4424f0c3",
+                &[0, 5, 10, 15, 17, 21, 25, 31, 33, 38, 43, 48, 50, 59, 64],
+                &[],
+            ),
+            // 0x357c80, 13B SHA256 7294d9ad1b18cbf0b956f5258c661f821bdfa156644efba46af3fd6b013a2a6a.
+            (
+                "fixed_dev_backing_map_closure",
+                7,
+                "48897c24f8488d05ecadd7ffc3",
+                &[0, 5, 12],
+                &[(8, 12, "fixed_backing_object", false)],
+            ),
+            // 0x375810, 43B SHA256 7db6c5ae6c204f1344ec256c4f3c5586a3f3eb96756af076526f0eb9139c7c8e.
+            (
+                "prepare_result_pointer_as_ref",
+                8,
+                "48897c24e848897c24f84883ff00740c488b4424e848894424f0eb0948c74424f000000000488b4424f0c3",
+                &[0, 5, 10, 14, 16, 21, 26, 28, 37, 42],
+                &[],
+            ),
+            // 0x37a3f0, 43B SHA256 7db6c5ae6c204f1344ec256c4f3c5586a3f3eb96756af076526f0eb9139c7c8e.
+            (
+                "fixed_dev_heap_metadata_pointer_as_ref",
+                9,
+                "48897c24e848897c24f84883ff00740c488b4424e848894424f0eb0948c74424f000000000488b4424f0c3",
+                &[0, 5, 10, 14, 16, 21, 26, 28, 37, 42],
+                &[],
+            ),
+            // 0x36d2c0, 51B SHA256 97d2f2b95de7118020bad54fd64ed8664e2a74bb9b73398f926f63897f6ad8ea.
+            (
+                "fixed_scalar_syscall",
+                106,
+                "4883ec2848897c24084889742410488954241848894c242031c04189c14d89c848c7042400000000ff15a23017004883c428c3",
+                &[0, 4, 9, 14, 19, 24, 26, 29, 32, 40, 46, 50],
+                &[(42, 46, "reverie_inguest_trusted_syscall", true)],
+            ),
+            // Actual0x328e20, 267B SHA256 2d8f8aeef0ea9e9944e26f83ef704fa2417fd6fc95ae0bae3836ec646dd63b83.
+            (
+                "fixed_tool_owned_heap",
+                0,
+                "4883ec78488974240848897c241048897c24184889742438e80355ffff4889c748897c247048897c2460ff15f04d1b004889c7ff15ef4d1b004889442440488b54244031c0b9010000004883fa00480f44c148a901000000740d488d7c2420ff15cb4d1b00eb45488b442440488944246848b9000000100060000048894c245048c7442458000000024889442448488b4424484889442420488b4424504889442428488b4424584889442430488b542420b80100000031c94883fa00480f44c148a901000000742f488b742408488b7c2410488b442420488907488b44242848894708488b44243048894710e88ffeffffa801750ceb05e8a40b0000e89f0b0000488b4424184883c478c3",
+                &[
+                    0, 4, 9, 14, 19, 24, 29, 32, 37, 42, 48, 51, 57, 62, 67, 69, 74, 78, 82, 88,
+                    90, 95, 101, 103, 108, 113, 123, 128, 137, 142, 147, 152, 157, 162, 167, 172,
+                    177, 182, 184, 188, 192, 198, 200, 205, 210, 215, 218, 223, 227, 232, 236, 241,
+                    243, 245, 247, 252, 257, 262, 266,
+                ],
+                &[
+                    (25, 29, "fixed_tool_heap_metadata", false),
+                    (44, 48, "fixed_dev_heap_metadata_pointer_as_ref", true),
+                    (53, 57, "fixed_dev_heap_metadata_option_branch", true),
+                    (97, 101, "fixed_tool_heap_option_residual", true),
+                    (237, 241, "fixed_span_contains", false),
+                    (248, 252, "fixed_refuse_foreign", false),
+                    (253, 257, "fixed_refuse_foreign", false),
+                ],
+            ),
+            // Actual0x31ddb0, 520B SHA256 9bddd7e0cb581f12ea514f7ace3096419cbae3eab91c1e559306a09e2414ff42.
+            (
+                "fixed_setup_bitmap_range",
+                1,
+                "4881ecf80000004889542438488974244048897c244888c88844245648897c24604889742468488954247024018844247f4883e7074883ff007516488b4424484883f8000f94c024ff34ffa8017519eb2f488b742448bf08000000488d151e9c1a00ff15f07e1b00488b4424484883c008488944243048898424f0000000eb0d488d3df99b1a00ff15d37e1b00488b44243048898424a0000000488b442440488b4c243048898c24800000004889442458488b44243848394424587207c644245701eb2c488b442430488b4c245848c1e90648898424a800000048898c24b000000048c1e1034801c84889442428eb0c8a4424574881c4f8000000c3488b4424284889842488000000488b4424584883e03f89c748c78424d00000000100000089bc24d800000083e73f897c241c89bc24dc000000488d352c9b1a00e82fd205008b44241c89c089c1b80100000048d3e04889442420488b442428488b4c242048898c249000000048898424b8000000488b0048894424108a442456488b4c241048898c2498000000a8017515488b4c2420488b4424104821c84883f800754deb27488b442428488b542420488b4c24104809d148898424c000000048898c24c8000000488908eb2e488b44245848898424e000000048c78424e8000000010000004883c0014889442408eb0cc644245700e9f9feffffebd0488b4424084889442458e9a9feffff",
+                &[
+                    0, 7, 12, 17, 22, 24, 28, 33, 38, 43, 45, 49, 53, 57, 59, 64, 68, 71, 73, 75,
+                    77, 79, 81, 86, 91, 98, 104, 109, 113, 118, 126, 128, 135, 141, 146, 154, 159,
+                    164, 172, 177, 182, 187, 189, 194, 196, 201, 206, 210, 218, 226, 230, 233, 238,
+                    240, 244, 251, 252, 257, 265, 270, 274, 276, 288, 295, 298, 302, 309, 316, 321,
+                    325, 327, 329, 334, 337, 342, 347, 352, 360, 368, 371, 376, 380, 385, 393, 395,
+                    397, 402, 407, 410, 414, 416, 418, 423, 428, 433, 436, 444, 452, 455, 457, 462,
+                    470, 482, 486, 491, 493, 498, 503, 505, 510, 515,
+                ],
+                &[
+                    (94, 98, "fixed_dev_scalar_bitmap_reference_143_27", false),
+                    (100, 104, "fixed_panic_misaligned_reference", true),
+                    (131, 135, "fixed_dev_scalar_bitmap_reference_143_27", false),
+                    (137, 141, "fixed_panic_null_reference", true),
+                    (312, 316, "fixed_shift_location", false),
+                    (317, 321, "fixed_setup_shift_guard", false),
+                ],
+            ),
+        ]
+    }
+
+    fn dev_scalar_publication_control_graph(mutations: bool) -> DetcorePublicationControlGraph {
+        // Reuse only static storage addresses from the historical graph.
+        // All27 current whole bodies use independent measured samples; neither
+        // historical bitmap175/495 nor optimized raw23 supplies DEV evidence.
+        let old = naked_owner_publication_control_graph(0, false);
+        let mut targets = old.targets;
+        let mut selected = BTreeMap::new();
+        let mut transfers = BTreeMap::new();
+        let mut witnesses = BTreeMap::new();
+        let samples = dev_scalar_publication_samples();
+        for (i, &(role, ..)) in samples.iter().enumerate() {
+            targets.insert(role.into(), 0x1000000 + i as u64 * 0x10000);
+        }
+        let mut ordinal = 0;
+        for &(_, _, _, _, operands) in &samples {
+            for &(_, _, key, _) in operands {
+                if !targets.contains_key(key) {
+                    targets.insert(key.into(), 0x2000000 + ordinal * 0x1000);
+                    ordinal += 1;
+                }
+            }
+        }
+        for (i, binding) in FIXED_DEV_SCALAR_ALLOC_LOCATIONS.iter().enumerate() {
+            let address = 0x5000000 + i as u64 * 0x1000;
+            let file = 0x5100000;
+            targets.insert(binding.request.into(), address);
+            targets.insert(binding.spec.key.into(), address);
+            targets.insert(format!("{}_file", binding.request), file);
+            targets.insert(format!("{}_file", binding.spec.key), file);
+        }
+        targets.insert("fixed_shift_panic_text".into(), 0x5200000);
+        targets.insert("fixed_panic_nounwind_fmt".into(), 0x5300000);
+        let context = detcore_validate_control_context("dev-complete-source-context");
+        let mut readonly = BTreeMap::new();
+        for (i, key) in FIXED_DEV_SCALAR_OPERATION_DATA.iter().enumerate() {
+            let spec = fixed_dev_scalar_operation_data_spec(key).unwrap();
+            let address = targets[*key];
+            readonly.insert(address, fixed_hex(spec.hex));
+            if spec.kind == "location" {
+                let file = 0x5400000 + i as u64 * 0x1000;
+                targets.insert(format!("{key}_file"), file);
+                readonly.insert(file, fixed_hex(spec.file_hex));
+            }
+        }
+        // Independent frozen coordinates, including complete payload775:9.
+        for (i, key, path, line, column) in [
+            (
+                0,
+                "fixed_scalar_publication_get_location",
+                "tool_region.rs",
+                89_u32,
+                36_u32,
+            ),
+            (
+                1,
+                "fixed_scalar_publication_set_location",
+                "tool_region.rs",
+                138,
+                36,
+            ),
+            (
+                2,
+                "fixed_naked_constructor_record_location",
+                "tool_region_constructor.rs",
+                803,
+                14,
+            ),
+            (
+                3,
+                "fixed_naked_generic_record_location",
+                "tool_region_constructor.rs",
+                820,
+                14,
+            ),
+            (
+                4,
+                "fixed_naked_publish_record_location",
+                "tool_region_constructor.rs",
+                785,
+                18,
+            ),
+            (
+                5,
+                "fixed_dev_publish_payload_location",
+                "tool_region_constructor.rs",
+                775,
+                9,
+            ),
+        ] {
+            let address = 0x4000000 + i * 0x100;
+            let file = 0x5000000 + i * 0x100;
+            targets.insert(key.into(), address);
+            targets.insert(format!("{key}_file"), file);
+            let name = &context[&format!("rv:reverie-inguest/src/guest/{path}")];
+            let mut location = vec![0; 24];
+            location[8..16].copy_from_slice(&(name.len() as u64).to_le_bytes());
+            location[16..20].copy_from_slice(&line.to_le_bytes());
+            location[20..24].copy_from_slice(&column.to_le_bytes());
+            readonly.insert(address, location);
+            readonly.insert(file, name.clone());
+        }
+        let mut slots = BTreeMap::new();
+        let mut got = BTreeMap::new();
+        for &(_, _, _, _, operands) in &samples {
+            for &(_, _, key, indirect) in operands {
+                if indirect && !slots.contains_key(key) {
+                    let slot = 0x6000000 + slots.len() as u64 * 8;
+                    slots.insert(key, slot);
+                    got.insert(slot, targets[key]);
+                }
+            }
+        }
+        let shift_slot = 0x6100000;
+        got.insert(shift_slot, targets["fixed_panic_nounwind_fmt"]);
+        for &(role, index, whole, offsets, operands) in &samples {
+            let address = targets[role];
+            let mut bytes = fixed_hex(whole);
+            for &(at, next, key, indirect) in operands {
+                let operand = if indirect { slots[key] } else { targets[key] };
+                let delta = i32::try_from(i128::from(operand) - i128::from(address) - next as i128)
+                    .unwrap();
+                bytes[at..at + 4].copy_from_slice(&delta.to_le_bytes());
+            }
+            let instructions = |body: &[u8]| -> Vec<EncodedConstructorInstruction> {
+                offsets
+                    .iter()
+                    .enumerate()
+                    .map(|(i, &at)| {
+                        let end = offsets.get(i + 1).copied().unwrap_or(body.len());
+                        EncodedConstructorInstruction {
+                            address: address + at as u64,
+                            bytes: body[at..end].to_vec(),
+                        }
+                    })
+                    .collect()
+            };
+            let is_helper = FIXED_DEV_SCALAR_HELPER_SYMBOLS
+                .iter()
+                .any(|&(r, _)| r == role);
+            let is_operation = FIXED_DEV_SCALAR_OPERATIONS.iter().any(|r| r.role == role);
+            let check = |body: &[u8],
+                         ins: &[EncodedConstructorInstruction],
+                         ts: &BTreeMap<String, u64>,
+                         gs: &BTreeMap<u64, u64>,
+                         ro: &BTreeMap<u64, Vec<u8>>,
+                         ctx: &BTreeMap<String, Vec<u8>>| {
+                if is_operation {
+                    fixed_dev_scalar_operation_qualified(
+                        role,
+                        address,
+                        (body, ins),
+                        DetcoreRecipeBindings {
+                            targets: ts,
+                            got: gs,
+                            readonly: ro,
+                            context: ctx,
+                        },
+                        true,
+                    )
+                } else if is_helper {
+                    fixed_dev_scalar_helper_qualified_operation(role, address, (body, ins), ts, gs)
+                } else {
+                    fixed_detcore_qualified_operation(
+                        role,
+                        address,
+                        (body, ins),
+                        DetcoreRecipeBindings {
+                            targets: ts,
+                            got: gs,
+                            readonly: ro,
+                            context: ctx,
+                        },
+                        0,
+                        false,
+                    )
+                }
+            };
+            let ins = instructions(&bytes);
+            let witness = check(&bytes, &ins, &targets, &got, &readonly, &context)
+                .unwrap_or_else(|e| panic!("dev whole sample {role}: {e}"));
+            assert_eq!(
+                witness.kind,
+                if is_operation {
+                    AuthenticatedDetcoreOperationKind::DevScalarOperation(index)
+                } else if is_helper {
+                    AuthenticatedDetcoreOperationKind::DevScalarHelper(index)
+                } else {
+                    AuthenticatedDetcoreOperationKind::ValidateTemplate(index)
+                }
+            );
+            if mutations {
+                for byte in 0..bytes.len() {
+                    let mut bad = bytes.clone();
+                    bad[byte] ^= 1;
+                    if is_operation {
+                        let error = match check(
+                            &bad,
+                            &instructions(&bad),
+                            &targets,
+                            &got,
+                            &readonly,
+                            &context,
+                        ) {
+                            Err(error) => error,
+                            Ok(_) => panic!("changed current operation body was accepted"),
+                        };
+                        assert!(
+                            error.starts_with(&format!("current dev operation machine {role}:")),
+                            "{role}/{byte}: {error}"
+                        );
+                    }
+                    assert!(
+                        check(
+                            &bad,
+                            &instructions(&bad),
+                            &targets,
+                            &got,
+                            &readonly,
+                            &context
+                        )
+                        .is_err(),
+                        "dev whole literal/bound operand {role}/{byte}"
+                    );
+                }
+                if matches!(role, "fixed_constructor_prepare" | "fixed_generic_prepare") {
+                    let (origin, other) = if role == "fixed_constructor_prepare" {
+                        (1, 2)
+                    } else {
+                        (2, 1)
+                    };
+                    for byte in [67, 121] {
+                        assert_eq!(bytes[byte], origin);
+                        let mut bad = bytes.clone();
+                        bad[byte] = other;
+                        assert!(
+                            check(
+                                &bad,
+                                &instructions(&bad),
+                                &targets,
+                                &got,
+                                &readonly,
+                                &context
+                            )
+                            .is_err(),
+                            "dev constructor/generic origin substitution {role}/{byte}"
+                        );
+                    }
+                }
+                for extent in [
+                    bytes[..bytes.len() - 1].to_vec(),
+                    [bytes.clone(), vec![0x90]].concat(),
+                ] {
+                    assert!(
+                        check(
+                            &extent,
+                            &instructions(&extent),
+                            &targets,
+                            &got,
+                            &readonly,
+                            &context
+                        )
+                        .is_err(),
+                        "dev complete extent {role}"
+                    );
+                }
+                let mut bad_ins = instructions(&bytes);
+                bad_ins[0].address += 1;
+                assert!(check(&bytes, &bad_ins, &targets, &got, &readonly, &context).is_err());
+                for &(_, _, key, indirect) in operands {
+                    let mut ts = targets.clone();
+                    *ts.get_mut(key).unwrap() += 1;
+                    assert!(
+                        check(&bytes, &ins, &ts, &got, &readonly, &context).is_err(),
+                        "dev typed target {role}/{key}"
+                    );
+                    if indirect {
+                        let mut bad = got.clone();
+                        bad.remove(&slots[key]);
+                        assert!(check(&bytes, &ins, &targets, &bad, &readonly, &context).is_err());
+                        let mut bad = got.clone();
+                        bad.insert(slots[key], targets[key] + 1);
+                        assert!(check(&bytes, &ins, &targets, &bad, &readonly, &context).is_err());
+                    }
+                    if let Some(data) = readonly.get(&targets[key]) {
+                        assert_eq!(data.len(), 24);
+                        for byte in 0..24 {
+                            let mut ro = readonly.clone();
+                            ro.get_mut(&targets[key]).unwrap()[byte] ^= 1;
+                            assert!(
+                                check(&bytes, &ins, &targets, &got, &ro, &context).is_err(),
+                                "dev Location {role}/{key}/{byte}"
+                            );
+                        }
+                        let file = targets[&format!("{key}_file")];
+                        let mut ro = readonly.clone();
+                        ro.get_mut(&file).unwrap()[0] ^= 1;
+                        assert!(check(&bytes, &ins, &targets, &got, &ro, &context).is_err());
+                        if !is_operation {
+                            assert!(
+                                check(&bytes, &ins, &targets, &got, &readonly, &BTreeMap::new())
+                                    .is_err()
+                            );
+                        } else {
+                            let error = match fixed_dev_scalar_operation_qualified(
+                                role,
+                                address,
+                                (&bytes, &ins),
+                                DetcoreRecipeBindings {
+                                    targets: &targets,
+                                    got: &got,
+                                    readonly: &readonly,
+                                    context: &context,
+                                },
+                                false,
+                            ) {
+                                Err(error) => error,
+                                Ok(_) => panic!("source-less current operation was accepted"),
+                            };
+                            assert_eq!(
+                                error,
+                                "current dev operation lacks complete source/shape context"
+                            );
+                        }
+                    }
+                }
+                // All actual calls, including EH landings, must stay in the
+                // census; a terminal label cannot delete a physical edge.
+                for i in 0..witness.edges.len() {
+                    let mut edges = witness.edges.clone();
+                    edges.remove(i);
+                    assert!(
+                        fixed_census_transfers(&ins, address, &bytes, &edges, &got, false).is_err(),
+                        "dev removed actual transfer {role}/{i}"
+                    );
+                }
+                if is_helper {
+                    assert!(
+                        fixed_dev_scalar_helper_qualified_operation(
+                            "unknown_helper_type",
+                            address,
+                            (&bytes, &ins),
+                            &targets,
+                            &got
+                        )
+                        .is_err()
+                    );
+                    // The parser takes actual Rust symbols, not its already
+                    // normalized catalog spelling with empty crate hashes.
+                    let spelling = dev_scalar_actual_helper_symbol(role);
+                    assert_eq!(fixed_emitted_role(spelling), Some(role));
+                    assert_eq!(fixed_emitted_role(&format!("{spelling}unreviewed")), None);
+                }
+            }
+            transfers.insert(role.into(), witness.edges.clone());
+            witnesses.insert(role.into(), witness);
+            selected.insert(role.into(), address);
+        }
+        let shift_address = targets["fixed_setup_shift_guard"];
+        let mut shift = FIXED_ARENA_BYTES_2.to_vec();
+        for (at, next, target) in [
+            (26, 30, targets["fixed_shift_panic_text"]),
+            (47, 51, targets["fixed_shift_panic_text"]),
+            (60, 64, shift_slot),
+        ] {
+            let displacement =
+                i32::try_from(i128::from(target) - i128::from(shift_address) - next as i128)
+                    .unwrap();
+            shift[at..at + 4].copy_from_slice(&displacement.to_le_bytes());
+        }
+        let offsets = [0, 4, 9, 13, 16, 18, 23, 30, 35, 44, 51, 56, 58, 64, 68];
+        let instructions: Vec<_> = offsets
+            .iter()
+            .enumerate()
+            .map(|(i, &at)| EncodedConstructorInstruction {
+                address: shift_address + at as u64,
+                bytes: shift[at..offsets.get(i + 1).copied().unwrap_or(shift.len())].to_vec(),
+            })
+            .collect();
+        let edges = fixed_arena_recipe(
+            "fixed_setup_shift_guard",
+            shift_address,
+            &shift,
+            &targets,
+            &got,
+        )
+        .unwrap();
+        fixed_census_transfers(&instructions, shift_address, &shift, &edges, &got, false).unwrap();
+        selected.insert("fixed_setup_shift_guard".into(), shift_address);
+        transfers.insert("fixed_setup_shift_guard".into(), edges);
+        DetcorePublicationControlGraph {
+            witnesses,
+            transfers,
+            selected,
+            targets,
+        }
+    }
+
+    fn check_dev_scalar_graph(g: &DetcorePublicationControlGraph) -> Result<()> {
+        fixed_scalar_publication_syscall_mode(&g.witnesses, FixedImageKind::Standalone, false)?;
+        fixed_scalar_publication_cohort(
+            &g.witnesses,
+            &g.transfers,
+            &g.selected,
+            &g.targets,
+            FixedImageKind::Standalone,
+        )?;
+        fixed_detcore_full_result_contract(&g.witnesses, &g.transfers, &g.selected, &g.targets)
+    }
+
+    #[test]
+    fn source_owned_dev_scalar_helper_private_symbol_controls() {
+        fn put(b: &mut [u8], at: usize, width: usize, value: u64) {
+            b[at..at + width].copy_from_slice(&value.to_le_bytes()[..width]);
+        }
+        fn fixture(name: &str, code: &[u8]) -> Vec<u8> {
+            let mut b = vec![0; 0x3000];
+            b[..16].copy_from_slice(&[0x7f, b'E', b'L', b'F', 2, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+            for (at, width, value) in [
+                (16, 2, 3),
+                (18, 2, 62),
+                (20, 4, 1),
+                (32, 8, 64),
+                (40, 8, 0x2800),
+                (52, 2, 64),
+                (54, 2, 56),
+                (56, 2, 2),
+                (58, 2, 64),
+                (60, 2, 6),
+                (64, 4, 1),
+                (68, 4, 5),
+                (96, 8, 0x3000),
+                (104, 8, 0x3000),
+                (112, 8, 4096),
+                (120, 4, 2),
+                (124, 4, 4),
+                (128, 8, 0x2400),
+                (136, 8, 0x2400),
+                (152, 8, 112),
+                (160, 8, 112),
+                (168, 8, 8),
+                (0x2844, 4, 1),
+                (0x2848, 8, 6),
+                (0x2850, 8, 0x1000),
+                (0x2858, 8, 0x1000),
+                (0x2860, 8, 0x400),
+                (0x2870, 8, 16),
+                (0x2884, 4, 3),
+                (0x2890, 8, 0x1400),
+                (0x2898, 8, 0x1400),
+                (0x28a0, 8, 0x300),
+                (0x28c4, 4, 3),
+                (0x28d8, 8, 0x1800),
+                (0x28e0, 8, 0x300),
+                (0x2904, 4, 2),
+                (0x2918, 8, 0x1c00),
+                (0x2920, 8, 72),
+                (0x2928, 4, 3),
+                (0x292c, 4, 3),
+                (0x2930, 8, 8),
+                (0x2938, 8, 24),
+                (0x2944, 4, 11),
+                (0x2948, 8, 2),
+                (0x2950, 8, 0x1d00),
+                (0x2958, 8, 0x1d00),
+                (0x2960, 8, 48),
+                (0x2968, 4, 2),
+                (0x296c, 4, 1),
+                (0x2970, 8, 8),
+                (0x2978, 8, 24),
+            ] {
+                put(&mut b, at, width, value);
+            }
+            let strings = format!("\0{name}\0different_export\0");
+            b[0x1400..0x1400 + strings.len()].copy_from_slice(strings.as_bytes());
+            b[0x1800..0x1800 + strings.len()].copy_from_slice(strings.as_bytes());
+            for (i, (tag, value)) in [
+                (5_u64, 0x1400),
+                (10, strings.len() as u64),
+                (6, 0x1d00),
+                (11, 24),
+                (4, 0x1e00),
+                (0, 0),
+                (0, 0),
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                put(&mut b, 0x2400 + 16 * i, 8, tag);
+                put(&mut b, 0x2408 + 16 * i, 8, value);
+            }
+            put(&mut b, 0x1e00, 4, 1);
+            put(&mut b, 0x1e04, 4, 2);
+            for (at, width, value) in [
+                (0x1c18, 4, 1),
+                (0x1c1c, 1, 2),
+                (0x1c1e, 2, 1),
+                (0x1c20, 8, 0x1000),
+                (0x1c28, 8, code.len() as u64),
+                (0x1c30, 4, name.len() as u64 + 2),
+                (0x1c34, 1, 2),
+                (0x1c36, 2, 1),
+                (0x1c38, 8, 0x1300),
+                (0x1d18, 4, name.len() as u64 + 2),
+                (0x1d1c, 1, 0x12),
+                (0x1d1e, 2, 1),
+                (0x1d20, 8, 0x1300),
+            ] {
+                put(&mut b, at, width, value);
+            }
+            b[0x1000..0x1000 + code.len()].copy_from_slice(code);
+            b
+        }
+        let check = |bytes: &[u8], role| -> Result<()> {
+            let elf = Elf::parse(bytes).map_err(|e| e.to_string())?;
+            let selected = elf.syms.get(1).ok_or("selected helper symbol absent")?;
+            fixed_dev_scalar_helper_symbol_identity(&elf, role, &selected)
+        };
+        let mut count = 0;
+        let mut operation_count = 0;
+        for recipe in FIXED_DEV_SCALAR_HELPERS
+            .iter()
+            .filter(|r| fixed_dev_scalar_private_helper(r.role))
+            .chain(FIXED_DEV_SCALAR_OPERATIONS)
+        {
+            if fixed_dev_scalar_private_helper(recipe.role) {
+                count += 1;
+            } else {
+                operation_count += 1;
+            }
+            let raw_name = dev_scalar_actual_helper_symbol(recipe.role);
+            let code = fixed_hex(recipe.hex);
+            let good = fixture(raw_name, &code);
+            check(&good, recipe.role).unwrap();
+            for address in [0x1000, 0x1001, 0x1000 + code.len() as u64 - 1] {
+                for size in [0, 1, code.len() as u64] {
+                    for kind in [0, 1, 2, 6, 10] {
+                        for dynamic in [false, true] {
+                            let mut bad = good.clone();
+                            let at = if dynamic { 0x1d18 } else { 0x1c30 };
+                            put(
+                                &mut bad,
+                                at + 4,
+                                1,
+                                if dynamic { 0x10 | kind } else { kind },
+                            );
+                            put(&mut bad, at + 8, 8, address);
+                            put(&mut bad, at + 16, 8, size);
+                            assert!(
+                                check(&bad, recipe.role).is_err(),
+                                "renamed entry/extent alias {}/{dynamic}/{kind}/{address:x}/{size}",
+                                recipe.role
+                            );
+                        }
+                    }
+                }
+            }
+            for dynamic in [false, true] {
+                let at = if dynamic { 0x1d18 } else { 0x1c30 };
+                let mut overlap = good.clone();
+                put(&mut overlap, at + 8, 8, 0xfff);
+                put(&mut overlap, at + 16, 8, 2);
+                assert!(check(&overlap, recipe.role).is_err());
+                let mut duplicate = good.clone();
+                put(&mut duplicate, at, 4, 1);
+                put(&mut duplicate, at + 4, 1, 0);
+                put(&mut duplicate, at + 6, 2, 0);
+                assert!(
+                    check(&duplicate, recipe.role).is_err(),
+                    "raw same-role identity cannot disappear through function filtering"
+                );
+                let mut boundary = good.clone();
+                put(&mut boundary, at + 8, 8, 0x1000 + code.len() as u64);
+                check(&boundary, recipe.role).unwrap();
+            }
+            for (at, width, value) in [
+                (0x1c1c, 1, 0x12),
+                (0x1c1c, 1, 0x22),
+                (0x1c1c, 1, 1),
+                (0x1c1e, 2, 0),
+                (0x1c28, 8, 0),
+                (0x1c20, 8, u64::MAX - 1),
+            ] {
+                let mut bad = good.clone();
+                put(&mut bad, at, width, value);
+                assert!(check(&bad, recipe.role).is_err());
+            }
+            assert!(check(&good, "unreviewed_helper").is_err());
+        }
+        assert_eq!(count, 6);
+        assert_eq!(operation_count, 2);
+        assert!(!fixed_dev_scalar_private_helper(
+            "prepare_scalar_usize_identity"
+        ));
+        assert!(!fixed_dev_scalar_private_helper(
+            "prepare_result_pointer_as_ref"
+        ));
+    }
+
+    #[test]
+    fn source_owned_dev_scalar_complete_readonly_profile_controls() {
+        fn put(b: &mut [u8], at: usize, width: usize, value: u64) {
+            b[at..at + width].copy_from_slice(&value.to_le_bytes()[..width]);
+        }
+        // These coordinates and whole bytes come from the retained actual
+        // 6fa582bd... dev ELF and independent scoped census, not an input ELF
+        // accepted as its own golden or a runtime test fixture requirement.
+        let frozen: &[(&str, &str, u32, u32)] = &[
+            (
+                "fixed_heap_location_alloc_160_34",
+                "fixed_dev_scalar_alloc_149_34",
+                149,
+                34,
+            ),
+            (
+                "fixed_heap_location_alloc_172_36",
+                "fixed_dev_scalar_alloc_161_36",
+                161,
+                36,
+            ),
+            (
+                "fixed_heap_location_alloc_177_42",
+                "fixed_dev_scalar_alloc_166_42",
+                166,
+                42,
+            ),
+            (
+                "fixed_heap_location_alloc_177_57",
+                "fixed_dev_scalar_alloc_166_57",
+                166,
+                57,
+            ),
+            (
+                "fixed_heap_location_alloc_188_42",
+                "fixed_dev_scalar_alloc_177_42",
+                177,
+                42,
+            ),
+            (
+                "fixed_heap_location_alloc_190_35",
+                "fixed_dev_scalar_alloc_179_35",
+                179,
+                35,
+            ),
+            (
+                "fixed_heap_location_alloc_193_25",
+                "fixed_dev_scalar_alloc_182_25",
+                182,
+                25,
+            ),
+            (
+                "fixed_heap_location_alloc_193_41",
+                "fixed_dev_scalar_alloc_182_41",
+                182,
+                41,
+            ),
+            (
+                "fixed_heap_location_alloc_201_25",
+                "fixed_dev_scalar_alloc_190_25",
+                190,
+                25,
+            ),
+            (
+                "fixed_heap_location_alloc_203_25",
+                "fixed_dev_scalar_alloc_192_25",
+                192,
+                25,
+            ),
+            (
+                "fixed_heap_location_alloc_217_31",
+                "fixed_dev_scalar_alloc_206_31",
+                206,
+                31,
+            ),
+            (
+                "fixed_heap_location_alloc_232_23",
+                "fixed_dev_scalar_alloc_221_23",
+                221,
+                23,
+            ),
+            (
+                "fixed_heap_location_alloc_239_13",
+                "fixed_dev_scalar_alloc_228_13",
+                228,
+                13,
+            ),
+            (
+                "fixed_heap_location_alloc_253_28",
+                "fixed_dev_scalar_alloc_242_28",
+                242,
+                28,
+            ),
+            (
+                "fixed_heap_location_alloc_256_24",
+                "fixed_dev_scalar_alloc_245_24",
+                245,
+                24,
+            ),
+            (
+                "fixed_heap_location_alloc_259_13",
+                "fixed_dev_scalar_alloc_248_13",
+                248,
+                13,
+            ),
+            (
+                "fixed_heap_location_alloc_261_17",
+                "fixed_dev_scalar_alloc_250_17",
+                250,
+                17,
+            ),
+            (
+                "fixed_heap_location_alloc_263_17",
+                "fixed_dev_scalar_alloc_252_17",
+                252,
+                17,
+            ),
+            (
+                "fixed_heap_location_alloc_269_41",
+                "fixed_dev_scalar_alloc_258_41",
+                258,
+                41,
+            ),
+            (
+                "fixed_heap_location_alloc_270_41",
+                "fixed_dev_scalar_alloc_259_41",
+                259,
+                41,
+            ),
+            (
+                "fixed_heap_location_alloc_270_73",
+                "fixed_dev_scalar_alloc_259_73",
+                259,
+                73,
+            ),
+            (
+                "fixed_heap_location_alloc_272_21",
+                "fixed_dev_scalar_alloc_261_21",
+                261,
+                21,
+            ),
+            (
+                "fixed_heap_location_alloc_273_21",
+                "fixed_dev_scalar_alloc_262_21",
+                262,
+                21,
+            ),
+            (
+                "fixed_heap_location_alloc_278_67",
+                "fixed_dev_scalar_alloc_267_67",
+                267,
+                67,
+            ),
+            (
+                "fixed_heap_location_alloc_280_37",
+                "fixed_dev_scalar_alloc_269_37",
+                269,
+                37,
+            ),
+            (
+                "fixed_heap_location_alloc_280_64",
+                "fixed_dev_scalar_alloc_269_64",
+                269,
+                64,
+            ),
+            (
+                "fixed_heap_location_alloc_281_21",
+                "fixed_dev_scalar_alloc_270_21",
+                270,
+                21,
+            ),
+            (
+                "fixed_heap_location_alloc_282_21",
+                "fixed_dev_scalar_alloc_271_21",
+                271,
+                21,
+            ),
+            (
+                "fixed_heap_location_alloc_282_38",
+                "fixed_dev_scalar_alloc_271_38",
+                271,
+                38,
+            ),
+            (
+                "fixed_heap_location_alloc_732_22",
+                "fixed_dev_scalar_alloc_721_22",
+                721,
+                22,
+            ),
+            (
+                "fixed_heap_location_alloc_733_35",
+                "fixed_dev_scalar_alloc_722_35",
+                722,
+                35,
+            ),
+            (
+                "fixed_operation_data_13",
+                "fixed_dev_scalar_alloc_279_16",
+                279,
+                16,
+            ),
+        ];
+        assert_eq!(frozen.len(), 32);
+        let mut good = vec![0; 0x4000];
+        good[..16].copy_from_slice(&[0x7f, b'E', b'L', b'F', 2, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+        for (at, width, value) in [
+            (16, 2, 3),
+            (18, 2, 62),
+            (20, 4, 1),
+            (32, 8, 64),
+            (40, 8, 0x3100),
+            (52, 2, 64),
+            (54, 2, 56),
+            (56, 2, 2),
+            (58, 2, 64),
+            (60, 2, 2),
+            (64, 4, 1),
+            (68, 4, 4),
+            (96, 8, 0x3000),
+            (104, 8, 0x3000),
+            (112, 8, 4096),
+            (120, 4, 2),
+            (124, 4, 4),
+            (128, 8, 0x2600),
+            (136, 8, 0x2600),
+            (152, 8, 64),
+            (160, 8, 64),
+            (168, 8, 8),
+            (0x3144, 4, 1),
+            (0x3148, 8, 2),
+            (0x3150, 8, 0x1000),
+            (0x3158, 8, 0x1000),
+            (0x3160, 8, 0x1000),
+            (0x3170, 8, 8),
+        ] {
+            put(&mut good, at, width, value);
+        }
+        for (i, (tag, value)) in [(7_u64, 0x2800), (8, 32 * 24), (9, 24), (0, 0)]
+            .into_iter()
+            .enumerate()
+        {
+            put(&mut good, 0x2600 + i * 16, 8, tag);
+            put(&mut good, 0x2608 + i * 16, 8, value);
+        }
+        let filename = b"reverie-inguest/src/guest/alloc.rs";
+        good[0x1800..0x1800 + filename.len()].copy_from_slice(filename);
+        for (i, &(request, current, line, column)) in frozen.iter().enumerate() {
+            let binding = FIXED_DEV_SCALAR_ALLOC_LOCATIONS
+                .iter()
+                .find(|b| b.request == request)
+                .unwrap();
+            assert_eq!(binding.spec.key, current);
+            let address = 0x1200 + i * 24;
+            let mut expected = [0; 24];
+            expected[8..16].copy_from_slice(&(filename.len() as u64).to_le_bytes());
+            expected[16..20].copy_from_slice(&line.to_le_bytes());
+            expected[20..24].copy_from_slice(&column.to_le_bytes());
+            assert_eq!(fixed_hex(binding.spec.hex), expected);
+            assert_eq!(fixed_hex(binding.spec.file_hex), filename);
+            good[address..address + 24].copy_from_slice(&expected);
+            put(&mut good, 0x2800 + i * 24, 8, address as u64);
+            put(&mut good, 0x2808 + i * 24, 8, 8);
+            put(&mut good, 0x2810 + i * 24, 8, 0x1800);
+        }
+        let bind = |bytes: &[u8], spec: &FixedReadonlySpec, address| -> Result<()> {
+            let elf = Elf::parse(bytes).map_err(|e| e.to_string())?;
+            fixed_bind_readonly_in_source_context(
+                (&elf, bytes),
+                spec,
+                address,
+                &mut BTreeMap::new(),
+                &mut BTreeMap::new(),
+                &mut BTreeMap::new(),
+                None,
+            )
+        };
+        let elf = Elf::parse(&good).unwrap();
+        let mut targets = BTreeMap::new();
+        let mut readonly = BTreeMap::new();
+        let mut evidence = BTreeMap::new();
+        for (i, binding) in FIXED_DEV_SCALAR_ALLOC_LOCATIONS.iter().enumerate() {
+            let address = 0x1200 + i as u64 * 24;
+            fixed_bind_readonly_in_source_context(
+                (&elf, &good),
+                &binding.spec,
+                address,
+                &mut targets,
+                &mut readonly,
+                &mut evidence,
+                None,
+            )
+            .unwrap();
+            targets.insert(binding.request.into(), address);
+            targets.insert(format!("{}_file", binding.request), 0x1800);
+            let old = FIXED_READONLY_SPECS
+                .iter()
+                .find(|s| s.key == binding.request)
+                .unwrap();
+            assert!(
+                bind(&good, old, address).is_err(),
+                "old exact profile must refuse new coordinates"
+            );
+            for byte in 0..24 {
+                let mut bad = good.clone();
+                bad[address as usize + byte] ^= 1;
+                assert!(
+                    bind(&bad, &binding.spec, address).is_err(),
+                    "current whole Location byte {}/{byte}",
+                    binding.spec.key
+                );
+            }
+            for byte in 0..filename.len() {
+                let mut bad = good.clone();
+                bad[0x1800 + byte] ^= 1;
+                assert!(bind(&bad, &binding.spec, address).is_err());
+            }
+            for (at, width, value) in [
+                (0x2800 + i * 24, 8, address + 1),
+                (0x2808 + i * 24, 8, 1),
+                (0x2808 + i * 24, 8, (1_u64 << 32) | 8),
+                (0x2810 + i * 24, 8, 0x1801),
+            ] {
+                let mut bad = good.clone();
+                put(&mut bad, at, width, value);
+                assert!(bind(&bad, &binding.spec, address).is_err());
+            }
+            assert!(
+                fixed_bind_operand_data_for_profile(
+                    (&elf, &good),
+                    binding.request,
+                    address,
+                    &mut BTreeMap::new(),
+                    &mut BTreeMap::new(),
+                    &mut BTreeMap::new(),
+                    (None, true)
+                )
+                .is_err(),
+                "source-less current profile refused"
+            );
+        }
+        fixed_dev_scalar_readonly_profile(&targets).unwrap();
+        assert_eq!(evidence.len(), 32);
+        assert!(
+            evidence
+                .keys()
+                .all(|key| key.starts_with("fixed_dev_scalar_alloc_"))
+        );
+        for binding in FIXED_DEV_SCALAR_ALLOC_LOCATIONS {
+            let address = targets[binding.spec.key];
+            fixed_dev_scalar_location_readonly(binding, address, &targets, &readonly).unwrap();
+            dev_fixed_heap_readonly_in_source_profile(
+                binding.request,
+                address,
+                &targets,
+                &readonly,
+            )
+            .unwrap();
+            for key in [
+                binding.request.to_owned(),
+                binding.spec.key.to_owned(),
+                format!("{}_file", binding.request),
+                format!("{}_file", binding.spec.key),
+            ] {
+                let mut bad = targets.clone();
+                bad.remove(&key);
+                assert!(fixed_dev_scalar_readonly_profile(&bad).is_err());
+                let mut bad = targets.clone();
+                *bad.get_mut(&key).unwrap() += 1;
+                assert!(fixed_dev_scalar_readonly_profile(&bad).is_err());
+            }
+            let mut bad = readonly.clone();
+            bad.get_mut(&address).unwrap()[16] ^= 1;
+            assert!(fixed_dev_scalar_location_readonly(binding, address, &targets, &bad).is_err());
+            let mut bad = readonly.clone();
+            bad.get_mut(&0x1800).unwrap()[0] ^= 1;
+            assert!(fixed_dev_scalar_location_readonly(binding, address, &targets, &bad).is_err());
+        }
+        for (at, width, value) in [
+            (68, 4, 6),
+            (68, 4, 5),
+            (96, 8, 0x1208),
+            (0x3158, 8, 0x1008),
+            (0x2618, 8, 0),
+        ] {
+            let mut bad = good.clone();
+            put(&mut bad, at, width, value);
+            assert!(bind(&bad, &FIXED_DEV_SCALAR_ALLOC_LOCATIONS[0].spec, 0x1200).is_err());
+        }
+        let graph = dev_scalar_publication_control_graph(false);
+        check_dev_scalar_graph(&graph).unwrap();
+        for binding in FIXED_DEV_SCALAR_ALLOC_LOCATIONS {
+            let mut bad = dev_scalar_publication_control_graph(false);
+            bad.targets.remove(binding.spec.key);
+            assert!(
+                check_dev_scalar_graph(&bad).is_err(),
+                "complete dev join cannot omit any current source record"
+            );
+        }
+        let mut roles = BTreeMap::new();
+        let mut code = BTreeMap::new();
+        for (i, (role, _, hex, _, _)) in dev_scalar_publication_samples().iter().enumerate() {
+            let address = 0x1000000 + i as u64 * 0x10000;
+            roles.insert(
+                (*role).into(),
+                sym::Sym {
+                    st_value: address,
+                    ..Default::default()
+                },
+            );
+            code.insert(address, fixed_hex(hex));
+        }
+        let raw_address = roles["fixed_scalar_syscall"].st_value;
+        assert_eq!(code[&raw_address].len(), 51);
+        let mut old_raw = code.clone();
+        old_raw.insert(raw_address, fixed_hex(DETCORE_VALIDATE_TEMPLATES[26].hex));
+        assert!(!fixed_standalone_dev_scalar_shape(
+            FixedImageKind::Standalone,
+            &roles,
+            &old_raw
+        ));
+        assert!(fixed_standalone_dev_scalar_shape(
+            FixedImageKind::Standalone,
+            &roles,
+            &code
+        ));
+        assert!(!fixed_standalone_dev_scalar_shape(
+            FixedImageKind::Detcore,
+            &roles,
+            &code
+        ));
+        for role in roles.keys() {
+            let mut bad = roles.clone();
+            bad.remove(role);
+            assert!(!fixed_standalone_dev_scalar_shape(
+                FixedImageKind::Standalone,
+                &bad,
+                &code
+            ));
+            let mut bad = code.clone();
+            bad.get_mut(&roles[role].st_value).unwrap()[0] ^= 1;
+            assert!(!fixed_standalone_dev_scalar_shape(
+                FixedImageKind::Standalone,
+                &roles,
+                &bad
+            ));
+        }
+    }
+
+    // A structural roundtrip fixture, not a source authority or ELF receipt.
+    // Complete-byte/type/data refusal controls above exercise the independent
+    // physical factories. No VerifiedCompiledSources is fabricated here.
+    fn dev_scalar_backing_schema_control() -> AllocatorBackingEvidence {
+        let function = |name: &str, address| SymbolEvidence {
+            name: name.to_owned(),
+            address,
+            size: 16,
+            binding: sym::STB_LOCAL,
+            visibility: sym::STV_DEFAULT,
+        };
+        let mut functions = BTreeMap::new();
+        for (index, role) in FIXED_REQUIRED_ROLES
+            .iter()
+            .copied()
+            .chain(FIXED_PUBLICATION_REQUIRED_ROLES.iter().copied())
+            .enumerate()
+        {
+            functions.insert(
+                role.to_owned(),
+                function(role, 0x3000 + index as u64 * 0x20),
+            );
+        }
+        let mut compiler_routes = BTreeMap::new();
+        for (index, (shim, role)) in [
+            ("__rust_alloc", "fixed_patch_alloc"),
+            ("__rust_alloc_zeroed", "fixed_patch_alloc_zeroed"),
+            ("__rust_realloc", "fixed_patch_realloc"),
+            ("__rust_dealloc", "fixed_patch_dealloc"),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let shim_symbol = function(shim, 0x2000 + index as u64 * 0x20);
+            functions.insert(shim.to_owned(), shim_symbol.clone());
+            let implementation = functions[role].clone();
+            compiler_routes.insert(
+                shim.to_owned(),
+                FixedAllocatorRoute {
+                    call_path: vec![shim_symbol.address, implementation.address],
+                    shim: shim_symbol,
+                    implementation,
+                    local_got_edges: vec![],
+                },
+            );
+        }
+        let backing = AllocatorBackingEvidence {
+            fixed_native_syscalls: None,
+            fixed_arena_version: 1,
+            descriptor: AllocatorDescriptorEvidence {
+                symbol: SymbolEvidence {
+                    name: ALLOCATOR_BACKING_SYMBOL.to_owned(),
+                    address: 0x1200,
+                    size: 16,
+                    binding: sym::STB_GLOBAL,
+                    visibility: sym::STV_HIDDEN,
+                },
+                version: 1,
+                mode: AllocatorBackingMode::Fixed,
+                payload_sha256: "0".repeat(64),
+                file_offset: 0x200,
+                section_index: 1,
+                load_segment_index: 0,
+            },
+            compiler_global_type: "reverie_liteinst::patch_alloc::FixedPrivatePatchAllocator"
+                .to_owned(),
+            fixed_backing_record: ImmutableAllocatorObject {
+                symbol: SymbolEvidence {
+                    name: "_RNvNtNtNtCsk1nybVdH5QO_15reverie_inguest5guest11tool_region5arena13FIXED_BACKING".to_owned(),
+                    address: 0x4000, size: 40, binding: sym::STB_LOCAL,
+                    visibility: sym::STV_DEFAULT,
+                },
+                payload_sha256: sha256(&[FIXED_TOOL_BOTTOM, FIXED_TOOL_BOTTOM + FIXED_ARENA_BYTES,
+                    FIXED_PATCH_BOTTOM, FIXED_PATCH_BOTTOM + FIXED_ARENA_BYTES, FIXED_METADATA + 24]
+                    .into_iter().flat_map(u64::to_le_bytes).collect::<Vec<_>>()),
+                file_offset: 0x800, section_index: 1, load_segment_index: 0,
+            },
+            tls_boundary: AllocatorInstallationEvidence::Existing(Box::new(AllocatorTlsBoundary {
+                dependency: "existing_installation_depth_tls".to_owned(),
+                provider_symbol: "__tls_get_addr".to_owned(), provider_version: "GLIBC_2.3".to_owned(),
+                provider_library: "ld-linux-x86-64.so.2".to_owned(),
+                plt_address: 0x5000, got_slot: 0x6000, dynamic_symbol_index: 1,
+                tls_cell: SymbolEvidence { name: "_RNvNCNKNvNtCsnMqmb1yYhM_16reverie_liteinst11patch_alloc18INSTALLATION_DEPTH0s_023___RUST_STD_INTERNAL_VAL".to_owned(), address: 0x48,
+                    size: 8, binding: sym::STB_LOCAL, visibility: sym::STV_DEFAULT },
+                tls_module_slot: 0x6100, tls_offset_slot: 0x6108,
+                callsites: vec![ConstructorTransfer { instruction: 0x3010, target: 0x5000, local_got_slot: None }],
+                local_key_object: None, local_key_transfer: None, local_key_resolution: None,
+                unisolated: true, plt_sha256: "0".repeat(64),
+                function_sha256: BTreeMap::from([("fixed_patch_alloc".to_owned(), "0".repeat(64))]),
+                local_chain: BTreeMap::from([("fixed_patch_alloc".to_owned(), functions["fixed_patch_alloc"].clone())]),
+                direct_allocation: None,
+            })),
+            allocator_transfers: FIXED_REQUIRED_ROLES[..4]
+                .iter()
+                .chain(FIXED_PUBLICATION_REQUIRED_ROLES.iter())
+                .map(|role| (role.to_string(), vec![]))
+                .collect(),
+            readonly_objects:BTreeMap::new(),
+            selection_objects:[("fixed_initializing","_RNvNtNtCsTest_15reverie_inguest5guest11tool_region12INITIALIZING",1),("fixed_region","_RNvNtNtCsTest_15reverie_inguest5guest11tool_region6REGION",32),("fixed_compiler_global_marker","_RNvCsTest_24reverie_liteinst_preload26REVERIE_LITEINST_ALLOCATOR",0)].into_iter().enumerate().map(|(i,(key,name,size))|(key.into(),SymbolEvidence {name:name.into(),address:0x7000+32*i as u64,size,binding:sym::STB_LOCAL,visibility:sym::STV_DEFAULT})).collect(),
+            guard_contract:FIXED_GUARD_CONTRACT.into(),guarded_terminal_edges:BTreeMap::new(),
+            compiler_routes,
+            function_sha256: functions
+                .keys()
+                .map(|role| (role.clone(), "0".repeat(64)))
+                .collect(),
+            functions,
+            owned_setup_transfers: BTreeMap::from([("fixed_arena_setup".to_owned(), vec![])]),
+            owned_setup_got_edges: vec![],
+        };
+        backing
+    }
+
+    fn dev_scalar_backing_emitter_control() -> AllocatorBackingEvidence {
+        let graph = dev_scalar_publication_control_graph(false);
+        check_dev_scalar_graph(&graph).unwrap();
+        let mut backing = dev_scalar_backing_schema_control();
+        for role in [
+            "fixed_region_publication_get",
+            "fixed_region_publication_set",
+            "fixed_tool_heap",
+        ] {
+            backing.functions.remove(role);
+            backing.function_sha256.remove(role);
+            backing.allocator_transfers.remove(role);
+        }
+        backing
+            .selection_objects
+            .get_mut("fixed_initializing")
+            .unwrap()
+            .address = graph.targets["fixed_initializing"];
+        backing
+            .selection_objects
+            .get_mut("fixed_region")
+            .unwrap()
+            .address = graph.targets["fixed_region"];
+        backing.fixed_backing_record.symbol.address = graph.targets["fixed_backing_object"];
+        let name = |role: &str| {
+            FIXED_EMITTED_ROLE_SYMBOLS
+                .iter()
+                .chain(FIXED_OPERATION_ROLE_SYMBOLS)
+                .chain(FIXED_SUPPORT_ROLE_SYMBOLS)
+                .chain(PUBLICATION_ROLE_SYMBOLS)
+                .chain(DETCORE_VALIDATE_ROLE_SYMBOLS)
+                .chain(FIXED_DEV_SCALAR_HELPER_SYMBOLS)
+                .find(|&&(candidate, _)| candidate == role)
+                .unwrap()
+                .1
+                .replace("Cs_", "Cs1_")
+        };
+        let recipes = FIXED_DEV_SCALAR_COHORT
+            .iter()
+            .copied()
+            .chain(std::iter::once((
+                "fixed_scalar_syscall",
+                FIXED_DEV_SCALAR_SYSCALL_TEMPLATE,
+            )))
+            .map(|(role, index)| (role, DETCORE_VALIDATE_TEMPLATES[index].hex.len() / 2))
+            .chain(
+                FIXED_DEV_SCALAR_HELPERS
+                    .iter()
+                    .map(|recipe| (recipe.role, recipe.hex.len() / 2)),
+            )
+            .chain(
+                FIXED_DEV_SCALAR_OPERATIONS
+                    .iter()
+                    .map(|recipe| (recipe.role, recipe.hex.len() / 2)),
+            )
+            .chain(std::iter::once(("fixed_setup_shift_guard", 69)));
+        for (role, size) in recipes {
+            let spelling = name(role);
+            assert_eq!(fixed_emitted_role(&spelling), Some(role));
+            backing.functions.insert(
+                role.into(),
+                SymbolEvidence {
+                    name: spelling,
+                    address: graph.selected[role],
+                    size: size as u64,
+                    binding: sym::STB_LOCAL,
+                    visibility: sym::STV_DEFAULT,
+                },
+            );
+            backing.function_sha256.insert(role.into(), "0".repeat(64));
+            backing
+                .allocator_transfers
+                .insert(role.into(), graph.transfers[role].clone());
+        }
+        backing.functions.insert(
+            CONSTRUCTOR_GATE_OWNER.into(),
+            SymbolEvidence {
+                name: CONSTRUCTOR_GATE_OWNER.into(),
+                address: graph.targets[CONSTRUCTOR_GATE_OWNER],
+                size: 44,
+                binding: sym::STB_LOCAL,
+                visibility: sym::STV_DEFAULT,
+            },
+        );
+        backing
+            .function_sha256
+            .insert(CONSTRUCTOR_GATE_OWNER.into(), "0".repeat(64));
+        backing
+            .allocator_transfers
+            .insert(CONSTRUCTOR_GATE_OWNER.into(), vec![]);
+        let terminal_role = "fixed_publication_cannot_unwind";
+        backing.functions.insert(
+            terminal_role.into(),
+            SymbolEvidence {
+                name: name(terminal_role),
+                address: graph.targets[terminal_role],
+                size: 16,
+                binding: sym::STB_LOCAL,
+                visibility: sym::STV_DEFAULT,
+            },
+        );
+        backing
+            .function_sha256
+            .insert(terminal_role.into(), "0".repeat(64));
+        for binding in FIXED_DEV_SCALAR_ALLOC_LOCATIONS {
+            backing.readonly_objects.insert(
+                binding.spec.key.into(),
+                FixedReadonlyEvidence {
+                    address: graph.targets[binding.spec.key],
+                    size: 24,
+                    sha256: sha256(&fixed_hex(binding.spec.hex)),
+                    file_address: Some(graph.targets[&format!("{}_file", binding.spec.key)]),
+                    file_sha256: Some(sha256(&fixed_hex(binding.spec.file_hex))),
+                    relative_pointer_slot: Some(graph.targets[binding.spec.key]),
+                },
+            );
+        }
+        // Independently retained actual CALL offsets. The real production
+        // emitter must produce records accepted by the real final validator.
+        for (role, call) in [
+            ("fixed_tool_heap_metadata", 470),
+            ("fixed_region_publication_get_opaque", 21),
+            ("fixed_region_publication_set_opaque", 34),
+        ] {
+            let address = graph.selected[role];
+            let edge = graph.transfers[role]
+                .iter()
+                .find(|edge| edge.instruction == address + call)
+                .unwrap();
+            let (key, evidence) = fixed_guarded_terminal_evidence(
+                role,
+                address,
+                edge,
+                FixedImageKind::Standalone,
+                &graph.witnesses,
+                &[terminal_role],
+            )
+            .unwrap()
+            .unwrap();
+            assert_eq!(key, format!("{role}+{call:#x}"));
+            assert_eq!(
+                evidence.premise,
+                "dev_source_owned_complete_scalar_no_unwind"
+            );
+            assert_eq!(evidence.transfer, *edge);
+            assert!(
+                backing
+                    .guarded_terminal_edges
+                    .insert(key, evidence)
+                    .is_none()
+            );
+        }
+        for (role, size) in [
+            ("fixed_span_contains", 114),
+            ("fixed_refuse_foreign", 81),
+            ("fixed_tool_heap_option_residual", 11),
+            ("fixed_panic_misaligned_reference", 66),
+            ("fixed_panic_null_reference", 25),
+            ("fixed_panic_nounwind_fmt", 53),
+        ] {
+            let spelling = name(role);
+            assert!(fixed_dev_operation_symbol_matches(role, &spelling));
+            backing.functions.insert(
+                role.into(),
+                SymbolEvidence {
+                    name: spelling,
+                    address: graph.targets[role],
+                    size,
+                    binding: sym::STB_LOCAL,
+                    visibility: sym::STV_DEFAULT,
+                },
+            );
+            backing.function_sha256.insert(role.into(), "0".repeat(64));
+        }
+        for key in FIXED_DEV_SCALAR_OPERATION_DATA {
+            let spec = fixed_dev_scalar_operation_data_spec(key).unwrap();
+            let location = spec.kind == "location";
+            backing.readonly_objects.insert(
+                (*key).into(),
+                FixedReadonlyEvidence {
+                    address: graph.targets[*key],
+                    size: spec.hex.len() / 2,
+                    sha256: sha256(&fixed_hex(spec.hex)),
+                    file_address: location.then(|| graph.targets[&format!("{key}_file")]),
+                    file_sha256: location.then(|| sha256(&fixed_hex(spec.file_hex))),
+                    relative_pointer_slot: location.then(|| graph.targets[*key]),
+                },
+            );
+        }
+        for (role, call, callee) in [
+            (
+                "fixed_setup_bitmap_range",
+                98,
+                "fixed_panic_misaligned_reference",
+            ),
+            (
+                "fixed_setup_bitmap_range",
+                135,
+                "fixed_panic_null_reference",
+            ),
+            ("fixed_setup_shift_guard", 58, "fixed_panic_nounwind_fmt"),
+        ] {
+            let address = graph.selected[role];
+            let edge = graph.transfers[role]
+                .iter()
+                .find(|edge| edge.instruction == address + call)
+                .unwrap();
+            let (key, guard) = fixed_guarded_terminal_evidence(
+                role,
+                address,
+                edge,
+                FixedImageKind::Standalone,
+                &graph.witnesses,
+                &[callee],
+            )
+            .unwrap()
+            .unwrap();
+            assert_eq!(guard.transfer, *edge);
+            assert_eq!(
+                guard.premise,
+                fixed_guarded_terminal_pairs(FixedImageKind::Standalone)
+                    .iter()
+                    .find(|&&(caller, target, _)| caller == role && target == callee)
+                    .unwrap()
+                    .2
+            );
+            assert!(backing.guarded_terminal_edges.insert(key, guard).is_none());
+        }
+        assert_eq!(
+            backing
+                .guarded_terminal_edges
+                .values()
+                .filter(|guard| guard.premise == FIXED_DEV_SCALAR_NO_UNWIND_PREMISE)
+                .count(),
+            3
+        );
+        assert_eq!(backing.guarded_terminal_edges.len(), 6);
+        let setter = &backing.functions["fixed_region_publication_set_opaque"];
+        let setter_transfers = graph.transfers["fixed_region_publication_set_opaque"].clone();
+        backing
+            .owned_setup_got_edges
+            .extend(fixed_dev_setter_setup_got_edges(setter, &setter_transfers));
+        backing.owned_setup_transfers.insert(
+            "fixed_region_publication_set_opaque".into(),
+            setter_transfers,
+        );
+        backing
+    }
+
+    struct DevSetterSetupControl {
+        graph: DetcorePublicationControlGraph,
+        context: FixedMachineContext,
+        roles: BTreeMap<String, sym::Sym>,
+        code: BTreeMap<u64, Vec<u8>>,
+        disassembly: String,
+        strings: Vec<u8>,
+        got: BTreeMap<u64, u64>,
+        existing_helpers: BTreeSet<u64>,
+    }
+
+    fn dev_setter_setup_control() -> DevSetterSetupControl {
+        // Synthetic whole-operation/source-context controls, never retained
+        // ELF qualification. The independent measured samples still construct
+        // every complete current witness through the original real factories.
+        let graph = dev_scalar_publication_control_graph(false);
+        check_dev_scalar_graph(&graph).unwrap();
+        let samples = dev_scalar_publication_samples();
+        let mut slots = BTreeMap::new();
+        let mut got = BTreeMap::new();
+        for &(_, _, _, _, operands) in &samples {
+            for &(_, _, key, indirect) in operands {
+                if indirect && !slots.contains_key(key) {
+                    let slot = 0x6000000 + slots.len() as u64 * 8;
+                    slots.insert(key, slot);
+                    got.insert(slot, graph.targets[key]);
+                }
+            }
+        }
+        let mut code = BTreeMap::new();
+        let mut disassembly = String::new();
+        for &(role, _, whole, offsets, operands) in &samples {
+            let address = graph.targets[role];
+            let mut bytes = fixed_hex(whole);
+            for &(at, next, key, indirect) in operands {
+                let target = if indirect {
+                    slots[key]
+                } else {
+                    graph.targets[key]
+                };
+                let delta =
+                    i32::try_from(i128::from(target) - i128::from(address) - next as i128).unwrap();
+                bytes[at..at + 4].copy_from_slice(&delta.to_le_bytes());
+            }
+            disassembly.push_str(&format!("{address:x} <{role}>:\n"));
+            for (i, &at) in offsets.iter().enumerate() {
+                let end = offsets.get(i + 1).copied().unwrap_or(bytes.len());
+                disassembly.push_str(&format!(
+                    "{:x}: {}\n",
+                    address + at as u64,
+                    bytes[at..end]
+                        .iter()
+                        .map(|b| format!("{b:02x}"))
+                        .collect::<Vec<_>>()
+                        .join(" ")
+                ));
+            }
+            code.insert(address, bytes);
+        }
+        let mut strings = vec![0];
+        let mut roles = BTreeMap::new();
+        for (role, address) in &graph.selected {
+            let spelling = FIXED_EMITTED_ROLE_SYMBOLS
+                .iter()
+                .chain(FIXED_OPERATION_ROLE_SYMBOLS)
+                .chain(FIXED_SUPPORT_ROLE_SYMBOLS)
+                .chain(PUBLICATION_ROLE_SYMBOLS)
+                .chain(DETCORE_VALIDATE_ROLE_SYMBOLS)
+                .chain(FIXED_DEV_SCALAR_HELPER_SYMBOLS)
+                .find(|&&(candidate, _)| candidate == role)
+                .unwrap()
+                .1
+                .replace("Cs_", "Cs1_");
+            let name = strings.len();
+            strings.extend_from_slice(spelling.as_bytes());
+            strings.push(0);
+            roles.insert(
+                role.clone(),
+                sym::Sym {
+                    st_name: name,
+                    st_info: (sym::STB_LOCAL << 4) | sym::STT_FUNC,
+                    st_other: sym::STV_DEFAULT,
+                    st_shndx: 1,
+                    st_value: *address,
+                    st_size: code.get(address).map_or(69, |bytes| bytes.len() as u64),
+                },
+            );
+        }
+        let compiled_filenames = detcore_validate_control_context("dev-complete-source-context");
+        let filename = &compiled_filenames["rv:reverie-inguest/src/guest/tool_region.rs"];
+        let mut location = vec![0; 24];
+        location[8..16].copy_from_slice(&(filename.len() as u64).to_le_bytes());
+        location[16..20].copy_from_slice(&138_u32.to_le_bytes());
+        location[20..24].copy_from_slice(&36_u32.to_le_bytes());
+        let readonly = BTreeMap::from([
+            (
+                graph.targets["fixed_scalar_publication_set_location"],
+                location,
+            ),
+            (
+                graph.targets["fixed_scalar_publication_set_location_file"],
+                filename.clone(),
+            ),
+        ]);
+        let context = FixedMachineContext {
+            current_dev_source_profile: true,
+            native_syscalls: None,
+            compiled_filenames,
+            targets: graph.targets.clone(),
+            readonly,
+            readonly_evidence: BTreeMap::new(),
+            selection_objects: BTreeMap::new(),
+        };
+        // These five targets are already in the original41-member production
+        // helper set. Do not add the new i32 helper to this old subset.
+        let existing_helpers = [
+            "fixed_publication_cannot_unwind",
+            "fixed_heap_panic_misaligned",
+            "fixed_metadata_atomic_load_bool",
+            "fixed_panic_null_reference",
+            "fixed_heap_atomic_bool_store",
+        ]
+        .map(|role| graph.targets[role])
+        .into_iter()
+        .collect();
+        DevSetterSetupControl {
+            graph,
+            context,
+            roles,
+            code,
+            disassembly,
+            strings,
+            got,
+            existing_helpers,
+        }
+    }
+
+    fn dev_setter_setup_control_elf(control: &DevSetterSetupControl) -> Elf<'_> {
+        let header = goblin::elf::header::Header::new(goblin::container::Ctx::new(
+            goblin::container::Container::Big,
+            goblin::container::Endian::Little,
+        ));
+        let mut elf = Elf::lazy_parse(header).unwrap();
+        elf.strtab =
+            goblin::strtab::Strtab::parse(&control.strings, 0, control.strings.len(), 0).unwrap();
+        elf
+    }
+
+    fn dev_setter_setup_control_witness(
+        control: &DevSetterSetupControl,
+    ) -> Result<Option<FixedDevSetterSetupCensus>> {
+        fixed_dev_setter_setup_witness(
+            &control.context,
+            FixedImageKind::Standalone,
+            (&control.graph.witnesses, &control.graph.transfers),
+            (&control.roles, &dev_setter_setup_control_elf(control)),
+            (&control.code, &control.disassembly),
+            &control.got,
+        )
+    }
+
+    #[test]
+    fn source_owned_dev_setter_setup_private_witness_controls() {
+        let control = dev_setter_setup_control();
+        let witness = dev_setter_setup_control_witness(&control).unwrap().unwrap();
+        assert_eq!(witness.function.size, 353);
+        assert_eq!(witness.helper.size, 18);
+        assert_eq!(witness.transfers.len(), 7);
+        for mode in 0..7 {
+            let mut bad = dev_setter_setup_control();
+            match mode {
+                0 => {
+                    bad.graph.witnesses.remove("fixed_dev_i32_identity");
+                }
+                1 => {
+                    bad.graph
+                        .witnesses
+                        .get_mut("fixed_region_publication_set_opaque")
+                        .unwrap()
+                        .kind = AuthenticatedDetcoreOperationKind::ValidateTemplate(68);
+                }
+                2 => {
+                    bad.graph
+                        .witnesses
+                        .get_mut("fixed_dev_i32_identity")
+                        .unwrap()
+                        .kind = AuthenticatedDetcoreOperationKind::DevScalarHelper(0);
+                }
+                3 => {
+                    bad.roles
+                        .get_mut("fixed_dev_i32_identity")
+                        .unwrap()
+                        .st_value += 1;
+                }
+                4 => {
+                    bad.code
+                        .get_mut(&bad.graph.targets["fixed_dev_i32_identity"])
+                        .unwrap()[0] ^= 1;
+                }
+                5 => {
+                    bad.code
+                        .get_mut(&bad.graph.targets["fixed_region_publication_set_opaque"])
+                        .unwrap()[0] ^= 1;
+                }
+                _ => {
+                    bad.graph.witnesses.remove("fixed_setup_bitmap_range");
+                }
+            }
+            let error = match dev_setter_setup_control_witness(&bad) {
+                Err(error) => error,
+                Ok(_) => panic!("changed current setter witness accepted"),
+            };
+            assert!(
+                error.starts_with("current dev setter setup witness:"),
+                "{mode}: {error}"
+            );
+        }
+        // Both RIP operands can individually resolve to the exact helper.
+        // This synthetic complete-body mutation proves that the new private
+        // witness also requires their measured shared slot, without relying
+        // on an absolute address or changing the old template's semantics.
+        let mut two_slots = dev_setter_setup_control();
+        let role = "fixed_region_publication_set_opaque";
+        let address = two_slots.graph.targets[role];
+        let helper = two_slots.graph.targets["fixed_dev_i32_identity"];
+        let new_slot = 0x6200000;
+        assert!(!two_slots.got.contains_key(&new_slot));
+        two_slots.got.insert(new_slot, helper);
+        let code = two_slots.code.get_mut(&address).unwrap();
+        let line = |bytes: &[u8]| {
+            format!(
+                "{:x}: {}\n",
+                address + 306,
+                bytes
+                    .iter()
+                    .map(|byte| format!("{byte:02x}"))
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            )
+        };
+        let old_line = line(&code[306..313]);
+        let displacement = i32::try_from(new_slot as i128 - address as i128 - 313).unwrap();
+        code[309..313].copy_from_slice(&displacement.to_le_bytes());
+        let new_line = line(&code[306..313]);
+        assert_eq!(two_slots.disassembly.matches(&old_line).count(), 1);
+        two_slots.disassembly = two_slots.disassembly.replacen(&old_line, &new_line, 1);
+        for edges in [
+            &mut two_slots.graph.witnesses.get_mut(role).unwrap().edges,
+            two_slots.graph.transfers.get_mut(role).unwrap(),
+        ] {
+            edges
+                .iter_mut()
+                .find(|edge| edge.instruction == address + 315)
+                .unwrap()
+                .local_got_slot = Some(new_slot);
+        }
+        check_dev_scalar_graph(&two_slots.graph).unwrap();
+        let error = match dev_setter_setup_control_witness(&two_slots) {
+            Err(error) => error,
+            Ok(_) => panic!("distinct setter helper slots accepted"),
+        };
+        assert_eq!(
+            error,
+            "current dev setter setup witness: current setter scalar calls lose their shared private helper slot"
+        );
+        let mut absent = dev_setter_setup_control();
+        absent.context.current_dev_source_profile = false;
+        assert!(dev_setter_setup_control_witness(&absent).unwrap().is_none());
+        let error = match fixed_dev_setter_setup_witness(
+            &control.context,
+            FixedImageKind::Detcore,
+            (&control.graph.witnesses, &control.graph.transfers),
+            (&control.roles, &dev_setter_setup_control_elf(&control)),
+            (&control.code, &control.disassembly),
+            &control.got,
+        ) {
+            Err(error) => error,
+            Ok(_) => panic!("native setter setup accepted"),
+        };
+        assert!(error.contains("outside its source-owned standalone family"));
+    }
+
+    #[test]
+    fn source_owned_dev_setter_setup_actual_windows_and_census_controls() {
+        let control = dev_setter_setup_control();
+        let witness = dev_setter_setup_control_witness(&control).unwrap().unwrap();
+        let function = &witness.function;
+        let instructions =
+            constructor_instructions(&control.disassembly, function.address).unwrap();
+        assert!(!control.existing_helpers.contains(&witness.helper.address));
+        // The unchanged generic path still refuses this helper; neither its
+        // original role set nor its XOR argument vocabulary is broadened.
+        assert_eq!(
+            fixed_owned_setup_preparation_transfers(
+                "fixed_region_publication_set_opaque",
+                function,
+                &instructions,
+                &control.got,
+                &control.existing_helpers,
+                (None, None)
+            )
+            .unwrap_err(),
+            "contextual prepare GOT target lacks an exact private helper role"
+        );
+        let (transfers, got_edges) = fixed_owned_setup_preparation_transfers(
+            "fixed_region_publication_set_opaque",
+            function,
+            &instructions,
+            &control.got,
+            &control.existing_helpers,
+            (None, Some(&witness)),
+        )
+        .unwrap();
+        assert_eq!(
+            transfers,
+            control.graph.transfers["fixed_region_publication_set_opaque"]
+        );
+        assert_eq!(transfers.len(), 7);
+        assert_eq!(got_edges.len(), 5);
+        for offset in [180, 315] {
+            assert!(
+                transfers
+                    .iter()
+                    .any(|edge| edge.instruction == function.address + offset
+                        && edge.target == witness.helper.address)
+            );
+            assert!(
+                got_edges
+                    .iter()
+                    .any(|edge| edge.instruction == function.address + offset
+                        && edge.target_function == witness.helper.address)
+            );
+        }
+        for (offset, changed) in [
+            (168, 0x49),
+            (175, 0xba),
+            (180, 0x90),
+            (306, 0x49),
+            (313, 0x90),
+            (315, 0x90),
+        ] {
+            let mut bad = instructions.clone();
+            bad.iter_mut()
+                .find(|i| i.address == function.address + offset)
+                .unwrap()
+                .bytes[0] = changed;
+            let error = fixed_owned_setup_preparation_transfers(
+                "fixed_region_publication_set_opaque",
+                function,
+                &bad,
+                &control.got,
+                &control.existing_helpers,
+                (None, Some(&witness)),
+            )
+            .unwrap_err();
+            assert!(
+                error.starts_with("current dev setter setup census:"),
+                "{offset}: {error}"
+            );
+            assert!(
+                error.contains("whole setter identity/bytes"),
+                "{offset}: {error}"
+            );
+        }
+        let slot = transfers
+            .iter()
+            .find(|e| e.instruction == function.address + 180)
+            .unwrap()
+            .local_got_slot
+            .unwrap();
+        for target in [
+            0,
+            witness.helper.address + 1,
+            control.graph.targets["prepare_scalar_usize_identity"],
+        ] {
+            let mut got = control.got.clone();
+            got.insert(slot, target);
+            let error = fixed_owned_setup_preparation_transfers(
+                "fixed_region_publication_set_opaque",
+                function,
+                &instructions,
+                &got,
+                &control.existing_helpers,
+                (None, Some(&witness)),
+            )
+            .unwrap_err();
+            assert!(error.contains("exact GOT/typed helper target"), "{error}");
+        }
+        for offset in [180, 315] {
+            let mut bad = instructions.clone();
+            bad.iter_mut()
+                .find(|i| i.address == function.address + offset)
+                .unwrap()
+                .address += 1;
+            let error = fixed_owned_setup_preparation_transfers(
+                "fixed_region_publication_set_opaque",
+                function,
+                &bad,
+                &control.got,
+                &control.existing_helpers,
+                (None, Some(&witness)),
+            )
+            .unwrap_err();
+            assert!(
+                error.contains("instruction sequence is discontinuous"),
+                "{error}"
+            );
+        }
+        let entries =
+            preparation_register_entry_targets(&instructions, &control.existing_helpers).unwrap();
+        assert!(entries.contains(&(function.address + 168)));
+        assert!(entries.contains(&(function.address + 306)));
+        // Corrupt only a test-private witness digest to exercise the internal
+        // window/alternate-entry defenses after its outer whole-byte guard.
+        // Production exposes no such constructor or mutable witness. The real
+        // typed factory and existing per-byte controls still refuse these
+        // changed bodies before any physical admission.
+        for (offset, byte, value, expected) in [
+            (
+                175_u64,
+                0,
+                0xb8,
+                "unmodeled instruction/flow in contextual prepare function",
+            ),
+            (
+                175,
+                0,
+                0xba,
+                "current setter scalar call loses its exact defining load/argument/entry window",
+            ),
+            (
+                313,
+                1,
+                0xc0,
+                "current setter scalar call loses its exact defining load/argument/entry window",
+            ),
+            (
+                180,
+                1,
+                0xd1,
+                "unmodeled instruction/flow in contextual prepare function",
+            ),
+            (
+                149,
+                1,
+                24,
+                "current setter scalar call loses its exact defining load/argument/entry window",
+            ),
+            (
+                149,
+                1,
+                29,
+                "current setter scalar call loses its exact defining load/argument/entry window",
+            ),
+            (
+                304,
+                1,
+                7,
+                "current setter scalar call loses its exact defining load/argument/entry window",
+            ),
+            (
+                304,
+                1,
+                9,
+                "current setter scalar call loses its exact defining load/argument/entry window",
+            ),
+        ] {
+            let mut bad = instructions.clone();
+            bad.iter_mut()
+                .find(|i| i.address == function.address + offset)
+                .unwrap()
+                .bytes[byte] = value;
+            let mut corrupted = dev_setter_setup_control_witness(&control).unwrap().unwrap();
+            let bytes: Vec<_> = bad.iter().flat_map(|i| i.bytes.iter().copied()).collect();
+            corrupted.function_sha256 = sha256(&bytes);
+            let error = fixed_owned_setup_preparation_transfers(
+                "fixed_region_publication_set_opaque",
+                function,
+                &bad,
+                &control.got,
+                &control.existing_helpers,
+                (None, Some(&corrupted)),
+            )
+            .unwrap_err();
+            assert_eq!(
+                error,
+                format!("current dev setter setup census: {expected}"),
+                "{offset}/{byte}"
+            );
+        }
+        let mut backward = instructions.clone();
+        let branch = backward
+            .iter_mut()
+            .find(|i| i.address == function.address + 186)
+            .unwrap();
+        assert_eq!(branch.bytes[0], 0xe9);
+        branch.bytes[1..5].copy_from_slice(&(-11_i32).to_le_bytes());
+        let mut corrupted = dev_setter_setup_control_witness(&control).unwrap().unwrap();
+        let bytes: Vec<_> = backward
+            .iter()
+            .flat_map(|i| i.bytes.iter().copied())
+            .collect();
+        corrupted.function_sha256 = sha256(&bytes);
+        let error = fixed_owned_setup_preparation_transfers(
+            "fixed_region_publication_set_opaque",
+            function,
+            &backward,
+            &control.got,
+            &control.existing_helpers,
+            (None, Some(&corrupted)),
+        )
+        .unwrap_err();
+        assert!(
+            error.contains("exact defining load/argument/entry window"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn source_owned_dev_setter_setup_final_evidence_join_controls() {
+        let layout = Some((
+            CompiledSourceLayout::ReverieWorkspace,
+            FixedImageKind::Standalone,
+        ));
+        let backing = dev_scalar_backing_emitter_control();
+        let check = |b: &AllocatorBackingEvidence| {
+            validate_fixed_backing_evidence_in_source_context(b, FixedImageKind::Standalone, layout)
+        };
+        check(&backing).unwrap();
+        let roundtrip: AllocatorBackingEvidence =
+            serde_json::from_slice(&serde_json::to_vec(&backing).unwrap()).unwrap();
+        assert_eq!(backing, roundtrip);
+        check(&roundtrip).unwrap();
+        let role = "fixed_region_publication_set_opaque";
+        let mut two_slots = backing.clone();
+        let setter = &two_slots.functions[role];
+        let second_call = setter.address + 315;
+        let old_slot = two_slots.allocator_transfers[role][6]
+            .local_got_slot
+            .unwrap();
+        let new_slot = old_slot.checked_add(8).unwrap();
+        for edges in [
+            two_slots.allocator_transfers.get_mut(role).unwrap(),
+            two_slots.owned_setup_transfers.get_mut(role).unwrap(),
+        ] {
+            let edge = edges
+                .iter_mut()
+                .find(|edge| edge.instruction == second_call)
+                .unwrap();
+            edge.local_got_slot = Some(new_slot);
+        }
+        two_slots
+            .owned_setup_got_edges
+            .iter_mut()
+            .find(|edge| edge.instruction == second_call)
+            .unwrap()
+            .slot = new_slot;
+        assert_eq!(
+            check(&two_slots).unwrap_err(),
+            "dev setter setup loses its exact shared helper slot: current setter scalar calls lose their shared private helper slot"
+        );
+        for mode in 0..9 {
+            let mut bad = backing.clone();
+            match mode {
+                0 => {
+                    bad.owned_setup_transfers.remove(role);
+                }
+                1 => {
+                    bad.owned_setup_transfers.get_mut(role).unwrap().remove(4);
+                }
+                2 => {
+                    bad.owned_setup_transfers.get_mut(role).unwrap()[4].instruction += 1;
+                }
+                3 => {
+                    bad.owned_setup_transfers.get_mut(role).unwrap()[4].target += 1;
+                }
+                4 => {
+                    bad.owned_setup_transfers.get_mut(role).unwrap()[4].local_got_slot = None;
+                }
+                5 => {
+                    bad.owned_setup_got_edges[0].source_function += 1;
+                }
+                6 => {
+                    bad.owned_setup_got_edges[0].instruction += 1;
+                }
+                7 => {
+                    let extra = bad.owned_setup_got_edges[0].clone();
+                    bad.owned_setup_got_edges.push(extra);
+                }
+                _ => {
+                    bad.owned_setup_got_edges[0].slot += 8;
+                }
+            }
+            let error = check(&bad).unwrap_err();
+            assert!(
+                error.starts_with("dev setter setup loses its exact"),
+                "{mode}: {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn source_owned_dev_scalar_emitted_terminal_final_evidence_roundtrip() {
+        let source_layout = Some((
+            CompiledSourceLayout::ReverieWorkspace,
+            FixedImageKind::Standalone,
+        ));
+        let check = |backing: &AllocatorBackingEvidence| {
+            validate_fixed_backing_evidence_in_source_context(
+                backing,
+                FixedImageKind::Standalone,
+                source_layout,
+            )
+        };
+        // This argument is a synthetic structural layout only. Production
+        // callers extract it from fresh verified sources, then retain exact
+        // source equality and full physical qualification/evidence equality.
+        let backing = dev_scalar_backing_emitter_control();
+        check(&backing).unwrap();
+        let serialized = serde_json::to_vec(&backing).unwrap();
+        let roundtrip: AllocatorBackingEvidence = serde_json::from_slice(&serialized).unwrap();
+        assert_eq!(roundtrip, backing);
+        check(&roundtrip).unwrap();
+        for context in [
+            None,
+            Some((CompiledSourceLayout::HermitGit, FixedImageKind::Standalone)),
+            Some((
+                CompiledSourceLayout::ReverieWorkspace,
+                FixedImageKind::Detcore,
+            )),
+            Some((CompiledSourceLayout::HermitGit, FixedImageKind::Detcore)),
+        ] {
+            assert!(
+                validate_fixed_backing_evidence_in_source_context(
+                    &backing,
+                    FixedImageKind::Standalone,
+                    context
+                )
+                .is_err()
+            );
+        }
+        assert!(
+            validate_fixed_backing_evidence_in_source_context(
+                &backing,
+                FixedImageKind::Detcore,
+                source_layout
+            )
+            .is_err()
+        );
+        let historical = dev_scalar_backing_schema_control();
+        // Historical receipts retain their None-context path; adding only
+        // current terminal labels never grants the complete dev family.
+        validate_fixed_backing_evidence(&historical).unwrap();
+        let mut unused = historical.clone();
+        for role in FIXED_DEV_SCALAR_HELPER_SYMBOLS
+            .iter()
+            .map(|&(role, _)| role)
+            .filter(|role| fixed_dev_scalar_private_helper(role))
+        {
+            unused
+                .functions
+                .insert(role.into(), backing.functions[role].clone());
+            unused
+                .function_sha256
+                .insert(role.into(), backing.function_sha256[role].clone());
+        }
+        // Existing symbol census may retain an unused typed definition. It
+        // has no authenticated operation/transfer witness and grants no dev
+        // path; adding it must not reject an unchanged historical family.
+        validate_fixed_backing_evidence(&unused).unwrap();
+        let mut old = historical.clone();
+        old.guarded_terminal_edges = backing.guarded_terminal_edges.clone();
+        assert!(check(&old).is_err());
+        for (role, symbol) in &backing.functions {
+            if FIXED_DEV_SCALAR_COHORT
+                .iter()
+                .any(|&(candidate, _)| candidate == role)
+                || FIXED_DEV_SCALAR_HELPERS.iter().any(|r| r.role == role)
+                || matches!(
+                    role.as_str(),
+                    "fixed_scalar_syscall" | "fixed_setup_bitmap_range"
+                )
+            {
+                for mode in 0..5 {
+                    let mut bad = backing.clone();
+                    match mode {
+                        0 => {
+                            bad.functions.remove(role);
+                        }
+                        1 => {
+                            bad.functions.get_mut(role).unwrap().size = symbol.size + 1;
+                        }
+                        2 => {
+                            bad.functions
+                                .get_mut(role)
+                                .unwrap()
+                                .name
+                                .push_str("_foreign");
+                        }
+                        3 => {
+                            bad.functions.get_mut(role).unwrap().binding = sym::STB_GLOBAL;
+                        }
+                        _ => {
+                            bad.allocator_transfers.remove(role);
+                        }
+                    }
+                    assert!(
+                        check(&bad).is_err(),
+                        "complete emitted family {role}/{mode}"
+                    );
+                }
+            }
+        }
+        for role in [
+            "fixed_region_publication_get",
+            "fixed_region_publication_set",
+            "fixed_tool_heap",
+            "fixed_native_bitmap_range",
+        ] {
+            let mut mixed = backing.clone();
+            mixed.functions.insert(
+                role.into(),
+                SymbolEvidence {
+                    name: role.into(),
+                    address: 0x9000000,
+                    size: 1,
+                    binding: sym::STB_LOCAL,
+                    visibility: sym::STV_DEFAULT,
+                },
+            );
+            mixed.function_sha256.insert(role.into(), "0".repeat(64));
+            mixed.allocator_transfers.insert(role.into(), vec![]);
+            assert!(
+                check(&mixed).is_err(),
+                "mixed historical/native role {role}"
+            );
+        }
+        for binding in FIXED_DEV_SCALAR_ALLOC_LOCATIONS {
+            for mode in 0..7 {
+                let mut bad = backing.clone();
+                match mode {
+                    0 => {
+                        bad.readonly_objects.remove(binding.spec.key);
+                    }
+                    1 => {
+                        bad.readonly_objects
+                            .get_mut(binding.spec.key)
+                            .unwrap()
+                            .sha256 = "f".repeat(64);
+                    }
+                    2 => {
+                        bad.readonly_objects
+                            .get_mut(binding.spec.key)
+                            .unwrap()
+                            .file_sha256 = Some("f".repeat(64));
+                    }
+                    3 => {
+                        bad.readonly_objects
+                            .get_mut(binding.spec.key)
+                            .unwrap()
+                            .relative_pointer_slot = None;
+                    }
+                    4 => {
+                        bad.readonly_objects.get_mut(binding.spec.key).unwrap().size = 23;
+                    }
+                    5 => {
+                        bad.readonly_objects
+                            .get_mut(binding.spec.key)
+                            .unwrap()
+                            .file_address = None;
+                    }
+                    _ => {
+                        bad.readonly_objects.insert(
+                            binding.request.into(),
+                            bad.readonly_objects[binding.spec.key].clone(),
+                        );
+                    }
+                }
+                assert!(
+                    check(&bad).is_err(),
+                    "emitted current Location/file profile {}/{mode}",
+                    binding.spec.key
+                );
+            }
+        }
+        // Preserve the original three-edge shared-slot mutation oracle. The
+        // separately added bitmap/shift guards have their own physical slot
+        // proofs and structural mutations in the current-operation control.
+        for (key, terminal) in backing
+            .guarded_terminal_edges
+            .iter()
+            .filter(|(_, terminal)| terminal.premise == FIXED_DEV_SCALAR_NO_UNWIND_PREMISE)
+        {
+            for mode in 0..9 {
+                let mut bad = backing.clone();
+                if mode == 0 {
+                    bad.guarded_terminal_edges.remove(key);
+                } else {
+                    let guard = bad.guarded_terminal_edges.get_mut(key).unwrap();
+                    match mode {
+                        1 => guard.caller_role = "fixed_tool_alloc".into(),
+                        2 => guard.terminal_role = "fixed_heap_panic_null".into(),
+                        3 => guard.premise = "constant_atomic_order".into(),
+                        4 => guard.transfer.instruction += 1,
+                        5 => guard.transfer.target += 1,
+                        6 => guard.transfer.local_got_slot = None,
+                        7 => {
+                            guard.transfer.local_got_slot =
+                                guard.transfer.local_got_slot.map(|slot| slot + 8)
+                        }
+                        _ => guard.transfer.local_got_slot = Some(1),
+                    }
+                    // Match the changed raw edge too: rejection must retain
+                    // the exact caller/CALL PC/premise/target/GOT family join.
+                    let changed = guard.transfer.clone();
+                    let raw = bad
+                        .allocator_transfers
+                        .get_mut(&terminal.caller_role)
+                        .unwrap();
+                    let index = raw
+                        .iter()
+                        .position(|edge| edge == &terminal.transfer)
+                        .unwrap();
+                    raw[index] = changed;
+                }
+                assert!(check(&bad).is_err(), "emitted terminal {key}/{mode}");
+            }
+            let mut duplicate = backing.clone();
+            duplicate
+                .allocator_transfers
+                .get_mut(&terminal.caller_role)
+                .unwrap()
+                .push(terminal.transfer.clone());
+            assert!(check(&duplicate).is_err());
+            let mut wrong_key = backing.clone();
+            let edge = wrong_key.guarded_terminal_edges.remove(key).unwrap();
+            wrong_key
+                .guarded_terminal_edges
+                .insert("changed_guard_key".into(), edge);
+            assert!(check(&wrong_key).is_err());
+        }
+        // A seventh label/edge cannot enter the finite six-edge allowance
+        // (three unchanged historical bitmap/shift guards and three dev EH).
+        let mut extra = backing.clone();
+        extra.guarded_terminal_edges.insert(
+            "extra".into(),
+            backing
+                .guarded_terminal_edges
+                .values()
+                .next()
+                .unwrap()
+                .clone(),
+        );
+        assert!(check(&extra).is_err());
+    }
+
+    #[test]
+    fn source_owned_dev_scalar_actual_syscall_transport_controls() {
+        // Actual retained DEV raw body and independent objdump boundaries.
+        // Synthetic addresses elsewhere in graph fixtures do not define this ABI.
+        let address = 0x36d2c0;
+        let gate = 0x36d1c0;
+        let slot = 0x4e0390;
+        let bytes = fixed_hex(
+            "4883ec2848897c24084889742410488954241848894c242031c04189c14d89c848c7042400000000ff15a23017004883c428c3",
+        );
+        assert_eq!(
+            sha256(&bytes),
+            "97d2f2b95de7118020bad54fd64ed8664e2a74bb9b73398f926f63897f6ad8ea"
+        );
+        let offsets = [0, 4, 9, 14, 19, 24, 26, 29, 32, 40, 46, 50];
+        let instructions: Vec<_> = offsets
+            .iter()
+            .enumerate()
+            .map(|(i, &at)| EncodedConstructorInstruction {
+                address: address + at as u64,
+                bytes: bytes[at..offsets.get(i + 1).copied().unwrap_or(bytes.len())].to_vec(),
+            })
+            .collect();
+        let targets = BTreeMap::from([(CONSTRUCTOR_GATE_OWNER.into(), gate)]);
+        let got = BTreeMap::from([(slot, gate)]);
+        let readonly = BTreeMap::new();
+        let context = BTreeMap::new();
+        let bindings = || DetcoreRecipeBindings {
+            targets: &targets,
+            got: &got,
+            readonly: &readonly,
+            context: &context,
+        };
+        let witness = fixed_detcore_qualified_operation(
+            "fixed_scalar_syscall",
+            address,
+            (&bytes, &instructions),
+            bindings(),
+            0,
+            false,
+        )
+        .unwrap();
+        let no_scope = fixed_no_scope_qualified_operation(
+            "fixed_scalar_syscall",
+            address,
+            (&bytes, &instructions),
+            bindings(),
+            false,
+        )
+        .unwrap();
+        assert_eq!(
+            witness.kind,
+            AuthenticatedDetcoreOperationKind::ValidateTemplate(106)
+        );
+        assert_eq!(witness.scalar_storage, None);
+        assert_eq!(no_scope.kind, witness.kind);
+        assert_eq!(no_scope.edges, witness.edges);
+        assert_eq!(no_scope.scalar_storage, None);
+        assert_eq!(
+            witness.edges,
+            vec![ConstructorTransfer {
+                instruction: address + 40,
+                target: gate,
+                local_got_slot: Some(slot),
+            }]
+        );
+        assert_eq!(
+            fixed_scalar_helper_recipe("fixed_scalar_syscall", address, &bytes, &got, gate,)
+                .unwrap(),
+            witness.edges
+        );
+        let dev = dev_scalar_publication_control_graph(false);
+        check_dev_scalar_graph(&dev).unwrap();
+        let mut mixed = dev_scalar_publication_control_graph(false);
+        mixed
+            .witnesses
+            .get_mut("fixed_scalar_syscall")
+            .unwrap()
+            .kind = AuthenticatedDetcoreOperationKind::ValidateTemplate(26);
+        assert!(
+            check_dev_scalar_graph(&mixed).is_err(),
+            "DEV cannot reuse optimized raw23"
+        );
+        for case in 0..6 {
+            let mut old = naked_owner_publication_control_graph(case, false);
+            old.witnesses.get_mut("fixed_scalar_syscall").unwrap().kind = witness.kind;
+            let kind = [
+                FixedImageKind::Standalone,
+                FixedImageKind::Detcore,
+                FixedImageKind::Detcore,
+                FixedImageKind::Standalone,
+                FixedImageKind::Detcore,
+                FixedImageKind::Detcore,
+            ][case];
+            let native = [false, true, false, false, true, false][case];
+            assert!(
+                fixed_scalar_publication_syscall_mode(&old.witnesses, kind, native).is_err(),
+                "raw51 alone cannot select DEV in an old complete tuple {case}"
+            );
+        }
+        let backing = dev_scalar_backing_emitter_control();
+        let source = Some((
+            CompiledSourceLayout::ReverieWorkspace,
+            FixedImageKind::Standalone,
+        ));
+        let check = |value: &AllocatorBackingEvidence| {
+            validate_fixed_backing_evidence_in_source_context(
+                value,
+                FixedImageKind::Standalone,
+                source,
+            )
+        };
+        check(&backing).unwrap();
+        for mode in 0..10 {
+            let mut bad = backing.clone();
+            match mode {
+                0 => bad.functions.get_mut("fixed_scalar_syscall").unwrap().size = 23,
+                1 => {
+                    bad.allocator_transfers
+                        .get_mut("fixed_scalar_syscall")
+                        .unwrap()[0]
+                        .instruction -= 25
+                }
+                2 => {
+                    bad.allocator_transfers
+                        .get_mut("fixed_scalar_syscall")
+                        .unwrap()[0]
+                        .target += 1
+                }
+                3 => {
+                    bad.allocator_transfers
+                        .get_mut("fixed_scalar_syscall")
+                        .unwrap()[0]
+                        .local_got_slot = None
+                }
+                4 => {
+                    bad.allocator_transfers
+                        .get_mut("fixed_scalar_syscall")
+                        .unwrap()[0]
+                        .local_got_slot = Some(1)
+                }
+                5 => {
+                    bad.allocator_transfers
+                        .get_mut("fixed_scalar_syscall")
+                        .unwrap()
+                        .clear();
+                }
+                6 => {
+                    let e = bad.allocator_transfers["fixed_scalar_syscall"][0].clone();
+                    bad.allocator_transfers
+                        .get_mut("fixed_scalar_syscall")
+                        .unwrap()
+                        .push(e);
+                }
+                7 => bad.functions.get_mut(CONSTRUCTOR_GATE_OWNER).unwrap().size += 1,
+                8 => bad
+                    .functions
+                    .get_mut(CONSTRUCTOR_GATE_OWNER)
+                    .unwrap()
+                    .name
+                    .push_str("_foreign"),
+                _ => {
+                    bad.allocator_transfers.remove(CONSTRUCTOR_GATE_OWNER);
+                }
+            }
+            assert!(
+                check(&bad).is_err(),
+                "exact emitted DEV raw/gate join {mode}"
+            );
+        }
+    }
+
+    #[test]
+    fn source_owned_dev_scalar_complete_operation_family_controls() {
+        let graph = dev_scalar_publication_control_graph(false);
+        check_dev_scalar_graph(&graph).unwrap();
+        for recipe in FIXED_DEV_SCALAR_OPERATIONS {
+            for kind in [
+                AuthenticatedDetcoreOperationKind::ValidateTemplate(11),
+                AuthenticatedDetcoreOperationKind::DevScalarHelper(0),
+            ] {
+                let mut bad = dev_scalar_publication_control_graph(false);
+                bad.witnesses.get_mut(recipe.role).unwrap().kind = kind;
+                assert_eq!(
+                    fixed_dev_scalar_mode(&bad.witnesses, FixedImageKind::Standalone, false)
+                        .unwrap_err(),
+                    "unknown or mixed standalone dev scalar whole composition/profile"
+                );
+            }
+            let mut bad = dev_scalar_publication_control_graph(false);
+            bad.witnesses.get_mut(recipe.role).unwrap().scalar_storage = None;
+            assert_eq!(
+                check_dev_scalar_graph(&bad).unwrap_err(),
+                "dev scalar complete witness loses physical identity/storage/census"
+            );
+        }
+        // These are additions to existing rows, never unqualified-caller exemptions.
+        for (caller, pc, callee) in [
+            ("fixed_tool_owned_heap", 24, "fixed_tool_heap_metadata"),
+            (
+                "fixed_tool_owned_heap",
+                42,
+                "fixed_dev_heap_metadata_pointer_as_ref",
+            ),
+            (
+                "fixed_tool_owned_heap",
+                51,
+                "fixed_dev_heap_metadata_option_branch",
+            ),
+            ("fixed_tool_dealloc", 34, "fixed_tool_owned_heap"),
+            ("fixed_tool_realloc", 47, "fixed_tool_owned_heap"),
+            ("fixed_setup_bitmap_range", 316, "fixed_setup_shift_guard"),
+        ] {
+            let edges = &graph.transfers[caller];
+            let index = edges
+                .iter()
+                .position(|edge| {
+                    edge.instruction == graph.selected[caller] + pc
+                        && edge.target == graph.targets[callee]
+                })
+                .unwrap();
+            for mode in 0..4 {
+                let mut bad = dev_scalar_publication_control_graph(false);
+                let edges = &mut bad.transfers.get_mut(caller).unwrap();
+                match mode {
+                    0 => {
+                        edges.remove(index);
+                    }
+                    1 => edges[index].instruction += 1,
+                    2 => {
+                        let edge = edges[index].clone();
+                        edges.push(edge);
+                    }
+                    _ => {
+                        edges[index].local_got_slot = if edges[index].local_got_slot.is_some() {
+                            None
+                        } else {
+                            Some(0x6000000)
+                        }
+                    }
+                }
+                // Keep the caller's opaque census equal so the intended exact
+                // incoming multiset is tested, not an earlier identity check.
+                bad.witnesses.get_mut(caller).unwrap().edges = edges.clone();
+                let error = check_dev_scalar_graph(&bad).unwrap_err();
+                assert!(
+                    matches!(
+                        error.as_str(),
+                        "missing dev scalar helper incoming edge"
+                            | "extra duplicate shifted or wrong-mode dev scalar helper edge"
+                    ),
+                    "{caller}/{pc}/{mode}: {error}"
+                );
+            }
+        }
+        for mode in 0..2 {
+            let mut bad = dev_scalar_publication_control_graph(false);
+            let edge = ConstructorTransfer {
+                instruction: 0x7000000,
+                target: graph.targets["fixed_tool_owned_heap"],
+                local_got_slot: None,
+            };
+            if mode == 0 {
+                bad.transfers.insert("unknown_caller".into(), vec![edge]);
+            } else {
+                bad.transfers
+                    .get_mut("fixed_tool_alloc")
+                    .unwrap()
+                    .push(edge.clone());
+                bad.witnesses
+                    .get_mut("fixed_tool_alloc")
+                    .unwrap()
+                    .edges
+                    .push(edge);
+            }
+            let error = check_dev_scalar_graph(&bad).unwrap_err();
+            assert!(
+                matches!(
+                    error.as_str(),
+                    "dev scalar helper has unqualified caller"
+                        | "extra duplicate shifted or wrong-mode dev scalar helper edge"
+                ),
+                "{error}"
+            );
+        }
+    }
+
+    #[test]
+    fn source_owned_dev_scalar_bitmap_current_physical_data_controls() {
+        fn put(b: &mut [u8], at: usize, width: usize, value: u64) {
+            b[at..at + width].copy_from_slice(&value.to_le_bytes()[..width]);
+        }
+        // Synthetic ELF data fragment, not a compiled source authority or
+        // runtime receipt. It calls the unchanged real physical data binder.
+        let mut good = vec![0; 0x4000];
+        good[..16].copy_from_slice(&[0x7f, b'E', b'L', b'F', 2, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+        for (at, width, value) in [
+            (16, 2, 3),
+            (18, 2, 62),
+            (20, 4, 1),
+            (32, 8, 64),
+            (40, 8, 0x3100),
+            (52, 2, 64),
+            (54, 2, 56),
+            (56, 2, 2),
+            (58, 2, 64),
+            (60, 2, 2),
+            (64, 4, 1),
+            (68, 4, 4),
+            (96, 8, 0x3000),
+            (104, 8, 0x3000),
+            (112, 8, 4096),
+            (120, 4, 2),
+            (124, 4, 4),
+            (128, 8, 0x2600),
+            (136, 8, 0x2600),
+            (152, 8, 64),
+            (160, 8, 64),
+            (168, 8, 8),
+            (0x3144, 4, 1),
+            (0x3148, 8, 2),
+            (0x3150, 8, 0x1000),
+            (0x3158, 8, 0x1000),
+            (0x3160, 8, 0x1000),
+            (0x3170, 8, 8),
+        ] {
+            put(&mut good, at, width, value);
+        }
+        for (i, (tag, value)) in [(7_u64, 0x2800), (8, 24), (9, 24), (0, 0)]
+            .into_iter()
+            .enumerate()
+        {
+            put(&mut good, 0x2600 + i * 16, 8, tag);
+            put(&mut good, 0x2608 + i * 16, 8, value);
+        }
+        let full_location = fixed_hex("00000000000000002e000000000000008f0000001b000000");
+        let filename = b"reverie-inguest/src/guest/tool_region_arena.rs";
+        assert_eq!(
+            fixed_hex(FIXED_DEV_SCALAR_BITMAP_REFERENCE.hex),
+            full_location
+        );
+        assert_eq!(
+            fixed_hex(FIXED_DEV_SCALAR_BITMAP_REFERENCE.file_hex),
+            filename
+        );
+        good[0x1200..0x1218].copy_from_slice(&full_location);
+        good[0x1800..0x1800 + filename.len()].copy_from_slice(filename);
+        put(&mut good, 0x2800, 8, 0x1200);
+        put(&mut good, 0x2808, 8, 8);
+        put(&mut good, 0x2810, 8, 0x1800);
+        let check = |bytes: &[u8], spec: &FixedReadonlySpec| -> Result<()> {
+            let elf = Elf::parse(bytes).map_err(|error| error.to_string())?;
+            fixed_bind_readonly_in_source_context(
+                (&elf, bytes),
+                spec,
+                0x1200,
+                &mut BTreeMap::new(),
+                &mut BTreeMap::new(),
+                &mut BTreeMap::new(),
+                None,
+            )
+        };
+        check(&good, &FIXED_DEV_SCALAR_BITMAP_REFERENCE).unwrap();
+        let old = FIXED_READONLY_SPECS
+            .iter()
+            .find(|spec| spec.key == "fixed_bitmap_reference_location")
+            .unwrap();
+        assert_eq!(
+            check(&good, old).unwrap_err(),
+            "wrong complete Fixed source Location"
+        );
+        for byte in 0..24 {
+            let mut bad = good.clone();
+            bad[0x1200 + byte] ^= 1;
+            assert_eq!(
+                check(&bad, &FIXED_DEV_SCALAR_BITMAP_REFERENCE).unwrap_err(),
+                "wrong complete Fixed source Location"
+            );
+        }
+        for byte in 0..filename.len() {
+            let mut bad = good.clone();
+            bad[0x1800 + byte] ^= 1;
+            assert_eq!(
+                check(&bad, &FIXED_DEV_SCALAR_BITMAP_REFERENCE).unwrap_err(),
+                "Fixed Location filename differs from exact source role"
+            );
+        }
+        for (at, width, value) in [
+            (0x2800, 8, 0x1201),
+            (0x2808, 8, 1),
+            (0x2808, 8, (1_u64 << 32) | 8),
+            (0x2810, 8, 0x1801),
+            (68, 4, 6),
+            (68, 4, 5),
+            (0x3158, 8, 0x1008),
+            (0x2618, 8, 0),
+        ] {
+            let mut bad = good.clone();
+            put(&mut bad, at, width, value);
+            let error = check(&bad, &FIXED_DEV_SCALAR_BITMAP_REFERENCE).unwrap_err();
+            assert!(
+                error.contains("Fixed") || error.contains("readonly"),
+                "{at:#x}: {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn source_owned_dev_scalar_current_operation_final_evidence_controls() {
+        let source_layout = Some((
+            CompiledSourceLayout::ReverieWorkspace,
+            FixedImageKind::Standalone,
+        ));
+        let check = |backing: &AllocatorBackingEvidence| {
+            validate_fixed_backing_evidence_in_source_context(
+                backing,
+                FixedImageKind::Standalone,
+                source_layout,
+            )
+        };
+        let good = dev_scalar_backing_emitter_control();
+        check(&good).unwrap();
+        let roundtrip: AllocatorBackingEvidence =
+            serde_json::from_slice(&serde_json::to_vec(&good).unwrap()).unwrap();
+        assert_eq!(good, roundtrip);
+        check(&roundtrip).unwrap();
+        for (role, old_sizes) in [
+            ("fixed_tool_owned_heap", &[127_u64][..]),
+            ("fixed_setup_bitmap_range", &[175, 495][..]),
+        ] {
+            for &size in old_sizes {
+                let mut bad = good.clone();
+                bad.functions.get_mut(role).unwrap().size = size;
+                assert_eq!(
+                    check(&bad).unwrap_err(),
+                    "dev scalar backing mixes complete function identity, extent or transfer evidence"
+                );
+            }
+            for edge in &good.allocator_transfers[role] {
+                for mode in 0..4 {
+                    let mut bad = good.clone();
+                    let edges = bad.allocator_transfers.get_mut(role).unwrap();
+                    let index = edges
+                        .iter()
+                        .position(|candidate| candidate == edge)
+                        .unwrap();
+                    match mode {
+                        0 => {
+                            edges.remove(index);
+                        }
+                        1 => edges[index].instruction += 1,
+                        2 => edges[index].target += 1,
+                        _ => {
+                            edges[index].local_got_slot = if edge.local_got_slot.is_some() {
+                                None
+                            } else {
+                                Some(8)
+                            }
+                        }
+                    };
+                    let error = check(&bad).unwrap_err();
+                    assert!(
+                        matches!(
+                            error.as_str(),
+                            "dev scalar operation loses complete actual transfer census"
+                                | "dev scalar operation loses exact caller/CALL PC/mode/target join"
+                        ),
+                        "{role}/{mode}: {error}"
+                    );
+                }
+            }
+        }
+        for key in FIXED_DEV_SCALAR_OPERATION_DATA {
+            for mode in 0..7 {
+                let mut bad = good.clone();
+                if mode == 0 {
+                    bad.readonly_objects.remove(*key);
+                } else {
+                    let object = bad.readonly_objects.get_mut(*key).unwrap();
+                    match mode {
+                        1 => object.size += 1,
+                        2 => object.sha256 = "f".repeat(64),
+                        3 => object.address = 0,
+                        4 => object.file_address = Some(0),
+                        5 => object.file_sha256 = Some("f".repeat(64)),
+                        _ => object.relative_pointer_slot = Some(0),
+                    }
+                }
+                let error = check(&bad).unwrap_err();
+                assert!(
+                    matches!(
+                        error.as_str(),
+                        "dev scalar operation lacks complete physical readonly evidence"
+                            | "dev scalar operation physical readonly identity differs"
+                    ),
+                    "{key}/{mode}: {error}"
+                );
+            }
+        }
+        for (key, terminal) in good
+            .guarded_terminal_edges
+            .iter()
+            .filter(|(_, guard)| guard.premise != FIXED_DEV_SCALAR_NO_UNWIND_PREMISE)
+        {
+            for mode in 0..8 {
+                let mut bad = good.clone();
+                if mode == 0 {
+                    bad.guarded_terminal_edges.remove(key);
+                } else {
+                    let guard = bad.guarded_terminal_edges.get_mut(key).unwrap();
+                    match mode {
+                        1 => guard.caller_role = "fixed_tool_alloc".into(),
+                        2 => guard.terminal_role = "fixed_heap_panic_null".into(),
+                        3 => guard.premise = "constant_atomic_order".into(),
+                        4 => guard.transfer.instruction += 1,
+                        5 => guard.transfer.target += 1,
+                        6 => guard.transfer.local_got_slot = None,
+                        _ => guard.transfer.local_got_slot = Some(1),
+                    }
+                    let changed = guard.transfer.clone();
+                    let raw = bad
+                        .allocator_transfers
+                        .get_mut(&terminal.caller_role)
+                        .unwrap();
+                    let index = raw
+                        .iter()
+                        .position(|edge| edge == &terminal.transfer)
+                        .unwrap();
+                    raw[index] = changed;
+                }
+                let error = check(&bad).unwrap_err();
+                assert!(
+                    matches!(
+                        error.as_str(),
+                        "dev scalar operation drops physical guarded terminal"
+                            | "dev scalar operation guarded terminal loses exact physical/source premise"
+                            | "dev scalar operation loses exact caller/CALL PC/mode/target join"
+                            | "dev scalar shift guard loses its actual retained terminal"
+                    ),
+                    "current physical terminal {key}/{mode}: {error}"
+                );
+            }
+        }
+        for (key, terminal) in good
+            .guarded_terminal_edges
+            .iter()
+            .filter(|(_, guard)| guard.premise != FIXED_DEV_SCALAR_NO_UNWIND_PREMISE)
+        {
+            // Keep the physical raw vector unchanged: even an aligned different
+            // serialized guard slot must fail their exact equality join.
+            let mut disagreement = good.clone();
+            let guard = disagreement.guarded_terminal_edges.get_mut(key).unwrap();
+            guard.transfer.local_got_slot = guard.transfer.local_got_slot.map(|slot| slot + 8);
+            assert_eq!(
+                check(&disagreement).unwrap_err(),
+                "dev scalar operation guarded terminal loses exact physical/source premise"
+            );
+            let mut duplicate = good.clone();
+            duplicate
+                .allocator_transfers
+                .get_mut(&terminal.caller_role)
+                .unwrap()
+                .push(terminal.transfer.clone());
+            let error = check(&duplicate).unwrap_err();
+            assert!(
+                matches!(
+                    error.as_str(),
+                    "dev scalar operation loses complete actual transfer census"
+                        | "dev scalar shift guard loses its actual retained terminal"
+                ),
+                "{key}: {error}"
+            );
+            let mut wrong_key = good.clone();
+            let guard = wrong_key.guarded_terminal_edges.remove(key).unwrap();
+            wrong_key
+                .guarded_terminal_edges
+                .insert("changed_current_guard_key".into(), guard);
+            assert_eq!(
+                check(&wrong_key).unwrap_err(),
+                "dev scalar operation drops physical guarded terminal"
+            );
+        }
+        // An aligned slot jointly changed in both serialized vectors does not
+        // assert new instruction/writer authority. Complete physical recipe/GOT
+        // controls and consumer requalification own that independent proof.
+        let mut mixed = good.clone();
+        mixed.readonly_objects.insert(
+            "fixed_bitmap_reference_location".into(),
+            good.readonly_objects[FIXED_DEV_SCALAR_BITMAP_REFERENCE.key].clone(),
+        );
+        assert_eq!(
+            check(&mixed).unwrap_err(),
+            "dev scalar operation mixes historical bitmap source Location"
+        );
+        for role in [
+            "fixed_tool_owned_heap",
+            "fixed_setup_bitmap_range",
+            "fixed_setup_shift_guard",
+        ] {
+            let mut bad = good.clone();
+            let address = good.functions[role].address;
+            bad.functions
+                .get_mut(CONSTRUCTOR_GATE_OWNER)
+                .unwrap()
+                .address = address + 1;
+            assert_eq!(
+                check(&bad).unwrap_err(),
+                "dev scalar backing loses its exact ordinary51B CALL40/private44B gate join"
+            );
+        }
+        let mut overlap = good.clone();
+        overlap
+            .functions
+            .get_mut("fixed_tool_owned_heap")
+            .unwrap()
+            .address = good.functions["fixed_setup_bitmap_range"].address + 1;
+        assert_eq!(
+            check(&overlap).unwrap_err(),
+            "dev scalar backing mixes complete function identity, extent or transfer evidence"
+        );
+        // Unreached current definitions do not reclassify a historical receipt.
+        let mut historical = dev_scalar_backing_schema_control();
+        for recipe in FIXED_DEV_SCALAR_OPERATIONS {
+            historical
+                .functions
+                .insert(recipe.role.into(), good.functions[recipe.role].clone());
+            historical.function_sha256.insert(
+                recipe.role.into(),
+                good.function_sha256[recipe.role].clone(),
+            );
+        }
+        validate_fixed_backing_evidence(&historical).unwrap();
+    }
+
+    #[test]
+    fn source_owned_dev_scalar_complete_machine_controls() {
+        let graph = dev_scalar_publication_control_graph(true);
+        assert_eq!(graph.witnesses.len(), 27); //14 parents+10 helpers+raw51+two complete operations.
+        check_dev_scalar_graph(&graph).unwrap();
+        for role in graph.witnesses.keys() {
+            for mode in 0..7 {
+                let mut bad = dev_scalar_publication_control_graph(false);
+                match mode {
+                    0 => {
+                        bad.witnesses.remove(role);
+                    }
+                    1 => {
+                        bad.selected.remove(role);
+                    }
+                    2 => {
+                        *bad.targets.get_mut(role).unwrap() += 1;
+                    }
+                    3 => {
+                        bad.transfers.remove(role);
+                    }
+                    4 => {
+                        bad.witnesses.get_mut(role).unwrap().kind =
+                            AuthenticatedDetcoreOperationKind::ValidateTemplate(0);
+                    }
+                    5 => {
+                        bad.witnesses.get_mut(role).unwrap().address += 1;
+                    }
+                    _ => {
+                        bad.witnesses.get_mut(role).unwrap().role = "wrong_role".into();
+                    }
+                }
+                assert!(
+                    check_dev_scalar_graph(&bad).is_err(),
+                    "dev missing/identity {role}/{mode}"
+                );
+            }
+        }
+        for key in [
+            "fixed_region",
+            "fixed_region_ready",
+            "fixed_region_value16",
+            "fixed_initializing",
+            "fixed_backing_object",
+        ] {
+            let mut bad = dev_scalar_publication_control_graph(false);
+            *bad.targets.get_mut(key).unwrap() += 1;
+            assert!(check_dev_scalar_graph(&bad).is_err(), "dev storage {key}");
+        }
+        for role in FIXED_DEV_SCALAR_COHORT
+            .iter()
+            .map(|r| r.0)
+            .chain(FIXED_DEV_SCALAR_HELPERS.iter().map(|r| r.role))
+        {
+            let mut bad = dev_scalar_publication_control_graph(false);
+            bad.witnesses.get_mut(role).unwrap().scalar_storage = None;
+            assert!(
+                check_dev_scalar_graph(&bad).is_err(),
+                "dev private storage {role}"
+            );
+        }
+    }
+
+    #[test]
+    fn source_owned_dev_scalar_cohort_and_transfer_refusals() {
+        let graph = dev_scalar_publication_control_graph(false);
+        check_dev_scalar_graph(&graph).unwrap();
+        assert!(
+            fixed_scalar_publication_syscall_mode(
+                &graph.witnesses,
+                FixedImageKind::Standalone,
+                true
+            )
+            .is_err()
+        );
+        assert!(
+            fixed_scalar_publication_syscall_mode(&graph.witnesses, FixedImageKind::Detcore, false)
+                .is_err()
+        );
+        assert!(
+            fixed_scalar_publication_syscall_mode(&graph.witnesses, FixedImageKind::Detcore, true)
+                .is_err()
+        );
+        assert!(
+            fixed_scalar_publication_cohort(
+                &graph.witnesses,
+                &graph.transfers,
+                &graph.selected,
+                &graph.targets,
+                FixedImageKind::Detcore
+            )
+            .is_err()
+        );
+        for case in 0..6 {
+            let old = naked_owner_publication_control_graph(case, false);
+            for &(role, _) in FIXED_DEV_SCALAR_COHORT {
+                if old.witnesses[role].kind == graph.witnesses[role].kind {
+                    continue;
+                }
+                let mut bad = dev_scalar_publication_control_graph(false);
+                bad.witnesses.get_mut(role).unwrap().kind = old.witnesses[role].kind;
+                assert!(
+                    check_dev_scalar_graph(&bad).is_err(),
+                    "dev mixed optimized role {case}/{role}"
+                );
+                let mut bad = naked_owner_publication_control_graph(case, false);
+                bad.witnesses.get_mut(role).unwrap().kind = graph.witnesses[role].kind;
+                let kind = [
+                    FixedImageKind::Standalone,
+                    FixedImageKind::Detcore,
+                    FixedImageKind::Detcore,
+                    FixedImageKind::Standalone,
+                    FixedImageKind::Detcore,
+                    FixedImageKind::Detcore,
+                ][case];
+                let native = [false, true, false, false, true, false][case];
+                assert!(
+                    fixed_scalar_publication_syscall_mode(&bad.witnesses, kind, native).is_err(),
+                    "old tuple plus ONLY dev role/bridge {case}/{role}"
+                );
+            }
+        }
+        for &(callee, callers) in FIXED_DEV_SCALAR_INCOMING {
+            let mut bad = dev_scalar_publication_control_graph(false);
+            bad.transfers.insert(
+                "unqualified_extra_caller".into(),
+                vec![ConstructorTransfer {
+                    instruction: 1,
+                    target: bad.targets[callee],
+                    local_got_slot: None,
+                }],
+            );
+            assert!(
+                check_dev_scalar_graph(&bad).is_err(),
+                "dev extra caller {callee}"
+            );
+            for &(caller, pc, _) in callers {
+                for mode in 0..4 {
+                    let mut bad = dev_scalar_publication_control_graph(false);
+                    let w = bad.witnesses.get_mut(caller).unwrap();
+                    let i = w
+                        .edges
+                        .iter()
+                        .position(|e| e.instruction == w.address + pc)
+                        .unwrap();
+                    match mode {
+                        0 => {
+                            w.edges.remove(i);
+                        }
+                        1 => {
+                            w.edges.push(w.edges[i].clone());
+                        }
+                        2 => {
+                            w.edges[i].instruction += 1;
+                        }
+                        _ => {
+                            w.edges[i].local_got_slot = if w.edges[i].local_got_slot.is_some() {
+                                None
+                            } else {
+                                Some(0x300f00)
+                            };
+                        }
+                    }
+                    bad.transfers.insert(caller.into(), w.edges.clone());
+                    assert!(
+                        check_dev_scalar_graph(&bad).is_err(),
+                        "dev incoming {callee}/{caller}/{pc}/{mode}"
+                    );
+                }
+            }
+        }
+        for (role, index) in [
+            ("fixed_tool_heap_metadata", 96),
+            ("fixed_region_publication_get_opaque", 97),
+            ("fixed_region_publication_set_opaque", 98),
+        ] {
+            assert!(fixed_dev_scalar_no_unwind_terminal(
+                role,
+                &graph.witnesses,
+                &["fixed_publication_cannot_unwind"]
+            ));
+            assert!(!fixed_dev_scalar_no_unwind_terminal(
+                role,
+                &graph.witnesses,
+                &["other_terminal"]
+            ));
+            let mut bad = dev_scalar_publication_control_graph(false);
+            bad.witnesses.get_mut(role).unwrap().kind =
+                AuthenticatedDetcoreOperationKind::ValidateTemplate(index - 40);
+            assert!(!fixed_dev_scalar_no_unwind_terminal(
+                role,
+                &bad.witnesses,
+                &["fixed_publication_cannot_unwind"]
+            ));
+        }
+    }
+    #[test]
+    fn source_owned_dev_scalar_retains_whole_external_root_caller() {
+        let mut graph = dev_scalar_publication_control_graph(false);
+        // Actual c1 fixed_patch_heap201 is outside the24-row dev transaction.
+        // Its old whole recipe and complete five-edge census remain mandatory;
+        // roots do not acquire a fabricated zero-production-incoming assertion.
+        let address = 0x7000000;
+        let mut bytes = fixed_hex(
+            "4883ec38ff1546a631004889c7ff1545a631004889442420488b54242031c0b9010000004883fa00480f44c148a9010000007412ff1526a6310048894424104889542418eb74488b4424204889442430488b481048890c24488b402048894424084883e0074883f8007516488b4424084883f8000f94c024ff34ffa8017519eb2c488b742408bf08000000488d1566cb2d00ff15a09e3100488b0424488b4c240848894c24104889442418eb0d488d3d44cb2d00ff15869e3100488b442410488b5424184883c438c3",
+        );
+        let offsets = &[
+            0, 4, 10, 13, 19, 24, 29, 31, 36, 40, 44, 50, 52, 58, 63, 68, 70, 75, 80, 84, 88, 92,
+            97, 101, 105, 107, 112, 116, 119, 121, 123, 125, 127, 129, 134, 139, 146, 152, 156,
+            161, 166, 171, 173, 180, 186, 191, 196, 200,
+        ];
+        let fields = &[
+            (6, 10, "fixed_arena_backing", true),
+            (15, 19, "fixed_patch_backing_option_branch", true),
+            (54, 58, "fixed_patch_span_option_residual", true),
+            (142, 146, "publication_dev_data_3655e8", false),
+            (148, 152, "fixed_heap_panic_misaligned", true),
+            (176, 180, "publication_dev_data_3655e8", false),
+            (182, 186, "fixed_panic_null_reference", true),
+        ];
+        for (i, &(_, _, key, _)) in fields.iter().enumerate() {
+            graph
+                .targets
+                .entry(key.into())
+                .or_insert(0x7100000 + i as u64 * 0x1000);
+        }
+        let mut readonly = BTreeMap::new();
+        readonly.insert(
+            graph.targets["publication_dev_data_3655e8"],
+            fixed_hex("000000000000000023000000000000006c00000018000000"),
+        );
+        let mut got = BTreeMap::new();
+        for (i, &(at, next, key, indirect)) in fields.iter().enumerate() {
+            let operand = if indirect {
+                let slot = 0x7200000 + i as u64 * 8;
+                got.insert(slot, graph.targets[key]);
+                slot
+            } else {
+                graph.targets[key]
+            };
+            let displacement =
+                i32::try_from(i128::from(operand) - i128::from(address) - next as i128).unwrap();
+            bytes[at..at + 4].copy_from_slice(&displacement.to_le_bytes());
+        }
+        let instructions = |body: &[u8]| -> Vec<EncodedConstructorInstruction> {
+            offsets
+                .iter()
+                .enumerate()
+                .map(|(i, &at)| {
+                    let end = offsets.get(i + 1).copied().unwrap_or(body.len());
+                    EncodedConstructorInstruction {
+                        address: address + at as u64,
+                        bytes: body[at..end].to_vec(),
+                    }
+                })
+                .collect()
+        };
+        let edges = fixed_wrapper_recipe(
+            "fixed_patch_heap",
+            address,
+            &bytes,
+            &graph.targets,
+            &got,
+            &readonly,
+        )
+        .unwrap();
+        assert_eq!(edges.len(), 5);
+        assert_eq!(
+            edges[0],
+            ConstructorTransfer {
+                instruction: address + 4,
+                target: graph.targets["fixed_arena_backing"],
+                local_got_slot: Some(0x7200000)
+            }
+        );
+        fixed_census_transfers(&instructions(&bytes), address, &bytes, &edges, &got, false)
+            .unwrap();
+        // This caller is deliberately not a dev witness; its own existing
+        // complete factory, rather than a label or broad exemption, qualified it.
+        graph.selected.insert("fixed_patch_heap".into(), address);
+        graph.targets.insert("fixed_patch_heap".into(), address);
+        graph
+            .transfers
+            .insert("fixed_patch_heap".into(), edges.clone());
+        check_dev_scalar_graph(&graph).unwrap();
+        for byte in 0..bytes.len() {
+            let mut bad = bytes.clone();
+            bad[byte] ^= 1;
+            assert!(
+                fixed_wrapper_recipe(
+                    "fixed_patch_heap",
+                    address,
+                    &bad,
+                    &graph.targets,
+                    &got,
+                    &readonly
+                )
+                .is_err(),
+                "retained outside caller whole byte {byte}"
+            );
+        }
+        for i in 0..edges.len() {
+            let mut bad = edges.clone();
+            bad.remove(i);
+            assert!(
+                fixed_census_transfers(&instructions(&bytes), address, &bytes, &bad, &got, false)
+                    .is_err()
+            );
+        }
     }
 }
 

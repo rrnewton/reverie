@@ -4,7 +4,7 @@ use std::process::Command;
 
 #[allow(dead_code)]
 #[path = "support/liteinst_runtime.rs"]
-mod liteinst_runtime;
+pub mod liteinst_runtime;
 use liteinst_runtime as runtime;
 #[path = "support/fulltool_capture.rs"]
 mod fulltool_capture;

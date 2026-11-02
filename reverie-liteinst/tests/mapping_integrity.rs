@@ -12,7 +12,7 @@ use reverie_liteinst::configure_command;
 // This consumer uses only part of the shared runtime qualification support.
 #[allow(dead_code)]
 #[path = "support/liteinst_runtime.rs"]
-mod liteinst_runtime;
+pub mod liteinst_runtime;
 use liteinst_runtime as runtime;
 #[path = "support/fulltool_capture.rs"]
 mod fulltool_capture;
