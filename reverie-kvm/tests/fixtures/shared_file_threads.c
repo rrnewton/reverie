@@ -41,6 +41,21 @@
  * - "publish-vs-clone": with no workers, a publisher thread maps a view,
  *   stores through it and unmaps it 200 times, while the main thread creates
  *   and joins 200 short threads; the file then holds the publisher's count.
+ * - "join-fork": with no workers, the main thread maps the view, then five
+ *   times creates a thread, joins it and forks; each child reads the view
+ *   and exits 0. At each fork the process has one live thread, so Linux
+ *   always allows it.
+ * - "leader-exit-fork": with no workers, the main thread maps the view and
+ *   forks; the child creates a worker and its main thread exits with
+ *   pthread_exit; the worker joins it, so that it is the child's only live
+ *   thread, forks a grandchild that reads the view, and exits 0.
+ * - "leader-cleartid": with no workers, the main thread maps the view and a
+ *   MAP_SHARED | MAP_ANONYMOUS page holding a marker, and forks. The child
+ *   points its clear_child_tid at the marker (set_tid_address), creates a
+ *   thread, joins it, and exits its only thread with SYS_exit. Linux's
+ *   mm_release stores zero there and wakes it only while another task uses
+ *   the address space; the joined thread does not, so the marker stays. The
+ *   parent prints the word once it has reaped the child.
  * Every step prints one line.
  */
 #define _GNU_SOURCE
@@ -175,6 +190,98 @@ static int publish_vs_clone(int fd) {
   return 0;
 }
 
+/* Mode "join-fork". */
+static int join_fork(int fd) {
+  view = mmap(NULL, PAGE, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+  REQUIRE(view != MAP_FAILED, "mmap");
+  view[0] = 'j';
+  for (int round = 0; round < 5; round++) {
+    pthread_t brief;
+    REQUIRE(pthread_create(&brief, NULL, short_lived, NULL) == 0, "pthread_create");
+    REQUIRE(pthread_join(brief, NULL) == 0, "pthread_join");
+    pid_t child = fork();
+    REQUIRE(child >= 0, "fork after a join");
+    if (child == 0) {
+      _exit(view[0] == 'j' ? 0 : 3);
+    }
+    int status = 0;
+    REQUIRE(waitpid(child, &status, 0) == child && WIFEXITED(status) &&
+                WEXITSTATUS(status) == 0,
+            "the child");
+  }
+  printf("forked five times, each after joining the only other thread\n");
+  return 0;
+}
+
+static void *fork_after_leader_exit(void *argument) {
+  (void)argument;
+  REQUIRE(pthread_join(main_thread, NULL) == 0, "joining the child's main thread");
+  pid_t grandchild = fork();
+  REQUIRE(grandchild >= 0, "fork by the last thread");
+  if (grandchild == 0) {
+    _exit(view[0] == 'l' ? 0 : 3);
+  }
+  int status = 0;
+  REQUIRE(waitpid(grandchild, &status, 0) == grandchild && WIFEXITED(status) &&
+              WEXITSTATUS(status) == 0,
+          "the grandchild");
+  printf("the child's last thread forked after its main thread exited\n");
+  fflush(stdout);
+  exit(0);
+}
+
+/* Mode "leader-exit-fork". */
+static int leader_exit_fork(int fd) {
+  view = mmap(NULL, PAGE, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+  REQUIRE(view != MAP_FAILED, "mmap");
+  view[0] = 'l';
+  pid_t child = fork();
+  REQUIRE(child >= 0, "fork");
+  if (child == 0) {
+    main_thread = pthread_self();
+    pthread_t thread;
+    REQUIRE(pthread_create(&thread, NULL, fork_after_leader_exit, NULL) == 0,
+            "pthread_create in the child");
+    pthread_exit(NULL);
+  }
+  int status = 0;
+  REQUIRE(waitpid(child, &status, 0) == child && WIFEXITED(status) &&
+              WEXITSTATUS(status) == 0,
+          "the child");
+  printf("the child exited 0\n");
+  return 0;
+}
+
+/* Mode "leader-cleartid". */
+static int leader_cleartid(int fd) {
+  view = mmap(NULL, PAGE, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+  REQUIRE(view != MAP_FAILED, "mmap");
+  view[0] = 'c';
+  volatile unsigned int *marker = mmap(NULL, PAGE, PROT_READ | PROT_WRITE,
+                                       MAP_SHARED | MAP_ANONYMOUS, -1, 0);
+  REQUIRE(marker != MAP_FAILED, "the marker's page");
+  marker[16] = 0x5eedf00d;
+  pid_t child = fork();
+  REQUIRE(child >= 0, "fork");
+  if (child == 0) {
+    syscall(SYS_set_tid_address, (unsigned int *)&marker[16]);
+    pthread_t brief;
+    if (pthread_create(&brief, NULL, short_lived, NULL) != 0 ||
+        pthread_join(brief, NULL) != 0) {
+      _exit(5);
+    }
+    syscall(SYS_exit, 0);
+    _exit(6);
+  }
+  int status = 0;
+  REQUIRE(waitpid(child, &status, 0) == child && WIFEXITED(status) &&
+              WEXITSTATUS(status) == 0,
+          "the child");
+  printf("the child's last thread exited; its clear_child_tid word holds %#x\n",
+         marker[16]);
+  return 0;
+}
+
 static void *join_main_thread(void *argument) {
   (void)argument;
   REQUIRE(pthread_join(main_thread, NULL) == 0, "joining the child's main thread");
@@ -216,6 +323,15 @@ int main(int argc, char **argv) {
   }
   if (strcmp(mode, "publish-vs-clone") == 0) {
     return publish_vs_clone(fd);
+  }
+  if (strcmp(mode, "join-fork") == 0) {
+    return join_fork(fd);
+  }
+  if (strcmp(mode, "leader-exit-fork") == 0) {
+    return leader_exit_fork(fd);
+  }
+  if (strcmp(mode, "leader-cleartid") == 0) {
+    return leader_cleartid(fd);
   }
   REQUIRE(pthread_barrier_init(&barrier, NULL, WORKERS + 1) == 0, "pthread_barrier_init");
   word = mmap(NULL, PAGE, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);

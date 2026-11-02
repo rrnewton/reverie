@@ -315,8 +315,118 @@ pub enum Admission {
 pub enum Activity {
     Stopped,
     Setup,
-    Running(libc::pthread_t),
+    Running(HostThread),
     Retiring,
+}
+
+/// A running member's host thread, as a closer's kick reaches it
+/// ([`EntryGate::try_close`]): the kernel's process and thread IDs, read on
+/// the thread itself when its entry activated.
+///
+/// Not a `pthread_t`: glibc's `pthread_kill` sends to the thread ID cached in
+/// the target's thread descriptor, and the initial thread of a process
+/// created by a raw `clone(2)` or `clone3(2)` (as reverie-process creates its
+/// children) holds its parent's ID there, since glibc's `clone` wrapper does
+/// not update it. A kick of that thread would fail with ESRCH, or reach
+/// whichever thread of the process has that ID.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct HostThread {
+    process: libc::pid_t,
+    thread: libc::pid_t,
+}
+
+impl HostThread {
+    /// The calling thread.
+    pub fn current() -> Self {
+        // SAFETY: getpid and gettid take no arguments and touch no memory.
+        unsafe {
+            Self {
+                process: libc::syscall(libc::SYS_getpid) as libc::pid_t,
+                thread: libc::syscall(libc::SYS_gettid) as libc::pid_t,
+            }
+        }
+    }
+
+    /// Sends `signal` to this thread (`tgkill(2)`).
+    pub fn signal(self, signal: libc::c_int) -> std::io::Result<()> {
+        // SAFETY: tgkill takes three integers and touches no memory.
+        let sent = unsafe { libc::syscall(libc::SYS_tgkill, self.process, self.thread, signal) };
+        if sent == 0 {
+            Ok(())
+        } else {
+            Err(std::io::Error::last_os_error())
+        }
+    }
+}
+
+/// What [`EntryGate::try_close`] did.
+pub enum CloseAttempt {
+    /// Admission is closing: [`Closing::finish`] waits until it has closed.
+    Closing(Closing),
+    /// Admission was not open, so nothing changed.
+    NotOpen,
+    /// The reserved signal could not be sent to a running member, for this
+    /// error. The close was abandoned before it took effect: admission is
+    /// open again and that member's kick is undone, and a member kicked
+    /// before it leaves the guest once and enters again. Nothing is poisoned.
+    SendFailed(std::io::Error),
+}
+
+impl CloseAttempt {
+    /// The [`Closing`], for a caller that knows admission was open and that
+    /// every send succeeds.
+    ///
+    /// # Panics
+    ///
+    /// When admission did not start closing.
+    #[track_caller]
+    pub fn unwrap(self) -> Closing {
+        match self {
+            Self::Closing(closing) => closing,
+            other => panic!("admission did not start closing: {other:?}"),
+        }
+    }
+}
+
+impl std::fmt::Debug for CloseAttempt {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Closing(closing) => f.debug_tuple("Closing").field(&closing.id).finish(),
+            Self::NotOpen => f.write_str("NotOpen"),
+            Self::SendFailed(error) => f.debug_tuple("SendFailed").field(error).finish(),
+        }
+    }
+}
+
+/// What [`EntryGate::close_blocking`] did.
+pub(crate) enum BlockingClose {
+    /// Every member stopped and every admitted copy retired.
+    Closed(Closed),
+    /// Admission was not open: another close was in progress.
+    NotOpen,
+    /// Members or copies did not stop within the bound; the close was
+    /// abandoned with admission reopened.
+    TimedOut,
+    /// The reserved signal could not be sent to a running member
+    /// ([`CloseAttempt::SendFailed`]).
+    SendFailed(std::io::Error),
+}
+
+#[cfg(test)]
+impl BlockingClose {
+    #[track_caller]
+    fn unwrap(self) -> Closed {
+        match self {
+            Self::Closed(closed) => closed,
+            Self::NotOpen => panic!("admission was not open"),
+            Self::TimedOut => panic!("the close timed out"),
+            Self::SendFailed(error) => panic!("a kick was not sent: {error}"),
+        }
+    }
+
+    fn is_closed(&self) -> bool {
+        matches!(self, Self::Closed(_))
+    }
 }
 
 /// A participant's shared record. Its failure attribution, the origin, is
@@ -547,7 +657,10 @@ impl State {
 
     /// The members whose guest thread has not retired.
     fn live_members(&self) -> usize {
-        self.members.values().filter(|member| !member.retired).count()
+        self.members
+            .values()
+            .filter(|member| !member.retired)
+            .count()
     }
 
     fn stopped(&self) -> bool {
@@ -648,6 +761,19 @@ impl std::fmt::Debug for EntryGate {
 }
 
 impl EntryGate {
+    /// The arena byte ranges of the live retained operands, in the order they
+    /// were retained.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn retained_operand_ranges_for_test(&self) -> Vec<Range<usize>> {
+        self.state
+            .lock()
+            .unwrap()
+            .retained_operands
+            .values()
+            .cloned()
+            .collect()
+    }
+
     #[cfg(any(test, feature = "test-support"))]
     pub fn test_state(&self) -> TestGateState {
         let state = self.state.lock().unwrap();
@@ -914,21 +1040,23 @@ impl EntryGate {
     /// Close admission for every member, as [`Self::try_close`] does, and
     /// wait on this thread, for at most `timeout`, until every member is
     /// stopped and every admitted copy has retired
-    /// ([`Closing::finish_blocking`]). None changes no lasting state: either
-    /// a close was already in progress, or members or copies did not stop in
-    /// time, and the close was abandoned with admission reopened.
+    /// ([`Closing::finish_blocking`]). Every outcome but
+    /// [`BlockingClose::Closed`] leaves no lasting state: admission was not
+    /// open, a send failed, or members or copies did not stop in time and
+    /// the close was abandoned with admission reopened.
     ///
     /// The caller may hold its memory's allocation transaction: no admitted
     /// copy acquires it, and a member stops without it. It must hold no
     /// address-space or backing lock, which admitted copies take.
-    pub(crate) fn close_blocking(
-        self: &Arc<Self>,
-        timeout: Duration,
-    ) -> GateResult<Option<Closed>> {
-        match self.try_close()? {
-            Some(closing) => closing.finish_blocking(timeout),
-            None => Ok(None),
-        }
+    pub(crate) fn close_blocking(self: &Arc<Self>, timeout: Duration) -> GateResult<BlockingClose> {
+        Ok(match self.try_close()? {
+            CloseAttempt::Closing(closing) => match closing.finish_blocking(timeout)? {
+                Some(closed) => BlockingClose::Closed(closed),
+                None => BlockingClose::TimedOut,
+            },
+            CloseAttempt::NotOpen => BlockingClose::NotOpen,
+            CloseAttempt::SendFailed(error) => BlockingClose::SendFailed(error),
+        })
     }
 
     #[cfg(any(test, feature = "test-support"))]
@@ -1098,29 +1226,22 @@ impl EntryGate {
     /// [`Closing::finish`], or the crate's bounded blocking form
     /// (`Closing::finish_blocking`), then waits until every member is
     /// stopped and every admitted copy has retired.
-    pub fn try_close(self: &Arc<Self>) -> GateResult<Option<Closing>> {
-        self.try_close_with(|thread| {
-            // SAFETY: the registry mutex remains held through pthread_kill.
-            // Entry return withdraws this exact target under the same mutex
-            // before the pthread-affine guard or participant can retire.
-            let result = unsafe { libc::pthread_kill(thread, 64) };
-            if result == 0 {
-                Ok(())
-            } else {
-                Err(std::io::Error::from_raw_os_error(result))
-            }
-        })
+    pub fn try_close(self: &Arc<Self>) -> GateResult<CloseAttempt> {
+        // The registry mutex stays held through each send, and an entry
+        // withdraws its target under the same mutex before its thread can
+        // exit, so no thread ID sent to here can have been reused.
+        self.try_close_with(|thread| thread.signal(signal::SIGNAL))
     }
 
     /// As [`Self::try_close`], with `send` interrupting each running member.
     pub fn try_close_with(
         self: &Arc<Self>,
-        mut send: impl FnMut(libc::pthread_t) -> std::io::Result<()>,
-    ) -> GateResult<Option<Closing>> {
+        mut send: impl FnMut(HostThread) -> std::io::Result<()>,
+    ) -> GateResult<CloseAttempt> {
         let mut state = self.state.lock().unwrap();
         state.check()?;
         if state.admission != Admission::Open {
-            return Ok(None);
+            return Ok(CloseAttempt::NotOpen);
         }
         let Some(id) = state.next_close.checked_add(1) else {
             let error = state.fail(None, protocol_failure("close identity exhausted"));
@@ -1139,7 +1260,10 @@ impl EntryGate {
                     // Record before sending: the entry's cleanup refuses any
                     // instance beyond the kicks recorded.
                     member.kicks = member.kicks.saturating_add(1);
-                    send(thread).err()
+                    let error = send(thread).err()?;
+                    // Not sent: the entry's cleanup must not wait for it.
+                    member.kicks -= 1;
+                    Some(error)
                 } else {
                     None
                 }
@@ -1156,24 +1280,27 @@ impl EntryGate {
             }
         };
         let (result, sender) = match send_error {
+            // Abandon the close before it takes effect, as a bounded close
+            // that times out does: a member's kick that was sent makes it
+            // leave the guest once, and it enters again.
             Some(error) => {
-                let failure = state.fail(None, failure("interrupt running vCPU", error));
-                (Err(failure), state.changed())
+                state.admission = Admission::Open;
+                (CloseAttempt::SendFailed(error), state.changed())
             }
             // Admission is closing on the caller's stack, which may hold its
             // memory's allocation transaction: wake no subscriber here.
             None => (
-                Ok(Some(Closing {
+                CloseAttempt::Closing(Closing {
                     gate: self.clone(),
                     id,
                     complete: false,
-                })),
+                }),
                 state.changed_without_subscribers(),
             ),
         };
         drop(state);
         notify(sender);
-        result
+        Ok(result)
     }
 }
 
@@ -1423,10 +1550,9 @@ impl Entry<'_> {
             return Ok(false);
         }
         let member = state.members.get_mut(&self.participant.id).unwrap();
-        // SAFETY: this guard remains on the current thread until withdrawal
-        // and signal cleanup. The numeric pthread identity never escapes the
-        // serialized sender path.
-        member.activity = Activity::Running(unsafe { libc::pthread_self() });
+        // This guard remains on the current thread until withdrawal and
+        // signal cleanup, so the thread outlives the target it publishes.
+        member.activity = Activity::Running(HostThread::current());
         member.generation = Some(self.generation);
         Ok(true)
     }
@@ -2394,7 +2520,7 @@ mod tests {
         let (sender, receiver) = std::sync::mpsc::channel();
         let closer = std::thread::spawn(move || {
             let closed = closer_gate.close_blocking(Duration::from_secs(60)).unwrap();
-            sender.send(closed.is_some()).unwrap();
+            sender.send(closed.is_closed()).unwrap();
         });
         let deadline = Instant::now() + Duration::from_secs(10);
         while gate.state.lock().unwrap().blocked_closers == 0 {
@@ -2417,11 +2543,10 @@ mod tests {
         let gate = EntryGate::new();
         let mut participant = gate.register().unwrap();
         let mut entry = participant.try_enter().unwrap().unwrap();
-        assert!(
-            gate.close_blocking(Duration::from_millis(50))
-                .unwrap()
-                .is_none()
-        );
+        assert!(matches!(
+            gate.close_blocking(Duration::from_millis(50)).unwrap(),
+            BlockingClose::TimedOut
+        ));
         assert!(gate.test_state().open);
         assert!(gate.pending_failure().is_none());
         assert!(entry.activate().unwrap());
@@ -3147,36 +3272,103 @@ mod tests {
         assert!(poll(closed.as_mut()).is_ready());
     }
 
+    /// A participant whose guest thread retired no longer counts as a user of
+    /// the address space, though it stays registered until it drops: its
+    /// sibling becomes the sole member, the one-member quiescent close goes
+    /// ahead, and the live count leaves it out. It may not enter again: an
+    /// entry after retirement is the backend's own defect, which fails the
+    /// gate.
     #[test]
-    fn failed_send_preserves_running_accounting_and_typed_cause() {
+    fn a_retired_participant_counts_as_no_user_of_the_address_space() {
         let gate = EntryGate::new();
-        let mut participant = gate.register().unwrap();
-        let id = participant.id;
-        let mut entry = participant.try_enter().unwrap().unwrap();
-        assert!(entry.activate().unwrap());
-        let changed = gate.subscribe();
-        let failure =
-            match gate.try_close_with(|_| Err(std::io::Error::from_raw_os_error(libc::ESRCH))) {
-                Err(failure) => failure,
-                Ok(_) => panic!("failed send reported a close"),
-            };
-        assert!(changed.now_or_never().is_some());
+        let live = gate.register().unwrap();
+        let mut retired = gate.register().unwrap();
+        assert!(!live.is_sole_member());
         assert!(matches!(
-            gate.state.lock().unwrap().members[&id].activity,
-            Activity::Running(_)
+            gate.try_close_quiescent_single_counting(),
+            Ok(Err(2))
         ));
+        retired.retire_from_guest();
+        retired.retire_from_guest();
+        assert!(live.is_sole_member());
+        assert!(!retired.is_sole_member());
+        assert_eq!(gate.test_state().members.len(), 2);
+        let closed = match gate.try_close_quiescent_single_counting() {
+            Ok(Ok(closed)) => closed,
+            Ok(Err(live)) => panic!("the close counted {live} live members"),
+            Err(failure) => panic!("{:?}", failure.error()),
+        };
+        drop(closed);
+        assert!(gate.pending_failure().is_none());
+        let failure = match retired.try_enter() {
+            Err(failure) => failure,
+            Ok(_) => panic!("a retired participant entered"),
+        };
+        assert!(matches!(
+            failure.error().primary(),
+            Error::EntryControl { operation, .. }
+                if *operation == "entry after the participant's thread retired"
+        ));
+        drop((live, retired));
+    }
+
+    /// A send that fails abandons the close before it takes effect, and
+    /// poisons nothing: admission is open again, the failed member's kick is
+    /// undone, and a member sent to before it keeps its one kick, which makes
+    /// it leave the guest once. Both entries finish normally, and a later
+    /// close goes ahead.
+    #[test]
+    fn a_failed_send_abandons_the_close_and_undoes_its_kick() {
+        let gate = EntryGate::new();
+        let mut first = gate.register().unwrap();
+        let mut second = gate.register().unwrap();
+        let (first_id, second_id) = (first.id, second.id);
+        let mut first_entry = first.try_enter().unwrap().unwrap();
+        assert!(first_entry.activate().unwrap());
+        let mut second_entry = second.try_enter().unwrap().unwrap();
+        assert!(second_entry.activate().unwrap());
+        let changed = gate.subscribe();
+        let mut sends = 0;
+        let attempt = gate
+            .try_close_with(|_| {
+                sends += 1;
+                if sends == 1 {
+                    Ok(())
+                } else {
+                    Err(std::io::Error::from_raw_os_error(libc::ESRCH))
+                }
+            })
+            .unwrap();
         assert!(
-            matches!(failure.error().primary(), Error::EntryControl { source, .. } if source.raw_os_error() == Some(libc::ESRCH))
+            matches!(&attempt, CloseAttempt::SendFailed(error) if error.raw_os_error() == Some(libc::ESRCH)),
+            "{attempt:?}"
         );
-        assert!(gate.admit_operation().is_err());
-        assert!(gate.try_copy(None).is_err());
-        entry.withdraw();
-        assert!(entry.acknowledge(Ok(())).is_err());
-        assert_eq!(
-            gate.state.lock().unwrap().members[&id].activity,
-            Activity::Stopped
-        );
-        assert!(gate.try_close().is_err());
+        assert_eq!(sends, 2);
+        assert!(changed.now_or_never().is_some());
+        {
+            let state = gate.state.lock().unwrap();
+            assert_eq!(state.admission, Admission::Open);
+            assert_eq!(state.members[&first_id].kicks, 1);
+            assert_eq!(state.members[&second_id].kicks, 0);
+            assert!(matches!(
+                state.members[&first_id].activity,
+                Activity::Running(_)
+            ));
+            assert!(matches!(
+                state.members[&second_id].activity,
+                Activity::Running(_)
+            ));
+        }
+        assert!(gate.pending_failure().is_none());
+        assert!(gate.admit_operation().is_ok());
+        assert_eq!(first_entry.withdraw(), 1);
+        first_entry.acknowledge(Ok(())).unwrap();
+        assert_eq!(second_entry.withdraw(), 0);
+        second_entry.acknowledge(Ok(())).unwrap();
+        let close = gate.try_close().unwrap().unwrap();
+        let mut closed = pin!(close.finish());
+        assert!(poll(closed.as_mut()).is_ready());
+        assert!(gate.pending_failure().is_none());
     }
 
     #[test]
@@ -3326,7 +3518,7 @@ mod tests {
                     let _ = gate.try_close_with(|thread| {
                         // Deliver a real control signal before the injected
                         // unwind. Cleanup must still account for it.
-                        assert_eq!(unsafe { libc::pthread_kill(thread, 64) }, 0);
+                        thread.signal(64).unwrap();
                         panic!("send operation unwound");
                     });
                 }
@@ -3606,6 +3798,106 @@ mod tests {
         drop(vm);
         drop(memory);
     }
+
+    /// In a process created by a raw `clone(2)`, as reverie-process creates
+    /// its children, glibc's descriptor of the initial thread keeps its
+    /// parent's thread ID, so `pthread_kill` to that thread from another one
+    /// fails with ESRCH (the test checks that it does). A closer's kick
+    /// reaches a member running on that thread all the same, since it is
+    /// sent to the kernel's thread ID: the close begins, the kick is
+    /// delivered and counted, and the entry's cleanup accepts it.
+    #[test]
+    fn a_kick_reaches_the_initial_thread_of_a_process_made_by_a_raw_clone() {
+        const CHILD: &str = "REVERIE_KVM_ENTRY_RAW_CLONE_CHILD";
+        const NAME: &str =
+            "entry::tests::a_kick_reaches_the_initial_thread_of_a_process_made_by_a_raw_clone";
+        if std::env::var_os(CHILD).is_none() {
+            // A fresh process, whose only test thread makes the raw clone.
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", NAME, "--nocapture", "--test-threads=1"])
+                .env(CHILD, "1")
+                .output()
+                .unwrap();
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            assert!(
+                output.status.success() && stdout.contains("raw-clone child: the kick arrived"),
+                "{stdout}{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            return;
+        }
+
+        extern "C" fn child(_: *mut libc::c_void) -> libc::c_int {
+            let initial = unsafe { libc::pthread_self() };
+            let gate = EntryGate::new();
+            let mut participant = gate.register().unwrap();
+            let key = participant.key;
+            let entry = participant.try_enter().unwrap().unwrap();
+            let control = signal::Control::arm(key, None).unwrap();
+            let mut guard = RunEntry {
+                entry: Some(entry),
+                control: Some(control),
+            };
+            assert!(guard.entry.as_mut().unwrap().activate().unwrap());
+            let before = delivered_for_test();
+            let closer_gate = gate.clone();
+            let closer = std::thread::spawn(move || {
+                // What the kick sent before: glibc's cached ID is stale here.
+                // Signal 0 checks the target and sends nothing.
+                let cached = unsafe { libc::pthread_kill(initial, 0) };
+                let attempt = closer_gate.try_close().unwrap();
+                (cached, attempt)
+            });
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+            while delivered_for_test() == before && std::time::Instant::now() < deadline {
+                // A real system call returns through the kernel, which
+                // delivers a pending reserved signal to its handler.
+                // SAFETY: getppid has no arguments and no memory effects.
+                unsafe { libc::syscall(libc::SYS_getppid) };
+            }
+            let (cached, attempt) = closer.join().unwrap();
+            let delivered = delivered_for_test() - before;
+            let closing = match attempt {
+                CloseAttempt::Closing(closing) => closing,
+                other => {
+                    println!("raw-clone child: the close did not begin: {other:?}");
+                    return 1;
+                }
+            };
+            if cached != libc::ESRCH || delivered != 1 {
+                println!(
+                    "raw-clone child: pthread_kill gave {cached}, kicks delivered {delivered}"
+                );
+                return 1;
+            }
+            guard.finish(Ok(())).unwrap();
+            let closed = block_on(closing.finish()).unwrap();
+            drop(closed);
+            assert!(gate.pending_failure().is_none());
+            println!("raw-clone child: the kick arrived");
+            0
+        }
+
+        let mut stack = vec![0_u8; 1 << 20];
+        // SAFETY: the child runs on its own copy of this process, without
+        // CLONE_VM, on the top of `stack`, which outlives the call.
+        let pid = unsafe {
+            libc::clone(
+                child,
+                stack.as_mut_ptr().add(stack.len()).cast(),
+                libc::SIGCHLD,
+                std::ptr::null_mut(),
+            )
+        };
+        assert!(pid > 0, "clone: {}", std::io::Error::last_os_error());
+        let mut status = 0;
+        // SAFETY: status is a valid out-parameter.
+        assert_eq!(unsafe { libc::waitpid(pid, &mut status, 0) }, pid);
+        assert!(
+            libc::WIFEXITED(status) && libc::WEXITSTATUS(status) == 0,
+            "raw-clone child status {status:#x}"
+        );
+    }
 }
 #[cfg(any(test, feature = "test-support"))]
 #[test]
@@ -3844,7 +4136,7 @@ mod participant_origin_tests {
                     let mut entry = participant.try_enter().unwrap().unwrap();
                     assert!(entry.activate().unwrap());
                     std::mem::forget(entry);
-                    Activity::Running(unsafe { libc::pthread_self() })
+                    Activity::Running(HostThread::current())
                 }
             };
             assert_eq!(

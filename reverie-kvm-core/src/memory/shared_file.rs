@@ -8,6 +8,7 @@
 // AUTONOMOUS-BOT-IMPLEMENTED: Retain ordinary shared files in the stable KVM arena.
 // TODO-HUMAN-REVIEW(PR-911): Review publication, fault containment and retirement.
 use super::*;
+use crate::entry::BlockingClose;
 
 /// An allocation owner also defers terminal notifications until its real mutex
 /// has been released. The monotonically distinct owner prevents an old Drop
@@ -46,6 +47,17 @@ const PUBLICATION_STOP_TIMEOUT: std::time::Duration = std::time::Duration::from_
 const PUBLICATION_STOP_FAILURE: &str = "the address space's other vCPUs or host copies did not \
      stop within the publication's bound; this is a defect of the backend to report, not a \
      refusal of the program";
+
+/// Why a publication ends when another close of the address space's
+/// admission was in progress. Every closer holds the allocation transaction
+/// the publication holds, so this is the backend's own failure too.
+const PUBLICATION_CLOSE_BUSY: &str = "another close of the address space's admission was in \
+     progress; this is a defect of the backend to report, not a refusal of the program";
+
+/// Why a publication ends when the reserved signal could not be sent to one
+/// of the address space's running vCPUs (the error follows).
+const PUBLICATION_KICK_FAILURE: &str = "the signal that stops a running vCPU could not be sent; \
+     this is a defect of the backend to report, not a refusal of the program";
 
 /// Why a publication is refused while a vfork child's window is open over
 /// the memory it would change.
@@ -111,9 +123,53 @@ impl std::fmt::Debug for DeferredFailures {
     }
 }
 
+#[cfg(any(test, feature = "test-support"))]
+thread_local! {
+    /// Run on this thread just after it releases an allocation transaction.
+    static AFTER_ALLOCATION_RELEASE: std::cell::RefCell<Option<Box<dyn FnMut()>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Runs `hook` on this thread each time it releases an allocation
+/// transaction, from just after the release, until the returned guard drops:
+/// the hook sees what the transaction's next holder would. It must not take
+/// an allocation transaction itself.
+#[cfg(any(test, feature = "test-support"))]
+pub fn after_allocation_release_for_test(hook: impl FnMut() + 'static) -> AllocationReleaseHook {
+    AFTER_ALLOCATION_RELEASE.with(|slot| {
+        let previous = slot.borrow_mut().replace(Box::new(hook));
+        assert!(previous.is_none(), "nested allocation-release hooks");
+    });
+    AllocationReleaseHook(std::marker::PhantomData)
+}
+
+/// Removes this thread's [`after_allocation_release_for_test`] hook on drop.
+#[cfg(any(test, feature = "test-support"))]
+pub struct AllocationReleaseHook(std::marker::PhantomData<*const ()>);
+
+#[cfg(any(test, feature = "test-support"))]
+impl Drop for AllocationReleaseHook {
+    fn drop(&mut self) {
+        AFTER_ALLOCATION_RELEASE.with(|slot| slot.borrow_mut().take());
+    }
+}
+
+#[cfg(any(test, feature = "test-support"))]
+fn after_allocation_release() {
+    let hook = AFTER_ALLOCATION_RELEASE.with(|slot| slot.borrow_mut().take());
+    if let Some(mut hook) = hook {
+        hook();
+        AFTER_ALLOCATION_RELEASE.with(|slot| {
+            slot.borrow_mut().get_or_insert(hook);
+        });
+    }
+}
+
 impl Drop for AllocationGuard<'_> {
     fn drop(&mut self) {
         drop(self.guard.take());
+        #[cfg(any(test, feature = "test-support"))]
+        after_allocation_release();
         let (causes, notifications) = {
             let mut deferred = self.memory.mapping.deferred.lock().unwrap();
             if deferred.active != Some(self.id) {
@@ -242,6 +298,10 @@ pub struct PrivateRangePlan<'a> {
     /// None retires user access; it does not zero the outgoing file.
     pub permissions: Option<(bool, bool)>,
     pub cursors: Option<AllocationCursors>,
+    /// For a new mapping (`permissions` set), what it maps, recorded with the
+    /// installation: no other operation of the address space sees the new
+    /// mapping without it. None records nothing.
+    pub provenance: Option<MappingProvenance>,
 }
 
 impl GuestMemory {
@@ -480,12 +540,18 @@ impl GuestMemory {
         });
         let slice =
             BackingSlice::new(backing, offset, plan.length).map_err(Error::MemoryMapping)?;
+        // A new view of a regular file: its file offset is recorded with it.
+        let provenance = MappingProvenance {
+            file_offset: Some(plan.offset),
+            shared_anonymous: false,
+        };
         self.publish_range(
             allocation,
             plan.address,
             slice,
             Some((plan.readable, plan.writable)),
             plan.cursors,
+            Some(provenance),
         )
     }
 
@@ -511,6 +577,7 @@ impl GuestMemory {
             slice,
             plan.permissions,
             plan.cursors,
+            plan.provenance,
         )
     }
 
@@ -521,6 +588,7 @@ impl GuestMemory {
         slice: BackingSlice,
         permissions: Option<(bool, bool)>,
         cursors: Option<AllocationCursors>,
+        provenance: Option<MappingProvenance>,
     ) -> Result<()> {
         self.publish_range_from(
             allocation,
@@ -529,12 +597,14 @@ impl GuestMemory {
             permissions,
             cursors,
             InstallSource::Fresh,
+            provenance,
         )
     }
 
     // Only snapshot_with_shared_files may supply a source VMA. Its parent
     // allocation and Closed token retain that exact installed source until
     // this operation returns. Normal mmap continues to validate new VMA rights.
+    #[allow(clippy::too_many_arguments)]
     fn publish_range_from<'a>(
         &'a self,
         allocation: AllocationGuard<'a>,
@@ -543,6 +613,7 @@ impl GuestMemory {
         permissions: Option<(bool, bool)>,
         cursors: Option<AllocationCursors>,
         source: InstallSource,
+        provenance: Option<MappingProvenance>,
     ) -> Result<()> {
         self.check_copy_failure()?;
         // Only a guest's own mapping change is a Fresh publication; a fork's
@@ -621,15 +692,27 @@ impl GuestMemory {
                         .close_blocking(publication_stop_timeout())
                         .map_err(|failure| failure.error())?
                     {
-                        Some(closed) => (closed, true),
-                        // The backend's own vCPUs or copies failed to stop:
-                        // its failure, not a refusal of what the program did.
-                        None => {
+                        BlockingClose::Closed(closed) => (closed, true),
+                        // The backend's own vCPUs or copies failed to stop,
+                        // or its close could not begin: its failure, not a
+                        // refusal of what the program did. Nothing changed.
+                        failed => {
                             drop(reservation);
                             drop(allocation);
-                            return Err(Error::SharedFileCapability {
+                            let refusal = |reason| Error::SharedFileCapability {
                                 operation: "mapping publication",
-                                reason: PUBLICATION_STOP_FAILURE,
+                                reason,
+                            };
+                            return Err(match failed {
+                                BlockingClose::TimedOut => refusal(PUBLICATION_STOP_FAILURE),
+                                // Every closer holds the allocation
+                                // transaction this publication holds.
+                                BlockingClose::NotOpen => refusal(PUBLICATION_CLOSE_BUSY),
+                                BlockingClose::SendFailed(error) => {
+                                    refusal(PUBLICATION_KICK_FAILURE)
+                                        .with_cleanup(vec![Error::HostIo(error)])
+                                }
+                                BlockingClose::Closed(_) => unreachable!(),
                             });
                         }
                     }
@@ -739,6 +822,14 @@ impl GuestMemory {
                     }
                 }
             }
+        }
+        // A new mapping's provenance goes in with it, under this hold of the
+        // address-space lock and the allocation transaction: an operation
+        // that takes either after the installation (another thread's
+        // MADV_DONTNEED, a fork's snapshot) sees what the mapping maps.
+        if let Some(provenance) = provenance {
+            debug_assert!(permissions.is_some(), "a withdrawal maps nothing");
+            prepared.record_mapping(first, pages as u64, provenance);
         }
         if let Some(cursors) = cursors {
             prepared.cursors = Some(cursors);
@@ -934,6 +1025,7 @@ impl GuestMemory {
                 Some(permissions),
                 None,
                 InstallSource::CurrentContents,
+                None,
             ) {
                 Ok(()) => {}
                 Err(Error::SharedFileCapability {
@@ -1082,6 +1174,7 @@ impl GuestMemory {
                     permissions(page),
                     None,
                     InstallSource::Fresh,
+                    None,
                 )?;
                 continue;
             }
@@ -1094,6 +1187,7 @@ impl GuestMemory {
                 permissions(page),
                 None,
                 InstallSource::Inherited(installed.mapping),
+                None,
             )?;
         }
         self.check_copy_failure()?;
@@ -1258,6 +1352,7 @@ impl GuestMemory {
                     contents: None,
                     permissions: None,
                     cursors: None,
+                    provenance: None,
                 },
             )?;
         }
@@ -1740,6 +1835,7 @@ mod tests {
                     contents,
                     permissions: mapped.then_some((true, true)),
                     cursors: None,
+                    provenance: None,
                 },
             )
             .unwrap();
@@ -2957,6 +3053,7 @@ mod tests {
                     contents: None,
                     permissions: Some((true, true)),
                     cursors: None,
+                    provenance: None,
                 },
             );
             assert!(
@@ -3729,6 +3826,7 @@ mod tests {
                 contents: None,
                 permissions: None,
                 cursors: None,
+                provenance: None,
             },
         ));
         vfork_refusal(child.publish_private_range(
@@ -3739,6 +3837,7 @@ mod tests {
                 contents: Some(b"private"),
                 permissions: Some((true, true)),
                 cursors: None,
+                provenance: None,
             },
         ));
         vfork_refusal(child.publish_shared_file_range(
@@ -3858,6 +3957,39 @@ mod tests {
         drop((one, two, participant));
     }
 
+    /// A fork's snapshot of an address space that holds shared views counts
+    /// only the threads that have not retired: beside a second thread whose
+    /// participant is still registered but retired (its guest thread exited,
+    /// its host side may still be tearing down), the snapshot goes ahead, as
+    /// Linux's fork after a join does; beside a live one it is refused by
+    /// name, whenever the live one's host thread happens to be.
+    #[test]
+    fn a_fork_snapshot_counts_only_threads_that_have_not_retired() {
+        let memory = fixture(2);
+        let original = file(1);
+        install(&memory, &original, BASE, 1, 0);
+        let forker = memory.entry_gate().register().unwrap();
+        let mut sibling = memory.entry_gate().register().unwrap();
+        let refused = memory.snapshot().unwrap_err();
+        assert!(
+            matches!(
+                &refused,
+                Error::UnsupportedSharedFile {
+                    operation: "shared-file fork snapshot",
+                    ..
+                }
+            ) && refused.is_named_refusal(),
+            "{refused}"
+        );
+        sibling.retire_from_guest();
+        let child = memory.snapshot().unwrap();
+        assert!(child.contains_shared_file());
+        child.write_raw(BASE, b"child").unwrap();
+        assert_eq!(read(&memory, BASE, 5), b"child");
+        assert!(memory.entry_gate().pending_failure().is_none());
+        drop((forker, sibling));
+    }
+
     /// While a vfork child's window is open over a memory, another thread's
     /// change to a shared view there is refused by name before it changes
     /// anything: on Linux the child shares the address space and reads the
@@ -3945,6 +4077,7 @@ mod tests {
                 contents: None,
                 permissions: None,
                 cursors: None,
+                provenance: None,
             },
         ));
         assert!(memory.range_contains_shared_file(BASE, PAGE_SIZE));
@@ -4020,12 +4153,23 @@ mod tests {
             );
             done.send(result.is_ok()).unwrap();
         });
-        let published = published
-            .recv_timeout(std::time::Duration::from_secs(30))
-            .expect("the publication deadlocked in a subscriber's waker");
+        let published = match published.recv_timeout(std::time::Duration::from_secs(30)) {
+            Ok(published) => published,
+            Err(_) => {
+                // The publisher is stuck in the waker and holds the change's
+                // waker list: dropping what it shares would wait for it.
+                std::mem::forget((change, waker, one, two, memory));
+                panic!("the publication deadlocked in a subscriber's waker");
+            }
+        };
         assert!(published);
         assert_eq!(*waker.reads.lock().unwrap(), vec![(true, true)]);
-        assert!(change.as_mut().poll(&mut Context::from_waker(&Waker::noop())).is_ready());
+        assert!(
+            change
+                .as_mut()
+                .poll(&mut Context::from_waker(&Waker::noop()))
+                .is_ready()
+        );
         assert!(memory.contains_shared_file());
         drop((one, two));
     }

@@ -43,9 +43,13 @@ mod vfork;
 use page_maps::UserPages;
 use page_maps::Versioned;
 pub use shared_file::AllocationGuard;
+#[cfg(any(test, feature = "test-support"))]
+pub use shared_file::AllocationReleaseHook;
 use shared_file::MemoryCopyAccess;
 pub use shared_file::PrivateRangePlan;
 pub use shared_file::SharedFileRangePlan;
+#[cfg(any(test, feature = "test-support"))]
+pub use shared_file::after_allocation_release_for_test;
 pub use vfork::VforkWriteBack;
 #[cfg(any(test, feature = "test-support"))]
 pub use vfork::vfork_window_steps;
@@ -541,7 +545,45 @@ impl ScratchCache {
     }
 }
 
+/// What a new mapping maps, which a publication records with its
+/// installation ([`GuestMemory::record_page_backing`] records it for a mapping
+/// made without one).
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct MappingProvenance {
+    /// The file offset of the mapping's first byte, when it maps a regular
+    /// file.
+    pub file_offset: Option<u64>,
+    /// Whether the mapping is `MAP_SHARED | MAP_ANONYMOUS`.
+    pub shared_anonymous: bool,
+}
+
 impl AddressSpaceState {
+    /// Records what a new mapping of `pages` physical pages from `first` maps
+    /// (`GuestMemory::record_page_backing`): whatever they held before goes,
+    /// and they take an incarnation of their own.
+    fn record_mapping(&mut self, first: u64, pages: u64, provenance: MappingProvenance) {
+        for index in 0..pages {
+            let page = first + index;
+            match provenance
+                .file_offset
+                .and_then(|offset| offset.checked_add(index * PAGE_SIZE as u64))
+            {
+                Some(offset) => self.file_pages.edit().insert(page, offset),
+                None => self.file_pages.edit().remove(&page),
+            };
+            if provenance.shared_anonymous {
+                self.shared_anonymous_pages.edit().insert(page);
+            } else {
+                self.shared_anonymous_pages.edit().remove(&page);
+            }
+        }
+        let incarnation = fresh_mapping_incarnation();
+        let incarnations = Arc::make_mut(&mut self.mapping_incarnations);
+        for index in 0..pages {
+            incarnations.insert(first + index, incarnation);
+        }
+    }
+
     /// Sets the mapping incarnation of `page`, or removes it with `None`.
     /// The map is copied out of the copies that share it only when the value
     /// changes, so an edit that changes nothing (a fork child's hidden
@@ -696,6 +738,43 @@ impl AddressSpaceState {
             cursor += physical_end - physical;
         }
         false
+    }
+
+    /// The guest-physical bytes the user addresses in `[address, end)`
+    /// translate to, from the first to the last, in whole pages: one span
+    /// across every region the range meets, taken one region at a time as
+    /// [`Self::user_range_reaches_mapping`] takes them. None where the range
+    /// meets no region.
+    fn user_physical_hull(&self, address: u64, end: u64) -> Option<(u64, u64)> {
+        let page = PAGE_SIZE as u64;
+        let mut hull: Option<(u64, u64)> = None;
+        let mut cursor = address;
+        while cursor < end {
+            let Ok((physical, limit)) = self.user_extent(cursor, 0) else {
+                let next_region = self
+                    .windows
+                    .iter()
+                    .map(|window| window.user_start)
+                    .chain(std::iter::once(self.coverage.start))
+                    .filter(|start| *start > cursor)
+                    .min();
+                match next_region {
+                    Some(start) => cursor = start,
+                    None => break,
+                }
+                continue;
+            };
+            // The region holds `cursor`, so it ends above it.
+            let physical_end = limit.min(physical.saturating_add(end - cursor));
+            let low = physical - physical % page;
+            let high = physical_end.div_ceil(page).saturating_mul(page);
+            hull = Some(match hull {
+                Some((first, last)) => (first.min(low), last.max(high)),
+                None => (low, high),
+            });
+            cursor += physical_end - physical;
+        }
+        hull
     }
 
     /// The user address of physical address `physical`, if it has one.
@@ -2893,7 +2972,9 @@ impl GuestMemory {
     /// length)` maps: a regular file from byte `offset` (or none), and whether
     /// it is `MAP_SHARED | MAP_ANONYMOUS`. Whatever the range held before goes,
     /// and the range takes an incarnation of its own (see
-    /// `AddressSpaceState::mapping_incarnations`).
+    /// `AddressSpaceState::mapping_incarnations`). A mapping made by a
+    /// publication records the same with its installation instead
+    /// ([`PrivateRangePlan::provenance`], [`GuestMemory::publish_shared_file_range`]).
     pub fn record_page_backing(
         &self,
         guest_address: u64,
@@ -2905,29 +2986,18 @@ impl GuestMemory {
         else {
             return;
         };
-        let mut access = self
-            .mapping
+        self.mapping
             .address_space
             .lock()
-            .expect("guest memory access map lock poisoned");
-        for page in first_page..=last_page {
-            match offset
-                .and_then(|offset| offset.checked_add((page - first_page) * PAGE_SIZE as u64))
-            {
-                Some(offset) => access.file_pages.edit().insert(page, offset),
-                None => access.file_pages.edit().remove(&page),
-            };
-            if shared_anonymous {
-                access.shared_anonymous_pages.edit().insert(page);
-            } else {
-                access.shared_anonymous_pages.edit().remove(&page);
-            }
-        }
-        let incarnation = fresh_mapping_incarnation();
-        let incarnations = Arc::make_mut(&mut access.mapping_incarnations);
-        for page in first_page..=last_page {
-            incarnations.insert(page, incarnation);
-        }
+            .expect("guest memory access map lock poisoned")
+            .record_mapping(
+                first_page,
+                last_page - first_page + 1,
+                MappingProvenance {
+                    file_offset: offset,
+                    shared_anonymous,
+                },
+            );
     }
 
     /// What `MADV_DONTNEED` over user `[user_start, user_start + length)` must
@@ -3732,12 +3802,14 @@ impl GuestMemory {
         // Retire the short copy before taking either alias lock: retirement
         // notifies subscribers synchronously and their wakers may read memory.
         // The retained operand still prevents a publication over its range,
-        // the bytes the syscall may write.
-        let range = self.arena_range(address, length);
+        // the bytes the syscall may write. `address` is a user address: its
+        // pages translate to the arena bytes the syscall may write, under the
+        // copy, which no publication passes.
         let retained = self.with_copy(|copy| {
+            let range = self.user_arena_range(address, length);
             self.mapping
                 .entry_gate
-                .retain_operand_with(copy, range.clone(), || self.entry_origin())
+                .retain_operand_with(copy, range, || self.entry_origin())
                 .map_err(|failure| failure.error())
         })?;
         let mut alias = UserWriteAlias {
@@ -3940,6 +4012,28 @@ impl GuestMemory {
         }
         let relative = |address: u64| (address - self.mapping.guest_base) as usize;
         relative(start)..relative(end)
+    }
+
+    /// The arena byte range a host operation on user `[address, address +
+    /// length)` may touch: from the first to the last byte of that range's
+    /// pages that translate to guest-physical memory (identity addresses or a
+    /// window's), whole pages, and across the gap where the range spans
+    /// several windows. Empty for an empty range, and where no page
+    /// translates.
+    fn user_arena_range(&self, address: u64, length: usize) -> std::ops::Range<usize> {
+        if length == 0 {
+            return 0..0;
+        }
+        let hull = self
+            .mapping
+            .address_space
+            .lock()
+            .expect("guest memory access map lock poisoned")
+            .user_physical_hull(address, address.saturating_add(length as u64));
+        match hull {
+            Some((low, high)) => self.arena_range(low, (high - low) as usize),
+            None => 0..0,
+        }
     }
 
     fn checked_page_range(&self, guest_address: u64, length: u64) -> Result<Option<(u64, u64)>> {
@@ -7803,6 +7897,7 @@ mod tests {
                     contents,
                     permissions: Some((true, true)),
                     cursors: None,
+                    provenance: None,
                 },
             )
             .unwrap();
@@ -8437,6 +8532,48 @@ mod tests {
             ));
             assert_eq!(Arc::strong_count(&memory.mapping.slice.backing), 1);
         }
+    }
+
+    /// A writable alias of user memory in a window retains the arena bytes
+    /// the window's addresses translate to, so a publication over them waits
+    /// for the system call that writes through the alias; not the bytes at
+    /// the user address taken as a physical one, which lie outside the arena.
+    #[test]
+    fn a_window_alias_retains_the_bytes_its_addresses_translate_to() {
+        // Physical pages 1 to 3 at the top of the user addresses; the first
+        // two are user pages, below the stack top.
+        let memory = GuestMemory::new(0, 4 * PAGE_SIZE).unwrap();
+        let user_start = memory
+            .establish_user_stack_window(3 * PAGE_SIZE as u64)
+            .unwrap();
+        memory
+            .map_user_permissions(PAGE_SIZE as u64, 3 * PAGE_SIZE as u64, true, true)
+            .unwrap();
+        memory.enable_user_access();
+        let user = memory.user();
+        let alias = user
+            .writable_alias(user_start + PAGE_SIZE as u64 + 8, 16)
+            .unwrap();
+        assert_eq!(
+            memory.entry_gate().retained_operand_ranges_for_test(),
+            vec![2 * PAGE_SIZE..3 * PAGE_SIZE]
+        );
+        alias.finish().unwrap();
+        // Across the window's two user pages.
+        let alias = user
+            .writable_alias(user_start + PAGE_SIZE as u64 - 4, 8)
+            .unwrap();
+        assert_eq!(
+            memory.entry_gate().retained_operand_ranges_for_test(),
+            vec![PAGE_SIZE..3 * PAGE_SIZE]
+        );
+        alias.finish().unwrap();
+        assert!(
+            memory
+                .entry_gate()
+                .retained_operand_ranges_for_test()
+                .is_empty()
+        );
     }
 
     #[test]

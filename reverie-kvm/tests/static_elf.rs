@@ -22609,6 +22609,77 @@ fn shared_file_publications_kick_running_and_new_vcpus_as_natively() {
     }
 }
 
+/// What a process that holds shared views may do once its other threads
+/// have exited (`fixtures/shared_file_threads.c`) does not depend on when
+/// their host threads finish tearing down: a thread stops counting as a user
+/// of the address space at its exit, in the guest's order. Mode "join-fork"
+/// forks five times, each time after joining the only other thread; mode
+/// "leader-exit-fork" forks from a child's last thread after its main thread
+/// exited; and in mode "leader-cleartid" a forked child's last thread exits
+/// with its clear_child_tid word in shared anonymous memory, which Linux
+/// leaves unwritten when no other task uses the address space. Each run
+/// matches native Linux on KVM, three times over, without a tool and with the
+/// strace tool owning threads on the host or through the tool.
+#[test]
+fn shared_file_threads_that_exited_stop_counting_in_the_guests_order() {
+    const TEST: &str = "shared_file_threads_that_exited_stop_counting_in_the_guests_order";
+    if !leader_self_exec_bounded(TEST) {
+        return;
+    }
+    let directory = TestDirectory::new();
+    let program = compile_c_program(
+        &directory.0,
+        "shared-file-threads",
+        include_str!("fixtures/shared_file_threads.c"),
+    );
+    for (mode, expected) in [
+        (
+            "join-fork",
+            "forked five times, each after joining the only other thread\n",
+        ),
+        (
+            "leader-exit-fork",
+            "the child's last thread forked after its main thread exited\nthe child exited 0\n",
+        ),
+        (
+            "leader-cleartid",
+            "the child's last thread exited; its clear_child_tid word holds 0x5eedf00d\n",
+        ),
+    ] {
+        let native = run_shared_file_vfork_natively(
+            &directory.0,
+            &program,
+            &format!("native-{mode}"),
+            &[mode],
+        );
+        assert_eq!(native.status.code(), Some(0), "{mode}: {native:?}");
+        assert_eq!(String::from_utf8_lossy(&native.stdout), expected, "{mode}");
+        for round in 0..3 {
+            for kvm_mode in SHARED_FILE_VFORK_MODES {
+                let name = kvm_mode.0;
+                let run_directory = directory.0.join(format!("{mode}-{round}"));
+                std::fs::create_dir_all(&run_directory).unwrap();
+                let (_, code, stdout, stderr) =
+                    run_shared_file_vfork_on_kvm(&run_directory, &program, kvm_mode, &[mode])
+                        .unwrap_or_else(|error| {
+                            panic!("{mode} round {round} mode={name}: {error}")
+                        });
+                assert_eq!(
+                    code, 0,
+                    "{mode} round {round} mode={name}: stdout={stdout:?} stderr={stderr:?}"
+                );
+                assert_eq!(
+                    String::from_utf8_lossy(&stdout),
+                    expected,
+                    "{mode} round {round} mode={name}"
+                );
+                assert_eq!(stderr, native.stderr, "{mode} round {round} mode={name}");
+            }
+        }
+        eprintln!("shared-file-threads completed {mode} 3 rounds x 3 modes");
+    }
+}
+
 /// A view mapped with MAP_FIXED over the page of another thread's host
 /// FUTEX_WAIT (`fixtures/shared_file_threads.c`, mode "futex") is refused by
 /// name on KVM after the publication's bound: the wait holds a host pointer
@@ -22692,20 +22763,20 @@ fn shared_file_view_mapped_beside_a_vfork_child_is_refused_by_name() {
     );
     for mode in SHARED_FILE_VFORK_MODES {
         let name = mode.0;
-        let error = match run_shared_file_vfork_on_kvm(&directory.0, &program, mode, &["sibling-map"])
-        {
-            Ok((_, code, stdout, stderr)) => panic!(
-                "mode={name}: expected the refusal, got code={code} stdout={:?} stderr={:?}",
-                String::from_utf8_lossy(&stdout),
-                String::from_utf8_lossy(&stderr)
-            ),
-            // The program's doing (a mapping beside a vfork child), so a
-            // refusal by name rather than a failure of the backend.
-            Err(error) => {
-                assert!(refused_by_name(&error), "mode={name}: {error:?}");
-                error.to_string()
-            }
-        };
+        let error =
+            match run_shared_file_vfork_on_kvm(&directory.0, &program, mode, &["sibling-map"]) {
+                Ok((_, code, stdout, stderr)) => panic!(
+                    "mode={name}: expected the refusal, got code={code} stdout={:?} stderr={:?}",
+                    String::from_utf8_lossy(&stdout),
+                    String::from_utf8_lossy(&stderr)
+                ),
+                // The program's doing (a mapping beside a vfork child), so a
+                // refusal by name rather than a failure of the backend.
+                Err(error) => {
+                    assert!(refused_by_name(&error), "mode={name}: {error:?}");
+                    error.to_string()
+                }
+            };
         assert!(
             error.contains(
                 "unsupported KVM shared-file operation mapping publication: a vfork child of \

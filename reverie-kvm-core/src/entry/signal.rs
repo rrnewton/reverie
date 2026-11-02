@@ -58,7 +58,7 @@ use crate::Result;
 #[cfg(any(test, feature = "test-support"))]
 use crate::error_ext::ErrorExt;
 
-const SIGNAL: libc::c_int = 64;
+pub(super) const SIGNAL: libc::c_int = 64;
 
 thread_local! {
     /// Instances of the reserved signal that this thread's handler has taken.
