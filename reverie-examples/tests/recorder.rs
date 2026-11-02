@@ -93,7 +93,6 @@ fn in_guest_backends_host_the_recorder_in_the_example_preload() {
     }
 }
 
-
 // These use the real recorder/GlobalState route, not scripted RPC responses.
 // A static raw-entry fixture makes the first application syscall observable.
 fn compile_descriptor_fixture() -> (tempfile::TempDir, std::path::PathBuf) {
@@ -236,7 +235,6 @@ fn parse_descriptor_output(
         text,
     }
 }
-
 
 fn assert_descriptor_records(mode: &str, native: DescriptorRecord, observed: DescriptorRecord) {
     let mut expected = vec!["openat", "openat", "write", "close", "close", "exit_group"];

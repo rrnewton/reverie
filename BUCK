@@ -215,9 +215,7 @@ rust_library(
                 "description": "Command helpers for generic Reverie conformance tests.",
                 "publish": False,
             },
-            # DBT caller artifacts use the explicit OSS producer. Buck's
-            # generic conformance targets retain their ptrace selections.
-            "features": {"default": [], "dbt": ["dep:reverie-dbt"]},
+            "features": {"default": []},
             "test": [
                 {"name": "basics", "path": "../tests/basics.rs"},
                 {"name": "exit", "path": "../tests/exit.rs"},
@@ -229,63 +227,10 @@ rust_library(
                 {"name": "thread_start", "path": "../tests/thread_start.rs"},
                 {"name": "stack", "path": "../tests/stack.rs"},
                 {"name": "suppression", "path": "../tests/suppression.rs"},
-                {"name": "dbt_command", "path": "tests/dbt_command.rs", "required-features": ["dbt"]},
             ],
-            "bin": [
-                {"name": "stat-rust-command-guest", "path": "../tests/fixtures/stat-rust-command.rs", "test": False, "bench": False, "required-features": ["dbt"]},
-            {
-                "name": "exit-rust-command-guest",
-                "path": "../tests/fixtures/exit-rust-command.rs",
-                "test": False,
-                "bench": False,
-                "required-features": ["dbt"],
-            }, {
-                "name": "basics-rust-command-guest",
-                "path": "../tests/fixtures/basics-rust-command.rs",
-                "test": False,
-                "bench": False,
-                "required-features": ["dbt"],
-            }, {
-                "name": "vdso-rust-command-guest",
-                "path": "../tests/fixtures/vdso-rust-command.rs",
-                "test": False,
-                "bench": False,
-                "required-features": ["dbt"],
-            }, {
-                "name": "inject-then-tail-rust-command-guest",
-                "path": "../tests/fixtures/inject-then-tail-rust-command.rs",
-                "test": False,
-                "bench": False,
-                "required-features": ["dbt"],
-            }, {
-                "name": "at-random-rust-command-guest",
-                "path": "../tests/fixtures/at-random-rust-command.rs",
-                "test": False,
-                "bench": False,
-                "required-features": ["dbt"],
-            }, {
-                "name": "thread-start-rust-command-guest",
-                "path": "../tests/fixtures/thread-start-rust-command.rs",
-                "test": False,
-                "bench": False,
-                "required-features": ["dbt"],
-            }, {
-                "name": "stack-rust-command-guest",
-                "path": "../tests/fixtures/stack-rust-command.rs",
-                "test": False,
-                "bench": False,
-                "required-features": ["dbt"],
-            }, {
-                "name": "suppression-rust-command-guest",
-                "path": "../tests/fixtures/suppression-rust-command.rs",
-                "test": False,
-                "bench": False,
-                "required-features": ["dbt"],
-            }],
             "dependencies_override": {
                 "dependencies": {
                     "nix": {"features": ["fs", "process", "signal"]},
-                    "reverie-dbt": {"version": "0.5.4", "path": "../reverie-dbt", "default-features": False, "optional": True},
                 },
                 "dev-dependencies": {
                     "reverie-ptrace": {"features": ["nightly"]},

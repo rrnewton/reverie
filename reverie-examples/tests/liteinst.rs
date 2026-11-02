@@ -18,6 +18,7 @@ use std::os::fd::AsRawFd;
 use std::os::unix::ffi::OsStrExt as _;
 use std::os::unix::fs::MetadataExt as _;
 use std::os::unix::process::CommandExt;
+use std::path::Path;
 use std::path::PathBuf;
 use std::process::Command;
 use std::process::Output;
@@ -992,43 +993,6 @@ fn ptrace_counter2_reports_exit_after_echo_closes_stdio() {
     counter2_reports_exit_after_echo_closes_stdio("ptrace");
 }
 
-#[test]
-fn dbt_counter2_reports_exit_after_echo_closes_stdio() {
-    counter2_reports_exit_after_echo_closes_stdio("dbt");
-}
-
-#[test]
-fn dbt_counter2_bad_override_never_uses_the_valid_default_pair() {
-    let default = Path::new(env!("CARGO_BIN_EXE_counter2"))
-        .parent()
-        .unwrap()
-        .join("reverie-dbt-callers/counter2/manifest.json");
-    reverie_dbt::CallerArtifact::load(&default).unwrap();
-    let directory = tempfile::tempdir().unwrap();
-    let malformed = directory.path().join("malformed.json");
-    std::fs::write(&malformed, b"{}").unwrap();
-    for path in [directory.path().join("missing.json"), malformed] {
-        let mut command = Command::new(env!("CARGO_BIN_EXE_counter2"));
-        command.env("REVERIE_DBT_CALLER_ARTIFACT", &path).args([
-            "--backend",
-            "dbt",
-            "--",
-            "/bin/echo",
-            "hello",
-        ]);
-        let output = output_with_timeout(&mut command);
-        assert!(!output.status.success(), "{output:?}");
-        assert!(output.stdout.is_empty(), "{output:?}");
-        let stderr = String::from_utf8(output.stderr).unwrap();
-        assert!(
-            stderr.contains("cannot load DBT caller artifact"),
-            "{stderr}"
-        );
-        assert!(stderr.contains(path.to_str().unwrap()), "{stderr}");
-        assert!(!stderr.contains("counter2-local thread="), "{stderr}");
-    }
-}
-
 fn assert_counter2_environment(output: &Output, expected: &BTreeMap<OsString, OsString>) {
     assert!(output.status.success(), "{output:?}");
     assert_counter2_report(output);
@@ -1101,14 +1065,6 @@ fn counter2_captured_environment_controls(backend: &str) {
     }
     let program = Path::new(env!("CARGO_BIN_EXE_counter2"));
     assert!(program.is_absolute());
-    let manifest = program
-        .parent()
-        .unwrap()
-        .join("reverie-dbt-callers/counter2/manifest.json");
-    if backend == "dbt" {
-        // An absent or stale producer is a setup failure, never a skipped case.
-        reverie_dbt::CallerArtifact::load(&manifest).unwrap();
-    }
     let controller = BTreeMap::from([
         (OsString::from("PATH"), OsString::from("/bin:/usr/bin")),
         (OsString::from("LC_ALL"), OsString::from("C")),
@@ -1202,9 +1158,6 @@ fn counter2_captured_environment_controls(backend: &str) {
             .current_dir(directory.path())
             .stdin(Stdio::null())
             .args(["--backend", backend]);
-        if backend == "dbt" {
-            command.arg("--dbt-artifact").arg(&manifest);
-        }
         command.args(&options).args(["--", guest, "-0"]);
         eprintln!("counter2 environment {backend}/{case}: begin");
         let output = output_with_timeout(&mut command);
@@ -1222,11 +1175,6 @@ fn counter2_captured_environment_controls(backend: &str) {
 #[test]
 fn ptrace_counter2_captured_environment_controls() {
     counter2_captured_environment_controls("ptrace");
-}
-
-#[test]
-fn dbt_counter2_captured_environment_controls() {
-    counter2_captured_environment_controls("dbt");
 }
 
 #[test]
@@ -1393,69 +1341,6 @@ fn ptrace_chunky_print_preserves_buffering_and_causal_order() {
 }
 
 #[test]
-fn dbt_chunky_print_preserves_buffering_and_causal_order() {
-    chunky_print_preserves_buffering_and_causal_order("dbt");
-}
-
-#[test]
-fn dbt_chunky_print_oracle_requires_actual_tool() {
-    let noop = Path::new(env!("CARGO_BIN_EXE_chunky_print"))
-        .parent()
-        .unwrap()
-        .join("reverie-dbt-callers/basics-noop/manifest.json");
-    reverie_dbt::CallerArtifact::load(&noop).unwrap();
-    let mut command = Command::new(env!("CARGO_BIN_EXE_chunky_print"));
-    command
-        .args(["--backend", "dbt", "--preload"])
-        .arg(preload())
-        .arg("--dbt-artifact")
-        .arg(noop)
-        .arg("--")
-        .args([
-            env!("CARGO_BIN_EXE_reverie-liteinst-env-guest"),
-            "chunky-alias-order",
-        ]);
-    let output = output_with_timeout(&mut command);
-    eprintln!("ChunkyPrint Noop child: {output:?}");
-    // A successful real Noop guest with every token is required before the
-    // unchanged buffering oracle's rejection can demonstrate sensitivity.
-    assert_chunky_print_guest_bytes(&output);
-    assert!(std::panic::catch_unwind(|| assert_chunky_print_buffering(output)).is_err());
-}
-
-#[test]
-fn dbt_chunky_print_missing_artifact_refuses() {
-    let default = Path::new(env!("CARGO_BIN_EXE_chunky_print"))
-        .parent()
-        .unwrap()
-        .join("reverie-dbt-callers/chunky-print/manifest.json");
-    reverie_dbt::CallerArtifact::load(&default).unwrap();
-    let directory = tempfile::tempdir().unwrap();
-    let missing = directory.path().join("missing.json");
-    let mut command = Command::new(env!("CARGO_BIN_EXE_chunky_print"));
-    command
-        .args(["--backend", "dbt", "--preload"])
-        .arg(preload())
-        .arg("--dbt-artifact")
-        .arg(&missing)
-        .arg("--")
-        .args([
-            env!("CARGO_BIN_EXE_reverie-liteinst-env-guest"),
-            "chunky-alias-order",
-        ]);
-    let output = output_with_timeout(&mut command);
-    eprintln!("ChunkyPrint missing-artifact child: {output:?}");
-    assert!(!output.status.success(), "{output:?}");
-    assert!(output.stdout.is_empty(), "{output:?}");
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(
-        stderr.contains("cannot load DBT caller artifact"),
-        "{stderr}"
-    );
-    assert!(stderr.contains(missing.to_str().unwrap()), "{stderr}");
-}
-
-#[test]
 fn chrome_trace_output_requires_the_chrome_trace_tool() {
     let trace_path = std::env::temp_dir().join(format!(
         "reverie-liteinst-invalid-chrome-trace-{}.json",
@@ -1566,14 +1451,6 @@ fn ptrace_chrome_trace_tool_writes_process_and_syscall_events() {
     );
 }
 
-#[test]
-fn dbt_chrome_trace_tool_writes_process_and_syscall_events() {
-    chrome_trace_writes_process_and_syscall_events(
-        "dbt",
-        "dbt_chrome_trace_tool_writes_process_and_syscall_events",
-    );
-}
-
 fn chrome_trace_preserves_stdin_and_writes_events(backend: &str, identity: &str) {
     let trace_path = std::env::temp_dir().join(format!(
         "reverie-chrome-trace-{identity}-{}.json",
@@ -1604,75 +1481,6 @@ fn ptrace_chrome_trace_preserves_stdin_and_writes_events() {
         "ptrace",
         "ptrace_chrome_trace_preserves_stdin_and_writes_events",
     );
-}
-
-#[test]
-fn dbt_chrome_trace_preserves_stdin_and_writes_events() {
-    chrome_trace_preserves_stdin_and_writes_events(
-        "dbt",
-        "dbt_chrome_trace_preserves_stdin_and_writes_events",
-    );
-}
-
-#[test]
-fn dbt_chrome_trace_oracle_requires_actual_tool() {
-    let noop = Path::new(env!("CARGO_BIN_EXE_chrome_trace"))
-        .parent()
-        .unwrap()
-        .join("reverie-dbt-callers/basics-noop/manifest.json");
-    reverie_dbt::CallerArtifact::load(&noop).unwrap();
-    let trace_path = std::env::temp_dir().join(format!(
-        "reverie-chrome-trace-dbt_chrome_trace_oracle_requires_actual_tool-{}.json",
-        std::process::id()
-    ));
-    let _ = std::fs::remove_file(&trace_path);
-    let mut command = chrome_trace_command("dbt", &trace_path);
-    command
-        .arg("--dbt-artifact")
-        .arg(noop)
-        .args(["--", "/bin/echo", "hello"]);
-    let output = output_with_timeout(&mut command);
-    eprintln!("Chrome trace Noop output: {output:?}");
-    // The real Noop Tool must run the guest successfully before it can expose
-    // the event oracle's sensitivity. A caller setup refusal is not evidence.
-    assert_chrome_trace_guest_output(&output);
-    let trace = std::fs::read(&trace_path).unwrap();
-    let trace: serde_json::Value = serde_json::from_slice(&trace).unwrap();
-    eprintln!("Chrome trace Noop events: {trace}");
-    assert!(trace.as_array().unwrap().is_empty(), "{trace}");
-    assert!(std::panic::catch_unwind(|| assert_chrome_trace_events(&trace)).is_err());
-    std::fs::remove_file(&trace_path).unwrap();
-}
-
-#[test]
-fn dbt_chrome_trace_missing_artifact_refuses() {
-    let default = Path::new(env!("CARGO_BIN_EXE_chrome_trace"))
-        .parent()
-        .unwrap()
-        .join("reverie-dbt-callers/chrome-trace/manifest.json");
-    reverie_dbt::CallerArtifact::load(&default).unwrap();
-    let directory = tempfile::tempdir().unwrap();
-    let missing = directory.path().join("missing.json");
-    let trace_path = directory.path().join(format!(
-        "dbt_chrome_trace_missing_artifact_refuses-{}.json",
-        std::process::id()
-    ));
-    let mut command = chrome_trace_command("dbt", &trace_path);
-    command
-        .arg("--dbt-artifact")
-        .arg(&missing)
-        .args(["--", "/bin/echo", "hello"]);
-    let output = output_with_timeout(&mut command);
-    eprintln!("Chrome trace missing-artifact output: {output:?}");
-    assert!(!output.status.success(), "{output:?}");
-    assert!(output.stdout.is_empty(), "{output:?}");
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(
-        stderr.contains("cannot load DBT caller artifact"),
-        "{stderr}"
-    );
-    assert!(stderr.contains(missing.to_str().unwrap()), "{stderr}");
-    assert!(!trace_path.exists(), "unexpected artifact: {trace_path:?}");
 }
 
 #[test]
@@ -1760,67 +1568,6 @@ fn strace_minimal_tool_observes_write(backend: &str) {
 #[test]
 fn ptrace_strace_minimal_tool_observes_write() {
     strace_minimal_tool_observes_write("ptrace");
-}
-
-#[test]
-fn dbt_strace_minimal_tool_observes_write() {
-    strace_minimal_tool_observes_write("dbt");
-}
-
-#[test]
-fn dbt_strace_minimal_oracle_requires_actual_tool() {
-    let noop = Path::new(env!("CARGO_BIN_EXE_strace_minimal"))
-        .parent()
-        .unwrap()
-        .join("reverie-dbt-callers/basics-noop/manifest.json");
-    reverie_dbt::CallerArtifact::load(&noop).unwrap();
-    let mut command = Command::new(env!("CARGO_BIN_EXE_strace_minimal"));
-    command
-        .args(["--backend", "dbt", "--preload"])
-        .arg(preload())
-        .arg("--dbt-artifact")
-        .arg(noop)
-        .args(["--", "/bin/echo", "hello"]);
-    let output = output_with_timeout(&mut command);
-    eprintln!("strace-minimal Noop child output: {output:?}");
-    // Successful execution of the real Noop guest is required before missing
-    // diagnostics can demonstrate the unchanged full oracle's sensitivity.
-    assert!(output.status.success(), "{output:?}");
-    assert_eq!(output.stdout, b"hello\n");
-    assert!(output.stderr.is_empty(), "{output:?}");
-    assert!(std::panic::catch_unwind(|| assert_strace_minimal_write(output)).is_err());
-}
-
-#[test]
-fn dbt_strace_minimal_missing_artifact_refuses() {
-    let default = Path::new(env!("CARGO_BIN_EXE_strace_minimal"))
-        .parent()
-        .unwrap()
-        .join("reverie-dbt-callers/strace-minimal/manifest.json");
-    reverie_dbt::CallerArtifact::load(&default).unwrap();
-    let directory = tempfile::tempdir().unwrap();
-    let missing = directory.path().join("missing.json");
-    let mut command = Command::new(env!("CARGO_BIN_EXE_strace_minimal"));
-    command
-        .args(["--backend", "dbt", "--preload"])
-        .arg(preload())
-        .arg("--dbt-artifact")
-        .arg(&missing)
-        .args(["--", "/bin/echo", "hello"]);
-    let output = output_with_timeout(&mut command);
-    eprintln!("strace-minimal missing-artifact child output: {output:?}");
-    assert!(!output.status.success(), "{output:?}");
-    assert!(output.stdout.is_empty(), "{output:?}");
-    let stderr = String::from_utf8(output.stderr).unwrap();
-    assert!(
-        stderr.contains("cannot load DBT caller artifact"),
-        "{stderr}"
-    );
-    assert!(stderr.contains(missing.to_str().unwrap()), "{stderr}");
-    assert!(
-        stderr.contains("run reverie-dbt/scripts/build-client.sh --caller-manifest reverie-examples/strace-minimal-dbt-runtime/Cargo.toml"),
-        "{stderr}"
-    );
 }
 
 #[test]
