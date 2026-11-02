@@ -12007,7 +12007,7 @@ impl<L: Tool + 'static> TracedTask<L> {
         // Defer scratch/filter validation until an injection can be needed;
         // a contract-violating filter install may consequently be noticed
         // later, but every actual injection still validates its scratch.
-        let mask_only = run == SegvRun::Known(true)
+        let mask_only = run == SignalRun::Known(true)
             && before.is_some_and(|action| action.handler == libc::SIG_DFL as u64);
         let _repairs = if mask_only {
             None
