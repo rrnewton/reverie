@@ -335,9 +335,17 @@ pub struct HostThread {
     thread: libc::pid_t,
 }
 
+#[cfg(test)]
+thread_local! {
+    /// How many times this thread read its kernel IDs (`HostThread::current`).
+    static HOST_THREAD_READS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 impl HostThread {
     /// The calling thread.
     pub fn current() -> Self {
+        #[cfg(test)]
+        HOST_THREAD_READS.with(|reads| reads.set(reads.get() + 1));
         // SAFETY: getpid and gettid take no arguments and touch no memory.
         unsafe {
             Self {
@@ -357,6 +365,25 @@ impl HostThread {
             Err(std::io::Error::last_os_error())
         }
     }
+}
+
+thread_local! {
+    /// This thread's serial (`thread_serial`), or 0 before its first use.
+    static THREAD_SERIAL: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// The next thread serial (`thread_serial`).
+static NEXT_THREAD_SERIAL: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
+/// A number for the calling thread, unique among the threads of this process
+/// and never reused, read without a system call.
+fn thread_serial() -> u64 {
+    THREAD_SERIAL.with(|serial| {
+        if serial.get() == 0 {
+            serial.set(NEXT_THREAD_SERIAL.fetch_add(1, std::sync::atomic::Ordering::Relaxed));
+        }
+        serial.get()
+    })
 }
 
 /// What [`EntryGate::try_close`] did.
@@ -947,6 +974,7 @@ impl EntryGate {
                         key: signal::participant_key(),
                         origin: EntryOrigin::default(),
                         entry_outstanding: false,
+                        host: None,
                         #[cfg(any(test, feature = "test-support"))]
                         prepare_probe: None,
                     })
@@ -1337,6 +1365,13 @@ pub struct Participant {
     /// member's own check refused, without reading the member under the
     /// registry lock.
     entry_outstanding: bool,
+    /// The host thread of this participant's last activation, with the
+    /// serial of the thread it was read on (`thread_serial`): an activation
+    /// on the same thread reuses it, so an entry costs no system call for it.
+    /// A serial is never reused, unlike a pthread_t, and the participant is
+    /// created in the process that runs its entries, so a stale identity
+    /// cannot match.
+    host: Option<(u64, HostThread)>,
     #[cfg(any(test, feature = "test-support"))]
     prepare_probe: Option<Arc<PrepareProbe>>,
 }
@@ -1548,6 +1583,15 @@ impl Entry<'_> {
     /// The final open check and target publication occur under the registry
     /// lock.
     pub fn activate(&mut self) -> GateResult<bool> {
+        let current = thread_serial();
+        let host = match self.participant.host {
+            Some((serial, host)) if serial == current => host,
+            _ => {
+                let host = HostThread::current();
+                self.participant.host = Some((current, host));
+                host
+            }
+        };
         let mut state = self.participant.gate.state.lock().unwrap();
         state.check()?;
         let member = state.members.get(&self.participant.id).unwrap();
@@ -1560,7 +1604,7 @@ impl Entry<'_> {
         let member = state.members.get_mut(&self.participant.id).unwrap();
         // This guard remains on the current thread until withdrawal and
         // signal cleanup, so the thread outlives the target it publishes.
-        member.activity = Activity::Running(HostThread::current());
+        member.activity = Activity::Running(host);
         member.generation = Some(self.generation);
         Ok(true)
     }
@@ -3278,6 +3322,41 @@ mod tests {
         assert!(poll(closed.as_mut()).is_pending());
         entry.acknowledge(Ok(())).unwrap();
         assert!(poll(closed.as_mut()).is_ready());
+    }
+
+    /// An entry costs no system call to name its host thread: a participant
+    /// reads its thread's kernel IDs on its first activation on a thread and
+    /// again only on another thread, so an entry stays one `KVM_RUN`.
+    #[test]
+    fn an_activation_reads_the_threads_kernel_ids_once_per_thread() {
+        let gate = EntryGate::new();
+        let mut participant = gate.register().unwrap();
+        let reads = || HOST_THREAD_READS.with(std::cell::Cell::get);
+        let before = reads();
+        for _ in 0..3 {
+            let mut entry = participant.try_enter().unwrap().unwrap();
+            assert!(entry.activate().unwrap());
+            assert_eq!(entry.withdraw(), 0);
+            entry.acknowledge(Ok(())).unwrap();
+        }
+        assert_eq!(reads() - before, 1);
+        // On another thread the participant reads that thread's IDs, once.
+        let moved = std::thread::spawn(move || {
+            let before = HOST_THREAD_READS.with(std::cell::Cell::get);
+            for _ in 0..2 {
+                let mut entry = participant.try_enter().unwrap().unwrap();
+                assert!(entry.activate().unwrap());
+                assert_eq!(entry.withdraw(), 0);
+                entry.acknowledge(Ok(())).unwrap();
+            }
+            (
+                HOST_THREAD_READS.with(std::cell::Cell::get) - before,
+                participant,
+            )
+        });
+        let (moved_reads, participant) = moved.join().unwrap();
+        assert_eq!(moved_reads, 1);
+        drop(participant);
     }
 
     /// A participant whose guest thread retired no longer counts as a user of
