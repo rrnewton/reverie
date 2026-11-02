@@ -3571,6 +3571,16 @@ fn main() {
                 .expect("UTF-8 state"),
         ),
         #[cfg(feature = "fixed-syscall-gates")]
+        Some("fixed-gate-quiescent-selector-refusal") => {
+            fixed_gates_guest::quiescent_selector_refusal(
+                Path::new(&path),
+                args.next()
+                    .expect("refusal state")
+                    .to_str()
+                    .expect("UTF-8 state"),
+            )
+        }
+        #[cfg(feature = "fixed-syscall-gates")]
         Some("fixed-gate-selector-order") => fixed_gates_guest::selector_order(
             Path::new(&path),
             Path::new(&args.next().expect("observation path")),

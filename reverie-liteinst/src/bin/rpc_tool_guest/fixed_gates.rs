@@ -287,6 +287,123 @@ pub fn selector_refusal(path: &Path, state: &str) {
 }
 
 #[cfg(feature = "fixed-syscall-gates")]
+pub fn quiescent_selector_refusal(path: &Path, state: &str) {
+    use reverie_inguest::signal::KernelSigaction;
+    use reverie_inguest::signal::raw_sigaction;
+    use reverie_inguest::signal::raw_sigprocmask;
+
+    match state {
+        "inherited" => {
+            let mut instruction = libc::sock_filter {
+                code: (libc::BPF_RET | libc::BPF_K) as u16,
+                jt: 0,
+                jf: 0,
+                k: libc::SECCOMP_RET_ALLOW,
+            };
+            let filter = libc::sock_fprog {
+                len: 1,
+                filter: &mut instruction,
+            };
+            assert_eq!(
+                unsafe { libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) },
+                0
+            );
+            assert_eq!(
+                unsafe {
+                    libc::syscall(libc::SYS_seccomp, libc::SECCOMP_SET_MODE_FILTER, 0, &filter)
+                },
+                0
+            );
+        }
+        "published" => unsafe { reverie_inguest::trap::prepare_fixed_gates() }.unwrap(),
+        other => panic!("unknown refusal state {other:?}"),
+    }
+    let published = state == "published";
+    let filters = u64::from(state == "inherited");
+    assert_eq!(
+        unsafe { reverie_inguest::guest::sigalrm::seccomp_filter_count() },
+        Some(filters)
+    );
+    assert_eq!(reverie_inguest::trap::fixed_gates_published(), published);
+    let page = published.then(|| unsafe { *(BASE as *const [u8; 4096]) });
+    let gate_mapping = || {
+        std::fs::read_to_string("/proc/self/maps")
+            .unwrap()
+            .lines()
+            .find(|line| line.starts_with("500000000000-500000001000 "))
+            .map(str::to_owned)
+    };
+    let mapping = gate_mapping();
+    let actions = || {
+        (1..=64)
+            .filter(|signal| !matches!(*signal, libc::SIGKILL | libc::SIGSTOP))
+            .map(|signal| {
+                let mut action = KernelSigaction::default();
+                unsafe { raw_sigaction(signal, None, Some(&mut action)) }.unwrap();
+                action
+            })
+            .collect::<Vec<_>>()
+    };
+    let mask = || {
+        let mut mask = 0;
+        unsafe { raw_sigprocmask(libc::SIG_BLOCK, None, Some(&mut mask)) }.unwrap();
+        mask
+    };
+    let previous_actions = actions();
+    let previous_mask = mask();
+    let environment = std::env::vars_os().collect::<std::collections::BTreeMap<_, _>>();
+    let error =
+        unsafe { reverie_liteinst::install_tool_quiescent::<FixedGateTool>(path) }.unwrap_err();
+    #[cfg(not(feature = "liteinst"))]
+    {
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
+        assert_eq!(
+            error.to_string(),
+            "unsupported REVERIE_LITEINST_SITE_PATCHING value \"2\""
+        );
+    }
+    #[cfg(feature = "liteinst")]
+    {
+        // The quiescent API retains state refusal precedence: an inherited
+        // filter is refused before selector parsing, while errors after
+        // existing gate publication cannot return to the caller.
+        assert_eq!(state, "inherited");
+        assert_eq!(error.kind(), std::io::ErrorKind::Unsupported);
+        assert_eq!(
+            error.to_string(),
+            "fixed syscall gates refuse an inherited or unreadable seccomp filter state"
+        );
+    }
+    assert_eq!(
+        unsafe { reverie_inguest::guest::sigalrm::seccomp_filter_count() },
+        Some(filters)
+    );
+    assert_eq!(reverie_inguest::trap::fixed_gates_published(), published);
+    assert!(!reverie_inguest::trap::has_dispatcher());
+    assert_eq!(CALLS.load(Ordering::Relaxed), 0);
+    assert_eq!(actions(), previous_actions);
+    assert_eq!(mask(), previous_mask);
+    assert_eq!(
+        std::env::vars_os().collect::<std::collections::BTreeMap<_, _>>(),
+        environment
+    );
+    assert_eq!(gate_mapping(), mapping);
+    if let Some(page) = page {
+        assert_eq!(unsafe { &*(BASE as *const [u8; 4096]) }, &page);
+    } else {
+        assert_page_absent();
+    }
+    #[cfg(not(feature = "liteinst"))]
+    println!(
+        "quiescent selector refusal: state={state} original-error=preserved runtime-state=unchanged"
+    );
+    #[cfg(feature = "liteinst")]
+    println!(
+        "quiescent selector refusal: state={state} inherited-filter=preserved runtime-state=unchanged"
+    );
+}
+
+#[cfg(feature = "fixed-syscall-gates")]
 pub fn selector_order(path: &Path, observation: &Path) {
     use std::io;
     use std::io::Write;

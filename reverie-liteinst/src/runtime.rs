@@ -842,9 +842,18 @@ unsafe impl PatchHost for LiteinstPatchHost {
 
     #[cfg(feature = "liteinst")]
     fn preflight_site_patching(&self) -> Option<io::Result<bool>> {
-        // Invalid selectors must return before fixed-gate publication makes
-        // installation failures terminal. Valid ON selections retain their
-        // original late installation point.
+        // Concurrent installation retains its late selector and published-gate
+        // failure boundary. Only a fresh quiescent installation may return an
+        // ordinary selector error before publication.
+        if matches!(self.publication, PatchPublication::Concurrent)
+            || reverie_inguest::trap::fixed_gates_published()
+            // SAFETY: PatchHost runs at the exclusive startup boundary, before
+            // guest code or a runtime filter, using its trusted raw syscall gate.
+            || unsafe { reverie_inguest::guest::sigalrm::seccomp_filter_count() } != Some(0)
+        {
+            return None;
+        }
+        // Valid ON selections still run at the original late installation point.
         self.site_patching().err().map(Err)
     }
 

@@ -492,3 +492,85 @@ fn default_host_selects_after_publication_and_coordinator_then_exits_on_error() 
           selector gates=true filters=Some(0) dispatcher=false callbacks=0\n"
     );
 }
+
+fn quiescent_selector_refusal_command(path: &std::path::Path, state: &str) -> Command {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_reverie-liteinst-rpc-tool-guest"));
+    command
+        .arg("fixed-gate-quiescent-selector-refusal")
+        .arg(path)
+        .arg(state)
+        .env("REVERIE_LITEINST_SITE_PATCHING", "2")
+        .env(
+            "REVERIE_LITEINST_COORDINATOR",
+            "preserve-refused-coordinator",
+        );
+    command
+}
+
+#[test]
+fn quiescent_selector_failure_preserves_inherited_filter_state() {
+    let directory = tempfile::tempdir().unwrap();
+    let socket = directory.path().join("coordinator.sock");
+    let listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let output = bounded_output(quiescent_selector_refusal_command(&socket, "inherited"));
+    assert!(output.status.success(), "{output:?}");
+    assert!(output.stderr.is_empty(), "{output:?}");
+    assert_eq!(
+        output.stdout,
+        if cfg!(feature = "liteinst") {
+            b"quiescent selector refusal: state=inherited inherited-filter=preserved runtime-state=unchanged\n".as_slice()
+        } else {
+            b"quiescent selector refusal: state=inherited original-error=preserved runtime-state=unchanged\n".as_slice()
+        }
+    );
+    assert_eq!(
+        listener.accept().unwrap_err().kind(),
+        std::io::ErrorKind::WouldBlock
+    );
+}
+
+#[test]
+fn quiescent_selector_failure_preserves_published_boundary() {
+    let directory = tempfile::tempdir().unwrap();
+    let output = bounded_output(quiescent_selector_refusal_command(
+        &directory.path().join("no-server"),
+        "published",
+    ));
+    if cfg!(feature = "liteinst") {
+        assert_eq!(output.status.code(), Some(127), "{output:?}");
+        assert!(output.stdout.is_empty(), "{output:?}");
+    } else {
+        assert!(output.status.success(), "{output:?}");
+        assert_eq!(
+            output.stdout,
+            b"quiescent selector refusal: state=published original-error=preserved runtime-state=unchanged\n"
+        );
+    }
+    assert!(output.stderr.is_empty(), "{output:?}");
+
+    let socket = directory.path().join("listening.sock");
+    let listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+    let command = quiescent_selector_refusal_command(&socket, "published");
+    let output = if cfg!(feature = "liteinst") {
+        config_listener_output(&listener, command)
+    } else {
+        bounded_output(command)
+    };
+    if cfg!(feature = "liteinst") {
+        assert_eq!(output.status.code(), Some(127), "{output:?}");
+        assert!(output.stdout.is_empty(), "{output:?}");
+    } else {
+        assert!(output.status.success(), "{output:?}");
+        assert_eq!(
+            output.stdout,
+            b"quiescent selector refusal: state=published original-error=preserved runtime-state=unchanged\n"
+        );
+        listener.set_nonblocking(true).unwrap();
+        assert_eq!(
+            listener.accept().unwrap_err().kind(),
+            std::io::ErrorKind::WouldBlock
+        );
+    }
+    assert!(output.stderr.is_empty(), "{output:?}");
+}
