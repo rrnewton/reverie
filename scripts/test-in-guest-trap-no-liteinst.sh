@@ -17,7 +17,7 @@ trap 'rm -f "$graph"' EXIT
 # activation through the preload or example CLI. Include build and dev edges.
 cargo tree --locked --no-default-features \
     -p reverie-liteinst -p reverie-liteinst-preload -p reverie-examples \
-    --features "reverie-liteinst/allocator-fixture,reverie-liteinst/rpc-io-fixture,reverie-liteinst/exec-native-injection,reverie-liteinst/loader-private-runtime" \
+    --features "reverie-liteinst/allocator-fixture,reverie-liteinst/rpc-io-fixture,reverie-liteinst/exec-native-injection,reverie-liteinst/loader-private-runtime,reverie-examples/runtime" \
     --edges normal,build,dev --prefix none --format '{p}' > "$graph"
 if [[ ! -s "$graph" ]]; then
     echo 'in-guest-trap dependency graph is empty' >&2
@@ -62,6 +62,6 @@ cargo check --locked -p reverie-inguest --no-default-features \
 cargo test --locked -p reverie-inguest --no-default-features \
     --features coordinator-rpc,rcb-clock,launcher,allocator-fixture,rpc-io-fixture,exec-stop,stage1a-probe,exec-native-injection,loader-private-runtime,native-exec-state-fixture \
     --lib --no-fail-fast -- --test-threads=1
-cargo build --locked -p reverie-examples --no-default-features
+cargo build --locked -p reverie-examples --no-default-features --features runtime
 cargo test --locked -p reverie-examples --no-default-features \
-    --test liteinst -- --test-threads=1
+    --features runtime --test liteinst -- --test-threads=1
