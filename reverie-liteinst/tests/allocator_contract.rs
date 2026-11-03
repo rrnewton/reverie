@@ -77,8 +77,8 @@ fn context(label: &str) -> Result<(std::path::PathBuf, contract::HeldInputs), St
     Ok((evidence, held))
 }
 
-#[test]
 #[cfg(feature = "liteinst")]
+#[test]
 fn standalone_private_allocator_matrix() -> Result<(), String> {
     let (evidence, mut held) = context("standalone-matrix")?;
     let runtime = liteinst_runtime::required_runtime()?;
