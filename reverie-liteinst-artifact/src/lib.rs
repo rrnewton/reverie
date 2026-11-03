@@ -246,24 +246,98 @@ pub fn verify_guest_receipt(
 /// One shared absolute deadline; each stream has its own strict byte ceiling.
 /// Every child is placed in a fresh process group. Overflow/deadline kills that
 /// group; the enclosing DAG cgroup remains the authoritative descendant guard.
+///
+/// The wall deadline is a hang backstop, not a work bound: under host load a
+/// child that is making progress in CPU terms can exceed a tight wall bound
+/// while descheduled. Callers that bound work pass a per-command CPU budget
+/// (utime+stime summed over the child's process group, from /proc) through
+/// `Runner::new_with_cpu_budget`; the wall deadline stays as the generous
+/// backstop for a child that hangs without consuming CPU.
 pub struct Runner {
     pub logs: PathBuf,
     pub deadline: Instant,
+    pub cpu_budget: Option<Duration>,
     pub max_stream_bytes: usize,
     serial: u32,
     pub commands: Vec<CommandEvidence>,
 }
 
+/// Total CPU (user + system) consumed by every live member of a process
+/// group, from /proc/<pid>/stat fields utime/stime and the group id. Members
+/// that already exited are folded into their parent's cutime/cstime, so the
+/// leader is always counted with its own fields plus its reaped children;
+/// live members are counted directly to avoid double-counting.
+fn process_group_cpu(pgid: u32, leader: u32) -> Option<Duration> {
+    let ticks = unsafe { libc::sysconf(libc::_SC_CLK_TCK) };
+    if ticks <= 0 {
+        return None;
+    }
+    let mut total_ticks: u64 = 0;
+    let mut counted_leader = false;
+    for entry in fs::read_dir("/proc").ok()? {
+        let Ok(entry) = entry else { continue };
+        let Ok(pid) = entry.file_name().to_string_lossy().parse::<u32>() else {
+            continue;
+        };
+        let Ok(stat) = fs::read_to_string(entry.path().join("stat")) else {
+            continue;
+        };
+        // comm may contain spaces/parens; fields after the last ')' are
+        // state, ppid, pgrp, ... with utime at index 11 and stime at 12
+        // of that remainder (stat fields 14/15 overall).
+        let Some(close) = stat.rfind(')') else {
+            continue;
+        };
+        let fields: Vec<&str> = stat[close + 2..].split_whitespace().collect();
+        if fields.len() < 13 {
+            continue;
+        }
+        let Ok(member_pgid) = fields[2].parse::<u32>() else {
+            continue;
+        };
+        if member_pgid != pgid {
+            continue;
+        }
+        let utime: u64 = fields[11].parse().unwrap_or(0);
+        let stime: u64 = fields[12].parse().unwrap_or(0);
+        total_ticks += utime + stime;
+        if pid == leader {
+            counted_leader = true;
+            if fields.len() >= 17 {
+                total_ticks += fields[15].parse::<u64>().unwrap_or(0);
+                total_ticks += fields[16].parse::<u64>().unwrap_or(0);
+            }
+        }
+    }
+    if !counted_leader {
+        return None;
+    }
+    Some(Duration::from_secs_f64(total_ticks as f64 / ticks as f64))
+}
+
 impl Runner {
     pub fn new(logs: PathBuf, budget: Duration, max_stream_bytes: usize) -> Result<Self> {
+        Self::new_with_cpu_budget(logs, budget, None, max_stream_bytes)
+    }
+
+    pub fn new_with_cpu_budget(
+        logs: PathBuf,
+        budget: Duration,
+        cpu_budget: Option<Duration>,
+        max_stream_bytes: usize,
+    ) -> Result<Self> {
         require(
             budget.as_secs() > 0 && max_stream_bytes > 0,
             "command bounds must be positive",
         )?;
+        if let Some(cpu) = cpu_budget {
+            require(!cpu.is_zero(), "cpu budget must be positive")?;
+        }
         fs::create_dir(&logs).map_err(|e| format!("create unique log directory: {e}"))?;
         Ok(Self {
             logs,
             deadline: Instant::now() + budget,
+            cpu_budget,
             max_stream_bytes,
             serial: 0,
             commands: Vec::new(),
@@ -360,11 +434,18 @@ impl Runner {
         let mut bounds_failure = None;
         let mut killed_at = None;
         let status = loop {
+            let cpu_exceeded = self.cpu_budget.is_some_and(|budget| {
+                process_group_cpu(child.id(), child.id()).is_some_and(|used| used >= budget)
+            });
             if killed_at.is_none()
-                && (overflow.load(Ordering::Acquire) || Instant::now() >= self.deadline)
+                && (overflow.load(Ordering::Acquire)
+                    || cpu_exceeded
+                    || Instant::now() >= self.deadline)
             {
                 bounds_failure = Some(if overflow.load(Ordering::Acquire) {
                     byte_limit_description
+                } else if cpu_exceeded {
+                    "producer cpu budget"
                 } else {
                     "producer deadline"
                 });
@@ -33985,6 +34066,37 @@ mod tests {
         content_detcore_manifest_and_lock_pin(&runtime, root, source).unwrap();
         // These invoke the genuine factory, and must refuse before metadata;
         // no synthetic JSON can become VerifiedCompiledSources authority.
+        // CPU budget kills a busy child while the wall backstop remains;
+        // the wall deadline still kills a child that hangs without CPU.
+        let mut cpu_runner = Runner::new_with_cpu_budget(
+            root.join("cpu-budget-logs"),
+            Duration::from_secs(60),
+            Some(Duration::from_secs(1)),
+            1 << 20,
+        )
+        .unwrap();
+        let cpu_outcome = cpu_runner.run(
+            "/bin/sh",
+            &["-c".to_owned(), "while :; do :; done".to_owned()],
+            root,
+        );
+        let Err(cpu_err) = cpu_outcome else {
+            panic!("busy child must exceed its cpu budget");
+        };
+        assert!(cpu_err.contains("producer cpu budget"), "{cpu_err}");
+        let mut wall_runner = Runner::new_with_cpu_budget(
+            root.join("wall-backstop-logs"),
+            Duration::from_secs(1),
+            Some(Duration::from_secs(60)),
+            1 << 20,
+        )
+        .unwrap();
+        let wall_outcome =
+            wall_runner.run("/bin/sh", &["-c".to_owned(), "sleep 30".to_owned()], root);
+        let Err(wall_err) = wall_outcome else {
+            panic!("sleeping child must hit the wall backstop");
+        };
+        assert!(wall_err.contains("producer deadline"), "{wall_err}");
         let mut refused_runner = Runner::new(
             root.join("factory-refusals"),
             Duration::from_secs(10),
