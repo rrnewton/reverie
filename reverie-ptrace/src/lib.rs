@@ -94,6 +94,7 @@ pub use failure::PtraceCallbackRefusal;
 pub use failure::PtraceCallbackStop;
 pub use failure::PtraceCleanupFailure;
 pub use failure::PtraceRunFailure;
+pub use failure::QueuedSigtrapAtStep;
 pub use failure::ToolRunCompletion;
 pub use failure::UntracedStubSyscall;
 pub use injected_syscall::InjectedSyscallFrame;
