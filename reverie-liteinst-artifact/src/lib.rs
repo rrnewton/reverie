@@ -29499,6 +29499,9 @@ fn preparation_role(name: &str) -> Option<&'static str> {
         "_RNvNtCs_4core9panicking32panic_null_reference_constructed" => {
             Some("panic_null_reference_constructed")
         }
+        "_RNvNtCs_4core9panicking30panic_null_pointer_dereference" => {
+            Some("panic_null_pointer_dereference")
+        }
         "_RNvNtCs_4core9panicking36panic_misaligned_pointer_dereference" => {
             Some("panic_misaligned_pointer_dereference")
         }
@@ -46472,6 +46475,7 @@ mod tests {
             "_RNvNtCsayI02cGi06u_4core9panicking36panic_misaligned_pointer_dereference",
             "_RNvMs16_NtNtCsayI02cGi06u_4core4sync6atomicINtB6_6AtomicjE5storeCsk1nybVdH5QO_15reverie_inguest",
             "_RNvNtCsayI02cGi06u_4core9panicking32panic_null_reference_constructed",
+            "_RNvNtCsayI02cGi06u_4core9panicking30panic_null_pointer_dereference",
             "_RNvMs_NtNtNtCsk1nybVdH5QO_15reverie_inguest5guest11tool_region11constructorNtB4_16NativeFreshOwner7publish",
         ];
         let mut roles = BTreeSet::new();
@@ -46495,7 +46499,7 @@ mod tests {
                     || !name.contains("NativeFreshOwner")
             );
         }
-        assert_eq!(roles.len(), 9);
+        assert_eq!(roles.len(), 10);
         // Stable 1.97.1 emits the same typed Atomic<usize>::store role with
         // the Ms1k shim spelling; only that exact alternate spelling resolves.
         assert_eq!(
