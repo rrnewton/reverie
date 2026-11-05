@@ -1134,8 +1134,8 @@ const CONTENT_REVERIE_CATALOG: [(&str, u64, &str); 83] = [
     ),
     (
         "reverie-inguest/src/guest/tool_install.rs",
-        25615,
-        "3dc7ab43763fc3c0cc308050d785d058581701096a94193833587d2df1dd8795",
+        25614,
+        "e22613d605b984846de8a9e2ce26671587d335292c000500ba913744c90f69b6",
     ),
     (
         "reverie-inguest/src/signal.rs",
@@ -1339,8 +1339,8 @@ const CONTENT_REVERIE_CATALOG: [(&str, u64, &str); 83] = [
     ),
     (
         "reverie-liteinst/src/patch_alloc.rs",
-        24730,
-        "4e624b555d15acaeb72c9d4bf4d29e52666b377fb9a9ef48ef07447b6e834561",
+        24729,
+        "d17373084f4d3b16cd3f5bdf6e8314331de3ca279b1287a89c8b5566e16b5dfa",
     ),
     (
         "reverie-inguest/src/guest/alloc.rs",
@@ -11373,6 +11373,11 @@ const FIXED_OPERATION_ROLE_SYMBOLS: &[(&str, &str)] = &[
         "_RNvMNtNtCs_4core3ptr7mut_ptrOh7is_nullCs_7futures",
         "_RNvMNtNtCs_4core3ptr7mut_ptrOh7is_nullCs_7futures",
     ),
+    // Retained-cohort spellings, still matched by live fail-closed
+    // qualifiers: `Cs_9liteinst2` names the pre-0.2.0 crate in historical
+    // build images. Exact matching refuses (never mis-admits) an image
+    // whose symbols differ, so do not rename without recapturing a
+    // `Cs_8liteinst` cohort from a real 0.2.0 build.
     (
         "_RNvMNtNtCs_4core3ptr7mut_ptrOh7is_nullCs_9liteinst2",
         "_RNvMNtNtCs_4core3ptr7mut_ptrOh7is_nullCs_9liteinst2",
