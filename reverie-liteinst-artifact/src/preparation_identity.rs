@@ -52,7 +52,11 @@ fn identity_class(body: &[u8]) -> Result<IdentityClass> {
         SPILLED_RDI_IDENTITY => Ok(IdentityClass::SpilledRdi),
         REVERSED_SPILLED_RDI_IDENTITY => Ok(IdentityClass::ReversedSpilledRdi),
         NULL_BRANCH_RDI_IDENTITY => Ok(IdentityClass::NullBranchRdi),
-        _ => Err("unrecognized complete preparation identity ABI body".to_owned()),
+        _ => Err(format!(
+            "unrecognized complete preparation identity ABI body len={} hex={:02x?}",
+            body.len(),
+            body
+        )),
     }
 }
 
