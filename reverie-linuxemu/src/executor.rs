@@ -22334,8 +22334,14 @@ mod tests {
                 ),
                 target
             );
-            let first_installed_id =
-                f.executor.file_table.lock().unwrap().fd_entry_ids[&(target as i32)].clone();
+            let first_installed_id = f
+                .executor
+                .file_table
+                .lock()
+                .unwrap()
+                .entry_id(target as i32)
+                .expect("entry identity")
+                .clone();
             let between_installs = Mutex::new(sibling);
             let before: Vec<_> = f
                 .executor
@@ -22401,7 +22407,12 @@ mod tests {
                     &first_installed_id
                 ));
                 assert!(!Arc::ptr_eq(
-                    &f.executor.file_table.lock().unwrap().fd_entry_ids[&(target as i32)],
+                    f.executor
+                        .file_table
+                        .lock()
+                        .unwrap()
+                        .entry_id(target as i32)
+                        .expect("entry identity"),
                     &first_installed_id
                 ));
                 assert_eq!(result, negative_errno(libc::EMFILE));
@@ -22434,7 +22445,12 @@ mod tests {
             } else {
                 assert!(Arc::ptr_eq(
                     &f.executor.state.fd_entry_ids[&(target as i32)],
-                    &f.executor.file_table.lock().unwrap().fd_entry_ids[&(target as i32)]
+                    f.executor
+                        .file_table
+                        .lock()
+                        .unwrap()
+                        .entry_id(target as i32)
+                        .expect("entry identity")
                 ));
                 assert!(!Arc::ptr_eq(
                     &f.executor.state.fd_entry_ids[&(target as i32)],
@@ -22753,7 +22769,7 @@ mod tests {
         for fd in [first as i32, second as i32] {
             assert!(!Arc::ptr_eq(
                 &old_entries[&fd],
-                &authoritative.fd_entry_ids[&fd]
+                authoritative.entry_id(fd).expect("entry identity")
             ));
             assert!(!Arc::ptr_eq(
                 &old_objects[&fd],
@@ -22906,7 +22922,7 @@ mod tests {
             assert_ne!(flags(raw).0 & libc::O_APPEND, 0);
             assert!(Arc::ptr_eq(
                 &f.executor.state.fd_entry_ids[&(fd as i32)],
-                &authoritative.fd_entry_ids[&(fd as i32)]
+                authoritative.entry_id(fd as i32).expect("entry identity")
             ));
         }
         assert_eq!(
