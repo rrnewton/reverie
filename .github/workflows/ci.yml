@@ -31,48 +31,6 @@ concurrency:
 env:
   CARGO_TERM_COLOR: always
   RUSTFLAGS: -C link-arg=-llzma
-  # Every workspace feature except the `nightly` features of reverie-ptrace
-  # and reverie-process, which need a nightly compiler by design. The
-  # nightly lane (.github/workflows/nightly.yml) builds --all-features.
-  # Regenerate from `cargo metadata --no-deps` when features change.
-  STABLE_FEATURES: >-
-    reverie-core/perf-fixture reverie-inguest/allocator-fixture
-    reverie-inguest/coordinator-rpc reverie-inguest/exec-native-injection
-    reverie-inguest/exec-private-init reverie-inguest/exec-private-successor
-    reverie-inguest/exec-stop reverie-inguest/fixed-syscall-gates
-    reverie-inguest/launcher reverie-inguest/loader-private-runtime
-    reverie-inguest/native-entry-observer reverie-inguest/native-exec-state
-    reverie-inguest/native-exec-state-fixture
-    reverie-inguest/preload-constructor reverie-inguest/rcb-clock
-    reverie-inguest/rpc-io-fixture reverie-inguest/stage1a-probe
-    reverie-rpc-transport/test-guest-log safeptrace/memory
-    safeptrace/notifier safeptrace/reverie-memory
-    reverie-examples/conformance-tools reverie-examples/host
-    reverie-examples/runtime reverie-examples/test-support
-    reverie-kvm/native-test-support reverie-kvm-core/native-test-support
-    reverie-kvm-core/test-support reverie-linuxemu/native-test-support
-    reverie-linuxemu/test-support reverie-ptrace/rcb-observation
-    reverie-liteinst/allocator-fixture
-    reverie-liteinst/exec-native-injection reverie-liteinst/exec-private-init
-    reverie-liteinst/exec-private-successor
-    reverie-liteinst/fixed-syscall-gates
-    reverie-liteinst/loader-private-runtime
-    reverie-liteinst/native-exec-state reverie-liteinst/preload-constructor
-    reverie-liteinst/rpc-io-fixture reverie-liteinst-preload/allocator-fixture
-  # Same list minus the crates the regular job excludes; Cargo refuses
-  # features naming packages outside the selected set.
-  STABLE_FEATURES_REGULAR: >-
-    reverie-core/perf-fixture reverie-rpc-transport/test-guest-log
-    safeptrace/memory safeptrace/notifier safeptrace/reverie-memory
-    reverie-examples/conformance-tools reverie-examples/host
-    reverie-examples/runtime reverie-examples/test-support
-    reverie-ptrace/rcb-observation reverie-liteinst/allocator-fixture
-    reverie-liteinst/exec-native-injection reverie-liteinst/exec-private-init
-    reverie-liteinst/exec-private-successor
-    reverie-liteinst/fixed-syscall-gates
-    reverie-liteinst/loader-private-runtime
-    reverie-liteinst/native-exec-state reverie-liteinst/preload-constructor
-    reverie-liteinst/rpc-io-fixture reverie-liteinst-preload/allocator-fixture
 
 jobs:
   regular:
@@ -151,7 +109,9 @@ jobs:
         rustc scripts/check-skill-discovery.rs -o "$RUNNER_TEMP/check-skill-discovery"
         "$RUNNER_TEMP/check-skill-discovery"
     - name: Build
-      run: cargo build --workspace --features "${STABLE_FEATURES}"
+      run: |
+        source scripts/stable-features.sh
+        cargo build --workspace --features "${STABLE_FEATURES}"
     - name: LiteInst allocator fixtures
       timeout-minutes: 10
       run: |
@@ -161,33 +121,36 @@ jobs:
         scripts/build-liteinst-test-runtime.rs --for-ci "$generation"
         cat "$generation/bundle/github.env" >> "$GITHUB_ENV"
     - name: Test regular workspace cases
-      run: >-
-        cargo test --workspace --exclude reverie-kvm --exclude reverie-kvm-core --exclude reverie-linuxemu --exclude reverie-inguest --features "${STABLE_FEATURES_REGULAR}" --no-fail-fast --
-        --test-threads=1
-        --skip container::tests::bind_to_low_port
-        --skip container::tests::mount_error_from_child_is_returned
-        --skip container::tests::test_directory_is_available_after_mount
-        --skip container::tests::pin_affinity_to_all_cores
-        --skip tests::domainname
-        --skip tests::hostname
-        --skip tests::local_networking_loopback_flags
-        --skip tests::local_networking_ping
-        --skip tests::local_networking_there_can_be_only_one
-        --skip tests::mount_and_move_tmpfs
-        --skip tests::mount_bind
-        --skip tests::mount_bind_readonly_rejects_writes
-        --skip tests::mount_devpts_basic
-        --skip tests::mount_devpts_isolated
-        --skip tests::mount_proc
-        --skip tests::mount_tmpfs
-        --skip tests::pid_namespace
-        --skip tests::port_isolation
-        --skip tests::seccomp_notify
+      run: |
+        source scripts/stable-features.sh
+        cargo test --workspace --exclude reverie-kvm --exclude reverie-kvm-core --exclude reverie-linuxemu --exclude reverie-inguest --features "${STABLE_FEATURES_REGULAR}" --no-fail-fast -- \
+        --test-threads=1 \
+        --skip container::tests::bind_to_low_port \
+        --skip container::tests::mount_error_from_child_is_returned \
+        --skip container::tests::test_directory_is_available_after_mount \
+        --skip container::tests::pin_affinity_to_all_cores \
+        --skip tests::domainname \
+        --skip tests::hostname \
+        --skip tests::local_networking_loopback_flags \
+        --skip tests::local_networking_ping \
+        --skip tests::local_networking_there_can_be_only_one \
+        --skip tests::mount_and_move_tmpfs \
+        --skip tests::mount_bind \
+        --skip tests::mount_bind_readonly_rejects_writes \
+        --skip tests::mount_devpts_basic \
+        --skip tests::mount_devpts_isolated \
+        --skip tests::mount_proc \
+        --skip tests::mount_tmpfs \
+        --skip tests::pid_namespace \
+        --skip tests::port_isolation \
+        --skip tests::seccomp_notify \
         --skip tests::uid_namespace
     - name: Documentation tests
       run: cargo test --workspace --doc
     - name: Clippy
-      run: cargo clippy --workspace --all-targets --features "${STABLE_FEATURES}"
+      run: |
+        source scripts/stable-features.sh
+        cargo clippy --workspace --all-targets --features "${STABLE_FEATURES}"
     - name: Format
       run: cargo fmt --all -- --check
     # The cross-backend check on every backend that needs no device. A hosted
@@ -346,7 +309,9 @@ jobs:
         rustup toolchain install "$channel" --profile minimal
         rustc --version
     - name: Build
-      run: cargo build --workspace --features "${STABLE_FEATURES}"
+      run: |
+        source scripts/stable-features.sh
+        cargo build --workspace --features "${STABLE_FEATURES}"
     - name: LiteInst allocator fixtures
       timeout-minutes: 10
       run: |
@@ -373,6 +338,7 @@ jobs:
           --soft-deadline 300 --hard-box 540 &
         watchdog=$!
         set +e
+        source scripts/stable-features.sh
         cargo test --workspace --features "${STABLE_FEATURES}" -- --test-threads=1
         status=$?
         kill "$watchdog" 2>/dev/null || true

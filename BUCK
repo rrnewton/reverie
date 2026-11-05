@@ -443,6 +443,7 @@ rust_unittest(
         "tests/tool_fixtures/basics.rs",
     ],
     crate_root = "tests/basics.rs",
+    features = ["nightly"],
     rustc_flags = sanitized_feature,
     env = {
         "CARGO_BIN_EXE_basics-rust-command-guest": "$(location :basics-rust-command-guest)",

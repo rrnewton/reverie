@@ -702,7 +702,8 @@ fn exec_join_helper_parent_spawn_hook_panic_restores_original_ownership() {
         let payload: crate::failure::owned_future::PanicPayload = payload;
         let hook_payload = Arc::new(Mutex::new(Some(payload)));
         super::worker_join::add_join_spawn_hook(move || {
-            if let Some(payload) = hook_payload.lock().unwrap().take() {
+            let payload = { hook_payload.lock().unwrap().take() };
+            if let Some(payload) = payload {
                 std::panic::resume_unwind(payload);
             }
             Box::new(|| {})

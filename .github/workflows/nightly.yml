@@ -16,6 +16,9 @@ permissions:
 env:
   CARGO_TERM_COLOR: always
   RUSTFLAGS: -C link-arg=-llzma
+  # rust-toolchain.toml outranks `rustup default`, so the lane must name the
+  # nightly toolchain explicitly or every step silently runs stable.
+  RUSTUP_TOOLCHAIN: nightly
 
 jobs:
   nightly-features:
@@ -31,8 +34,16 @@ jobs:
       uses: dtolnay/rust-toolchain@nightly
       with:
         components: clippy, rustfmt
+    - name: Assert nightly in-repo
+      run: |
+        rustc --version
+        rustc --version | grep -q nightly
     - name: Build all features
       run: cargo build --workspace --all-features --all-targets
+    - name: Clippy and format (nightly-only options enforced here)
+      run: |
+        cargo clippy --workspace --all-targets --all-features
+        cargo fmt --all -- --check
     - name: API docs all features (warnings denied)
       env:
         RUSTDOCFLAGS: "-D warnings"

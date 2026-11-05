@@ -658,35 +658,39 @@ impl crate::executor::GuestWorkers for GuestThreadGroup {
 /// thread and returns a child hook that runs on the helper thread before
 /// `run_helper`. Registered hooks are thread-local to the launching thread
 /// and live for its lifetime; tests register one-shot hooks on the thread
-/// that drives the launch. Production builds contain no seam.
+/// that drives the launch. Unlike std, hooks run in registration order and
+/// are not inherited by other threads. Production builds contain no seam.
 /// Register a test spawn hook for later join-helper launches on this
 /// thread; see `join_spawn_hook`.
 #[cfg(test)]
-pub(super) fn add_join_spawn_hook(
-    hook: impl FnMut() -> Box<dyn FnOnce() + Send + 'static> + 'static,
-) {
+pub(super) fn add_join_spawn_hook(hook: impl Fn() -> Box<dyn FnOnce() + Send + 'static> + 'static) {
     join_spawn_hook::add(hook);
 }
 
 #[cfg(test)]
 mod join_spawn_hook {
     use std::cell::RefCell;
+    use std::rc::Rc;
 
     pub(super) type ChildHook = Box<dyn FnOnce() + Send + 'static>;
-    type ParentHook = Box<dyn FnMut() -> ChildHook + 'static>;
+    type ParentHook = Rc<dyn Fn() -> ChildHook + 'static>;
 
     thread_local! {
         static HOOKS: RefCell<Vec<ParentHook>> = const { RefCell::new(Vec::new()) };
     }
 
-    pub(super) fn add(hook: impl FnMut() -> ChildHook + 'static) {
-        HOOKS.with(|hooks| hooks.borrow_mut().push(Box::new(hook)));
+    pub(super) fn add(hook: impl Fn() -> ChildHook + 'static) {
+        HOOKS.with(|hooks| hooks.borrow_mut().push(Rc::new(hook)));
     }
 
-    /// Run every parent hook on this thread, collecting child hooks in
-    /// registration order. A panicking parent hook unwinds to the caller;
-    /// hooks already run keep their effects, as with std spawn hooks.
+    /// Snapshot the hooks, then run them with no borrow held, so a hook may
+    /// itself register hooks or launch (as std's clone-then-iterate does).
+    /// Collect child hooks in registration order. A panicking parent hook
+    /// unwinds to the caller; hooks already run keep their effects, and
+    /// collected child hooks drop during that unwind outside any borrow.
     pub(super) fn run_parent_hooks() -> Vec<ChildHook> {
-        HOOKS.with(|hooks| hooks.borrow_mut().iter_mut().map(|hook| hook()).collect())
+        let snapshot: Vec<ParentHook> =
+            HOOKS.with(|hooks| hooks.borrow().iter().map(Rc::clone).collect());
+        snapshot.iter().map(|hook| hook()).collect()
     }
 }
