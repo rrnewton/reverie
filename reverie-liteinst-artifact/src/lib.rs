@@ -1516,8 +1516,8 @@ const CONTENT_REVERIE_CATALOG: [(&str, u64, &str); 83] = [
     ),
     (
         "reverie/src/tool.rs",
-        78807,
-        "6bc09671bc1960d3c1029bc0901047307ac29a7e1fbc1cbc915bec296bb2cc4d",
+        78900,
+        "553c2ea8f2815bf6a19034c71d5897343c2bdaac2368a595a1ddebe06a8d47fa",
     ),
 ];
 // Native Detcore's fixed-gate publication ordering is a separately declared
