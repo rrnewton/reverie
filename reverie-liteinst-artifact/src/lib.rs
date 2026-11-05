@@ -17677,12 +17677,25 @@ fn qualify_allocator_tls_boundary_in_source_context(
             local_got_slot: None,
         });
         let (function, function_bytes) = bind("fixed_tls_fn_once")?;
-        fixed_whole_recipe(
-            function,
-            function_bytes,
-            "4883ec1848897c2410488b742410488d7c240fe8a802000048890424488b04244883c418c3",
-            &[(20, 24, getter)],
-        )?;
+        if function_bytes.len() == 65 {
+            // Stable codegen retains an unwind landing pad for the getter
+            // call. Bind its direct transfer to the actual local
+            // _Unwind_Resume implementation; the remaining bytes are exact.
+            let unwind_resume = private_function(elf, "_Unwind_Resume")?.st_value;
+            fixed_whole_recipe(
+                function,
+                function_bytes,
+                "4883ec2848897c2410488b742410488d7c240fe8d8f0010048890424eb1a488b7c2418e8d8e6feff4889c189d048894c241889442420ebe6488b04244883c428c3",
+                &[(20, 24, getter), (36, 40, unwind_resume)],
+            )?;
+        } else {
+            fixed_whole_recipe(
+                function,
+                function_bytes,
+                "4883ec1848897c2410488b742410488d7c240fe8a802000048890424488b04244883c418c3",
+                &[(20, 24, getter)],
+            )?;
+        }
         let (get, get_bytes) = bind("fixed_tls_get")?;
         let get_to_with =
             fixed_local_call_operand(get, get_bytes, 7, 11, roles["fixed_tls_with"].st_value, got)?;
