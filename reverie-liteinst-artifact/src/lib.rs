@@ -1319,8 +1319,8 @@ const CONTENT_REVERIE_CATALOG: [(&str, u64, &str); 83] = [
     ),
     (
         "reverie-liteinst/Cargo.toml",
-        5441,
-        "3e84133b0ad9301f45b43eaca6639905e35509d1a14b2917f82d3f67be0a1028",
+        5329,
+        "072bb73fa5146fb09119d2a2e06267fa2f62bc2bed8d6f4e19dbcf3acad6e029",
     ),
     (
         "reverie-liteinst/src/lib.rs",
@@ -1394,8 +1394,8 @@ const CONTENT_REVERIE_CATALOG: [(&str, u64, &str); 83] = [
     ),
     (
         "reverie-liteinst/src/tool_host.rs",
-        59035,
-        "96c710799ecfd0a2e228b9c6ee64ff1bf5846f6e2ec1c7929bb347249d002663",
+        59026,
+        "fcb1b651f5dc1142521b6ff8140c438c71b7b862ff6feb0d48ac63c52dbb570a",
     ),
     (
         "reverie/Cargo.toml",
