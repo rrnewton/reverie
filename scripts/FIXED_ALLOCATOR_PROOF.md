@@ -113,3 +113,247 @@ The landing evidence must separately run the physical qualifier with fresh
 locked source bindings and the real native producer. Unknown machine shapes,
 changed source catalogs, altered receiver/data bindings, missing roles, mixed
 ABIs and changed branch/constant bytes continue to refuse.
+
+## Source-owned standalone dev scalar composition
+
+The maintained standalone producer and its independent receipt consumer require
+`dev` with opt0, debug2, debug assertions and overflow checks. The successful
+Cargo artifact selection and subsequent receipt re-selection bind that exact
+profile and feature set. An optimized profile is not a substitute. Machine
+qualification still depends on full bytes, current compiled-source authority,
+actual image kind, private symbols, loader mappings and complete transfer/data
+censuses; compiler and profile names alone do not admit any machine body.
+
+The separate dev composition has fourteen complete parents: mprotect55,
+backing312, setup250, heap-metadata607, getter234, setter353, require-owned254,
+alloc294, dealloc59, realloc255, gettid39, constructor1411, generic1411 and
+owner301. Only setup250 and owner301 are byte/operand-identical to an existing
+composition. The ordinary complete DEV51B/template106 transport and separately
+qualified current bitmap520 and owned-heap267 remain required. Every other old optimized/native tuple and its
+indices remains distinct. Any one dev body in an older tuple, a missing dev
+member, native transport, or another image kind must refuse.
+
+Mprotect55 establishes SYS10, the incoming address, literal32MiB and prot3 at
+its sole direct raw call+27. It preserves the full64-bit result, restores its
+24-byte frame and returns; the cannot-unwind landing+39 remains recorded.
+Gettid39 supplies SYS186 and three zeros at direct raw+16, restores its frame
+and returns the full result. It retains its own cannot-unwind landing. Owner301
+checks origin, genuine record, owned stack, positive matching gettid, gate,
+phase and bitmap, then calls setup250+257 and checks full EAX before publishing
+its output. Setup250 retains both mprotect calls, metadata initialization and
+all six literal bitmap updates with full errno propagation.
+
+Getter234 accepts only the caller's aligned live publication slot. Its complete
+null/alignment guards and literal acquire-order load remain. It returns null
+when unpublished, otherwise that same slot address, through the exact const
+pointer identity leaf. Setter353 checks the same slot before reading payload.
+An already-published slot returns literal EAGAIN through the exact i32 identity
+without reading or moving payload. Otherwise it copies all24 bytes, releases
+publication at+24, and returns full zero through the same i32 leaf. The full
+bodies retain their null/alignment and EH landing edges.
+
+Backing312 and heap-metadata607 reject INITIALIZING, absent publication and a
+published error before returning the immutable backing object or exact fixed
+metadata. Their complete typed Option/Result operations are recursively
+qualified. Require-owned254 and allocation294 additionally transport a
+nullable metadata pointer through exact typed `as_ref` and Option branch
+leaves. The allocator, live-header, foreign-pointer refusal, checked new Layout,
+copy of min(old,new), and deallocation paths remain whole-qualified under the
+original valid GlobalAlloc/live-pointer/intact locked metadata contract.
+
+Each complete1411-byte entry retains origin1/2, saved stack and native owner
+admission. It checks the returned status before reading the authenticated
+owner, moves the entire24-byte payload through the same scalar setter and
+checks its full Result, stores phase READY, releases INITIALIZING, then observes
+the same publication independently. Its complete source Locations include the
+unaltered803:14/820:14,785:18 and separate775:9 payload expression. Every full
+24-byte Location and complete filename is independently source-bound, physically
+read-only or sealed RELRO, with one exact RELATIVE pointer writer and no filename
+writers. No line tolerance or ELF-derived expected filename is accepted.
+
+The finite ten-helper composition includes four already qualified prepare
+leaves and six additional exact typed bodies. The21-byte identity leaves return
+RDI in RAX with bounded16-byte red-zone writes. The18-byte i32 leaf returns EDI
+in EAX with eight red-zone bytes. Both43-byte pointer leaves return null for null
+and otherwise the original pointer; the65-byte Option branch likewise preserves
+the nullable pointer. These use at most24 red-zone bytes and no external call.
+The78-byte metadata Option map tests null, returns null on that arm, or calls
+one exact13-byte closure+47. That closure returns the independently authenticated
+immutable backing object through its bound RIP operand. Its caller's40-byte
+frame and complete branches remain literal.
+
+These leaf bytes prove scalar transport, not validity of Rust references.
+Audited caller source supplies live, aligned, correctly typed publication and
+metadata objects with process lifetime and exclusive initialization ownership.
+SysV stack validity covers the bounded red-zone writes; only preparation paths
+also inherit the existing source-bound owned8MiB stack argument. There is no
+new universal stack or pointer-validity claim.
+
+The three dev getter/setter/heap-metadata EH landing edges acquire guarded
+terminal treatment only from their exact private new whole-body witnesses and
+the mandatory complete dev join. Their literal valid atomic orders, live
+aligned references and finite already qualified callees have no normal unwind
+path under the existing no-foreign-unwind premise. The edges remain in the
+physical census. No old terminal table is changed and no arbitrary panic or
+unwinder is admitted. A changed instruction, helper identity, operand, readonly
+object, writer, incoming callsite or mixed composition continues to refuse.
+
+All ten helpers and all protected parent incoming multisets are exact: actual
+CALL PCs, direct/GOT modes, shared target addresses and complete private body
+witnesses must agree. The previous prepare-entry definition/alternate-entry
+proofs are retained independently. Pure machine mutation controls cover every
+byte, full extent, typed target, GOT slot, Location/filename, census edge and
+coherent-family boundary. Those controls do not establish physical ELF/source
+qualification, a producer success, or guest integration; each remains a separate
+required actual validation result.
+
+The current standalone dev heap source has a separate complete profile of
+32 measured `alloc.rs` Locations across allocation, deallocation, layout-end,
+alignment and span containment. Each profile member fixes the entire24-byte
+record and filename, keeps the sole exact RELATIVE writer, and has a distinct
+`fixed_dev_scalar_alloc_<line>_<column>` evidence key. Historical Location
+specs, heap recipes and their exact coordinate checks remain unchanged. There
+is no permitted line delta. Only the complete fourteen-parent/ten-helper dev
+shape, exact ordinary DEV51B transport, current bitmap520/owned-heap267 operations
+and a fresh standalone workspace source factory can request these records. Every one of the32 current records and its filename
+must join the final complete dev composition. Old operand request names are
+internal physical aliases; they do not label current serialized evidence.
+
+The six additional dev helpers also require one exact canonical raw definition
+and refuse a differently named static or dynamic function/storage entry or
+extent alias, including zero-sized aliases at their entry or interior. The
+four existing prepare helpers retain their independent private identity
+factory. Unrelated symbols outside these six extents do not acquire any new
+role or permission.
+
+The emitted dev EH classification has a matching final receipt-shape check.
+Both producer and consumer take its source layout from freshly verified source
+expectations, never from receipt labels. It requires all27 current functions
+(fourteen parents, ten helpers, ordinary DEV51B transport and the current
+bitmap520/owned-heap267 operations), all32 current alloc Location/file/writer records, and exactly the three retained EH CALL
+PCs470/21/34 with their shared local GOT slot and selected terminal target.
+Historical terminal tuples remain unchanged. Missing, old, mixed, native or
+source-less shapes cannot use this classification. This structural check does
+not recreate authenticated machine witnesses from serialized hashes: consumer
+source equality and independent full physical ELF qualification/evidence
+comparison remain mandatory. A real emitter-to-final-validator roundtrip
+control covers the complete structural shape and mutations; its synthetic
+layout and hashes are explicitly not source authority or runtime proof.
+
+
+The ordinary DEV transport has its own complete51-byte template106. Historical
+optimized raw26 remains23 bytes and is not a DEV positive. The independently
+measured DEV body preserves number/arg0/arg1/arg2, zeroes arg3/arg4/arg5, uses
+SUB40/ADD40 and one local-GOT CALL at+40, then returns the gate result in RAX.
+Its sole displacement42 is resolved from nextPC46 to the independently selected
+private44-byte trusted syscall gate. This is the same full scalar ABI already
+proved by the unchanged `fixed_scalar_helper_recipe`; no new arbitrary syscall
+or indirect-call classification is added. It has no REGION/INITIALIZING storage
+operand. Both private factory variants retain that distinction.
+
+The current DEV preselector, authenticated mode, full transfer census and
+serialized evidence shape all require this exact51-byte transport and CALL40.
+The two incoming raw callers remain mprotect+27 and gettid+16. The existing
+whole-body gate/RX/no-writer/local-symbol and sole RELATIVE/RELRO target checks
+still apply. A complete DEV family with optimized raw23, an old optimized or
+native family with only the new raw51 identity, a shifted CALL, different GOT
+callee, missing raw/gate transfer record or changed full extent must refuse.
+The DEV positive fixtures use the independently retained actual51-byte body
+and instruction boundaries, together with the complete current bitmap520 and
+owned-heap267 bodies described below. Historical175-byte bitmap fixtures remain
+separate and supply no current-family positive. A real emitter/final-validator control
+also joins full51/44-byte raw/gate identities and the actual single CALL40.
+No expected source Location, old template, historical terminal table, test
+assertion, comparator or old transport recipe is changed by this correction.
+
+
+## Complete current standalone DEV operation closure
+
+The complete source-aware DEV selector now joins27 whole bodies: fourteen
+parents, ten typed helpers, ordinary51-byte syscall transport, bitmap520 and
+owned-heap267. The two current operations use a separate private recipe table
+and opaque witness kind. Historical global template indices0..106, wrapper127,
+bitmap175/495, optimized/native families and terminal tables remain unchanged.
+A selected but unreached historical wrapper/bitmap definition keeps its old
+factory; only the complete Standalone/ReverieWorkspace source-and-shape context
+can select the new reached operations. Neither a name, isolated current body,
+receipt label nor compiler/profile name supplies that context.
+
+Bitmap520 has the exact measured248-byte balanced frame, Control/start/end/mark
+ABI, null/alignment guards, Control+8 word base, bounded page loop, word-index
+shift6 and bit-mask63. Its six setup250 callers remain exactly+16/+44/+72/+184/
++207/+230. GOT CALLs+98/+135 retain misaligned/null physical guards; direct
+CALL+316 reaches the unchanged whole69-byte shift precondition. Its separate
+complete24-byte143:27 Location has an exact46-byte tool_region_arena.rs filename,
+sole local RELATIVE writer and full physical readonly/RELRO proof. Historical
+128:27 is not an alias for this record. The unchanged1319:5 shift Location and
+full369-byte panic text remain independently bound. The shift guard retains its
+GOT panic CALL+58 and original premise. Source-safe fresh exclusive Control
+initialization and the setup bands remain necessary; bytes do not prove an
+arbitrary pointer safe.
+
+Owned-heap267 preserves a balanced120-byte frame and the Rust sret ABI: incoming
+RDI is the destination and RSI is the live allocation address. Metadata+24,
+nullable metadata pointer+42 and typed Option branch+51 construct exactly the
+three-word metadata/base0x600010000000/length0x2000000 span, or the existing None
+residual+95. It refuses None, copies all24 result bytes, calls containment+236
+with the original live address, refuses false+247/+252, then returns the original
+sret pointer. Exactly dealloc+34 and realloc+47 call this operation. The original
+GlobalAlloc/live-pointer/layout and locked metadata source premises remain.
+No unqualified caller exemption is added: the three metadata/helper incoming
+rows include only these measured new caller PCs, and the two new protected rows
+retain complete opaque caller witnesses. Safe historical outside roots retain
+their old whole-qualified source arguments without an empty-incoming claim.
+
+Both final evidence consumers require every current function's exact private
+identity and extent, all ten operation CALLs and typed direct/GOT targets, the
+new complete data/file/writer identities, the unchanged three dev EH landings
+and the three retained bitmap/shift terminal edges. The27 current code extents,
+unchanged69-byte shift guard and44-byte private gate are pairwise disjoint.
+The real physical emitter and real final validator/Serde controls use the full
+current family. Byte, typed target, GOT, census, alias, source/data, old-family
+substitution, missing/shifted/extra caller and overlap controls retain intended
+refusal diagnostics. Synthetic structural layouts are not source authority or
+producer/runtime evidence. Consumer source equality and complete independent
+physical requalification remain mandatory after structural validation.
+
+Identity checks have distinct scopes. The six additional typed DEV helpers
+require static/dynamic entry/interior/extent closure even if selected but not
+reached. The two new current operations use that same raw identity check only
+when reached through the complete current context. The four older prepare
+helpers retain their existing unique-role plus dynamic-name/same-entry checks;
+there is no new global static-alias constraint or uniform alias-closure claim.
+
+The contextual CALL RAX proof accepts the entire authenticated private prepare
+helper set already allowed for FF15, including those complete helpers and the
+exact scalar leaves. It does not accept arbitrary callees. Explicit XBEGIN and
+prefixed-flow target classification applies to contextual prepare functions
+containing CALL RAX; other preparers retain their older denylist. This section
+clarifies the current proof and does not rewrite historical commit claims.
+
+## Current DEV setter in the owned setup census
+
+The allocator's later owned setup census must retain the same complete current
+setter proof as its operation closure. The full353-byte setter has seven
+physical calls. Its CALLs+180/+315 use the already authenticated whole18-byte
+`fixed_dev_i32_identity`: load+168/MOV EDI,11+175/CALL+180, and
+load+306/XOR EDI,EDI+313/CALL+315. Both loads have exact seven-byte RIP-relative
+GOT form; each LOAD-PC+7 displacement, sole local writer and typed helper target
+remain joined. The two calls must resolve through the same aligned private GOT
+slot; a second valid slot to the same helper does not match this current case.
+Entries after either defining load through its CALL refuse.
+An entry at the defining load is allowed. The exact scalar helper saves and
+reloads EDI/EAX in the SysV red zone, without another call or RSP adjustment;
+it supplies no new reference-validity or memory-isolation claim.
+
+Only the completed current27-body Standalone/ReverieWorkspace source family
+can retain this private setter/helper witness. The later census rejoins the
+same full function identity/hash, both precise argument windows, all seven
+transfers and five CALL-based GOT edges. The generic constructor helper set,
+register-call vocabulary and existing native setup extension are unchanged.
+In particular, the two current calls do not add a globally allowed i32 callee
+or XOR argument form. Current serialized evidence joins its owned setup vector
+and GOT projection to the same allocator transfer vector, including source
+attribution or instruction-range ownership. Those structural records cannot
+construct the private physical witness; consumers still require fresh source
+equality and complete independent physical requalification.

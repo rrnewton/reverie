@@ -130,6 +130,34 @@ static int64_t probe_fixed_range(void) {
 }
 
 int main(int argc, char **argv) {
+    /* Only the trap-only active consumer supplies this explicit startup mode.
+     * Three-argument observe/inert invocations retain the original body below.
+     * The actual builtin constructor's shared-default policy is unchanged. */
+    if (argc == 4 && !strcmp(argv[1], "observe") &&
+        !strcmp(argv[3], "explicit-builtin")) {
+        if (!bind_exports(argv[2])) {
+            fprintf(stderr, "M2 explicit builtin query/arm owner absent\n");
+            return 2;
+        }
+        void *symbol = dlsym(RTLD_DEFAULT,
+                             "m2_stack_fixture_install_explicit_builtin");
+        Dl_info found;
+        if (!symbol || !dladdr(symbol, &found) ||
+            !found.dli_fname || !found.dli_fbase ||
+            strcmp(found.dli_fname, argv[2]) ||
+            found.dli_fbase != owner.dli_fbase) {
+            fprintf(stderr, "M2 explicit builtin installer exact owner absent\n");
+            return 2;
+        }
+        int (*install)(void);
+        memcpy(&install, &symbol, sizeof(install));
+        int installed = install();
+        if (installed) {
+            fprintf(stderr, "M2 explicit builtin installation failed: %d\n", installed);
+            return 2;
+        }
+        argc = 3;
+    }
     if (argc != 3 || (strcmp(argv[1], "observe") && strcmp(argv[1], "inert"))) {
         fprintf(stderr, "usage: m2_stack_guest <observe|inert> <exact runtime owner>\n");
         return 2;

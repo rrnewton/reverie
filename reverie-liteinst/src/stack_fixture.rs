@@ -1,7 +1,11 @@
 //! Separate M2 stack observations in the actual constructor-bearing runtime.
 //!
-//! This module never prepares a continuation, registers a stack, selects stack
-//! storage, or allocates. Its own C-ABI entry is not an isolated-stack claim.
+//! The observation functions never prepare a continuation, register a stack,
+//! select stack storage, or allocate. Their C-ABI entry is not an isolated-stack
+//! claim. A separate fixture startup, available only without `liteinst` and
+//! `fixed-syscall-gates`, explicitly installs the shared passthrough dispatcher
+//! with the selected alternate-stack setting; it does not prepare a FullTool
+//! continuation or change builtin defaults or fixed-gate admission.
 //! Fixed M1 exports and their workload remain independent of these diagnostics.
 
 use std::cell::Cell;
@@ -15,6 +19,72 @@ const ABI_VERSION: u64 = 1;
 const PROBE_CONTROL: u64 = 1;
 const PROBE_LOWER: u64 = 2;
 const PROBE_UPPER: u64 = 4;
+
+#[cfg(all(not(feature = "liteinst"), not(feature = "fixed-syscall-gates")))]
+mod explicit_builtin_startup {
+    use std::sync::atomic::AtomicI32;
+    use std::sync::atomic::Ordering;
+
+    use reverie_inguest::dispatch::PassthroughDispatcher;
+    use reverie_inguest::guest::tool_region::StackBacking;
+    use reverie_inguest::guest::tool_region::ToolRegion;
+    use reverie_inguest::lifecycle::InProcessSeccomp;
+    use reverie_inguest::lifecycle::RuntimeConfig;
+
+    static INSTALL_RESULT: AtomicI32 = AtomicI32::new(-libc::EINPROGRESS);
+
+    unsafe extern "C" fn install_body() {
+        // The authenticated generic entry owns the fresh Fixed scalar stack.
+        // Keep setup allocations in the declared Tool allocator, as in the
+        // regular explicit entry, before constructing the dispatcher.
+        let _private_allocations = reverie_inguest::guest::alloc::enter_dispatch();
+        let installed = crate::patch_alloc::preflight_allocator().and_then(|()| {
+            let use_alt_stack =
+                crate::alt_stack_from_env_value(std::env::var_os(crate::ALT_STACK_ENV).as_deref())?;
+            let region = ToolRegion::reserve()?;
+            let controller = InProcessSeccomp::with_stack_backing(StackBacking::ToolRegion(region));
+            let config = RuntimeConfig {
+                use_alt_stack,
+                ..RuntimeConfig::default()
+            };
+            // SAFETY: the fixture calls this exactly once in trusted,
+            // single-threaded startup, before any runtime or seccomp filter.
+            // This public shared seam installs the ordinary passthrough trap;
+            // it never initializes a FullTool continuation.
+            unsafe {
+                reverie_inguest::install(
+                    Box::new(PassthroughDispatcher::new()),
+                    &controller,
+                    &config,
+                )
+            }
+        });
+        let result = match installed {
+            Ok(()) => 0,
+            Err(error) => {
+                eprintln!("M2 explicit-config builtin fixture installation failed: {error}");
+                -error.raw_os_error().unwrap_or(libc::EIO)
+            }
+        };
+        INSTALL_RESULT.store(result, Ordering::Release);
+    }
+
+    /// Install the shared passthrough trap with the actual ALT_STACK selection.
+    ///
+    /// This fixture entry keeps the ordinary builtin constructor's default
+    /// policy unchanged. It prepares no continuation and claims no callback
+    /// placement or full-entry isolation.
+    ///
+    /// # Safety
+    /// Call once from trusted single-threaded startup, with clear DF and no
+    /// active runtime or seccomp filter. The genuine qualified Fixed leaf must
+    /// be loaded inertly; its native generic entry owns the first Rust stack.
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn m2_stack_fixture_install_explicit_builtin() -> i32 {
+        unsafe { reverie_inguest::guest::tool_region::generic_entry(install_body) };
+        INSTALL_RESULT.load(Ordering::Acquire)
+    }
+}
 
 /// Fixed C/Rust observation layout. Probe results are literal kernel returns.
 #[derive(Clone, Copy)]

@@ -152,11 +152,12 @@ fn calls(
 /// needs complete retained bytes and the separate proof below before admission.
 pub(super) fn candidate_scope(
     elf: &Elf<'_>,
+    bytes: &[u8],
     text: &str,
     got: &BTreeMap<u64, u64>,
     primary: &BTreeMap<u64, u64>,
 ) -> Result<BTreeMap<u64, u64>> {
-    let known: BTreeSet<_> = preparation_symbols(elf)?
+    let known: BTreeSet<_> = preparation_symbols(elf, bytes)?
         .values()
         .map(|s| s.st_value)
         .collect();
@@ -221,7 +222,7 @@ pub(super) fn complete_bytes(
     let primary_view = scope_view(text, primary);
     verify_constructor_complete_bytes(elf, initializer, &primary_view, &initial)?;
     let got = local_got_targets(elf, bytes)?;
-    let extra = candidate_scope(elf, &primary_view, &got, primary)?;
+    let extra = candidate_scope(elf, bytes, &primary_view, &got, primary)?;
     let mut full = primary.clone();
     for (address, size) in extra {
         if let Some(previous) = full.insert(address, size) {
@@ -1080,7 +1081,7 @@ mod tests {
             let known = BTreeSet::new();
             let route = transfers_route(0x1300);
             require(
-                candidate_scope(&elf, &text, &got, &primary)? == BTreeMap::from([(0x1200, 21)]),
+                candidate_scope(&elf, &bytes, &text, &got, &primary)? == BTreeMap::from([(0x1200, 21)]),
                 "entry fixture did not discover the unknown complete identity scope",
             )?;
             let complete = complete_bytes(&elf, &bytes, GENERIC_INITIALIZER, &text, &primary)?;

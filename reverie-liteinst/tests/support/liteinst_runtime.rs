@@ -2,8 +2,9 @@
 //!
 //! Expected package/profile/source/oracle identities come from this consumer and
 //! current Git worktree, never from the receipt being accepted. Verification is
-//! cached once per test process; it performs bounded Git reads and offline Cargo
-//! metadata, with no compilation, dlopen or guest launch. No artifact fallback exists.
+//! cached once per test process; it performs bounded Git reads and fresh offline
+//! Cargo metadata reads without compilation, cc, dlopen or a guest launch.
+//! There is no target/deps artifact fallback.
 
 use std::collections::BTreeMap;
 use std::ffi::OsString;
@@ -311,7 +312,10 @@ fn qualify_runtime() -> Result<QualifiedRuntime, String> {
             crate_types: vec!["cdylib".into()],
             target_source: artifact::real_file(&leaf.join("src/lib.rs"))?,
         };
-        let features = vec!["allocator-fixture".to_owned()];
+        let mut features = vec!["allocator-fixture".to_owned()];
+        if cfg!(feature = "liteinst") {
+            features.push("liteinst".to_owned());
+        }
         let profile = serde_json::json!({
             "opt_level": "0", "debuginfo": 2, "debug_assertions": true,
             "overflow_checks": true, "test": false,
@@ -326,8 +330,9 @@ fn qualify_runtime() -> Result<QualifiedRuntime, String> {
             Duration::from_secs(60),
             16 << 20,
         )?;
-        // Resolve from this consumer's current worktree, never from the receipt.
-        // The receipt-only transaction closes on success and ordinary error.
+        // The expected pin and packages come from the independent current
+        // worktree. Close this receipt-only transaction on success and error;
+        // no opaque authority is cached across later guest execution.
         let (receipt, _) = artifact::VerifiedCompiledSources::with_resolved(
             &artifact::CompiledSourceExpectation {
                 layout: artifact::CompiledSourceLayout::ReverieWorkspace,
@@ -340,6 +345,7 @@ fn qualify_runtime() -> Result<QualifiedRuntime, String> {
             |compiled_sources| {
                 let expectation = artifact::ConsumerExpectation {
                     compiled_sources: Some(compiled_sources),
+                    expected_current_policy: None,
                     package: &package,
                     features: &features,
                     profile_name: "dev",

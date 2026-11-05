@@ -58,6 +58,7 @@ fn select_rlib(
     root: &Path,
     metadata: &Value,
     messages: &str,
+    features: &[String],
     profile: &Value,
     target: &Path,
 ) -> Result<(FileIdentity, Value, Vec<String>)> {
@@ -142,8 +143,7 @@ fn select_rlib(
             "core library source differs",
         )?;
         check(
-            event["features"] == serde_json::json!(["allocator-fixture"])
-                && &event["profile"] == profile,
+            event["features"] == serde_json::json!(features) && &event["profile"] == profile,
             "core features/profile differ from diagnostic recipe",
         )?;
         let names = event["filenames"]
@@ -362,8 +362,14 @@ pub fn run(
         )? == *selected_leaf,
         "link-control Cargo output differs from the already selected current leaf",
     )?;
-    let (rlib, event, native_paths) =
-        select_rlib(root, metadata, &messages, &selected_leaf.profile, target)?;
+    let (rlib, event, native_paths) = select_rlib(
+        root,
+        metadata,
+        &messages,
+        &selected_leaf.features,
+        &selected_leaf.profile,
+        target,
+    )?;
     let dependency = rlib
         .path
         .parent()

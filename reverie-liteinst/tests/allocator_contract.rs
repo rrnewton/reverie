@@ -7,7 +7,7 @@ use std::process::Command;
 
 #[allow(dead_code)]
 #[path = "support/liteinst_runtime.rs"]
-mod liteinst_runtime;
+pub mod liteinst_runtime;
 
 #[path = "support/runtime_receipt_controls.rs"]
 mod runtime_receipt_controls;
@@ -80,6 +80,7 @@ fn context(label: &str) -> Result<(std::path::PathBuf, contract::HeldInputs), St
     Ok((evidence, held))
 }
 
+#[cfg(feature = "liteinst")]
 #[test]
 fn standalone_private_allocator_matrix() -> Result<(), String> {
     let (evidence, mut held) = context("standalone-matrix")?;

@@ -14,7 +14,7 @@ use goblin::elf::sym;
 
 #[allow(dead_code)]
 #[path = "support/liteinst_runtime.rs"]
-mod liteinst_runtime;
+pub mod liteinst_runtime;
 
 use liteinst_runtime::artifact;
 
@@ -52,7 +52,7 @@ const EXPECTED: [(&str, u64); 17] = [
         8,
     ),
     (
-        "_RNvNCNKNvNtNtCs_15reverie_inguest5guest5clock21RCB_CLOCK_UNAVAILABLE0s_023___RUST_STD_INTERNAL_VAL",
+        "_RNvNCNKNvNtNtCs_15reverie_inguest5guest5clock22RCB_CLOCK_AVAILABILITY0s_023___RUST_STD_INTERNAL_VAL",
         1,
     ),
     (
