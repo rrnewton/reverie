@@ -25,6 +25,7 @@ const REVERSED_NULL_BRANCH_RDI_IDENTITY: &[u8] = &[
 ];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[allow(clippy::enum_variant_names)] // Rdi names the register every class spills
 enum IdentityClass {
     SpilledRdi,
     ReversedSpilledRdi,
