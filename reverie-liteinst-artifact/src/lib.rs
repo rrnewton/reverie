@@ -16643,7 +16643,10 @@ fn fixed_local_call_operand(
     let slot = fixed_rip_target(address, code, displacement, next)?;
     require(
         got.get(&slot) == Some(&target),
-        "Fixed helper lacks exact local RELATIVE/RELRO target",
+        format!(
+            "Fixed helper lacks exact local RELATIVE/RELRO target address={address:#x} displacement={displacement} next={next} slot={slot:#x} expected={target:#x} actual={:?}",
+            got.get(&slot)
+        ),
     )?;
     Ok(slot)
 }
