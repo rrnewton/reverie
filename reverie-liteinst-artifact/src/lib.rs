@@ -5399,7 +5399,13 @@ fn fixed_whole_recipe(
     let mut expected = fixed_hex(hex);
     require(
         actual.len() == expected.len(),
-        "unrecognized whole Fixed function extent",
+        format!(
+            "unrecognized whole Fixed function extent address={address:#x} actual={} expected={} actual_hex={:02x?} expected_hex={:02x?}",
+            actual.len(),
+            expected.len(),
+            actual,
+            expected
+        ),
     )?;
     let mut claimed = BTreeSet::new();
     for &(displacement, next, target) in operands {
