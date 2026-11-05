@@ -819,13 +819,13 @@ rust_library(
             "dependencies_override": {
                 "dependencies": {
                     "iced-x86": {"version": "1.21.0", "optional": True, "default-features": False, "features": ["std", "decoder"]},
-                    "liteinst2": {"version": "0.1.0", "git": "https://github.com/rrnewton/liteinst2", "rev": "d64dc833418a4c265803645653b8f597d0f25060", "optional": True},
+                    "liteinst": {"version": "0.2.0", "optional": True},
                     "reverie-inguest": {"default-features": False, "features": ["coordinator-rpc", "rcb-clock", "launcher"]},
                 },
             },
             "features": {
                 "default": ["liteinst"],
-                "liteinst": ["dep:iced-x86", "dep:liteinst2"],
+                "liteinst": ["dep:iced-x86", "dep:liteinst"],
                 "preload-constructor": [],
             },
         },
