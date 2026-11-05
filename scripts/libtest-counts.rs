@@ -10,10 +10,11 @@
 //! Test execution writes its result records to a private FIFO through
 //! libtest's `--logfile`. The FIFO keeps records from successive test binaries
 //! in one isolated stream instead of letting each binary truncate a regular
-//! file. Separate `--list --format terse` invocations (all tests, then
-//! `--ignored` only) describe the selected and unfiltered test sets without
-//! executing test bodies. Terse listing is the stable spelling; libtest's
-//! JSON listing needs `-Z unstable-options`. The count file is only
+//! file. Separate `--list` invocations (all tests, then `--ignored` only)
+//! describe the selected and unfiltered test sets without executing test
+//! bodies, using libtest's default listing whose per-binary footers frame
+//! each suite on stable Rust; libtest's JSON listing needs
+//! `-Z unstable-options`. The count file is only
 //! published when the execution records and discovery records agree.
 //!
 //! ```cargo
@@ -184,40 +185,113 @@ fn parse_execution_records<R: BufRead>(reader: R) -> Result<ExecutionCounts, Str
     Ok(counts)
 }
 
-/// One terse listing as a multiset: the same `name: test` line from two
-/// binaries is two tests, so counts are per (name, kind), never a set.
-type TerseList = std::collections::BTreeMap<(String, &'static str), u64>;
+/// One default-format listing as a multiset: the same `name: test` line
+/// from two binaries is two tests, so counts are per (name, kind), never
+/// a set. Each binary's footer (`N tests, M benchmarks`) frames its suite:
+/// listed lines must match the footer exactly, and at least one completed
+/// suite is required, so empty output is refused while a genuinely
+/// zero-test binary (footer `0 tests, 0 benchmarks`) is accepted.
+type ListedTests = std::collections::BTreeMap<(String, &'static str), u64>;
 
-fn parse_terse_list<R: BufRead>(reader: R, mut echo: impl Write) -> Result<TerseList, String> {
-    let mut list = TerseList::new();
+fn parse_duration(token: &str) -> Option<()> {
+    let number = token.strip_suffix('s')?;
+    if number.is_empty()
+        || !number.chars().all(|c| c.is_ascii_digit() || c == '.')
+        || number.matches('.').count() > 1
+    {
+        return None;
+    }
+    match number.parse::<f64>() {
+        Ok(value) if value.is_finite() && value >= 0.0 => Some(()),
+        _ => None,
+    }
+}
+
+/// Rustdoc ends a doctest listing with one timing line. Accept only its
+/// exact shape; near-misses stay refused like any other unknown line.
+fn is_doctest_timing(line: &str) -> bool {
+    let Some(rest) = line.strip_prefix("all doctests ran in ") else {
+        return false;
+    };
+    match rest.split_once("; merged doctests compilation took ") {
+        Some((ran, took)) => parse_duration(ran).is_some() && parse_duration(took).is_some(),
+        None => parse_duration(rest).is_some(),
+    }
+}
+
+fn parse_footer(line: &str) -> Option<(u64, u64)> {
+    let (tests, benchmarks) = line.split_once(", ")?;
+    let tests = tests
+        .strip_suffix(" tests")
+        .or_else(|| tests.strip_suffix(" test"))?;
+    let benchmarks = benchmarks
+        .strip_suffix(" benchmarks")
+        .or_else(|| benchmarks.strip_suffix(" benchmark"))?;
+    Some((tests.parse().ok()?, benchmarks.parse().ok()?))
+}
+
+fn parse_pretty_list<R: BufRead>(reader: R, mut echo: impl Write) -> Result<ListedTests, String> {
+    let mut list = ListedTests::new();
+    let mut suite_tests = 0_u64;
+    let mut suite_benchmarks = 0_u64;
+    let mut completed = 0_u64;
     for line in reader.lines() {
         let line = line.map_err(|error| format!("cannot read libtest discovery list: {error}"))?;
         writeln!(echo, "{line}").map_err(|error| format!("cannot copy test output: {error}"))?;
         if line.trim().is_empty() {
             continue;
         }
+        if is_doctest_timing(&line) {
+            continue;
+        }
+        if let Some((tests, benchmarks)) = parse_footer(&line) {
+            if suite_tests != tests || suite_benchmarks != benchmarks {
+                return Err(format!(
+                    "discovery suite listed {suite_tests} tests and {suite_benchmarks} benchmarks but its footer reports {tests} tests and {benchmarks} benchmarks"
+                ));
+            }
+            suite_tests = 0;
+            suite_benchmarks = 0;
+            increment(&mut completed, "completed discovery suite count")?;
+            continue;
+        }
         let (name, kind) = line
             .rsplit_once(": ")
-            .ok_or_else(|| format!("malformed libtest terse list line: {line:?}"))?;
+            .ok_or_else(|| format!("malformed libtest list line: {line:?}"))?;
         if name.is_empty() {
-            return Err("libtest terse list line has an empty test name".to_string());
+            return Err("libtest list line has an empty test name".to_string());
         }
         let kind = match kind {
-            "test" => "test",
-            "bench" => "bench",
+            "test" => {
+                increment(&mut suite_tests, "discovered test count")?;
+                "test"
+            }
+            "bench" => {
+                increment(&mut suite_benchmarks, "discovered benchmark count")?;
+                "bench"
+            }
             _ => {
                 return Err(format!(
-                    "unknown libtest terse list kind {kind:?} in line {line:?}"
+                    "unknown libtest list kind {kind:?} in line {line:?}"
                 ));
             }
         };
         let count = list.entry((name.to_string(), kind)).or_default();
         increment(count, "discovered test count")?;
     }
+    if suite_tests != 0 || suite_benchmarks != 0 {
+        return Err("a discovery suite lacks its footer".to_string());
+    }
+    if completed == 0 {
+        return Err("libtest emitted no completed discovery suite".to_string());
+    }
     Ok(list)
 }
 
-fn discovery_counts(all: &TerseList, ignored_only: &TerseList) -> Result<DiscoveryCounts, String> {
+fn discovery_counts(
+    all: &ListedTests,
+    ignored_only: &ListedTests,
+) -> Result<DiscoveryCounts, String> {
     let mut counts = DiscoveryCounts::default();
     for ((name, kind), ignored) in ignored_only {
         let listed = all.get(&(name.clone(), *kind)).copied().unwrap_or(0);
@@ -324,11 +398,7 @@ struct CargoTestCommands {
 fn append_discovery_args(mut args: Vec<String>, harness_args: &[String]) -> Vec<String> {
     args.push("--".to_string());
     args.extend_from_slice(harness_args);
-    args.extend([
-        "--list".to_string(),
-        "--format".to_string(),
-        "terse".to_string(),
-    ]);
+    args.push("--list".to_string());
     args
 }
 
@@ -484,7 +554,7 @@ fn status_code(status: std::process::ExitStatus) -> i32 {
         .unwrap_or(1)
 }
 
-fn run_list(args: &[String]) -> Result<TerseList, String> {
+fn run_list(args: &[String]) -> Result<ListedTests, String> {
     let mut child = Command::new(&args[0])
         .args(&args[1..])
         .stdout(Stdio::piped())
@@ -495,7 +565,7 @@ fn run_list(args: &[String]) -> Result<TerseList, String> {
         .stdout
         .take()
         .ok_or_else(|| "cargo test discovery stdout was not piped".to_string())?;
-    let parsed = parse_terse_list(io::BufReader::new(stdout), io::stdout().lock());
+    let parsed = parse_pretty_list(io::BufReader::new(stdout), io::stdout().lock());
     let status = child
         .wait()
         .map_err(|error| format!("cannot wait for cargo test discovery: {error}"))?;
@@ -607,15 +677,24 @@ fn run(path: PathBuf, args: Vec<String>) -> Result<i32, String> {
 
 fn self_test() -> Result<(), String> {
     let selected_counts = discovery_counts(
-        &parse_terse_list("a: test\nb: test\nc: test\n".as_bytes(), io::sink())?,
-        &parse_terse_list("c: test\n".as_bytes(), io::sink())?,
-    )?;
-    let unfiltered_counts = discovery_counts(
-        &parse_terse_list(
-            "a: test\nb: test\nc: test\nd: test\n".as_bytes(),
+        &parse_pretty_list(
+            "a: test\nb: test\nc: test\n\n3 tests, 0 benchmarks\n".as_bytes(),
             io::sink(),
         )?,
-        &parse_terse_list("c: test\n".as_bytes(), io::sink())?,
+        &parse_pretty_list("c: test\n\n1 test, 0 benchmarks\n".as_bytes(), io::sink())?,
+    )?;
+    let unfiltered_counts = discovery_counts(
+        &parse_pretty_list(
+            "a: test\nb: test\nc: test\nd: test\n\n4 tests, 0 benchmarks\n".as_bytes(),
+            io::sink(),
+        )?,
+        &parse_pretty_list("c: test\n\n1 test, 0 benchmarks\n".as_bytes(), io::sink())?,
+    )?;
+    // Rustdoc's exact timing line after a doctest suite is accepted.
+    parse_pretty_list(
+        "x: test\n\n1 test, 0 benchmarks\nall doctests ran in 0.12s; merged doctests compilation took 0.12s\n"
+            .as_bytes(),
+        io::sink(),
     )?;
     let execution =
         parse_execution_records("ok a\nfailed b\nignored: reason supplied c\n".as_bytes())?;
@@ -645,20 +724,41 @@ fn self_test() -> Result<(), String> {
     if parse_execution_records("passed a\n".as_bytes()).is_ok() {
         return Err("unknown execution outcome was accepted".to_string());
     }
-    if parse_terse_list("same rendered text\n".as_bytes(), io::sink()).is_ok() {
-        return Err("human output was accepted as a libtest terse list".to_string());
+    if parse_pretty_list("same rendered text\n".as_bytes(), io::sink()).is_ok() {
+        return Err("human output was accepted as a libtest list".to_string());
+    }
+    if parse_pretty_list("".as_bytes(), io::sink()).is_ok() {
+        return Err("empty discovery evidence was accepted".to_string());
+    }
+    if parse_pretty_list("a: test\n".as_bytes(), io::sink()).is_ok() {
+        return Err("discovery without a suite footer was accepted".to_string());
+    }
+    if parse_pretty_list("a: test\n\n2 tests, 0 benchmarks\n".as_bytes(), io::sink()).is_ok() {
+        return Err("mutated discovery total was accepted".to_string());
+    }
+    if parse_pretty_list(
+        "a: test\n\n1 test, 0 benchmarks\nall doctests ran in Xs; merged doctests compilation took 0.12s\n"
+            .as_bytes(),
+        io::sink(),
+    )
+    .is_ok()
+    {
+        return Err("malformed doctest timing line was accepted".to_string());
     }
     if discovery_counts(
-        &parse_terse_list("a: test\n".as_bytes(), io::sink())?,
-        &parse_terse_list("z: test\n".as_bytes(), io::sink())?,
+        &parse_pretty_list("a: test\n\n1 test, 0 benchmarks\n".as_bytes(), io::sink())?,
+        &parse_pretty_list("z: test\n\n1 test, 0 benchmarks\n".as_bytes(), io::sink())?,
     )
     .is_ok()
     {
         return Err("ignored test absent from full discovery was accepted".to_string());
     }
     if discovery_counts(
-        &parse_terse_list("a: test\n".as_bytes(), io::sink())?,
-        &parse_terse_list("a: test\na: test\n".as_bytes(), io::sink())?,
+        &parse_pretty_list("a: test\n\n1 test, 0 benchmarks\n".as_bytes(), io::sink())?,
+        &parse_pretty_list(
+            "a: test\na: test\n\n2 tests, 0 benchmarks\n".as_bytes(),
+            io::sink(),
+        )?,
     )
     .is_ok()
     {
