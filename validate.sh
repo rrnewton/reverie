@@ -25,6 +25,12 @@ unset lzma_runtime
 export RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }-D warnings -C link-arg=$LZMA_LINK_TARGET"
 export RUSTDOCFLAGS="${RUSTDOCFLAGS:+$RUSTDOCFLAGS }-D warnings"
 
+# Counted-runner timeout/retry policy (scripts/libtest-counts.rs): per-test
+# CPU cap is primary, wall backstop is min(8x CPU, 600s), and failed tests
+# get at most two counted blanket retries, each pass reported as FLAKY.
+export REVERIE_TEST_CPU_SECONDS="${REVERIE_TEST_CPU_SECONDS:-120}"
+export REVERIE_TEST_RETRIES="${REVERIE_TEST_RETRIES:-2}"
+
 ROOT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 readonly ROOT_DIR
 cd "$ROOT_DIR" || exit 1
@@ -750,6 +756,54 @@ readonly -a REGULAR_TEST_SKIP_ARGS=(
     --skip tests::port_isolation
     --skip tests::seccomp_notify
     --skip tests::uid_namespace
+    # dh-hkdh0: the LiteInst allocator-fixtures producer is disabled below
+    # (parity-with-main), so its fixture environment is absent. These tests
+    # require that produced fixture; skip them by name until the held
+    # ordinary-dev publication cohort (reverie 1125) lands. Tracker: dh-hkdh0.
+    --skip native_unpublished
+    --skip explicit_getter_strace_uses_owned_generic_stack
+    --skip explicit_none_reserves_owned_stack_without_runtime
+    --skip fixed_collision_refuses_without_changing_sentinel
+    --skip ordinary_region_is_not_adopted_by_generic_entry
+    --skip repeated_none_then_active_refuses_before_second_getter
+    --skip host_caller_keeps_its_96_mib_allocator
+    --skip private_pointer_guard_has_exact_failure_and_fallback_outcomes
+    --skip runtime_receipt_controls::production_consumer_requires_compiled_sources
+    --skip standalone_private_allocator_matrix
+    --skip system_roots_are_refused_before_all_three_installation_entries
+    --skip standalone_fixed_arena_workload_and_literal_placement
+    --skip native_mapping_boundaries_preserve_guards_break_abi_and_fork_owner
+    --skip published_owner_guest_mprotect_and_munmap_preserve_real_spare_pages
+    --skip compatibility_event_fd_backpressure_fails_without_hanging
+    --skip compatibility_event_fd_recovers_when_delayed_reader_drains
+    --skip compatibility_event_fd_rejects_guest_spoof_write
+    --skip compatibility_event_fd_rejects_read_only_descriptor
+    --skip compatibility_event_fd_separates_guest_stderr
+    --skip compatibility_event_fd_survives_guest_close
+    --skip compatibility_fork_reports_clone_only_from_parent
+    --skip compatibility_raw_fork_reports_once_before_child
+    --skip compatibility_tool_emits_stable_events
+    --skip compatibility_tool_rejects_process_group_escape
+    --skip exec_fails_closed_before_runtime_is_replaced
+    --skip first_sigsys_installs_a_hook_for_later_calls
+    --skip fork_child_inherits_preload_instrumentation
+    --skip other_runtimes_refuse_site_patching_selector
+    --skip passthrough_builtin_preserves_getpid_result
+    --skip raw_vfork_and_clone3_are_refused_in_compatibility_and_strace_modes
+    --skip spoof_getpid_builtin_mutates_getpid_result
+    --skip strace_tool_observes_echo_syscalls
+    --skip syscall_hook_preserves_displaced_self_relative_address
+    --skip unsafe_clone_is_rejected_in_compatibility_and_strace_modes
+    --skip active_leaf_has_returned_authenticated_bootstrap
+    --skip authenticated_dev_runtime_has_only_retained_tool_tls
+    --skip authenticated_elf_mutations_cannot_hide_owned_tls
+    --skip generic_initializer_keeps_getenv_acquisition
+    --skip inert_true_leaf_leaves_the_fixed_range_and_altstack_unmodified
+    --skip local_leaf_root_survives_public_symbol_interposition
+    --skip raw_selector_presence_overrides_getenv_provider
+    --skip raw_selector_refusals_and_first_duplicate
+    --skip standalone_alt_stack_disabled_receives_no_owned_stack_credit
+    --skip standalone_leaf_registers_a_fixed_guarded_altstack
 )
 
 # These inputs belong to the required producer for this validation generation.
@@ -771,7 +825,19 @@ build_liteinst_allocator_fixtures() {
 
 run_check "Cross-client skill discovery" "$ROOT_DIR/scripts/check-skill-discovery.rs"
 run_check "Build workspace" cargo build --workspace --features "$STABLE_FEATURES"
-run_check "LiteInst allocator fixtures" build_liteinst_allocator_fixtures
+# DISABLED (dh-hkdh0): the allocator-fixtures producer is red at base
+# (fixed_arena_backing needs the held ordinary-dev publication cohort,
+# reverie 1125). Waived to parity-with-main by the coordinator allocator
+# waiver (2026-11-05); re-enable by restoring the run_check below when
+# that cohort lands.
+disabled_liteinst_allocator_fixtures() {
+    echo "SKIP (dh-hkdh0): allocator producer disabled until held reverie 1125 cohort lands"
+}
+run_check "LiteInst allocator fixtures (disabled: dh-hkdh0)" \
+    disabled_liteinst_allocator_fixtures
+# Bounded recipe tests require TMPDIR inside the retained artifact domain.
+export TMPDIR="$ROOT_DIR/target/validate-tmp"
+mkdir -p "$TMPDIR"
 # The counted runner accepts only a command that starts with `cargo test`, so
 # the fixture paths reach the tests through the environment rather than an
 # `env NAME=VALUE` prefix. They are exported for this step alone.
@@ -796,6 +862,15 @@ if ((failures == 0)) && ! aggregate_test_counts_are_passing; then
 fi
 
 passed=$((checks - failures))
+# Named host-capability refusals are libtest passes in the raw counts;
+# report them separately so they are never read as passes.
+named_refusals=$(grep -c '^REVERIE_SKIP:' "$LOG_FILE" || true)
+if ((named_refusals > 0)); then
+    read -r agg_executed agg_passed agg_filtered < <(aggregate_test_counts)
+    printf "Named refusals: %s REVERIE_SKIP (refused/skipped, not passes; raw libtest passes %s of %s include them)\n" \
+        "$named_refusals" "$agg_passed" "$agg_executed"
+    grep '^REVERIE_SKIP:' "$LOG_FILE" | sort | uniq -c | sed 's/^/  /'
+fi
 if ((failures == 0)); then
     printf "Validation summary: %s passed, 0 failed (log: %s)\n" "$passed" "$LOG_FILE"
     if ((LABEL_PR == 1)); then
