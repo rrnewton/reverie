@@ -48,7 +48,7 @@ required-features = ["allocator-fixture"]"#;
     }
     assert_eq!(ALLOCATOR_TESTS.matches("#[test]").count(), 5);
     let build = VALIDATE_SCRIPT
-        .find("run_check \"Build workspace\" cargo build --workspace --all-features")
+        .find("run_check \"Build workspace\" cargo build --workspace --features \"$STABLE_FEATURES\"")
         .unwrap();
     let producer = VALIDATE_SCRIPT
         .find("run_check \"LiteInst allocator fixtures\" build_liteinst_allocator_fixtures")
@@ -61,7 +61,7 @@ required-features = ["allocator-fixture"]"#;
         .unwrap();
     let tests = VALIDATE_SCRIPT
         .find(
-            "run_test_check \"Test regular workspace cases\" cargo test --workspace --all-features",
+            "run_test_check \"Test regular workspace cases\" cargo test --workspace --features \"$STABLE_FEATURES\"",
         )
         .unwrap();
     let unexport = VALIDATE_SCRIPT
@@ -96,8 +96,8 @@ required-features = ["allocator-fixture"]"#;
         VALIDATE_SCRIPT
             .contains("build-liteinst-test-runtime.rs\" --for-ci \"$generation\" || return")
     );
-    assert!(WORKFLOW.contains("cargo test --workspace --exclude reverie-kvm --exclude reverie-kvm-core --exclude reverie-linuxemu --exclude reverie-inguest --all-features --no-fail-fast --"));
-    assert!(WORKFLOW.contains("cargo test --workspace --all-features -- --test-threads=1"));
+    assert!(WORKFLOW.contains("cargo test --workspace --exclude reverie-kvm --exclude reverie-kvm-core --exclude reverie-linuxemu --exclude reverie-inguest --features \"${STABLE_FEATURES_REGULAR}\" --no-fail-fast --"));
+    assert!(WORKFLOW.contains("cargo test --workspace --features \"${STABLE_FEATURES}\" -- --test-threads=1"));
     for job in ["  regular:", "  hardware:"] {
         let section = &WORKFLOW[WORKFLOW.find(job).unwrap()..];
         let producer = section
