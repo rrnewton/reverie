@@ -16945,6 +16945,8 @@ const FIXED_OPTIMIZED_TLS_THUNK_DIAGNOSTIC_HEX: &str =
     "50488d3da0960a00e8832f0a00488d808800000059c3";
 const FIXED_DEV_TLS_CELL_GETTER_HEX: &str =
     "4883ec1848897c24084889742410488d3daba42100e8b6321e00488d80480000004883c418c3";
+const FIXED_DEV_TLS_CELL_GETTER_STABLE_HEX: &str =
+    "4883ec1848897c24084889742410488d3df3ca1e00e8866f1b00488d80300000004883c418c3";
 const FIXED_DEV_TLS_CELL_GETTER_EVENT_ARGUMENT_HEX: &str =
     "4883ec1848897c24084889742410488d3ddb4a2200e8a6d11e00488d80400000004883c418c3";
 const FIXED_DEV_TLS_CELL_GETTER_DIAGNOSTIC_EVENT_ARGUMENT_HEX: &str =
@@ -16987,6 +16989,11 @@ fn fixed_tls_cell_access_recipe(
             FIXED_OPTIMIZED_TLS_THUNK_DIAGNOSTIC_HEX,
             16,
             &[(4, 8), (9, 13)],
+        ),
+        ("fixed_tls_cell_getter", 0x30) => (
+            FIXED_DEV_TLS_CELL_GETTER_STABLE_HEX,
+            29,
+            &[(17, 21), (22, 26)],
         ),
         ("fixed_tls_cell_getter", 0x48) => {
             (FIXED_DEV_TLS_CELL_GETTER_HEX, 29, &[(17, 21), (22, 26)])
@@ -41299,6 +41306,13 @@ mod tests {
                 "4883ec1848897c24084889742410488d3daba42100e8b6321e00488d80480000004883c418c3",
                 72,
                 &[(17, 21, 3780144), (22, 26, 3554368)],
+            ),
+            (
+                "fixed_tls_cell_getter",
+                1653920,
+                "4883ec1848897c24084889742410488d3df3ca1e00e8866f1b00488d80300000004883c418c3",
+                48,
+                &[(17, 21, 3671976), (22, 26, 3451968)],
             ),
             (
                 "fixed_tls_cell_getter",
