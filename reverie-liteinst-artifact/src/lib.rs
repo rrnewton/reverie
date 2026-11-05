@@ -29485,7 +29485,8 @@ fn preparation_role(name: &str) -> Option<&'static str> {
         "_RINvYINtNtNtCs_4core3ops5range5RangejENtNtNtNtBa_4iter6traits8iterator8Iterator8try_folduNCINvNvBL_3all5checkjNCNvMs_NtNtNtCs_15reverie_inguest5guest11tool_region11constructorNtB22_16NativeFreshOwner11from_natives_0E0INtNtB8_12control_flow11ControlFlowuEEB28_" => {
             Some("from_native_bitmap_range")
         }
-        "_RNvMs16_NtNtCs_4core4sync6atomicINtB6_6AtomicjE5storeCs_15reverie_inguest" => {
+        "_RNvMs16_NtNtCs_4core4sync6atomicINtB6_6AtomicjE5storeCs_15reverie_inguest"
+        | "_RNvMs1k_NtNtCs_4core4sync6atomicINtB6_6AtomicjE5storeCs_15reverie_inguest" => {
             Some("atomic_usize_store")
         }
         "_RNvMs_NtNtNtCs_15reverie_inguest5guest11tool_region11constructorNtB4_16NativeFreshOwner11from_native" => {
@@ -46495,6 +46496,18 @@ mod tests {
             );
         }
         assert_eq!(roles.len(), 9);
+        // Stable 1.97.1 emits the same typed Atomic<usize>::store role with
+        // the Ms1k shim spelling; only that exact alternate spelling resolves.
+        assert_eq!(
+            preparation_role(
+                "_RNvMs1k_NtNtCsayI02cGi06u_4core4sync6atomicINtB6_6AtomicjE5storeCsk1nybVdH5QO_15reverie_inguest"
+            ),
+            Some("atomic_usize_store")
+        );
+        assert!(preparation_role(
+            "_RNvMs1x_NtNtCsayI02cGi06u_4core4sync6atomicINtB6_6AtomicjE5storeCsk1nybVdH5QO_15reverie_inguest"
+        )
+        .is_none());
         for unproved in [
             "from_native",
             "NativeFreshOwner::publish",
