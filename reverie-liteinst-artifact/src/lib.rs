@@ -1134,8 +1134,8 @@ const CONTENT_REVERIE_CATALOG: [(&str, u64, &str); 83] = [
     ),
     (
         "reverie-inguest/src/guest/tool_install.rs",
-        25615,
-        "3dc7ab43763fc3c0cc308050d785d058581701096a94193833587d2df1dd8795",
+        25614,
+        "e22613d605b984846de8a9e2ce26671587d335292c000500ba913744c90f69b6",
     ),
     (
         "reverie-inguest/src/signal.rs",
@@ -1319,8 +1319,8 @@ const CONTENT_REVERIE_CATALOG: [(&str, u64, &str); 83] = [
     ),
     (
         "reverie-liteinst/Cargo.toml",
-        5330,
-        "e7b3c9b460a9e9eb358284f9f41615847c0f1cd3d0f2594aaa556b343cdd408c",
+        5218,
+        "f6ffff5c4b91dc9cda1a085269f3f8e453f204ffa1e386af9b9053c929264bae",
     ),
     (
         "reverie-liteinst/src/lib.rs",
@@ -1339,8 +1339,8 @@ const CONTENT_REVERIE_CATALOG: [(&str, u64, &str); 83] = [
     ),
     (
         "reverie-liteinst/src/patch_alloc.rs",
-        24730,
-        "4e624b555d15acaeb72c9d4bf4d29e52666b377fb9a9ef48ef07447b6e834561",
+        24729,
+        "d17373084f4d3b16cd3f5bdf6e8314331de3ca279b1287a89c8b5566e16b5dfa",
     ),
     (
         "reverie-inguest/src/guest/alloc.rs",
@@ -1394,8 +1394,8 @@ const CONTENT_REVERIE_CATALOG: [(&str, u64, &str); 83] = [
     ),
     (
         "reverie-liteinst/src/tool_host.rs",
-        51879,
-        "b8099ce24313559ec22c1ba4c0b4246e044727be996ac753410cdac6e6ff0cdb",
+        51878,
+        "10cc5370244481d89f13bbaad715532562f9bfba9bb255e17c10605fb2f3e9c5",
     ),
     (
         "reverie/Cargo.toml",
@@ -11373,6 +11373,11 @@ const FIXED_OPERATION_ROLE_SYMBOLS: &[(&str, &str)] = &[
         "_RNvMNtNtCs_4core3ptr7mut_ptrOh7is_nullCs_7futures",
         "_RNvMNtNtCs_4core3ptr7mut_ptrOh7is_nullCs_7futures",
     ),
+    // Retained-cohort spellings, still matched by live fail-closed
+    // qualifiers: `Cs_9liteinst2` names the pre-0.2.0 crate in historical
+    // build images. Exact matching refuses (never mis-admits) an image
+    // whose symbols differ, so do not rename without recapturing a
+    // `Cs_8liteinst` cohort from a real 0.2.0 build.
     (
         "_RNvMNtNtCs_4core3ptr7mut_ptrOh7is_nullCs_9liteinst2",
         "_RNvMNtNtCs_4core3ptr7mut_ptrOh7is_nullCs_9liteinst2",

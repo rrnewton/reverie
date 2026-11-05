@@ -5,7 +5,7 @@
 use std::io;
 use std::path::Path;
 
-use liteinst2::trampoline::HookContext;
+use liteinst::trampoline::HookContext;
 #[cfg(feature = "exec-private-init")]
 use reverie::GlobalRPC;
 use reverie::Pid;
