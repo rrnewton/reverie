@@ -19,7 +19,7 @@ crate-type = ["rlib"]
 default = ["liteinst"]
 # Optional site patching over the shared in-guest seccomp/SIGSYS runtime.
 # The loader, preload, RPC transport and native-exec features do not require it.
-liteinst = ["dep:iced-x86", "dep:liteinst2"]
+liteinst = ["dep:iced-x86", "dep:liteinst"]
 # Deprecated no-op: the constructor and linker policy belong to the preload leaf.
 preload-constructor = []
 # Exposes a fixed test ABI in the actual runtime without changing its allocator.
@@ -62,7 +62,7 @@ path = "src/bin/lifecycle_guest.rs"
 bincode = { version = "2", features = ["serde"] }
 iced-x86 = { version = "1.21.0", default-features = false, features = ["std", "decoder"], optional = true }
 libc = "0.2.186"
-liteinst2 = { version = "0.1.0", git = "https://github.com/rrnewton/liteinst2", rev = "d64dc833418a4c265803645653b8f597d0f25060", optional = true }
+liteinst = { version = "0.2.0", optional = true }
 reverie = { version = "0.5.4", path = "../reverie", package = "reverie-core" }
 reverie-inguest = { version = "0.5.4", path = "../reverie-inguest", default-features = false, features = ["coordinator-rpc", "rcb-clock", "launcher"] }
 reverie-rpc-transport = { version = "0.5.4", path = "../reverie-rpc-transport" }

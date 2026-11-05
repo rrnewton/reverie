@@ -13,35 +13,35 @@ use std::ptr;
 use std::sync::OnceLock;
 
 #[cfg(feature = "liteinst")]
-use liteinst2::patcher::GuardSignalAction;
+use liteinst::patcher::GuardSignalAction;
 #[cfg(feature = "liteinst")]
-use liteinst2::patcher::GuardSignalHandler;
+use liteinst::patcher::GuardSignalHandler;
 #[cfg(feature = "liteinst")]
-use liteinst2::patcher::GuardSignalRuntime;
+use liteinst::patcher::GuardSignalRuntime;
 #[cfg(feature = "liteinst")]
-use liteinst2::patcher::JumpPatchPlan;
+use liteinst::patcher::JumpPatchPlan;
 #[cfg(feature = "liteinst")]
-use liteinst2::patcher::PatchError;
+use liteinst::patcher::PatchError;
 #[cfg(feature = "liteinst")]
-use liteinst2::patcher::prepare_live_patching_with_signal_runtime;
+use liteinst::patcher::prepare_live_patching_with_signal_runtime;
 #[cfg(feature = "liteinst")]
-use liteinst2::scanner::InstructionScanner;
+use liteinst::scanner::InstructionScanner;
 #[cfg(feature = "liteinst")]
-use liteinst2::scanner::ScanResult;
+use liteinst::scanner::ScanResult;
 #[cfg(feature = "liteinst")]
-use liteinst2::trampoline::ExecutableTrampoline;
+use liteinst::trampoline::ExecutableTrampoline;
 #[cfg(feature = "liteinst")]
-use liteinst2::trampoline::HookContext;
+use liteinst::trampoline::HookContext;
 #[cfg(feature = "liteinst")]
-use liteinst2::trampoline::HookSite;
+use liteinst::trampoline::HookSite;
 #[cfg(feature = "liteinst")]
-use liteinst2::trampoline::InstalledHook;
+use liteinst::trampoline::InstalledHook;
 #[cfg(feature = "liteinst")]
-use liteinst2::trampoline::TrampolineArena;
+use liteinst::trampoline::TrampolineArena;
 #[cfg(feature = "liteinst")]
-use liteinst2::trampoline::TrampolineError;
+use liteinst::trampoline::TrampolineError;
 #[cfg(feature = "liteinst")]
-use liteinst2::trampoline::TrampolinePlan;
+use liteinst::trampoline::TrampolinePlan;
 use reverie_inguest::BuiltinTool;
 use reverie_inguest::dispatch::SyscallEvent as PreloadSyscallEvent;
 use reverie_inguest::dispatch::is_fork_like;
@@ -711,7 +711,7 @@ pub(crate) enum InstrumentationPreparation {
 #[cfg(feature = "exec-private-init")]
 pub(crate) struct PrivateRuntimeImage<'a> {
     pub(crate) control: crate::tool_host::PrivateImageControl<'a>,
-    pub(crate) straddler_staleness: Option<Option<liteinst2::patcher::StalenessBudget>>,
+    pub(crate) straddler_staleness: Option<Option<liteinst::patcher::StalenessBudget>>,
     #[cfg(feature = "exec-private-init")]
     pub(crate) preparation: InstrumentationPreparation,
     #[cfg(feature = "exec-native-injection")]
@@ -837,7 +837,7 @@ struct EnvSelectors {
     process_forks_allowed: bool,
     sigalrm_handlers: bool,
     use_alt_stack: bool,
-    straddler_staleness: Option<liteinst2::patcher::StalenessBudget>,
+    straddler_staleness: Option<liteinst::patcher::StalenessBudget>,
 }
 
 impl LiteinstPatchHost {
@@ -1408,7 +1408,7 @@ enum GuardRouter {
 fn prepare_instrumentation(
     preparation: InstrumentationPreparation,
     router: GuardRouter,
-    staleness: Option<Option<liteinst2::patcher::StalenessBudget>>,
+    staleness: Option<Option<liteinst::patcher::StalenessBudget>>,
 ) -> io::Result<()> {
     // A supplied budget was validated before fixed-gate publication; other
     // routes keep reading the selector here at their existing point.
@@ -2175,7 +2175,7 @@ unsafe fn set_text_protection(address: u64, protection: i32) -> io::Result<()> {
     }
     let page_start = address & !(page_size - 1);
     let patch_end = address
-        .checked_add(liteinst2::patcher::WORD_PATCH_BYTES as u64)
+        .checked_add(liteinst::patcher::WORD_PATCH_BYTES as u64)
         .ok_or_else(|| io::Error::other("patch address overflow"))?;
     let page_end = patch_end
         .checked_add(page_size - 1)
@@ -2357,7 +2357,7 @@ fn neighbour_conflict(
     if other == 0 || other == address {
         return None;
     }
-    let word = liteinst2::patcher::WORD_PATCH_BYTES as u64;
+    let word = liteinst::patcher::WORD_PATCH_BYTES as u64;
     let patch_end = address.saturating_add(word);
     let mut conflict = None;
     if footprint {
@@ -2420,7 +2420,7 @@ fn neighbours_conflict(
 /// site's eight bytes now, `None` unless all eight were readable. A byte
 /// survives when it differs from the original and equals the published byte,
 /// or when it is an INT3 that was not in the original (a cross-line guard:
-/// liteinst2 guards every front-fragment byte, changed or not). Only when
+/// liteinst guards every front-fragment byte, changed or not). Only when
 /// no byte survives is the old patch provably gone, whatever part of its
 /// window a mapping change replaced.
 #[cfg(feature = "liteinst")]
@@ -2432,8 +2432,8 @@ fn stale_jump_survives(words: Option<(u64, u64)>, current: Option<[u8; 8]>) -> b
     (0..8).any(|offset| {
         let byte = current[offset];
         (published[offset] != original[offset] && byte == published[offset])
-            || (byte == liteinst2::patcher::BREAKPOINT_OPCODE
-                && original[offset] != liteinst2::patcher::BREAKPOINT_OPCODE)
+            || (byte == liteinst::patcher::BREAKPOINT_OPCODE
+                && original[offset] != liteinst::patcher::BREAKPOINT_OPCODE)
     })
 }
 
@@ -2691,7 +2691,7 @@ fn unpublished_syscall_entry(address: u64, slot: &SiteSlot, number: i64) -> Opti
 unsafe fn install_site_hook(
     address: u64,
     slot: &'static SiteSlot,
-    callback: liteinst2::trampoline::HookCallback,
+    callback: liteinst::trampoline::HookCallback,
     policy: SiteHookPolicy,
     expected_instruction: &[u8],
     manage_protection: bool,
@@ -2748,7 +2748,7 @@ unsafe fn install_site_hook(
         )));
     }
     check_neighbours(address, expected_instruction.len() as u64)?;
-    if available < liteinst2::patcher::WORD_PATCH_BYTES {
+    if available < liteinst::patcher::WORD_PATCH_BYTES {
         return Err(InstallFailure::untouched(io::Error::other(
             "syscall site is too close to its executable mapping end",
         )));
@@ -2759,7 +2759,7 @@ unsafe fn install_site_hook(
     // backing executes, including clean private aliases, behind their site
     // tables. Never writing there keeps every continuation's bytes free of
     // LiteInst jumps that this process's footprints cannot see.
-    let window_last = address + liteinst2::patcher::WORD_PATCH_BYTES as u64 - 1;
+    let window_last = address + liteinst::patcher::WORD_PATCH_BYTES as u64 - 1;
     if unsafe { private_span_protection(address, window_last) }.is_none() {
         return Err(InstallFailure::untouched(io::Error::other(
             "LiteInst publishes only into a private executable mapping",
@@ -2767,7 +2767,7 @@ unsafe fn install_site_hook(
     }
     let scanner = InstructionScanner::default();
     let scan = scanner
-        .scan_prefix(candidate, address, liteinst2::patcher::WORD_PATCH_BYTES)
+        .scan_prefix(candidate, address, liteinst::patcher::WORD_PATCH_BYTES)
         .map_err(|error| InstallFailure::untouched(io::Error::other(error.to_string())))?;
     let proof = match policy.entry_proof {
         EntryProof::Required => arena
@@ -2785,7 +2785,7 @@ unsafe fn install_site_hook(
         .cache_line_size()
         .split_offset(
             address as usize,
-            instruction_len.min(liteinst2::patcher::NEAR_JUMP_BYTES),
+            instruction_len.min(liteinst::patcher::NEAR_JUMP_BYTES),
         )
         .unwrap_or(0);
 
@@ -2811,7 +2811,7 @@ unsafe fn install_site_hook(
     // `available` is at least WORD_PATCH_BYTES here, and the bytes were just
     // verified, so these are the site's original eight bytes.
     let original_word = u64::from_le_bytes(
-        candidate[..liteinst2::patcher::WORD_PATCH_BYTES]
+        candidate[..liteinst::patcher::WORD_PATCH_BYTES]
             .try_into()
             .expect("the patch window is eight bytes"),
     );
@@ -2825,7 +2825,7 @@ unsafe fn install_site_hook(
     // no later installer's neighbour check sees this site as merely
     // INSTALLING when part of a jump may already be published.
     //
-    // Until activation starts, liteinst2 has only planned the patch and
+    // Until activation starts, liteinst has only planned the patch and
     // filled its trampoline in the arena; the guest's code bytes are the
     // original, so such a failure is touched but not possibly written.
     let published_failure = |error: io::Error| {
@@ -3000,7 +3000,7 @@ fn install_vdso_sites(sites: &[reverie::vdso::VdsoSyscallSite]) -> io::Result<()
 }
 
 #[cfg(feature = "liteinst")]
-fn vdso_callback(number: i64) -> io::Result<liteinst2::trampoline::HookCallback> {
+fn vdso_callback(number: i64) -> io::Result<liteinst::trampoline::HookCallback> {
     let callbacks = installed_entries::selected();
     match number {
         libc::SYS_time => Ok(callbacks.time),
@@ -3030,7 +3030,7 @@ fn instruction_at(address: u64) -> Option<(InstructionEventKind, &'static [u8])>
 }
 
 #[cfg(feature = "liteinst")]
-fn instruction_callback(kind: InstructionEventKind) -> liteinst2::trampoline::HookCallback {
+fn instruction_callback(kind: InstructionEventKind) -> liteinst::trampoline::HookCallback {
     let callbacks = installed_entries::selected();
     match kind {
         InstructionEventKind::Cpuid => callbacks.cpuid,
@@ -4189,14 +4189,14 @@ mod tests {
     }
 
     #[cfg(feature = "liteinst")]
-    unsafe extern "C" fn unreachable_hook(_context: *mut liteinst2::trampoline::HookContext) {
+    unsafe extern "C" fn unreachable_hook(_context: *mut liteinst::trampoline::HookContext) {
         unreachable!("a refused publication installs no hook");
     }
 
     // A5 step 3c slice 0c: once installation has left the SIGTRAP guard router
     // out (site patching off), install_site_hook refuses before it reads or
     // writes anything, so no guard breakpoint can be planted with no router to
-    // take it, and liteinst2 never installs one lazily. The refusal is
+    // take it, and liteinst never installs one lazily. The refusal is
     // untouched (the code is the original) and the slot keeps no trace.
     #[test]
     #[cfg(feature = "liteinst")]

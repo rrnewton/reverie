@@ -14582,6 +14582,11 @@ const FIXED_OPERATION_ROLE_SYMBOLS: &[(&str, &str)] = &[
         "_RNvMNtNtCs_4core3ptr7mut_ptrOh7is_nullCs_7futures",
         "_RNvMNtNtCs_4core3ptr7mut_ptrOh7is_nullCs_7futures",
     ),
+    // Retained-cohort spellings, still matched by live fail-closed
+    // qualifiers: `Cs_9liteinst2` names the pre-0.2.0 crate in historical
+    // build images. Exact matching refuses (never mis-admits) an image
+    // whose symbols differ, so do not rename without recapturing a
+    // `Cs_8liteinst` cohort from a real 0.2.0 build.
     (
         "_RNvMNtNtCs_4core3ptr7mut_ptrOh7is_nullCs_9liteinst2",
         "_RNvMNtNtCs_4core3ptr7mut_ptrOh7is_nullCs_9liteinst2",

@@ -8,13 +8,13 @@ use std::io;
 use std::sync::OnceLock;
 
 #[cfg(feature = "liteinst")]
-use liteinst2::cache_line::CacheLineSize;
+use liteinst::cache_line::CacheLineSize;
 #[cfg(feature = "liteinst")]
-use liteinst2::patcher::PatchStrategy;
+use liteinst::patcher::PatchStrategy;
 #[cfg(feature = "liteinst")]
-use liteinst2::patcher::StalenessBudget;
+use liteinst::patcher::StalenessBudget;
 #[cfg(feature = "liteinst")]
-use liteinst2::patcher::classify_word_patch;
+use liteinst::patcher::classify_word_patch;
 
 /// Opt-in calibrated WordPatch++ delay, in timestamp-counter ticks.
 ///
@@ -130,8 +130,8 @@ fn budget_for_patch_with(
 mod tests {
     use std::ffi::OsStr;
 
-    use liteinst2::cache_line::CacheLineSize;
-    use liteinst2::patcher::StalenessBudget;
+    use liteinst::cache_line::CacheLineSize;
+    use liteinst::patcher::StalenessBudget;
 
     use super::BudgetRefusal;
     use super::STRADDLER_STALENESS_TICKS_ENV;
