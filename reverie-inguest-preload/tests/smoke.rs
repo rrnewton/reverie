@@ -20,9 +20,9 @@ use std::path::PathBuf;
 use std::process::Command;
 use std::process::Output;
 
-use reverie_inguest::BuiltinTool;
-use reverie_inguest::SPOOF_PID;
-use reverie_inguest::configure_command;
+use reverie_inguest_core::BuiltinTool;
+use reverie_inguest_core::SPOOF_PID;
+use reverie_inguest_core::configure_command;
 
 fn preload_path() -> PathBuf {
     let probe = PathBuf::from(env!("CARGO_BIN_EXE_reverie-inguest-probe"));

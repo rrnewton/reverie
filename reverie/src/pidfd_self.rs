@@ -182,7 +182,7 @@ pub const fn probe_args(pidfd: i32) -> [usize; 6] {
 /// Anything unreadable or unrecognised is `false`, so a backend that cannot
 /// tell what stands between its leaf and the kernel does not qualify.
 pub fn thread_has_exactly_seccomp_filters(expected: u64) -> bool {
-    match std::fs::read_to_string("/proc/thread-self/status") {
+    match crate::process::launch_window::read_to_string("/proc/thread-self/status") {
         Ok(status) => status_has_exactly_seccomp_filters(&status, expected),
         Err(_) => false,
     }

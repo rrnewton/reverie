@@ -35,8 +35,9 @@ atomically, so there is no post-fork install race.
 
 * **As a library (`rlib`):** a backend embeds the runtime, registers its own
   `SyscallDispatcher`, and calls `reverie_inguest::install(...)`.
-* **As a standalone `LD_PRELOAD` (`cdylib`):** set `REVERIE_INGUEST_TOOL`
-  (`passthrough` or `spoof-getpid`) and preload `libreverie_inguest.so`.
+* **As a standalone `LD_PRELOAD` (`cdylib`):** build the cdylib-only
+  `reverie-inguest-preload` leaf, set `REVERIE_INGUEST_TOOL`
+  (`passthrough` or `spoof-getpid`), and preload `libreverie_inguest.so`.
 
 ```rust,ignore
 use reverie_inguest::dispatch::PassthroughDispatcher;

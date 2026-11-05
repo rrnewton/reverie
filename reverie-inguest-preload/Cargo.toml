@@ -1,0 +1,51 @@
+[package]
+name = "reverie-inguest-preload"
+version = "0.5.4"
+authors = ["Meta Platforms"]
+edition = "2024"
+repository = "https://github.com/facebookexperimental/reverie"
+license = "BSD-2-Clause"
+readme = "README.md"
+homepage = "https://hermetic-infra.org"
+documentation = "https://docs.rs/reverie-inguest-preload"
+keywords = ["linux", "instrumentation", "hermit"]
+categories = ["development-tools::debugging", "os::linux-apis"]
+description = "Standalone LD_PRELOAD leaf for the Reverie in-guest runtime"
+
+# A cdylib-only leaf. Keeping the constructor out of the shared rlib makes
+# every build of this artifact constructor-bearing by construction: no other
+# package's feature selection can produce an inert variant at this filename.
+[lib]
+name = "reverie_inguest"
+crate-type = ["cdylib"]
+
+[features]
+default = []
+native-entry-observer = ["reverie-inguest-core/native-entry-observer"]
+allocator-fixture = ["reverie-inguest-core/allocator-fixture"]
+rpc-io-fixture = ["reverie-inguest-core/rpc-io-fixture"]
+launcher = ["reverie-inguest-core/launcher"]
+fixed-syscall-gates = ["reverie-inguest-core/fixed-syscall-gates"]
+exec-private-init = ["reverie-inguest-core/exec-private-init"]
+loader-private-runtime = ["reverie-inguest-core/loader-private-runtime"]
+native-exec-state = ["reverie-inguest-core/native-exec-state"]
+native-exec-state-fixture = ["reverie-inguest-core/native-exec-state-fixture"]
+exec-private-successor = ["reverie-inguest-core/exec-private-successor"]
+exec-native-injection = ["reverie-inguest-core/exec-native-injection"]
+coordinator-rpc = ["reverie-inguest-core/coordinator-rpc"]
+rcb-clock = ["reverie-inguest-core/rcb-clock"]
+# Retained as a no-op for feature-selection compatibility; this leaf always
+# registers the constructor below.
+preload-constructor = []
+
+[dependencies]
+libc = "0.2.186"
+reverie-inguest-core = { package = "reverie-inguest", version = "0.5.4", path = "../reverie-inguest", default-features = false }
+
+[[bin]]
+name = "reverie-inguest-probe"
+path = "src/bin/preload_probe.rs"
+
+[[test]]
+name = "smoke"
+path = "tests/smoke.rs"

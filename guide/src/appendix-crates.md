@@ -6,7 +6,7 @@
 | `reverie-ptrace` + `safeptrace` | the reference backend | [Backends](backends.md) |
 | `reverie-syscalls` | typed syscall wrappers + pretty-printing | [Typed syscalls](typed-syscalls.md) |
 | `reverie-process`, `reverie-memory`, `reverie-util` | commands, guest memory, shared utilities | throughout |
-| `reverie-inguest` | shared in-guest runtime: seccomp trap, dispatcher, trusted gate | [Mechanisms](mechanisms.md) |
+| `reverie-inguest` (+ `-preload` leaf) | shared in-guest runtime: seccomp trap, dispatcher, trusted gate; leaf owns the standalone preload constructor | [Mechanisms](mechanisms.md) |
 | `reverie-liteinst` (+ `-artifact`, `-preload`) | in-guest LiteInst patching backend + preload hosting | [Backends](backends.md) |
 | `reverie-loader` | image validation, gate audit, init stages | [Loaders](loaders.md) |
 | `reverie-kvm`, `reverie-kvm-core` | KVM backend (specialized runner) | [Backends](backends.md) |

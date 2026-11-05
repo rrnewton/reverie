@@ -12,25 +12,26 @@ keywords = ["linux", "instrumentation", "hermit"]
 categories = ["development-tools::debugging", "os::linux-apis"]
 description = "Shared LD_PRELOAD + seccomp/SIGSYS instrumentation runtime for Reverie in-guest backends (e9patch, LiteInst, SaBRe)"
 
-# Both an rlib (so e9patch/liteinst embed the runtime and register their own
-# dispatcher) and a cdylib (a standalone `LD_PRELOAD=libreverie_inguest.so`
-# skeleton usable on its own and by the integration tests).
+# An rlib so e9patch/liteinst can embed the runtime and register their own
+# dispatcher. The standalone cdylib lives in the cdylib-only
+# reverie-inguest-preload leaf, whose constructor cannot be feature-disabled
+# by another package's build graph.
 [lib]
-crate-type = ["cdylib", "rlib"]
+crate-type = ["rlib"]
 
 [features]
 # Read-only native callback observations; no constructor or entry authority.
 native-entry-observer = ["coordinator-rpc"]
-default = ["preload-constructor"]
+default = []
 # Allocation diagnostics for the real-preload ownership regression. This does
 # not select or alter the allocator.
 allocator-fixture = []
 # Observations of real RPC connections and dispatch counters for installed tests.
 # Does not enable a constructor, native exec, or callback authority.
 rpc-io-fixture = ["coordinator-rpc"]
-# Install the runtime from a `.init_array` constructor the moment the dynamic
-# loader maps the cdylib. Disable to embed the runtime and drive it manually
-# (for example from a backend that installs it after its own bootstrap).
+# Deprecated no-op retained for feature-selection compatibility. The
+# constructor now lives unconditionally in reverie-inguest-preload; this core
+# rlib never registers one itself.
 preload-constructor = []
 # Host process launch/RPC lifetime owner. Guest bootstrap and typed statistics
 # remain usable without this feature; it never registers a constructor.
@@ -87,14 +88,6 @@ reverie-loader = { version = "0.5.4", path = "../reverie-loader" }
 tokio = { version = "1.52.4", features = ["test-util"] }
 tracing-subscriber = "0.3.23"
 iced-x86 = { version = "1.21.0", default-features = false, features = ["std", "decoder"] }
-
-[[bin]]
-name = "reverie-inguest-probe"
-path = "src/bin/preload_probe.rs"
-
-[[test]]
-name = "smoke"
-path = "tests/smoke.rs"
 
 [[test]]
 name = "pkeys"
