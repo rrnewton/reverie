@@ -209,12 +209,16 @@ rust_library(
 rust_library(
     name = "reverie-test-support",
     srcs = glob(["reverie-test-support/src/**/*.rs"]),
+    features = ["nightly"],
     autocargo = {
         "cargo_toml_config": {
             "package": {
                 "version": "0.5.4",
                 "description": "Command helpers for generic Reverie conformance tests.",
                 "publish": False,
+            },
+            "features": {
+                "nightly": ["reverie-ptrace/nightly"],
             },
             "test": [
                 {"name": "basics", "path": "../tests/basics.rs"},
@@ -276,7 +280,6 @@ rust_library(
                     "nix": {"features": ["fs", "process", "signal"]},
                 },
                 "dev-dependencies": {
-                    "reverie-ptrace": {"features": ["nightly"]},
                     "serde": {"features": ["derive"]},
                 },
             },
