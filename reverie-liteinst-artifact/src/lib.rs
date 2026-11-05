@@ -17740,28 +17740,54 @@ fn qualify_allocator_tls_boundary_in_source_context(
         // not an expected backing or an admitted external provider.
         loaded_bytes(elf, bytes, refusal_data, 24)?;
         let (try_with, try_bytes) = bind("fixed_tls_try_with")?;
-        let callback = fixed_local_call_operand(
-            try_with,
-            try_bytes,
-            0x65,
-            0x69,
-            roles["fixed_tls_cell_callback"].st_value,
-            got,
-        )?;
-        fixed_whole_recipe(
-            try_with,
-            try_bytes,
-            FIXED_DEV_TLS_TRY_WITH_HEX,
-            &[(0x65, 0x69, callback)],
-        )?;
-        // Entire exact prefix retains the incoming immutable LocalKey in RAX,
-        // supplies the None argument, and calls precisely *(RAX). This edge is
-        // qualified by the bound readonly LocalKey object, not a register-call
-        // allowlist. No body/function pointer from the guest earns this role.
-        let transfer = ConstructorTransfer {
-            instruction: try_with + 0x15,
-            target: fn_once,
-            local_got_slot: None,
+        // The two exact bodies differ in how the LocalKey init pointer is
+        // called: nightly calls *(RAX) at +0x15 after retaining the key in
+        // RAX; stable first loads (*RDI) into RAX and calls *RAX at +0x18,
+        // loads the callback through its GOT slot, and retains an unwind
+        // landing pad. Each edge below is qualified by the bound readonly
+        // LocalKey object, not a register-call allowlist. No body or
+        // function pointer from the guest earns this role.
+        let transfer = if try_bytes.len() == 235 {
+            let callback = fixed_local_call_operand(
+                try_with,
+                try_bytes,
+                0xab,
+                0xaf,
+                roles["fixed_tls_cell_callback"].st_value,
+                got,
+            )?;
+            let unwind_resume = private_function(elf, "_Unwind_Resume")?.st_value;
+            fixed_whole_recipe(
+                try_with,
+                try_bytes,
+                FIXED_DEV_TLS_TRY_WITH_STABLE_HEX,
+                &[(0xab, 0xaf, callback), (0xe5, 0xe9, unwind_resume)],
+            )?;
+            ConstructorTransfer {
+                instruction: try_with + 0x18,
+                target: fn_once,
+                local_got_slot: None,
+            }
+        } else {
+            let callback = fixed_local_call_operand(
+                try_with,
+                try_bytes,
+                0x65,
+                0x69,
+                roles["fixed_tls_cell_callback"].st_value,
+                got,
+            )?;
+            fixed_whole_recipe(
+                try_with,
+                try_bytes,
+                FIXED_DEV_TLS_TRY_WITH_HEX,
+                &[(0x65, 0x69, callback)],
+            )?;
+            ConstructorTransfer {
+                instruction: try_with + 0x15,
+                target: fn_once,
+                local_got_slot: None,
+            }
         };
         let (callback_address, callback_bytes) = bind("fixed_tls_cell_callback")?;
         // Missing or unrecognized emission must refuse, not panic on indexing.
@@ -17835,6 +17861,7 @@ fn qualify_allocator_tls_boundary_in_source_context(
 }
 
 const FIXED_DEV_TLS_TRY_WITH_HEX: &str = "4883ec784889f84889442448c64424470131c989cfff1048894424104889442458488b4424104883f8007444488b4424104889442438488b44243848894424604889442430488b44243048894424684889442428488b7c242848897c2470c644244700ff153f6d1a004889442408eb1d48c74424380000000048c74424300000000048c744241801000000eb13488b442408488944242048c744241800000000488b442418488b5424204883c478c3";
+const FIXED_DEV_TLS_TRY_WITH_STABLE_HEX: &str = "4881ec8800000048897c2448c644244701488b0731c989cfffd04889442410eb20f6442447010f85bd000000e9ae0000004889c189d048894c245889442460ebe0488b44241048894424684883f800751d48c74424380000000048c74424300000000048c744241801000000eb4a488b4424104889442438488b44243848894424704889442430488b44243048894424784889442428488b7c24284889bc2480000000c644244700488b0511ea0c00ffd04889442408eb12488b442418488b5424204881c488000000c3488b442408488944242048c744241800000000ebd9488b7c2458e887aceaffebf4";
 
 const FIXED_OPTIMIZED_PATCH_ALLOC_HEX: &str = "41574156415453504889d34989f6ff15a4740a004885c074774c8b78204d85ff746e4989c4488d3d446f0a00e83f080a004883b848000000007463498b542410498b0f498d76ff49f7de31c04889cf4801d7723e4801f772394c21f74989f84929d04901d8410f92c14981f801000002410f93c24508ca75194889c8f04d0fb1074889c1b80000000075c14889f8eb0231c04883c4085b415c415e415fc3bf010000004c89f64889da4883c4085b415c415e415fff2526740a00";
 
@@ -18412,7 +18439,7 @@ fn validate_fixed_backing_evidence_in_source_context(
             && canonical_rust_symbol(&tls.tls_cell.name).as_deref() == Some(FIXED_TLS_CELL_ROLE)
             && match image_kind {
                 FixedImageKind::Standalone => {
-                    matches!(tls.tls_cell.address, 0x40 | 0x48 | 0x80 | 0x88)
+                    matches!(tls.tls_cell.address, 0x30 | 0x40 | 0x48 | 0x80 | 0x88)
                 }
                 FixedImageKind::Detcore => {
                     matches!(
@@ -18461,7 +18488,7 @@ fn validate_fixed_backing_evidence_in_source_context(
             resolution == "local_relative_readonly_function_pointer"
                 && (tls.tls_cell.address == 0x48
                     || (image_kind == FixedImageKind::Standalone
-                        && matches!(tls.tls_cell.address, 0x40 | 0x80)))
+                        && matches!(tls.tls_cell.address, 0x30 | 0x40 | 0x80)))
                 && edge.local_got_slot.is_none()
                 && tls
                     .local_chain
@@ -18518,7 +18545,7 @@ fn validate_fixed_backing_evidence_in_source_context(
         _ => return Err("Fixed TLS local function-pointer evidence is inconsistent".into()),
     }
     if image_kind == FixedImageKind::Standalone
-        && matches!(tls.tls_cell.address, 0x40 | 0x80)
+        && matches!(tls.tls_cell.address, 0x30 | 0x40 | 0x80)
         && tls.local_key_object.is_some()
     {
         let try_with = tls.local_chain.get("fixed_tls_try_with");
@@ -18531,7 +18558,13 @@ fn validate_fixed_backing_evidence_in_source_context(
                     .is_some_and(|key| key != 0 && key.is_multiple_of(8))
                 && tls.local_key_transfer.as_ref().is_some_and(|edge| {
                     try_with.is_some_and(|caller| {
-                        caller.address.checked_add(0x15) == Some(edge.instruction)
+                        let call_offset = match (tls.tls_cell.address, caller.size) {
+                            (0x30, 235) => Some(0x18),
+                            (0x40 | 0x80, 175) => Some(0x15),
+                            _ => None,
+                        };
+                        call_offset.and_then(|offset| caller.address.checked_add(offset))
+                            == Some(edge.instruction)
                     })
                 })
                 && tls
@@ -25403,6 +25436,77 @@ fn fixed_tls_transfers(
                     .ok_or("TLS local closure has unchecked GOT target")?,
                 local_got_slot: Some(slot),
             });
+        } else if b == &[0xff, 0xd0] {
+            // Stable dev try_with uses CALL RAX twice, and only these two
+            // exact sites earn edges: at +0x18 RAX was just loaded from
+            // (*RDI), the incoming LocalKey's first word; at +0xaf RAX was
+            // just loaded from the exact callback GOT slot. Any other
+            // register call remains uncovered and is refused by the census.
+            let instruction_at = |offset: u64| {
+                instructions.iter().find(|candidate| {
+                    symbol.st_value.checked_add(offset) == Some(candidate.address)
+                })
+            };
+            if symbol.st_value.checked_add(0x18) == Some(instruction.address) {
+                let key = tls
+                    .local_key_object
+                    .ok_or("TLS register call lacks its readonly LocalKey object")?;
+                let getter = tls
+                    .local_chain
+                    .get("fixed_tls_fn_once")
+                    .ok_or("TLS LocalKey lacks its exact typed FnOnce target")?;
+                let edge = tls
+                    .local_key_transfer
+                    .as_ref()
+                    .filter(|e| e.instruction == instruction.address)
+                    .ok_or("TLS register call lacks exact readonly local key proof")?;
+                require(
+                    role == "fixed_tls_try_with"
+                        && symbol.st_size == 235
+                        && instruction_at(0x00)
+                            .is_some_and(|i| i.bytes == [0x48, 0x81, 0xec, 0x88, 0, 0, 0])
+                        && instruction_at(0x07)
+                            .is_some_and(|i| i.bytes == [0x48, 0x89, 0x7c, 0x24, 0x48])
+                        && instruction_at(0x0c)
+                            .is_some_and(|i| i.bytes == [0xc6, 0x44, 0x24, 0x47, 0x01])
+                        && instruction_at(0x11).is_some_and(|i| i.bytes == [0x48, 0x8b, 0x07])
+                        && instruction_at(0x14).is_some_and(|i| i.bytes == [0x31, 0xc9])
+                        && instruction_at(0x16).is_some_and(|i| i.bytes == [0x89, 0xcf])
+                        && tls.local_key_resolution.as_deref()
+                            == Some("local_relative_readonly_function_pointer")
+                        && getter.address != 0
+                        && edge.target == getter.address
+                        && edge.local_got_slot.is_none()
+                        && got.get(&key) == Some(&getter.address),
+                    "TLS register call differs from its exact LocalKey/typed getter proof",
+                )?;
+                edges.push(edge.clone());
+            } else if symbol.st_value.checked_add(0xaf) == Some(instruction.address) {
+                let load = instruction_at(0xa8)
+                    .ok_or("stable TLS callback call lacks its exact GOT load")?;
+                require(
+                    role == "fixed_tls_try_with"
+                        && symbol.st_size == 235
+                        && load.bytes.len() == 7
+                        && load.bytes.starts_with(&[0x48, 0x8b, 0x05]),
+                    "stable TLS callback call differs from its exact GOT load",
+                )?;
+                let slot = fixed_rip_target(load.address, &load.bytes, 3, 7)?;
+                let target = *got
+                    .get(&slot)
+                    .ok_or("TLS local closure has unchecked GOT target")?;
+                require(
+                    tls.local_chain
+                        .get("fixed_tls_cell_callback")
+                        .is_some_and(|callback| callback.address == target),
+                    "stable TLS callback call differs from its exact typed callback",
+                )?;
+                edges.push(ConstructorTransfer {
+                    instruction: instruction.address,
+                    target,
+                    local_got_slot: Some(slot),
+                });
+            }
         } else if b == &[0xff, 0x10] {
             // Actual dev try_with calls the function pointer stored in the
             // incoming immutable LocalKey: CALL [RAX], not CALL RAX. Its full
@@ -41742,6 +41846,107 @@ mod tests {
         let edges = check(&bytes, &tls, &got).unwrap();
         assert_eq!(edges.len(), 2);
         assert_eq!(edges[0], edge);
+        // The stable body loads (*RDI) before CALL RAX and loads its
+        // callback from the GOT before a second CALL RAX. Only those exact
+        // sites/prefixes earn the same two typed edges (plus the direct
+        // unwind-resume edge the census records from the landing pad).
+        {
+            let stable_bytes = fixed_hex(FIXED_DEV_TLS_TRY_WITH_STABLE_HEX);
+            let stable_symbol = sym::Sym {
+                st_value: address,
+                st_size: stable_bytes.len() as u64,
+                ..sym::Sym::default()
+            };
+            let stable_offsets: &[usize] = &[
+                0, 7, 12, 17, 20, 22, 24, 26, 31, 33, 38, 44, 49, 52, 54, 59, 63, 65, 70, 75, 79,
+                81, 88, 90, 97, 99, 106, 108, 110, 115, 120, 125, 130, 135, 140, 145, 150, 155,
+                162, 163, 168, 175, 177, 182, 184, 189, 194, 201, 202, 207, 212, 219, 221, 223,
+                228, 233,
+            ];
+            let stable_instructions = |code: &[u8]| -> Result<Vec<EncodedConstructorInstruction>> {
+                stable_offsets
+                    .iter()
+                    .enumerate()
+                    .map(|(i, offset)| {
+                        let end = stable_offsets.get(i + 1).copied().unwrap_or(code.len());
+                        Ok(EncodedConstructorInstruction {
+                            address: address + *offset as u64,
+                            bytes: code
+                                .get(*offset..end)
+                                .ok_or("truncated stable TLS control")?
+                                .to_vec(),
+                        })
+                    })
+                    .collect()
+            };
+            let mut stable_tls = tls.clone();
+            stable_tls
+                .local_chain
+                .get_mut("fixed_tls_try_with")
+                .unwrap()
+                .size = stable_bytes.len() as u64;
+            stable_tls.local_chain.insert(
+                "fixed_tls_cell_callback".into(),
+                function("actual_callback", callback, 25),
+            );
+            stable_tls.local_key_transfer = Some(ConstructorTransfer {
+                instruction: address + 0x18,
+                target: fn_once,
+                local_got_slot: None,
+            });
+            let stable_slot = 0x2c75c0;
+            let mut stable_got = got.clone();
+            stable_got.insert(stable_slot, callback);
+            fixed_whole_recipe(
+                address,
+                &stable_bytes,
+                FIXED_DEV_TLS_TRY_WITH_STABLE_HEX,
+                &[(0xab, 0xaf, stable_slot), (0xe5, 0xe9, 0xa3870)],
+            )
+            .unwrap();
+            let stable_ins = stable_instructions(&stable_bytes).unwrap();
+            let stable_edges = fixed_tls_transfers(
+                "fixed_tls_try_with",
+                &stable_symbol,
+                &stable_ins,
+                &stable_tls,
+                &stable_got,
+            )
+            .unwrap();
+            assert!(stable_edges.contains(&ConstructorTransfer {
+                instruction: address + 0x18,
+                target: fn_once,
+                local_got_slot: None,
+            }));
+            assert!(stable_edges.contains(&ConstructorTransfer {
+                instruction: address + 0xaf,
+                target: callback,
+                local_got_slot: Some(stable_slot),
+            }));
+            fixed_census_transfers(
+                &stable_ins,
+                address,
+                &stable_bytes,
+                &stable_edges,
+                &stable_got,
+                false,
+            )
+            .unwrap();
+            // Removing the (*RDI) load must remove the LocalKey edge.
+            let mut bad = stable_bytes.clone();
+            bad[0x11] ^= 1;
+            let bad_ins = stable_instructions(&bad).unwrap();
+            assert!(
+                fixed_tls_transfers(
+                    "fixed_tls_try_with",
+                    &stable_symbol,
+                    &bad_ins,
+                    &stable_tls,
+                    &stable_got
+                )
+                .is_err()
+            );
+        }
         assert_eq!(
             edges[1],
             ConstructorTransfer {
