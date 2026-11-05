@@ -625,6 +625,10 @@ impl WriteResponse for StopReason {
                         writer.put_str("X");
                         writer.put_hex_encoded(&[signals::to_gdb(*sig)]);
                     }
+                    ExitStatus::SignaledRaw(sig, _) => {
+                        writer.put_str("X");
+                        writer.put_hex_encoded(&[(*sig as u8) | 0x80]);
+                    }
                 }
                 writer.put_str(";process:");
                 writer.put_num(pid.as_raw());
