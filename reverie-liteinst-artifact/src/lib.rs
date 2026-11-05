@@ -1773,8 +1773,8 @@ fn content_manifest_relative(image_kind: FixedImageKind) -> &'static str {
 const CONTENT_REVERIE_CATALOG: [(&str, u64, &str); 83] = [
     (
         "reverie-liteinst-artifact/src/preparation_identity.rs",
-        47133,
-        "8bcd76024fed01842752781495f668d8fee2594f87356daa8534e863147958ec",
+        47173,
+        "1025c5a9ad0c39123f67622b423b4f9fc45c44c93f9983a6c0119f2c626f9948",
     ),
     // Bind the signal-mask gate and every changed native-source premise of it.
     (
@@ -1804,8 +1804,8 @@ const CONTENT_REVERIE_CATALOG: [(&str, u64, &str); 83] = [
     ),
     (
         "reverie-inguest/src/guest/tool_install.rs",
-        27893,
-        "363a0eb6e476a5c2aefd1e48392c2b2a78ff89f2cc26ae5797cf22654abaaf18",
+        27892,
+        "012e8c97e95db157bd64f55eda6c072c3b3ac3cc8a7c36f4bab88f9dfd9c2556",
     ),
     (
         "reverie-inguest/src/signal.rs",
@@ -1989,13 +1989,13 @@ const CONTENT_REVERIE_CATALOG: [(&str, u64, &str); 83] = [
     ),
     (
         "reverie-liteinst/Cargo.toml",
-        5441,
-        "3e84133b0ad9301f45b43eaca6639905e35509d1a14b2917f82d3f67be0a1028",
+        5795,
+        "0fcb7e5d8a3e9debd8936e60decb1f9ce5a85ff91c76c54b5059c499892f84eb",
     ),
     (
         "reverie-liteinst/src/lib.rs",
-        24353,
-        "5a038fb111932c1bc045074cf679dce0bef88e8c50511aee252db24bab9c2a8b",
+        27544,
+        "71c207fbdda6e7a931f0012e2f24630baf1583e5d2fcab707130d8989e5a08cb",
     ),
     (
         "reverie-liteinst-preload/Cargo.toml",
@@ -2009,8 +2009,8 @@ const CONTENT_REVERIE_CATALOG: [(&str, u64, &str); 83] = [
     ),
     (
         "reverie-liteinst/src/patch_alloc.rs",
-        24943,
-        "9336107f903561bb5297f9897fd4c222e9cd2f80715817a07e330498ab7c17f5",
+        24942,
+        "3594983133be9a749cdc744717e04b7cfcd793a26d41f34669afbfdc964b3c18",
     ),
     (
         "reverie-inguest/src/guest/alloc.rs",
@@ -2054,8 +2054,8 @@ const CONTENT_REVERIE_CATALOG: [(&str, u64, &str); 83] = [
     ),
     (
         "reverie-inguest/src/guest/host.rs",
-        225912,
-        "107c375b5016d8357184184c6c496587648425708b6f561262e9fb6fe4e3276c",
+        226257,
+        "5e69e2830e6286da413ffea694a397ead28892fbb7bbcea00ca2d1a8321f2159",
     ),
     (
         "reverie-inguest/src/guest/host_linux.rs",
@@ -2064,8 +2064,8 @@ const CONTENT_REVERIE_CATALOG: [(&str, u64, &str); 83] = [
     ),
     (
         "reverie-liteinst/src/tool_host.rs",
-        59035,
-        "96c710799ecfd0a2e228b9c6ee64ff1bf5846f6e2ec1c7929bb347249d002663",
+        59642,
+        "d41765654403c3bc29eb2b41a3bfe3b562a844315796a9181142ec6dde24b069",
     ),
     (
         "reverie/Cargo.toml",
