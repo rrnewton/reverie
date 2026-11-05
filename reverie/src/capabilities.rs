@@ -227,6 +227,15 @@ pub struct BackendCapabilities {
     /// child that dies during initialization, the root before it starts,
     /// unregistered children reaped at cleanup) are not reported; the tool
     /// never schedules an exit for them.
+    ///
+    /// Under KVM the executor publishes the exit itself: to a live parent
+    /// through the run's child-exit publication, which the Tool's child wait
+    /// event commits; to an adopting namespace init, or at teardown, by
+    /// reaping the slot. The backend reports once per started process leader
+    /// whose exit settles that way, after its threads have joined and
+    /// before the retirement callback and the Tool's exit hooks, from the
+    /// exiting leader's own teardown. A thread exit that does not end its
+    /// process is never reported.
     pub reports_child_exit_publication: bool,
 
     /// The kernel's own child-exit `SIGCHLD` (`si_code` `CLD_EXITED`,
@@ -574,7 +583,9 @@ impl BackendCapabilities {
         kernel_never_walks_robust_lists: true,
         provides_process_signal_control: true,
         emulates_child_waits: true,
-        reports_child_exit_publication: false,
+        // `reports_child_exit_publication` is ptrace's: the backend reports a
+        // process leader's exit once its publication is committed, before the
+        // retirement callback and the exit hooks.
         // No run has shown the kernel's own child-exit copy reaching the tool.
         reports_kernel_child_exit_signals: false,
         supports_blocked_wait_signal_interruption: false,
@@ -766,7 +777,6 @@ mod tests {
                 "kernel_never_walks_robust_lists": true,
                 "provides_process_signal_control": true,
                 "emulates_child_waits": true,
-                "reports_child_exit_publication": false,
                 "reports_kernel_child_exit_signals": false,
                 "supports_blocked_wait_signal_interruption": false,
                 "kernel_signal_state_is_guests": false,

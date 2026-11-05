@@ -338,8 +338,9 @@ pub trait GlobalTool: Send + Sync + Default {
     /// backend that reports child-exit publication
     /// ([`crate::BackendCapabilities::reports_child_exit_publication`]: under
     /// ptrace, right after the tracer consumes the final wait status of an
-    /// ordinary, initialized process leader; see that capability for the
-    /// processes it does not cover). The backend calls it once per process,
+    /// ordinary, initialized process leader; under KVM, once the executor's
+    /// publication of a started leader's exit has committed; see that
+    /// capability for the processes it does not cover). The backend calls it once per process,
     /// after the kernel has published the exit to the parent, and possibly
     /// before the tool has granted that process's exit. It must not wait for
     /// guest progress.

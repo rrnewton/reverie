@@ -4822,13 +4822,26 @@ async fn finish_tool_process_after_workers_with_panics<T: Tool>(
             .map_err(|error| report("process family exit", error)),
         (Some(_), false) | (None, _) => Ok(()),
     };
-    let retirement = if start_permitted
+    let exit_settled = start_permitted
         && pid == tid
         && outcome.is_ok()
         && workers.is_ok()
         && process_status.is_ok()
-        && child_wait.is_ok()
-    {
+        && child_wait.is_ok();
+    if exit_settled {
+        // The leader has joined every thread, and the exit is published: to a
+        // live parent, the executor's child-exit publication has committed
+        // (the Tool's child wait event above) and the status is waitable; to
+        // an adopting namespace init or at teardown, the slot is auto-reaped;
+        // a root has no parent to publish to. Report it once, before the
+        // retirement callback and the exit hooks, as ptrace reports the
+        // consumption of a leader's final status
+        // (BackendCapabilities::reports_child_exit_publication). The report
+        // only says that the event happened; what the parent sees was decided
+        // by the publication itself.
+        global_state.on_backend_process_exited(pid.as_raw());
+    }
+    let retirement = if exit_settled {
         // The leader has joined every peer's cleanup. If a controlled terminal
         // receipt established a Tool fence, it can now open before independent
         // children need further deterministic turns. A synchronous hardware
