@@ -75,6 +75,7 @@ mod guest;
 /// Shared in-process retired-branch counter mechanics.
 pub mod in_guest_rcb;
 mod inherited_input;
+pub mod intercept;
 /// Shared Linux perf event mechanics; no tracer or timer policy.
 pub mod perf;
 pub mod pidfd_self;

@@ -758,6 +758,8 @@ pub enum Activation {
 pub enum Mechanism {
     /// B1: seccomp trap (`RET_TRAP`/`SIGSYS`).
     SeccompTrap,
+    /// B2: Syscall User Dispatch (x86_64-only upstream; runtime-probed).
+    SudTrap,
     /// B3: in-place patching of known sites, over a completeness trap.
     InPlacePatching,
     /// B4: page-fault gating before patch/trap inside admitted pages.
