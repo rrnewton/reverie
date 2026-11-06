@@ -41,8 +41,9 @@ W5 enum in §3 (stacked after W5 slice 1, never a fork of it),
 (3) the B5 certificate identity policy in §4 (stat-custody fast
 path vs content hash), and (4) the slice order in §6 (L6 registry
 first, gate second, selectable cell last). Three coordination
-questions for museemu are listed in §7 as questions for museli-lt
-to relay; this note does not claim museemu's agreement.
+questions for museemu (§2.5 Q1–Q3) were relayed by museli-lt and
+**answered by museemu on 2026-11-06, confirming all three stated
+assumptions** (recorded in §2.5/§7); no direct contact was made.
 
 **Non-goals.** No Hermit/Detcore behaviour (Reverie-generic only,
 per the slot `AGENTS.md`). No aarch64 gate claim: V6 here is
@@ -366,19 +367,32 @@ admission work, or a guest continuation.** Concretely:
   certificate check (§4), so threads never head-of-line-block
   each other on the coordinator to admit code.
 
-**What needs museemu's answer (via museli-lt, §7 Q1–Q3):**
-whether per-thread *fault accounting* (which thread admitted
-which group, for teardown) belongs in the W7 lease record or
-stays gate-private; who retires a thread's in-flight
-`Admitting` CAS if that thread exits mid-admission; and whether
-W7's lazy per-thread connection open needs a matching lazy
-per-thread gate-handler arming check (alt-stack per thread) or
-one process-wide handler suffices. This design proceeds on the
-stated assumptions (gate-private accounting; winner-or-refuse,
-never orphaned `Admitting`; one process handler + per-thread
-alt-stack verification at thread admission) and will amend to
-museemu's answers — the alternative, two registries with two
-lease laws, is the fork to avoid.
+**Q1–Q3 — ANSWERED by museemu via museli-lt (2026-11-06);
+all three stated assumptions CONFIRMED.** Q1 (fault-accounting
+home): gate-private, as assumed — with exactly one lease hook
+requested: a core-owned *optional retire-notification* (a
+function pointer supplied at host construction, default none),
+because `StateLease::retire`
+(`reverie-inguest/src/guest/native_state.rs:490`, reached
+through the `NativeCallbackLease` retire path, `:829`) is the
+single retirement point funnelled by `finish_tool_exit`
+(`reverie-inguest/src/guest/host.rs:1496`). No gate fields go
+in the lease record; the hook is notification only (no gate
+lock, state, or control flow crosses into the core). Q2
+(mid-admission thread exit): winner-or-refuse confirmed — the
+`finish_tool_exit` holder exclusively retires; gate cleanup
+(clearing/poisoning any in-flight `Admitting` claim owned by
+the dying thread) is driven from retire, *before* record
+removal, and all death paths funnel there, so `Admitting` is
+never orphaned. Q3 (handler arming): one process-wide handler
+plus per-thread alt-stack *verification* at thread admission,
+run as **one admission checklist** together with lease
+creation and lazy connection open (W7 slice 2) — a new thread
+is admitted once, with all three checks, never in three places.
+The alternative this avoids — two registries with two lease
+laws — remains the fork to avoid; the retire-notification hook
+in Q1 is the only new edge between the two designs, and it is
+owned by the core, defaulting to none when no gate is present.
 
 Signal ownership is part of L6, not an afterthought. Three
 runtime signals must co-exist under one ownership protocol:
@@ -797,9 +811,15 @@ without re-measuring the loser-wait would be a silent perf
 regression.
 
 **Open questions (for museli-lt / reviewers; none blocks S0).**
-Q1–Q3 for museemu via museli-lt: fault-accounting home
-(lease vs gate-private), mid-admission thread-exit retirement,
-per-thread alt-stack/handler arming (§2.5). Q4: does the
+Q1–Q3 (museemu, via museli-lt): **ANSWERED 2026-11-06, all
+confirmed** — Q1 gate-private accounting + one core-owned
+optional retire-notification hook, no gate fields in the lease
+record; Q2 winner-or-refuse, `finish_tool_exit` holder
+exclusively retires with gate cleanup from retire before record
+removal; Q3 one process handler + per-thread alt-stack
+verification in one admission checklist with lease creation and
+lazy connection open (W7 slice 2); full text §2.5. Remaining
+open: Q4: does the
 reviewer accept stat-custody re-admission within a generation
 (§4.3), or require re-hash on every re-seal? Q5: fixed group-
 table capacity + overflow policy (proposed: refuse
