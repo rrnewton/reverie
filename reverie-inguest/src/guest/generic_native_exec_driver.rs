@@ -739,6 +739,7 @@ mod tests {
             context: 0,
             dispatch: SyscallDispatch::Fallback,
             guest_pkru: None,
+            unsupported_refusal: None,
         };
         unsafe { host.dispatch(&mut event) };
         let results = returned.lock().unwrap();
