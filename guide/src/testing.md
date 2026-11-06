@@ -66,12 +66,62 @@ small outputs; compare full traces only through the typed pretty
 printer (stable formatting); and treat any test that needs a sleep to
 pass as a failing test that hasn't confessed yet.
 
-> 🚧 **Under construction — conformance scorecard.** TODO: publish the
-> Reverie-alone conformance matrix (example tools × backends × corpus,
-> with pass counts and wall times) from the validation lane (L7), and
-> link each cell's expectation from this chapter.
-> <!-- UC: testing-scorecard -->
-> Tracking: [reverie#1272](https://github.com/rrnewton/reverie/issues/1272) (`testing-scorecard`).
+## Scorecard: one full run, read honestly
+
+One judged run of `reverie-examples/e2e/run.sh` (all four
+first-party backends, this host's `centos-9-glibc2.34` ledger,
+exit 0: every non-match is a ledger row, none stale). *Match*
+means call-for-call identical to native; *expected mismatch* means
+the first difference is already recorded in the ledger with its
+issue — a known, named divergence, not a pass.
+
+| Program | ptrace | KVM | in-guest (LiteInst) | in-guest (trap) |
+|---|---|---|---|---|
+| `true` | match | expected mismatch | match | match |
+| `echo` | match | expected mismatch | match | match |
+| `cat-hostname` | match | expected mismatch | match | match |
+| `ls-root` | match | expected mismatch | match | match |
+| `stat-root` | match | expected mismatch | match | match |
+| `uname` | match | expected mismatch | match | match |
+| `sh-builtin` | match | expected mismatch | expected mismatch | expected mismatch |
+| `sh-fork` | expected mismatch | expected mismatch | expected mismatch | expected mismatch |
+| `head-zero` | match | expected mismatch | match | match |
+| `false` | match | expected mismatch | match | match |
+| `sort-passwd` | match | expected mismatch | expected mismatch | expected mismatch |
+| `grep-passwd` | expected mismatch | expected mismatch | expected mismatch | expected mismatch |
+| `sha256-true` | match | expected mismatch | match | match |
+| `dd-zero` | match | expected mismatch | expected mismatch | expected mismatch |
+| `seq` | match | expected mismatch | match | match |
+| `sleep` | match | expected mismatch | match | match |
+| `find-etc` | match | expected mismatch | match | match |
+| `tar-hostname` | match | expected mismatch | match | match |
+| `gzip-hostname` | match | expected mismatch | match | match |
+| `awk` | expected mismatch | expected mismatch | expected mismatch | expected mismatch |
+| `perl` | match | expected mismatch | expected mismatch | expected mismatch |
+| `python3` | match | expected mismatch | expected mismatch | expected mismatch |
+| `sh-pipe` | expected mismatch | expected mismatch | expected mismatch | expected mismatch |
+
+Pass counts: ptrace **19/23**, LiteInst in-guest **14/23**,
+in-guest trap **14/23**, KVM **0/23**. The zeroes are not noise:
+KVM's first difference on every program is the same
+(`rseq=ok -> rseq=ENOSYS`, ledgered to
+[hermit#4485](https://github.com/rrnewton/hermit/issues/4485)),
+so its remaining stream is never even compared — one early
+divergence masks everything behind it, which is what a
+first-difference scorecard honestly reports. The in-guest
+mismatches cluster where this book says they should: late-start
+alignment on the big runtimes (`awk`, `perl`, `python3`),
+successor `execve`
+(`EOPNOTSUPP`, [hermit#5094](https://github.com/rrnewton/hermit/issues/5094)),
+and shell/process-tree programs. Even ptrace carries four ledgered
+mismatches (`sh-fork`, `grep-passwd`, `awk`, `sh-pipe`) — the
+reference has named holes too.
+
+The runner emits no wall times; time `run.sh` externally if you
+need them, and treat any number as this host's, from a warm build.
+Reproduce the table with the commands in
+`reverie-examples/e2e/README.md`; on a host without a ledger, run
+`--report-only` and expect the verdicts without judgement.
 >
 ## A copyable skeleton
 
