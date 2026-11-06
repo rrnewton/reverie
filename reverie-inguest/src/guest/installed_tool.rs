@@ -414,6 +414,7 @@ pub unsafe fn dispatch_saved_syscall(
         // Fallback supplies its owned genuine entry. Installed hooks still
         // need independent provenance; never borrow a stale signal's rights.
         guest_pkru: guest_pkru.as_ref().and_then(|value| **value),
+        unsupported_refusal: None,
     };
     if matches!(dispatch, SyscallDispatch::Fallback)
         && let Some(observe) = observe_fallback
