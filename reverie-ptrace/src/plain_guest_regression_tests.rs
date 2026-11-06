@@ -2442,7 +2442,9 @@ async fn unknown_numbers_return_enosys_without_a_tool_event() {
 /// that single-steps it is the step's debug trap (1) instead of the
 /// syscall's (13), a documented difference. In the fixture's order of the
 /// shapes (exact inject, tail, emulate, private inject, two injects, two
-/// private injects) the steps are 0, 0, 1, 2, 1 and 3.
+/// private injects) the steps are 0, 0, 1, 0, 1 and 1: a divergent first
+/// injection now runs in place at its seccomp stop, so only the syscall
+/// skip (emulate) and later private-page injections still step.
 #[tokio::test(flavor = "current_thread")]
 async fn sigtrap_profile_follows_each_handler_shape() {
     let [inject, tail] = run_both_configurations("sigtrap_profile").await;
@@ -2486,7 +2488,7 @@ async fn sigtrap_profile_follows_each_handler_shape() {
         "{}",
         tail.report
     );
-    let expected = [0, 0, 1, 2, 1, 3];
+    let expected = [0, 0, 1, 0, 1, 1];
     let steps = steps_per_shape(&inject);
     eprintln!("steps per shape: {steps:?}");
     assert_eq!(steps, expected, "step profile");
@@ -2536,7 +2538,7 @@ async fn sigtrap_state_survives_each_handler_shape() {
         assert_eq!(lines, expected, "{}", run.report);
     }
     let steps = steps_per_shape(&runs[0]);
-    assert_eq!(steps, [0, 0, 1, 2, 1, 3, 4].repeat(5), "step profile");
+    assert_eq!(steps, [0, 0, 1, 0, 1, 1, 2].repeat(5), "step profile");
 }
 
 /// Steps taken by each tagged call: the cumulative count at the next
@@ -4081,6 +4083,7 @@ async fn a_guest_int3_in_a_timer_window_takes_sigtraps_default_action() {
 /// (<https://github.com/rrnewton/hermit/issues/4409>). Both configurations.
 #[tokio::test(flavor = "current_thread")]
 async fn a_pending_blocked_sigtrap_at_a_step_ends_the_run_by_name() {
+    let _stepped = NoInPlaceRewrite::new();
     for tail in [false, true] {
         let error = match run_guest_with("sigtrap_pending_at_step", tail).await {
             Ok(run) => panic!(
@@ -4372,6 +4375,7 @@ async fn an_untraced_sharer_keeps_the_step_shield_as_before() {
 /// repairs are noted per configuration. Both configurations.
 #[tokio::test(flavor = "current_thread")]
 async fn a_held_signal_mask_transition_decides_the_shield_as_before() {
+    let _stepped = NoInPlaceRewrite::new();
     let expected = [
         "hold ign-blocked SigBlk=0 SigIgn=1 SigCgt=0 blocked=1 hits=1",
         "hold ign-blocked after sigtrap=ign flags=0x50000000 usr2-in-mask=1 blocked=1",
@@ -6031,6 +6035,7 @@ async fn a_sigtrap_queued_again_behind_a_later_signal_keeps_its_place() {
 /// reached.
 #[tokio::test(flavor = "current_thread")]
 async fn a_requeue_that_would_reorder_synchronous_signals_ends_the_run() {
+    let _stepped = NoInPlaceRewrite::new();
     let error =
         match run_guest_options("sigtrap_requeue_behind_segv", GuestOptions::default()).await {
             Ok(run) => panic!("the run was not refused: {:?}\n{}", run.status, run.report),
@@ -6109,6 +6114,7 @@ async fn a_group_queued_sigtrap_stays_queued_across_injections_in_any_thread() {
 /// Both configurations.
 #[tokio::test(flavor = "current_thread")]
 async fn a_group_sigtrap_with_the_step_trap_bytes_is_not_taken_for_it() {
+    let _stepped = NoInPlaceRewrite::new();
     // The fixture writes the address of the instruction after the private
     // page's syscall.
     assert_eq!(
@@ -6168,6 +6174,7 @@ async fn refusals_in_both_configurations(mode: &str) -> Vec<(bool, String)> {
 /// configurations.
 #[tokio::test(flavor = "current_thread")]
 async fn a_thread_sigtrap_with_a_trap_code_is_not_kept_for_a_private_ppoll() {
+    let _stepped = NoInPlaceRewrite::new();
     let native = native_report("sigtrap_thread_brkpt_private_ppoll");
     assert_eq!(
         prefixed_lines(&native, &["brkpt "]),
@@ -6193,6 +6200,7 @@ async fn a_thread_sigtrap_with_a_trap_code_is_not_kept_for_a_private_ppoll() {
 /// rather than losing deliveries. Both configurations.
 #[tokio::test(flavor = "current_thread")]
 async fn a_guest_sigtrap_with_a_trap_code_is_not_kept_across_steps() {
+    let _stepped = NoInPlaceRewrite::new();
     let native = native_report("sigtrap_guest_pending_kept_brkpt");
     let expected: Vec<String> = KEPT_ACROSS_STEPS_LINES
         .iter()
@@ -7011,6 +7019,7 @@ async fn report_lines_with(mode: &str, prefix: &str, options: GuestOptions) -> [
 /// reviewer's witness W1 at rev 8. Both configurations.
 #[tokio::test(flavor = "current_thread")]
 async fn a_fork_without_the_repair_page_never_has_it_written() {
+    let _stepped = NoInPlaceRewrite::new();
     for (mode, own, page, changed) in [
         ("sigtrap_rv_dontfork_own", 1, 1, 0),
         ("sigtrap_rv_dontfork_none", 0, 0, -1),
@@ -7092,6 +7101,7 @@ async fn no_mapping_call_can_replace_the_sealed_repair_page() {
 /// syscalls are stepped injections, and is then always persistent.
 #[tokio::test(flavor = "current_thread")]
 async fn a_sibling_sig_dfl_during_a_repair_is_lost_a_pinned_limit() {
+    let _stepped = NoInPlaceRewrite::new();
     let [inject, tail] = report_lines_within(
         "sigtrap_rv_sibling_dfl_persist",
         "rv-sibling-dfl-persist ",
@@ -7180,6 +7190,7 @@ async fn a_sibling_tsync_filter_kills_no_guest_unless_the_contract_is_broken() {
 /// (<https://github.com/rrnewton/hermit/issues/4409>). Both configurations.
 #[tokio::test(flavor = "current_thread")]
 async fn the_sigtrap_repair_runs_only_under_a_declared_serialization_contract() {
+    let _stepped = NoInPlaceRewrite::new();
     for (no_serialization_contract, expected) in [
         (false, "preexec-filter sigign=1"),
         (true, "preexec-filter sigign=0"),
@@ -7269,6 +7280,24 @@ async fn a_guest_seccomp_filter_against_rt_sigaction_never_meets_a_repair() {
                 "{mode}"
             );
         }
+    }
+}
+
+/// Forces divergent first injections onto the skip plus private-page
+/// transports (`NO_IN_PLACE_REWRITE_FOR_TEST`) for tests whose subject
+/// is that stepped machinery itself; restored when dropped.
+struct NoInPlaceRewrite;
+
+impl NoInPlaceRewrite {
+    fn new() -> Self {
+        crate::task::NO_IN_PLACE_REWRITE_FOR_TEST.with(|none| none.set(true));
+        Self
+    }
+}
+
+impl Drop for NoInPlaceRewrite {
+    fn drop(&mut self) {
+        crate::task::NO_IN_PLACE_REWRITE_FOR_TEST.with(|none| none.set(false));
     }
 }
 
@@ -7571,6 +7600,7 @@ fn a_filtered_tracer_keeps_the_stepped_window() {
 /// `SI_QUEUE`, 4242 and the tracer's PID. Both configurations.
 #[tokio::test(flavor = "current_thread")]
 async fn a_held_signal_keeps_its_siginfo_across_an_injected_wait() {
+    let _stepped = NoInPlaceRewrite::new();
     let before = TransportCounts::now();
     let runs = run_both_configurations("held_siginfo_then_ppoll").await;
     let after = TransportCounts::now();
@@ -7844,6 +7874,7 @@ async fn each_mask_swapping_wait_runs_between_syscall_stops_as_natively() {
 /// stop. Both configurations.
 #[tokio::test(flavor = "current_thread")]
 async fn a_handler_that_interrupts_an_injected_wait_has_the_native_masks() {
+    let _stepped = NoInPlaceRewrite::new();
     require_capped_crash_dumps();
     let expected = [
         "masks ret=-4 hits=1 live trap=1 usr1=1 usr2=1 frame trap=0 usr1=1 usr2=0 after trap=0 usr1=1 usr2=0",
