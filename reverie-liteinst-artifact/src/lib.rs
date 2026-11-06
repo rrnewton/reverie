@@ -26148,7 +26148,7 @@ const DETCORE_VALIDATE_TEMPLATES: &[DetcoreValidateTemplate] = &[
             DetcoreValidateOperand {
                 displacement: 283,
                 next: 287,
-                key: "fixed_naked_constructor_record_location",
+                key: "fixed_naked_generic_record_location",
                 got: false,
             },
             DetcoreValidateOperand {
@@ -26160,7 +26160,7 @@ const DETCORE_VALIDATE_TEMPLATES: &[DetcoreValidateTemplate] = &[
             DetcoreValidateOperand {
                 displacement: 304,
                 next: 308,
-                key: "fixed_naked_constructor_record_location",
+                key: "fixed_naked_generic_record_location",
                 got: false,
             },
             DetcoreValidateOperand {
