@@ -94,6 +94,9 @@ mod image_guest;
 #[cfg(all(test, feature = "exec-native-injection"))]
 #[path = "native_exec_tests.rs"]
 mod native_exec_tests;
+#[cfg(all(test, feature = "exec-native-injection"))]
+#[path = "native_exec_witness_tests.rs"]
+mod native_exec_witness_tests;
 #[cfg(feature = "exec-private-successor")]
 #[path = "successor_image_guest.rs"]
 mod successor_image_guest;
