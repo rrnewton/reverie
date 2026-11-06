@@ -4,7 +4,15 @@
 Author: musepage (Muse lane, devbig030), for museli-lt to route for
 review. Status: **DESIGN — no code.** No implementation starts from
 this note until museli-lt routes a review of it and the design is
-approved.
+approved. Amended 2026-11-06 for museport design review
+CHANGES REQUESTED at `b4da83e6`
+(`ignored/reviews/REVIEW-l3-pagegate-b4da83e6-MUSE.md`):
+handler context transfer (no in-handler publication), total
+revocation/immutability table, mandatory R-UNBUILT gate, hook
+contract, tightened stat custody, explicit W5 stack edge,
+certificate load-bias binding, registry invariants, S2
+foreign-fault witnesses. No bar lowered: every amendment
+tightens or specifies enforcement.
 
 Source: coord7 09:00 message assigning L3 of
 `ai_docs/plans/2026-11-04-liteinst-reverie-full-court-press-plan.md`
@@ -211,6 +219,22 @@ operational: `adapter_mapping_replaced: bool` becomes
 `cert_gen` vs `mapping_gen` check), and the bool is deleted, not
 kept in parallel.
 
+**Registry invariants (museport P2 — decided before S1, Q5
+closed).** Extents form a sorted set of non-overlapping
+half-open intervals `[lo, hi)`; overlap on insert is resolved
+only by the §2.2 revoke-and-remint rules, never by merging
+records with different generations. An `Ungated` record is
+created exactly for: any `PROT_EXEC` mapping the runtime
+observes, any extent overlapping a patched site or a census
+dependency, and any extent alias-relevant to a certified
+group (same backing) — data-only mappings with none of those
+properties get no record. The group table is fixed-capacity
+(sized in S1 from census data with headroom, the constant
+named in code and in the S1 PR); overflow at mint/seal time
+refuses by name (`R-CODE registry-full`) and **never evicts**
+an existing record to make room — eviction would silently drop
+revocation coverage for the evicted extent.
+
 **Invariant R1 (revocation before coverage — Astra P2).** No
 thread may execute, patch, or census-prove bytes under a
 superseded generation after the revoking mapping operation has
@@ -249,6 +273,10 @@ revoke nothing, matching today's early return.
 | `mremap` | Revoke old range; revoke+remint at the new range (even a no-op in-place `mremap`) | Proven necessary by the `late_code` fixtures: a no-op `mremap` invalidates every site in the page |
 | `mprotect` / `pkey_mprotect`: **any** protection or key change on a known/gated extent | Revoke. This deliberately widens today's rule (read-removal + pkey only): adding `PROT_WRITE` threatens immutability; adding/removing `PROT_EXEC` changes fetchability; removing `PROT_READ` breaks census custody — all three void a certificate | A certificate binds bytes *and* fetch permissions *and* unreadability assumptions; any change breaks at least one |
 | `mprotect`/`mmap` creating a **writable alias** of a certified extent (same file offset / shared anon reachable writable) | Revoke the certified group, or refuse at seal time if the alias already exists (§2.3) | Bytes can change without any syscall on the RX mapping; generation alone cannot see it |
+| `write`/`pwrite*`, `truncate`/`ftruncate`, `fallocate` (incl. punch/collapse/zero-range), `copy_file_range`/`sendfile` into the file, to any FD naming a certified extent's backing file | Revoke every group backed by that (device, inode) whose file range intersects — conservatively the whole object's groups when ranges cannot be proved disjoint | File writes change fetched bytes with no mapping syscall; mediated per-FD at dispatch, before forward completes (revoke-first) |
+| `io_uring` file-mutating SQEs (`WRITE`/`WRITEV`/`FALLOCATE`/`XATTR` class) via `io_uring_enter` | Treat as the row above: revoke-first for any submitted write naming certified backing. Because SQE streams are not one-syscall-one-write, the sound default is stronger: an open *writable* FD (uring-registered files included) to certified backing disqualifies sealing (§2.3) | Async writes otherwise escape per-syscall mediation entirely |
+| `madvise` content-discarding ops on a known extent (`MADV_DONTNEED`, `MADV_FREE`, `MADV_REMOVE`) | Revoke (private file pages re-fault from the file — possibly changed; anon pages zero-fill). Non-discarding advice (`SEQUENTIAL`, `WILLNEED`, hugepage hints) does not revoke | Discard changes what the next fetch sees without unmapping |
+| `mseal` on a known/gated extent (kernel ≥6.10; floor here is 6.x) | Revoke admission immediately; mark extent never-(re)sealable for this epoch (future grant/re-seal `mprotect` would `EPERM`). Cell requiring the gate then refuses `R-CODE msealed-extent`; trap-only fallback may continue. The runtime never `mseal`s guest extents | `mseal` freezes the very transitions revocation depends on; a sealed-by-guest extent cannot honour R1 |
 | `brk` growth into/over a known extent; `shmat` exec attach; `memfd`+`mmap` exec | Same as `mmap`: revoke overlap, mint `Ungated` | Same address-reuse hazard; enumerated so the table stays total, not syscall-number-lucky |
 | `execve`/`execveat` (when admitted at all) | End the image epoch: every group, site, and certificate is discarded; successors start unadmitted (§2.4) | A successor image is a new first-instruction problem (I8) |
 | `fork`/`clone` (process) | Child inherits a *copy* of the registry with generations preserved but gate state forced to `Sealed` until the child re-arms (§2.4) | COW preserves bytes, not handler liveness proofs |
@@ -272,6 +300,30 @@ at group, not page, granularity.
 A group may be sealed (NX, awaiting first fetch) only if the
 runtime can state *why* its bytes cannot change during the
 generation:
+
+**Seal-eligible mapping kinds (museport P1 — total).**
+Eligible in V6 v1: populated **private** file mappings
+(`MAP_PRIVATE`, `PROT_READ|PROT_EXEC`, no `PROT_WRITE`) whose
+backing (device, inode) has **no open writable FD in the
+guest** at seal time (including `io_uring`-registered files
+and `O_PATH`-opened-for-write equivalents) and no known
+writable alias. Never eligible: `MAP_SHARED` mappings (writes
+through the mapping or the file are visible without any
+revoking syscall), writable or `mseal`ed extents, and
+anonymous extents (uncertified until the S5 certified-dynamic
+API). An open writable FD **disqualifies** (refuse seal,
+`R-CODE writable-fd`) rather than being mediated write-by-
+write — per-write mediation cannot cover `io_uring` SQE
+streams soundly; the §2.2 file-write revoke rows remain as
+defence in depth for FDs opened *after* sealing (opening
+certified backing `O_WRONLY`/`O_RDWR` itself revokes-first).
+**Hash domain:** the certificate hashes the **live mapped RX
+bytes as fetched** (post-relocation), read at seal time while
+the guest is stopped/sealed — which deliberately populates
+the pages (fault-in cost counted in §5, arm-time only). A
+file-bytes hash is a cache *key* across runs, never the
+admission judge: relocated/IFUNC-resolved bytes are what the
+CPU executes, and only they are certified.
 
 1. The extent itself is not writable (`PROT_WRITE` clear) for
    the whole generation; any syscall that would make it
@@ -312,15 +364,23 @@ Two counters, different lifetimes, never conflated:
 
 **Fork.** The seccomp filter is inherited and patch state is
 preserved across plain fork today (fork/exec plan §1); the L6
-registry is COW-inherited the same way, with one change: every
-`Admitted` group downgrades to `Sealed` in the child until the
-child's runtime proves its gate handler is live (the liteinst
-first-entry raw-fork profile, L0 §1.2, is the seed shape).
-Generations are *not* bumped by fork itself — bytes did not
-change — but the child's first fetch per group pays one fault to
-re-prove liveness. vfork children (exit-or-exec only) never
-admit new groups; they inherit the parent's admitted set
-read-only, matching the existing translation semantics.
+registry is COW-inherited the same way — but a *logical*
+downgrade does not make inherited RX pages fault (museport
+P1). Required physical sequence in the child, inside the
+existing fork-child rebind (before any guest application code
+resumes; the liteinst first-entry raw-fork profile, L0 §1.2,
+is the seed shape): (i) `mprotect` every inherited
+`Admitted` group back to NX (`PROT_READ`) — a real re-seal,
+not a state flip; (ii) prove the child's gate handler live;
+(iii) only then resume. Generations are *not* bumped by fork
+itself — bytes did not change — but the child's first fetch
+per group pays one fault, and re-grant follows the tightened
+§4.3 rule: **the stat fast path is prohibited across fork**
+(a second process can write shared backing while stat stays
+plausible; the hash judges every post-fork re-grant). vfork
+children (exit-or-exec only) never admit new groups; they
+inherit the parent's admitted set read-only, matching the
+existing translation semantics.
 
 **Exec.** Until the re-bootstrap path (fork/exec plan S-A…S-E)
 admits a successor, `execve` keeps refusing `R-EXEC` exactly as
@@ -348,15 +408,23 @@ admission work, or a guest continuation.** Concretely:
   `mark_site_range_stale` loop, no allocation through the guest
   allocator, no blocking RPC while held.
 - The `SIGSEGV` gate handler (signal context) never takes that
-  lock. It reads per-group atomics only (extent, generation,
-  state, certified entries — the spike's `Gate` layout
-  generalised to a fixed-capacity group table), in the spike's
-  proven order: foreign-fault check → stale-generation check →
-  already-admitted retry → certified-entry check →
-  single-winner `Sealed→Admitting` CAS → one extent-wide
-  `mprotect` → `Admitting→Admitted` release-store. Losers wait
-  for the winner with a bounded, deadlock-argued wait (§3.3),
-  never by running Tool/RPC code in the handler.
+  lock and **never publishes patches** (museport P1). It reads
+  per-group atomics only (extent, generation, state, certified
+  entries — the spike's `Gate` layout generalised to a
+  fixed-capacity group table), in this order: foreign-fault
+  classification (§3.3 discriminator) → stale-generation check
+  → already-admitted retry → certified-entry check →
+  single-winner `Sealed→Admitting` CAS → **context transfer**:
+  rewrite the faulting `ucontext` `REG_RIP` to the runtime
+  admission trampoline (precedent: the instruction-fault path
+  already redirects `REG_RIP` to continuations,
+  `reverie-inguest/src/guest/instruction.rs:539,757`) and
+  return. Patch publication, custody hashing, sync-core, and
+  the grant `mprotect` all run *after* sigreturn, on the
+  runtime stack in the admission trampoline (§3.3) — the same
+  transfer shape as seccomp `SIGSYS` discovery (trap locates,
+  normal context dispatches). Only in the already-admitted
+  retry case does the handler return without transfer.
 - Per-thread state stays W7's: each thread's RPC connection and
   callback lease (`native_state.rs`) are per-thread; the L6
   registry is per-process-image. The only shared edge is
@@ -393,6 +461,33 @@ The alternative this avoids — two registries with two lease
 laws — remains the fork to avoid; the retire-notification hook
 in Q1 is the only new edge between the two designs, and it is
 owned by the core, defaulting to none when no gate is present.
+
+**Hook contract (museport P2 — specified, not just recorded).**
+Proposed type (design sketch): the host holds
+`retire_hook: Option<unsafe fn(NativeThreadIdentity)>`, a
+`'static` function pointer supplied at host construction —
+copied identity facts only (physical pid/tid + epoch, the
+fields gate-private accounting is keyed by), no state pointer,
+no return authority. Sequencing is total: `StateLease::retire`
+flips `Active→Retired` under the registry lock
+(`native_state.rs:490-498`); the lock is **dropped**; then the
+hook runs (gate side: atomics-only — poison that thread's
+`Admitting` claim to `Revoked`-poisoned and release its waiters;
+allocation, RPC, Tool calls, and re-taking the `native_state`
+registry lock are forbidden in the hook); only then is the
+record/state consumed by Tool finalisation. "Before record
+removal" means exactly this order. Lifetime: the pointer is
+inherited verbatim across fork (child re-registers gate state
+under the same hook; §2.4) and reset to the new host's
+construction value (default none) across exec — never carried
+in guest-writable memory. Invocation path honesty: today's
+`finish_tool_exit` retires by `HashMap` removal
+(`host.rs:1496-1515`) and does **not** yet call
+`StateLease::retire`; the unified W7 path (lease-based retire
+for ordinary *and* native threads alike) is what invokes the
+hook for every thread. Until that unification lands, the gate
+must not claim threaded admission — consistent with §3.4
+(`SingleThread` until W7 lifts the bit).
 
 Signal ownership is part of L6, not an afterthought. Three
 runtime signals must co-exist under one ownership protocol:
@@ -448,8 +543,8 @@ pub enum InterceptStrategy {
     PageGate,  // env value: "page-gate"
 }
 // mechanism(): PageGate => Mechanism::PageFaultGate (already exists)
-// resolve(): PageGate refuses Unavailable off Linux x86-64 / kernel < 6.x;
-//            no SUD-probe downgrade (gate correctness is SUD-independent, I6).
+// resolve(): arch/kernel availability ONLY — never run authority (below).
+//            No SUD-probe downgrade (gate correctness is SUD-independent, I6).
 ```
 
 Everything else about W5 is inherited unchanged: config-selected
@@ -473,6 +568,26 @@ only by a launcher path that can seal before first fetch
 before guest start (`strategy-unavailable-on-this-backend`,
 same discipline as W5 rule 2) — never silently degrades to
 `TrapAndPatch`.
+
+**Mandatory R-UNBUILT gate on every selector path (museport
+P1).** Parsing, `mechanism()`, and `resolve()` never authorise
+a run. There is exactly one choke point every caller — builder,
+env (`REVERIE_INTERCEPT`), and direct-strategy alike — must
+pass: `selection::admit` (`reverie/src/selection.rs:2090`,
+over `implemented_cells()`) producing an `AdmissionReport` /
+retained `ExecutionPlan`, re-validated at handoff by
+`ExecutionPlan::validate_handoff` (`:2279`). No launcher may
+branch on `InterceptStrategy::mechanism()` to start a guest;
+launch APIs take the admitted plan, not a strategy value.
+Until the single S4 commit that *both* registers the V6 cell
+*and* wires A-stop arming, `admit` therefore refuses every
+`page-gate` request (`R-UNBUILT`, with filter trace) on all
+three caller paths — including `ExplicitSelection::Cell` /
+`::Backend` attempts, which are honoured exactly or refused by
+name, never substituted. S3 may add the parse value only
+behind this gate (parseable, logged, always refused); if
+review prefers, S3 defers parseability itself to S4 — either
+way, no path runs gated code before arming exists.
 
 ### 3.2 Activation constraint: no seal, no V6
 
@@ -511,35 +626,76 @@ later, A3 custom loader. Therefore:
 
 Per group, the lifecycle is: **census+certify** (§4, off the
 fault path) → **seal** (`PROT_READ`, NX; one `mprotect` per
-group at arm time) → **first fetch faults** → handler verifies
-(generation current, fault address is a certified entry,
-certificate custody per §4) → **publish patches** for the
-group's certified sites (quiescent publication while the group
-is still NX and the faulting thread is stopped in the handler
-— no concurrent fetcher exists for this extent, which is
-exactly liteinst's quiescent precondition) or arms trap
-fallback per site → **grant** (one extent-wide
-`mprotect RX`) → resume with the kernel `ucontext` untouched.
-Second and later fetches in the group run at V3/V2 cost with
-no fault. Sites the certificate cannot patch keep the
-completeness trap (seccomp `SIGSYS` → lazy trap-and-patch as
-today); a group with no certificate and no trap fallback in
-the selected cell refuses `R-CODE uncertified-group` at seal
+group at arm time) → **first fetch faults** → *handler
+(signal context): classify, check, claim, transfer only* →
+*admission trampoline (normal runtime context, runtime stack,
+after sigreturn): custody check per §4, publish patches
+(quiescent — the group is still NX, so no concurrent fetcher
+exists for this extent, exactly liteinst's quiescent
+precondition; the faulting thread itself is parked in the
+trampoline, not fetching) or arm trap fallback per site,
+sync-core, grant (one extent-wide `mprotect RX`), flip
+`Admitting→Admitted`* → resume at the saved original RIP.
+The handler's transfer saves the original `ucontext` RIP/RSP
+in per-thread gate-private storage and rewrites `REG_RIP` to
+the trampoline entry; the trampoline restores guest registers
+exactly (only RIP/SP bookkeeping differs) before jumping to
+the original fetch address — the guest never observes the
+detour except in timing. Second and later fetches run at
+V3/V2 cost with no fault. Sites the certificate cannot patch
+keep the completeness trap (seccomp `SIGSYS` → lazy
+trap-and-patch as today); a group with no certificate and no
+trap fallback refuses `R-CODE uncertified-group` at seal
 time, not at fetch time.
 
-Handler law (from the liteinst skill invariants, restated as
-gate requirements): async-signal-safe operations only; no guest
-allocator, no Tool code, no coordinator RPC from signal
-context; fixed-capacity group table (exhaustion refuses by
-name, predictably); text permissions restored on every path;
-modified instructions made visible to executing cores
-(sync-core serialisation counted in §5, not hidden). The
-loser-wait for racing first faults is bounded spin-then-refuse
-in v1 (spike shape) with the bound justified in §5; a
-futex-based wait is a later optimisation only if measurement
-shows spin burn under thread storms — and threads are refused
-until W7 admits them anyway (§2.5), so v1's racing case is
-fault redelivery, not an 8-thread storm.
+**Foreign-fault discrimination (specified and witnessed in
+S2, museport P2 — not deferred to S4).** `si_addr` inside an
+extent does not prove instruction fetch. The x86-64
+discriminator is conjunctive, all from the delivered frame
+with no memory reads: page-fault error code (`REG_ERR` in
+`uc_mcontext.gregs`) has the I/D fetch bit (`0x10`) set and
+U/S user bit set; `si_code == SEGV_ACCERR` (2, protection
+violation on a present sealed page — `SEGV_MAPERR` is never a
+gate fault); saved `REG_RIP == si_addr` (fetch faults at RIP;
+a data read/write to sealed text faults with RIP elsewhere).
+Any conjunct failing ⇒ foreign: chain to the guest
+disposition/Tool signal protocol with mask, alt-stack, and
+restorer fidelity exactly as without the gate. S2 witnesses:
+certified-entry fetch admits; data-write to sealed text
+chains (guest handler observes it); data-read of sealed text
+(`PROT_READ` allows it — no fault, asserted explicitly);
+`SEGV_MAPERR` wild fetch chains.
+
+**Handler law + nested faults, masking, loser/poison
+semantics (museport P1).** Async-signal-safe operations only
+in the handler; no guest allocator, no Tool code, no RPC, no
+patch publication, no hashing, and no `mprotect` at all
+(the grant moved to the trampoline). `SIGSEGV` stays blocked
+for the handler duration (no `SA_NODEFER`); the gate handler
+runs on the per-thread verified alt-stack (§2.5 Q3) with
+`SA_SIGINFO`; admission-trampoline execution runs with
+`SIGSEGV` unblocked (normal context) but a nested gate fault
+*during* admission of group G is classified as: same group ⇒
+fatal `R-CODE nested-admission` (admission code must never
+fetch from G; runtime text is never gated); other sealed group
+⇒ refused in v1 (`R-CODE nested-admission`) rather than
+recursively admitted — recursion depth is a later, separately
+witnessed widening. Racing losers (fault redelivery in v1;
+threads only after W7) spin bounded on the group state in the
+*handler* only until `Admitted` (then plain return/retry) or
+poisoned; bound exhaustion refuses from the handler by the
+runtime's existing fatal-exit path (async-signal-safe
+`write` + `_exit`, the spike `refuse` shape) with the
+`R-CODE admission-stuck` record — a loser never transfers,
+never publishes, never waits unboundedly. If the winner dies
+(mid-trampoline exit, fatal signal, retire): the Q1 retire
+hook (§2.5) atomically poisons the claim
+(`Admitting→Revoked`-poisoned) and losers observe poison and
+refuse `R-CODE admission-poisoned` instead of spinning; the
+group stays NX and requires fresh certification before any
+re-admission. Fixed-capacity table exhaustion refuses by name
+(§2.1); text permissions restored on every path; sync-core
+counted in §5, executed in the trampoline, never hidden.
 
 ### 3.4 What V6 guarantees (cell contract to register)
 
@@ -614,6 +770,21 @@ L0 §1.1); L3's certificate is the live-gate form of those
 facts, built by Reverie's census, not by importing the model
 crate as an oracle.
 
+**Portability across runs/load bias (museport P2).** Entries
+and site plans are stored **file-offset-relative** (offsets
+from the extent's file offset, never absolute VAs), and the
+certificate binds the object's build-id (when present) plus
+extent file identity. At seal time the runtime records the
+live load bias (mapping base − file offset) alongside the
+generation; a cached certificate is usable at a different
+bias only after re-binding offsets through that bias **and**
+revalidating every address-dependent tactic outcome at
+publication (near-jump reachability to the trampoline arena,
+arena placement, RIP-relative displacement ranges) — any
+outcome that flips downgrades that site to trap-fallback or
+uncertifies the group. A cached plan never silently becomes
+authority at a new bias.
+
 ### 4.2 When scanning runs (never on the fault path)
 
 1. **Initial image:** at arm time, while the guest is stopped
@@ -651,12 +822,18 @@ Policy (for reviewer decision, §0 item 3):
 
 - **Seal time (group first seen):** full content hash +
   census. No shortcut; this is where trust is created.
-- **Re-admission of the same generation** (fork child,
-  re-seal after revoke+fresh-cert): stat custody (device,
-  inode, size, timestamps) may short-circuit re-hashing
-  *only* while immutability (§2.3) held continuously for that
-  generation. Any revocation, alias discovery, or custody
-  mismatch forces a full re-hash + re-census.
+- **Stat custody is a lookup hint only (museport P2 —
+  tightened; the earlier within-generation shortcut is
+  withdrawn as stated).** "Immutability held continuously" is
+  the fact to be proved, not a checkable precondition. Stat
+  custody may therefore only (i) *select* a candidate
+  certificate and (ii) avoid re-reading census *metadata*
+  (unwind/relocation inputs) when custody matches. **Every**
+  NX→RX grant that follows a prior RX exposure, a revocation,
+  a fork (§2.4), or any writable-alias/writable-FD exposure
+  requires the content hash as judge over the live bytes
+  before granting — no exceptions. The sole hash-free path is
+  the already-`Admitted` retry (no grant occurs).
 - **Cache hits across runs:** stat custody selects the cached
   certificate; the live extent's hash is still verified at
   seal time before the first grant. (Cheaper alternative —
@@ -709,11 +886,14 @@ and marks what is still UNMEASURED. No slice may quote the
 
 ### 5.2 Invariants that keep the design inside the gate
 
-1. **Zero maps reads, zero decoding, zero hashing on the fault
-   path.** The handler does atomic loads, integer compares,
-   one CAS, patch publishes from the precomputed site plan,
-   and one `mprotect`. Anything else is a design violation,
-   found by review or by the S2 primitive breakdown.
+1. **Zero maps reads, zero decoding, zero hashing, zero
+   publication in the handler.** The handler does atomic
+   loads, integer compares, one CAS, and the `REG_RIP`
+   transfer (§3.3); publication, hashing, sync-core, and the
+   grant run in the admission trampoline from the precomputed
+   site plan. Anything else in signal context is a design
+   violation, found by review or by the S2 primitive breakdown
+   (which now measures handler vs trampoline costs separately).
 2. **Admission count = group count, not page count.** Grouping
    follows object mapping generations (spike census: 6/575,
    3/418, 4/649). Any change that splits groups toward pages
@@ -756,15 +936,24 @@ Every later *code* slice stacks after the C1+S1 follow-on
 mapped transport + S1 native-exec admission + S2a-1 witness),
 per the clean-stack rule — code lands on one clean Reverie
 stack, in this order, each slice independently reviewable and
-revertible. W5 (`musearch/w5-intercept-20261106`) lands before
-S3 by construction. No slice below starts until §0's decisions
+revertible. **Explicit W5 edge (museport P2 — verified this
+round: `127146b21d` is NOT an ancestor of
+`liteinst/c1s1-followon-20261106`):** stack order is
+C1+S1 follow-on → **W5 slice 1** → S3. W5 reaches the stack by
+exactly one of: (i) musearch lands W5 on the base first (S3
+waits), or (ii) the S3 owner cherry-picks `127146b21d` onto the
+stack tip as a named stack commit preserving musearch
+authorship, with any rebase conflicts resolved in that commit
+and called out for musearch/museli-lt review. S3 is blocked
+until W5's content is an ancestor of the S3 base — no
+"by construction" hand-wave. No slice below starts until §0's decisions
 are approved; sizes are estimates for sequencing, not evidence.
 
 | Slice | Content (surfaces) | Tests / exit evidence |
 |---|---|---|
 | **S0** (this note) | Design only. No code. | Review routed by museli-lt; §7 questions answered or carried as named risks. Exit = approved design SHA. |
 | **S1 L6 registry, no gate** | `reverie-inguest` L6 registry (groups, generations, gate states; `sysconf` pages); rewire `observe_mapping_generation` to mint/revoke per §2.2 (incl. the widened `mprotect` rule) and delete `adapter_mapping_replaced` in favour of generation compare; site/census consumers read `(epoch, generation)`. Behaviour for V4/V5 unchanged (no sealing yet). | Unit: mint/revoke/partial-overlap/failed-syscall table (§2.2 each row). Regression floor: `cargo test -p reverie-liteinst --test strace -- --test-threads=1`, `--test rpc_tool`, `--all-features`; signature `calls=32 traps=1 hooks=32` preserved; `late_code` churn fixtures (no-op `mremap`, dlopen CPUID/RDTSC) green. Adversarial: alias-write + `MAP_FIXED` overwrite must stale-mark (new tests, named). |
-| **S2 Gate primitives spike→library** | Generalise the spike to N groups, `sysconf` pages (4K+64K), foreign-fault chaining (replacing spike `EXIT_FOREIGN`), bounded loser-wait; still a standalone library + witnesses, **no backend wiring**. Measure seal/sync-core/grant primitives at real extents. | Port the 5 witnesses (`tests/grouped_admission.rs` shapes: admit/interior/revoke/readmit/concurrent) to N-group + foreign-chaining + 64K variants; bench mode extended to print the §5.1 primitive breakdown. Exit = witnesses green + primitive table (machine+n+medians) reviewed before any integration. |
+| **S2 Gate primitives spike→library** | Generalise the spike to N groups, `sysconf` pages (4K+64K), handler→trampoline context transfer (§3.3, handler never publishes), foreign-fault discriminator + chaining (replacing spike `EXIT_FOREIGN`), bounded loser-wait + poison semantics; still a standalone library + witnesses, **no backend wiring**. Measure handler vs trampoline/seal/sync-core/grant primitives at real extents. | Port the 5 witnesses to N-group + 64K; add discriminator witnesses (fetch admits / data-write chains / data-read no-fault / `MAPERR` chains, §3.3), nested-admission refusal, winner-death poison + loser release, chaining mask/alt-stack/restorer fidelity; bench prints the §5.1 breakdown split handler vs trampoline. Exit = witnesses green + primitive table (machine+n+medians) reviewed before any integration. |
 | **S3 B5 certificates + `PageGate` value (refusing)** | Certificate builder over `liteinst_census.rs` (hash, entry closure, site plan, dependency record); custody policy §4.3; `InterceptStrategy::PageGate` + `page-gate` env parse + `mechanism()`/`resolve()` stacked on landed W5. Selection still refuses `R-UNBUILT` (no cell registered). | Certificate determinism (same bytes ⇒ same cert), staleness (byte flip ⇒ hash/custody miss), residuals inherited (no-EH-frame ⇒ uncertified, anon ⇒ uncertified); W5 test quartet for the new value: parse table, mismatch refusal (preload/aarch64 refuse by name), banner logging, builder-wins. No guest runs gated yet. |
 | **S4 V6 integration + cell registration** | A-stop arming: census+certify+seal initial groups at exec stop (closing the stage-1a release gap for this path); gate handler + quiescent publish + grant (§3.3); late-map sealing (§3.2); fork re-seal (§2.4); register the V6 `ImplementedCell` with the honest §3.4 envelope (SingleThread, Exec Refused). | Conformance (L0 §5): recorder/counter/mutator differential V6 vs V1/V2 on the frozen non-exec corpus (static/dynamic/PIE hello, `ls`, signal-dense, nondet loop, dlopen churn); refusal oracle (exact `R-*` names: interior, stale, alias, uncertified, window); firstprobe zero-window on `hello`+`ls`; foreign-`SIGSEGV` chaining witness (guest handler still receives its faults). Perf: §5.3 protocol, floor = completes; DR-null ratio reported, not yet gated. |
 | **S5 Hardening + widenings (separate approvals)** | Exec successors via re-bootstrap S-B/S-C (envelope → `RearmedSameCell` only with sh-chain witness); W7-threaded admission when W7 lifts the capability bit; certified-dynamic-code API; certificate cache across runs; futex loser-wait if measured necessary. Each is its own slice + review; none is implied by S4. | Per widening: its own witnesses (exec chains incl. static + fork-child; thread storm first-fault racing; certified-JIT admit vs arbitrary-JIT `R-CODE` as separate cases) + §5.3 re-measurement toward the M3 ≤1.5x bar (musebench verdict). |
@@ -820,11 +1009,12 @@ removal; Q3 one process handler + per-thread alt-stack
 verification in one admission checklist with lease creation and
 lazy connection open (W7 slice 2); full text §2.5. Remaining
 open: Q4: does the
-reviewer accept stat-custody re-admission within a generation
-(§4.3), or require re-hash on every re-seal? Q5: fixed group-
-table capacity + overflow policy (proposed: refuse
-`R-CODE` by name; capacity sized from S3 census data, not
-guessed here). Q6: should `R-CODE` detail strings become typed
+reviewer accept the tightened §4.3 rule (stat as lookup hint
+only; hash judges every post-exposure grant)? Q5: **closed by
+amendment** — registry interval invariant, `Ungated`-record
+creation rule, fixed capacity with `R-CODE registry-full`
+refusal and no eviction (§2.1); only the capacity constant
+remains, sized in S1. Q6: should `R-CODE` detail strings become typed
 variants in `RefusalCode` now, or stay detail strings until a
 second consumer needs them? Each question names its default
 (this note's text) so review can amend by exception.
