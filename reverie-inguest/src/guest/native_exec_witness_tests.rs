@@ -56,7 +56,6 @@ use crate::trap::frame::SignalFrame;
 
 const SENTINEL_PID: i64 = 424_242;
 const CONFIG: u64 = 903;
-const MISSING: &[u8] = b"/nonexistent-s2a1-witness-target\0";
 const RESUME_MASK: u64 = 1_u64 << (libc::SIGUSR1 - 1);
 const CHILD_ENV: &str = "REVERIE_NATIVE_EXEC_WITNESS";
 const MODE_ENV: &str = "REVERIE_NATIVE_EXEC_WITNESS_MODE";
@@ -75,6 +74,9 @@ static TAMPER: AtomicU64 = AtomicU64::new(0); // 1 digest, 2 sequence
 
 const TAMPER_DIGEST: u64 = 1;
 const TAMPER_SEQUENCE: u64 = 2;
+const TAMPER_PREPARE_SOURCES: u64 = 3;
+const TAMPER_PKRU: u64 = 4;
+const TAMPER_ROLLBACK: u64 = 5;
 
 fn refusal_code(operation: reverie::UnsupportedOperation) -> i64 {
     match operation {
@@ -125,6 +127,11 @@ impl Tool for WitnessTool {
             SEQ[index].store(number.id() as i64, Ordering::Relaxed);
         }
         if number == Sysno::getpid {
+            // Directly observe the old Tool tuple at this genuine
+            // next callback (restored (3,1) after a correct rollback).
+            let observed = *guest.thread_state();
+            STATE_AT_NEXT_0.store(observed.0, Ordering::Relaxed);
+            STATE_AT_NEXT_1.store(observed.1, Ordering::Relaxed);
             // Observable Tool effect: raw passthrough would return the
             // real pid; only genuine Tool mediation yields the sentinel.
             return Ok(SENTINEL_PID);
@@ -183,7 +190,9 @@ impl Tool for WitnessTool {
             refusal.map_or(-1, |r| refusal_code(r.operation)),
             Ordering::Relaxed,
         );
-        *guest.thread_state_mut() = (3, 1);
+        if TAMPER.load(Ordering::Relaxed) != TAMPER_ROLLBACK {
+            *guest.thread_state_mut() = (3, 1);
+        }
         Ok(-i64::from(errno.into_raw()))
     }
 }
@@ -491,7 +500,16 @@ unsafe impl NativeExecDriver<WitnessTool> for WitnessDriver {
         // Deliberate divergence from the Detcore catalog: no declared
         // target set. Shape qualification only; existence is the
         // kernel's decision at the leaf (that is the witness).
-        if arguments.path() != &MISSING[..MISSING.len() - 1] {
+        let declared_ptr = DECLARED_PTR.load(Ordering::Acquire);
+        let declared_len = DECLARED_LEN.load(Ordering::Relaxed) as usize;
+        if declared_ptr == 0 || declared_len == 0 {
+            return Err(named("witness has no declared target"));
+        }
+        // SAFETY: the fixture leaked exactly these bytes before
+        // arming and never frees or mutates them.
+        let declared =
+            unsafe { core::slice::from_raw_parts(declared_ptr as *const u8, declared_len) };
+        if arguments.path() != declared {
             return Err(named("witness original path is not the declared target"));
         }
         if arguments.envp().any(|entry| {
@@ -509,7 +527,7 @@ unsafe impl NativeExecDriver<WitnessTool> for WitnessDriver {
         .map_err(|_| named("witness protected socket bindings differ"))?;
         let captured_sequence = self.sequence.fetch_add(1, Ordering::AcqRel) + 1;
         Ok(Box::new(WitnessSession {
-            sequence: &self.sequence,
+            sequence: self.sequence,
             cut: *cut,
             captured_sequence,
             arguments: Mutex::new(arguments),
@@ -549,47 +567,64 @@ unsafe impl NativeExecSession<WitnessTool> for WitnessSession {
             .map_err(|_| terminal("witness protected socket inheritance failed"))?;
         // Bootstrap sources: five distinct CLOEXEC regular files.
         // Source 0 carries the exact prepared-state encoding; the
-        // kernel never consumes them on the failed-exec path.
+        // kernel never consumes them on the failed-exec path. Every
+        // error exit below closes exactly the sources created so
+        // far (single cleanup site after the labeled block).
         let mut sources = [0_i32; 5];
-        for (index, source) in sources.iter_mut().enumerate() {
-            let fd = unsafe {
-                crate::trap::raw_syscall6(
-                    libc::SYS_memfd_create,
-                    [b"w\0".as_ptr() as u64, libc::MFD_CLOEXEC as u64, 0, 0, 0, 0],
-                )
-            };
-            if fd < 0 {
-                lease
-                    .cancel()
-                    .map_err(|_| terminal("witness source cleanup failed"))?;
-                return Err(refused("witness bootstrap source cannot be created"));
-            }
-            *source = fd as i32;
-            if index == 0 {
-                let mut encoded = [0_u8; 24];
-                encoded[0..8].copy_from_slice(&state.0.to_be_bytes());
-                encoded[8..16].copy_from_slice(&state.1.to_be_bytes());
-                encoded[16..24].copy_from_slice(&self.captured_sequence.to_be_bytes());
-                let written = unsafe {
-                    crate::trap::raw_syscall6(
-                        libc::SYS_write,
-                        [
-                            *source as u64,
-                            encoded.as_ptr() as u64,
-                            encoded.len() as u64,
-                            0,
-                            0,
-                            0,
-                        ],
-                    )
+        let mut created = 0_usize;
+        let sources_result = 'sources: {
+            for index in 0..sources.len() {
+                let forced = TAMPER.load(Ordering::Relaxed) == TAMPER_PREPARE_SOURCES && index == 2;
+                let fd = if forced {
+                    -1
+                } else {
+                    unsafe {
+                        crate::trap::raw_syscall6(
+                            libc::SYS_memfd_create,
+                            [c"w".as_ptr() as u64, libc::MFD_CLOEXEC as u64, 0, 0, 0, 0],
+                        )
+                    }
                 };
-                if written != encoded.len() as i64 {
-                    lease
-                        .cancel()
-                        .map_err(|_| terminal("witness source cleanup failed"))?;
-                    return Err(refused("witness bootstrap source cannot be written"));
+                if fd < 0 {
+                    break 'sources Err(refused("witness bootstrap source cannot be created"));
+                }
+                sources[index] = fd as i32;
+                created += 1;
+                if index == 0 {
+                    let mut encoded = [0_u8; 24];
+                    encoded[0..8].copy_from_slice(&state.0.to_be_bytes());
+                    encoded[8..16].copy_from_slice(&state.1.to_be_bytes());
+                    encoded[16..24].copy_from_slice(&self.captured_sequence.to_be_bytes());
+                    let written = unsafe {
+                        crate::trap::raw_syscall6(
+                            libc::SYS_write,
+                            [
+                                sources[0] as u64,
+                                encoded.as_ptr() as u64,
+                                encoded.len() as u64,
+                                0,
+                                0,
+                                0,
+                            ],
+                        )
+                    };
+                    if written != encoded.len() as i64 {
+                        break 'sources Err(refused("witness bootstrap source cannot be written"));
+                    }
                 }
             }
+            Ok(())
+        };
+        if let Err(error) = sources_result {
+            for source in &sources[..created] {
+                unsafe {
+                    crate::trap::raw_syscall6(libc::SYS_close, [*source as u64, 0, 0, 0, 0, 0])
+                };
+            }
+            lease
+                .cancel()
+                .map_err(|_| terminal("witness source cleanup failed"))?;
+            return Err(error);
         }
         // SAFETY: distinct owned CLOEXEC regular sources just created
         // above; none aliases a reserved descriptor.
@@ -697,15 +732,25 @@ unsafe impl PreparedNativeExec<WitnessTool> for WitnessTransaction<'_> {
     }
 }
 
-static PKRU_PRE: AtomicU64 = AtomicU64::new(u64::MAX);
-static PKRU_POST: AtomicU64 = AtomicU64::new(u64::MAX);
+static EXEC_PKRU_PRE: AtomicU64 = AtomicU64::new(u64::MAX);
+static EXEC_PKRU_POST: AtomicU64 = AtomicU64::new(u64::MAX);
+static EXEC_PKRU_SAMPLED: AtomicU64 = AtomicU64::new(0);
+static STATE_AT_NEXT_0: AtomicU64 = AtomicU64::new(u64::MAX);
+static STATE_AT_NEXT_1: AtomicU64 = AtomicU64::new(u64::MAX);
+static DECLARED_PTR: AtomicUsize = AtomicUsize::new(0);
+static DECLARED_LEN: AtomicU64 = AtomicU64::new(0);
+static FD_COUNT_PRE: AtomicU64 = AtomicU64::new(0);
+static DECLARED_DIR_PTR: AtomicUsize = AtomicUsize::new(0);
 
 unsafe fn witness_syscall(context: *mut RegisterContext, pkru: &mut Option<u32>) {
     let host = unsafe {
         &*(HOST_PTR.load(Ordering::Acquire) as *const ToolHost<WitnessTool, WitnessRuntime>)
     };
     let c = unsafe { &mut *context };
-    PKRU_PRE.store(pkru.map_or(u64::MAX, u64::from), Ordering::Relaxed);
+    let is_exec = matches!(c.rax as i64, libc::SYS_execve | libc::SYS_execveat);
+    if is_exec {
+        EXEC_PKRU_PRE.store(pkru.map_or(u64::MAX, u64::from), Ordering::Relaxed);
+    }
     let mut event = SyscallEvent {
         number: c.rax as i64,
         args: [c.rdi, c.rsi, c.rdx, c.r10, c.r8, c.r9],
@@ -718,7 +763,17 @@ unsafe fn witness_syscall(context: *mut RegisterContext, pkru: &mut Option<u32>)
     unsafe { host.dispatch(&mut event) };
     c.rax = event.result as u64;
     *pkru = event.guest_pkru;
-    PKRU_POST.store(pkru.map_or(u64::MAX, u64::from), Ordering::Relaxed);
+    if is_exec {
+        let mut post = pkru.map_or(u64::MAX, u64::from);
+        if TAMPER.load(Ordering::Relaxed) == TAMPER_PKRU {
+            // Negative control: simulate an exec-only PKRU drift
+            // observation; the postcondition must catch it even
+            // though the later getpid preserves the drifted value.
+            post ^= 4;
+        }
+        EXEC_PKRU_POST.store(post, Ordering::Relaxed);
+        EXEC_PKRU_SAMPLED.store(1, Ordering::Relaxed);
+    }
 }
 
 unsafe fn no_instruction(_: *mut RegisterContext, _: InstructionEventKind) {
@@ -788,6 +843,61 @@ fn write_frame(stream: &mut UnixStream, payload: &[u8]) {
 /// are neither sealed memfds nor frozen-root copies, so most objects
 /// will fail shape checks and the driver falls back to the trait
 /// default refusal list; that fallback is disclosed, not hidden.
+/// Open-descriptor count via gated raw getdents64 (stack buffer only).
+/// The transient directory descriptor is open during both snapshots,
+/// so pre/post counts are directly comparable.
+fn open_fd_count() -> u64 {
+    let dir = unsafe {
+        crate::trap::raw_syscall6(
+            libc::SYS_openat,
+            [
+                libc::AT_FDCWD as i64 as u64,
+                c"/proc/self/fd".as_ptr() as u64,
+                (libc::O_RDONLY | libc::O_DIRECTORY | libc::O_CLOEXEC) as u64,
+                0,
+                0,
+                0,
+            ],
+        )
+    };
+    if dir < 0 {
+        return 0;
+    }
+    let mut count = 0_u64;
+    let mut buffer = [0_u8; 4096];
+    loop {
+        let read = unsafe {
+            crate::trap::raw_syscall6(
+                libc::SYS_getdents64,
+                [
+                    dir as u64,
+                    buffer.as_mut_ptr() as u64,
+                    buffer.len() as u64,
+                    0,
+                    0,
+                    0,
+                ],
+            )
+        };
+        if read <= 0 {
+            break;
+        }
+        let mut offset = 0_usize;
+        while offset + 19 < read as usize {
+            let reclen = u16::from_ne_bytes([buffer[offset + 16], buffer[offset + 17]]) as usize;
+            if reclen == 0 {
+                break;
+            }
+            if buffer[offset + 19].is_ascii_digit() {
+                count += 1;
+            }
+            offset += reclen;
+        }
+    }
+    unsafe { crate::trap::raw_syscall6(libc::SYS_close, [dir as u64, 0, 0, 0, 0, 0]) };
+    count
+}
+
 fn build_catalog() -> Option<ExecutableMappings> {
     use std::os::unix::fs::MetadataExt;
     let maps = std::fs::read_to_string("/proc/self/maps").ok()?;
@@ -886,10 +996,49 @@ fn run_witness_inner(mode: &str) {
         match mode {
             "tamper-digest" => TAMPER_DIGEST,
             "tamper-sequence" => TAMPER_SEQUENCE,
+            "tamper-prepare-sources" => TAMPER_PREPARE_SOURCES,
+            "tamper-pkru" => TAMPER_PKRU,
+            "tamper-rollback" => TAMPER_ROLLBACK,
             _ => 0,
         },
         Ordering::Relaxed,
     );
+    // Owned absent target: a private mkdtemp namespace whose target
+    // is proven absent here and again immediately before the filter
+    // installs, so this witness cannot pass via a file that happens
+    // to exist on some host. The driver qualifies exactly this path.
+    let mut template = std::env::temp_dir()
+        .join("s2a1-witness-XXXXXX")
+        .into_os_string()
+        .into_string()
+        .unwrap()
+        .into_bytes();
+    template.push(0);
+    let dir_ptr = unsafe { libc::mkdtemp(template.as_mut_ptr().cast()) };
+    assert!(!dir_ptr.is_null());
+    let dir_bytes = unsafe { core::ffi::CStr::from_ptr(dir_ptr) }
+        .to_bytes()
+        .to_vec();
+    let mut target = dir_bytes.clone();
+    target.extend_from_slice(b"/absent-target");
+    let declared_len = target.len() as u64;
+    target.push(0);
+    let declared: &'static [u8] = Box::leak(target.into_boxed_slice());
+    let mut dir_z = dir_bytes.clone();
+    dir_z.push(0);
+    let declared_dir: &'static [u8] = Box::leak(dir_z.into_boxed_slice());
+    DECLARED_PTR.store(declared.as_ptr() as usize, Ordering::Release);
+    DECLARED_LEN.store(declared_len, Ordering::Relaxed);
+    DECLARED_DIR_PTR.store(declared_dir.as_ptr() as usize, Ordering::Release);
+    assert_eq!(
+        unsafe { libc::access(declared.as_ptr().cast(), libc::F_OK) },
+        -1
+    );
+    assert_eq!(
+        std::io::Error::last_os_error().raw_os_error(),
+        Some(libc::ENOENT)
+    );
+
     // --- Protected sockets + coordinator (pre-filter, no threads). ---
     let (rpc_client, mut rpc_peer) = UnixStream::pair().unwrap();
     let (detlog_sock, detlog_peer) = UnixStream::pair().unwrap();
@@ -1052,17 +1201,23 @@ fn run_witness_inner(mode: &str) {
     unsafe { filter.install() }.unwrap();
 
     // --- Guest: failed exec, then subscribed getpid. ---
-    // The argument collector snapshots only anonymous mappings, so
-    // the path bytes live in leaked heap memory, not `.rodata`.
-    let missing: &'static [u8] = Box::leak(MISSING.to_vec().into_boxed_slice());
-    let argv = [missing.as_ptr() as u64, 0];
+    // Re-prove absence with the filter about to install, and take
+    // the fd-table baseline the postconditions compare against.
+    let declared_ptr = DECLARED_PTR.load(Ordering::Acquire) as *const u8;
+    assert_eq!(unsafe { libc::access(declared_ptr.cast(), libc::F_OK) }, -1);
+    assert_eq!(
+        std::io::Error::last_os_error().raw_os_error(),
+        Some(libc::ENOENT)
+    );
+    FD_COUNT_PRE.store(open_fd_count(), Ordering::Relaxed);
+    let argv = [declared_ptr as u64, 0];
     let envp = [0_u64];
     let exec_result = unsafe {
         guest_syscall(
             libc::SYS_execveat,
             [
                 libc::AT_FDCWD as i64 as u64,
-                missing.as_ptr() as u64,
+                declared_ptr as u64,
                 argv.as_ptr() as u64,
                 envp.as_ptr() as u64,
                 0,
@@ -1074,28 +1229,41 @@ fn run_witness_inner(mode: &str) {
 
     // --- Post-conditions (raw gate only where practical). ---
     let tamper = TAMPER.load(Ordering::Relaxed);
-    if tamper == 0 {
-        assert_eq!(exec_result, -i64::from(libc::ENOENT));
-        assert_eq!(EXEC_REFUSAL.load(Ordering::Relaxed), -1);
-        assert_eq!(ISSUED.load(Ordering::Relaxed), 1);
-    } else {
+    let refused_before_issue = matches!(
+        tamper,
+        TAMPER_DIGEST | TAMPER_SEQUENCE | TAMPER_PREPARE_SOURCES
+    );
+    if refused_before_issue {
         assert_eq!(exec_result, -i64::from(libc::EOPNOTSUPP));
         assert_eq!(EXEC_REFUSAL.load(Ordering::Relaxed), 2);
         assert_eq!(ISSUED.load(Ordering::Relaxed), 0);
+    } else {
+        assert_eq!(exec_result, -i64::from(libc::ENOENT));
+        assert_eq!(EXEC_REFUSAL.load(Ordering::Relaxed), -1);
+        assert_eq!(ISSUED.load(Ordering::Relaxed), 1);
     }
     assert_eq!(pid_result, SENTINEL_PID);
     assert_ne!(SENTINEL_PID, real_pid);
     assert_eq!(SEQ_COUNT.load(Ordering::Relaxed), 2);
     assert_eq!(SEQ[0].load(Ordering::Relaxed), libc::SYS_execveat);
     assert_eq!(SEQ[1].load(Ordering::Relaxed), libc::SYS_getpid);
+    // Restored old Tool state directly observed at the genuine next
+    // callback, not inferred from interception alone.
+    assert_eq!(STATE_AT_NEXT_0.load(Ordering::Relaxed), 3);
+    assert_eq!(STATE_AT_NEXT_1.load(Ordering::Relaxed), 1);
     assert_eq!(THREADS_PREPARE.load(Ordering::Relaxed), 1);
-    if tamper == 0 {
+    if tamper != TAMPER_PREPARE_SOURCES {
         assert_eq!(THREADS_FINAL.load(Ordering::Relaxed), 1);
     }
+    // PKRU samples bound to the exec dispatch itself; the later
+    // getpid callback cannot overwrite them.
+    assert_eq!(EXEC_PKRU_SAMPLED.load(Ordering::Relaxed), 1);
     assert_eq!(
-        PKRU_PRE.load(Ordering::Relaxed),
-        PKRU_POST.load(Ordering::Relaxed)
+        EXEC_PKRU_PRE.load(Ordering::Relaxed),
+        EXEC_PKRU_POST.load(Ordering::Relaxed)
     );
+    // Whole fd table intact across the failed exec (all modes).
+    assert_eq!(open_fd_count(), FD_COUNT_PRE.load(Ordering::Relaxed));
     for index in 0..5 {
         let fd = 198 + index;
         let queried = unsafe {
@@ -1122,6 +1290,20 @@ fn run_witness_inner(mode: &str) {
         crate::trap::raw_syscall6(libc::SYS_poll, [(&raw mut pollfd) as u64, 1, 0, 0, 0, 0])
     };
     assert_eq!(polled, 0);
+    // Best-effort removal of the owned empty target directory.
+    unsafe {
+        crate::trap::raw_syscall6(
+            libc::SYS_unlinkat,
+            [
+                libc::AT_FDCWD as i64 as u64,
+                DECLARED_DIR_PTR.load(Ordering::Relaxed) as u64,
+                libc::AT_REMOVEDIR as u64,
+                0,
+                0,
+                0,
+            ],
+        );
+    }
     let marker: &[u8] = if tamper == 0 {
         b"NATIVE_EXEC_WITNESS_OK\n"
     } else {
@@ -1141,7 +1323,7 @@ fn run_witness_inner(mode: &str) {
     unsafe { libc::_exit(0) }
 }
 
-fn spawn_witness(mode: &'static str, test_name: &str, marker: &str) {
+fn spawn_witness(mode: &'static str, test_name: &str, marker: &str, expect_success: bool) {
     if std::env::var_os(CHILD_ENV).is_some() {
         run_witness(mode);
         return;
@@ -1153,12 +1335,23 @@ fn spawn_witness(mode: &'static str, test_name: &str, marker: &str) {
         .output()
         .unwrap();
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(
-        output.status.success() && stdout.contains(marker),
-        "witness child failed: {}; stdout={stdout}; stderr={}",
-        output.status,
-        String::from_utf8_lossy(&output.stderr)
-    );
+    if expect_success {
+        assert!(
+            output.status.success() && stdout.contains(marker),
+            "witness child failed: {}; stdout={stdout}; stderr={}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr)
+        );
+    } else {
+        // Negative control: the causal assertion inside the child
+        // must fire (nonzero exit, success marker absent).
+        assert!(
+            !output.status.success() && !stdout.contains(marker),
+            "negative-control child unexpectedly passed: {}; stdout={stdout}; stderr={}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
 }
 
 #[test]
@@ -1171,6 +1364,7 @@ fn physical_failed_exec_witness() {
         "ok",
         "guest::host::native_exec_witness_tests::physical_failed_exec_witness",
         "NATIVE_EXEC_WITNESS_OK",
+        true,
     );
 }
 
@@ -1184,6 +1378,7 @@ fn physical_failed_exec_witness_tampered_digest_refuses_before_issue() {
         "tamper-digest",
         "guest::host::native_exec_witness_tests::physical_failed_exec_witness_tampered_digest_refuses_before_issue",
         "NATIVE_EXEC_WITNESS_TAMPER_OK",
+        true,
     );
 }
 
@@ -1197,5 +1392,52 @@ fn physical_failed_exec_witness_tampered_sequence_refuses_before_issue() {
         "tamper-sequence",
         "guest::host::native_exec_witness_tests::physical_failed_exec_witness_tampered_sequence_refuses_before_issue",
         "NATIVE_EXEC_WITNESS_TAMPER_OK",
+        true,
+    );
+}
+
+#[test]
+fn physical_failed_exec_witness_prepare_error_closes_exactly_owned_sources() {
+    if std::env::var_os(CHILD_ENV).is_some() {
+        run_witness("tamper-prepare-sources");
+        return;
+    }
+    spawn_witness(
+        "tamper-prepare-sources",
+        "guest::host::native_exec_witness_tests::physical_failed_exec_witness_prepare_error_closes_exactly_owned_sources",
+        "NATIVE_EXEC_WITNESS_TAMPER_OK",
+        true,
+    );
+}
+
+#[test]
+fn physical_failed_exec_witness_exec_pkru_drift_is_caught() {
+    if std::env::var_os(CHILD_ENV).is_some() {
+        run_witness("tamper-pkru");
+        return;
+    }
+    // Negative control: simulated exec-only PKRU drift must fail
+    // the exec-bound equality even though getpid preserves it.
+    spawn_witness(
+        "tamper-pkru",
+        "guest::host::native_exec_witness_tests::physical_failed_exec_witness_exec_pkru_drift_is_caught",
+        "NATIVE_EXEC_WITNESS_OK",
+        false,
+    );
+}
+
+#[test]
+fn physical_failed_exec_witness_omitted_rollback_is_caught() {
+    if std::env::var_os(CHILD_ENV).is_some() {
+        run_witness("tamper-rollback");
+        return;
+    }
+    // Negative control: omitting the Tool-owned rollback leaves the
+    // prepared tuple observable at the next genuine callback.
+    spawn_witness(
+        "tamper-rollback",
+        "guest::host::native_exec_witness_tests::physical_failed_exec_witness_omitted_rollback_is_caught",
+        "NATIVE_EXEC_WITNESS_OK",
+        false,
     );
 }
