@@ -1502,6 +1502,25 @@ impl Default for PmuState {
 mod clock_state_tests {
     use super::*;
 
+    // Drift guard for the interim aarch64 RcbMetric mirror in
+    // pmu_shim: the match is exhaustive, so a new variant in the
+    // real enum breaks this test until the mirror learns its id.
+    #[test]
+    fn pmu_shim_metric_mirror_covers_every_variant() {
+        let metric = crate::pmu::RcbMetric::ConditionalBranchesRetiredUserV1;
+        let shim_id = match metric {
+            crate::pmu::RcbMetric::ConditionalBranchesRetiredUserV1 => {
+                pmu_shim::RcbMetric::ConditionalBranchesRetiredUserV1.id()
+            }
+        };
+        assert_eq!(shim_id, metric.id());
+        assert_eq!(
+            pmu_shim::RcbMetric::from_id(metric.id()).map(|m| m.id()),
+            crate::pmu::RcbMetric::from_id(metric.id()).map(|m| m.id())
+        );
+        assert_eq!(pmu_shim::RcbMetric::from_id("rcb:unknown:v0"), None);
+    }
+
     fn profile(family: u8, model: u8) -> PmuConfig {
         PmuConfig::try_from_family_model(family, model).expect("a model in the profile table")
     }
