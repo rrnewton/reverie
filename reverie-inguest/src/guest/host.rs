@@ -3846,14 +3846,16 @@ impl<'a, T: Tool, R: HostRuntime> Guest<T> for InGuest<'a, T, R> {
             && self.native_exec_admitted
         {
             // Admitted route, final-step refusal: admission plumbing is
-            // consulted, but no thread or vfork child is armed yet, so
-            // creation still refuses by typed name rather than running
-            // unmediated or crashing.
+            // consulted, but no thread is armed yet, so creation still
+            // refuses by typed name rather than running unmediated or
+            // crashing. Plain forks (including vfork and fork-shaped
+            // clone/clone3) never reach this arm: `is_plain_fork`
+            // forwards them above, in admitted and unadmitted mode alike.
             self.unsupported_refusal = Some(reverie::UnsupportedRefusal::new(
                 reverie::UnsupportedOperation::ThreadCreation,
                 Errno::EOPNOTSUPP,
-                "the admitted native exec route does not arm thread or vfork creation: \
-                 clone, clone3 and vfork other than a plain fork are refused at the \
+                "the admitted native exec route does not arm thread creation: \
+                 clone and clone3 that are not plain forks are refused at the \
                  final step",
             ));
             return Err(Errno::EOPNOTSUPP);
@@ -3888,21 +3890,6 @@ impl<'a, T: Tool, R: HostRuntime> Guest<T> for InGuest<'a, T, R> {
         #[cfg(feature = "exec-native-injection")]
         if super::native_exec::is_exec(number) {
             let site = self.native_exec_site();
-            if number == libc::SYS_execveat
-                && raw_args[4] & libc::AT_EMPTY_PATH as u64 != 0
-                && self.exec.is_some()
-            {
-                // Named scope exclusion: empty-path/memfd images have no
-                // admitted route; refuse before driver prepare so no
-                // provision is taken and the old image stays armed.
-                self.unsupported_refusal = Some(reverie::UnsupportedRefusal::new(
-                    reverie::UnsupportedOperation::Exec,
-                    Errno::EOPNOTSUPP,
-                    "execveat with AT_EMPTY_PATH is not admitted by the native exec \
-                     route: only plain path execve/execveat images are admitted",
-                ));
-                return Err(Errno::EOPNOTSUPP);
-            }
             if let Some(exec) = self.exec.as_mut() {
                 let result = exec.inject(
                     (number, raw_args),
