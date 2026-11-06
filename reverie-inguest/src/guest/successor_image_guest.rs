@@ -244,7 +244,7 @@ impl<'a, T: Tool, R: HostRuntime> Guest<T> for SuccessorImageGuest<'a, T, R> {
         {
             return Err(self.refuse(1));
         }
-        if let Some(error) = injected_syscall_guard(self.runtime, number, args) {
+        if let Some(error) = injected_syscall_guard(self.runtime, number, args, false) {
             self.refuse(1);
             return Err(error);
         }

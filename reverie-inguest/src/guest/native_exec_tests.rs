@@ -667,7 +667,7 @@ fn mock_driver_tail_exec_keeps_the_original_process_guard_refusal() {
     let runtime = ModelRuntime { watched: false };
     for number in [libc::SYS_execve, libc::SYS_execveat] {
         assert_eq!(
-            injected_syscall_guard(&runtime, number, [0; 6]),
+            injected_syscall_guard(&runtime, number, [0; 6], false),
             Some(Errno::EOPNOTSUPP)
         );
     }
