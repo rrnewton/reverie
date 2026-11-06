@@ -1134,8 +1134,8 @@ const CONTENT_REVERIE_CATALOG: [(&str, u64, &str); 83] = [
     ),
     (
         "reverie-inguest/src/guest/tool_install.rs",
-        25859,
-        "527b74c43a82c5f79980dc78dc60b9dcce78061562238bc7ec615f7c4f43d0d6",
+        26788,
+        "7d82b853b703806add91be0c3db27c3d3a877a99df33b821889ad779d4c3c96e",
     ),
     (
         "reverie-inguest/src/signal.rs",
@@ -1319,13 +1319,13 @@ const CONTENT_REVERIE_CATALOG: [(&str, u64, &str); 83] = [
     ),
     (
         "reverie-liteinst/Cargo.toml",
-        5505,
-        "fd91ba0c9bf4c3819502aaf6ee693752f3991a99fc838b1341c568add207c410",
+        6063,
+        "59093e1dd648258f13d1c729108af3436503e44765616aba786fb67bd6fd6e01",
     ),
     (
         "reverie-liteinst/src/lib.rs",
-        24353,
-        "5a038fb111932c1bc045074cf679dce0bef88e8c50511aee252db24bab9c2a8b",
+        25595,
+        "a3055746ef601a5bf6c3d5ba13dbd221cc6f07944f36ea176fd02ec809def37a",
     ),
     (
         "reverie-liteinst-preload/Cargo.toml",
@@ -1339,8 +1339,8 @@ const CONTENT_REVERIE_CATALOG: [(&str, u64, &str); 83] = [
     ),
     (
         "reverie-liteinst/src/patch_alloc.rs",
-        24729,
-        "d17373084f4d3b16cd3f5bdf6e8314331de3ca279b1287a89c8b5566e16b5dfa",
+        24942,
+        "3594983133be9a749cdc744717e04b7cfcd793a26d41f34669afbfdc964b3c18",
     ),
     (
         "reverie-inguest/src/guest/alloc.rs",
@@ -1394,8 +1394,8 @@ const CONTENT_REVERIE_CATALOG: [(&str, u64, &str); 83] = [
     ),
     (
         "reverie-liteinst/src/tool_host.rs",
-        59026,
-        "fcb1b651f5dc1142521b6ff8140c438c71b7b862ff6feb0d48ac63c52dbb570a",
+        59345,
+        "10713282b9911d38455ea53fd430bde386e4903022511db7f6a7a8ae974f4516",
     ),
     (
         "reverie/Cargo.toml",
