@@ -316,9 +316,12 @@ mod tests {
     use super::*;
 
     // Each exact test runs alone in a subprocess: descriptor-number and rlimit
-    // checks must not race other tests opening descriptors in the same process.
-    fn isolated_coordinator_move_test(name: &str, body: impl FnOnce()) {
-        const CHILD: &str = "REVERIE_ORDINARY_COORDINATOR_MOVE_TEST";
+    // checks must not race other tests opening descriptors in the same
+    // process, and checks that assume sole ownership of a socket end (EOF
+    // after drop, EPIPE after peer close) must not race other tests forking
+    // children that inherit the whole descriptor table.
+    fn isolated_subprocess_test(name: &str, body: impl FnOnce()) {
+        const CHILD: &str = "REVERIE_INGUEST_ISOLATED_SUBPROCESS_TEST";
         if std::env::var(CHILD).ok().as_deref() == Some(name) {
             body();
             return;
@@ -343,7 +346,7 @@ mod tests {
                     String::from_utf8_lossy(&output.stdout)
                         .lines()
                         .any(|line| line == format!("test {name} ... ok")),
-                    "selected relocation control did not execute: {}",
+                    "selected isolated test did not execute: {}",
                     String::from_utf8_lossy(&output.stdout)
                 );
                 return;
@@ -351,7 +354,7 @@ mod tests {
             if std::time::Instant::now() >= deadline {
                 child.kill().unwrap();
                 let status = child.wait().unwrap();
-                panic!("coordinator relocation control exceeded its bound: {status}");
+                panic!("isolated test exceeded its bound: {status}");
             }
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
@@ -373,7 +376,7 @@ mod tests {
 
     #[test]
     fn ordinary_coordinator_connect_and_rpc_do_not_require_high_descriptors() {
-        isolated_coordinator_move_test(
+        isolated_subprocess_test(
             "guest::rpc::stream::tests::ordinary_coordinator_connect_and_rpc_do_not_require_high_descriptors",
             || {
                 use std::os::unix::net::UnixListener;
@@ -485,7 +488,7 @@ mod tests {
     /// than wait for itself.
     #[test]
     fn a_relocated_coordinator_connection_answers_the_next_request() {
-        isolated_coordinator_move_test(
+        isolated_subprocess_test(
             "guest::rpc::stream::tests::a_relocated_coordinator_connection_answers_the_next_request",
             || {
                 use std::os::unix::net::UnixListener;
@@ -567,7 +570,7 @@ mod tests {
 
     #[test]
     fn ordinary_coordinator_move_preserves_ofd_peer_and_closes_original() {
-        isolated_coordinator_move_test(
+        isolated_subprocess_test(
             "guest::rpc::stream::tests::ordinary_coordinator_move_preserves_ofd_peer_and_closes_original",
             || {
                 let (original, mut peer) = UnixStream::pair().unwrap();
@@ -625,7 +628,7 @@ mod tests {
 
     #[test]
     fn ordinary_coordinator_move_skips_occupied_high_descriptor() {
-        isolated_coordinator_move_test(
+        isolated_subprocess_test(
             "guest::rpc::stream::tests::ordinary_coordinator_move_skips_occupied_high_descriptor",
             || {
                 let (first, mut first_peer) = UnixStream::pair().unwrap();
@@ -648,7 +651,7 @@ mod tests {
 
     #[test]
     fn ordinary_coordinator_move_returns_real_duplication_error_and_cleans_owner() {
-        isolated_coordinator_move_test(
+        isolated_subprocess_test(
             "guest::rpc::stream::tests::ordinary_coordinator_move_returns_real_duplication_error_and_cleans_owner",
             || {
                 let (original, mut peer) = UnixStream::pair().unwrap();
@@ -692,26 +695,31 @@ mod tests {
 
     #[test]
     fn ordinary_adapter_preserves_real_stream_partial_io_and_eof() {
-        let (client, mut peer) = UnixStream::pair().unwrap();
-        let fd = client.as_raw_fd();
-        let mut stream = GuestRpcStream::from(client);
-        assert_eq!(stream.as_raw_fd(), fd);
-        assert!(matches!(&stream, GuestRpcStream::Ordinary(_)));
-        peer.write_all(b"abc").unwrap();
-        let mut first = [0; 2];
-        assert_eq!(stream.read(&mut first).unwrap(), 2);
-        assert_eq!(&first, b"ab");
-        let mut second = [0; 4];
-        assert_eq!(stream.read(&mut second).unwrap(), 1);
-        assert_eq!(second[0], b'c');
-        stream.write_all(b"reply").unwrap();
-        let mut reply = [0; 5];
-        peer.read_exact(&mut reply).unwrap();
-        assert_eq!(&reply, b"reply");
-        stream.flush().unwrap();
-        drop(peer);
-        assert_eq!(stream.read(&mut second).unwrap(), 0);
-        assert_eq!(stream.read(&mut []).unwrap(), 0);
+        isolated_subprocess_test(
+            "guest::rpc::stream::tests::ordinary_adapter_preserves_real_stream_partial_io_and_eof",
+            || {
+                let (client, mut peer) = UnixStream::pair().unwrap();
+                let fd = client.as_raw_fd();
+                let mut stream = GuestRpcStream::from(client);
+                assert_eq!(stream.as_raw_fd(), fd);
+                assert!(matches!(&stream, GuestRpcStream::Ordinary(_)));
+                peer.write_all(b"abc").unwrap();
+                let mut first = [0; 2];
+                assert_eq!(stream.read(&mut first).unwrap(), 2);
+                assert_eq!(&first, b"ab");
+                let mut second = [0; 4];
+                assert_eq!(stream.read(&mut second).unwrap(), 1);
+                assert_eq!(second[0], b'c');
+                stream.write_all(b"reply").unwrap();
+                let mut reply = [0; 5];
+                peer.read_exact(&mut reply).unwrap();
+                assert_eq!(&reply, b"reply");
+                stream.flush().unwrap();
+                drop(peer);
+                assert_eq!(stream.read(&mut second).unwrap(), 0);
+                assert_eq!(stream.read(&mut []).unwrap(), 0);
+            },
+        );
     }
 
     /// This guard exercises return/error semantics only. The installed
@@ -724,51 +732,56 @@ mod tests {
 
     #[test]
     fn callback_socket_keeps_short_io_empty_calls_and_kernel_errors() {
-        let (socket, mut peer) = UnixStream::pair().unwrap();
-        socket.set_nonblocking(true).unwrap();
-        let fd = socket.as_raw_fd();
-        let mut adapter = GuestRpcStream::from(socket);
-        assert_eq!(adapter.as_raw_fd(), fd);
+        isolated_subprocess_test(
+            "guest::rpc::stream::tests::callback_socket_keeps_short_io_empty_calls_and_kernel_errors",
+            || {
+                let (socket, mut peer) = UnixStream::pair().unwrap();
+                socket.set_nonblocking(true).unwrap();
+                let fd = socket.as_raw_fd();
+                let mut adapter = GuestRpcStream::from(socket);
+                assert_eq!(adapter.as_raw_fd(), fd);
 
-        // recvfrom with length zero still reaches the kernel: without input,
-        // Linux reports EAGAIN on a nonblocking stream instead of success.
-        let empty = callback_io(|| adapter.read(&mut []));
-        assert_eq!(empty.unwrap_err().raw_os_error(), Some(libc::EAGAIN));
-        assert_eq!(callback_io(|| adapter.write(&[])).unwrap(), 0);
-        peer.write_all(b"abc").unwrap();
-        let mut bytes = [0; 8];
-        assert_eq!(callback_io(|| adapter.read(&mut [])).unwrap(), 0);
-        assert_eq!(callback_io(|| adapter.read(&mut bytes[..2])).unwrap(), 2);
-        assert_eq!(&bytes[..2], b"ab");
-        assert_eq!(callback_io(|| adapter.read(&mut bytes)).unwrap(), 1);
-        assert_eq!(bytes[0], b'c');
-        assert_eq!(
-            callback_io(|| adapter.read(&mut bytes))
-                .unwrap_err()
-                .raw_os_error(),
-            Some(libc::EAGAIN),
+                // recvfrom with length zero still reaches the kernel: without input,
+                // Linux reports EAGAIN on a nonblocking stream instead of success.
+                let empty = callback_io(|| adapter.read(&mut []));
+                assert_eq!(empty.unwrap_err().raw_os_error(), Some(libc::EAGAIN));
+                assert_eq!(callback_io(|| adapter.write(&[])).unwrap(), 0);
+                peer.write_all(b"abc").unwrap();
+                let mut bytes = [0; 8];
+                assert_eq!(callback_io(|| adapter.read(&mut [])).unwrap(), 0);
+                assert_eq!(callback_io(|| adapter.read(&mut bytes[..2])).unwrap(), 2);
+                assert_eq!(&bytes[..2], b"ab");
+                assert_eq!(callback_io(|| adapter.read(&mut bytes)).unwrap(), 1);
+                assert_eq!(bytes[0], b'c');
+                assert_eq!(
+                    callback_io(|| adapter.read(&mut bytes))
+                        .unwrap_err()
+                        .raw_os_error(),
+                    Some(libc::EAGAIN),
+                );
+                assert_eq!(callback_io(|| adapter.write(b"reply")).unwrap(), 5);
+                let mut reply = [0; 5];
+                peer.read_exact(&mut reply).unwrap();
+                assert_eq!(&reply, b"reply");
+                callback_io(|| adapter.flush()).unwrap();
+                peer.shutdown(std::net::Shutdown::Write).unwrap();
+                assert_eq!(callback_io(|| adapter.read(&mut bytes)).unwrap(), 0);
+                drop(peer);
+                assert_eq!(
+                    callback_io(|| adapter.write(&[]))
+                        .unwrap_err()
+                        .raw_os_error(),
+                    Some(libc::EPIPE),
+                );
+                assert_eq!(
+                    callback_io(|| adapter.write(b"x"))
+                        .unwrap_err()
+                        .raw_os_error(),
+                    Some(libc::EPIPE),
+                );
+                assert_eq!(adapter.as_raw_fd(), fd);
+            },
         );
-        assert_eq!(callback_io(|| adapter.write(b"reply")).unwrap(), 5);
-        let mut reply = [0; 5];
-        peer.read_exact(&mut reply).unwrap();
-        assert_eq!(&reply, b"reply");
-        callback_io(|| adapter.flush()).unwrap();
-        peer.shutdown(std::net::Shutdown::Write).unwrap();
-        assert_eq!(callback_io(|| adapter.read(&mut bytes)).unwrap(), 0);
-        drop(peer);
-        assert_eq!(
-            callback_io(|| adapter.write(&[]))
-                .unwrap_err()
-                .raw_os_error(),
-            Some(libc::EPIPE),
-        );
-        assert_eq!(
-            callback_io(|| adapter.write(b"x"))
-                .unwrap_err()
-                .raw_os_error(),
-            Some(libc::EPIPE),
-        );
-        assert_eq!(adapter.as_raw_fd(), fd);
     }
 
     #[test]
