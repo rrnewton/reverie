@@ -1379,8 +1379,8 @@ const CONTENT_REVERIE_CATALOG: [(&str, u64, &str); 83] = [
     ),
     (
         "reverie-inguest/src/guest/rpc.rs",
-        19824,
-        "7c87f79841be6e70cd775741362f2dc5a51f4e467ddf23a129e12d938a11dda9",
+        23415,
+        "282a1dc2327f0d52d2a1fff5cf546fcf1ef383ff2ee543dcefe18bd29550e4d4",
     ),
     (
         "reverie-inguest/src/guest/host.rs",
@@ -1481,13 +1481,13 @@ const CONTENT_REVERIE_CATALOG: [(&str, u64, &str); 83] = [
     ),
     (
         "reverie-rpc-transport/src/lib.rs",
-        4862,
-        "f0dec89933ddc8d520f0d7fbe634bbb5866826f4360b1a35d8a3fdedc4b36fbd",
+        4975,
+        "b8b927cf8deacd2c20ac20885cdecd913b0805d5452773dedbb32cafc46a8622",
     ),
     (
         "reverie-rpc-transport/src/server.rs",
-        121453,
-        "fdc6396f781ca59bf8f1b54886401ba36a466d4c12a88b0d90d51326fe4c91e5",
+        122838,
+        "762c9635b53287bb892e6931b77c5ff6605b9cb27553d87932b43caf85544281",
     ),
     (
         "reverie-rpc-transport/src/blocking_client.rs",
