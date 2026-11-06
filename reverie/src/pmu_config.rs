@@ -6,7 +6,90 @@ use thiserror::Error;
 
 use crate::Errno;
 use crate::perf::Event;
-pub use crate::pmu::RcbMetric;
+pub use pmu_shim::RcbMetric;
+
+/// Interim single cfg site for PMU profile facts (Isa addendum 2,
+/// 2026-11-06): profile facts are Isa facts, and until
+/// `Isa::pmu_profile` lands every `crate::pmu` reference in this
+/// file collects here. The aarch64 arm mirrors the metric type
+/// (identifiers must round-trip in recorded histories) but has no
+/// profile table: qualification falls through to the existing
+/// unqualified path. Delete this module when the Isa trait lands;
+/// scattered per-use cfg beyond this site is a review finding.
+#[cfg(target_arch = "x86_64")]
+mod pmu_shim {
+    pub use crate::pmu::PmuProfile;
+    pub use crate::pmu::RcbMetric;
+    pub use crate::pmu::vendor_has_family;
+}
+
+/// Interim aarch64 arm of [`pmu_shim`]: no profile table.
+#[cfg(not(target_arch = "x86_64"))]
+mod pmu_shim {
+    /// Mirror of the x86 metric type: same variant and stable
+    /// identifiers, so recorded histories read identically. No
+    /// aarch64 profile ever yields one in this interim.
+    #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
+    pub enum RcbMetric {
+        /// Every retired conditional branch, user mode only, per thread.
+        ConditionalBranchesRetiredUserV1,
+    }
+
+    impl RcbMetric {
+        /// The stable identifier histories store.
+        pub const fn id(self) -> &'static str {
+            match self {
+                Self::ConditionalBranchesRetiredUserV1 => "rcb:cond-retired:user:v1",
+            }
+        }
+
+        /// The metric a stored identifier names, or `None` for one this
+        /// build does not know.
+        pub fn from_id(id: &str) -> Option<Self> {
+            match id {
+                "rcb:cond-retired:user:v1" => Some(Self::ConditionalBranchesRetiredUserV1),
+                _ => None,
+            }
+        }
+    }
+
+    /// No aarch64 vendor/family is in the interim profile table.
+    pub fn vendor_has_family(_vendor: &str, _family_id: u8) -> bool {
+        false
+    }
+
+    /// A raw retired conditional branch event and its default ptrace
+    /// timer margin. Never constructed on aarch64 in this interim:
+    /// `for_family_model` has no table to return from.
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    pub struct PmuProfile {
+        rcb_event: u64,
+        skid_margin: u64,
+        metric: Option<RcbMetric>,
+    }
+
+    impl PmuProfile {
+        /// No interim aarch64 profile exists for any family/model.
+        pub fn for_family_model(_family_id: u8, _model_id: u8) -> Option<Self> {
+            None
+        }
+
+        pub fn metric(&self) -> Option<RcbMetric> {
+            self.metric
+        }
+
+        pub fn raw_rcb_event(&self) -> u64 {
+            self.rcb_event
+        }
+
+        // API parity with the x86 profile; its only consumer
+        // (try_from_family_model) is x86-only in this interim.
+        #[allow(dead_code)]
+        pub fn default_skid_margin(&self) -> u64 {
+            self.skid_margin
+        }
+    }
+}
 // Used by both the preserved validation diagnostic and its ptrace probe.
 #[cfg(target_arch = "x86_64")]
 #[doc(hidden)]
@@ -243,7 +326,7 @@ pub enum PmuValidationError {
 pub const SINGLESTEP_TIMEOUT_RCBS: u64 = 5;
 
 /// The largest default skid margin of any processor in the PMU table
-/// (`crate::pmu::PmuProfile`, and at most 2,700 on aarch64): that of the AMD Zen
+/// (the PMU profile table, and at most 2,700 on aarch64): that of the AMD Zen
 /// processors without a measured 1K entry. A unit test checks it against the
 /// whole table.
 pub const LARGEST_TABLE_SKID_MARGIN: u64 = 10_000;
@@ -463,7 +546,7 @@ impl PmuConfig {
     #[cfg(target_arch = "x86_64")]
     #[doc(hidden)]
     pub fn try_from_family_model(family_id: u8, model_id: u8) -> Option<Self> {
-        crate::pmu::PmuProfile::for_family_model(family_id, model_id).map(|profile| Self {
+        pmu_shim::PmuProfile::for_family_model(family_id, model_id).map(|profile| Self {
             rcb_event: profile.raw_rcb_event(),
             skid_margin: profile.default_skid_margin(),
             skid_margin_override: None,
@@ -1169,13 +1252,13 @@ pub fn qualify_host(
     family_id: u8,
     model_id: u8,
 ) -> Result<QualifiedClock, UnqualifiedReason> {
-    if !crate::pmu::vendor_has_family(vendor, family_id) {
+    if !pmu_shim::vendor_has_family(vendor, family_id) {
         return Err(UnqualifiedReason::VendorFamilyNotInTable {
             vendor: vendor.to_owned(),
             family: family_id,
         });
     }
-    let profile = crate::pmu::PmuProfile::for_family_model(family_id, model_id).ok_or(
+    let profile = pmu_shim::PmuProfile::for_family_model(family_id, model_id).ok_or(
         UnqualifiedReason::ModelNotInTable {
             family: family_id,
             model: model_id,
