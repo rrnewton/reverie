@@ -774,6 +774,12 @@ struct Event {
     /// and must not be collapsed into terminal ECHILD.
     registration_error: Mutex<Option<Errno>>,
 
+    /// Generation-bound waits created while this task was detached
+    /// (detach -> reattach handoff). While nonzero, an instantaneous
+    /// ECHILD with TracerPid=0 is the expected handoff gap, not loss of
+    /// wait ownership; see [`Event::mark_echild_if_unowned`].
+    detached_waits: AtomicUsize,
+
     /// Monotonic activity state owned by this exact Event generation.
     worker_state: AtomicI32,
     worker_done_lock: Mutex<()>,
@@ -1428,6 +1434,7 @@ impl Event {
             exit_epoch: AtomicUsize::new(0),
             exit_stop_follows_dead_exec: AtomicBool::new(false),
             registration_error: Mutex::new(None),
+            detached_waits: AtomicUsize::new(0),
             worker_state: AtomicI32::new(WORKER_NOT_STARTED),
             worker_done_lock: Mutex::new(()),
             worker_done_changed: Condvar::new(),
@@ -1934,6 +1941,18 @@ impl Event {
         self.exit_waiters.wake_all();
     }
 
+    /// Records one generation-bound wait created while detached. The
+    /// creating driver holds the matching end (its Drop), so the count
+    /// is nonzero exactly while a detached wait object lives.
+    fn note_detached_wait(&self) {
+        self.detached_waits.fetch_add(1, Ordering::AcqRel);
+    }
+
+    fn end_detached_wait(&self) {
+        let previous = self.detached_waits.fetch_sub(1, Ordering::AcqRel);
+        debug_assert!(previous != 0, "detached wait ended without a note");
+    }
+
     /// Commit loss of wait ownership against a concurrent Safe API attach.
     /// Once the gate is closed, attachment must wait for this owner to retire
     /// and use a new Event; a successful attachment while it is open instead
@@ -1947,6 +1966,23 @@ impl Event {
         if identity.is_active_tracee() {
             return false;
         }
+        // A detach -> reattach handoff passes through TracerPid=0 while
+        // this generation's handles explicitly survive the owner change,
+        // and the worker can enter its wait exactly inside that gap and
+        // reap an instantaneous ECHILD. That gap is explicit state, not
+        // timing inference: a generation-bound wait created while the
+        // task was detached records itself in `detached_waits` until it
+        // drops or completes. While such a wait exists, the same live
+        // generation is not unowned merely for being untraced at this
+        // instant. A zombie is exempt: Linux refuses ptrace attach once
+        // exit_state is set, so no reattach can ever consume it, and
+        // retirement must not wait for an unrelated parent's reap.
+        if self.detached_waits.load(Ordering::Acquire) != 0
+            && identity.observed_process_generation() == Some(true)
+            && !identity.task_is_zombie()
+        {
+            return false;
+        }
         self.mark_echild();
         true
     }
@@ -1954,6 +1990,15 @@ impl Event {
     fn mark_legacy_echild_if_unowned(&self, identity: &WorkerIdentity) -> Result<bool, Errno> {
         let progress = self.legacy_wait.lock();
         if !progress.consumed.is_empty() {
+            return Ok(false);
+        }
+        // Same explicit handoff state as the native path: a detached wait
+        // on this same live, non-zombie generation means a reattach is
+        // pending, so a momentary TracerPid=0 does not close the wait.
+        if self.detached_waits.load(Ordering::Acquire) != 0
+            && identity.observed_process_generation() == Some(true)
+            && !identity.task_is_zombie()
+        {
             return Ok(false);
         }
         // Attachment/lifetime proof comes from the retained target and host
@@ -3228,6 +3273,9 @@ struct WorkerProcSnapshot {
     tgid: Pid,
     tracer_pid: Pid,
     start_time: u64,
+    /// `State: Z` (or X): exit_state is set, so ptrace attach is refused
+    /// and no reattach can ever consume this task again.
+    zombie: bool,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -3440,6 +3488,15 @@ impl WorkerIdentity {
                 current.same_process_generation(&self.snapshot)
                     && tracer_is_current(current.tracer_pid)
             })
+    }
+
+    /// Whether this exact generation is currently a zombie (or dead):
+    /// exit_state is set and ptrace attach is refused, so no pending
+    /// reattach can ever consume it.
+    fn task_is_zombie(&self) -> bool {
+        self.read_snapshot()
+            .ok()
+            .is_some_and(|current| current.zombie)
     }
 
     /// Reads current attachment state through the retained proc directory,
@@ -5359,6 +5416,7 @@ fn retained_proc_snapshot(directory: RawFd) -> io::Result<WorkerProcSnapshot> {
         tgid: worker_status_pid(&status, "Tgid:")?,
         tracer_pid: worker_status_pid(&status, "TracerPid:")?,
         start_time,
+        zombie: worker_status_is_zombie(&status),
     };
     if worker_stat_start_time(&read(directory, c"stat")?)? != start_time {
         return Err(io::Error::new(
@@ -5367,6 +5425,13 @@ fn retained_proc_snapshot(directory: RawFd) -> io::Result<WorkerProcSnapshot> {
         ));
     }
     Ok(snapshot)
+}
+
+fn worker_status_is_zombie(status: &str) -> bool {
+    status
+        .lines()
+        .find_map(|line| line.strip_prefix("State:"))
+        .is_some_and(|value| matches!(value.trim_start().chars().next(), Some('Z' | 'X' | 'x')))
 }
 
 fn worker_status_pid(status: &str, name: &str) -> std::io::Result<Pid> {
@@ -5390,6 +5455,7 @@ fn worker_proc_snapshot(pid: Pid) -> std::io::Result<WorkerProcSnapshot> {
         tgid: worker_status_pid(&status, "Tgid:")?,
         tracer_pid: worker_status_pid(&status, "TracerPid:")?,
         start_time,
+        zombie: worker_status_is_zombie(&status),
     };
     if worker_process_start_time(pid)? != start_time {
         return Err(std::io::Error::new(
@@ -7417,6 +7483,28 @@ pub enum OwnedWaitError {
     Completed,
 }
 
+/// Records a generation-bound wait created while its task is detached,
+/// returning the Event whose detached-wait count was noted (the caller
+/// holds it until drop; see [`Event::note_detached_wait`]). A wait
+/// created while attached, or whose task is already gone, records
+/// nothing: no handoff is pending for it to protect.
+fn note_detached_wait_if_untraced(token: &TraceeToken) -> Option<Arc<Event>> {
+    let handle = token.event();
+    let identity = handle.identity()?;
+    if identity.current_tracer_pid() != Ok(Pid::from_raw(0)) {
+        return None;
+    }
+    let event = Arc::clone(handle.event());
+    event.note_detached_wait();
+    Some(event)
+}
+
+fn end_detached_wait(pending: &mut Option<Arc<Event>>) {
+    if let Some(event) = pending.take() {
+        event.end_detached_wait();
+    }
+}
+
 /// A wait that retains its original capability on non-owning errors.
 ///
 /// It may be polled again after handling an error. A successful return removes
@@ -7427,13 +7515,17 @@ pub struct OwnedWaitFuture {
     inner: Option<WaitFuture>,
     observed_death: bool,
     managed_guard: Option<PtracerThreadGuard>,
+    /// Detached-wait note taken at creation while untraced, ended on drop.
+    detached_wait: Option<Arc<Event>>,
 }
 impl OwnedWaitFuture {
     pub(super) fn new(running: Running) -> Self {
+        let detached_wait = note_detached_wait_if_untraced(&running.1);
         Self {
             inner: Some(WaitFuture::new(running)),
             observed_death: false,
             managed_guard: None,
+            detached_wait,
         }
     }
 
@@ -7442,6 +7534,7 @@ impl OwnedWaitFuture {
             inner: Some(WaitFuture::from_stopped(stopped)),
             observed_death: false,
             managed_guard: None,
+            detached_wait: None,
         }
     }
 
@@ -7534,6 +7627,12 @@ impl OwnedWaitFuture {
         }
         let inner = self.inner.take().unwrap();
         Ok(super::Zombie(Running::from_token(inner.pid, inner.token)))
+    }
+}
+
+impl Drop for OwnedWaitFuture {
+    fn drop(&mut self) {
+        end_detached_wait(&mut self.detached_wait);
     }
 }
 
@@ -7781,10 +7880,19 @@ struct PtracerAffinity {
 pub struct PtracerSyncDriver {
     input: Option<(Pid, TraceeToken)>,
     affinity: PtracerAffinity,
+    /// Detached-wait note taken at creation while untraced, ended on drop.
+    detached_wait: Option<Arc<Event>>,
+}
+
+impl Drop for PtracerSyncDriver {
+    fn drop(&mut self) {
+        end_detached_wait(&mut self.detached_wait);
+    }
 }
 
 impl PtracerSyncDriver {
     pub(super) fn new(running: Running) -> Self {
+        let detached_wait = note_detached_wait_if_untraced(&running.1);
         let affinity = PtracerAffinity::new(
             running.1.event(),
             running.1.ptracer_owner.clone(),
@@ -7793,6 +7901,7 @@ impl PtracerSyncDriver {
         Self {
             input: Some((running.0, running.1)),
             affinity,
+            detached_wait,
         }
     }
 

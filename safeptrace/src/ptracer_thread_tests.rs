@@ -1378,6 +1378,95 @@ async fn explicit_native_reattach_preserves_current_owner_and_original_driver() 
     emit_completion_marker(MARKER);
 }
 
+/// Seizes the guest member with a synchronous wait and returns its
+/// stopped capability. No notifier worker is started for the
+/// generation yet: registration happens when the caller creates a
+/// terminal cleanup handle, which the controls below do only after
+/// detaching, so the worker's first wait deterministically observes
+/// the detached state.
+#[cfg(not(sanitized))]
+fn seized_stopped_sync(tid: Pid) -> Stopped {
+    let running = Running::seize_on_ptracer_thread(tid.into(), legacy_thread_options()).unwrap();
+    running.interrupt().unwrap();
+    let (stopped, event) = running
+        .wait_sync_on_ptracer_thread()
+        .wait()
+        .unwrap()
+        .assume_stopped();
+    assert_eq!(event, crate::Event::Stop);
+    stopped
+}
+
+/// A permanent detach (no generation-bound wait created while detached)
+/// retires the generation promptly: the worker must not be retained by
+/// the detach -> reattach handoff exemption.
+#[test]
+#[cfg(not(sanitized))]
+fn permanent_detach_retires_native_generation() {
+    let (root, tid, release, mut root_cleanup) = legacy_owner_guest();
+    let stopped = seized_stopped_sync(tid);
+    let running = stopped.detach(None).unwrap();
+    let terminal = running.terminal_cleanup();
+    drop(running);
+    assert!(
+        terminal.wait(TRACEE_WAIT_TIMEOUT),
+        "permanently detached generation must retire"
+    );
+    legacy_owner_reap_root(root, &mut root_cleanup);
+    drop(release);
+}
+
+/// Owner-thread exit after a detach into a retained driver retires the
+/// generation: the driver's detached-wait note ends when the exiting
+/// thread drops it, so no live thread can reattach this generation.
+#[test]
+#[cfg(not(sanitized))]
+fn owner_exit_retires_native_generation() {
+    let (root, tid, release, mut root_cleanup) = legacy_owner_guest();
+    let (sent, received) = mpsc::channel();
+    let owner = thread::spawn(move || {
+        let stopped = seized_stopped_sync(tid);
+        let running = stopped.detach(None).unwrap();
+        let terminal = running.terminal_cleanup();
+        let driver = running.wait_sync_on_ptracer_thread().into_driver();
+        sent.send(terminal).unwrap();
+        // The retained driver (and its detached-wait note) drops with
+        // this thread's stack at exit.
+        drop(driver);
+    });
+    let terminal = received.recv_timeout(TRACEE_WAIT_TIMEOUT).unwrap();
+    owner.join().unwrap();
+    assert!(
+        terminal.wait(TRACEE_WAIT_TIMEOUT),
+        "generation whose owner thread exited must retire"
+    );
+    legacy_owner_reap_root(root, &mut root_cleanup);
+    drop(release);
+}
+
+/// An unreaped zombie retires even while a detached wait is held: Linux
+/// refuses ptrace attach once exit_state is set, so no reattach can
+/// consume it and retirement must not wait for the real parent's reap.
+#[test]
+#[cfg(not(sanitized))]
+fn unreaped_zombie_retires_native_generation() {
+    let (root, tid, release, mut root_cleanup) = legacy_owner_guest();
+    let stopped = seized_stopped_sync(tid);
+    let running = stopped.detach(None).unwrap();
+    let terminal = running.terminal_cleanup();
+    let driver = running.wait_sync_on_ptracer_thread().into_driver();
+    // Kill the whole guest group; the member is then a zombie (or gone)
+    // while the root remains unreaped by this test process.
+    assert_eq!(unsafe { libc::kill(root.as_raw(), libc::SIGKILL) }, 0);
+    assert!(
+        terminal.wait(TRACEE_WAIT_TIMEOUT),
+        "zombie generation must retire without waiting for reap"
+    );
+    drop(driver);
+    legacy_owner_reap_root(root, &mut root_cleanup);
+    drop(release);
+}
+
 #[tokio::test(flavor = "current_thread")]
 #[cfg(not(sanitized))]
 async fn explicit_copied_owner_namespace_refuses_before_consuming_any_report() {
