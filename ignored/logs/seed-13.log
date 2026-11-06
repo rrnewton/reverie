@@ -1,0 +1,17 @@
+
+running 12 tests
+test tracer::injection_stop_tests::different_tail_injection_replaces_original_once ... ok
+test tracer::injection_stop_tests::divergent_first_inject_in_place_then_private ... ok
+test tracer::injection_stop_tests::divergent_inject_with_pending_signal_delivers_after_resume ... ok
+test tracer::injection_stop_tests::divergent_number_runs_in_place_and_suppresses_original ... ok
+test tracer::injection_stop_tests::emulated_return_consumes_stop_before_instruction_callback ... ok
+test tracer::injection_stop_tests::inherited_ret_trap_rewrite_reports_enosys_on_both_transports ... ok
+test tracer::injection_stop_tests::post_exec_injections_leave_entry_memory_untouched ... ok
+test tracer::injection_stop_tests::post_exec_tail_exit_leaves_entry_unexecuted ... ok
+test tracer::injection_stop_tests::same_reinjection_then_private_injection_does_not_step_guest ... ok
+test tracer::injection_stop_tests::same_tail_injection_preserves_original_kernel_call ... ok
+test tracer::injection_stop_tests::seccomp_replacement_suppresses_original_write_once ... ok
+test tracer::injection_stop_tests::divergent_inject_interrupted_restarts_the_guest_call ... ok
+
+test result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 811 filtered out; finished in 2.03s
+
