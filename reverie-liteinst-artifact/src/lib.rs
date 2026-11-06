@@ -1486,8 +1486,8 @@ const CONTENT_REVERIE_CATALOG: [(&str, u64, &str); 83] = [
     ),
     (
         "reverie-rpc-transport/src/server.rs",
-        122838,
-        "762c9635b53287bb892e6931b77c5ff6605b9cb27553d87932b43caf85544281",
+        124659,
+        "1c66210c80566abed0e020a4b090ddd0ad5be05a45aba6ec29857fc066684ed7",
     ),
     (
         "reverie-rpc-transport/src/blocking_client.rs",
