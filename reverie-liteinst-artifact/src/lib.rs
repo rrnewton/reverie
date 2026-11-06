@@ -1417,15 +1417,14 @@ const CONTENT_REVERIE_CATALOG: [(&str, u64, &str); 83] = [
         83433,
         "20f3002e6864a55cb759e95be7b82bdaaf0680bf238487f6f16c5302eceeb40a",
     ),
-    // Reviewed for rrnewton/reverie#1284: SpecLockMap is now decided by
-    // direct exact branch counting (`AmdSpecLockMapBranchOvercount` /
-    // inconclusive-counter classification), replacing the PMCx025 witness
-    // as the deciding signal. Size/digest updated for that reviewed change
-    // only; no other catalogued source changed in that commit.
+    // Reviewed for rrnewton/reverie#1284 and its measured-read follow-up:
+    // SpecLockMap is decided by direct exact branch counting, and every
+    // counter window must prove it ran throughout (time_running) before
+    // any count is believed. Size/digest cover both reviewed changes.
     (
         "reverie/src/pmu_config.rs",
-        72113,
-        "f061005806e54acaea99bc11b421134361be3ede1233ffeb8b8f0faf4e271913",
+        73155,
+        "631bd7d217034be37d5cefcb198a6367c0ea2ab9291c5afa1266c0a0544b823d",
     ),
     (
         "reverie/src/in_guest_rcb.rs",

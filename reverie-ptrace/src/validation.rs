@@ -245,6 +245,57 @@ fn ioctl(
     })
 }
 
+/// One measured perf-counter reading, with the scheduling evidence
+/// `PERF_FORMAT_TOTAL_TIME_ENABLED`/`PERF_FORMAT_TOTAL_TIME_RUNNING`
+/// provide. A delta between two samples is a *measurement* only when
+/// the counter ran for the whole window; a multiplexed or starved
+/// counter that never ran reads its stale value (usually 0), which
+/// is not a measurement of anything and must never be handed to a
+/// verdict as a count.
+#[cfg(target_arch = "x86_64")]
+#[derive(Clone, Copy, Debug, Default)]
+struct CounterSample {
+    value: i64,
+    time_enabled: u64,
+    time_running: u64,
+}
+
+/// The value delta between two samples, or `None` when the counter
+/// was not scheduled for the whole window between them (including
+/// not at all): an unmeasured window yields no count, never a zero.
+#[cfg(target_arch = "x86_64")]
+fn measured_delta(before: CounterSample, after: CounterSample) -> Option<i64> {
+    let enabled = after.time_enabled.wrapping_sub(before.time_enabled);
+    let running = after.time_running.wrapping_sub(before.time_running);
+    (enabled > 0 && running >= enabled).then_some(after.value - before.value)
+}
+
+/// Reads one counter whose attr requested the total-time formats:
+/// the read returns value, time_enabled, and time_running, in that
+/// order.
+#[cfg(target_arch = "x86_64")]
+fn read_counter_sample(fd: &ScopedFd) -> Result<CounterSample, PmuValidationError> {
+    let mut words = [0_u64; 3];
+    let size = mem::size_of_val(&words);
+    let nread =
+        Errno::result(unsafe { libc::read(fd.0, words.as_mut_ptr() as *mut libc::c_void, size) })
+            .map_err(|errno| PmuValidationError::UnexpectedTestingErrnoError {
+            errno,
+            msg: "Failed to read from a counter",
+        })?;
+    if nread != size as isize {
+        return Err(PmuValidationError::UnexpectedTestingError(format!(
+            "Expected to read {} bytes from counter, but read {}",
+            size, nread
+        )));
+    }
+    Ok(CounterSample {
+        value: words[0] as i64,
+        time_enabled: words[1],
+        time_running: words[2],
+    })
+}
+
 /// read from the given file descriptor assuming it is a counter
 fn read_counter(fd: &ScopedFd) -> Result<i64, PmuValidationError> {
     let mut val: i64 = 0;
@@ -394,8 +445,34 @@ fn check_for_zen_speclockmap() -> Result<(), PmuValidationError> {
     speclockmap_verdict(count_speclockmap_commits()?)
 }
 
+/// How many times [`count_speclockmap_commits`] re-measures when a
+/// counter was not scheduled for the whole window (multiplexed or
+/// starved under load) before refusing as unmeasured. Bounded and
+/// counted: the refusal names this many attempts.
+#[cfg(target_arch = "x86_64")]
+const SPECLOCKMAP_MEASURE_ATTEMPTS: usize = 5;
+
 #[cfg(target_arch = "x86_64")]
 fn count_speclockmap_commits() -> Result<SpecLockMapCounts, PmuValidationError> {
+    let mut unmeasured: Vec<&'static str> = Vec::new();
+    for _ in 0..SPECLOCKMAP_MEASURE_ATTEMPTS {
+        if let Some(counts) = measure_speclockmap_once(&mut unmeasured)? {
+            return Ok(counts);
+        }
+    }
+    Err(PmuValidationError::SpecLockMapCounterUnmeasured {
+        counter: unmeasured.join(", "),
+        attempts: SPECLOCKMAP_MEASURE_ATTEMPTS,
+    })
+}
+
+/// One measurement attempt. `Ok(None)` means at least one counter was
+/// not scheduled for the whole window (its reading is unmeasured,
+/// not zero), and its name has been added to `unmeasured`.
+#[cfg(target_arch = "x86_64")]
+fn measure_speclockmap_once(
+    unmeasured: &mut Vec<&'static str>,
+) -> Result<Option<SpecLockMapCounts>, PmuValidationError> {
     // When the SpecLockMap optimization is not disabled, rr will not work
     // reliably (e.g. it would work fine on a single process with a single
     // thread, but not more). When the optimization is disabled, the
@@ -407,15 +484,22 @@ fn count_speclockmap_commits() -> Result<SpecLockMapCounts, PmuValidationError> 
     // one locked instruction can leave the counter at 0 on a CPU where the
     // optimization is enabled. Execute many, and count them: a zero is
     // never believed on this counter alone (the direct branch test
-    // decides acceptance), but a commit it does count happened, and a
-    // count of exactly zero locked instructions means this pipeline
-    // showed nothing at all.
+    // decides acceptance), but a commit it does count happened. Every
+    // counter here requests its enabled/running times, and a window in
+    // which it was not scheduled throughout is unmeasured - it yields
+    // no count at all, for any of the three counters, branch counter
+    // included - and the attempt is retried.
+    let read_format =
+        (perf::PERF_FORMAT_TOTAL_TIME_ENABLED | perf::PERF_FORMAT_TOTAL_TIME_RUNNING) as u64;
     let mut locked_attr =
         init_perf_event_attr(perf::PERF_TYPE_RAW, RETIRED_LOCK_INSTRUCTIONS_EVENT, false);
+    locked_attr.read_format = read_format;
     let mut commit_attr =
         init_perf_event_attr(perf::PERF_TYPE_RAW, SPECLOCKMAP_COMMIT_EVENT, false);
+    commit_attr.read_format = read_format;
 
     let mut rcb_attr = ticks_attr(false);
+    rcb_attr.read_format = read_format;
     let locked_fd = start_counter(0, -1, &mut locked_attr, None)?;
     let commit_fd = start_counter(0, -1, &mut commit_attr, None)?;
     let rcb_fd = start_counter(0, -1, &mut rcb_attr, None)?;
@@ -427,32 +511,56 @@ fn count_speclockmap_commits() -> Result<SpecLockMapCounts, PmuValidationError> 
     // reads the identical delta three times; SpecLockMap's harm is
     // precisely that locked instructions inflate the third reading.
     let iterations = SPECLOCKMAP_LOCKED_INSTRUCTIONS;
-    let branch_phase = |run: &dyn Fn()| -> Result<i64, PmuValidationError> {
-        let before = read_counter(&rcb_fd)?;
-        run();
-        Ok(read_counter(&rcb_fd)? - before)
+    let mut note_unmeasured = |name: &'static str| {
+        if !unmeasured.contains(&name) {
+            unmeasured.push(name);
+        }
     };
-    let branches_rcb = branch_phase(&|| do_branches(iterations as u64))?;
-    let branches_rcb_repeat = branch_phase(&|| do_branches(iterations as u64))?;
+    let branch_phase = |run: &dyn Fn()| -> Result<Option<i64>, PmuValidationError> {
+        let before = read_counter_sample(&rcb_fd)?;
+        run();
+        Ok(measured_delta(before, read_counter_sample(&rcb_fd)?))
+    };
+    let Some(branches_rcb) = branch_phase(&|| do_branches(iterations as u64))? else {
+        note_unmeasured("retired-branch");
+        return Ok(None);
+    };
+    let Some(branches_rcb_repeat) = branch_phase(&|| do_branches(iterations as u64))? else {
+        note_unmeasured("retired-branch");
+        return Ok(None);
+    };
     // The lock word is prepared before the locked phase is counted,
     // so that counted region contains only its loop body.
     let lock_word = core::sync::atomic::AtomicUsize::new(0);
-    let locks_rcb =
-        branch_phase(&|| execute_locked_instructions_branch_matched(iterations, &lock_word))?;
+    let Some(locks_rcb) =
+        branch_phase(&|| execute_locked_instructions_branch_matched(iterations, &lock_word))?
+    else {
+        note_unmeasured("retired-branch");
+        return Ok(None);
+    };
     core::hint::black_box(lock_word.load(core::sync::atomic::Ordering::Relaxed));
 
-    let locked_before = read_counter(&locked_fd)?;
-    let commits_before = read_counter(&commit_fd)?;
+    let locked_before = read_counter_sample(&locked_fd)?;
+    let commits_before = read_counter_sample(&commit_fd)?;
     execute_locked_instructions(SPECLOCKMAP_LOCKED_INSTRUCTIONS);
-    let speclockmap_commits = read_counter(&commit_fd)? - commits_before;
-    let locked_instructions = read_counter(&locked_fd)? - locked_before;
-    Ok(SpecLockMapCounts {
+    let Some(speclockmap_commits) =
+        measured_delta(commits_before, read_counter_sample(&commit_fd)?)
+    else {
+        note_unmeasured("speclockmap-commit");
+        return Ok(None);
+    };
+    let Some(locked_instructions) = measured_delta(locked_before, read_counter_sample(&locked_fd)?)
+    else {
+        note_unmeasured("retired-lock");
+        return Ok(None);
+    };
+    Ok(Some(SpecLockMapCounts {
         locked_instructions,
         speclockmap_commits,
         branches_rcb,
         branches_rcb_repeat,
         locks_rcb,
-    })
+    }))
 }
 
 /// The largest loop overhead (counted branches beyond the iterations
@@ -480,9 +588,11 @@ const SPECLOCKMAP_BRANCH_OVERHEAD_MAX: i64 = 256;
 /// as refusal evidence: PMCx025 does not count every locked
 /// instruction on every Zen part (it counted 3 to 466 of 100,000 on
 /// an EPYC 9D64 with SpecLockMap disabled), so its under-count can
-/// never accept a host, but a commit it does count happened, and a
-/// lock count of exactly zero means the event pipeline itself is
-/// dead or filtered, which is inconclusive rather than clean. No
+/// never accept a host, but a commit it does count happened. A
+/// fully-scheduled lock count of exactly zero is likewise only a
+/// measurement of an event that decides nothing; an unscheduled
+/// window is not a count at all and never reaches this verdict (the
+/// measurement layer re-measures it and refuses as unmeasured). No
 /// SpecLockMap-enabled host has yet measured this exact loop's
 /// differential: the enabled-state refusal rests on the retained
 /// commit counter (measured at 91 to 2,374 commits per 100,000 when
@@ -510,11 +620,16 @@ fn speclockmap_verdict(counts: SpecLockMapCounts) -> Result<(), PmuValidationErr
             locked_instructions,
         });
     }
-    // The retired-lock pipeline must at least be alive: a hypervisor
-    // filtering PMCx025 to zero would otherwise leave the commit
-    // counter's zero meaningless (the lock-event count itself, short
-    // of exact, decides nothing in either direction on any part).
-    if locked_instructions <= 0 {
+    // A negative retired-lock delta is a counter reading nothing can
+    // be concluded from. A fully-scheduled PMCx025 reading of exactly
+    // zero is different: it is a real measurement of an event that
+    // decides nothing by under-counting (see the module history: 3 to
+    // 466 of 100,000 on this part), and acceptance rests on the direct
+    // branch evidence below, per the design that replaced this proxy.
+    // Unscheduled windows never reach this verdict at all: the
+    // measurement layer treats them as unmeasured and re-measures,
+    // so a zero here was counted, not starved into existence.
+    if locked_instructions < 0 {
         return Err(PmuValidationError::SpecLockMapCheckInconclusive {
             counted: locked_instructions,
             executed: SPECLOCKMAP_LOCKED_INSTRUCTIONS,
@@ -639,8 +754,8 @@ mod test {
             "{counts:?}"
         );
         assert!(
-            counts.locked_instructions >= 1,
-            "{counts:?}: the retired-lock pipeline counted nothing"
+            counts.locked_instructions >= 0,
+            "{counts:?}: the retired-lock pipeline counted backwards"
         );
         // The verdict over this test's own counts must carry those same
         // counts in its payload, whatever this host's setting is. (A
@@ -711,6 +826,39 @@ mod test {
 
     #[cfg(target_arch = "x86_64")]
     #[test]
+    fn measured_delta_requires_the_counter_ran_the_whole_window() {
+        let sample = |value: i64, time_enabled: u64, time_running: u64| CounterSample {
+            value,
+            time_enabled,
+            time_running,
+        };
+        // Fully scheduled: the delta is a measurement, including a
+        // genuine counted zero (multiplexed-to-zero is the row below,
+        // not this one).
+        assert_eq!(
+            measured_delta(sample(7, 100, 100), sample(7, 200, 200)),
+            Some(0)
+        );
+        assert_eq!(
+            measured_delta(sample(7, 100, 100), sample(107, 200, 200)),
+            Some(100)
+        );
+        // Multiplexed part of the window: unmeasured, never a count.
+        assert_eq!(
+            measured_delta(sample(7, 100, 100), sample(7, 200, 150)),
+            None
+        );
+        // Never scheduled at all: unmeasured even though it reads 0.
+        assert_eq!(measured_delta(sample(0, 100, 0), sample(0, 200, 0)), None);
+        // An empty window shows nothing either way.
+        assert_eq!(
+            measured_delta(sample(7, 100, 100), sample(7, 100, 100)),
+            None
+        );
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    #[test]
     fn speclockmap_verdict_refuses_any_commit() {
         let n = SPECLOCKMAP_LOCKED_INSTRUCTIONS as i64;
         let exact = SpecLockMapCounts {
@@ -749,9 +897,30 @@ mod test {
             }),
             Err(PmuValidationError::UnexpectedTestingError(_))
         ));
-        // A dead retired-lock pipeline (nothing counted, not even
-        // the locks just executed) is inconclusive, never clean.
-        for dead in [0, -5] {
+        // A fully-scheduled retired-lock count of exactly zero is a
+        // measurement of an event that decides nothing: with exact
+        // branch evidence and zero commits it accepts (the direct
+        // test decides, per the design that replaced the proxy), and
+        // with inexact branches it refuses on the branch evidence.
+        assert!(
+            speclockmap_verdict(SpecLockMapCounts {
+                locked_instructions: 0,
+                ..exact
+            })
+            .is_ok()
+        );
+        assert!(matches!(
+            speclockmap_verdict(SpecLockMapCounts {
+                locked_instructions: 0,
+                branches_rcb: n + 25_000,
+                branches_rcb_repeat: n + 25_000,
+                locks_rcb: n + 25_000,
+                ..exact
+            }),
+            Err(PmuValidationError::BranchCounterCheckInconclusive { .. })
+        ));
+        // A negative delta is not a count at all: inconclusive.
+        for dead in [-5] {
             assert!(
                 matches!(
                     speclockmap_verdict(SpecLockMapCounts {
