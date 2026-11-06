@@ -711,12 +711,22 @@ unsafe impl PreparedNativeExec<WitnessTool> for WitnessTransaction<'_> {
         // SAFETY: genuine one-use local Issue over this exact session;
         // all after_issue obligations are the fixture's (see header).
         let leaf = unsafe { exec_private::IssuedNativeExecLeaf::after_issue(cut)? };
-        unsafe {
+        let mut returned = unsafe {
             leaf.call(|| {
                 self.session
                     .final_check(state, cut, &self.lease, &ticket, &self.digest)
             })
+        }?;
+        if TAMPER.load(Ordering::Relaxed) == TAMPER_PKRU {
+            // Negative control, selected here independently of the
+            // sampling guard it tests: this path runs only for the
+            // admitted exec issue, so the drift is exec-only even if
+            // observation sampling regresses to unconditional. The
+            // genuine leaf already returned; only the reported
+            // permission value handed back to the host is flipped.
+            returned.pkru = Some(returned.pkru.unwrap_or(0) ^ 4);
         }
+        Ok(returned)
     }
 
     fn cancel(
@@ -735,6 +745,7 @@ unsafe impl PreparedNativeExec<WitnessTool> for WitnessTransaction<'_> {
 static EXEC_PKRU_PRE: AtomicU64 = AtomicU64::new(u64::MAX);
 static EXEC_PKRU_POST: AtomicU64 = AtomicU64::new(u64::MAX);
 static EXEC_PKRU_SAMPLED: AtomicU64 = AtomicU64::new(0);
+static EXEC_PKRU_SAMPLE_COUNT: AtomicU64 = AtomicU64::new(0);
 static STATE_AT_NEXT_0: AtomicU64 = AtomicU64::new(u64::MAX);
 static STATE_AT_NEXT_1: AtomicU64 = AtomicU64::new(u64::MAX);
 static DECLARED_PTR: AtomicUsize = AtomicUsize::new(0);
@@ -764,15 +775,9 @@ unsafe fn witness_syscall(context: *mut RegisterContext, pkru: &mut Option<u32>)
     c.rax = event.result as u64;
     *pkru = event.guest_pkru;
     if is_exec {
-        let mut post = pkru.map_or(u64::MAX, u64::from);
-        if TAMPER.load(Ordering::Relaxed) == TAMPER_PKRU {
-            // Negative control: simulate an exec-only PKRU drift
-            // observation; the postcondition must catch it even
-            // though the later getpid preserves the drifted value.
-            post ^= 4;
-        }
-        EXEC_PKRU_POST.store(post, Ordering::Relaxed);
+        EXEC_PKRU_POST.store(pkru.map_or(u64::MAX, u64::from), Ordering::Relaxed);
         EXEC_PKRU_SAMPLED.store(1, Ordering::Relaxed);
+        EXEC_PKRU_SAMPLE_COUNT.fetch_add(1, Ordering::Relaxed);
     }
 }
 
@@ -861,7 +866,7 @@ fn open_fd_count() -> u64 {
         )
     };
     if dir < 0 {
-        return 0;
+        return u64::MAX;
     }
     let mut count = 0_u64;
     let mut buffer = [0_u8; 4096];
@@ -879,7 +884,11 @@ fn open_fd_count() -> u64 {
                 ],
             )
         };
-        if read <= 0 {
+        if read < 0 {
+            unsafe { crate::trap::raw_syscall6(libc::SYS_close, [dir as u64, 0, 0, 0, 0, 0]) };
+            return u64::MAX;
+        }
+        if read == 0 {
             break;
         }
         let mut offset = 0_usize;
@@ -1258,12 +1267,22 @@ fn run_witness_inner(mode: &str) {
     // PKRU samples bound to the exec dispatch itself; the later
     // getpid callback cannot overwrite them.
     assert_eq!(EXEC_PKRU_SAMPLED.load(Ordering::Relaxed), 1);
+    // Exactly one sample: an unconditional-sampling regression would
+    // record the getpid callback too and fail here even though its
+    // overwritten pre/post pair would compare equal.
+    assert_eq!(EXEC_PKRU_SAMPLE_COUNT.load(Ordering::Relaxed), 1);
     assert_eq!(
         EXEC_PKRU_PRE.load(Ordering::Relaxed),
         EXEC_PKRU_POST.load(Ordering::Relaxed)
     );
-    // Whole fd table intact across the failed exec (all modes).
-    assert_eq!(open_fd_count(), FD_COUNT_PRE.load(Ordering::Relaxed));
+    // Open-fd cardinality intact across the failed exec (all modes);
+    // named protected-FD identities are asserted separately below.
+    // A query failure (MAX sentinel) on either snapshot fails here
+    // rather than comparing equal by accident.
+    let fd_pre = FD_COUNT_PRE.load(Ordering::Relaxed);
+    let fd_post = open_fd_count();
+    assert_ne!(fd_pre, u64::MAX);
+    assert_eq!(fd_post, fd_pre);
     for index in 0..5 {
         let fd = 198 + index;
         let queried = unsafe {
@@ -1346,8 +1365,11 @@ fn spawn_witness(mode: &'static str, test_name: &str, marker: &str, expect_succe
         // Negative control: the causal assertion inside the child
         // must fire (nonzero exit, success marker absent).
         assert!(
-            !output.status.success() && !stdout.contains(marker),
-            "negative-control child unexpectedly passed: {}; stdout={stdout}; stderr={}",
+            !output.status.success()
+                && !stdout.contains(marker)
+                && String::from_utf8_lossy(&output.stderr)
+                    .contains("panicked at reverie-inguest/src/guest/native_exec_witness_tests.rs"),
+            "negative-control child did not fail at its own assertion: {}; stdout={stdout}; stderr={}",
             output.status,
             String::from_utf8_lossy(&output.stderr)
         );
