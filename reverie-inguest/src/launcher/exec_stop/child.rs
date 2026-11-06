@@ -500,15 +500,25 @@ impl<'fd> PreparedExec<'fd> {
 #[inline(always)]
 unsafe fn syscall6(number: u64, args: [u64; 6]) -> i64 {
     let result: i64;
-    // SAFETY: the caller owns every pointer operand. All x86-64 syscall
-    // clobbers are declared and the stack is untouched by this instruction.
+    // SAFETY: the caller owns every pointer operand. All syscall
+    // clobbers are declared and the stack is untouched by these
+    // instructions (x86-64 `syscall`, aarch64 `svc #0`).
     unsafe {
+        #[cfg(target_arch = "x86_64")]
         core::arch::asm!(
             "syscall",
             inlateout("rax") number => result,
             in("rdi") args[0], in("rsi") args[1], in("rdx") args[2],
             in("r10") args[3], in("r8") args[4], in("r9") args[5],
             lateout("rcx") _, lateout("r11") _, options(nostack),
+        );
+        #[cfg(target_arch = "aarch64")]
+        core::arch::asm!(
+            "svc #0",
+            inlateout("x0") args[0] => result,
+            in("x1") args[1], in("x2") args[2], in("x3") args[3],
+            in("x4") args[4], in("x5") args[5], in("x8") number,
+            options(nostack),
         );
     }
     result
@@ -520,8 +530,12 @@ unsafe fn exit_child() -> ! {
         syscall6(libc::SYS_exit_group as u64, [122, 0, 0, 0, 0, 0]);
     }
     // SAFETY: exit_group cannot return without a hostile external supervisor;
-    // retain a terminal trap instead of running any inherited Rust teardown.
+    // retain a terminal trap instead of running any inherited Rust teardown
+    // (ud2 on x86-64, brk on aarch64).
     unsafe {
+        #[cfg(target_arch = "x86_64")]
         core::arch::asm!("ud2", options(noreturn));
+        #[cfg(target_arch = "aarch64")]
+        core::arch::asm!("brk #0", options(noreturn));
     }
 }
