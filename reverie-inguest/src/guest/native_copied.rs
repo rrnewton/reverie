@@ -111,6 +111,8 @@ where
             prepared_exec: SpinMutex::new(None),
             #[cfg(feature = "exec-native-injection")]
             native_exec_driver: None,
+            #[cfg(feature = "exec-native-injection")]
+            native_exec_admitted: false,
         };
         Ok(CopiedNativeProcess {
             host,
