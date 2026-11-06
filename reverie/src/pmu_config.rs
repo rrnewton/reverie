@@ -126,6 +126,27 @@ pub enum PmuValidationError {
         executed: usize,
     },
 
+    /// A performance counter the SpecLockMap check depends on was not
+    /// scheduled for the whole measurement window (its perf
+    /// `time_running` never caught up with `time_enabled`, e.g. it was
+    /// multiplexed out under load), in every bounded attempt. Its
+    /// reading is not a measurement - in particular it is not a
+    /// counted zero - so the check refuses as inconclusive rather
+    /// than let a verdict consume it as a count.
+    #[cfg(target_arch = "x86_64")]
+    #[error(
+        "The AMD Zen SpecLockMap check is inconclusive: the {counter} performance \
+        counter was not scheduled for the whole measurement window in {attempts} \
+        attempts (time_running < time_enabled), so its reading is unmeasured and \
+        cannot decide. See https://github.com/rr-debugger/rr/wiki/Zen"
+    )]
+    SpecLockMapCounterUnmeasured {
+        /// Which counter(s) never ran for a whole window.
+        counter: String,
+        /// How many bounded measurement attempts were made.
+        attempts: usize,
+    },
+
     /// The retired-branch counter counted more branches over a loop of
     /// locked instructions than over a branch-matched loop without
     /// them: locked instructions are inflating the branch count, which
