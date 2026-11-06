@@ -4,7 +4,11 @@
 Author: musepage (Muse lane, devbig030), for museli-lt to route for
 review. Status: **DESIGN — no code.** No implementation starts from
 this note until museli-lt routes a review of it and the design is
-approved. Amended 2026-11-06 for museport design review
+approved. Amended twice 2026-11-06: musegates second review
+CHANGES REQUESTED at `c57a7eee`
+(`ignored/reviews/REVIEW-l3-pagegate-c57a7eee-musegates.md`:
+tree-wide revocation/fork narrowing, mechanical trampoline
+entry, R-UNBUILT choke hardening); earlier museport design review
 CHANGES REQUESTED at `b4da83e6`
 (`ignored/reviews/REVIEW-l3-pagegate-b4da83e6-MUSE.md`):
 handler context transfer (no in-handler publication), total
@@ -266,6 +270,16 @@ bytes an address fetches, what permissions they fetch under, or
 which object they belong to. Failed syscalls (`result < 0`)
 revoke nothing, matching today's early return.
 
+**Catch-all rule (musegates P1 — the table illustrates, this
+sentence governs).** *Any* operation, by any name, that can
+change fetched bytes, fetch permission, fault ownership, or
+backing identity for a known extent revokes or disqualifies
+it. S1 must produce its syscall audit from the full syscall
+table (every number classified revoke / disqualify / provably
+inert with reason), not from the rows remembered here; an
+unclassified number defaults to revoke-on-success for known
+extents, never to inert.
+
 | Guest operation (successful) | L6 action | Why |
 |---|---|---|
 | `munmap` overlapping a known extent | Revoke overlapped groups; drop fully-unmapped groups; split survivors (see partial-overlap rule) | Addresses may be reused by different bytes; stale jumps must not survive by assumption |
@@ -277,6 +291,7 @@ revoke nothing, matching today's early return.
 | `io_uring` file-mutating SQEs (`WRITE`/`WRITEV`/`FALLOCATE`/`XATTR` class) via `io_uring_enter` | Treat as the row above: revoke-first for any submitted write naming certified backing. Because SQE streams are not one-syscall-one-write, the sound default is stronger: an open *writable* FD (uring-registered files included) to certified backing disqualifies sealing (§2.3) | Async writes otherwise escape per-syscall mediation entirely |
 | `madvise` content-discarding ops on a known extent (`MADV_DONTNEED`, `MADV_FREE`, `MADV_REMOVE`) | Revoke (private file pages re-fault from the file — possibly changed; anon pages zero-fill). Non-discarding advice (`SEQUENTIAL`, `WILLNEED`, hugepage hints) does not revoke | Discard changes what the next fetch sees without unmapping |
 | `mseal` on a known/gated extent (kernel ≥6.10; floor here is 6.x) | Revoke admission immediately; mark extent never-(re)sealable for this epoch (future grant/re-seal `mprotect` would `EPERM`). Cell requiring the gate then refuses `R-CODE msealed-extent`; trap-only fallback may continue. The runtime never `mseal`s guest extents | `mseal` freezes the very transitions revocation depends on; a sealed-by-guest extent cannot honour R1 |
+| `remap_file_pages`, `process_madvise` (discard ops, self or cross-process), `userfaultfd` create/`UFFDIO_REGISTER` over a known extent, `io_uring_register` fixed-file register/update after sealing | Revoke/disqualify per the catch-all: remap/process_madvise as their mapping/madvise rows; any `userfaultfd` registration over a gated extent disqualifies it (`R-CODE foreign-fault-owner` — two fault owners for one extent is never sound); registering certified backing as a fixed file after sealing revokes-first like a writable open | Named explicitly per musegates P1; the catch-all, not this row, is the guarantee |
 | `brk` growth into/over a known extent; `shmat` exec attach; `memfd`+`mmap` exec | Same as `mmap`: revoke overlap, mint `Ungated` | Same address-reuse hazard; enumerated so the table stays total, not syscall-number-lucky |
 | `execve`/`execveat` (when admitted at all) | End the image epoch: every group, site, and certificate is discarded; successors start unadmitted (§2.4) | A successor image is a new first-instruction problem (I8) |
 | `fork`/`clone` (process) | Child inherits a *copy* of the registry with generations preserved but gate state forced to `Sealed` until the child re-arms (§2.4) | COW preserves bytes, not handler liveness proofs |
@@ -362,25 +377,46 @@ Two counters, different lifetimes, never conflated:
   tagged `(image_epoch, mapping_generation)`. A record from a
   prior epoch is dead on sight, even if addresses coincide.
 
-**Fork.** The seccomp filter is inherited and patch state is
-preserved across plain fork today (fork/exec plan §1); the L6
-registry is COW-inherited the same way — but a *logical*
-downgrade does not make inherited RX pages fault (museport
-P1). Required physical sequence in the child, inside the
-existing fork-child rebind (before any guest application code
-resumes; the liteinst first-entry raw-fork profile, L0 §1.2,
-is the seed shape): (i) `mprotect` every inherited
-`Admitted` group back to NX (`PROT_READ`) — a real re-seal,
-not a state flip; (ii) prove the child's gate handler live;
-(iii) only then resume. Generations are *not* bumped by fork
-itself — bytes did not change — but the child's first fetch
-per group pays one fault, and re-grant follows the tightened
-§4.3 rule: **the stat fast path is prohibited across fork**
-(a second process can write shared backing while stat stays
-plausible; the hash judges every post-fork re-grant). vfork
-children (exit-or-exec only) never admit new groups; they
-inherit the parent's admitted set read-only, matching the
-existing translation semantics.
+**Fork — envelope narrowed until tree-wide sync exists
+(musegates P1).** The registry is per process image, but
+certified bytes are process-tree-visible: clean private file
+pages are page-cache backed, so a fork sibling (or any guest
+process sharing the backing object) that writes the backing
+file — or pokes this process with `process_vm_writev`/ptrace
+— changes what an already-granted, non-faulting RX mapping
+fetches, and no per-process registry can revoke it. Seal-time
+FD checks cannot close this (the writer arrives later, from
+another process). V6 v1 therefore does **not** admit
+concurrent parent/child execution over gated groups:
+- Plain fork while any group is `Sealed`/`Admitted` refuses
+  by name (`R-LIFECYCLE fork-concurrent-gated` — reuse the
+  landed code, detail string as shown), *unless* the child is
+  exit-or-exec-only (below) or the system-wide precondition
+  (next bullet) is proved. Fork with no gated groups follows
+  the existing fork semantics unchanged.
+- Exit-or-exec-only children (incl. translated vfork) inherit
+  the admitted set read-only and never admit new groups, as
+  before; the physical child re-seal sequence still applies
+  the moment a child could fetch gated code: (i) `mprotect`
+  every inherited `Admitted` group to NX (a real re-seal, not
+  a state flip — museport P1), (ii) prove the child's gate
+  handler live, (iii) only then resume; stat prohibited across
+  fork, hash judges every re-grant (§4.3).
+- Concurrent fork is re-enabled only by one of two named
+  widenings (S5, separately witnessed): (a) **tree-wide
+  generation authority** — a coordinator-shared backing
+  registry where a mediated write/writable-open in *any*
+  guest process stops and revokes *every* process sharing
+  that backing before any resumes fetching; or (b) a
+  **system-wide eligibility proof** as a V6 deployment
+  precondition (e.g. write-sealed memfd backing, verified
+  read-only mount for every certified object), probed at
+  selection, not snapshotted per-process. Until one lands,
+  §2.3's heading claim is scoped exactly: immutability is
+  enforced against writers *this* model mediates, and the
+  fork envelope above is what makes that sufficient.
+Generations are still not bumped by fork itself; exec ends
+the epoch as below.
 
 **Exec.** Until the re-bootstrap path (fork/exec plan S-A…S-E)
 admits a successor, `execve` keeps refusing `R-EXEC` exactly as
@@ -407,6 +443,17 @@ admission work, or a guest continuation.** Concretely:
   stale-mark dependent sites — the same shape as today's
   `mark_site_range_stale` loop, no allocation through the guest
   allocator, no blocking RPC while held.
+- Handler-visible group data is published as **one immutable
+  snapshot** (musegates P1): certified entries + count + site
+  plan live behind a single atomic pointer; dispatch builds
+  the snapshot fully, then release-swaps the pointer (or,
+  equivalently, fully initialises a fresh slot and publishes
+  it last with a release state store). The handler loads the
+  pointer once (acquire) and reads only through it — pointer +
+  length can never tear when a second thread faults while a
+  late group is added at dispatch. Snapshots are retired only
+  when no handler can hold them (epoch/generation retirement
+  at revoke, freed at dispatch quiescence, never in handler).
 - The `SIGSEGV` gate handler (signal context) never takes that
   lock and **never publishes patches** (museport P1). It reads
   per-group atomics only (extent, generation, state, certified
@@ -588,6 +635,22 @@ name, never substituted. S3 may add the parse value only
 behind this gate (parseable, logged, always refused); if
 review prefers, S3 defers parseability itself to S4 — either
 way, no path runs gated code before arming exists.
+**Hardening (musegates P2):** as the types stand today this
+is a launch-API rule, not yet type-enforced —
+`ImplementedCell`/`AdmissionReport` fields are public,
+`admit_over` is public, and `ExecutionPlan::from_report`
+(`selection.rs:2193`) will retain a plan over a caller-supplied
+cell slice, so a bare `ExecutionPlan` cannot distinguish
+registered admission from a fabricated candidate V6 cell. S4
+must therefore *re-check at the arming entry*: the plan's cell
+must be pointer/identity-equal to the registered singleton in
+`implemented_cells()` (or arming re-runs `admit` over
+`implemented_cells()` and compares the chosen cell), refusing
+`R-UNBUILT` otherwise. The "exactly one choke point" claim in
+this note means that normative rule *plus* that S4 re-check —
+not a type-level guarantee the current API does not provide.
+(This is host-code governance, not a guest escape; it is
+hardened anyway so the prose never overclaims.)
 
 ### 3.2 Activation constraint: no seal, no V6
 
@@ -641,7 +704,43 @@ in per-thread gate-private storage and rewrites `REG_RIP` to
 the trampoline entry; the trampoline restores guest registers
 exactly (only RIP/SP bookkeeping differs) before jumping to
 the original fetch address — the guest never observes the
-detour except in timing. Second and later fetches run at
+detour except in timing.
+
+**Mechanical entry contract (musegates P1 — the transfer is
+defined at register/stack level, mirroring the continuation
+precedent, `reverie-inguest/src/guest/continuation.rs:721-731,1054`).**
+On `rt_sigreturn` control would otherwise arrive with guest
+RSP, guest mask, no return address, and call-misaligned stack
+— an ordinary Rust/C entry there is unsound. Required shape:
+the handler (before returning) rewrites the *frame*, not just
+RIP — `REG_RSP` := top of an owned, 16-byte-aligned runtime
+stack (`owner.stack.top & !15` precedent), `REG_RDI` := gate
+owner pointer, DF cleared in `REG_EFL`, frame signal mask :=
+`runtime_mask` (guest mask saved gate-private), PKRU opened
+per precedent. Entry is a **naked `global_asm` stub** (no
+stack use, no red-zone reliance, before any switch completes:
+`cld`/`fninit`/MXCSR init per `fallback_entry`, owner moved
+to a callee-saved register, then `call` into Rust admission).
+Guest RSP and its 128-byte red zone are never touched by
+admission (all admission stack use is on the owned stack; a
+nested signal during admission lands on the alt-stack /
+owned-stack rules of §2.5, never on guest stack). Completion
+resumes the guest by restoring the saved frame — guest mask,
+RSP, registers — and transferring to the original fetch RIP
+in *one* frame restoration (sigreturn-class), so no window
+exists where the guest fetch runs under the runtime mask or
+a second signal lands between unmask and fetch. The
+trampoline's own syscalls (custody reads, `mprotect` grant,
+sync-core helpers) go exclusively through the existing
+runtime-owned trusted syscall sites
+(`reverie_inguest_trusted_syscall`,
+`reverie-inguest/src/trap.rs:122-145`, and the
+`physical_guest_syscall` raw gate) — the internal-syscall
+classification the trap substrate already recognises — so
+they are never re-trapped as guest syscalls and never recurse
+into Tool dispatch mid-admission. S2 proves this contract
+(naked entry, stack switch, mask atomicity, red-zone
+preservation witnesses) before any backend wiring. Second and later fetches run at
 V3/V2 cost with no fault. Sites the certificate cannot patch
 keep the completeness trap (seccomp `SIGSYS` → lazy
 trap-and-patch as today); a group with no certificate and no
@@ -705,7 +804,11 @@ in admitted groups; elsewhere as V2. Thr: per-mapping gate ⇒
 new threads observed from first fetch *once W7 admits threads*
 (until then `ThreadsBound::SingleThread`, thread creation
 refuses as in V4/V5 — registering more would be false). Sig:
-§2.5 router protocol. Fork: §2.4 (followed, child re-seals).
+§2.5 router protocol. Fork: exit-or-exec-only children
+followed (physical re-seal §2.4); **concurrent parent/child
+over gated groups refuses in v1** until tree-wide sync or a
+system-wide eligibility proof lands (S5) — registering
+`Followed` before then would be false (musegates P1).
 Exec: `Refused` until re-bootstrap S-B/S-C admit successors,
 then `RearmedSameCell` — the envelope is widened by a later
 slice with its own witnesses, never by editing the note field
@@ -952,11 +1055,11 @@ are approved; sizes are estimates for sequencing, not evidence.
 | Slice | Content (surfaces) | Tests / exit evidence |
 |---|---|---|
 | **S0** (this note) | Design only. No code. | Review routed by museli-lt; §7 questions answered or carried as named risks. Exit = approved design SHA. |
-| **S1 L6 registry, no gate** | `reverie-inguest` L6 registry (groups, generations, gate states; `sysconf` pages); rewire `observe_mapping_generation` to mint/revoke per §2.2 (incl. the widened `mprotect` rule) and delete `adapter_mapping_replaced` in favour of generation compare; site/census consumers read `(epoch, generation)`. Behaviour for V4/V5 unchanged (no sealing yet). | Unit: mint/revoke/partial-overlap/failed-syscall table (§2.2 each row). Regression floor: `cargo test -p reverie-liteinst --test strace -- --test-threads=1`, `--test rpc_tool`, `--all-features`; signature `calls=32 traps=1 hooks=32` preserved; `late_code` churn fixtures (no-op `mremap`, dlopen CPUID/RDTSC) green. Adversarial: alias-write + `MAP_FIXED` overwrite must stale-mark (new tests, named). |
-| **S2 Gate primitives spike→library** | Generalise the spike to N groups, `sysconf` pages (4K+64K), handler→trampoline context transfer (§3.3, handler never publishes), foreign-fault discriminator + chaining (replacing spike `EXIT_FOREIGN`), bounded loser-wait + poison semantics; still a standalone library + witnesses, **no backend wiring**. Measure handler vs trampoline/seal/sync-core/grant primitives at real extents. | Port the 5 witnesses to N-group + 64K; add discriminator witnesses (fetch admits / data-write chains / data-read no-fault / `MAPERR` chains, §3.3), nested-admission refusal, winner-death poison + loser release, chaining mask/alt-stack/restorer fidelity; bench prints the §5.1 breakdown split handler vs trampoline. Exit = witnesses green + primitive table (machine+n+medians) reviewed before any integration. |
+| **S1 L6 registry, no gate** | `reverie-inguest` L6 registry (groups, generations, gate states; `sysconf` pages); rewire `observe_mapping_generation` to mint/revoke per §2.2 (incl. the widened `mprotect` rule) and delete `adapter_mapping_replaced` in favour of generation compare; site/census consumers read `(epoch, generation)`. Behaviour for V4/V5 unchanged (no sealing yet). | Full-syscall-table audit artefact (every number classified revoke/disqualify/inert per §2.2 catch-all; unclassified defaults revoke) + unit: mint/revoke/partial-overlap/failed-syscall table (§2.2 each row). Regression floor: `cargo test -p reverie-liteinst --test strace -- --test-threads=1`, `--test rpc_tool`, `--all-features`; signature `calls=32 traps=1 hooks=32` preserved; `late_code` churn fixtures (no-op `mremap`, dlopen CPUID/RDTSC) green. Adversarial: alias-write + `MAP_FIXED` overwrite must stale-mark (new tests, named). |
+| **S2 Gate primitives spike→library** | Generalise the spike to N groups, `sysconf` pages (4K+64K), handler→trampoline mechanical entry (naked stub, owned-stack switch, mask atomicity; §3.3, handler never publishes), foreign-fault discriminator + chaining (replacing spike `EXIT_FOREIGN`), bounded loser-wait + poison semantics; still a standalone library + witnesses, **no backend wiring**. Measure handler vs trampoline/seal/sync-core/grant primitives at real extents. | Port the 5 witnesses to N-group + 64K; add discriminator witnesses (fetch admits / data-write chains / data-read no-fault / `MAPERR` chains, §3.3), nested-admission refusal, winner-death poison + loser release, chaining mask/alt-stack/restorer fidelity; bench prints the §5.1 breakdown split handler vs trampoline. Exit = witnesses green + primitive table (machine+n+medians) reviewed before any integration. |
 | **S3 B5 certificates + `PageGate` value (refusing)** | Certificate builder over `liteinst_census.rs` (hash, entry closure, site plan, dependency record); custody policy §4.3; `InterceptStrategy::PageGate` + `page-gate` env parse + `mechanism()`/`resolve()` stacked on landed W5. Selection still refuses `R-UNBUILT` (no cell registered). | Certificate determinism (same bytes ⇒ same cert), staleness (byte flip ⇒ hash/custody miss), residuals inherited (no-EH-frame ⇒ uncertified, anon ⇒ uncertified); W5 test quartet for the new value: parse table, mismatch refusal (preload/aarch64 refuse by name), banner logging, builder-wins. No guest runs gated yet. |
-| **S4 V6 integration + cell registration** | A-stop arming: census+certify+seal initial groups at exec stop (closing the stage-1a release gap for this path); gate handler + quiescent publish + grant (§3.3); late-map sealing (§3.2); fork re-seal (§2.4); register the V6 `ImplementedCell` with the honest §3.4 envelope (SingleThread, Exec Refused). | Conformance (L0 §5): recorder/counter/mutator differential V6 vs V1/V2 on the frozen non-exec corpus (static/dynamic/PIE hello, `ls`, signal-dense, nondet loop, dlopen churn); refusal oracle (exact `R-*` names: interior, stale, alias, uncertified, window); firstprobe zero-window on `hello`+`ls`; foreign-`SIGSEGV` chaining witness (guest handler still receives its faults). Perf: §5.3 protocol, floor = completes; DR-null ratio reported, not yet gated. |
-| **S5 Hardening + widenings (separate approvals)** | Exec successors via re-bootstrap S-B/S-C (envelope → `RearmedSameCell` only with sh-chain witness); W7-threaded admission when W7 lifts the capability bit; certified-dynamic-code API; certificate cache across runs; futex loser-wait if measured necessary. Each is its own slice + review; none is implied by S4. | Per widening: its own witnesses (exec chains incl. static + fork-child; thread storm first-fault racing; certified-JIT admit vs arbitrary-JIT `R-CODE` as separate cases) + §5.3 re-measurement toward the M3 ≤1.5x bar (musebench verdict). |
+| **S4 V6 integration + cell registration** | A-stop arming: census+certify+seal initial groups at exec stop (closing the stage-1a release gap for this path); gate handler + mechanical trampoline entry + quiescent publish + grant (§3.3); late-map sealing (§3.2); fork envelope incl. `R-LIFECYCLE fork-concurrent-gated` + physical re-seal (§2.4); arming-entry singleton re-check (§3.1); register the V6 `ImplementedCell` with the honest §3.4 envelope (SingleThread, Exec Refused, concurrent fork refused). | Conformance (L0 §5): recorder/counter/mutator differential V6 vs V1/V2 on the frozen non-exec corpus (static/dynamic/PIE hello, `ls`, signal-dense, nondet loop, dlopen churn); refusal oracle (exact `R-*` names: interior, stale, alias, uncertified, window); firstprobe zero-window on `hello`+`ls`; foreign-`SIGSEGV` chaining witness (guest handler still receives its faults). Perf: §5.3 protocol, floor = completes; DR-null ratio reported, not yet gated. |
+| **S5 Hardening + widenings (separate approvals)** | Exec successors via re-bootstrap S-B/S-C (envelope → `RearmedSameCell` only with sh-chain witness); **concurrent-fork widening via tree-wide generation authority or system-wide eligibility proof (§2.4)**; W7-threaded admission when W7 lifts the capability bit; certified-dynamic-code API; certificate cache across runs; futex loser-wait if measured necessary. Each is its own slice + review; none is implied by S4. | Per widening: its own witnesses (exec chains incl. static + fork-child; thread storm first-fault racing; certified-JIT admit vs arbitrary-JIT `R-CODE` as separate cases) + §5.3 re-measurement toward the M3 ≤1.5x bar (musebench verdict). |
 
 **Rollback.** S1 is behaviour-preserving for V4/V5 (revert =
 prior flags; generations are additive until the bool deletion,
