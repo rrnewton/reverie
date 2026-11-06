@@ -9,20 +9,25 @@
 //! thread, but only its original ptracer performs terminal-wait cleanup.
 #![deny(unsafe_code)]
 
+mod arch;
 #[allow(unsafe_code)]
 mod child;
 #[cfg(feature = "stage1a-probe")]
 pub mod images;
 /// Owned original child-input observations; no mapping or resume capability.
+/// The copied-input wire codec is x86-64-shaped today (27-word register
+/// records); an aarch64 register record is a separate loader-owned step.
+#[cfg(target_arch = "x86_64")]
 pub mod initial_inputs;
+#[cfg(target_arch = "x86_64")]
 mod initial_stack_inputs;
-#[cfg(feature = "loader-private-runtime")]
+#[cfg(all(target_arch = "x86_64", feature = "loader-private-runtime"))]
 mod input_data;
-#[cfg(feature = "loader-private-runtime")]
+#[cfg(all(target_arch = "x86_64", feature = "loader-private-runtime"))]
 pub use input_data::CopiedInitialData;
-#[cfg(feature = "loader-private-runtime")]
+#[cfg(all(target_arch = "x86_64", feature = "loader-private-runtime"))]
 pub use input_data::CopiedInputLocations;
-#[cfg(feature = "loader-private-runtime")]
+#[cfg(all(target_arch = "x86_64", feature = "loader-private-runtime"))]
 pub use input_data::CopiedInputRequest;
 #[cfg(feature = "stage1a-probe")]
 pub mod inject;
@@ -346,11 +351,12 @@ fn duplicate_live_birth_pidfd(fd: &std::os::fd::OwnedFd) -> Result<std::os::fd::
 
 /// The complete original entry context; restoration proves no runtime readiness.
 pub struct EntryContext {
-    /// Kernel entry registers, including FS/GS.
+    /// Kernel entry registers (x86-64: including FS/GS).
     regs: Regs,
     generation: safeptrace::TraceeGeneration,
-    /// Opaque complete xstate image.
-    xstate: safeptrace::XState,
+    /// Opaque complete extended-state image (XSAVE on x86-64,
+    /// FPSIMD on aarch64; see `arch::ExtendedState`).
+    xstate: arch::ExtendedState,
     /// Original guest signal mask.
     signal_mask: u64,
     /// Start of the selected initial stack VMA.
@@ -363,8 +369,13 @@ impl EntryContext {
     pub fn regs(&self) -> &Regs {
         &self.regs
     }
-    /// Original opaque xstate bytes.
+    /// Original opaque XSAVE bytes (x86-64 only; PKRU lives there).
+    #[cfg(target_arch = "x86_64")]
     pub fn xstate(&self) -> &safeptrace::XState {
+        self.xstate.xstate()
+    }
+    /// Original opaque extended-state image, either architecture.
+    pub fn extended_state(&self) -> &arch::ExtendedState {
         &self.xstate
     }
     /// Original signal mask.
@@ -384,8 +395,8 @@ impl EntryContext {
     fn capture(task: &Stopped) -> Result<Self> {
         let regs = task.getregs()?;
         let signal_mask = task.getsigmask()?;
-        let xstate = task.getxstate()?;
-        let (stack_start, stack_bytes) = snapshot_stack(task, regs.rsp)?;
+        let xstate = arch::capture_extended(task)?;
+        let (stack_start, stack_bytes) = snapshot_stack(task, arch::stack_pointer(&regs))?;
         Ok(Self {
             regs,
             generation: task.generation(),
@@ -406,11 +417,11 @@ impl EntryContext {
             return Err("mapped_handover_foreign_context".into());
         }
         let current_stack = trace::read(task, self.stack_start, self.stack_bytes.len())?;
-        task.setxstate(&self.xstate)?;
+        arch::restore_extended(task, &self.xstate)?;
         task.setregs(&self.regs)?;
         task.setsigmask(mask)?;
-        if register_words(&task.getregs()?) != register_words(&self.regs)
-            || task.getxstate()? != self.xstate
+        if !arch::regs_equal(&task.getregs()?, &self.regs)
+            || arch::capture_extended(task)? != self.xstate
             || task.getsigmask()? != mask
             || trace::read(task, self.stack_start, current_stack.len())? != current_stack
         {
@@ -428,11 +439,11 @@ impl EntryContext {
         if trace::read(task, self.stack_start, self.stack_bytes.len())? != self.stack_bytes {
             return Err("loader refused: bootstrap changed the kernel guest stack".into());
         }
-        task.setxstate(&self.xstate)?;
+        arch::restore_extended(task, &self.xstate)?;
         task.setregs(&self.regs)?;
         task.setsigmask(self.signal_mask)?;
-        if register_words(&task.getregs()?) != register_words(&self.regs)
-            || task.getxstate()? != self.xstate
+        if !arch::regs_equal(&task.getregs()?, &self.regs)
+            || arch::capture_extended(task)? != self.xstate
             || task.getsigmask()? != self.signal_mask
         {
             return Err("loader refused: original kernel entry context did not restore".into());
@@ -451,23 +462,23 @@ fn drain_and_capture(
 ) -> Result<(Stopped, EntryContext, ExecBoundary)> {
     let at_event = exec.getregs()?;
     let at_event_info = exec.getsyscallinfo()?;
-    if at_event.orig_rax != libc::SYS_execve as u64 {
+    if arch::syscall_number(&at_event) != libc::SYS_execve as u64 {
         return Err("exec-stop refused: exec event did not originate in execve".into());
     }
     let (task, event) = trace::stopped(exec.syscall(None)?, "exec syscall-exit drain")?;
     let info = task.getsyscallinfo()?;
     let entry = task.getregs()?;
     if !matches!(event, Event::Syscall)
-        || info.architecture != 0xc000_003e
+        || info.architecture != arch::SYSCALL_AUDIT_ARCH
         || info.operation
             != (SyscallInfoOp::Exit {
                 return_value: 0,
                 is_error: false,
             })
-        || entry.rip != at_event.rip
-        || entry.rsp != at_event.rsp
-        || info.instruction_pointer != entry.rip
-        || info.stack_pointer != entry.rsp
+        || arch::instruction_pointer(&entry) != arch::instruction_pointer(&at_event)
+        || arch::stack_pointer(&entry) != arch::stack_pointer(&at_event)
+        || info.instruction_pointer != arch::instruction_pointer(&entry)
+        || info.stack_pointer != arch::stack_pointer(&entry)
     {
         return Err(format!(
             "exec-stop refused: exec return did not drain without entry progress: {info:?}"
@@ -814,6 +825,9 @@ fn snapshot_stack(task: &Stopped, rsp: u64) -> Result<(u64, Vec<u8>)> {
 }
 
 /// Exact native x86-64 register words, including segment and base state.
+/// This is the x86-64 wire codec; an aarch64 register record is a
+/// separate loader-owned step, so the codec exists only there.
+#[cfg(target_arch = "x86_64")]
 pub fn register_words(r: &Regs) -> [u64; 27] {
     [
         r.r15, r.r14, r.r13, r.r12, r.rbp, r.rbx, r.r11, r.r10, r.r9, r.r8, r.rax, r.rcx, r.rdx,
@@ -822,7 +836,7 @@ pub fn register_words(r: &Regs) -> [u64; 27] {
     ]
 }
 
-#[cfg(all(test, feature = "loader-private-runtime"))]
+#[cfg(all(test, target_arch = "x86_64", feature = "loader-private-runtime"))]
 // Test-only raw FD queries and the explicit isolated rlimit control. Each raw
 // operation documents SAFETY; production unsafe remains in the child boundary.
 #[allow(unsafe_code)]
