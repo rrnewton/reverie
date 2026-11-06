@@ -8,8 +8,11 @@ use std::os::unix::ffi::OsStringExt;
 use std::path::PathBuf;
 use std::process::Command;
 
-#[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
-compile_error!("reverie-liteinst requires Linux x86-64");
+#[cfg(all(
+    feature = "liteinst",
+    not(all(target_os = "linux", target_arch = "x86_64"))
+))]
+compile_error!("reverie-liteinst site patching requires Linux x86-64");
 
 mod allocator_backing;
 #[cfg(feature = "allocator-fixture")]
@@ -24,7 +27,9 @@ pub mod fixed_arena_fixture;
 pub mod generic_fixture;
 #[cfg(feature = "exec-private-init")]
 mod initial_image_stats;
+#[cfg(feature = "liteinst")]
 mod interior_entry;
+#[cfg(feature = "liteinst")]
 mod liteinst_census;
 #[cfg(feature = "native-exec-state")]
 pub mod native_exec_state;
@@ -101,6 +106,7 @@ pub use runtime::site_patching_enabled;
 pub use runtime::site_patching_from_env_value;
 pub use runtime::tool_output_fd;
 pub use straddler::STRADDLER_STALENESS_TICKS_ENV;
+#[cfg(feature = "liteinst")]
 pub use straddler::straddler_staleness_from_env_value;
 #[cfg(feature = "exec-private-init")]
 pub use tool_host::InstalledInitialImage;
@@ -328,6 +334,7 @@ pub fn set_guest_site_patching(command: &mut Command, enabled: bool) {
 /// Call once during trusted single-threaded startup, with clear DF and no
 /// active runtime filter. Repeated calls refuse before reading the selector
 /// or installing another runtime.
+#[cfg(feature = "liteinst")]
 #[unsafe(naked)]
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn reverie_liteinst_initialize() {
@@ -342,6 +349,7 @@ pub unsafe extern "C" fn reverie_liteinst_initialize() {
 
 // Distinct local Rust body: the existing dispatch/preflight/getter order stays
 // intact, and only the native entry may supply this body to its fresh bootstrap.
+#[cfg(feature = "liteinst")]
 #[unsafe(no_mangle)]
 #[inline(never)]
 unsafe extern "C" fn reverie_liteinst_generic_body() {
@@ -351,6 +359,7 @@ unsafe extern "C" fn reverie_liteinst_generic_body() {
     );
 }
 
+#[cfg(feature = "liteinst")]
 core::arch::global_asm!(".hidden reverie_liteinst_generic_body");
 
 /// Establish an ordinary region owner for the explicit-entry refusal control.
@@ -537,6 +546,7 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "liteinst")]
     #[test]
     fn site_patching_setter_round_trips_through_the_parser() {
         for enabled in [true, false] {
@@ -556,6 +566,7 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "liteinst")]
     #[test]
     fn site_patching_parser_defaults_on_and_rejects_other_values() {
         assert!(site_patching_from_env_value(None).unwrap());
@@ -567,6 +578,27 @@ mod tests {
                 std::io::ErrorKind::InvalidInput,
                 "{rejected:?}"
             );
+        }
+    }
+    #[cfg(not(feature = "liteinst"))]
+    #[test]
+    fn trap_only_build_defaults_off_and_refuses_explicit_patching() {
+        assert!(!site_patching_from_env_value(None).unwrap());
+        assert!(!site_patching_from_env_value(Some(OsStr::new("0"))).unwrap());
+        let mut command = Command::new("/bin/true");
+        set_guest_site_patching(&mut command, true);
+        let requested = command
+            .get_envs()
+            .find(|(key, _)| *key == OsStr::new(SITE_PATCHING_ENV))
+            .and_then(|(_, value)| value)
+            .unwrap();
+        let error = site_patching_from_env_value(Some(requested)).unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::Unsupported);
+        assert!(error.to_string().contains("built without LiteInst"));
+        for rejected in ["", " 0", "0 ", "off", "false", "2", "yes"] {
+            let error = site_patching_from_env_value(Some(OsStr::new(rejected)))
+                .expect_err("invalid selectors must still be rejected");
+            assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
         }
     }
 }

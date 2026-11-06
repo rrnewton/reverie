@@ -4,7 +4,7 @@
 #[cfg(target_env = "gnu")]
 mod glibc_compat;
 
-#[cfg(not(test))]
+#[cfg(all(not(test), feature = "liteinst"))]
 mod constructor;
 
 #[cfg(not(test))]
@@ -13,7 +13,7 @@ reverie_liteinst::declare_fixed_tool_allocator!();
 #[cfg(test)]
 reverie_liteinst::declare_legacy_private_tool_allocator!();
 
-#[cfg(test)]
+#[cfg(all(test, feature = "liteinst"))]
 #[used]
 #[unsafe(link_section = ".init_array")]
 static REVERIE_LITEINST_INIT: unsafe extern "C" fn() =

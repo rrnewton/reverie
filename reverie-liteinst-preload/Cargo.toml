@@ -11,6 +11,8 @@ description = "Guest preload leaf for Reverie LiteInst"
 crate-type = ["cdylib"]
 
 [features]
+default = ["liteinst"]
+liteinst = ["reverie-liteinst/liteinst"]
 allocator-fixture = ["reverie-liteinst/allocator-fixture"]
 
 [dependencies]
@@ -24,6 +26,7 @@ tempfile = "3.27.0"
 [[bin]]
 name = "reverie-liteinst-glibc-compat-guest"
 path = "src/bin/glibc_compat_guest.rs"
+required-features = ["liteinst"]
 # The module's unchanged unit tests run once in this package's library. This
 # executable is the non-PIE subject of the integration test below.
 test = false
@@ -31,3 +34,4 @@ test = false
 [[test]]
 name = "glibc_compat"
 path = "tests/glibc_compat.rs"
+required-features = ["liteinst"]
