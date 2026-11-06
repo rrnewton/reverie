@@ -511,14 +511,44 @@ impl<'a, T: Tool> ExecInjection<'a, T> {
         // revalidations above are the admitted route's evidence, but no
         // successor execution is permitted in this stage regardless of
         // driver behavior. Cancel the owned attempt (consuming every
-        // provision lease) and refuse by typed name. Removing this
-        // block is the single seam that re-enables issue in a later
-        // stage; until then `issue_and_call` is unreachable from here.
-        attempt.cancel(rpc);
-        Err(refusal(
-            "reverie-inguest: admitted native exec is refused at the final \
-             step in this stage; no successor image is executed",
-        ))
+        // provision lease) and refuse by typed name. The sole exception
+        // is the S2a-1 physical-witness latch below: it exists only in
+        // test builds, is armed only by that fixture's own process, and
+        // never exists in production builds, where removing this
+        // refusal remains the single seam that re-enables issue.
+        #[cfg(test)]
+        let witness_armed = TEST_ISSUE_ARMED.load(core::sync::atomic::Ordering::Acquire);
+        #[cfg(not(test))]
+        let witness_armed = false;
+        if !witness_armed {
+            attempt.cancel(rpc);
+            return Err(refusal(
+                "reverie-inguest: admitted native exec is refused at the final \
+                 step in this stage; no successor image is executed",
+            ));
+        }
+        #[cfg(test)]
+        {
+            let result = unsafe {
+                attempt
+                    .prepared
+                    .as_mut()
+                    .unwrap()
+                    .issue_and_call(self.tool, state, cut, rpc)
+            };
+            match result {
+                Err(NativeExecFailure::Terminal(error)) => terminate(error),
+                returned => {
+                    attempt.cancel(rpc);
+                    match returned {
+                        Ok(errno) => Ok(errno),
+                        Err(error) => failed(error),
+                    }
+                }
+            }
+        }
+        #[cfg(not(test))]
+        unreachable!("production builds always refuse above")
     }
 }
 
@@ -527,6 +557,20 @@ fn failed<T>(failure: NativeExecFailure) -> Result<T, UnsupportedRefusal> {
         NativeExecFailure::Refused(error) => Err(error),
         NativeExecFailure::Terminal(error) => terminate(error),
     }
+}
+
+/// S2a-1 physical-witness arming latch. Test builds only: armed once
+/// by the witness fixture's own process before guest execution; every
+/// other test (and every production build, where this does not exist)
+/// keeps the stage-1 final refusal.
+#[cfg(test)]
+static TEST_ISSUE_ARMED: core::sync::atomic::AtomicBool =
+    core::sync::atomic::AtomicBool::new(false);
+
+/// Arm test-only issue for this process. Witness-fixture use only.
+#[cfg(test)]
+pub(crate) fn arm_test_issue() {
+    TEST_ISSUE_ARMED.store(true, core::sync::atomic::Ordering::Release);
 }
 
 pub(super) fn is_exec(number: i64) -> bool {
