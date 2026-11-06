@@ -3229,6 +3229,7 @@ unsafe extern "C" fn unpublished_syscall_hook(context: *mut HookContext) {
         // The real sigreturn restored the guest's live permissions; do not
         // open a key or borrow a saved permission value for the operation.
         guest_pkru: None,
+        unsupported_refusal: None,
     };
     // Classification is after the RCB exclusion sample. This is an unpatched
     // signal entry, never an installed-hook count.
@@ -3518,6 +3519,7 @@ unsafe impl TrapSeam for LiteinstSeam {
                 context: 0,
                 dispatch: SyscallDispatch::Trap,
                 guest_pkru: event.guest_pkru(),
+                unsupported_refusal: None,
             };
             // SAFETY: process_syscall traces the event for the compatibility Tool
             // and runs its syscall natively, as the safe
@@ -4399,6 +4401,7 @@ mod tests {
                         _ => SyscallDispatch::Fallback,
                     },
                     guest_pkru: None,
+                    unsupported_refusal: None,
                 };
                 // Exercise the exact production routing function. No test
                 // dispatcher, route predicate mirror or physical exec leaf.
