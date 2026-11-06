@@ -141,11 +141,18 @@ pub trait HostRuntime: Send + Sync + 'static {
     ///
     /// When this returns `true`, `execve`/`execveat` are forwarded to
     /// the kernel instead of refused — dynamic and static images
-    /// alike, from the initial leader and from plain-fork children
-    /// (each is its own thread-group leader under this runtime's
-    /// single-thread model; thread creation stays refused, so a
-    /// non-leader exec cannot arise). A successful exec never
-    /// returns here: this runtime image is replaced, and successor
+    /// alike. The gate applies wherever it is queried, including in
+    /// plain-fork children (runtime state is inherited; each child
+    /// is its own thread-group leader under this runtime's
+    /// single-thread model, and thread creation stays refused, so a
+    /// non-leader exec cannot arise) — but a child's leader status
+    /// does not establish its ptracer: arming asserts watcher
+    /// coverage in every process where the gate can fire. The
+    /// in-tree supervisor watches a single leader and does not
+    /// follow forks yet, so until fork-following exists arming is
+    /// sound only when the embedder watches each child itself or
+    /// the guest cannot fork. A successful exec never returns here:
+    /// this runtime image is replaced, and successor
     /// admission/reconnection is the coordinator's business. A
     /// failed exec returns the genuine kernel errno, untagged.
     ///
@@ -975,6 +982,8 @@ where
             exec: None,
             #[cfg(feature = "exec-native-injection")]
             mapping_driver: self.native_exec_driver.as_deref(),
+            #[cfg(feature = "exec-native-injection")]
+            native_exec_installed: self.native_exec_driver.is_some(),
             unsupported_refusal: None,
             injected_syscalls: 0,
         };
@@ -1032,6 +1041,8 @@ where
                             parent_pid: pid,
                             child_tid: raw_pid(libc::SYS_gettid),
                             child_pid: raw_pid(libc::SYS_getpid),
+                            #[cfg(feature = "exec-native-injection")]
+                            native_exec_installed: self.native_exec_driver.is_some(),
                         },
                     );
                 } else {
@@ -1080,6 +1091,16 @@ where
                         ending,
                     );
                 }
+                return;
+            } else if matches!(number, libc::SYS_execve | libc::SYS_execveat)
+                && let Some(refusal) = guest.exec_native_priority_refusal()
+            {
+                // Unsubscribed originals never capture the installed
+                // native route; a watched exec refuses by name here
+                // instead of forwarding past it. Unwatched, the guard
+                // below keeps the historical refusal.
+                guest.unsupported_refusal = Some(refusal);
+                guest.event.result = -i64::from(Errno::EOPNOTSUPP.into_raw());
                 return;
             } else if let Some(error) = injected_syscall_guard(&self.runtime, number, args) {
                 guest.event.result = -i64::from(error.into_raw());
@@ -1227,6 +1248,8 @@ where
                         parent_pid,
                         child_tid,
                         child_pid,
+                        #[cfg(feature = "exec-native-injection")]
+                        native_exec_installed: self.native_exec_driver.is_some(),
                     },
                 );
             }
@@ -1310,6 +1333,8 @@ where
             exec: None,
             #[cfg(feature = "exec-native-injection")]
             mapping_driver: self.native_exec_driver.as_deref(),
+            #[cfg(feature = "exec-native-injection")]
+            native_exec_installed: self.native_exec_driver.is_some(),
             unsupported_refusal: None,
             injected_syscalls: 0,
         };
@@ -1439,6 +1464,8 @@ fn finish_fork_child<T: Tool, R: HostRuntime>(
         parent_pid,
         child_tid,
         child_pid,
+        #[cfg(feature = "exec-native-injection")]
+        native_exec_installed,
     } = context;
     runtime.fork_child_rebind();
     runtime.emit_stage(b"fork-child-thread-start-begin");
@@ -1489,6 +1516,8 @@ fn finish_fork_child<T: Tool, R: HostRuntime>(
         exec: None,
         #[cfg(feature = "exec-native-injection")]
         mapping_driver: None,
+        #[cfg(feature = "exec-native-injection")]
+        native_exec_installed,
         unsupported_refusal: None,
         injected_syscalls: 0,
     };
@@ -1530,6 +1559,8 @@ struct ForkChildContext {
     parent_pid: Pid,
     child_tid: Pid,
     child_pid: Pid,
+    #[cfg(feature = "exec-native-injection")]
+    native_exec_installed: bool,
 }
 
 // TODO-HUMAN-REVIEW(PR-143): Review single-process Tool exit lifecycle.
@@ -2115,6 +2146,13 @@ pub struct InGuest<'a, T: Tool, R: HostRuntime> {
     exec: Option<super::native_exec::ExecInjection<'a, T>>,
     #[cfg(feature = "exec-native-injection")]
     mapping_driver: Option<&'a dyn super::native_exec::NativeExecDriver<T>>,
+    /// Whether the host has an installed native exec driver, recorded
+    /// when this view is built. Routes that never capture it
+    /// (lifecycle callbacks, unsubscribed originals, tail calls) use
+    /// this to refuse a watched exec by name instead of forwarding
+    /// past installed native authority.
+    #[cfg(feature = "exec-native-injection")]
+    native_exec_installed: bool,
     /// The typed refusal of the last injection, if the backend refused it
     /// ([`reverie::Guest::take_unsupported_refusal`]).
     unsupported_refusal: Option<reverie::UnsupportedRefusal>,
@@ -2141,6 +2179,61 @@ impl<T: Tool, R: HostRuntime> InGuest<'_, T, R> {
             guest_signal_mode: super::sigalrm::admitted(),
             fork_state: self.fork_parent_state.is_some(),
         }
+    }
+
+    /// Whether a watched exec would forward past installed native
+    /// authority from this view: a driver is installed on the host
+    /// but this dispatch never captured its route (lifecycle
+    /// callbacks and unsubscribed originals capture nothing; the
+    /// subscribed handler captures before the Tool runs). Forwarding
+    /// there would bypass the installed route's priority, so those
+    /// routes refuse by name instead.
+    fn exec_native_route_unreachable(&self) -> bool {
+        #[cfg(feature = "exec-native-injection")]
+        {
+            self.native_exec_installed && self.exec.is_none()
+        }
+        #[cfg(not(feature = "exec-native-injection"))]
+        {
+            false
+        }
+    }
+
+    /// The named refusal for a watched exec on a route that cannot
+    /// consult the installed native exec route, or `None` when the
+    /// exec may proceed (unwatched handling is the caller's existing
+    /// refusal; no driver, or the route was captured, forwards
+    /// through the ordinary paths).
+    fn exec_native_priority_refusal(&self) -> Option<reverie::UnsupportedRefusal> {
+        if self.runtime.exec_watch_armed() && self.exec_native_route_unreachable() {
+            Some(reverie::UnsupportedRefusal::new(
+                reverie::UnsupportedOperation::NativeExec,
+                Errno::EOPNOTSUPP,
+                "watched exec cannot forward from a dispatch route that did not capture \
+                 the installed native exec route",
+            ))
+        } else {
+            None
+        }
+    }
+
+    /// The named refusal for a watched tail-injected exec while a
+    /// native driver is installed: a tail call has no native cut of
+    /// its own (the capture belongs to the original dispatch and is
+    /// single-attempt), so it refuses by name in every capture state
+    /// rather than forwarding past — or re-spending — the installed
+    /// route.
+    fn exec_tail_native_refusal(&self) -> Option<reverie::UnsupportedRefusal> {
+        #[cfg(feature = "exec-native-injection")]
+        if self.runtime.exec_watch_armed() && self.native_exec_installed {
+            return Some(reverie::UnsupportedRefusal::new(
+                reverie::UnsupportedOperation::NativeExec,
+                Errno::EOPNOTSUPP,
+                "tail-injected exec has no native cut of its own and cannot bypass \
+                 the installed native exec route",
+            ));
+        }
+        None
     }
 
     #[cfg(feature = "exec-native-injection")]
@@ -3832,23 +3925,33 @@ impl<'a, T: Tool, R: HostRuntime> Guest<T> for InGuest<'a, T, R> {
                 };
             }
         }
-        if matches!(number, libc::SYS_execve | libc::SYS_execveat)
-            && !self.runtime.exec_watch_armed()
-        {
-            // A typed refusal, so the Tool can tell this from an exec that
-            // Linux failed: without an installed native exec route or an
-            // armed exec watch the in-guest runtime has no way to replace
-            // the process image. With a watch armed, execution falls
-            // through to the ordinary forward below: success never
-            // returns (the watcher re-bootstraps the successor), and
-            // failure returns the genuine kernel errno untagged.
-            self.unsupported_refusal = Some(reverie::UnsupportedRefusal::new(
-                reverie::UnsupportedOperation::Exec,
-                Errno::EOPNOTSUPP,
-                "the in-guest backend cannot replace the process image: execve and execveat \
+        if matches!(number, libc::SYS_execve | libc::SYS_execveat) {
+            // Installed native authority first: on a route that never
+            // captured it (lifecycle callbacks run before capture), a
+            // watched exec refuses by name here instead of forwarding
+            // past the installed route.
+            if let Some(refusal) = self.exec_native_priority_refusal() {
+                self.unsupported_refusal = Some(refusal);
+                return Err(Errno::EOPNOTSUPP);
+            }
+            if !self.runtime.exec_watch_armed() {
+                // A typed refusal, so the Tool can tell this from an exec
+                // that Linux failed: without an installed native exec
+                // route or an armed exec watch the in-guest runtime has
+                // no way to replace the process image. With a watch
+                // armed (and no unreachable native route), execution
+                // falls through to the ordinary forward below: success
+                // never returns (the watcher re-bootstraps the
+                // successor), and failure returns the genuine kernel
+                // errno untagged.
+                self.unsupported_refusal = Some(reverie::UnsupportedRefusal::new(
+                    reverie::UnsupportedOperation::Exec,
+                    Errno::EOPNOTSUPP,
+                    "the in-guest backend cannot replace the process image: execve and execveat \
                  are not forwarded",
-            ));
-            return Err(Errno::EOPNOTSUPP);
+                ));
+                return Err(Errno::EOPNOTSUPP);
+            }
         }
         #[cfg(feature = "exec-native-injection")]
         self.check_native_mapping(number, raw_args)?;
@@ -4045,6 +4148,16 @@ impl<'a, T: Tool, R: HostRuntime> Guest<T> for InGuest<'a, T, R> {
             } else {
                 self.tail.set_result(result);
             }
+        } else if matches!(number, libc::SYS_execve | libc::SYS_execveat)
+            && let Some(refusal) = self.exec_tail_native_refusal()
+        {
+            // A tail call has no native cut of its own; with a driver
+            // installed it refuses by name in every capture state
+            // rather than forwarding past (or re-spending) the
+            // installed route. Unwatched, the guard below refuses.
+            self.unsupported_refusal = Some(refusal);
+            self.tail
+                .set_result(-i64::from(Errno::EOPNOTSUPP.into_raw()));
         } else if let Some(error) = injected_syscall_guard(self.runtime, number, args) {
             self.tail.set_result(-i64::from(error.into_raw()));
         } else if let Some(result) = super::restorer::mapping_change_result(number, args) {
@@ -4697,6 +4810,8 @@ mod process_owner_tests {
                 parent_pid: Pid::from_raw(parent_pid),
                 child_tid: Pid::from_raw(child_tid),
                 child_pid: Pid::from_raw(child_pid),
+                #[cfg(feature = "exec-native-injection")]
+                native_exec_installed: false,
             },
         );
         assert_eq!(call.result, 0);
@@ -4831,6 +4946,8 @@ mod tests {
             exec: None,
             #[cfg(feature = "exec-native-injection")]
             mapping_driver: None,
+            #[cfg(feature = "exec-native-injection")]
+            native_exec_installed: false,
             unsupported_refusal: None,
             injected_syscalls: 0,
         };
@@ -4971,6 +5088,8 @@ mod tests {
             exec: None,
             #[cfg(feature = "exec-native-injection")]
             mapping_driver: None,
+            #[cfg(feature = "exec-native-injection")]
+            native_exec_installed: false,
             unsupported_refusal: None,
             injected_syscalls: 0,
         };
@@ -5627,6 +5746,8 @@ mod tests {
                 exec: None,
                 #[cfg(feature = "exec-native-injection")]
                 mapping_driver: None,
+                #[cfg(feature = "exec-native-injection")]
+                native_exec_installed: false,
                 unsupported_refusal: None,
                 injected_syscalls: 0,
             };
