@@ -27,14 +27,19 @@ const VALIDATE_DAG: &str = include_str!("../../ci/dag/validate.json");
 #[test]
 fn validation_dag_builds_once_and_counts_every_test_node() {
     // One workspace test build feeds every counted nextest node.
-    assert!(VALIDATE_DAG.contains("cargo nextest list --workspace --all-features"));
+    assert!(
+        VALIDATE_DAG.contains("cargo nextest list --workspace --features \\\"$STABLE_FEATURES\\\"")
+    );
     assert!(VALIDATE_DAG.contains("--binaries-metadata target/validate/binaries-metadata.json"));
     // The duplicate serial `cargo build` gate is gone from the DAG: its
     // 274 artifact identities are a subset of the test build's 420
     // (measured 2026-11-05), with clippy --all-targets covering the
     // non-test lib profile.
     assert!(!VALIDATE_DAG.contains("\"cmd\": \"cargo build --workspace"));
-    assert!(VALIDATE_DAG.contains("cargo clippy --workspace --all-targets --all-features"));
+    assert!(
+        VALIDATE_DAG
+            .contains("cargo clippy --workspace --all-targets --features \\\"$STABLE_FEATURES\\\"")
+    );
     // No DAG test node may fall back to serialized libtest execution.
     assert!(!VALIDATE_DAG.contains("--test-threads=1"));
     // Nine counted nextest test nodes (the launch_descriptor_window
