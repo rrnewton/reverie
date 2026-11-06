@@ -36,6 +36,8 @@ pub enum RpcTransport {
 pub enum TransportSelectError {
     /// The environment value names no known transport.
     UnknownValue(String),
+    /// The environment value is not valid UTF-8 (never a silent default).
+    NonUnicodeValue,
     /// The supplied stream kind does not match the selected transport.
     Mismatch {
         /// Transport selected for this run.
@@ -53,6 +55,9 @@ impl fmt::Display for TransportSelectError {
                     f,
                     "unknown {TRANSPORT_ENV} value {value:?} (want socket|mapped)"
                 )
+            }
+            Self::NonUnicodeValue => {
+                write!(f, "non-UTF-8 {TRANSPORT_ENV} value (want socket|mapped)")
             }
             Self::Mismatch { selected, supplied } => write!(
                 f,
@@ -74,9 +79,21 @@ impl RpcTransport {
         }
     }
 
-    /// Read the selection from [`TRANSPORT_ENV`] once.
+    /// Read the selection from [`TRANSPORT_ENV`] once. Only an absent
+    /// variable uses the default; a present-but-non-UTF-8 value is a
+    /// named refusal, never a silent default.
     pub fn from_env() -> Result<Self, TransportSelectError> {
-        Self::parse(std::env::var(TRANSPORT_ENV).ok().as_deref())
+        Self::from_env_os(std::env::var_os(TRANSPORT_ENV))
+    }
+
+    fn from_env_os(value: Option<std::ffi::OsString>) -> Result<Self, TransportSelectError> {
+        match value {
+            None => Self::parse(None),
+            Some(value) => match value.to_str() {
+                Some(value) => Self::parse(Some(value)),
+                None => Err(TransportSelectError::NonUnicodeValue),
+            },
+        }
     }
 
     /// Refuse a stream whose kind does not match this selection.
@@ -134,5 +151,25 @@ mod tests {
             }
         ));
         assert!(RpcTransport::Socket.require("mapped").is_err());
+    }
+}
+
+#[cfg(all(test, unix))]
+mod env_tests {
+    use std::os::unix::ffi::OsStringExt;
+
+    use super::*;
+
+    #[test]
+    fn non_utf8_env_is_named_refusal_not_default() {
+        let bad = std::ffi::OsString::from_vec(vec![0xff]);
+        assert_eq!(
+            RpcTransport::from_env_os(Some(bad)),
+            Err(TransportSelectError::NonUnicodeValue)
+        );
+        assert_eq!(
+            RpcTransport::from_env_os(None).unwrap(),
+            RpcTransport::Socket
+        );
     }
 }
