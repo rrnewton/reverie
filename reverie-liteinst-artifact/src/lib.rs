@@ -19196,6 +19196,46 @@ const DETCORE_VALIDATE_ROLE_SYMBOLS: &[(&str, &str)] = &[
         "_RNvNtNtNtCs_15reverie_inguest5guest11tool_region5arena19fixed_arena_backing",
     ),
     (
+        "fixed_metadata_atomic_load_bool",
+        "_RNvMs2_NtNtCs_4core4sync6atomicINtB5_6AtomicbE4loadCs_15reverie_inguest",
+    ),
+    (
+        "fixed_backing_black_box_void",
+        "_RINvNtCs_4core4hint9black_boxPNtNtB4_3ffi6c_voidECs_15reverie_inguest",
+    ),
+    (
+        "fixed_region_result_ptr_as_ref",
+        "_RNvMNtNtCs_4core3ptr9const_ptrPINtNtB6_6result6ResultNtNtNtCs_15reverie_inguest5guest11tool_region10ToolRegionlE6as_refB16_",
+    ),
+    (
+        "fixed_region_option_result_branch",
+        "_RNvXsJ_NtCs_4core6optionINtB5_6OptionRINtNtB7_6result6ResultNtNtNtCs_15reverie_inguest5guest11tool_region10ToolRegionlEENtNtNtB7_3ops9try_trait3Try6branchB1d_",
+    ),
+    (
+        "fixed_backing_option_residual",
+        "_RNvXsK_NtCs_4core6optionINtB5_6OptionRNtNtNtNtCs_15reverie_inguest5guest11tool_region5arena18FixedArenaMetadataEINtNtNtB7_3ops9try_trait12FromResidualIBy_NtNtB7_7convert10InfallibleEE13from_residualBT_",
+    ),
+    (
+        "fixed_region_result_as_ref",
+        "_RNvMNtNtCs_4core6resultINtB2_6ResultNtNtNtCs_15reverie_inguest5guest11tool_region10ToolRegionlE6as_refBN_",
+    ),
+    (
+        "fixed_region_result_ok",
+        "_RNvMNtNtCs_4core6resultINtB2_6ResultRNtNtNtCs_15reverie_inguest5guest11tool_region10ToolRegionRlE2okBO_",
+    ),
+    (
+        "fixed_region_option_branch",
+        "_RNvXsJ_NtCs_4core6optionINtB5_6OptionRNtNtNtCs_15reverie_inguest5guest11tool_region10ToolRegionENtNtNtB7_3ops9try_trait3Try6branchBR_",
+    ),
+    (
+        "fixed_backing_option_map",
+        "_RINvMNtNtCs_4core6optionINtB3_6OptionRNtNtNtNtCs_15reverie_inguest5guest11tool_region5arena18FixedArenaMetadataE3mapRNtBL_17FixedArenaBackingNCNvBL_19fixed_arena_backing0EBR_",
+    ),
+    (
+        "fixed_backing_black_box_option",
+        "_RINvNtCs_4core4hint9black_boxINtNtB4_6option6OptionRNtNtNtNtCs_15reverie_inguest5guest11tool_region5arena17FixedArenaBackingEEB17_",
+    ),
+    (
         "fixed_arena_setup",
         "_RNvNtNtNtCs_15reverie_inguest5guest11tool_region5arena23initialize_fixed_arenas",
     ),
@@ -24338,6 +24378,130 @@ const DETCORE_VALIDATE_TEMPLATES: &[DetcoreValidateTemplate] = &[
             (314, 8),
             (335, 10),
             (348, 12),
+        ],
+    },
+    // Standalone dev allocator-fixture producer body (dev profile, opt0),
+    // 0x28c890, SHA256 e32ac8111fdee919c9c27c1ba9d859f0b71903dbc12a70929dd25449d4f8fc08.
+    DetcoreValidateTemplate {
+        role: "fixed_arena_backing",
+        hex: "4883ec68488d3d0dec0d02be02000000e80bae0200a801757d488d0500ec0d024889442438488d05f4eb0d024889442460488d05e8eb0d024889442458488d3ddceb0d02ff159e700d004889c748897c2440e8592100004889c748897c244848897c2450ff1586700d004889c7ff1585700d004889442420488b54242031c0b9010000004883fa00480f44c148a901000000750deb1848c744241000000000eb79ff1559700d004889442410eb6c488b7c242048897c2428ff154a700d004889c74889d6ff1546700d004889c7ff1545700d004889442418488b54241831c0b9010000004883fa00480f44c148a901000000740dff1506700d004889442410eb19488b442418488944243048b800300200006000004889442410488b7c2410ff150b700d004889c748897c2408ff1505700d004883c468c3",
+        operands: &[
+            DetcoreValidateOperand {
+                displacement: 7,
+                next: 11,
+                key: "fixed_initializing",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 17,
+                next: 21,
+                key: "fixed_metadata_atomic_load_bool",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 28,
+                next: 32,
+                key: "fixed_region",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 40,
+                next: 44,
+                key: "fixed_region",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 52,
+                next: 56,
+                key: "fixed_region",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 64,
+                next: 68,
+                key: "fixed_region",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 70,
+                next: 74,
+                key: "fixed_backing_black_box_void",
+                got: true,
+            },
+            DetcoreValidateOperand {
+                displacement: 83,
+                next: 87,
+                key: "fixed_region_publication_get_opaque",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 102,
+                next: 106,
+                key: "fixed_region_result_ptr_as_ref",
+                got: true,
+            },
+            DetcoreValidateOperand {
+                displacement: 111,
+                next: 115,
+                key: "fixed_region_option_result_branch",
+                got: true,
+            },
+            DetcoreValidateOperand {
+                displacement: 163,
+                next: 167,
+                key: "fixed_backing_option_residual",
+                got: true,
+            },
+            DetcoreValidateOperand {
+                displacement: 186,
+                next: 190,
+                key: "fixed_region_result_as_ref",
+                got: true,
+            },
+            DetcoreValidateOperand {
+                displacement: 198,
+                next: 202,
+                key: "fixed_region_result_ok",
+                got: true,
+            },
+            DetcoreValidateOperand {
+                displacement: 207,
+                next: 211,
+                key: "fixed_region_option_branch",
+                got: true,
+            },
+            DetcoreValidateOperand {
+                displacement: 246,
+                next: 250,
+                key: "fixed_backing_option_residual",
+                got: true,
+            },
+            DetcoreValidateOperand {
+                displacement: 289,
+                next: 293,
+                key: "fixed_backing_option_map",
+                got: true,
+            },
+            DetcoreValidateOperand {
+                displacement: 303,
+                next: 307,
+                key: "fixed_backing_black_box_option",
+                got: true,
+            },
+        ],
+        transfers: &[
+            (16, 1),
+            (68, 6),
+            (82, 7),
+            (100, 8),
+            (109, 9),
+            (161, 10),
+            (184, 11),
+            (196, 12),
+            (205, 13),
+            (244, 14),
+            (287, 15),
+            (301, 16),
         ],
     },
 ];
