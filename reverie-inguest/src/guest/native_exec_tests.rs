@@ -477,6 +477,7 @@ fn run_model_watched(
         context: 0,
         dispatch: source,
         guest_pkru: if mode == 19 { Some(0) } else { None },
+        unsupported_refusal: None,
     };
     unsafe { host.dispatch(&mut event) };
     if mode == 19 {
@@ -815,6 +816,7 @@ unsafe impl NativeExecDriver<WatchedTool> for DenyDriver {
 
 struct WatchOutcome {
     event_result: i64,
+    event_refusal: Option<reverie::UnsupportedRefusal>,
     returned: Vec<(Errno, Option<reverie::UnsupportedRefusal>)>,
     captures: usize,
 }
@@ -870,10 +872,12 @@ fn run_watched_case(
         context: 0,
         dispatch: SyscallDispatch::Fallback,
         guest_pkru: None,
+        unsupported_refusal: None,
     };
     unsafe { host.dispatch(&mut event) };
     let outcome = WatchOutcome {
         event_result: event.result,
+        event_refusal: event.unsupported_refusal,
         returned: returned.lock().unwrap().clone(),
         captures: captures.load(Ordering::SeqCst),
     };
@@ -889,6 +893,13 @@ fn watched_tail_exec_refuses_with_installed_driver() {
             move || {
                 let outcome = run_watched_case(WatchAction::TailInject, number, true, true);
                 assert_eq!(outcome.event_result, -i64::from(libc::EOPNOTSUPP));
+                // The named refusal must surface on the outward event,
+                // not die in the dropped guest view.
+                let refusal = outcome
+                    .event_refusal
+                    .expect("tail refusal identity on the event");
+                assert_eq!(refusal.operation, reverie::UnsupportedOperation::NativeExec);
+                assert!(refusal.diagnostic.contains("tail-injected"), "{refusal:?}");
                 // The subscribed dispatch attempted its (refused)
                 // capture once; the tail refusal precedes any
                 // prepare/issue or physical forward.
@@ -958,6 +969,10 @@ fn watched_unsubscribed_exec_refuses_with_installed_driver() {
             move || {
                 let outcome = run_watched_case(WatchAction::Plain, number, true, false);
                 assert_eq!(outcome.event_result, -i64::from(libc::EOPNOTSUPP));
+                let refusal = outcome
+                    .event_refusal
+                    .expect("unsubscribed refusal identity on the event");
+                assert_eq!(refusal.operation, reverie::UnsupportedOperation::NativeExec);
                 assert_eq!(outcome.captures, 0);
             },
             0,
