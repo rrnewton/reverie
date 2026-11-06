@@ -1379,8 +1379,8 @@ const CONTENT_REVERIE_CATALOG: [(&str, u64, &str); 83] = [
     ),
     (
         "reverie-inguest/src/guest/rpc.rs",
-        31585,
-        "1991d8e3fa19ca294533b05deeb501862cc48d8cfea969439fc0d20f888a638a",
+        33852,
+        "9876cc18a15f9d57073084fe0b0ebbcca094eb443cf655c3713b3795af0f9eab",
     ),
     (
         "reverie-inguest/src/guest/host.rs",
