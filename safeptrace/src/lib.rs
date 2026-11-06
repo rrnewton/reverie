@@ -1115,7 +1115,10 @@ impl Stopped {
         if err == Errno::ESRCH {
             // The tracee has left the stop this capability names.
             #[cfg(feature = "notifier")]
-            self.1.event().stop_may_have_ended();
+            {
+                self.1.event().invalidate_regs();
+                self.1.event().stop_may_have_ended();
+            }
             self.retire_statuses_before_exit_stop();
             Error::Died(Zombie::from_token(self.0, self.1.clone()))
         } else {
@@ -1263,6 +1266,10 @@ impl Stopped {
     fn into_running(self) -> Running {
         #[cfg(feature = "notifier")]
         {
+            // The resume that ends this stop may run arbitrary guest
+            // code, a syscall, or a signal handler: none of the cached
+            // registers survive it (see `Event::regs_cache`).
+            self.1.event().invalidate_regs();
             self.1.event().invalidate_numeric_auth();
             self.1.event().expect_stop();
         }
@@ -1415,17 +1422,49 @@ impl Stopped {
                 )
             })
             .map_err(|err| self.map_err(err))?;
+        // `struct user` includes the general-purpose register area, so a
+        // write may have changed the registers outside `setregs`.
+        #[cfg(feature = "notifier")]
+        self.1.event().invalidate_regs();
         Ok(())
     }
 
     /// Gets the current state of the general purpose registers.
+    ///
+    /// With the `notifier` feature, repeated calls at one stop of a
+    /// generation with a bound identity serve the registers its first
+    /// call read (or its latest [`Stopped::setregs`] wrote) instead of
+    /// reading them from the kernel again; see the generation's
+    /// register cache. A stop ends at every successful resume, which
+    /// clears the cache.
     pub fn getregs(&self) -> Result<Regs, Error> {
+        #[cfg(feature = "notifier")]
+        if self.1.event().regs_cacheable() {
+            if let Some(regs) = self.1.event().cached_regs() {
+                return Ok(regs);
+            }
+            let regs = self.getregset(libc::NT_PRSTATUS)?;
+            #[cfg(test)]
+            self.1.event().note_regs_kernel_read();
+            self.1.event().store_regs(regs);
+            return Ok(regs);
+        }
         self.getregset(libc::NT_PRSTATUS)
     }
 
     /// Sets the general purpose registers.
+    ///
+    /// The write goes to the kernel immediately; with the `notifier`
+    /// feature it also replaces this generation's cached registers
+    /// (see [`Stopped::getregs`]), so later reads at this stop observe
+    /// the written values without another kernel read.
     pub fn setregs(&self, regs: &Regs) -> Result<(), Error> {
-        self.setregset(libc::NT_PRSTATUS, regs)
+        self.setregset(libc::NT_PRSTATUS, regs)?;
+        #[cfg(feature = "notifier")]
+        if self.1.event().regs_cacheable() {
+            self.1.event().store_regs(*regs);
+        }
+        Ok(())
     }
 
     /// Gets the floating point registers.
@@ -1585,7 +1624,10 @@ impl Stopped {
                     // The retained value keeps its ownership role, but the
                     // tracee has left the exit stop this capability names.
                     #[cfg(feature = "notifier")]
-                    self.1.event().stop_may_have_ended();
+                    {
+                        self.1.event().invalidate_regs();
+                        self.1.event().stop_may_have_ended();
+                    }
                     self.retire_statuses_before_exit_stop();
                 }
                 Err((self, error))
@@ -1672,7 +1714,13 @@ impl Stopped {
     #[cfg(target_arch = "aarch64")]
     pub fn set_syscall(&self, nr: i32) -> Result<(), Error> {
         const NT_ARM_SYSTEM_CALL: i32 = 0x404;
-        self.setregset(NT_ARM_SYSTEM_CALL, &nr)
+        self.setregset(NT_ARM_SYSTEM_CALL, &nr)?;
+        // The kernel's syscall number lives outside `NT_PRSTATUS` here,
+        // but the register view derived from `x8` and the number the
+        // resume runs must not be read as one cached whole.
+        #[cfg(feature = "notifier")]
+        self.1.event().invalidate_regs();
+        Ok(())
     }
 
     /// Reads this thread's ptrace hardware breakpoints (`NT_ARM_HW_BREAK`).
