@@ -59,6 +59,11 @@ const _: () = {
 /// LiteInst's services for the in-guest Tool host.
 pub(crate) struct LiteinstRuntime {
     stats: crate::stats::GuestStatsHooks,
+    /// Armed external exec watch (see `HostRuntime::exec_watch_armed`).
+    /// No in-tree liteinst launcher seizes guests under a supervisor
+    /// yet, so every current construction sets this `false`; the
+    /// seized-launcher composition will set it at construction.
+    exec_watch: bool,
     #[cfg(feature = "exec-private-init")]
     no_rcb: bool,
 }
@@ -68,6 +73,7 @@ impl LiteinstRuntime {
     pub(crate) fn new(stats: crate::stats::GuestStatsHooks) -> Self {
         Self {
             stats,
+            exec_watch: false,
             #[cfg(feature = "exec-private-init")]
             no_rcb: false,
         }
@@ -118,6 +124,10 @@ impl HostRuntime for LiteinstRuntime {
 
     fn reserved_signal_mask(&self) -> u64 {
         runtime::reserved_signal_mask()
+    }
+
+    fn exec_watch_armed(&self) -> bool {
+        self.exec_watch
     }
 }
 
@@ -1297,6 +1307,7 @@ where
         instruction_subscriptions.cpuid,
         LiteinstRuntime {
             stats,
+            exec_watch: false,
             #[cfg(feature = "exec-private-init")]
             no_rcb: skip_pmu,
         },
