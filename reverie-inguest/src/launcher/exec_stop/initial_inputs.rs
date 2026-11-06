@@ -382,7 +382,7 @@ pub(super) fn unchanged_parts(
         || task.generation() != owner.generation
         || register_words(&task.getregs()?) != register_words(&context.regs)
         || task.getsigmask()? != context.signal_mask
-        || task.getxstate()? != context.xstate
+        || super::arch::capture_extended(task)? != context.xstate
         || read_exact_span(task, context.stack_start, context.stack_bytes.len())?
             != context.stack_bytes
     {
