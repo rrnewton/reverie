@@ -345,27 +345,44 @@ impl Drop for Fixture {
     }
 }
 
-/// Reaps `tid` iff it is this test process's own zombie child. An effect
-/// task orphaned when its root dies is reparented to the test process; the
-/// driver has already reported it SIGKILL-terminal, but nobody has waited
-/// on it, so `/proc/<tid>` lingers as a zombie until we reap it here.
-/// Waiting on that exact waitpid is waiting on the reap event itself.
+/// Waits until the SIGKILL-terminal effect task `tid` has been reaped.
+/// An effect task orphaned when its root dies is reparented to the
+/// nearest child-subreaper ancestor: this test process in a direct run,
+/// or the static-reaper wrapper process (which sets
+/// PR_SET_CHILD_SUBREAPER before spawning this test as its ptracer
+/// child and reaps adopted tasks itself). Nobody has waited on the
+/// task when the driver reports it terminal, so `/proc/<tid>` lingers
+/// as a zombie until its adoptive parent reaps it.
+///
+/// If the task is our own child, a blocking waitpid on the exact tid
+/// waits on the reap event itself (retrying on EINTR: SIGCHLD traffic
+/// in a full test binary can interrupt a single call). If it was
+/// adopted by an ancestor instead (ECHILD here), there is no reap
+/// event to wait on from this process, so poll for the absence the
+/// adoptive parent's reap produces, bounded so a never-reaped task
+/// still fails the assertion that follows. Sampling state once raced
+/// both the zombie transition (green6) and the wrapper's reap
+/// (green7: effect zombie's ppid was the wrapper, not this process).
 fn reap_adopted_zombie(tid: i32) {
-    let Ok(stat) = fs::read_to_string(format!("/proc/{tid}/stat")) else {
-        return;
-    };
-    let Some(close) = stat.rfind(')') else { return };
-    let mut fields = stat[close + 2..].split_whitespace();
-    let (Some(state), Some(ppid)) = (fields.next(), fields.next()) else {
-        return;
-    };
-    if state != "Z" || ppid.parse::<u32>().ok() != Some(std::process::id()) {
-        return;
+    // SAFETY: waitpid on an exact tid reaps at most that one child and
+    // writes only `status`; for a non-child it fails without effect.
+    loop {
+        let mut status = 0;
+        if unsafe { libc::waitpid(tid, &mut status, 0) } >= 0 {
+            return;
+        }
+        if std::io::Error::last_os_error().raw_os_error() != Some(libc::EINTR) {
+            break;
+        }
     }
-    let mut status = 0;
-    // SAFETY: tid was just observed as our own zombie child; waitpid on it
-    // reaps exactly that child and writes only `status`.
-    unsafe { libc::waitpid(tid, &mut status, 0) };
+    // Bounded at 2 s: an adoptive init/wrapper reaps in well under
+    // that, and the static-reaper diagnostic that runs this test as
+    // its ptracer child grants the whole diagnostic five seconds.
+    let proc_tid = format!("/proc/{tid}");
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while PathBuf::from(&proc_tid).exists() && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(1));
+    }
 }
 
 async fn run(mode: Mode) {
