@@ -95,8 +95,29 @@ may require SUD, CPUID faulting, or `PR_SET_TSC` (I6, as amended: such
 support may be a cell prerequisite, its absence then yields a named
 refusal above); and so on.
 >
-> 🚧 **Under construction — lifecycle matrix.** TODO: the
-> thread/signal/fork/exec/mapping-churn × backend coverage matrix,
-> generated from conformance results so it cannot drift from what
-> actually passes. <!-- UC: safety-lifecycle -->
-> Tracking: [reverie#1272](https://github.com/rrnewton/reverie/issues/1272) (`safety-lifecycle`).
+### The lifecycle matrix
+
+Coverage below is generated from the three `Guest` implementations
+(which lifecycle hooks each backend actually drives) and checked
+against the conformance corpus's lifecycle programs (shell
+fork/exec, exit codes); "delivered" means the corresponding `Tool`
+hook runs on that backend today. Anything not delivered is refused
+or outside the cell's stated personality — never silently skipped.
+
+| Event | ptrace | in-guest | KVM |
+|---|---|---|---|
+| Thread birth (`handle_thread_start`) | delivered | delivered (per-process runtime; new threads initialize continuation state before their first trap) | delivered (backend-created vCPU threads) |
+| Fork / clone children followed | delivered — the reference | a supported COW fork inherits the live image and stack and rebinds the child owner; broader topologies are not claimed | emulated inside the VM personality (LinuxEmu has its own fork/vfork task model); no host process is forked |
+| Exec successor (`handle_exec_commit` / `handle_post_exec`) | delivered, `handle_post_exec` per successor image | re-armed by the preload constructor when the preload survives the exec; `handle_post_exec` delivered | `handle_exec_commit` delivered (the one backend that can refuse an exec before the point of no return); `handle_post_exec` delivered |
+| Signal interception & rewriting | delivered, with the named held-signal holes of §2.2 as reference semantics | shared dispatcher over SIGSYS/SIGSEGV with an alternate-stack runtime; arbitrary guest signal-handler support is refused, not emulated | guest signals are personality-emulated; host signal 64 and `SIGSTKFLT` are reserved by the backend and must not be used by embedding code |
+| Mapping churn after launch | observed (mappings are syscalls and page state) | refused outside the admitted census: new executable code needs its own admission | managed as VM memory by the backend/LinuxEmu, not guest-planned mappings |
+| Thread/process exit (`on_exit_thread` / `on_exit_process`) | delivered | delivered | delivered |
+| Timers | delivered (time and precise RCB schedules; timers armed before the launch exec are retired by it — re-arm in `handle_post_exec`) | delivered through the same `Guest` surface where the runtime admits the guest shape | delivered; the preemption timer's `SIGSTKFLT` is backend-owned |
+
+Two asymmetries in that table bite in practice. Only KVM has an
+exec *commit* point it can refuse before the old image is gone —
+elsewhere `handle_post_exec` is your first word in the new image.
+And only ptrace delivers the full signal surface: in-guest signal
+handling is a dispatcher with stated limits, and KVM reserves two
+host signals for itself, so a tool that rewrites arbitrary signals
+today has exactly one backend.
