@@ -24504,6 +24504,27 @@ const DETCORE_VALIDATE_TEMPLATES: &[DetcoreValidateTemplate] = &[
             (301, 16),
         ],
     },
+    // Standalone dev allocator-fixture producer body (dev profile, opt0),
+    // 0x28c9d0, SHA256 0d21190b09a968dded749b8e04538f3bc4fe991c22d9e9b35f18d5cb423d1194.
+    DetcoreValidateTemplate {
+        role: "fixed_arena_mprotect",
+        hex: "4883ec184889fe4889742410bf0a000000ba00000002b903000000e8f0b302004889442408eb06ff152b110d00488b4424084883c418c3",
+        operands: &[
+            DetcoreValidateOperand {
+                displacement: 28,
+                next: 32,
+                key: "fixed_scalar_syscall",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 41,
+                next: 45,
+                key: "fixed_publication_cannot_unwind",
+                got: true,
+            },
+        ],
+        transfers: &[(27, 0), (39, 1)],
+    },
 ];
 struct DetcoreRecipeBindings<'a> {
     targets: &'a BTreeMap<String, u64>,
