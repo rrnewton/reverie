@@ -1152,6 +1152,77 @@ mod tests {
         assert_eq!(owner.wait(running).unwrap(), ExitStatus::Exited(0));
     }
 
+    /// Locate the host-pinned static busybox and prove from its ELF
+    /// program headers that it really is static (no PT_INTERP):
+    /// the static mechanical witness must not silently degrade to
+    /// a dynamic guest.
+    fn pinned_static_busybox() -> &'static Path {
+        let path = ["/usr/sbin/busybox", "/bin/busybox", "/usr/bin/busybox"]
+            .into_iter()
+            .map(Path::new)
+            .find(|candidate| candidate.is_file())
+            .expect("static witness requires a pinned static busybox on the host");
+        let image = std::fs::read(path).unwrap();
+        assert!(image.starts_with(b"\x7fELF"), "busybox is not an ELF");
+        let phoff = u64::from_le_bytes(image[32..40].try_into().unwrap()) as usize;
+        let phentsize = u16::from_le_bytes(image[54..56].try_into().unwrap()) as usize;
+        let phnum = u16::from_le_bytes(image[56..58].try_into().unwrap()) as usize;
+        assert!(phentsize >= 56 && phnum > 0, "busybox phdr shape");
+        for i in 0..phnum {
+            let at = phoff + i * phentsize;
+            let kind = u32::from_le_bytes(image[at..at + 4].try_into().unwrap());
+            assert_ne!(kind, 3, "busybox has PT_INTERP: not a static guest");
+        }
+        path
+    }
+
+    // S1 static mechanical witness (preparation/mechanics only, no
+    // arming claim): the supervisor seizes a static busybox before
+    // its initial exec, catches that exec, detaches, and the guest
+    // completes `ls /` unsupervised with its real output. This
+    // proves the exec-stop core (spawn, drain, release) on a
+    // static image; it proves no Tool arming and no translation
+    // (the listing is the host root).
+    #[test]
+    fn static_busybox_detached_release_lists_root() {
+        use std::io::Read as _;
+
+        use reverie::process::PreparedStdio;
+        use reverie::process::Stdio;
+
+        let busybox = pinned_static_busybox();
+        let arguments: Vec<OsString> = ["ls", "/"].iter().map(OsString::from).collect();
+        let request = PreparedExec::new(busybox, &arguments, &[], None, Vec::new())
+            .unwrap()
+            .with_stdio(
+                PreparedStdio::new(Stdio::piped(), Stdio::piped(), Stdio::piped()).unwrap(),
+            );
+        let mut detached = Supervisor::spawn(
+            request,
+            CleanupReceipt::default(),
+            SupervisorMode::DormantSeize,
+        )
+        .unwrap();
+        assert_eq!(detached.former_tid(), detached.pid());
+        let mut pipes = detached.take_parent_stdio().unwrap();
+        drop(pipes.stdin.take());
+        let outcome = detached.wait().unwrap();
+        assert_eq!(outcome.status, ExitStatus::Exited(0));
+        assert!(outcome.cleanup.confirmed);
+        let mut stdout = Vec::new();
+        std::fs::File::from(pipes.stdout.take().unwrap())
+            .read_to_end(&mut stdout)
+            .unwrap();
+        let listing = String::from_utf8(stdout).unwrap();
+        let entries: std::collections::BTreeSet<&str> = listing.split_whitespace().collect();
+        for expected in ["bin", "etc", "usr"] {
+            assert!(
+                entries.contains(expected),
+                "root listing missing {expected}: {listing:?}"
+            );
+        }
+    }
+
     #[test]
     fn initial_exec_stop_release_hook_error_fails_closed() {
         use super::super::ExecStop;
@@ -1603,12 +1674,25 @@ mod tests {
             handoff_file: &'fd File,
             input_file: &'fd File,
         ) -> WatchedSupervisor<'fd> {
-            let args: Vec<OsString> = ["sh", "-c", "exec /bin/sh -c true"]
-                .iter()
-                .map(OsString::from)
-                .collect();
-            let request = PreparedExec::new(
+            watched_guest_with(
                 Path::new("/bin/sh"),
+                &["sh", "-c", "exec /bin/sh -c true"],
+                runtime_file,
+                handoff_file,
+                input_file,
+            )
+        }
+
+        fn watched_guest_with<'fd>(
+            program: &Path,
+            arguments: &[&str],
+            runtime_file: &'fd File,
+            handoff_file: &'fd File,
+            input_file: &'fd File,
+        ) -> WatchedSupervisor<'fd> {
+            let args: Vec<OsString> = arguments.iter().map(OsString::from).collect();
+            let request = PreparedExec::new(
+                program,
                 &args,
                 &[],
                 None,
@@ -1760,6 +1844,39 @@ mod tests {
             let input_file = memfd(INERT_PACKET, true).unwrap();
             let watched = watched_guest(&runtime_file, &handoff_file, &input_file);
             let stop = next_exec(watched);
+            prepare_and_cancel(
+                stop,
+                &runtime,
+                &descriptor,
+                &geometry,
+                &runtime_file,
+                &handoff_file,
+                &input_file,
+            );
+        }
+
+        // S1 static mechanical witness, preparation half: the same
+        // full physical preparation run against a pinned static
+        // busybox initial image (no PT_INTERP, proven by
+        // pinned_static_busybox). Cancel-terminated preparation
+        // only: no guest release, no Tool arming, no translation.
+        #[test]
+        fn static_busybox_preparation_rerun() {
+            let runtime = synthetic_runtime();
+            let descriptor = descriptor_words(&runtime);
+            let geometry = geometry(&descriptor);
+            let runtime_file = memfd(&runtime, true).unwrap();
+            let handoff_file = memfd(&[], false).unwrap();
+            let input_file = memfd(INERT_PACKET, true).unwrap();
+            let watched = watched_guest_with(
+                super::pinned_static_busybox(),
+                &["ls", "/"],
+                &runtime_file,
+                &handoff_file,
+                &input_file,
+            );
+            let stop = next_exec(watched);
+            assert_eq!(stop.former_tid(), stop.pid());
             prepare_and_cancel(
                 stop,
                 &runtime,
