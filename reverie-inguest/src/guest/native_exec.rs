@@ -461,6 +461,17 @@ impl<'a, T: Tool> ExecInjection<'a, T> {
                 "reverie-inguest: native exec already attempted in this dispatch",
             ));
         }
+        // Named scope exclusion, through the single-attempt latch above:
+        // empty-path/memfd images have no admitted route, and refusing
+        // here still consumes the one attempt for this dispatch.
+        if operation.0 == libc::SYS_execveat && operation.1[4] & libc::AT_EMPTY_PATH as u64 != 0 {
+            return Err(UnsupportedRefusal::new(
+                UnsupportedOperation::Exec,
+                Errno::EOPNOTSUPP,
+                "execveat with AT_EMPTY_PATH is not admitted by the native exec \
+                 route: only plain path execve/execveat images are admitted",
+            ));
+        }
         let (cut, session) = self.captured.as_mut().map_err(|error| *error)?;
         cut.revalidate(event, site)?;
         if !cut.original.accepts(operation.0, operation.1) {
@@ -496,23 +507,18 @@ impl<'a, T: Tool> ExecInjection<'a, T> {
             attempt.cancel(rpc);
             return Err(error);
         }
-        let result = unsafe {
-            attempt
-                .prepared
-                .as_mut()
-                .unwrap()
-                .issue_and_call(self.tool, state, cut, rpc)
-        };
-        match result {
-            Err(NativeExecFailure::Terminal(error)) => terminate(error),
-            returned => {
-                attempt.cancel(rpc);
-                match returned {
-                    Ok(errno) => Ok(errno),
-                    Err(error) => failed(error),
-                }
-            }
-        }
+        // Stage-1 final refusal, host-enforced: preparation and both
+        // revalidations above are the admitted route's evidence, but no
+        // successor execution is permitted in this stage regardless of
+        // driver behavior. Cancel the owned attempt (consuming every
+        // provision lease) and refuse by typed name. Removing this
+        // block is the single seam that re-enables issue in a later
+        // stage; until then `issue_and_call` is unreachable from here.
+        attempt.cancel(rpc);
+        Err(refusal(
+            "reverie-inguest: admitted native exec is refused at the final \
+             step in this stage; no successor image is executed",
+        ))
     }
 }
 

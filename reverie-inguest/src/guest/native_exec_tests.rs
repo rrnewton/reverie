@@ -85,6 +85,30 @@ impl Tool for ModelTool {
             self.calls.lock().unwrap().push("rollback");
             return Ok(-i64::from(errno.into_raw()));
         }
+        if self.mode == 22 {
+            // Refused-first probe: an AT_EMPTY_PATH injection against a
+            // plain-path original, then the exact original. Both must
+            // refuse (scope exclusion, then already-attempted) with no
+            // driver prepare in between.
+            let plain = [libc::AT_FDCWD as i64 as u64, 0x1000, 0x2000, 0x3000, 0, 0];
+            let mut empty_path = plain;
+            empty_path[4] = libc::AT_EMPTY_PATH as u64;
+            let first = guest
+                .inject(syscall(libc::SYS_execveat, empty_path))
+                .await
+                .unwrap_err();
+            let first_refusal = guest.take_unsupported_refusal();
+            self.returned.lock().unwrap().push((first, first_refusal));
+            let second = guest
+                .inject(syscall(libc::SYS_execveat, plain))
+                .await
+                .unwrap_err();
+            let second_refusal = guest.take_unsupported_refusal();
+            self.returned.lock().unwrap().push((second, second_refusal));
+            *guest.thread_state_mut() = (3, 1);
+            self.calls.lock().unwrap().push("rollback");
+            return Ok(-i64::from(first.into_raw()));
+        }
         let (number, args) = call.into_parts();
         let mut injected = [
             args.arg0 as u64,
@@ -503,7 +527,9 @@ fn run_model(
     };
     unsafe { host.dispatch(&mut event) };
     if mode == 19 {
-        assert_eq!(event.guest_pkru, Some(0x40));
+        // No issue is reached in this stage, so no kernel permission
+        // effect is applied: the event keeps its original PKRU.
+        assert_eq!(event.guest_pkru, Some(0));
     }
     let results = returned.lock().unwrap();
     assert_eq!(results.len(), 1);
@@ -628,19 +654,18 @@ fn run_model(
             assert_eq!(log[log.len() - 2], "native-cancel");
         }
     } else {
-        assert_eq!(refusal, None); // even model ENOSYS/EOPNOTSUPP stays untagged
+        // Contract correction (stage-1 final refusal): these modes used
+        // to expect the mock driver's returned kernel errno via
+        // "call-original". The host now cancels after revalidation and
+        // refuses at the final step, so issue is unreachable and no
+        // driver-chosen errno (modes 6-9) can leak to the guest.
+        assert_eq!(errno, Errno::EOPNOTSUPP);
+        let refusal = refusal.expect("named final-step refusal");
+        assert_eq!(refusal.operation, reverie::UnsupportedOperation::NativeExec);
+        assert!(refusal.diagnostic.contains("final step"));
+        let log = calls.lock().unwrap();
         assert_eq!(
-            errno,
-            match mode {
-                6 => Errno::ENOSYS,
-                7 => Errno::EOPNOTSUPP,
-                8 => Errno::EACCES,
-                9 => Errno::ENOEXEC,
-                _ => Errno::ENOENT,
-            }
-        );
-        assert_eq!(
-            *calls.lock().unwrap(),
+            *log,
             [
                 "init",
                 "thread-start",
@@ -649,11 +674,11 @@ fn run_model(
                 "handler-prepare",
                 "native-prepare",
                 "native-revalidate",
-                "call-original",
                 "native-cancel",
                 "rollback"
             ]
         );
+        assert_eq!(log.iter().filter(|c| **c == "call-original").count(), 0);
     }
     drop(results);
     drop(host);
@@ -707,7 +732,7 @@ fn mock_driver_prepared_and_final_refusals_cancel_only_owned_provision_before_ro
     }
 }
 #[test]
-fn mock_driver_returned_kernel_errno_has_no_named_refusal_even_when_errno_matches() {
+fn admitted_exec_final_refusal_never_reaches_issue_for_any_driver_errno_mode() {
     for mode in [1, 6, 7, 8, 9] {
         isolated(
             move || run_model(mode, false, true, true, SyscallDispatch::Fallback),
@@ -750,8 +775,9 @@ fn mock_driver_tail_exec_keeps_the_original_process_guard_refusal() {
 }
 
 #[test]
-fn mock_returned_exec_permission_effect_survives_cancellation_and_errno() {
-    // Typed host propagation only, not a physical PKRU or kernel exec claim.
+fn admitted_final_refusal_applies_no_kernel_permission_effect() {
+    // Component-level only: with issue unreachable, cancellation
+    // cannot carry a returned PKRU effect into the event.
     isolated(
         || run_model(19, true, true, true, SyscallDispatch::Fallback),
         0,
@@ -830,10 +856,14 @@ fn admission_requires_installed_driver_and_is_single_shot() {
 }
 
 #[test]
-fn admitted_failed_exec_keeps_old_image_armed_for_redispatch() {
-    // Atomicity at the host boundary: a genuine returned kernel errno
-    // (mock ENOENT) leaves the old image armed, so a second dispatch
-    // captures and attempts again instead of wedging or disarming.
+fn component_only_final_refusal_keeps_model_old_image_dispatching() {
+    // COMPONENT-ONLY evidence: mock driver, synthetic events, manual
+    // state rollback. This proves the host dispatch boundary stays
+    // live after a final-step refusal (second dispatch captures and
+    // refuses again); it is NOT a physical atomicity witness — no
+    // kernel exec is issued and no genuine errno is observed. The
+    // physical witness needs harness pieces that do not exist yet
+    // (see the S1 fix-round design note).
     isolated(
         || {
             let _native = crate::guest::exec_private::native_exec_mock_callback();
@@ -878,19 +908,155 @@ fn admitted_failed_exec_keeps_old_image_armed_for_redispatch() {
                     guest_pkru: None,
                 };
                 unsafe { host.dispatch(&mut event) };
-                assert_eq!(event.result, -i64::from(Errno::ENOENT.into_raw()));
+                assert_eq!(event.result, -i64::from(Errno::EOPNOTSUPP.into_raw()));
                 assert_eq!(
                     host.states.lock().get(&raw_pid(libc::SYS_gettid).as_raw()),
                     Some(&(3, 1))
                 );
             }
             let results = returned.lock().unwrap();
-            assert_eq!(*results, [(Errno::ENOENT, None), (Errno::ENOENT, None)]);
+            assert_eq!(results.len(), 2);
+            for (errno, refusal) in results.iter() {
+                assert_eq!(*errno, Errno::EOPNOTSUPP);
+                let refusal = refusal.expect("named final-step refusal");
+                assert_eq!(refusal.operation, reverie::UnsupportedOperation::NativeExec);
+                assert!(refusal.diagnostic.contains("final step"));
+            }
             let log = calls.lock().unwrap();
             assert_eq!(log.iter().filter(|c| **c == "capture-old").count(), 2);
-            assert_eq!(log.iter().filter(|c| **c == "call-original").count(), 2);
+            assert_eq!(log.iter().filter(|c| **c == "call-original").count(), 0);
             drop(results);
             drop(log);
+            drop(host);
+            worker.join().unwrap();
+        },
+        0,
+    );
+}
+
+#[test]
+fn refused_first_empty_path_consumes_the_single_attempt() {
+    // Refused-first probe: plain-path original; first injection adds
+    // AT_EMPTY_PATH (scope refusal), second injects the exact
+    // original and must meet the already-attempted latch, with no
+    // driver prepare or issue in between.
+    isolated(
+        || {
+            let _native = crate::guest::exec_private::native_exec_mock_callback();
+            let (rpc, worker) = rpc();
+            let calls = Arc::new(Mutex::new(Vec::new()));
+            let returned = Arc::new(Mutex::new(Vec::new()));
+            let owner = Arc::new(AtomicUsize::new(0));
+            let tool = ModelTool {
+                mode: 22,
+                calls: calls.clone(),
+                returned: returned.clone(),
+            };
+            let mut host = Box::new(ToolHost::new(
+                tool,
+                rpc,
+                raw_pid(libc::SYS_getpid),
+                HashSet::from([Sysno::execve, Sysno::execveat, Sysno::getpid]),
+                false,
+                ModelRuntime,
+            ));
+            owner.store(
+                &*host as *const ToolHost<ModelTool, ModelRuntime> as usize,
+                Ordering::Release,
+            );
+            unsafe {
+                host.install_native_exec_driver(Arc::new(ModelDriver {
+                    mode: 22,
+                    host: owner,
+                    calls: calls.clone(),
+                }))
+            }
+            .unwrap();
+            unsafe { host.admit_native_exec() }.unwrap();
+            let mut event = SyscallEvent {
+                number: libc::SYS_execveat,
+                args: [libc::AT_FDCWD as i64 as u64, 0x1000, 0x2000, 0x3000, 0, 0],
+                instruction_pointer: 0x1234,
+                result: 0,
+                context: 0,
+                dispatch: SyscallDispatch::Fallback,
+                guest_pkru: None,
+            };
+            unsafe { host.dispatch(&mut event) };
+            assert_eq!(event.result, -i64::from(Errno::EOPNOTSUPP.into_raw()));
+            let results = returned.lock().unwrap();
+            assert_eq!(results.len(), 2);
+            assert_eq!(results[0].0, Errno::EOPNOTSUPP);
+            let first = results[0].1.expect("named empty-path refusal");
+            assert_eq!(first.operation, reverie::UnsupportedOperation::Exec);
+            assert!(first.diagnostic.contains("AT_EMPTY_PATH"));
+            assert_eq!(results[1].0, Errno::EOPNOTSUPP);
+            let second = results[1].1.expect("already-attempted refusal");
+            assert_eq!(second.operation, reverie::UnsupportedOperation::NativeExec);
+            assert!(second.diagnostic.contains("already attempted"));
+            let log = calls.lock().unwrap();
+            assert_eq!(log.iter().filter(|c| **c == "capture-old").count(), 1);
+            assert_eq!(log.iter().filter(|c| **c == "native-prepare").count(), 0);
+            assert_eq!(log.iter().filter(|c| **c == "call-original").count(), 0);
+            drop(results);
+            drop(log);
+            drop(host);
+            worker.join().unwrap();
+        },
+        0,
+    );
+}
+
+#[test]
+fn admission_after_dispatch_is_refused() {
+    // Pins the states-nonempty guard: once a dispatch created Tool
+    // state, admission follows dispatch and must fail. The sibling
+    // try_lock WouldBlock guard needs a concurrently held state lock
+    // and stays explicitly deferred (identical guard to driver
+    // installation, same lock and errors).
+    isolated(
+        || {
+            let _native = crate::guest::exec_private::native_exec_mock_callback();
+            let (rpc, worker) = rpc();
+            let calls = Arc::new(Mutex::new(Vec::new()));
+            let owner = Arc::new(AtomicUsize::new(0));
+            let tool = ModelTool {
+                mode: 1,
+                calls: calls.clone(),
+                returned: Arc::new(Mutex::new(Vec::new())),
+            };
+            let mut host = Box::new(ToolHost::new(
+                tool,
+                rpc,
+                raw_pid(libc::SYS_getpid),
+                HashSet::from([Sysno::execve, Sysno::execveat, Sysno::getpid]),
+                false,
+                ModelRuntime,
+            ));
+            owner.store(
+                &*host as *const ToolHost<ModelTool, ModelRuntime> as usize,
+                Ordering::Release,
+            );
+            unsafe {
+                host.install_native_exec_driver(Arc::new(ModelDriver {
+                    mode: 1,
+                    host: owner,
+                    calls,
+                }))
+            }
+            .unwrap();
+            let mut event = SyscallEvent {
+                number: libc::SYS_execveat,
+                args: [libc::AT_FDCWD as i64 as u64, 0x1000, 0x2000, 0x3000, 0, 0],
+                instruction_pointer: 0x1234,
+                result: 0,
+                context: 0,
+                dispatch: SyscallDispatch::Fallback,
+                guest_pkru: None,
+            };
+            unsafe { host.dispatch(&mut event) };
+            assert!(unsafe { host.admit_native_exec() }.is_err());
+            assert!(!host.native_exec_admitted());
             drop(host);
             worker.join().unwrap();
         },
