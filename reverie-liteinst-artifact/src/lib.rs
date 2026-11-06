@@ -1422,11 +1422,12 @@ const CONTENT_REVERIE_CATALOG: [(&str, u64, &str); 83] = [
     // counter window must prove it ran throughout (time_running) before
     // any count is believed; the diagnostic counts it adds distinguish a
     // measured count from an unmeasured one instead of reporting an
-    // invented number. Size/digest cover both reviewed changes.
+    // invented number. Size/digest cover both reviewed changes and the
+    // interim pmu_shim.
     (
         "reverie/src/pmu_config.rs",
-        74723,
-        "ab1ea2a92c58a0a49bbd5f700d5bf303917802c4143645f015fa8047b0e463d3",
+        77614,
+        "e42c577bc665850d5a72f0d9bcc917403cc7c6687c010db74e640a51d29b4e5a",
     ),
     (
         "reverie/src/in_guest_rcb.rs",
