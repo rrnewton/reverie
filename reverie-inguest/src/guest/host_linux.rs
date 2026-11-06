@@ -566,6 +566,8 @@ mod tests {
             native: None,
             tail: &tail,
             cpuid_interception: false,
+            admit_threads: false,
+            thread_birth: None,
             fork_parent_state: None,
             runtime: &ForwardRuntime,
             staged_signals: Vec::new(),
