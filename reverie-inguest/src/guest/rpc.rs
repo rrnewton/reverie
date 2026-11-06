@@ -113,6 +113,7 @@ pub struct CoordinatorRpc<G: GlobalTool> {
     config: Arc<G::Config>,
     path: Option<PathBuf>,
     fd: AtomicI32,
+    transport: reverie_rpc_transport::RpcTransport,
     on_reconnect: ReconnectHook,
     #[cfg(feature = "exec-private-successor")]
     native_failed: AtomicBool,
@@ -147,6 +148,7 @@ impl<G: GlobalTool> CoordinatorRpc<G> {
             config,
             path: Some(path),
             fd: AtomicI32::new(-1),
+            transport: reverie_rpc_transport::RpcTransport::Socket,
             on_reconnect: |_, _| Err(io::Error::from_raw_os_error(libc::EPROTO)),
             #[cfg(feature = "exec-private-successor")]
             native_failed: AtomicBool::new(false),
@@ -163,6 +165,7 @@ impl<G: GlobalTool> CoordinatorRpc<G> {
             config,
             path: None,
             fd: AtomicI32::new(-1),
+            transport: reverie_rpc_transport::RpcTransport::Socket,
             on_reconnect: |_, _| Err(io::Error::from_raw_os_error(libc::EPROTO)),
             #[cfg(feature = "exec-private-successor")]
             native_failed: AtomicBool::new(false),
@@ -212,6 +215,10 @@ impl<G: GlobalTool> CoordinatorRpc<G> {
             GuestRpcStream::Ordinary(previous) => {
                 let _ = previous.into_raw_fd();
             }
+            // Unreachable: mapped reports fd -1, rejected by the `from`
+            // check above. Defensive forget mirrors Native below.
+            #[cfg(target_os = "linux")]
+            GuestRpcStream::Mapped(previous) => core::mem::forget(previous),
             #[cfg(feature = "exec-private-init")]
             GuestRpcStream::Native(previous) => core::mem::forget(previous),
         }
@@ -240,15 +247,27 @@ impl<G: GlobalTool> CoordinatorRpc<G> {
                 "live coordinator client belongs to another thread",
             ));
         }
+        // Mapped streams retain no descriptor (as_raw_fd() == -1 by
+        // construction); every other GuestRpcStream kind has a real fd.
         let fd = client.as_raw_fd();
-        let valid = unsafe {
-            raw_syscall6(
-                libc::SYS_fcntl,
-                [fd as u64, libc::F_GETFD as u64, 0, 0, 0, 0],
-            )
+        let (transport, supplied) = if fd < 0 {
+            (reverie_rpc_transport::RpcTransport::Mapped, "mapped")
+        } else {
+            (reverie_rpc_transport::RpcTransport::Socket, "socket")
         };
-        if fd < 0 || valid < 0 {
-            return Err(io::Error::other("live coordinator descriptor is invalid"));
+        reverie_rpc_transport::RpcTransport::from_env()
+            .and_then(|selected| selected.require(supplied))
+            .map_err(|e| io::Error::other(e.to_string()))?;
+        if transport == reverie_rpc_transport::RpcTransport::Socket {
+            let valid = unsafe {
+                raw_syscall6(
+                    libc::SYS_fcntl,
+                    [fd as u64, libc::F_GETFD as u64, 0, 0, 0, 0],
+                )
+            };
+            if valid < 0 {
+                return Err(io::Error::other("live coordinator descriptor is invalid"));
+            }
         }
         let config = Arc::new(client.config().clone());
         Ok(Self {
@@ -256,6 +275,39 @@ impl<G: GlobalTool> CoordinatorRpc<G> {
             config,
             path: Some(path.as_ref().to_path_buf()),
             fd: AtomicI32::new(fd),
+            transport,
+            on_reconnect,
+            #[cfg(feature = "exec-private-successor")]
+            native_failed: AtomicBool::new(false),
+        })
+    }
+
+    /// Adopt a mapped (shared-memory) stream issued by the coordinator
+    /// (C1 PR1). Performs the ordinary config handshake over it.
+    /// Fork and successor flows over mapped refuse by name in PR1
+    /// (see `exchange`); fd delivery for children is PR2.
+    #[cfg(target_os = "linux")]
+    pub fn from_mapped_stream(
+        stream: reverie_rpc_transport::mapped::MappedStream,
+        on_reconnect: ReconnectHook,
+    ) -> io::Result<Self> {
+        reverie_rpc_transport::RpcTransport::from_env()
+            .and_then(|selected| selected.require("mapped"))
+            .map_err(|e| io::Error::other(e.to_string()))?;
+        let pid = current_id(libc::SYS_getpid)?;
+        let tid = current_id(libc::SYS_gettid)?;
+        let client = BlockingRpcClient::<G, GuestRpcStream>::from_connected_stream(
+            GuestRpcStream::Mapped(stream),
+            tid,
+        )
+        .map_err(|error| io::Error::other(describe_rpc_error(&error)))?;
+        let config = Arc::new(client.config().clone());
+        Ok(Self {
+            connection: ConnectionOwner::Ordinary(SpinMutex::new(RpcConnection { pid, client })),
+            config,
+            path: None,
+            fd: AtomicI32::new(-1),
+            transport: reverie_rpc_transport::RpcTransport::Mapped,
             on_reconnect,
             #[cfg(feature = "exec-private-successor")]
             native_failed: AtomicBool::new(false),
@@ -266,6 +318,12 @@ impl<G: GlobalTool> CoordinatorRpc<G> {
     /// `on_reconnect` runs when a forked child reconnects; see
     /// [`ReconnectHook`].
     pub fn connect(path: impl AsRef<Path>, on_reconnect: ReconnectHook) -> io::Result<Self> {
+        // Path connect is the socket transport by definition; a mapped
+        // selection here is a named mismatch, never a silent fallback.
+        let transport = reverie_rpc_transport::RpcTransport::Socket;
+        reverie_rpc_transport::RpcTransport::from_env()
+            .and_then(|selected| selected.require("socket"))
+            .map_err(|e| io::Error::other(e.to_string()))?;
         let path = path.as_ref().to_path_buf();
         let pid = current_id(libc::SYS_getpid)?;
         let tid = current_id(libc::SYS_gettid)?;
@@ -278,6 +336,7 @@ impl<G: GlobalTool> CoordinatorRpc<G> {
             config,
             path: Some(path),
             fd: AtomicI32::new(fd),
+            transport,
             on_reconnect,
             #[cfg(feature = "exec-private-successor")]
             native_failed: AtomicBool::new(false),
@@ -321,6 +380,13 @@ impl<G: GlobalTool> CoordinatorRpc<G> {
         // child, so `getpid`/`gettid` are issued only when a fork has actually
         // happened and the inherited connection may still belong to the parent.
         if FORKED_SINCE_LAST_RPC.swap(false, Ordering::AcqRel) {
+            // C1 PR1: a mapped endpoint must never be duplicated by fork
+            // (SPSC contract). Refuse by name (exit 124) instead of
+            // operating the inherited copy; PR2 delivers fresh pairs.
+            #[cfg(target_os = "linux")]
+            if self.transport == reverie_rpc_transport::RpcTransport::Mapped {
+                rpc_fatal(124);
+            }
             // Both installed private domains already refuse fork/thread. A
             // retained native stream can never reconnect as ordinary I/O.
             #[cfg(feature = "exec-private-init")]
@@ -362,6 +428,10 @@ impl<G: GlobalTool> CoordinatorRpc<G> {
                         });
                         drop(blocked);
                     }
+                    // Not reached for mapped either: the fork branch above
+                    // refuses mapped (124) before reconnecting. Defensive.
+                    #[cfg(target_os = "linux")]
+                    GuestRpcStream::Mapped(stream) => drop(stream),
                     // Not reached: connect_ordinary builds only Ordinary
                     // streams, and an active exec-private domain exits with
                     // 123 above. Dropped as before, without the survivor
