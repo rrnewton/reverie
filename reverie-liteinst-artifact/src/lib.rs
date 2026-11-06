@@ -1324,8 +1324,8 @@ const CONTENT_REVERIE_CATALOG: [(&str, u64, &str); 83] = [
     ),
     (
         "reverie-liteinst/src/lib.rs",
-        24353,
-        "5a038fb111932c1bc045074cf679dce0bef88e8c50511aee252db24bab9c2a8b",
+        24468,
+        "ee1b4631d3a83d4d3d0fd6022affb5da4e58bfcfcaec8b6f65f47f5fb02cf146",
     ),
     (
         "reverie-liteinst-preload/Cargo.toml",
@@ -1379,23 +1379,23 @@ const CONTENT_REVERIE_CATALOG: [(&str, u64, &str); 83] = [
     ),
     (
         "reverie-inguest/src/guest/rpc.rs",
-        19824,
-        "7c87f79841be6e70cd775741362f2dc5a51f4e467ddf23a129e12d938a11dda9",
+        23415,
+        "282a1dc2327f0d52d2a1fff5cf546fcf1ef383ff2ee543dcefe18bd29550e4d4",
     ),
     (
         "reverie-inguest/src/guest/host.rs",
-        225912,
-        "107c375b5016d8357184184c6c496587648425708b6f561262e9fb6fe4e3276c",
+        230183,
+        "de1007db86ff63f854b2b20cb5797655bebe4156132782b8316c5838cb7732ad",
     ),
     (
         "reverie-inguest/src/guest/host_linux.rs",
-        24826,
-        "b63d026293b761802a5009d2a421e1f645a72c3f96ff35ba23ff7cee7bf17348",
+        24921,
+        "3236278ee1985a08a47c01658e20bf9c3e6569ce2ca3c3551cd59a41804e00f5",
     ),
     (
         "reverie-liteinst/src/tool_host.rs",
-        59026,
-        "fcb1b651f5dc1142521b6ff8140c438c71b7b862ff6feb0d48ac63c52dbb570a",
+        61404,
+        "ff5d44765a362a06f08c4f8f3e67ee6b66665ca67a7ff35f74d0c8b334a23971",
     ),
     (
         "reverie/Cargo.toml",
@@ -1481,13 +1481,13 @@ const CONTENT_REVERIE_CATALOG: [(&str, u64, &str); 83] = [
     ),
     (
         "reverie-rpc-transport/src/lib.rs",
-        4862,
-        "f0dec89933ddc8d520f0d7fbe634bbb5866826f4360b1a35d8a3fdedc4b36fbd",
+        4975,
+        "b8b927cf8deacd2c20ac20885cdecd913b0805d5452773dedbb32cafc46a8622",
     ),
     (
         "reverie-rpc-transport/src/server.rs",
-        121453,
-        "fdc6396f781ca59bf8f1b54886401ba36a466d4c12a88b0d90d51326fe4c91e5",
+        124659,
+        "1c66210c80566abed0e020a4b090ddd0ad5be05a45aba6ec29857fc066684ed7",
     ),
     (
         "reverie-rpc-transport/src/blocking_client.rs",
