@@ -67,9 +67,58 @@ and final state.
 > scorecard. <!-- UC: backends-pages -->
 > Tracking: [reverie#1272](https://github.com/rrnewton/reverie/issues/1272) (`backends-pages`).
 >
-> 🚧 **Under construction — external backends.** TODO: summarize the
-> e9patch / SaBRe / DynamoRIO extension backends from their owning
-> repositories at pinned revisions, or link out with a stated reason;
-> `docs/BACKEND_SOURCES.md` is the ownership record.
-> <!-- UC: backends-external -->
-> Tracking: [reverie#1272](https://github.com/rrnewton/reverie/issues/1272) (`backends-external`).
+## External backends
+
+Three backends live outside this workspace, in extension
+repositories that own their native source custody, builds, and
+qualification. `docs/BACKEND_SOURCES.md` in this repository is the
+ownership record; the summary below is why you would reach for each
+and what contract it has *here*. Nothing in a core build qualifies
+an extension: source archives, missing or dirty checkouts, and
+relocated historical pins refuse in the extension's own producer,
+and the old `third-party/{dynamorio,sabre,e9patch}` gitlinks in
+this tree are retired — use each extension's normal checkout.
+
+| Backend | Owning repository | Generic `Backend`? | Mechanism in one line |
+|---|---|---|---|
+| DynamoRIO | [hermit-dynamorio](https://github.com/rrnewton/hermit-dynamorio) (complete patched fork under `third-party/dynamorio`; `reverie-dynamorio` owns its SDK producer) | No — real `Tool`/`Guest` execution, not yet the common launch contract | Translated basic blocks in a code cache; syscall callbacks at the translated boundary; CPUID/RDTSC replaced in-cache |
+| SaBRe | [hermit-3rdparty-patching](https://github.com/rrnewton/hermit-3rdparty-patching) (vendored under `experimental/reverie-sabre/vendor/`) | No — adapter with local and remote modes | Load-time `.text` rewrite: five-byte jumps to a plugin handler, `SIGILL` fallback where a jump cannot fit |
+| e9patch | [hermit-3rdparty-patching](https://github.com/rrnewton/hermit-3rdparty-patching) (`reverie-e9patch/vendor/e9patch`) | **Yes** — the generic mode implements the trait | Ahead-of-time rewrite of every recovered syscall site in the root ELF, partial coverage refused at preparation |
+
+How they differ on the three questions of this chapter:
+
+* **DynamoRIO** hooks by translation, so there is no *missed native
+  site* inside translated code — and no shared seccomp/SIGSYS
+  completeness trap either; its boundary is the code cache. The
+  tool runs in the DynamoRIO client; coordinated launches share one
+  RPC server for global state, with an in-process singleton as the
+  uncoordinated fallback. Native custody is the strictest of the
+  three: the producer requires exact clean Git roots and all pinned
+  recursive children, and measures source bytes, modes, and
+  symlinks itself.
+* **SaBRe** hooks by rewriting mapped executable text at load. Its
+  honesty boundary is the one to read carefully: an unrewritable
+  known site falls back to a reserved instruction and a `SIGILL`
+  handler, but the current host launch installs no independent
+  seccomp completeness filter, so a site SaBRe never found is not
+  *proved* fail-closed by this integration. The plugin runs the
+  tool in guest context; RPC placement is a mode choice (remote
+  coordinator or local adapter), not part of the rewriter.
+* **e9patch** comes in two modes that must not be confused. The
+  *generic* mode implements `Backend` by staying ptrace-hosted:
+  rewritten sites emit a validated `SIGTRAP` to the ptracer, which
+  keeps loader syscalls, lifecycle, signals, timers, and full
+  `Guest` semantics — so rewritten sites still pay a ptrace stop.
+  The *direct opt-in* mode calls the shared dispatcher in guest
+  context behind the preload seccomp/SIGSYS completeness trap, with
+  a stated boundary (no static/`AT_SECURE` guests, no early loader
+  calls, no exec) and currently single-process/single-thread
+  lifecycle coverage — it does not replace the generic mode yet.
+
+License notices travel with the extensions (DynamoRIO:
+BSD-3-Clause with LGPL/BSD-4 components; SaBRe and e9patch:
+GPL/LGPL families with documented exceptions — the table in
+`docs/BACKEND_SOURCES.md` is authoritative). For mechanism-level
+detail with source-pinned references, the repository's
+`BACKENDS.md` is the backend author's reference; this section is
+the tool author's map to it.
