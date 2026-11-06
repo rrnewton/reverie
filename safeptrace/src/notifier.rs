@@ -1947,6 +1947,24 @@ impl Event {
         if identity.is_active_tracee() {
             return false;
         }
+        // A same-generation task that is alive but untraced at this instant
+        // is not unowned: a detach -> reattach handoff passes through
+        // TracerPid=0 while this generation's handles (the original driver,
+        // terminal cleanup) explicitly survive the owner change, and the
+        // worker can enter its wait exactly inside that gap and reap an
+        // instantaneous ECHILD. Retiring there permanently kills the
+        // generation's only harvester, so the reattachment stop is never
+        // queued. Retirement requires the task to be gone (or a different
+        // generation), or the recorded wait owner to be dead: only then
+        // can no live thread reattach and resume this generation.
+        if identity.observed_process_generation() == Some(true)
+            && self
+                .legacy_wait_owner
+                .get()
+                .is_none_or(|owner| owner.is_live() != Ok(false))
+        {
+            return false;
+        }
         self.mark_echild();
         true
     }
