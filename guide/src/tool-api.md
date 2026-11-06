@@ -549,8 +549,71 @@ The guest in recipe 4 is twelve lines: print
 (`src/bin/cpuid_guest.rs` next to the test). Leaf 0's vendor EBX
 passes through untouched; only leaf 1's EBX is forged.
 >
-> 🚧 **Under construction — Guest capability matrix.** TODO: tabulate
-> which `Guest` operations each backend implements vs refuses, sourced
-> from the conformance suite rather than from reading four
-> implementations by hand. <!-- UC: api-guest-matrix -->
-> Tracking: [reverie#1272](https://github.com/rrnewton/reverie/issues/1272) (`api-guest-matrix`).
+## Which optional Guest operations each backend implements
+
+The `Guest` trait has 84 methods; most carry a fail-closed default
+(usually `ENOSYS`/`EOPNOTSUPP` or a conservative answer), so the
+capability question is which defaults each backend overrides. The
+table below is generated from the three `Guest` impls
+(`TracedTask`, `InGuest`, `KvmGuest`) against the trait in
+`reverie/src/guest.rs` — regenerate it the same way rather than
+editing it by hand. It lists only the optional operations where
+the backends *differ*; of the remaining optional operations, 6 are implemented by all three and 6 by none (the trait default is the behaviour everywhere). Required operations (memory, registers read, injection, timers, lifecycle queries) are universal by construction. "In-guest" is one column because the patching and trap modes share the `InGuest` implementation.
+
+| Operation | ptrace | in-guest | KVM |
+|---|---|---|---|
+| `auxv` | trait default | implemented | implemented |
+| `backtrace` | implemented | implemented | trait default |
+| `bind_native_request` | implemented | trait default | trait default |
+| `cancel_current_thread` | trait default | trait default | implemented |
+| `cancel_parked_signal` | trait default | trait default | implemented |
+| `captured_write_signal_site` | trait default | trait default | implemented |
+| `controller_capture_fact` | trait default | implemented | trait default |
+| `defer_signal_delivery` | trait default | implemented | implemented |
+| `defer_signal_delivery_before_syscall` | trait default | implemented | trait default |
+| `deliver_signal` | implemented | trait default | trait default |
+| `descriptor_status` | implemented | trait default | implemented |
+| `detlog_memory_regions` | trait default | trait default | implemented |
+| `inject_observed` | implemented | trait default | trait default |
+| `inject_observed_with_native_operation` | implemented | trait default | trait default |
+| `inject_restartable` | implemented | trait default | trait default |
+| `inject_restartable_with_native_operation` | implemented | trait default | trait default |
+| `inject_staged_input` | implemented | trait default | trait default |
+| `inject_staged_with_native_operation` | implemented | trait default | trait default |
+| `inject_with_native_operation` | implemented | trait default | trait default |
+| `is_backend_runtime_bootstrap` | trait default | implemented | implemented |
+| `is_command_bootstrap` | implemented | trait default | trait default |
+| `is_runtime_owned_fd` | trait default | implemented | trait default |
+| `link_path` | implemented | trait default | implemented |
+| `memory_map` | implemented | trait default | implemented |
+| `observe_parked_signal` | trait default | trait default | implemented |
+| `parent_death_syscall_preflight` | trait default | trait default | implemented |
+| `parked_signal_failure_context` | trait default | trait default | implemented |
+| `parked_signal_site` | trait default | trait default | implemented |
+| `polled_read_signal_site` | trait default | trait default | implemented |
+| `queue_child_exit_signal` | trait default | trait default | implemented |
+| `queue_process_alarm_signal` | trait default | trait default | implemented |
+| `reserved_input_descriptor` | implemented | trait default | trait default |
+| `reserved_input_descriptors` | implemented | trait default | trait default |
+| `reserved_input_process_exit_signal` | implemented | trait default | trait default |
+| `reserved_input_task` | implemented | trait default | trait default |
+| `resume_signal_mask` | trait default | implemented | trait default |
+| `retire_current_thread` | trait default | trait default | implemented |
+| `runtime_private_memory_is_current` | trait default | implemented | trait default |
+| `runtime_private_memory_regions` | trait default | implemented | trait default |
+| `set_blocked_signals` | implemented | trait default | trait default |
+| `set_regs` | implemented | implemented | trait default |
+| `set_watchpoints` | implemented | trait default | trait default |
+| `signal_control_mode` | trait default | trait default | implemented |
+| `signal_observation_lease` | trait default | trait default | implemented |
+| `signal_report_path` | implemented | trait default | trait default |
+| `signal_sets` | implemented | trait default | implemented |
+| `signal_task_identity` | trait default | trait default | implemented |
+| `storable_memory_ranges` | trait default | trait default | implemented |
+| `supports_native_operations` | implemented | trait default | trait default |
+| `tail_inject_with_native_operation` | implemented | trait default | trait default |
+| `take_unsupported_refusal` | trait default | implemented | implemented |
+| `terminate_from_parked_signal` | trait default | trait default | implemented |
+| `try_mapping_capture` | trait default | implemented | trait default |
+| `user_address_limit` | trait default | trait default | implemented |
+| `watch_hits_keep_timer_events` | implemented | trait default | trait default |
