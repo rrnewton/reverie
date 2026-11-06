@@ -526,6 +526,12 @@ pub struct TrapOptions {
     pub process_forks_allowed: bool,
     /// Guest SIGALRM handlers are requested (signal phase 1).
     pub sigalrm_handlers: bool,
+    /// An external exec watcher is armed for this process (see
+    /// `HostRuntime::exec_watch_armed`): guest exec forwards to the
+    /// kernel instead of being refused. Only arm this when the
+    /// launcher actually seized the process under a supervisor that
+    /// re-bootstraps successors.
+    pub exec_watch: bool,
     /// The runtime's signal configuration.
     pub config: RuntimeConfig,
 }
@@ -537,6 +543,7 @@ impl Default for TrapOptions {
             stage_stream: false,
             process_forks_allowed: true,
             sigalrm_handlers: false,
+            exec_watch: false,
             config: RuntimeConfig {
                 restrict_signal_return: true,
                 ..RuntimeConfig::default()
@@ -594,13 +601,17 @@ unsafe impl PatchHost for TrapHost {
     }
 
     fn runtime(&self, stats: GuestStatsHooks) -> TrapRuntime {
-        TrapRuntime { stats }
+        TrapRuntime {
+            stats,
+            exec_watch: self.options.exec_watch,
+        }
     }
 }
 
 /// The shared runtime's services for a Tool host with no patcher.
 pub struct TrapRuntime {
     stats: GuestStatsHooks,
+    exec_watch: bool,
 }
 
 impl HostRuntime for TrapRuntime {
@@ -652,5 +663,9 @@ impl HostRuntime for TrapRuntime {
 
     fn reserved_signal_mask(&self) -> u64 {
         crate::guest::signal::reserved_signal_mask()
+    }
+
+    fn exec_watch_armed(&self) -> bool {
+        self.exec_watch
     }
 }
