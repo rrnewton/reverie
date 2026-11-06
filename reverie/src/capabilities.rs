@@ -604,7 +604,12 @@ impl BackendCapabilities {
         reports_kernel_child_exit_signals: false,
         supports_blocked_wait_signal_interruption: false,
         kernel_signal_state_is_guests: false,
-        kernel_signal_targets_are_predictable: false,
+        // The backend chooses no receiver for a process-directed signal: under
+        // Tool-controlled signal delivery a thread takes one only with the
+        // delivery permit the tool reserves for it, and the tool reads every
+        // thread's guest mask from the backend (`Guest::signal_sets`) while
+        // guest threads are serialized. The tool's choice is the target.
+        kernel_signal_targets_are_predictable: true,
         host_task_reads_reach_guest_threads: false,
         host_timed_signals_are_physical: false,
         reports_sigreturns: false,
@@ -802,7 +807,7 @@ mod tests {
                 "reports_kernel_child_exit_signals": false,
                 "supports_blocked_wait_signal_interruption": false,
                 "kernel_signal_state_is_guests": false,
-                "kernel_signal_targets_are_predictable": false,
+                "kernel_signal_targets_are_predictable": true,
                 "host_task_reads_reach_guest_threads": false,
                 "host_timed_signals_are_physical": false,
                 "reports_sigreturns": false,
