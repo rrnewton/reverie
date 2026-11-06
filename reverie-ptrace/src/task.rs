@@ -4535,6 +4535,15 @@ thread_local! {
     /// for the tests of the stepped path. Per thread, as above.
     pub(crate) static NO_SYSCALL_STOPS_FOR_TEST: std::cell::Cell<bool> =
         const { std::cell::Cell::new(false) };
+
+    /// Admits no divergent first injection to run in place at its
+    /// seccomp stop (`in_place_rewrite_admitted`), so that every
+    /// divergent injection takes the skip plus private-page transports,
+    /// for the tests whose subject is that stepped machinery (the
+    /// SIGTRAP shield/repair and pending-SIGTRAP refusals). Per
+    /// thread, as above.
+    pub(crate) static NO_IN_PLACE_REWRITE_FOR_TEST: std::cell::Cell<bool> =
+        const { std::cell::Cell::new(false) };
 }
 
 /// Test-only: the private-page injections of `nr` made by `syscall_stops`
@@ -15723,6 +15732,183 @@ impl<L: Tool + 'static> TracedTask<L> {
     // Replace an actual, unconverted seccomp entry. The caller must have taken
     // its pending record; this is not valid for a stopped task with no original
     // syscall left to consume (for example, a post-exec callback).
+    /// Whether a divergent first injection (the pending seccomp call
+    /// rewritten to `nr`/`args`) may run in place at its seccomp stop
+    /// instead of through `private_inject`'s skip plus private-page
+    /// step. In place the kernel runs the rewritten call itself at the
+    /// resume, with its own restart and signal semantics, and neither
+    /// single step happens. Refused where that changes more than the
+    /// transport:
+    /// - a legacy vsyscall stop, whose fixed-page return the kernel
+    ///   owns (`handle_seccomp` keeps it on its synthetic path);
+    /// - a guest seccomp filter of its own, whose trace/trap verdict
+    ///   on the rewritten call would arrive as a stop this injection
+    ///   does not own (`guest_has_own_seccomp_filter`);
+    /// - an exec: its success never returns here, and its pre-init
+    ///   SIGTRAP keeping is written around the stepped transports;
+    /// - `rt_sigreturn`, whose frame the private transport's step
+    ///   accounting is written around;
+    /// - a changed syscall number off x86_64: on aarch64 the kernel
+    ///   copied the number out of `x8` before the stop, so rewriting
+    ///   the registers alone runs the original call (`regs` module).
+    ///   An arguments-only rewrite is admitted there;
+    /// - a mask-setting or mask-swapping call (`StepKind::SetsMask` /
+    ///   `SwapsMask`): run in place it would become the guest's own
+    ///   interrupted syscall for kernel restart and held-signal
+    ///   purposes, where the private transport keeps the guest frame
+    ///   (and its interrupted call) intact across the injection;
+    /// - a reserved-input injection (observed or staged): its backend
+    ///   lifecycle binds the attempt to the private transport's
+    ///   execution provenance, and settling it from the guest's own
+    ///   syscall site misclassifies the result (the staged survivor
+    ///   in `reserved_input_interrupts` reads its write back nonzero).
+    fn in_place_rewrite_admitted(
+        &self,
+        task: &Stopped,
+        original: Sysno,
+        nr: Sysno,
+        args: &SyscallArgs,
+        reserved_input: bool,
+    ) -> Result<bool, TraceError> {
+        #[cfg(test)]
+        if NO_IN_PLACE_REWRITE_FOR_TEST.with(|none| none.get()) {
+            return Ok(false);
+        }
+        if reserved_input {
+            return Ok(false);
+        }
+        if matches!(nr, Sysno::execve | Sysno::execveat | Sysno::rt_sigreturn)
+            || original == Sysno::rt_sigreturn
+        {
+            return Ok(false);
+        }
+        if !matches!(
+            step_kind(nr, injection_swaps_signal_mask(nr, args)),
+            StepKind::KeepsMask | StepKind::Clones
+        ) {
+            return Ok(false);
+        }
+        #[cfg(target_arch = "aarch64")]
+        if nr != original {
+            return Ok(false);
+        }
+        #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+        {
+            return Ok(false);
+        }
+        #[cfg(target_arch = "x86_64")]
+        if is_legacy_vsyscall_ip(task.getregs()?.ip()) {
+            return Ok(false);
+        }
+        Ok(!self.guest_has_own_seccomp_filter(task.pid()))
+    }
+
+    /// Runs the pending syscall (rewritten to `nr`/`args` first when
+    /// `rewrite` holds them) from its seccomp stop to its exit stop,
+    /// in place: one `PTRACE_SYSCALL` resume, no skip and no
+    /// private-page step. The caller must have taken the pending
+    /// record. Signal, clone and exec outcomes classify exactly as
+    /// the exact pending call's do today (`status_to_result` with no
+    /// saved context).
+    async fn run_pending_in_place(
+        &mut self,
+        mut task: Stopped,
+        nr: Sysno,
+        args: SyscallArgs,
+        rewrite: bool,
+        input: Option<&NativeCallContext>,
+    ) -> Result<Result<i64, Errno>, TraceError> {
+        let oldregs = task.getregs()?;
+        let run_regs = if rewrite {
+            let mut regs = oldregs;
+            *regs.syscall_mut() = nr as Reg;
+            *regs.orig_syscall_mut() = nr as Reg;
+            regs.set_args((
+                args.arg0 as Reg,
+                args.arg1 as Reg,
+                args.arg2 as Reg,
+                args.arg3 as Reg,
+                args.arg4 as Reg,
+                args.arg5 as Reg,
+            ));
+            regs
+        } else {
+            oldregs
+        };
+        #[cfg(test)]
+        if self.global_state.pre_syscall_for_test.is_some() {
+            self.pre_syscall_for_test(&run_regs, PreSyscallPoint::Early)
+                .await;
+            self.pre_syscall_for_test(&run_regs, PreSyscallPoint::Late)
+                .await;
+        }
+        if rewrite {
+            task.setregs(&run_regs)?;
+        }
+        if let Some(input) = input {
+            self.observe_native_entry(&task, input)?;
+        }
+        if let Err(error) = self.prepare_input_at_stop(&mut task, input) {
+            return Err(self.recover_input_not_run(&task, oldregs, input.unwrap(), error));
+        }
+        self.issue_input(input)?;
+        let wait = self
+            .syscall_stopped_input(task, None, input)?
+            .next_state_with_owner(&self.ptracer_waits)
+            .await?;
+        self.arm_liteinst_wait(&wait);
+        let result = self
+            .status_to_result(
+                wait,
+                None,
+                None,
+                input,
+                false,
+                InjectionRestoration::PreserveResult,
+            )
+            .await?;
+        // A clone run in place steps its parent once
+        // (`handle_new_task`); an ignored SIGTRAP its trap reset is
+        // put back before the Tool goes on, and a guest SIGTRAP the
+        // step delivered is queued again (`absorb_sigtrap_at_stop`).
+        if self.sigtrap_repair().is_some() && self.keeps_sigtrap_state() {
+            let task = self.assume_stopped();
+            self.apply_sigtrap_repair(task).await?;
+        }
+        self.requeue_stashed_sigtrap_after_injection().await?;
+        Ok(result)
+    }
+
+    /// Leaves the pending syscall (as the registers now stand) to the
+    /// callback's final resume: the callback is cancelled next, and
+    /// that resume still owns its execution; no skip is due.
+    fn defer_pending_to_resume(
+        &mut self,
+        task: &Stopped,
+        nr: Sysno,
+        native: NativeCallContext,
+    ) -> Result<Result<i64, Errno>, TraceError> {
+        let callback = self
+            .native_callback
+            .ok_or_else(|| self.input_failure("native-tail-without-callback-owner"))?;
+        let pending = self
+            .native_entry_pending
+            .clone()
+            .ok_or_else(|| self.input_failure("native-tail-without-entry-owner"))?;
+        if self.deferred_native_call.is_some() {
+            return Err(self.input_failure("native-tail-duplicate-completion"));
+        }
+        self.deferred_native_call = Some(DeferredNativeCall {
+            callback,
+            owner: task.generation(),
+            pending,
+            context: native,
+        });
+        self.segv_resume_syscall
+            .store(nr as u64 + 1, Ordering::SeqCst);
+        Ok(Ok(0))
+    }
+
     async fn private_inject(
         &mut self,
         task: Stopped,
@@ -16234,7 +16420,7 @@ impl<L: Tool + 'static> TracedTask<L> {
         args: SyscallArgs,
         input: Option<&NativeCallContext>,
     ) -> Result<Result<i64, Errno>, TraceError> {
-        let mut task = self.assume_stopped();
+        let task = self.assume_stopped();
         let restoration = InjectionRestoration::for_public_returning(
             self.pending_syscall.is_some(),
             self.injected_syscall_frame.is_some(),
@@ -16265,52 +16451,22 @@ impl<L: Tool + 'static> TracedTask<L> {
             match self.pending_syscall.take() {
                 Some(original) if original == (nr, args) => {
                     // Run the exact pending syscall and stop at its exit.
-                    #[cfg(test)]
-                    if self.global_state.pre_syscall_for_test.is_some() {
-                        let regs = task.getregs()?;
-                        self.pre_syscall_for_test(&regs, PreSyscallPoint::Early)
-                            .await;
-                        self.pre_syscall_for_test(&regs, PreSyscallPoint::Late)
-                            .await;
-                    }
-                    let oldregs = task.getregs()?;
-                    if let Some(input) = input {
-                        self.observe_native_entry(&task, input)?;
-                    }
-                    if let Err(error) = self.prepare_input_at_stop(&mut task, input) {
-                        return Err(self.recover_input_not_run(
-                            &task,
-                            oldregs,
-                            input.unwrap(),
-                            error,
-                        ));
-                    }
-                    self.issue_input(input)?;
-                    let wait = self
-                        .syscall_stopped_input(task, None, input)?
-                        .next_state_with_owner(&self.ptracer_waits)
-                        .await?;
-                    self.arm_liteinst_wait(&wait);
-                    let result = self
-                        .status_to_result(
-                            wait,
-                            None,
-                            None,
-                            input,
-                            false,
-                            InjectionRestoration::PreserveResult,
-                        )
-                        .await?;
-                    // A clone run in place steps its parent once
-                    // (`handle_new_task`); an ignored SIGTRAP its trap reset is
-                    // put back before the Tool goes on, and a guest SIGTRAP the
-                    // step delivered is queued again (`absorb_sigtrap_at_stop`).
-                    if self.sigtrap_repair().is_some() && self.keeps_sigtrap_state() {
-                        let task = self.assume_stopped();
-                        self.apply_sigtrap_repair(task).await?;
-                    }
-                    self.requeue_stashed_sigtrap_after_injection().await?;
-                    Ok(result)
+                    self.run_pending_in_place(task, nr, args, false, input)
+                        .await
+                }
+                Some((original, _))
+                    if self.in_place_rewrite_admitted(
+                        &task,
+                        original,
+                        nr,
+                        &args,
+                        input.and_then(|c| c.input.as_ref()).is_some(),
+                    )? =>
+                {
+                    // Run the pending syscall rewritten to this call,
+                    // in place at its seccomp stop: no skip over the
+                    // guest instruction and no private-page step.
+                    self.run_pending_in_place(task, nr, args, true, input).await
                 }
                 Some(_) => {
                     self.private_inject(task, nr, args, input, restoration)
@@ -16461,27 +16617,33 @@ impl<L: Tool + 'static> TracedTask<L> {
 
         match self.pending_syscall.take() {
             Some(original) if original == (nr, args) => {
-                // The callback is cancelled next. Its final resume still owns
-                // execution of this original syscall; no second skip is due.
-                let callback = self
-                    .native_callback
-                    .ok_or_else(|| self.input_failure("native-tail-without-callback-owner"))?;
-                let pending = self
-                    .native_entry_pending
-                    .clone()
-                    .ok_or_else(|| self.input_failure("native-tail-without-entry-owner"))?;
-                if self.deferred_native_call.is_some() {
-                    return Err(self.input_failure("native-tail-duplicate-completion"));
-                }
-                self.deferred_native_call = Some(DeferredNativeCall {
-                    callback,
-                    owner: task.generation(),
-                    pending,
-                    context: native,
-                });
-                self.segv_resume_syscall
-                    .store(nr as u64 + 1, Ordering::SeqCst);
-                Ok(Ok(0))
+                self.defer_pending_to_resume(&task, nr, native)
+            }
+            Some((original, _))
+                if self.in_place_rewrite_admitted(
+                    &task,
+                    original,
+                    nr,
+                    &args,
+                    native.input.is_some(),
+                )? =>
+            {
+                // Rewrite the pending syscall's registers at its
+                // seccomp stop; the final resume then runs this call
+                // in place, as for the exact tail injection above.
+                let mut regs = task.getregs()?;
+                *regs.syscall_mut() = nr as Reg;
+                *regs.orig_syscall_mut() = nr as Reg;
+                regs.set_args((
+                    args.arg0 as Reg,
+                    args.arg1 as Reg,
+                    args.arg2 as Reg,
+                    args.arg3 as Reg,
+                    args.arg4 as Reg,
+                    args.arg5 as Reg,
+                ));
+                task.setregs(&regs)?;
+                self.defer_pending_to_resume(&task, nr, native)
             }
             Some(_) => {
                 self.private_inject(
