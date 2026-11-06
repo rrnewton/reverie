@@ -1191,9 +1191,11 @@ where
             {
                 // Unsubscribed originals never capture the installed
                 // native route; a watched exec refuses by name here
-                // instead of forwarding past it. Unwatched, the guard
-                // below keeps the historical refusal.
-                guest.unsupported_refusal = Some(refusal);
+                // instead of forwarding past it. No Tool callback
+                // runs on this route, so the name rides on the event
+                // itself for the dispatch consumer. Unwatched, the
+                // guard below keeps the historical refusal.
+                guest.event.unsupported_refusal = Some(refusal);
                 guest.event.result = -i64::from(Errno::EOPNOTSUPP.into_raw());
                 return;
             } else if let Some(error) = injected_syscall_guard(&self.runtime, number, args) {
@@ -1278,6 +1280,13 @@ where
         match driven {
             DrivenSyscall::Result(value) => {
                 guest.event.result = value;
+                // Carry any refusal the Tool did not consume (tail
+                // routes park forever, so the tag cannot be taken
+                // after tail_inject) onto the outward event, where
+                // the dispatch consumer reads the refusal's name.
+                if guest.event.unsupported_refusal.is_none() {
+                    guest.event.unsupported_refusal = guest.unsupported_refusal.take();
+                }
                 // Signals the Tool's handler sent the guest itself that would
                 // end its process (`InGuest::inject` staged them), now that
                 // the handler has run to its end, as a tracer delivers a
@@ -1395,6 +1404,7 @@ where
             context: context as *mut RegisterContext as usize,
             dispatch: SyscallDispatch::InstalledHook,
             guest_pkru: None,
+            unsupported_refusal: None,
         };
         let mut guest = InGuest::<T, R> {
             event: &mut event,
@@ -4727,6 +4737,7 @@ mod process_owner_tests {
             context: 0,
             dispatch: SyscallDispatch::InstalledHook,
             guest_pkru: None,
+            unsupported_refusal: None,
         }
     }
 
@@ -5092,6 +5103,7 @@ mod tests {
             context: 0,
             dispatch: SyscallDispatch::InstalledHook,
             guest_pkru: None,
+            unsupported_refusal: None,
         };
         let tail = TailResult::default();
         let mut state = ();
@@ -5234,6 +5246,7 @@ mod tests {
             context: 0,
             dispatch: SyscallDispatch::InstalledHook,
             guest_pkru: None,
+            unsupported_refusal: None,
         };
         let tail = TailResult::default();
         let mut state = ();
@@ -5903,6 +5916,7 @@ mod tests {
                 context: 0,
                 dispatch: SyscallDispatch::InstalledHook,
                 guest_pkru: None,
+                unsupported_refusal: None,
             };
             let tail = TailResult::default();
             let mut state = ();
