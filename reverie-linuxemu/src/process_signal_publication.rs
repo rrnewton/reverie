@@ -149,22 +149,38 @@ impl ProcessBinding {
 
     pub(super) fn rebind(&self, state: &LoadedStaticElf, files: &Arc<Mutex<FileTableState>>) {
         // Caller holds the authoritative file table and process transaction.
-        state
+        let mut lifecycle = state
             .task_lifecycle
             .lock()
-            .unwrap_or_else(|p| p.into_inner())
+            .unwrap_or_else(|p| p.into_inner());
+        lifecycle.parent_death.signals.insert(
+            process_key(self.identity),
+            Arc::downgrade(&state.process_signals),
+        );
+        record_image(&mut lifecycle, process_key(self.identity), state);
+        lifecycle
             .parent_death
-            .signals
-            .insert(
-                process_key(self.identity),
-                Arc::downgrade(&state.process_signals),
-            );
+            .file_tables
+            .insert(process_key(self.identity), Arc::downgrade(files));
+        drop(lifecycle);
         *self.image.lock().unwrap_or_else(|p| p.into_inner()) = CurrentImage {
             revision: ImageRevision(Arc::new(())),
             files: Arc::downgrade(files),
             signals: Arc::downgrade(&state.process_signals),
         };
     }
+}
+
+/// Record `state`'s image as process `key`'s (`ParentDeathState::images`),
+/// or that it has no file, under the lifecycle lock the caller holds.
+fn record_image(lifecycle: &mut TaskLifecycleTable, key: ProcessKey, state: &LoadedStaticElf) {
+    match &state.executable_file {
+        Some(file) => lifecycle
+            .parent_death
+            .images
+            .insert(key, Arc::downgrade(file)),
+        None => lifecycle.parent_death.images.remove(&key),
+    };
 }
 
 /// The signal state of `image`, the image of `binding`'s process that the
@@ -439,16 +455,21 @@ impl ProcessSignalRegistry {
             tgid: reverie::Pid::from_raw(state.pid),
             generation,
         };
-        state
-            .task_lifecycle
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .parent_death
-            .signals
-            .insert(
+        {
+            let mut lifecycle = state
+                .task_lifecycle
+                .lock()
+                .unwrap_or_else(|p| p.into_inner());
+            lifecycle.parent_death.signals.insert(
                 (state.pid, generation),
                 Arc::downgrade(&state.process_signals),
             );
+            record_image(&mut lifecycle, (state.pid, generation), state);
+            lifecycle
+                .parent_death
+                .file_tables
+                .insert((state.pid, generation), Arc::downgrade(files));
+        }
         // Successful exec and same-process executor reconstruction retain the
         // process generation; they are not a fork edge and cannot make a
         // process its own child.

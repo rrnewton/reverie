@@ -33606,6 +33606,212 @@ mod tests {
         assert_eq!(&page_bytes(&memory, file), b"file-new");
     }
 
+    fn guard_advice(
+        memory: &mut GuestMemory,
+        state: &mut LoadedStaticElf,
+        address: u64,
+        length: u64,
+        advice: libc::c_int,
+    ) -> i64 {
+        syscall_result(
+            memory,
+            state,
+            libc::SYS_madvise,
+            [address, length, advice as u64, 0, 0, 0],
+        )
+    }
+
+    /// `MADV_GUARD_INSTALL` succeeds on a private anonymous mapping, discards
+    /// the page, and makes a syscall's copy to it fault (EFAULT), as Linux's
+    /// guard marker does; `MADV_GUARD_REMOVE` gives the page back empty and
+    /// accessible (`madvise_guard_install`, `madvise_guard_remove`,
+    /// mm/madvise.c in v6.17).
+    #[test]
+    fn madvise_guard_install_faults_copies_until_the_guard_is_removed() {
+        let (_root, mut state, mut memory) = madvise_memory(8);
+        // Copies check page access, as they do once a loader has placed an
+        // image.
+        memory.enable_user_access();
+        let mapped = madvise_map(
+            &mut memory,
+            &mut state,
+            libc::MAP_PRIVATE | libc::MAP_ANONYMOUS,
+            -1,
+            2,
+        );
+        memory.write(mapped, b"occupied").unwrap();
+        assert_eq!(
+            guard_advice(
+                &mut memory,
+                &mut state,
+                mapped,
+                PAGE_SIZE,
+                MADV_GUARD_INSTALL
+            ),
+            0
+        );
+        // The page's contents went; no copy may read it now.
+        let mut raw = [0xff; 8];
+        memory.read_raw(mapped, &mut raw).unwrap();
+        assert_eq!(raw, [0; 8]);
+        assert!(memory.read(mapped, &mut raw).is_err());
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_uname,
+                [mapped, 0, 0, 0, 0, 0]
+            ),
+            negative_errno(libc::EFAULT)
+        );
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_uname,
+                [mapped + PAGE_SIZE, 0, 0, 0, 0, 0]
+            ),
+            0
+        );
+        // Linux checks the length as for any advice: a length that is not a
+        // page multiple is rounded up, and a zero length succeeds.
+        assert_eq!(
+            guard_advice(&mut memory, &mut state, mapped, 1, MADV_GUARD_INSTALL),
+            0
+        );
+        assert_eq!(
+            guard_advice(&mut memory, &mut state, mapped, 0, MADV_GUARD_REMOVE),
+            0
+        );
+        assert_eq!(
+            guard_advice(
+                &mut memory,
+                &mut state,
+                mapped + 1,
+                PAGE_SIZE,
+                MADV_GUARD_REMOVE
+            ),
+            negative_errno(libc::EINVAL)
+        );
+        assert_eq!(
+            guard_advice(
+                &mut memory,
+                &mut state,
+                mapped,
+                PAGE_SIZE,
+                MADV_GUARD_REMOVE
+            ),
+            0
+        );
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_uname,
+                [mapped, 0, 0, 0, 0, 0]
+            ),
+            0
+        );
+    }
+
+    /// A guard over a range with a hole applies to its mapped pages and
+    /// reports ENOMEM (`madvise_walk_vmas`).
+    #[test]
+    fn madvise_guard_applies_to_mapped_parts_then_reports_a_hole() {
+        let (_root, mut state, mut memory) = madvise_memory(8);
+        let mapped = madvise_map(
+            &mut memory,
+            &mut state,
+            libc::MAP_PRIVATE | libc::MAP_ANONYMOUS,
+            -1,
+            1,
+        );
+        assert_eq!(
+            guard_advice(
+                &mut memory,
+                &mut state,
+                mapped,
+                2 * PAGE_SIZE,
+                MADV_GUARD_INSTALL
+            ),
+            negative_errno(libc::ENOMEM)
+        );
+        assert!(memory.is_guard_page(mapped));
+        assert_eq!(
+            guard_advice(
+                &mut memory,
+                &mut state,
+                mapped,
+                2 * PAGE_SIZE,
+                MADV_GUARD_REMOVE
+            ),
+            negative_errno(libc::ENOMEM)
+        );
+        assert!(!memory.is_guard_page(mapped));
+    }
+
+    /// A guard over a private file mapping, which this backend cannot read
+    /// again, and a guard change in a vfork child, which runs on a copy of
+    /// its parent's address space, are refused by name: ENOSYS with the typed
+    /// refusal `MemoryAdvice`, before any page changes. A removal over a
+    /// private file page, which is never a guard page, succeeds.
+    #[test]
+    fn madvise_guard_refuses_a_private_file_and_a_vfork_child_by_name() {
+        let (root, mut state, mut memory) = madvise_memory(8);
+        std::fs::write(root.0.join("file"), b"contents").unwrap();
+        state
+            .files
+            .insert(5, std::fs::File::open(root.0.join("file")).unwrap());
+        let anonymous = madvise_map(
+            &mut memory,
+            &mut state,
+            libc::MAP_PRIVATE | libc::MAP_ANONYMOUS,
+            -1,
+            1,
+        );
+        let file = madvise_map(&mut memory, &mut state, libc::MAP_PRIVATE, 5, 1);
+        memory.write(anonymous, b"anon-new").unwrap();
+        let child = memory.snapshot_sharing_address_space().unwrap();
+        let mut executor = ElfExecutor::new(state, false);
+        let mut madvise = |memory: &GuestMemory, length: u64, advice: libc::c_int| {
+            let result = executor.execute(
+                &SyscallRequest::new(
+                    libc::SYS_madvise as u64,
+                    [anonymous, length, advice as u64, 0, 0, 0],
+                ),
+                memory,
+            );
+            (result, executor.take_unsupported_refusal())
+        };
+        let refused = |(result, refusal): (i64, Option<reverie::UnsupportedRefusal>)| {
+            assert_eq!(result, negative_errno(libc::ENOSYS));
+            let refusal = refusal.unwrap();
+            assert_eq!(
+                refusal.operation,
+                reverie::UnsupportedOperation::MemoryAdvice
+            );
+            refusal.diagnostic
+        };
+        // An install over the file page is refused whole.
+        let diagnostic = refused(madvise(&memory, 2 * PAGE_SIZE, MADV_GUARD_INSTALL));
+        assert!(diagnostic.contains("private file mapping"), "{diagnostic}");
+        assert!(!memory.is_guard_page(anonymous));
+        assert_eq!(&page_bytes(&memory, anonymous), b"anon-new");
+        assert_eq!(file, anonymous + PAGE_SIZE);
+        // The file page is never a guard page, so a removal leaves it alone.
+        assert_eq!(
+            madvise(&memory, 2 * PAGE_SIZE, MADV_GUARD_REMOVE),
+            (0, None)
+        );
+        // A vfork child changes no guard, its parent's included.
+        for advice in [MADV_GUARD_INSTALL, MADV_GUARD_REMOVE] {
+            let diagnostic = refused(madvise(&child, PAGE_SIZE, advice));
+            assert!(diagnostic.contains("vfork child"), "{diagnostic}");
+        }
+        assert!(!memory.is_guard_page(anonymous) && !child.is_guard_page(anonymous));
+        assert_eq!(&page_bytes(&memory, anonymous), b"anon-new");
+    }
+
     #[test]
     fn madvise_dontneed_applies_to_mapped_parts_then_reports_a_hole() {
         let (_root, mut state, mut memory) = madvise_memory(8);
@@ -43311,44 +43517,46 @@ mod tests {
         }
     }
 
+    /// The executor has no copy of any process's `exe` link either: a Tool
+    /// renders it, from the `link_path` fact for any process's image
+    /// (`ElfExecutor::link_path`, which names the image by its current name
+    /// and ` (deleted)` once it is unlinked or replaced). A guest that runs
+    /// without the Tool meets the procfs refusal, its buffer left alone,
+    /// whether the image has a file or not.
     #[test]
-    fn proc_executable_link_marks_unlinked_and_replaced_files_deleted() {
-        let proc_executable_link_target = |state: &LoadedStaticElf| {
-            let mut memory = GuestMemory::new(0, 8192).unwrap();
-            memory.write(0x100, b"/proc/self/exe\0").unwrap();
-            memory.write(0x1000, &[0xa5; 4096]).unwrap();
-            let count = readlink_at_impl(&mut memory, state, libc::AT_FDCWD, 0x100, 0x1000, 4096);
-            assert!((0..4096).contains(&count));
-            let mut output = [0; 4096];
-            memory.read(0x1000, &mut output).unwrap();
-            assert_eq!(&output[count as usize..], &[0xa5; 4096][count as usize..]);
-            output[..count as usize].to_vec()
-        };
+    fn proc_executable_link_is_refused_rather_than_answered_by_the_executor() {
         let dir = TestDir::new();
         let executable = dir.0.join("program");
         std::fs::write(&executable, b"first").unwrap();
         let mut state = test_state(&dir.0);
         state.executable_path = executable.clone();
         state.executable_file = Some(Arc::new(std::fs::File::open(&executable).unwrap()));
-        assert_eq!(
-            proc_executable_link_target(&state),
-            executable.as_os_str().as_bytes(),
-        );
-
-        let replacement = dir.0.join("replacement");
-        std::fs::write(&replacement, b"second").unwrap();
-        std::fs::rename(&replacement, &executable).unwrap();
-        let expected = format!("{} (deleted)", executable.display());
-        assert_eq!(proc_executable_link_target(&state), expected.as_bytes());
-
-        std::fs::remove_file(&executable).unwrap();
-        assert_eq!(proc_executable_link_target(&state), expected.as_bytes());
-        state.executable_file = None;
-        assert_eq!(
-            proc_executable_link_target(&state),
-            executable.as_os_str().as_bytes(),
-            "the embedding API's unknown initial identity stays best effort",
-        );
+        // Spellings the supervisor's own procfs holds, so that its lookup
+        // reaches the procfs refusal (a number it does not hold fails the
+        // host lookup first, with ENOENT: why a Tool decides every spelling).
+        let spellings = [
+            "/proc/self/exe".to_owned(),
+            "/proc/thread-self/exe".to_owned(),
+            format!("/proc/{}/exe", state.pid),
+        ];
+        for with_file in [true, false] {
+            if !with_file {
+                state.executable_file = None;
+            }
+            for path in &spellings {
+                let mut memory = GuestMemory::new(0, 8192).unwrap();
+                write_c_string(&mut memory, 0x100, path);
+                memory.write(0x1000, &[0xa5; 4096]).unwrap();
+                assert_eq!(
+                    readlink_at_impl(&mut memory, &state, libc::AT_FDCWD, 0x100, 0x1000, 4096),
+                    negative_errno(libc::EACCES),
+                    "{path} with_file={with_file}"
+                );
+                let mut output = [0; 4096];
+                memory.read(0x1000, &mut output).unwrap();
+                assert_eq!(output, [0xa5; 4096], "{path} with_file={with_file}");
+            }
+        }
     }
 
     /// A guest's execve records the filename it gave, byte for byte, as
