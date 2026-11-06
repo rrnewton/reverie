@@ -1426,8 +1426,8 @@ const CONTENT_REVERIE_CATALOG: [(&str, u64, &str); 83] = [
     // interim pmu_shim.
     (
         "reverie/src/pmu_config.rs",
-        77614,
-        "e42c577bc665850d5a72f0d9bcc917403cc7c6687c010db74e640a51d29b4e5a",
+        78461,
+        "f9093b61bca97cee1845b359a8e583e90f2604d580991ab388b3b4bb6f6c8a2f",
     ),
     (
         "reverie/src/in_guest_rcb.rs",
