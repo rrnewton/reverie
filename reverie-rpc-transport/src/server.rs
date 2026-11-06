@@ -767,6 +767,31 @@ where
     }
 
     // TODO-HUMAN-REVIEW(PR-139): Review the public config-handshake readiness boundary.
+    /// Issue one mapped (shared-memory) guest connection (C1 PR1).
+    ///
+    /// Creates a mapped pair with `capacity` bytes per direction, spawns
+    /// the host end on the current Tokio runtime serving this server's
+    /// global/config with the ordinary handshake/framing, and returns the
+    /// guest setup memfd. The launcher must transfer that descriptor to
+    /// exactly one guest, which imports it with
+    /// `MappedStream::from_owned_fd` (consuming/closing it). Callers must
+    /// uphold the `MappedStream::create` safety contract for the returned
+    /// descriptor until import. Socket-only admission/peer-identity hooks
+    /// do not run for issued pairs: issuance itself is the admission.
+    #[cfg(target_os = "linux")]
+    pub fn issue_mapped_connection(
+        &self,
+        capacity: usize,
+    ) -> std::io::Result<(OwnedFd, tokio::task::JoinHandle<Result<(), RpcError>>)> {
+        // SAFETY: the returned descriptor is exclusively transferred to
+        // one guest importer by the caller, per this method's contract;
+        // no other mapping or writer touches the backing storage.
+        let (host, guest_fd) = unsafe { crate::mapped::MappedStream::create(capacity)? };
+        let host = host.into_async()?;
+        let handle = tokio::spawn(serve_stream(self.global.clone(), self.config.clone(), host));
+        Ok((guest_fd, handle))
+    }
+
     /// Binds a coordinator and marks `readiness` after a guest receives its
     /// configuration handshake, before that guest sends its first request.
     pub fn bind_with_connection_readiness(

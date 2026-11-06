@@ -81,7 +81,7 @@ mod server;
 
 #[cfg(target_os = "linux")]
 pub mod mapped;
-
+pub mod transport_select;
 pub use blocking_client::BlockingRpcClient;
 pub use blocking_client::BorrowedBlockingRpcClient;
 pub use blocking_client::InitialImageClient;
@@ -93,6 +93,8 @@ pub use blocking_client::read_config_frame;
 pub use client::RpcClient;
 pub use envelope::RequestEnvelope;
 pub use error::RpcError;
+pub use transport_select::RpcTransport;
+pub use transport_select::TransportSelectError;
 /// Fail-closed process status for an in-guest Tool owner that loses its RPC
 /// transport. This names the existing trap-owner policy; each backend retains
 /// its own termination and cleanup mechanism. It is not an application errno
