@@ -61,12 +61,14 @@ partially armed), and **G5** isolation of tool windows. The manifest
 also carries the tool's `ToolRequirements`, so the same image can be
 admitted by A1 and refused by A2 (`R-WINDOW`) by name.
 
-> 🚧 **Under construction — loader generality (pending owner approval
-> of L0/L1).** The loader's docs and stage names currently describe
-> one consumer's runtime (`DetcoreReady`, a two-image hard-code)
-> rather than an arbitrary tool's. Architecture §4.3 adopts the L1
-> contract above; its decisions D1–D4 await the owner under item C of
-> [§6.3](https://github.com/rrnewton/dev-hermit/blob/main/ai_docs/2026-11-04-liteinst-reverie-architecture.md#63-decisions-requested-from-the-owner-via-coord7).
+> 🚧 **Under construction — loader generality (implementation in
+> progress).** The former consumer-named ready stage was renamed to
+> `ToolReady` in L1-a (landed locally), but the loader is not yet
+> shipped as tool-generic (L1-b/c pending). Architecture §4.3 adopts
+> the L1 contract above; its decisions D1–D4 were resolved as
+> PROCEED-with-amendments on 2026-11-05 under item C of
+> [§6.3](https://github.com/rrnewton/dev-hermit/blob/main/ai_docs/2026-11-04-liteinst-reverie-architecture.md#63-decisions-requested-from-the-owner-via-coord7),
+> with implementation in progress.
 > TODO: rewrite this chapter against the landed tool-agnostic loader
 > with a non-Hermit `counter-inguest` achieving zero unarmed guest
 > instructions on `hello` and `ls` as the acceptance evidence. Until
