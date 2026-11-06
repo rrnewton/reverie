@@ -13,6 +13,7 @@ use std::sync::atomic::Ordering;
 use reverie::Guest;
 use reverie::Rdtsc;
 use reverie::RdtscResult;
+use reverie::Stack as _;
 use reverie::process::Stdio;
 use reverie::syscalls::Addr;
 use reverie::syscalls::Close;
@@ -26,6 +27,7 @@ use reverie::syscalls::OFlag;
 use reverie::syscalls::Openat;
 use reverie::syscalls::PathPtr;
 use reverie::syscalls::ProtFlags;
+use reverie::syscalls::RtSigprocmask;
 use reverie::syscalls::Syscall;
 use reverie::syscalls::Write as WriteCall;
 use serde::Deserialize;
@@ -38,13 +40,19 @@ const WORD: usize = 0x402000;
 const ORIGINAL: usize = WORD + 8;
 const REPLACEMENT: usize = WORD + 9;
 const EMULATED_RESULT: usize = WORD + 16;
+const HANDLED: usize = WORD + 24;
 const SHARED_PATH: usize = WORD + 64;
+const SIGACT: usize = WORD + 128;
+const SIGSET: usize = WORD + 160;
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 enum Mode {
     #[default]
     PostExec,
     Replace,
+    ReplaceNumber,
+    ReplaceThenPrivate,
+    ReplaceWithPendingSignal,
     SameThenPrivate,
     TailSame,
     TailOther,
@@ -184,6 +192,54 @@ impl Tool for StopTool {
                 let rip = guest.regs().await.rip;
                 let result = match mode {
                     Mode::Replace => guest.inject(replacement()).await?,
+                    Mode::ReplaceNumber => {
+                        // A different syscall number, run in place as
+                        // the pending call: the kernel runs close, the
+                        // guest's write never happens, and the callback
+                        // still reports one byte written.
+                        assert_eq!(
+                            guest.inject(Close::default().with_fd(-1)).await,
+                            Err(Errno::EBADF)
+                        );
+                        1
+                    }
+                    Mode::ReplaceThenPrivate => {
+                        // First injection rewrites the pending call in
+                        // place; the second has no pending call left and
+                        // takes the private page. Output is R then O.
+                        assert_eq!(guest.inject(replacement()).await?, 1);
+                        assert_eq!(guest.regs().await.rip, rip);
+                        assert_eq!(word(guest, WORD), 1);
+                        assert_eq!(guest.inject(original).await?, 1);
+                        1
+                    }
+                    Mode::ReplaceWithPendingSignal => {
+                        // SIGUSR1 is blocked and pending in the kernel
+                        // at this stop. The divergent write runs in
+                        // place; unblocking (a second, private
+                        // injection) must not deliver it early: the
+                        // handler runs only once the guest resumes.
+                        assert_eq!(word(guest, HANDLED), 0);
+                        assert_eq!(guest.inject(replacement()).await?, 1);
+                        let mut stack = guest.stack().await;
+                        let set = stack.push(1u64 << (libc::SIGUSR1 - 1));
+                        let _guard = stack.commit()?;
+                        guest
+                            .inject(
+                                RtSigprocmask::new()
+                                    .with_how(libc::SIG_UNBLOCK)
+                                    .with_set(Some(set.cast()))
+                                    .with_oldset(None)
+                                    .with_sigsetsize(8),
+                            )
+                            .await?;
+                        assert_eq!(
+                            word(guest, HANDLED),
+                            0,
+                            "pending signal delivered while still stopped"
+                        );
+                        1
+                    }
                     Mode::SameThenPrivate => {
                         assert_eq!(guest.inject(original).await?, 1);
                         assert_eq!(guest.regs().await.rip, rip);
@@ -223,6 +279,13 @@ impl Tool for StopTool {
                 }
                 let expected = if mode == Mode::PostExec { 1 } else { 2 };
                 assert_eq!(word(guest, WORD), expected);
+                if mode == Mode::ReplaceWithPendingSignal {
+                    assert_eq!(
+                        word(guest, HANDLED),
+                        1,
+                        "pending SIGUSR1 was not delivered after the write callback"
+                    );
+                }
                 guest.send_rpc(Observation::Boundary(expected)).await;
                 Ok(guest.inject(original).await?)
             }
@@ -285,6 +348,25 @@ impl Fixture {
         let mut code = Vec::new();
         memory_instruction(&mut code, &[0x48, 0xff, 0x05], WORD); // inc qword [rip+disp32]
         let mut timestamp_rip = 0;
+        let mut handler_addr = 0u64;
+        let mut restorer_addr = 0u64;
+        if mode == Mode::ReplaceWithPendingSignal {
+            // rt_sigaction(SIGUSR1, SIGACT, NULL, 8); the action and
+            // set words are patched into the data page below, once the
+            // handler/restorer addresses at the end of the code are known.
+            code.extend_from_slice(&[0xb8, 13, 0, 0, 0, 0xbf, 10, 0, 0, 0, 0xbe]);
+            code.extend_from_slice(&(SIGACT as u32).to_le_bytes());
+            code.extend_from_slice(&[0x31, 0xd2, 0x41, 0xba, 8, 0, 0, 0, 0x0f, 0x05]);
+            // rt_sigprocmask(SIG_BLOCK, SIGSET, NULL, 8): block SIGUSR1.
+            code.extend_from_slice(&[0xb8, 14, 0, 0, 0, 0x31, 0xff, 0xbe]);
+            code.extend_from_slice(&(SIGSET as u32).to_le_bytes());
+            code.extend_from_slice(&[0x31, 0xd2, 0x41, 0xba, 8, 0, 0, 0, 0x0f, 0x05]);
+            // tgkill(gettid(), gettid(), SIGUSR1): queue it blocked.
+            code.extend_from_slice(&[
+                0xb8, 186, 0, 0, 0, 0x0f, 0x05, 0x89, 0xc7, 0x89, 0xc6, 0xba, 10, 0, 0, 0, 0xb8,
+                234, 0, 0, 0, 0x0f, 0x05,
+            ]);
+        }
         if mode.emulates() {
             getpid(&mut code);
             memory_instruction(&mut code, &[0x48, 0x89, 0x05], EMULATED_RESULT); // mov [rip+disp32],rax
@@ -299,6 +381,13 @@ impl Fixture {
         }
         getpid(&mut code);
         code.extend_from_slice(&[0xb8, 60, 0, 0, 0, 0x31, 0xff, 0x0f, 0x05]);
+        if mode == Mode::ReplaceWithPendingSignal {
+            handler_addr = ENTRY + code.len() as u64;
+            memory_instruction(&mut code, &[0x48, 0xff, 0x05], HANDLED); // inc qword [rip+disp32]
+            code.push(0xc3); // ret to the restorer
+            restorer_addr = ENTRY + code.len() as u64;
+            code.extend_from_slice(&[0xb8, 15, 0, 0, 0, 0x0f, 0x05]); // rt_sigreturn
+        }
         let mut elf = vec![0u8; 0x3000];
         elf[..7].copy_from_slice(b"\x7fELF\x02\x01\x01");
         elf[16..18].copy_from_slice(&2u16.to_le_bytes());
@@ -324,6 +413,14 @@ impl Fixture {
         }
         elf[0x1000..0x1000 + code.len()].copy_from_slice(&code);
         elf[0x2008..0x200a].copy_from_slice(b"OR");
+        if mode == Mode::ReplaceWithPendingSignal {
+            // struct kernel_sigaction at SIGACT: handler, SA_RESTORER,
+            // restorer, empty mask. Blocked set at SIGSET: SIGUSR1 only.
+            elf[0x2080..0x2088].copy_from_slice(&handler_addr.to_le_bytes());
+            elf[0x2088..0x2090].copy_from_slice(&0x0400_0000u64.to_le_bytes());
+            elf[0x2090..0x2098].copy_from_slice(&restorer_addr.to_le_bytes());
+            elf[0x20a0..0x20a8].copy_from_slice(&(1u64 << (10 - 1)).to_le_bytes());
+        }
         let shared = if mode == Mode::PostExecTail {
             let shared = path.with_extension("shared-word");
             let mut data = vec![0u8; 4096];
@@ -368,7 +465,19 @@ impl Drop for Fixture {
     }
 }
 
+/// Private-page injections of `nr` on this thread so far, both
+/// transports summed (`PRIVATE_TRANSPORTS_FOR_TEST`).
+fn private_transports(nr: Sysno) -> u64 {
+    crate::task::private_transports_for_test(nr, true)
+        + crate::task::private_transports_for_test(nr, false)
+}
+
 async fn run(mode: Mode) {
+    let transports_before = (
+        private_transports(Sysno::write),
+        private_transports(Sysno::close),
+        private_transports(Sysno::rt_sigprocmask),
+    );
     let fixture = Fixture::new(mode);
     let mut command = Command::new(&fixture.path);
     command.stdout(Stdio::piped()).stderr(Stdio::piped());
@@ -389,8 +498,11 @@ async fn run(mode: Mode) {
         ExitStatus::Exited(if mode == Mode::PostExecTail { 27 } else { 0 })
     );
     let expected_stdout: &[u8] = match mode {
-        Mode::Replace | Mode::TailOther | Mode::PostExecTail => b"R",
+        Mode::Replace | Mode::TailOther | Mode::PostExecTail | Mode::ReplaceWithPendingSignal => {
+            b"R"
+        }
         Mode::SameThenPrivate => b"OR",
+        Mode::ReplaceThenPrivate => b"RO",
         Mode::TailSame => b"O",
         _ => b"",
     };
@@ -426,6 +538,26 @@ async fn run(mode: Mode) {
         ],
     };
     assert_eq!(log.0.into_inner().unwrap(), expected);
+    // Which transport each callback injection took: first injections at
+    // the write's seccomp stop run in place (no private-page transport),
+    // later ones in the same callback take the private page.
+    let transports = (
+        private_transports(Sysno::write) - transports_before.0,
+        private_transports(Sysno::close) - transports_before.1,
+        private_transports(Sysno::rt_sigprocmask) - transports_before.2,
+    );
+    let expected_transports = match mode {
+        // (writes, closes, sigprocmasks) on the private page.
+        Mode::Replace | Mode::ReplaceNumber | Mode::TailSame | Mode::TailOther => (0, 0, 0),
+        Mode::ReplaceThenPrivate => (1, 0, 0),
+        Mode::SameThenPrivate => (1, 1, 0),
+        Mode::ReplaceWithPendingSignal => (0, 0, 1),
+        _ => transports,
+    };
+    assert_eq!(
+        transports, expected_transports,
+        "{mode:?} private transports"
+    );
     eprintln!("INJECTION_STOP_COMPLETE {mode:?}");
 }
 
@@ -457,6 +589,21 @@ async fn different_tail_injection_replaces_original_once() {
 #[tokio::test(flavor = "current_thread")]
 async fn post_exec_tail_exit_leaves_entry_unexecuted() {
     run(Mode::PostExecTail).await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn divergent_number_runs_in_place_and_suppresses_original() {
+    run(Mode::ReplaceNumber).await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn divergent_first_inject_in_place_then_private() {
+    run(Mode::ReplaceThenPrivate).await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn divergent_inject_with_pending_signal_delivers_after_resume() {
+    run(Mode::ReplaceWithPendingSignal).await;
 }
 
 #[tokio::test(flavor = "current_thread")]
