@@ -1109,13 +1109,13 @@ const CONTENT_REVERIE_CATALOG: [(&str, u64, &str); 83] = [
     // Bind the signal-mask gate and every changed native-source premise of it.
     (
         "reverie-inguest/src/guest/continuation.rs",
-        53174,
-        "e44feb7ac38976340ebef89433e24bf8303bdbc967e55c68408686ef1351fbeb",
+        44673,
+        "7a2e070e0d4734a06e1f3b314f9de235003269a8a2538b87eb9f72c25a122f7c",
     ),
     (
         "reverie-inguest/src/guest/instruction.rs",
-        34567,
-        "3ffb1870db9dc758acf0e411f134d70c85b01c02b8daeb5e09ddc2aea128e953",
+        25458,
+        "98417972e3a1db14435f9e235b841b838b32a201c278780fbb0bd6a9d79169d5",
     ),
     (
         "reverie-inguest/src/guest/runtime_mask.rs",
@@ -1134,8 +1134,8 @@ const CONTENT_REVERIE_CATALOG: [(&str, u64, &str); 83] = [
     ),
     (
         "reverie-inguest/src/guest/tool_install.rs",
-        25848,
-        "80bb4d540979ad5cfb183faaf8fc74866893e729532f0a14df83bc1b900ba928",
+        28270,
+        "924a1f49294e75521f45acbc525bff24a1abdb45b0f21344d14a766a9d1986a3",
     ),
     (
         "reverie-inguest/src/signal.rs",
@@ -1174,8 +1174,8 @@ const CONTENT_REVERIE_CATALOG: [(&str, u64, &str); 83] = [
     ),
     (
         "Cargo.toml",
-        684,
-        "44fa1e4c6cae8a913517e223840ed1afe5309f30c179deb903bed42fd8b71233",
+        1129,
+        "64d3853002e0df089d60b4aee5b5744a1782fc5172158cd43692d6871729073f",
     ),
     (
         "reverie-liteinst-artifact/Cargo.toml",
@@ -1359,8 +1359,8 @@ const CONTENT_REVERIE_CATALOG: [(&str, u64, &str); 83] = [
     ),
     (
         "reverie-inguest/src/guest/tool_region.rs",
-        51920,
-        "13b271ccc95b8fd3c2f5d04f05c0482b70449ed703e7957d2b65ee55cb49adb6",
+        52895,
+        "ca12300ee6d5ccffb72cbf7d095abf73b0b37dc510957d026f2c246d810c913a",
     ),
     (
         "reverie-inguest/src/guest/tool_region_keyed.rs",
@@ -1369,13 +1369,13 @@ const CONTENT_REVERIE_CATALOG: [(&str, u64, &str); 83] = [
     ),
     (
         "reverie-inguest/src/guest/installed_tool.rs",
-        26242,
-        "1733d4d4a9f20407dddb74dc6d675be3873e36d71f8a0606ac35cbdf85f06186",
+        26066,
+        "050e6b9e2cecc6d951ba759f0a6c88e2a694d6dabbeb65fabec97187787044c4",
     ),
     (
         "reverie-inguest/src/guest/mod.rs",
-        3497,
-        "4020e358c802b8e5efe43614acd7ac0759cf00977794445cabca179f46967328",
+        2422,
+        "c92177576ab8dda0aa36876075877e35ff98e5acae1b0c1b67539e28317aab49",
     ),
     (
         "reverie-inguest/src/guest/rpc.rs",
@@ -1384,18 +1384,18 @@ const CONTENT_REVERIE_CATALOG: [(&str, u64, &str); 83] = [
     ),
     (
         "reverie-inguest/src/guest/host.rs",
-        238454,
-        "aff7143066c938ad9aa899036dee619bb3dfcc37ba59237a370acc21c28df35a",
+        250638,
+        "ce181c3f9bbc3731b16199f775d556a60bac2e90bf3cf755487b25200b18213a",
     ),
     (
         "reverie-inguest/src/guest/host_linux.rs",
-        24826,
-        "b63d026293b761802a5009d2a421e1f645a72c3f96ff35ba23ff7cee7bf17348",
+        24961,
+        "8787f5067040e371aa48c2b31c306b1c7099b77f34cd920086d5bd94299049ee",
     ),
     (
         "reverie-liteinst/src/tool_host.rs",
-        59345,
-        "10713282b9911d38455ea53fd430bde386e4903022511db7f6a7a8ae974f4516",
+        59775,
+        "52b4e6f76a2aa47a7766f770128422cd1e5b94955ab906a6c01000e67ed8208a",
     ),
     (
         "reverie/Cargo.toml",
@@ -1409,8 +1409,8 @@ const CONTENT_REVERIE_CATALOG: [(&str, u64, &str); 83] = [
     ),
     (
         "reverie/src/lib.rs",
-        7263,
-        "c8c23b8628a83099732be4e58530ab70685837821fccbb27447830a5bf726cc3",
+        7201,
+        "1c657bd9280262618b1ce11e0bc7a7aec2af748c409fb9de3b118657cd390cb5",
     ),
     (
         "reverie/src/perf.rs",
@@ -1426,8 +1426,8 @@ const CONTENT_REVERIE_CATALOG: [(&str, u64, &str); 83] = [
     // interim pmu_shim.
     (
         "reverie/src/pmu_config.rs",
-        78461,
-        "f9093b61bca97cee1845b359a8e583e90f2604d580991ab388b3b4bb6f6c8a2f",
+        76782,
+        "637c6fa142ed96a215675e072f2c48152ca3fe11f18a4a0e6d8eaa4bf7124029",
     ),
     (
         "reverie/src/in_guest_rcb.rs",
@@ -1441,8 +1441,8 @@ const CONTENT_REVERIE_CATALOG: [(&str, u64, &str); 83] = [
     ),
     (
         "reverie-inguest/src/guest/clock.rs",
-        25871,
-        "d353ba4ec2ea2225de34e5e6fceed12ff864183fa35ba004a7e63bcfa0125907",
+        25951,
+        "34d773ff0b576151381353320eedc4a082ebabd081a1c6d59871470c91a5a503",
     ),
     (
         "reverie-inguest/src/lifecycle.rs",
@@ -1523,8 +1523,8 @@ const CONTENT_REVERIE_CATALOG: [(&str, u64, &str); 83] = [
     ),
     (
         "reverie/src/tool.rs",
-        79939,
-        "d0ece0753a03016c9c6c3136bb04861b63e374d87012ca0d1b0eeae4b59fb8ab",
+        80301,
+        "89ae1888619a96b89c1adbcd6703b55c78af093de55f6a2e362af152c4fff321",
     ),
 ];
 // Native Detcore's fixed-gate publication ordering is a separately declared
@@ -33972,32 +33972,32 @@ mod tests {
             (
                 "Cargo.toml",
                 2142,
-                "b3c19cd3f242ba6185a61c596dea3b417be61543c2c83d1d4d358ee6f7fe4930",
+                "64d3853002e0df089d60b4aee5b5744a1782fc5172158cd43692d6871729073f",
             ),
             (
                 "Cargo.toml",
                 2030,
-                "ec6ca86a7e751e556ce92ae82ac349e56b90d509cbddb554abe8b8e7b91cf9e9",
+                "64d3853002e0df089d60b4aee5b5744a1782fc5172158cd43692d6871729073f",
             ),
             (
                 "reverie/src/tool_outcome.rs",
                 10307,
-                "ee28ac21532ccc32d15116a3bab71aea074e5177a8c3f630c09e74e8a16b798c",
+                "09904e7dcaf30866b7a4b64871a18efbaa586cf2fe43c5601e068c5c1a3778b3",
             ),
             (
                 "reverie-inguest/src/tool_host.rs",
                 24858,
-                "571d9604b2894cfb51256bc713d155b3d3ce42eb2cda54c5bc9912435ad96eb3",
+                "243cdd3d67ce1dbe4d539bbd85379983a2b293be582e36b6477e57661b7398ff",
             ),
             (
                 "reverie-inguest/src/guest/host.rs",
                 204181,
-                "3f3a6486819a5af8212f1d6abe42cc1e1cb098ddd45f8bf137790da50ee8c392",
+                "ce181c3f9bbc3731b16199f775d556a60bac2e90bf3cf755487b25200b18213a",
             ),
             (
                 "reverie/src/guest.rs",
                 81764,
-                "b8e45c8b40b0e711fdd01a4a71bbd671c4debcfd1977d44d920446067119dc3a",
+                "bc36728d33e68881868a2a450e3317d6a29bb838180287894dcfe6bcc0084bac",
             ),
         ] {
             let entries: Vec<_> = CONTENT_REVERIE_CATALOG

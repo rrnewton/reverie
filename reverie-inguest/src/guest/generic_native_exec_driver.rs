@@ -739,8 +739,10 @@ mod tests {
             context: 0,
             dispatch: SyscallDispatch::Fallback,
             guest_pkru: None,
+            unsupported_refusal: None,
         };
         unsafe { host.dispatch(&mut event) };
+        assert!(event.unsupported_refusal.is_none());
         let results = returned.lock().unwrap();
         assert_eq!(results.len(), 1, "results: {results:?}");
         let (errno, refusal) = &results[0];
