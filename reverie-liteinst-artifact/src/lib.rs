@@ -27356,6 +27356,16 @@ const FIXED_NAKED_COMPOSITIONS: &[FixedNakedComposition] = &[
         incoming: FIXED_NAKED_STABLE_ORDINARY_INCOMING,
         setup_bitmap_template: Some(105),
     },
+    // The same stable tuple under the native-syscall Detcore image: the
+    // Hermit native producer qualifies this composition with native
+    // syscall witnesses, mirroring the pinned-native entry above.
+    FixedNakedComposition {
+        image_kind: FixedImageKind::Detcore,
+        native_syscalls: true,
+        cohort: FIXED_NAKED_STABLE_ORDINARY_COHORT,
+        incoming: FIXED_NAKED_STABLE_ORDINARY_INCOMING,
+        setup_bitmap_template: Some(105),
+    },
 ];
 const FIXED_SOURCE_OWNED_TEMPLATE_END: usize = 94;
 
