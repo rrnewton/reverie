@@ -6334,6 +6334,16 @@ fn fixed_whole_recipe(
             .ok_or("Fixed recipe constant operand outside function")?
             .fill(0);
     }
+    if actual != expected {
+        let diffs: Vec<usize> = (0..actual.len()).filter(|&i| actual[i] != expected[i]).collect();
+        eprintln!(
+            "DIAG whole-recipe reject at {address:#x}: len {} diffs {:?} actual {:02x?} expected {:02x?}",
+            actual.len(),
+            diffs,
+            &actual[..actual.len().min(64)],
+            &expected[..expected.len().min(64)]
+        );
+    }
     require(
         actual == expected,
         "unrecognized whole Fixed operand/register/CFG recipe",
