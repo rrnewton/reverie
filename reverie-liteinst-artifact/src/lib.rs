@@ -28103,7 +28103,15 @@ fn fixed_naked_mprotect_bridge(
                     .zip(targets.get("fixed_initializing"))
                     .map(|(region, init)| (*region, *init))
             && addresses.insert(w.address),
-        "naked-owner C ABI bridge loses selected address/storage/census",
+        format!(
+            "DIAG bridge kind={:?} scalar_storage={:?} region={:?} init={:?} sel={:?} tgt={:?}",
+            w.kind,
+            w.scalar_storage,
+            targets.get("fixed_region"),
+            targets.get("fixed_initializing"),
+            selected.get("fixed_arena_mprotect"),
+            targets.get("fixed_arena_mprotect"),
+        ),
     )?;
     require(
         w.edges.len() == (if landing_pc.is_some() { 2 } else { 1 })
