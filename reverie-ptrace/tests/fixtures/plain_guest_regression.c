@@ -4992,6 +4992,14 @@ static void sigtrap_tsync_filter(unsigned int action) {
         if (atomic_load(&tsync_installed))
           after++;
       }
+      /* The delay spread above is what lands the install inside a
+       * repair; the exit verdict must not also race the installer's
+       * scheduling. Under load the loop can exhaust its iteration
+       * budget before a starved installer runs at all, which read
+       * as an "other" child. Join so the verdict sees the final
+       * install result; a failed install still exits 7. */
+      if (pthread_join(b, NULL))
+        die("tsync pthread_join");
       _exit(atomic_load(&tsync_installed) == 1 ? 0 : 7);
     }
     int status;
