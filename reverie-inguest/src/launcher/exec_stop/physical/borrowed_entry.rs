@@ -42,6 +42,49 @@ pub struct BootstrapEntryCoordinates {
     pub terminal_int3: u64,
 }
 
+/// Interim runtime-entry specification for ToolInitialization:
+/// the caller-qualified entry coordinates plus the actual
+/// reserved-signal set, as one value. This is the data surface a
+/// future ToolManifest will generate from artifact metadata; until
+/// then the caller source-qualifies every field under the same
+/// unsafe contract as [`BootstrapEntryCoordinates`] (deriving the
+/// entry from an ELF header is deliberately not done: no canonical
+/// private-image symbol contract exists yet, and the runtime entry
+/// is not in general the image entry). The native gate is not a
+/// field here: it remains derived from the sealed target-layout
+/// descriptor inside the handover, the image's own declaration.
+#[derive(Clone, Copy, Debug)]
+pub struct RuntimeEntrySpec {
+    /// Actual qualified private C entry, with arguments (handoff pointer, length).
+    pub entry: u64,
+    /// Actual source-qualified terminal trap instruction.
+    pub terminal_trap: u64,
+    /// Actual configured AND source-qualified reserved signal set.
+    pub reserved_signals: u64,
+}
+
+impl RuntimeEntrySpec {
+    /// Coordinates for the existing observer entry points.
+    pub fn coordinates(&self) -> BootstrapEntryCoordinates {
+        BootstrapEntryCoordinates {
+            entry: self.entry,
+            terminal_int3: self.terminal_trap,
+        }
+    }
+
+    /// Interim construction from existing caller-qualified coordinates.
+    pub fn from_coordinates(
+        coordinates: &BootstrapEntryCoordinates,
+        reserved_signals: u64,
+    ) -> Self {
+        Self {
+            entry: coordinates.entry,
+            terminal_trap: coordinates.terminal_int3,
+            reserved_signals,
+        }
+    }
+}
+
 /// Explicit observer domain under the caller's real unsafe entry contract.
 /// Constructing this value authenticates no source, frontend, child or readiness.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -71,6 +114,99 @@ pub struct BootstrapTerminalStop {
     pub forwarded_sigsys: u64,
     /// Actual phase2 deliveries, zero in the unchanged bootstrap-only domain.
     pub forwarded_tool_init_sigsys: u64,
+}
+
+/// Move-only proof that this mapping's ToolInitialization observer reached
+/// its coded terminal predicate on the actual retained stop. This is a
+/// sequence/provenance token for release, not source, admission, lifecycle
+/// or frontend attestation: release methods retain their full unsafe caller
+/// contract and re-read live state before detaching.
+#[derive(Debug)]
+pub struct VerifiedReady {
+    pid: safeptrace::Pid,
+    terminal_ip: u64,
+    reserved_signals: u64,
+}
+
+impl VerifiedReady {
+    /// Actual child whose initialized stop minted this token.
+    pub fn pid(&self) -> safeptrace::Pid {
+        self.pid
+    }
+
+    /// Actual terminal instruction pointer verified by the observer.
+    pub fn terminal_ip(&self) -> u64 {
+        self.terminal_ip
+    }
+
+    /// Actual qualified reserved-signal set verified by the observer.
+    pub fn reserved_signals(&self) -> u64 {
+        self.reserved_signals
+    }
+}
+
+/// A prepared mapping after successful restore and detach. The guest is
+/// no longer ptrace-held; retain this owner through [`Self::wait`] or
+/// [`Self::cancel`]. Dropping it invokes only the existing bounded
+/// original-owner cleanup, not a reap proof.
+#[must_use = "retain the released mapping through wait or cancellation"]
+pub struct ReleasedPreparedMapping<'fd> {
+    mapping: super::PreparedMapping<'fd>,
+}
+
+impl core::fmt::Debug for ReleasedPreparedMapping<'_> {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        formatter
+            .debug_struct("ReleasedPreparedMapping")
+            .field("cleanup", &self.mapping.cleanup())
+            .finish()
+    }
+}
+
+/// Release failed before detach completed; the retained mapping is returned
+/// for confirmed terminal cleanup and is never silently dropped.
+#[must_use = "retain failure and retry cleanup until confirmed; never fallback"]
+pub struct ReleaseFailure<'fd> {
+    /// Exact release failure; no detached success is implied.
+    pub error: Box<dyn std::error::Error>,
+    mapping: super::PreparedMapping<'fd>,
+}
+
+impl<'fd> ReleaseFailure<'fd> {
+    pub(super) fn new(
+        error: Box<dyn std::error::Error>,
+        mapping: super::PreparedMapping<'fd>,
+    ) -> Self {
+        Self { error, mapping }
+    }
+
+    /// Cleanup observations, including the retained owner's terminal proof.
+    pub fn cleanup(&self) -> super::CleanupState {
+        self.mapping.cleanup()
+    }
+
+    /// Repeat only bounded terminal cleanup, never entry or release work.
+    pub fn retry_cleanup(&mut self) -> bool {
+        self.mapping.owner.retire();
+        self.cleanup().confirmed
+    }
+
+    /// Recover the retained mapping (for example to retry release
+    /// with the correct token after a mismatch refusal, or to
+    /// cancel). No detached success is implied by recovery.
+    pub fn into_mapping(self) -> super::PreparedMapping<'fd> {
+        self.mapping
+    }
+}
+
+impl core::fmt::Debug for ReleaseFailure<'_> {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        formatter
+            .debug_struct("ReleaseFailure")
+            .field("error", &self.error)
+            .field("cleanup", &self.cleanup())
+            .finish()
+    }
 }
 
 #[derive(Default)]
@@ -226,6 +362,52 @@ impl PreparedMapping<'_> {
             return Err(error);
         }
         outcome
+    }
+
+    /// Observe ToolInitialization and mint the release sequence token.
+    ///
+    /// This delegates to [`Self::observe_until_terminal`] in the
+    /// ToolInitialization domain and additionally requires that its
+    /// successful verification recorded the exact initialized stop for
+    /// this mapping. The token proves only that coded observer
+    /// predicate; it is not source/admission/lifecycle/frontend
+    /// attestation. A BootstrapOnly observation cannot mint it.
+    ///
+    /// # Safety
+    /// The complete contract of [`Self::observe_until_terminal`] for
+    /// `ObservationDomain::ToolInitialization` applies unchanged.
+    pub async unsafe fn observe_tool_initialization_until_ready(
+        &mut self,
+        spec: &RuntimeEntrySpec,
+        deadline: Instant,
+    ) -> Result<(BootstrapTerminalStop, VerifiedReady)> {
+        // SAFETY: exactly the delegated ToolInitialization contract above.
+        let coordinates = spec.coordinates();
+        let stop = unsafe {
+            self.observe_until_terminal(
+                &coordinates,
+                ObservationDomain::ToolInitialization {
+                    reserved_signals: spec.reserved_signals,
+                },
+                deadline,
+            )
+            .await?
+        };
+        let (terminal_ip, verified_reserved) = self
+            .entry
+            .initialized_stop
+            .ok_or("mapped_tool_init_ready_missing")?;
+        if terminal_ip != spec.terminal_trap || verified_reserved != spec.reserved_signals {
+            return Err("mapped_tool_init_ready_mismatch".into());
+        }
+        Ok((
+            stop,
+            VerifiedReady {
+                pid: self.owner.generation.pid(),
+                terminal_ip,
+                reserved_signals: verified_reserved,
+            },
+        ))
     }
 
     fn entry_thread(&self) -> Result<()> {
@@ -759,6 +941,21 @@ fn tool_init_site(view: View<'_>, info: &[u8; 128], regs: &Regs) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn runtime_entry_spec_preserves_coordinates_exactly() {
+        let coordinates = BootstrapEntryCoordinates {
+            entry: 0x4010_0000,
+            terminal_int3: 0x4010_2400,
+        };
+        let spec = RuntimeEntrySpec::from_coordinates(&coordinates, 0x5a5a);
+        assert_eq!(spec.entry, coordinates.entry);
+        assert_eq!(spec.terminal_trap, coordinates.terminal_int3);
+        assert_eq!(spec.reserved_signals, 0x5a5a);
+        let back = spec.coordinates();
+        assert_eq!(back.entry, coordinates.entry);
+        assert_eq!(back.terminal_int3, coordinates.terminal_int3);
+    }
 
     fn put_i32(bytes: &mut [u8; 128], offset: usize, value: i32) {
         bytes[offset..offset + 4].copy_from_slice(&value.to_ne_bytes());

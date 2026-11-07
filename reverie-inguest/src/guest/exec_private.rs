@@ -3008,6 +3008,7 @@ mod successor_tests {
                         context: 0,
                         dispatch: crate::guest::event::SyscallDispatch::Trap,
                         guest_pkru: None,
+                        unsupported_refusal: None,
                     };
                     let mut observed = false;
                     unsafe {
@@ -3887,6 +3888,7 @@ mod tests {
                         context: 0,
                         dispatch: crate::guest::event::SyscallDispatch::Trap,
                         guest_pkru: None,
+                        unsupported_refusal: None,
                     };
                     let mut observed = false;
                     unsafe {
@@ -4013,6 +4015,7 @@ mod tests {
                         context: 0,
                         dispatch: crate::guest::event::SyscallDispatch::Trap,
                         guest_pkru: None,
+                        unsupported_refusal: None,
                     };
                     let mut observed = false;
                     unsafe {
