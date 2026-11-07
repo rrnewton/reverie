@@ -3953,19 +3953,19 @@ const NO_INSTALLATION_SCOPE_SOURCE: (&str, u64, &str) = (
 const NO_SCOPE_OTHER_GETTERS: [(&str, u64); 4] = [
     (
         "_RNvYNCNKNvNtNtCs_15reverie_inguest5guest7support20TOOL_CALLBACK_ACTIVE0s_0INtNtNtCs_4core3ops8function6FnOnceTINtNtB1s_6option6OptionQIB27_INtNtNtB1s_4sync6atomic6AtomicbEEEEE9call_onceBc_",
-        0xe8,
+        0x199,
     ),
     (
         "_RNvYNCNKNvNtNtCs_15reverie_inguest5guest12continuation5OWNER0s_0INtNtNtCs_4core3ops8function6FnOnceTINtNtB1i_6option6OptionQIB1X_INtNtB1i_4cell4CellONtB8_12ContinuationEEEEE9call_onceBc_",
-        0xf0,
+        0x180,
     ),
     (
         "_RNvYNCNKNvNtNtCs_15reverie_inguest5guest12continuation7PENDING0s_0INtNtNtCs_4core3ops8function6FnOnceTINtNtB1k_6option6OptionQIB1Z_INtNtB1k_4cell4CellIB1Z_NtB8_7PendingEEEEEE9call_onceBc_",
-        0,
+        0x28,
     ),
     (
         "_RNvYNCNKNvNtNtCs_15reverie_inguest5guest5alloc14DISPATCH_DEPTH0s_0INtNtNtCs_4core3ops8function6FnOnceTINtNtB1k_6option6OptionQIB1Z_INtNtB1k_4cell4CelljEEEEE9call_onceBc_",
-        0x140,
+        0x90,
     ),
 ];
 
