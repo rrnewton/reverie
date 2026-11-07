@@ -3945,8 +3945,8 @@ const NO_INSTALLATION_SCOPE_POLICY: &str =
     "detcore_native_off_alloc101_reviewed_source_current_build_rx_loader_census_v1";
 const NO_INSTALLATION_SCOPE_SOURCE: (&str, u64, &str) = (
     "reverie-liteinst/src/patch_alloc.rs",
-    24943,
-    "9336107f903561bb5297f9897fd4c222e9cd2f80715817a07e330498ab7c17f5",
+    24942,
+    "3594983133be9a749cdc744717e04b7cfcd793a26d41f34669afbfdc964b3c18",
 );
 // Complete22B getters physically retained by the measured native OFF image.
 // These are other TLS, never allocator-operation targets or isolation credit.
