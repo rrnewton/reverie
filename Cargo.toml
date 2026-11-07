@@ -28,3 +28,11 @@ members = [
 exclude = [
     "public_autocargo/experimental",
 ]
+
+# Integration-only override (integration/literoot-sprint): build against
+# liteinst2 main, which carries the aarch64 root lib, instead of crates.io
+# liteinst 0.2.0 (x86-gated encoding_error/detect). Remove when liteinst
+# publishes a crates.io release with the aarch64 root lib; do not publish
+# from this branch.
+[patch.crates-io]
+liteinst = { git = "https://github.com/rrnewton/liteinst2", rev = "34901a29a0070f30398f237839a567720c739af5" }
