@@ -19242,6 +19242,61 @@ const FIXED_GUARDED_TERMINAL_PAIRS: &[(&str, &str, &str)] = &[
         "fixed_tls_access_refusal",
         "qualified_local_tls_getter_always_some",
     ),
+    (
+        "fixed_region_publication_get_opaque",
+        "fixed_heap_panic_null",
+        "scalar_publication_actual_aligned_live_region",
+    ),
+    (
+        "fixed_region_publication_set_opaque",
+        "fixed_heap_panic_null",
+        "scalar_publication_actual_aligned_live_region",
+    ),
+    (
+        "fixed_native_from_native",
+        "fixed_heap_panic_null",
+        "native_authenticated_record_region_metadata_storage",
+    ),
+    (
+        "fixed_native_publish",
+        "fixed_heap_panic_null",
+        "native_authenticated_record_region_metadata_storage",
+    ),
+    (
+        "fixed_constructor_prepare",
+        "fixed_heap_panic_null",
+        "native_authenticated_record_region_metadata_storage",
+    ),
+    (
+        "fixed_generic_prepare",
+        "fixed_heap_panic_null",
+        "native_authenticated_record_region_metadata_storage",
+    ),
+    (
+        "fixed_region_publication_get",
+        "fixed_heap_panic_null",
+        "native_authenticated_record_region_metadata_storage",
+    ),
+    (
+        "fixed_region_publication_set",
+        "fixed_heap_panic_null",
+        "native_authenticated_record_region_metadata_storage",
+    ),
+    (
+        "fixed_patch_heap",
+        "fixed_heap_panic_null",
+        "authenticated_aligned_storage_bounded_shift",
+    ),
+    (
+        "fixed_published_metadata",
+        "fixed_heap_panic_null",
+        "authenticated_aligned_storage_bounded_shift",
+    ),
+    (
+        "fixed_setup_bitmap_range",
+        "fixed_heap_panic_null",
+        "authenticated_aligned_storage_bounded_shift",
+    ),
 ];
 
 // Exact finite role catalog derived from complete physical symbols.
@@ -24403,6 +24458,741 @@ const DETCORE_VALIDATE_TEMPLATES: &[DetcoreValidateTemplate] = &[
             (335, 10),
             (348, 12),
         ],
+    }, // Observed stable Rust 1.97.1 standalone dev (Hermit native producer,
+    // libdetcore_liteinst.so ce6526351c8be905); complete 74B. Same source
+    // body as the 88B nightly template with a push-rax frame idiom.
+    DetcoreValidateTemplate {
+        role: "fixed_arena_backing",
+        hex: "500fb6056065370484c0740431c9eb2d488d0559653704488904244889e0488b3c24e8c9f5ffff31c94885c0740f807810ff488d05e71dc9fe480f45c848890c244889e0488b042459c3",
+        operands: &[
+            DetcoreValidateOperand {
+                displacement: 4,
+                next: 8,
+                key: "fixed_initializing",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 19,
+                next: 23,
+                key: "fixed_region",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 35,
+                next: 39,
+                key: "fixed_region_publication_get_opaque",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 53,
+                next: 57,
+                key: "fixed_backing_object",
+                got: false,
+            },
+        ],
+        transfers: &[(34, 2)],
+    },
+    // Observed stable Rust 1.97.1 standalone dev (Hermit native producer,
+    // libdetcore_liteinst.so ce6526351c8be905); complete 77B. Same source
+    // body as the 91B nightly template with a push-rax frame idiom.
+    DetcoreValidateTemplate {
+        role: "fixed_tool_heap_metadata",
+        hex: "500fb605f064370484c0740431c0eb30488d05e9643704488904244889e0488b3c24e859f5ffff4885c074e031c9807810ff48b80030020000600000480f44c1488904244889e0488b042459c3",
+        operands: &[
+            DetcoreValidateOperand {
+                displacement: 4,
+                next: 8,
+                key: "fixed_initializing",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 19,
+                next: 23,
+                key: "fixed_region",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 35,
+                next: 39,
+                key: "fixed_region_publication_get_opaque",
+                got: false,
+            },
+        ],
+        transfers: &[(34, 2)],
+    }, // Observed stable Rust 1.97.1 standalone dev (Hermit native producer);
+    // complete 348B. Same source body as the 354B nightly template with
+    // reassigned stack slots; operands bound by resolved target below.
+    DetcoreValidateTemplate {
+        role: "fixed_constructor_prepare",
+        hex: "415741564154534883ec284889fb4989e748897c2408488d442408488b7c24084c897c2408488b74240848c744240801000000488b5424084c8d6424104c89642408488b4c2408e88c99ffff85c07411b8010000004883c4285b415c415e415fc30fb64c2418b80100000084c974e6f6c3070f85a00000004885db0f84ac0000004c8b7424104c897b5848b8001000000060000048894424104c89742418884c2420488d1d97b3370448895c2408488d442408488b7c24084c89642408488b742408e81957000085c0758541f6c60775694d85f6747949c7464803000000c60553b337040048895c2410488d442410488b7c2410e8975600004889c14885c0b8010000000f844bffffff31c0807910ff0f94c0e93dffffff488d1509613400bf080000004889deff1593543600488d3df4603400ff15668b3600488d15df5f3400bf080000004c89f6ff1571543600488d3dca5f3400ff15448b3600",
+        operands: &[
+            DetcoreValidateOperand {
+                displacement: 72,
+                next: 76,
+                key: "fixed_native_from_native",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 165,
+                next: 169,
+                key: "fixed_region",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 195,
+                next: 199,
+                key: "fixed_region_publication_set_opaque",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 224,
+                next: 229,
+                key: "fixed_initializing",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 245,
+                next: 249,
+                key: "fixed_region_publication_get_opaque",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 283,
+                next: 287,
+                key: "fixed_naked_constructor_record_location",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 297,
+                next: 301,
+                key: "fixed_heap_panic_misaligned",
+                got: true,
+            },
+            DetcoreValidateOperand {
+                displacement: 304,
+                next: 308,
+                key: "fixed_naked_constructor_record_location",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 310,
+                next: 314,
+                key: "fixed_heap_panic_null",
+                got: true,
+            },
+            DetcoreValidateOperand {
+                displacement: 317,
+                next: 321,
+                key: "fixed_naked_publish_record_location",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 331,
+                next: 335,
+                key: "fixed_heap_panic_misaligned",
+                got: true,
+            },
+            DetcoreValidateOperand {
+                displacement: 338,
+                next: 342,
+                key: "fixed_naked_publish_record_location",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 344,
+                next: 348,
+                key: "fixed_heap_panic_null",
+                got: true,
+            },
+        ],
+        transfers: &[
+            (71, 0),
+            (194, 2),
+            (244, 4),
+            (295, 6),
+            (308, 8),
+            (329, 10),
+            (342, 12),
+        ],
+    },
+    // Observed stable Rust 1.97.1 standalone dev (Hermit native producer);
+    // complete 348B. Generic counterpart of the constructor template above.
+    DetcoreValidateTemplate {
+        role: "fixed_generic_prepare",
+        hex: "415741564154534883ec284889fb4989e748897c2408488d442408488b7c24084c897c2408488b74240848c744240802000000488b5424084c8d6424104c89642408488b4c2408e82c98ffff85c07411b8010000004883c4285b415c415e415fc30fb64c2418b80100000084c974e6f6c3070f85a00000004885db0f84ac0000004c8b7424104c897b5848b8001000000060000048894424104c89742418884c2420488d1d37b2370448895c2408488d442408488b7c24084c89642408488b742408e8b955000085c0758541f6c60775694d85f6747949c7464803000000c605f3b137040048895c2410488d442410488b7c2410e8375500004889c14885c0b8010000000f844bffffff31c0807910ff0f94c0e93dffffff488d15c15f3400bf080000004889deff1533533600488d3dac5f3400ff15068a3600488d157f5e3400bf080000004c89f6ff1511533600488d3d6a5e3400ff15e4893600",
+        operands: &[
+            DetcoreValidateOperand {
+                displacement: 72,
+                next: 76,
+                key: "fixed_native_from_native",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 165,
+                next: 169,
+                key: "fixed_region",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 195,
+                next: 199,
+                key: "fixed_region_publication_set_opaque",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 224,
+                next: 229,
+                key: "fixed_initializing",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 245,
+                next: 249,
+                key: "fixed_region_publication_get_opaque",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 283,
+                next: 287,
+                key: "fixed_naked_generic_record_location",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 297,
+                next: 301,
+                key: "fixed_heap_panic_misaligned",
+                got: true,
+            },
+            DetcoreValidateOperand {
+                displacement: 304,
+                next: 308,
+                key: "fixed_naked_generic_record_location",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 310,
+                next: 314,
+                key: "fixed_heap_panic_null",
+                got: true,
+            },
+            DetcoreValidateOperand {
+                displacement: 317,
+                next: 321,
+                key: "fixed_naked_publish_record_location",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 331,
+                next: 335,
+                key: "fixed_heap_panic_misaligned",
+                got: true,
+            },
+            DetcoreValidateOperand {
+                displacement: 338,
+                next: 342,
+                key: "fixed_naked_publish_record_location",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 344,
+                next: 348,
+                key: "fixed_heap_panic_null",
+                got: true,
+            },
+        ],
+        transfers: &[
+            (71, 0),
+            (194, 2),
+            (244, 4),
+            (295, 6),
+            (308, 8),
+            (329, 10),
+            (342, 12),
+        ],
+    }, // Observed stable Rust 1.97.1 standalone dev (Hermit native producer);
+    // complete 667B. Same source body as the 660B nightly template with
+    // reassigned stack slots; panic locations bound by line/column below.
+    DetcoreValidateTemplate {
+        role: "fixed_heap_allocate",
+        hex: "554157415641554154534883ec184889742410488b1fb10131c0f00fb04b10741a6666666666662e0f1f840000000000f39031c0f00fb04b1075f54c8b73084d85f60f84f8000000488b7708488b4424104883f80941bf080000004c0f43f84d8d671749f7df4883fa014989d54983d5004531db488d05bdc736004889442408eb1a66666666662e0f1f8400000000004d89d34d85f60f84a40000004e8d0c3641f6c1070f85860100004d85c90f84700100004d89f24d8b7108498b294c01d572ce4889f14c01d172c64883f9ef77c04c8d4110488d41184c39c072b34c01e14839c172ab4c21f94889c84c01e872a04829f00f82890100004883f8f877914883c0074883e0f84829c572844883fd1f0f86cb00000048892c064c897406084889c24c29d20f82420100004989114d85db0f85b600000048894308e9bf000000488b0b4883f9014889c84883d0074883f9f877754883e0f8488b770831c94989c14901f172654983f9ef775f498d49104d8d59184939cb7250488b4c24104883f90941ba080000004c0f43d14b8d0c0a4883c1174c39d9723049f7da4c21d14883fa014883d2004801ca721d4829f20f82900000004883faf8770e4883c2074883e2f8483b5710763c31c9c64310004889c84883c4185b415c415d415e415f5dc34c89f04d85db0f844affffff4c01de40f6c60775584885f67465488946084c8951f8ebc64889d74829c7726948893c0648c744060800000000488941f8488913eba8488d3d3ec63600ff15b0153900488d1531c63600bf080000004c89ceff15bbde3800488d05ecc53600eb2f488d1543c63600bf08000000ff15a0de3800488d3d31c63600ff1573153900488d050cc63600eb07488d05d3c536004889442408488b7c2408ff15e3d638000f0bc64310004889c7e81591aeff",
+        operands: &[
+            DetcoreValidateOperand {
+                displacement: 119,
+                next: 123,
+                key: "fixed_detcore_validate_fixed_heap_allocate_571_data",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 550,
+                next: 554,
+                key: "fixed_detcore_validate_fixed_heap_allocate_537_data",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 556,
+                next: 560,
+                key: "fixed_heap_panic_null",
+                got: true,
+            },
+            DetcoreValidateOperand {
+                displacement: 563,
+                next: 567,
+                key: "fixed_detcore_validate_fixed_heap_allocate_550_data",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 577,
+                next: 581,
+                key: "fixed_heap_panic_misaligned",
+                got: true,
+            },
+            DetcoreValidateOperand {
+                displacement: 584,
+                next: 588,
+                key: "fixed_detcore_validate_fixed_heap_allocate_571_data",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 593,
+                next: 597,
+                key: "fixed_detcore_validate_fixed_heap_allocate_586_data",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 604,
+                next: 608,
+                key: "fixed_heap_panic_misaligned",
+                got: true,
+            },
+            DetcoreValidateOperand {
+                displacement: 611,
+                next: 615,
+                key: "fixed_detcore_validate_fixed_heap_allocate_607_data",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 617,
+                next: 621,
+                key: "fixed_heap_panic_null",
+                got: true,
+            },
+            DetcoreValidateOperand {
+                displacement: 624,
+                next: 628,
+                key: "fixed_detcore_validate_fixed_heap_allocate_620_data",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 633,
+                next: 637,
+                key: "fixed_detcore_validate_fixed_heap_allocate_629_data",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 649,
+                next: 653,
+                key: "fixed_heap_panic_sub_overflow",
+                got: true,
+            },
+            DetcoreValidateOperand {
+                displacement: 663,
+                next: 667,
+                key: "fixed_heap_unwind_resume",
+                got: false,
+            },
+        ],
+        transfers: &[(554, 2), (575, 4), (602, 7), (615, 9), (647, 12), (662, 13)],
+    }, // Stable Rust 1.97.1 duplicate of the fixed_patch_alloc template above in
+    // table order: identical exact shape, with the null panic GOT operand
+    // bound to panic_null_pointer_dereference, the entry stable core
+    // emits for the reference null check. Selection between the pair is
+    // by bound GOT callee (fixed_detcore_got_discriminate).
+    DetcoreValidateTemplate {
+        role: "fixed_patch_alloc",
+        hex: "41574156415453504889d34989f6ff1584d518004885c0747c4989c44c8b782041f6c7070f85a50000004d85ff0f84b1000000488d3d3e991800e8811c13004883b8d800000000745d498b542410498b07498d76ff49f7de31c94889c74801d772354801f772304c21f74989f84929d072504901d8410f92c14981f801000002410f93c24508ca750ef04d0fb10775ca4889f9eb0231c94889c84883c4085b415c415e415fc3bf010000004c89f64889da4883c4085b415c415e415fff250ed51800488d3d57c71500ff15a99d1800488d157ac71500bf080000004c89feff158cb11800488d3d65c71500ff1517c31800",
+        operands: &[
+            DetcoreValidateOperand {
+                displacement: 16,
+                next: 20,
+                key: "fixed_arena_backing",
+                got: true,
+            },
+            DetcoreValidateOperand {
+                displacement: 54,
+                next: 58,
+                key: "fixed_publication_tls_descriptor",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 59,
+                next: 63,
+                key: "fixed_tls_get_addr_plt",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 190,
+                next: 194,
+                key: "fixed_tool_alloc",
+                got: true,
+            },
+            DetcoreValidateOperand {
+                displacement: 197,
+                next: 201,
+                key: "fixed_detcore_validate_fixed_patch_alloc_194_data",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 203,
+                next: 207,
+                key: "fixed_heap_panic_sub_overflow",
+                got: true,
+            },
+            DetcoreValidateOperand {
+                displacement: 210,
+                next: 214,
+                key: "fixed_detcore_validate_fixed_patch_alloc_207_data",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 224,
+                next: 228,
+                key: "fixed_heap_panic_misaligned",
+                got: true,
+            },
+            DetcoreValidateOperand {
+                displacement: 231,
+                next: 235,
+                key: "fixed_detcore_validate_fixed_patch_alloc_228_data",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 237,
+                next: 241,
+                key: "fixed_heap_panic_null",
+                got: true,
+            },
+        ],
+        transfers: &[(14, 0), (58, 2), (188, 3), (201, 5), (222, 7), (235, 9)],
+    },
+    // Stable Rust 1.97.1 duplicate of the fixed_patch_realloc template above in
+    // table order: identical exact shape, with the null panic GOT operand
+    // bound to panic_null_pointer_dereference, the entry stable core
+    // emits for the reference null check. Selection between the pair is
+    // by bound GOT callee (fixed_detcore_got_discriminate).
+    DetcoreValidateTemplate {
+        role: "fixed_patch_realloc",
+        hex: "4157415641554154534d89c64889cb4989d44989f7ff1515c518004885c0743e488b702040f6c6070f85370100004885f60f8440010000488b4010483d000000fe0f833d010000488d88000000024c39f80f96c04c39f90f97c184c875094c89ffff15d1c41800ff15c3c418004885c07472488b702040f6c6070f85e50000004885f60f84ee000000488b50104881fa000000fe0f83ea000000488d82000000024c39fa0f96c14c39f80f97c020c83c017531498d7c24ff4985fc0f95c048b900000000000000804c29e14939ce0f97c108c1742f31c94889c85b415c415d415e415fc3bf010000004c89fe4c89e24889d94d89f05b415c415d415e415fff2554c41800488b0649f7dc31c94989c54901d572c34901fd72be4d21e54d89e84929d0726d4d01f0410f92c14981f801000002410f93c24508ca759cf04c0fb10675ca4d85ed748e4939de490f42de4c89ff4c89ee4889daff1503c418004c89e9e972ffffff488d153cb71500bf08000000ff1521a11800488d3d2ab71500ff15e4af1800488d3dedb61500ff15cf8a1800488d3dc8b61500ff15328d1800",
+        operands: &[
+            DetcoreValidateOperand {
+                displacement: 23,
+                next: 27,
+                key: "fixed_arena_backing",
+                got: true,
+            },
+            DetcoreValidateOperand {
+                displacement: 99,
+                next: 103,
+                key: "fixed_tool_require_owned",
+                got: true,
+            },
+            DetcoreValidateOperand {
+                displacement: 105,
+                next: 109,
+                key: "fixed_arena_backing",
+                got: true,
+            },
+            DetcoreValidateOperand {
+                displacement: 256,
+                next: 260,
+                key: "fixed_tool_realloc",
+                got: true,
+            },
+            DetcoreValidateOperand {
+                displacement: 345,
+                next: 349,
+                key: "fixed_copy_bytes",
+                got: true,
+            },
+            DetcoreValidateOperand {
+                displacement: 360,
+                next: 364,
+                key: "fixed_detcore_validate_fixed_patch_realloc_357_data",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 371,
+                next: 375,
+                key: "fixed_heap_panic_misaligned",
+                got: true,
+            },
+            DetcoreValidateOperand {
+                displacement: 378,
+                next: 382,
+                key: "fixed_detcore_validate_fixed_patch_realloc_375_data",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 384,
+                next: 388,
+                key: "fixed_heap_panic_null",
+                got: true,
+            },
+            DetcoreValidateOperand {
+                displacement: 391,
+                next: 395,
+                key: "fixed_detcore_validate_fixed_patch_realloc_388_data",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 397,
+                next: 401,
+                key: "_RNvNtNtCs_4core9panicking11panic_const24panic_const_add_overflow",
+                got: true,
+            },
+            DetcoreValidateOperand {
+                displacement: 404,
+                next: 408,
+                key: "fixed_detcore_validate_fixed_patch_realloc_401_data",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 410,
+                next: 414,
+                key: "fixed_heap_panic_sub_overflow",
+                got: true,
+            },
+        ],
+        transfers: &[
+            (21, 0),
+            (97, 1),
+            (103, 2),
+            (254, 3),
+            (343, 4),
+            (369, 6),
+            (382, 8),
+            (395, 10),
+            (408, 12),
+        ],
+    },
+    // Stable Rust 1.97.1 duplicate of the fixed_patch_dealloc template above in
+    // table order: identical exact shape, with the null panic GOT operand
+    // bound to panic_null_pointer_dereference, the entry stable core
+    // emits for the reference null check. Selection between the pair is
+    // by bound GOT callee (fixed_detcore_got_discriminate).
+    DetcoreValidateTemplate {
+        role: "fixed_patch_dealloc",
+        hex: "41574156534889cb4989d64989f7ff150cc618004885c0743e488b702040f6c6070f85950000004885f60f849e000000488b4010483d000000fe0f839b000000488d88000000024c39f80f96c04c39f90f97c184c875094c89ffff15c8c51800ff15bac518004885c07438488b702040f6c60775474885f67454488b4010483d000000fe7355488d88000000024c39f80f96c04c39f90f97c184c874065b415e415fc3bf010000004c89fe4c89f24889d95b415e415fff2584c51800488d15d5b81500bf08000000ff15baa21800488d3dc3b81500ff157db11800488d3d86b81500ff15688c1800",
+        operands: &[
+            DetcoreValidateOperand {
+                displacement: 16,
+                next: 20,
+                key: "fixed_arena_backing",
+                got: true,
+            },
+            DetcoreValidateOperand {
+                displacement: 92,
+                next: 96,
+                key: "fixed_tool_require_owned",
+                got: true,
+            },
+            DetcoreValidateOperand {
+                displacement: 98,
+                next: 102,
+                key: "fixed_arena_backing",
+                got: true,
+            },
+            DetcoreValidateOperand {
+                displacement: 184,
+                next: 188,
+                key: "fixed_tool_dealloc",
+                got: true,
+            },
+            DetcoreValidateOperand {
+                displacement: 191,
+                next: 195,
+                key: "fixed_detcore_validate_fixed_patch_dealloc_188_data",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 202,
+                next: 206,
+                key: "fixed_heap_panic_misaligned",
+                got: true,
+            },
+            DetcoreValidateOperand {
+                displacement: 209,
+                next: 213,
+                key: "fixed_detcore_validate_fixed_patch_dealloc_206_data",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 215,
+                next: 219,
+                key: "fixed_heap_panic_null",
+                got: true,
+            },
+            DetcoreValidateOperand {
+                displacement: 222,
+                next: 226,
+                key: "fixed_detcore_validate_fixed_patch_dealloc_219_data",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 228,
+                next: 232,
+                key: "_RNvNtNtCs_4core9panicking11panic_const24panic_const_add_overflow",
+                got: true,
+            },
+        ],
+        transfers: &[
+            (14, 0),
+            (90, 1),
+            (96, 2),
+            (182, 3),
+            (200, 5),
+            (213, 7),
+            (226, 9),
+        ],
+    }, // Stable Rust 1.97.1 duplicate of template 55 (fixed_region_publication_get_opaque): identical
+    // exact shape, with the null panic GOT operand bound to
+    // panic_null_pointer_dereference, the entry stable core emits for
+    // the reference null check. Selection is by bound GOT callee
+    // (fixed_detcore_got_discriminate).
+    DetcoreValidateTemplate {
+        role: "fixed_region_publication_get_opaque",
+        hex: "504889fe40f6c607751e4885f6742b0fb6461831c984c0480f45ce48890c244889e0488b042459c3488d1569192200bf08000000ff15ae6a2300488d3d57192200ff1531a22300",
+        operands: &[
+            DetcoreValidateOperand {
+                displacement: 43,
+                next: 47,
+                key: "fixed_scalar_publication_get_location",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 54,
+                next: 58,
+                key: "fixed_heap_panic_misaligned",
+                got: true,
+            },
+            DetcoreValidateOperand {
+                displacement: 61,
+                next: 65,
+                key: "fixed_scalar_publication_get_location",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 67,
+                next: 71,
+                key: "fixed_heap_panic_null",
+                got: true,
+            },
+        ],
+        transfers: &[(52, 1), (65, 3)],
+    },
+    // Stable Rust 1.97.1 duplicate of template 81 (fixed_region_publication_set_opaque): identical
+    // exact shape, with the null panic GOT operand bound to
+    // panic_null_pointer_dereference, the entry stable core emits for
+    // the reference null check. Selection is by bound GOT callee
+    // (fixed_detcore_got_discriminate).
+    DetcoreValidateTemplate {
+        role: "fixed_region_publication_set_opaque",
+        hex: "5040f6c70775454885ff74550fb6471884c07413c74424040b000000488d4424048b44240459c30f1006488b4610488947100f1107c6471801c744240400000000488d4424048b44240459c3488d153da820004889febf08000000ff15bfdf2100488d3d28a82000ff1532182200",
+        operands: &[
+            DetcoreValidateOperand {
+                displacement: 79,
+                next: 83,
+                key: "fixed_scalar_publication_set_location",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 93,
+                next: 97,
+                key: "fixed_heap_panic_misaligned",
+                got: true,
+            },
+            DetcoreValidateOperand {
+                displacement: 100,
+                next: 104,
+                key: "fixed_scalar_publication_set_location",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 106,
+                next: 110,
+                key: "fixed_heap_panic_null",
+                got: true,
+            },
+        ],
+        transfers: &[(91, 1), (104, 3)],
+    }, // Stable Rust 1.97.1 duplicate of template 25 (fixed_setup_bitmap_range):
+    // identical exact shape and Location profile, with the null panic GOT
+    // operand bound to panic_null_pointer_dereference. Selection is by
+    // bound GOT callee first, then by the existing Location profile.
+    DetcoreValidateTemplate {
+        role: "fixed_setup_bitmap_range",
+        hex: "504989f04889fe40f6c6070f85bf0000004885f60f84c8000000b0014c39c20f86a900000084c9746e89d14429c1498d7801f6c101741841b9010000004489c149d3e149c1e8064e094cc6084989f84839fa747a6666662e0f1f840000000000bf010000004489c148d3e74c89c148c1e90648097cce08498d4801bf0100000048d3e748c1e90648097cce084983c0024c39c275cbeb374c89c048c1e806488b44c6084c0fa3c0730431c059c349ffc04c39c20f94c074164c89c148c1e906488b4cce084c0fa3c14d8d400173e259c3488d15798b1200bf08000000ff1566471500488d3d678b1200ff1529561500",
+        operands: &[
+            DetcoreValidateOperand {
+                displacement: 211,
+                next: 215,
+                key: "fixed_detcore_validate_fixed_setup_bitmap_range_208_data",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 222,
+                next: 226,
+                key: "fixed_heap_panic_misaligned",
+                got: true,
+            },
+            DetcoreValidateOperand {
+                displacement: 229,
+                next: 233,
+                key: "fixed_detcore_validate_fixed_setup_bitmap_range_226_data",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 235,
+                next: 239,
+                key: "fixed_heap_panic_null",
+                got: true,
+            },
+        ],
+        transfers: &[(220, 1), (233, 3)],
+    },
+    // Stable Rust 1.97.1 duplicate of template 85 (fixed_setup_bitmap_range):
+    // identical exact shape and Location profile, with the null panic GOT
+    // operand bound to panic_null_pointer_dereference. Selection is by
+    // bound GOT callee first, then by the existing Location profile.
+    DetcoreValidateTemplate {
+        role: "fixed_setup_bitmap_range",
+        hex: "504989f04889fe40f6c6070f85bf0000004885f60f84c8000000b0014c39c20f86a900000084c9746e89d14429c1498d7801f6c101741841b9010000004489c149d3e149c1e8064e094cc6084989f84839fa747a6666662e0f1f840000000000bf010000004489c148d3e74c89c148c1e90648097cce08498d4801bf0100000048d3e748c1e90648097cce084983c0024c39c275cbeb374c89c048c1e806488b44c6084c0fa3c0730431c059c349ffc04c39c20f94c074164c89c148c1e906488b4cce084c0fa3c14d8d400173e259c3488d15c1e82100bf08000000ff150e352300488d3dafe82100ff15816d2300",
+        operands: &[
+            DetcoreValidateOperand {
+                displacement: 211,
+                next: 215,
+                key: "fixed_naked_bitmap_208_location",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 222,
+                next: 226,
+                key: "fixed_heap_panic_misaligned",
+                got: true,
+            },
+            DetcoreValidateOperand {
+                displacement: 229,
+                next: 233,
+                key: "fixed_naked_bitmap_226_location",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 235,
+                next: 239,
+                key: "fixed_heap_panic_null",
+                got: true,
+            },
+        ],
+        transfers: &[(220, 1), (233, 3)],
     },
 ];
 struct DetcoreRecipeBindings<'a> {
@@ -24444,10 +25234,11 @@ fn fixed_detcore_unique_template<'a>(
     if candidates.len() == 1 {
         return Ok(candidates[0]);
     }
+    let candidate_indices: BTreeSet<_> = candidates.iter().map(|(i, _)| *i).collect();
     require(
         role == "fixed_setup_bitmap_range"
-            && candidates.iter().map(|(i, _)| *i).collect::<BTreeSet<_>>()
-                == BTreeSet::from([25, 85])
+            && (candidate_indices == BTreeSet::from([25, 85])
+                || candidate_indices == BTreeSet::from([104, 105]))
             && candidates.len() == 2,
         why,
     )?;
@@ -24459,6 +25250,104 @@ fn fixed_detcore_unique_template<'a>(
         }
     }
     matched.ok_or_else(|| why.into())
+}
+
+// Two exact-shape candidates may differ only in the named callee of a GOT
+// operand: stable core merged panic_null_reference_constructed into
+// panic_null_pointer_dereference, so the same body calls a differently named
+// panic entry per toolchain. Admit such a pair only when exactly one
+// candidate's GOT operands all resolve through the actual GOT to their named
+// callees and the candidates' callees differ at every differing operand.
+// This is strictly more discrimination than shape alone (the bitmap pair
+// discriminates by Location data; this pair by bound callee): every admitted
+// candidate still matches exact bytes modulo its declared displacements and
+// still undergoes the full operand/data/census proof. Any other duplicate
+// shape is returned untouched for the caller to refuse.
+fn fixed_detcore_got_discriminate<'a>(
+    candidates: &[(usize, &'a DetcoreValidateTemplate)],
+    address: u64,
+    bytes: &[u8],
+    targets: &BTreeMap<String, u64>,
+    got: &BTreeMap<u64, u64>,
+) -> Vec<(usize, &'a DetcoreValidateTemplate)> {
+    if candidates.len() < 2 {
+        return candidates.to_vec();
+    }
+    let (_, first) = candidates[0];
+    let layouts_match = candidates.iter().all(|(_, other)| {
+        other.role == first.role
+            && other.operands.len() == first.operands.len()
+            && first.operands.iter().zip(other.operands).all(|(a, b)| {
+                a.displacement == b.displacement && a.next == b.next && a.got == b.got
+            })
+    });
+    let shapes_match = candidates.iter().all(|(_, other)| {
+        fixed_template_shape(
+            &fixed_hex(first.hex),
+            &fixed_hex(other.hex),
+            first.operands.iter().map(|op| op.displacement),
+        )
+    });
+    if !layouts_match || !shapes_match {
+        return candidates.to_vec();
+    }
+    // Only GOT operands participate in this discrimination. Differing
+    // non-GOT (readonly data) operands, such as the bitmap pair's panic
+    // Location profiles, are left to the caller's exact-data discrimination.
+    let differing: Vec<usize> = (0..first.operands.len())
+        .filter(|&index| {
+            first.operands[index].got
+                && candidates
+                    .iter()
+                    .any(|(_, other)| other.operands[index].key != first.operands[index].key)
+        })
+        .collect();
+    if differing.is_empty() {
+        return candidates.to_vec();
+    }
+    let binds_at = |template: &DetcoreValidateTemplate, index: usize| {
+        let op = &template.operands[index];
+        let Some(expected) = targets.get(op.key) else {
+            return false;
+        };
+        let Ok(slot) = fixed_rip_target(address, bytes, op.displacement, op.next) else {
+            return false;
+        };
+        got.get(&slot) == Some(expected)
+    };
+    let binds = |template: &DetcoreValidateTemplate| {
+        template
+            .operands
+            .iter()
+            .enumerate()
+            .filter(|(_, op)| op.got)
+            .all(|(index, _)| binds_at(template, index))
+    };
+    let bound: Vec<_> = candidates
+        .iter()
+        .filter(|(_, template)| binds(template))
+        .cloned()
+        .collect();
+    // Every dropped candidate must fail only at a differing GOT operand:
+    // its callees at the shared operands still bind, so the discrimination
+    // is exactly the named-callee difference and nothing else.
+    let dropped_are_callee_only = candidates
+        .iter()
+        .filter(|(index, _)| !bound.iter().any(|(bound_index, _)| bound_index == index))
+        .all(|(_, template)| {
+            template
+                .operands
+                .iter()
+                .enumerate()
+                .filter(|(index, op)| op.got && !differing.contains(index))
+                .all(|(index, _)| binds_at(template, index))
+                && differing.iter().any(|&index| !binds_at(template, index))
+        });
+    if !bound.is_empty() && bound.len() < candidates.len() && dropped_are_callee_only {
+        bound
+    } else {
+        candidates.to_vec()
+    }
 }
 
 fn fixed_detcore_validate_recipe_identity(
@@ -24485,6 +25374,7 @@ fn fixed_detcore_validate_recipe_identity(
                 )
         })
         .collect();
+    let candidates = fixed_detcore_got_discriminate(&candidates, address, bytes, targets, got);
     let (template_index, t) = fixed_detcore_unique_template(
         role,
         &candidates,
@@ -24865,6 +25755,46 @@ const DETCORE_VALIDATE_GUARDED_TERMINAL_PAIRS: &[(&str, &str, &str)] = &[
         "fixed_publication_cannot_unwind",
         "native_complete_fresh_owner_no_unwind",
     ),
+    (
+        "fixed_region_publication_get_opaque",
+        "fixed_heap_panic_null",
+        "scalar_publication_actual_aligned_live_region",
+    ),
+    (
+        "fixed_region_publication_set_opaque",
+        "fixed_heap_panic_null",
+        "scalar_publication_actual_aligned_live_region",
+    ),
+    (
+        "fixed_patch_alloc",
+        "fixed_heap_panic_null",
+        "valid_layout_intact_locked_metadata",
+    ),
+    (
+        "fixed_patch_realloc",
+        "fixed_heap_panic_null",
+        "valid_layout_intact_locked_metadata",
+    ),
+    (
+        "fixed_patch_dealloc",
+        "fixed_heap_panic_null",
+        "valid_layout_intact_locked_metadata",
+    ),
+    (
+        "fixed_generic_prepare",
+        "fixed_heap_panic_null",
+        "native_authenticated_record_region_metadata_storage",
+    ),
+    (
+        "fixed_setup_bitmap_range",
+        "fixed_heap_panic_null",
+        "native_authenticated_record_region_metadata_storage",
+    ),
+    (
+        "fixed_constructor_prepare",
+        "fixed_heap_panic_null",
+        "native_authenticated_record_region_metadata_storage",
+    ),
 ];
 
 fn fixed_guarded_terminal_pairs(
@@ -25148,6 +26078,8 @@ fn fixed_machine_context(
                         )
                 })
                 .collect();
+            let templates =
+                fixed_detcore_got_discriminate(&templates, symbol.st_value, actual, &targets, got);
             let (_, template) = fixed_detcore_unique_template(
                 role,
                 &templates,
@@ -26289,6 +27221,91 @@ const FIXED_NAKED_PINNED_ORDINARY_INCOMING: &[FixedScalarHelperIncoming] = &[
         &[("fixed_native_owner_gettid", 12, false)],
     ),
 ];
+// The stable Rust 1.97.1 pinned-ordinary composition: identical roles and
+// premises to FIXED_NAKED_PINNED_ORDINARY_COHORT, with the stable exact
+// bodies for the five roles whose codegen changed (get/set opaque,
+// metadata, backing, and the two prepare entries) and their incoming call
+// offsets. This tuple is indivisible like the others.
+const FIXED_NAKED_STABLE_ORDINARY_COHORT: &[(&str, usize)] = &[
+    ("fixed_region_publication_get_opaque", 102),
+    ("fixed_region_publication_set_opaque", 103),
+    ("fixed_tool_heap_metadata", 95),
+    ("fixed_arena_backing", 94),
+    ("fixed_tool_require_owned", 59),
+    ("fixed_tool_alloc", 60),
+    ("fixed_tool_dealloc", 61),
+    ("fixed_tool_realloc", 62),
+    ("fixed_native_from_native", 78),
+    ("fixed_constructor_prepare", 96),
+    ("fixed_generic_prepare", 97),
+    ("fixed_arena_setup", 82),
+    ("fixed_native_owner_gettid", 79),
+];
+const FIXED_NAKED_STABLE_ORDINARY_INCOMING: &[FixedScalarHelperIncoming] = &[
+    (
+        "fixed_region_publication_get_opaque",
+        &[
+            ("fixed_tool_heap_metadata", 34, false),
+            ("fixed_arena_backing", 34, false),
+            ("fixed_native_from_native", 176, false),
+            ("fixed_constructor_prepare", 244, false),
+            ("fixed_generic_prepare", 244, false),
+        ],
+    ),
+    (
+        "fixed_region_publication_set_opaque",
+        &[
+            ("fixed_constructor_prepare", 194, false),
+            ("fixed_generic_prepare", 194, false),
+        ],
+    ),
+    (
+        "fixed_tool_heap_metadata",
+        &[
+            ("fixed_tool_require_owned", 4, false),
+            ("fixed_tool_alloc", 13, false),
+            ("fixed_tool_dealloc", 4, false),
+            ("fixed_tool_realloc", 26, false),
+        ],
+    ),
+    (
+        "fixed_native_from_native",
+        &[
+            ("fixed_constructor_prepare", 71, false),
+            ("fixed_generic_prepare", 71, false),
+        ],
+    ),
+    (
+        "fixed_arena_setup",
+        &[("fixed_native_from_native", 257, false)],
+    ),
+    (
+        "fixed_native_owner_gettid",
+        &[("fixed_native_from_native", 116, false)],
+    ),
+    (
+        "fixed_arena_mprotect",
+        &[
+            ("fixed_arena_setup", 95, false),
+            ("fixed_arena_setup", 119, false),
+        ],
+    ),
+    (
+        "fixed_setup_bitmap_range",
+        &[
+            ("fixed_arena_setup", 16, false),
+            ("fixed_arena_setup", 44, false),
+            ("fixed_arena_setup", 72, false),
+            ("fixed_arena_setup", 184, false),
+            ("fixed_arena_setup", 207, false),
+            ("fixed_arena_setup", 230, false),
+        ],
+    ),
+    (
+        "fixed_scalar_syscall",
+        &[("fixed_native_owner_gettid", 12, false)],
+    ),
+];
 const FIXED_NAKED_COMPOSITIONS: &[FixedNakedComposition] = &[
     FixedNakedComposition {
         image_kind: FixedImageKind::Standalone,
@@ -26331,6 +27348,23 @@ const FIXED_NAKED_COMPOSITIONS: &[FixedNakedComposition] = &[
         cohort: FIXED_NAKED_PINNED_ORDINARY_COHORT,
         incoming: FIXED_NAKED_PINNED_ORDINARY_INCOMING,
         setup_bitmap_template: Some(85),
+    },
+    FixedNakedComposition {
+        image_kind: FixedImageKind::Detcore,
+        native_syscalls: false,
+        cohort: FIXED_NAKED_STABLE_ORDINARY_COHORT,
+        incoming: FIXED_NAKED_STABLE_ORDINARY_INCOMING,
+        setup_bitmap_template: Some(105),
+    },
+    // The same stable tuple under the native-syscall Detcore image: the
+    // Hermit native producer qualifies this composition with native
+    // syscall witnesses, mirroring the pinned-native entry above.
+    FixedNakedComposition {
+        image_kind: FixedImageKind::Detcore,
+        native_syscalls: true,
+        cohort: FIXED_NAKED_STABLE_ORDINARY_COHORT,
+        incoming: FIXED_NAKED_STABLE_ORDINARY_INCOMING,
+        setup_bitmap_template: Some(105),
     },
 ];
 const FIXED_SOURCE_OWNED_TEMPLATE_END: usize = 94;
@@ -56486,6 +57520,81 @@ mod tests {
                 .to_string(),
             why
         );
+    }
+
+    #[test]
+    fn got_discriminate_selects_by_bound_callee_only() {
+        const REFERENCE: DetcoreValidateTemplate = DetcoreValidateTemplate {
+            role: "fixed_patch_dealloc",
+            hex: "e800000000",
+            operands: &[DetcoreValidateOperand {
+                displacement: 1,
+                next: 5,
+                key: "fixed_panic_null_reference",
+                got: true,
+            }],
+            transfers: &[(0, 0)],
+        };
+        const POINTER: DetcoreValidateTemplate = DetcoreValidateTemplate {
+            role: "fixed_patch_dealloc",
+            hex: "e800000000",
+            operands: &[DetcoreValidateOperand {
+                displacement: 1,
+                next: 5,
+                key: "fixed_heap_panic_null",
+                got: true,
+            }],
+            transfers: &[(0, 0)],
+        };
+        let both = [(17, &REFERENCE), (99, &POINTER)];
+        let bytes = [0xe8, 0, 0, 0, 0];
+        let slot = 0x1005;
+        let targets = BTreeMap::from([
+            ("fixed_panic_null_reference".to_owned(), 0x2000),
+            ("fixed_heap_panic_null".to_owned(), 0x3000),
+        ]);
+        // Nightly image: the GOT slot holds the reference panic entry.
+        let nightly = fixed_detcore_got_discriminate(
+            &both,
+            0x1000,
+            &bytes,
+            &targets,
+            &BTreeMap::from([(slot, 0x2000)]),
+        );
+        assert_eq!(nightly.len(), 1);
+        assert_eq!(nightly[0].0, 17);
+        // Stable image: the same slot holds the merged pointer panic entry.
+        let stable = fixed_detcore_got_discriminate(
+            &both,
+            0x1000,
+            &bytes,
+            &targets,
+            &BTreeMap::from([(slot, 0x3000)]),
+        );
+        assert_eq!(stable.len(), 1);
+        assert_eq!(stable[0].0, 99);
+        // A third callee binds neither candidate: both stay for refusal.
+        let third = fixed_detcore_got_discriminate(
+            &both,
+            0x1000,
+            &bytes,
+            &targets,
+            &BTreeMap::from([(slot, 0x4000)]),
+        );
+        assert_eq!(third.len(), 2);
+        // Both keys resolving to the same callee is not discrimination.
+        let same_targets = BTreeMap::from([
+            ("fixed_panic_null_reference".to_owned(), 0x2000),
+            ("fixed_heap_panic_null".to_owned(), 0x2000),
+        ]);
+        let same = fixed_detcore_got_discriminate(
+            &both,
+            0x1000,
+            &bytes,
+            &same_targets,
+            &BTreeMap::from([(slot, 0x2000)]),
+        );
+        assert_eq!(same.len(), 2);
     }
 
     #[test]
