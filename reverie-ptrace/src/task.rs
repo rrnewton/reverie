@@ -112,6 +112,7 @@ use crate::regs::Reg;
 use crate::regs::RegAccess;
 use crate::segv_state::SIGSEGV_BIT;
 use crate::segv_state::SignalRun;
+#[cfg(target_arch = "x86_64")]
 use crate::segv_state::segv_repair;
 use crate::sigtrap_state::BLOCKABLE_SIGNAL_BITS;
 use crate::sigtrap_state::KernelSigaction;
