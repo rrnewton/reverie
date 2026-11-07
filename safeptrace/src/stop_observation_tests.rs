@@ -302,12 +302,12 @@ mod stop_observation_tests {
             .unwrap()
             .unwrap();
         root_cleanup.mark_claimed_exit();
-        drop(old_running);
         assert_eq!(
             first.getevent().unwrap(),
             0,
             "old leader's actual EXIT message"
         );
+        drop(old_running);
         let next = tokio::time::timeout(
             remaining(deadline),
             first.resume_retaining(None).unwrap().wait_owned(),

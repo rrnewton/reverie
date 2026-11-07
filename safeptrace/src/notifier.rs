@@ -1789,6 +1789,10 @@ impl Event {
         if self.exit_status.load(Ordering::Acquire) != EXIT_STOPPED {
             return Some(publication);
         }
+        eprintln!(
+            "EXPIRY-TRACE queue_after_exit cap_before={}",
+            self.exit_capability.load(Ordering::Acquire)
+        );
         self.exit_epoch.fetch_add(1, Ordering::AcqRel);
         self.exit_capability
             .store(EXIT_CAP_PENDING, Ordering::Release);
