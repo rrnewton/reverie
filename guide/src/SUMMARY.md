@@ -13,6 +13,10 @@
 - [State at three scales](state.md)
 - [Typed syscalls](typed-syscalls.md)
 - [Backends](backends.md)
+  - [Backend: ptrace](backends-ptrace.md)
+  - [Backend: LiteInst in-guest](backends-liteinst.md)
+  - [Backend: in-guest-trap](backends-inguest-trap.md)
+  - [Backend: KVM](backends-kvm.md)
 
 # Choosing and using mechanisms
 

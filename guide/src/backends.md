@@ -60,13 +60,25 @@ collector (unsupported measurements are never a successful zero), and
 `run_with_output` returns guest stdout/stderr bytes with the status
 and final state.
 
-> 🚧 **Under construction — per-backend pages.** TODO: one page per
-> backend (wasm-bindgen reference style): mechanism, lifecycle
-> coverage table, refusal list, stats fields, and the exact example
-> commands — kept in sync with `BACKENDS.md` and the conformance
-> scorecard. <!-- UC: backends-pages -->
-> Tracking: [reverie#1272](https://github.com/rrnewton/reverie/issues/1272) (`backends-pages`).
->
+## Per-backend pages
+
+Each first-party backend has a reference page in this book —
+mechanism (hooking, trapping, placement), lifecycle coverage
+from its admission envelope, its refusals by name, its typed
+statistics snapshot field by field, and the exact example
+commands. They summarize the same sources of truth as this
+chapter (`BACKENDS.md`, `reverie::selection::implemented_cells`,
+and the [conformance scorecard](testing.md)) and must not
+contradict them:
+
+* [ptrace](backends-ptrace.md) — the reference, V1.
+* [LiteInst in-guest](backends-liteinst.md) — patching, V5.
+* [in-guest-trap](backends-inguest-trap.md) — the same runtime
+  with patching off, V4, and the patchers' semantic reference.
+* [KVM](backends-kvm.md) — the VM substrate, V11.
+
+The three external backends are covered as a group below; their
+owning repositories hold their reference documentation.
 ## External backends
 
 Three backends live outside this workspace, in extension
