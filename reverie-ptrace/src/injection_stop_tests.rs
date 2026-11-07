@@ -16,7 +16,6 @@ use reverie::RdtscResult;
 use reverie::Stack as _;
 use reverie::process::Stdio;
 use reverie::syscalls::Addr;
-use reverie::syscalls::AddrMut;
 use reverie::syscalls::Close;
 use reverie::syscalls::Exit;
 use reverie::syscalls::Futex;
@@ -286,7 +285,9 @@ impl Tool for StopTool {
                     Mode::ReplaceInterruptedRestart => {
                         if *guest.thread_state() != 0 {
                             // The restarted guest write itself: run it.
-                            return guest.tail_inject(original).await;
+                            // (tail_inject diverges: it cancels this
+                            // callback, so there is no value to return.)
+                            guest.tail_inject(original).await
                         }
                         *guest.thread_state_mut() = 1;
                         // The rewritten call blocks in a futex wait
