@@ -45,6 +45,9 @@ use super::context::RegisterContext;
 use super::event::InstructionEventKind;
 use super::event::SyscallDispatch;
 use super::event::SyscallEvent;
+use super::isa::InstructionResult;
+use super::isa::Isa;
+use super::isa::NativeIsa;
 use super::native_rpc::NativeApplicationRpc;
 use super::native_rpc::NativeRpc;
 use super::native_services::NativeEntryObservation;
@@ -1258,7 +1261,7 @@ where
         let mut event = SyscallEvent {
             number: -1,
             args: [0; 6],
-            instruction_pointer: context.instruction_pointer,
+            instruction_pointer: NativeIsa::instruction_pointer(context),
             result: 0,
             context: context as *mut RegisterContext as usize,
             dispatch: SyscallDispatch::InstalledHook,
@@ -1310,7 +1313,11 @@ where
                 let outcome = drive_callback(
                     tool.as_ref()
                         .expect("checked live Tool")
-                        .handle_cpuid_event(&mut guest, context.rax as u32, context.rcx as u32),
+                        .handle_cpuid_event(
+                            &mut guest,
+                            NativeIsa::cpuid_inputs(context).0,
+                            NativeIsa::cpuid_inputs(context).1,
+                        ),
                     &tail,
                 );
                 let result = match callback_result(outcome) {
@@ -1329,10 +1336,16 @@ where
                         )
                     }
                 };
-                context.rax = u64::from(result.eax);
-                context.rbx = u64::from(result.ebx);
-                context.rcx = u64::from(result.ecx);
-                context.rdx = u64::from(result.edx);
+                NativeIsa::apply_instruction_result(
+                    context,
+                    kind,
+                    InstructionResult::Cpuid {
+                        eax: result.eax,
+                        ebx: result.ebx,
+                        ecx: result.ecx,
+                        edx: result.edx,
+                    },
+                );
             }
             InstructionEventKind::Rdtsc | InstructionEventKind::Rdtscp => {
                 let request = if kind == InstructionEventKind::Rdtscp {
@@ -1362,11 +1375,14 @@ where
                         )
                     }
                 };
-                context.rax = result.tsc as u32 as u64;
-                context.rdx = result.tsc.checked_shr(32).unwrap_or(0);
-                if let Some(aux) = result.aux {
-                    context.rcx = u64::from(aux);
-                }
+                NativeIsa::apply_instruction_result(
+                    context,
+                    kind,
+                    InstructionResult::Tsc {
+                        value: result.tsc,
+                        aux: result.aux,
+                    },
+                );
             }
         }
         // The instruction callback can send the guest a signal that ends it;
@@ -2279,12 +2295,7 @@ fn guest_filter_admitted() -> bool {
 /// status 125, before anything runs, reading no guest memory. Only a syscall
 /// handler's creation can complete in the child.
 fn refuse_creation_outside_handler(number: i64, in_syscall_handler: bool) {
-    if !in_syscall_handler
-        && matches!(
-            number,
-            libc::SYS_fork | libc::SYS_vfork | libc::SYS_clone | libc::SYS_clone3
-        )
-    {
+    if !in_syscall_handler && crate::arch::is_fork_family(number) {
         tool_fatal(
             125,
             &Error::Tool(
@@ -2333,10 +2344,10 @@ impl<T: Tool, R: HostRuntime> InGuest<'_, T, R> {
 // AUTONOMOUS-BOT-IMPLEMENTED
 // TODO-HUMAN-REVIEW(PR-326): Review the plain-fork injection boundary.
 fn is_plain_fork(number: i64, args: [u64; 6]) -> bool {
-    if number == libc::SYS_fork {
+    if Some(number) == crate::arch::SYS_FORK {
         return true;
     }
-    if number == libc::SYS_vfork {
+    if Some(number) == crate::arch::SYS_VFORK {
         return true;
     }
     if number == libc::SYS_clone3 {
@@ -2768,10 +2779,15 @@ fn clone3_record_for(
     const PIDFD: u64 = libc::CLONE_PIDFD as u64;
     const SIGNAL_MASK: u64 = 0xff;
     const SIZE_VER0: usize = 64;
+    // The copying vfork stays a COW fork with the parent waiting: no
+    // CLONE_VM or CLONE_VFORK is applied physically. Fork/vfork numbers
+    // exist only in the x86-64 table (clone shapes on aarch64 arrive as
+    // clone below), so this arm is selected by value, not pattern.
+    if Some(number) == crate::arch::SYS_FORK || Some(number) == crate::arch::SYS_VFORK {
+        record[..8].copy_from_slice(&[PIDFD, pidfd, 0, 0, libc::SIGCHLD as u64, 0, 0, 0]);
+        return Ok(SIZE_VER0);
+    }
     let fields: [u64; 8] = match number {
-        // The copying vfork stays a COW fork with the parent waiting: no
-        // CLONE_VM or CLONE_VFORK is applied physically.
-        libc::SYS_fork | libc::SYS_vfork => [PIDFD, pidfd, 0, 0, libc::SIGCHLD as u64, 0, 0, 0],
         // Legacy clone(flags, stack, parent_tid, child_tid, tls): the CSIGNAL
         // byte becomes exit_signal, and each TID output keeps its own
         // destination, separate from the pidfd output. The plain-fork subset
@@ -3112,12 +3128,15 @@ fn forward_plain_fork(number: i64, args: [u64; 6], guest_pkru: Option<&mut Optio
         reported_creation(hook, number, args, guest_pkru)
     } else {
         let permissions = guest_pkru.as_ref().and_then(|value| **value);
-        let physical = if number == libc::SYS_vfork {
+        let physical = if Some(number) == crate::arch::SYS_VFORK {
             // A real vfork child would run the instrumentation callback on the
             // parent's shared stack. Use a COW fork and preserve vfork's parent
             // suspension until the child exits. Exec remains fail-closed, so exit
-            // is the only supported vfork completion boundary for now.
-            unsafe { crate::trap::raw_syscall6_with_result(libc::SYS_fork, [0; 6], permissions) }
+            // is the only supported vfork completion boundary for now. Only
+            // reachable where the table has fork (vfork is a clone shape on
+            // aarch64 and never takes this branch).
+            let fork_nr = crate::arch::SYS_FORK.expect("vfork exists only beside fork");
+            unsafe { crate::trap::raw_syscall6_with_result(fork_nr, [0; 6], permissions) }
         } else {
             unsafe { crate::trap::raw_syscall6_with_result(number, args, permissions) }
         };
@@ -3126,7 +3145,7 @@ fn forward_plain_fork(number: i64, args: [u64; 6], guest_pkru: Option<&mut Optio
         }
         physical.result
     };
-    if number == libc::SYS_vfork && result > 0 {
+    if Some(number) == crate::arch::SYS_VFORK && result > 0 {
         let mut info = core::mem::MaybeUninit::<libc::siginfo_t>::zeroed();
         loop {
             let waited = unsafe {
@@ -3186,7 +3205,9 @@ fn injected_syscall_guard(
     // not an errno that would corrupt libc's saved break.
     let unsupported_process =
         // AUTONOMOUS-BOT-IMPLEMENTED
-        (matches!(number, libc::SYS_clone | libc::SYS_clone3 | libc::SYS_vfork)
+        ((number == libc::SYS_clone
+            || number == libc::SYS_clone3
+            || Some(number) == crate::arch::SYS_VFORK)
             && !is_plain_fork(number, args))
         // AUTONOMOUS-BOT-IMPLEMENTED
         || matches!(number, libc::SYS_execve | libc::SYS_execveat);
@@ -3622,40 +3643,15 @@ impl<'a, T: Tool, R: HostRuntime> Guest<T> for InGuest<'a, T, R> {
                 .regs()
                 .expect("native failed to translate the guest registers");
         }
-        let mut regs = unsafe { core::mem::zeroed::<libc::user_regs_struct>() };
         if self.event.context != 0 {
             let context = unsafe { &*(self.event.context as *const RegisterContext) };
-            regs.r15 = context.r15;
-            regs.r14 = context.r14;
-            regs.r13 = context.r13;
-            regs.r12 = context.r12;
-            regs.rbp = context.rbp;
-            regs.rbx = context.rbx;
-            regs.r11 = context.r11;
-            regs.r10 = context.r10;
-            regs.r9 = context.r9;
-            regs.r8 = context.r8;
-            regs.rax = context.rax;
-            regs.rcx = context.rcx;
-            regs.rdx = context.rdx;
-            regs.rsi = context.rsi;
-            regs.rdi = context.rdi;
-            regs.orig_rax = context.rax;
-            regs.rip = context.instruction_pointer;
-            regs.rsp = context.stack_pointer;
-            regs.eflags = context.rflags;
-            return regs;
+            return NativeIsa::user_regs_from_context(context);
         }
-        regs.rax = self.event.number as u64;
-        regs.orig_rax = self.event.number as u64;
-        regs.rdi = self.event.args[0];
-        regs.rsi = self.event.args[1];
-        regs.rdx = self.event.args[2];
-        regs.r10 = self.event.args[3];
-        regs.r8 = self.event.args[4];
-        regs.r9 = self.event.args[5];
-        regs.rip = self.event.instruction_pointer;
-        regs
+        NativeIsa::user_regs_from_event(
+            self.event.number,
+            self.event.args,
+            self.event.instruction_pointer,
+        )
     }
     async fn set_regs(&mut self, regs: libc::user_regs_struct) -> Result<(), Error> {
         if self.tail.ending() {
@@ -3665,27 +3661,10 @@ impl<'a, T: Tool, R: HostRuntime> Guest<T> for InGuest<'a, T, R> {
         if let Some(native) = &self.native {
             return native.services.set_regs(&regs).map_err(Error::from);
         }
-        self.event.number = regs.rax as i64;
-        self.event.args = [regs.rdi, regs.rsi, regs.rdx, regs.r10, regs.r8, regs.r9];
+        (self.event.number, self.event.args) = NativeIsa::event_from_user_regs(&regs);
         if self.event.context != 0 {
             let context = unsafe { &mut *(self.event.context as *mut RegisterContext) };
-            context.r15 = regs.r15;
-            context.r14 = regs.r14;
-            context.r13 = regs.r13;
-            context.r12 = regs.r12;
-            context.rbp = regs.rbp;
-            context.rbx = regs.rbx;
-            context.r11 = regs.r11;
-            context.r10 = regs.r10;
-            context.r9 = regs.r9;
-            context.r8 = regs.r8;
-            context.rax = regs.rax;
-            context.rcx = regs.rcx;
-            context.rdx = regs.rdx;
-            context.rsi = regs.rsi;
-            context.rdi = regs.rdi;
-            context.stack_pointer = regs.rsp;
-            context.rflags = regs.eflags;
+            NativeIsa::apply_user_regs(context, &regs);
         }
         Ok(())
     }
@@ -3780,7 +3759,10 @@ impl<'a, T: Tool, R: HostRuntime> Guest<T> for InGuest<'a, T, R> {
         }
 
         // AUTONOMOUS-BOT-IMPLEMENTED
-        if matches!(number, libc::SYS_clone | libc::SYS_clone3 | libc::SYS_vfork) {
+        if number == libc::SYS_clone
+            || number == libc::SYS_clone3
+            || Some(number) == crate::arch::SYS_VFORK
+        {
             // A typed refusal, so the Tool can tell this from a clone that
             // Linux failed: the in-guest runtime runs one thread of the guest
             // and has no thread or vfork-child creation to forward.
@@ -4120,10 +4102,10 @@ impl<'a, T: Tool, R: HostRuntime> Guest<T> for InGuest<'a, T, R> {
         let native = self.native.as_ref()?;
         let regs = native.services.regs().ok()?;
         let mut frames = vec![reverie::Frame {
-            ip: regs.rip,
+            ip: NativeIsa::user_regs_instruction_pointer(&regs),
             is_signal: false,
         }];
-        let mut fp = regs.rbp;
+        let mut fp = NativeIsa::user_regs_frame_pointer(&regs);
         while frames.len() < 256 {
             if fp == 0 || !fp.is_multiple_of(std::mem::align_of::<u64>() as u64) {
                 break;
@@ -4378,7 +4360,7 @@ mod process_owner_tests {
             let mut subscription =
                 reverie::Subscription::from_iter([Sysno::write, Sysno::getpid, Sysno::getppid]);
             if config.1 {
-                subscription.syscall(Sysno::fork);
+                subscription.syscall(Sysno::clone);
             }
             subscription
         }
@@ -4677,7 +4659,7 @@ mod process_owner_tests {
             tid: parent_tid,
             attempts: 0,
         };
-        let mut call = event(libc::SYS_fork, [0; 6]);
+        let mut call = event(crate::arch::SYS_FORK.unwrap_or(libc::SYS_clone), [0; 6]);
         finish_fork_child(
             &mut owner,
             &mut states,
@@ -5137,7 +5119,11 @@ mod tests {
     /// does not.
     #[test]
     fn only_the_guests_own_errors_reach_the_guest() {
-        for number in [libc::SYS_fork, libc::SYS_clone, libc::SYS_clone3] {
+        for number in [
+            crate::arch::SYS_FORK.unwrap_or(libc::SYS_clone),
+            libc::SYS_clone,
+            libc::SYS_clone3,
+        ] {
             assert!(errno_is_the_guests(number, libc::EAGAIN));
             assert!(errno_is_the_guests(number, libc::ENOSPC));
             for errno in [
@@ -5151,8 +5137,14 @@ mod tests {
             }
         }
         assert!(errno_is_the_guests(libc::SYS_clone3, libc::E2BIG));
-        assert!(!errno_is_the_guests(libc::SYS_fork, libc::E2BIG));
-        assert!(!errno_is_the_guests(libc::SYS_fork, libc::ENOSYS));
+        assert!(!errno_is_the_guests(
+            crate::arch::SYS_FORK.unwrap_or(libc::SYS_clone),
+            libc::E2BIG
+        ));
+        assert!(!errno_is_the_guests(
+            crate::arch::SYS_FORK.unwrap_or(libc::SYS_clone),
+            libc::ENOSYS
+        ));
     }
 
     /// Linux range-checks a whole clone3 record before reading any of it: a

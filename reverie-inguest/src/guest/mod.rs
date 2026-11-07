@@ -20,21 +20,7 @@ pub mod alloc;
 #[cfg(feature = "rcb-clock")]
 pub mod clock;
 pub mod context;
-#[cfg(target_arch = "x86_64")]
 pub mod continuation;
-/// No fallback continuation exists off x86-64 yet (its frame machinery is a
-/// later stage), so no thread can be running one: mask storage honestly
-/// reports exactly that, using the same `None`/`false` the real storage
-/// returns when no continuation is running.
-#[cfg(not(target_arch = "x86_64"))]
-pub mod continuation {
-    pub fn saved_guest_mask() -> Option<u64> {
-        None
-    }
-    pub fn set_saved_guest_mask(_mask: u64) -> bool {
-        false
-    }
-}
 pub mod event;
 #[cfg(feature = "exec-private-init")]
 pub mod exec_private;
@@ -45,23 +31,8 @@ pub mod host;
 pub mod installed_stack;
 #[cfg(feature = "coordinator-rpc")]
 pub mod installed_tool;
-#[cfg(target_arch = "x86_64")]
 pub mod instruction;
-/// CPUID/RDTSC faulting has no aarch64 counterpart in this stage; nothing
-/// can be subscribed there, which the subscription surface reports as-is.
-#[cfg(not(target_arch = "x86_64"))]
-pub mod instruction {
-    #[derive(Clone, Copy, Debug, Default)]
-    pub struct InstructionSubscriptions {
-        /// CPUID, trapped by CPUID faulting.
-        pub cpuid: bool,
-        /// RDTSC and RDTSCP, trapped by `PR_TSC_SIGSEGV`.
-        pub rdtsc: bool,
-    }
-    pub fn any_instruction_subscribed() -> bool {
-        false
-    }
-}
+pub mod isa;
 #[cfg(feature = "coordinator-rpc")]
 pub mod native_capture;
 #[cfg(feature = "exec-native-injection")]
@@ -97,5 +68,4 @@ pub mod support;
 #[cfg(all(feature = "coordinator-rpc", feature = "rcb-clock"))]
 pub mod tool_install;
 pub mod tool_region;
-#[cfg(target_arch = "x86_64")]
 pub mod trap_dispatch;

@@ -1100,7 +1100,7 @@ fn content_manifest_relative(image_kind: FixedImageKind) -> &'static str {
 }
 // Reviewed literal expectations, not hashes generated from the current checkout
 // or bytes embedded after a runtime edit. The qualifier self-hash is separate.
-const CONTENT_REVERIE_CATALOG: [(&str, u64, &str); 83] = [
+const CONTENT_REVERIE_CATALOG: [(&str, u64, &str); 86] = [
     (
         "reverie-liteinst-artifact/src/preparation_identity.rs",
         49430,
@@ -1109,13 +1109,28 @@ const CONTENT_REVERIE_CATALOG: [(&str, u64, &str); 83] = [
     // Bind the signal-mask gate and every changed native-source premise of it.
     (
         "reverie-inguest/src/guest/continuation.rs",
-        53174,
-        "e44feb7ac38976340ebef89433e24bf8303bdbc967e55c68408686ef1351fbeb",
+        44673,
+        "7a2e070e0d4734a06e1f3b314f9de235003269a8a2538b87eb9f72c25a122f7c",
     ),
     (
         "reverie-inguest/src/guest/instruction.rs",
-        34567,
-        "3ffb1870db9dc758acf0e411f134d70c85b01c02b8daeb5e09ddc2aea128e953",
+        25458,
+        "98417972e3a1db14435f9e235b841b838b32a201c278780fbb0bd6a9d79169d5",
+    ),
+    (
+        "reverie-inguest/src/guest/isa.rs",
+        15627,
+        "f7c8ae886b4b8450ce4ca7867bdcbfa7890a7d89b679e7e6a421a56fc7497724",
+    ),
+    (
+        "reverie-inguest/src/guest/isa/aarch64.rs",
+        17629,
+        "735c5827a1ed85f6808733887dfe2ce568fd777b46d1851685ce58e6a06470bf",
+    ),
+    (
+        "reverie-inguest/src/guest/isa/x86_64.rs",
+        31237,
+        "eb8cff672a8a84060132a67070a9d4a16e323e8725ca2977c63035fb228521cf",
     ),
     (
         "reverie-inguest/src/guest/runtime_mask.rs",
@@ -1134,8 +1149,8 @@ const CONTENT_REVERIE_CATALOG: [(&str, u64, &str); 83] = [
     ),
     (
         "reverie-inguest/src/guest/tool_install.rs",
-        25848,
-        "80bb4d540979ad5cfb183faaf8fc74866893e729532f0a14df83bc1b900ba928",
+        25792,
+        "db0f63022089ae68baa3b775d0c0759126ba90c5e8d877582c486d2ceb26cd9b",
     ),
     (
         "reverie-inguest/src/signal.rs",
@@ -1359,8 +1374,8 @@ const CONTENT_REVERIE_CATALOG: [(&str, u64, &str); 83] = [
     ),
     (
         "reverie-inguest/src/guest/tool_region.rs",
-        51920,
-        "13b271ccc95b8fd3c2f5d04f05c0482b70449ed703e7957d2b65ee55cb49adb6",
+        52701,
+        "5daf1bbec48c98dbebf64eb8d1a5b9bc8c59a47a8598666f7f9d2f1376252192",
     ),
     (
         "reverie-inguest/src/guest/tool_region_keyed.rs",
@@ -1369,13 +1384,13 @@ const CONTENT_REVERIE_CATALOG: [(&str, u64, &str); 83] = [
     ),
     (
         "reverie-inguest/src/guest/installed_tool.rs",
-        26242,
-        "1733d4d4a9f20407dddb74dc6d675be3873e36d71f8a0606ac35cbdf85f06186",
+        26031,
+        "84ba271d1e8be5e9cc665f8ce7440bf99064e84b5b9baee55e69a6e1dd5d8068",
     ),
     (
         "reverie-inguest/src/guest/mod.rs",
-        3497,
-        "4020e358c802b8e5efe43614acd7ac0759cf00977794445cabca179f46967328",
+        2422,
+        "c92177576ab8dda0aa36876075877e35ff98e5acae1b0c1b67539e28317aab49",
     ),
     (
         "reverie-inguest/src/guest/rpc.rs",
@@ -1384,8 +1399,8 @@ const CONTENT_REVERIE_CATALOG: [(&str, u64, &str); 83] = [
     ),
     (
         "reverie-inguest/src/guest/host.rs",
-        225912,
-        "107c375b5016d8357184184c6c496587648425708b6f561262e9fb6fe4e3276c",
+        225605,
+        "d28d89bb6e1a9979d97f46e3aabd21e9b0cba5ae1c8bebfa923e4a3311324664",
     ),
     (
         "reverie-inguest/src/guest/host_linux.rs",
@@ -1409,8 +1424,8 @@ const CONTENT_REVERIE_CATALOG: [(&str, u64, &str); 83] = [
     ),
     (
         "reverie/src/lib.rs",
-        7263,
-        "c8c23b8628a83099732be4e58530ab70685837821fccbb27447830a5bf726cc3",
+        7201,
+        "1c657bd9280262618b1ce11e0bc7a7aec2af748c409fb9de3b118657cd390cb5",
     ),
     (
         "reverie/src/perf.rs",
@@ -1425,8 +1440,8 @@ const CONTENT_REVERIE_CATALOG: [(&str, u64, &str); 83] = [
     // invented number. Size/digest cover both reviewed changes.
     (
         "reverie/src/pmu_config.rs",
-        74723,
-        "ab1ea2a92c58a0a49bbd5f700d5bf303917802c4143645f015fa8047b0e463d3",
+        76782,
+        "637c6fa142ed96a215675e072f2c48152ca3fe11f18a4a0e6d8eaa4bf7124029",
     ),
     (
         "reverie/src/in_guest_rcb.rs",
@@ -1440,8 +1455,8 @@ const CONTENT_REVERIE_CATALOG: [(&str, u64, &str); 83] = [
     ),
     (
         "reverie-inguest/src/guest/clock.rs",
-        25871,
-        "d353ba4ec2ea2225de34e5e6fceed12ff864183fa35ba004a7e63bcfa0125907",
+        25951,
+        "34d773ff0b576151381353320eedc4a082ebabd081a1c6d59871470c91a5a503",
     ),
     (
         "reverie-inguest/src/lifecycle.rs",
@@ -1522,8 +1537,8 @@ const CONTENT_REVERIE_CATALOG: [(&str, u64, &str); 83] = [
     ),
     (
         "reverie/src/tool.rs",
-        79939,
-        "d0ece0753a03016c9c6c3136bb04861b63e374d87012ca0d1b0eeae4b59fb8ab",
+        80301,
+        "89ae1888619a96b89c1adbcd6703b55c78af093de55f6a2e362af152c4fff321",
     ),
 ];
 // Native Detcore's fixed-gate publication ordering is a separately declared
@@ -33625,7 +33640,7 @@ mod tests {
         let rv_two = cargo_two.join(suffix);
         // Current compiled bytes are inputs only. Each must independently match
         // the fixed reviewed length/digest catalog before any positive is earned.
-        let compiled_files: [(&str, &[u8]); 85] = [
+        let compiled_files: [(&str, &[u8]); 88] = [
             (
                 "reverie/src/tool_process.rs",
                 include_bytes!("../../reverie/src/tool_process.rs"),
@@ -33661,6 +33676,18 @@ mod tests {
             (
                 "reverie-inguest/src/guest/instruction.rs",
                 include_bytes!("../../reverie-inguest/src/guest/instruction.rs"),
+            ),
+            (
+                "reverie-inguest/src/guest/isa.rs",
+                include_bytes!("../../reverie-inguest/src/guest/isa.rs"),
+            ),
+            (
+                "reverie-inguest/src/guest/isa/aarch64.rs",
+                include_bytes!("../../reverie-inguest/src/guest/isa/aarch64.rs"),
+            ),
+            (
+                "reverie-inguest/src/guest/isa/x86_64.rs",
+                include_bytes!("../../reverie-inguest/src/guest/isa/x86_64.rs"),
             ),
             (
                 "reverie-inguest/src/guest/runtime_mask.rs",
@@ -33966,7 +33993,7 @@ mod tests {
         ];
         // These reviewed sources changed for startup or returning-injection contracts.
         // Keep the fixed catalog authoritative and reject their prior tuples.
-        assert_eq!(CONTENT_REVERIE_CATALOG.len(), 83);
+        assert_eq!(CONTENT_REVERIE_CATALOG.len(), 86);
         for (relative, old_size, old_digest) in [
             (
                 "Cargo.toml",
@@ -34025,11 +34052,11 @@ mod tests {
             }
         }
         let (rv_inventory, _) = content_reverie_inventory(&rv_one).unwrap();
-        // 83 reviewed sources plus the independently checked qualifier.
-        assert_eq!(rv_inventory.len(), 84);
+        // 86 reviewed sources plus the independently checked qualifier.
+        assert_eq!(rv_inventory.len(), 87);
         let (detcore_inventory, _) =
             content_reverie_inventory_for_image(&rv_one, FixedImageKind::Detcore).unwrap();
-        assert_eq!(detcore_inventory.len(), 85);
+        assert_eq!(detcore_inventory.len(), 88);
         for relative in [
             "reverie-inguest/src/guest/pidfd_self.rs",
             "reverie/src/pidfd_self.rs",
