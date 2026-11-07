@@ -26916,6 +26916,13 @@ fn fixed_machine_context(
                         )
                 })
                 .collect();
+            if role == "fixed_patch_alloc" {
+                eprintln!(
+                    "DEBUG candidates for {role}: {:?} actual_len={} kind={image_kind:?}",
+                    templates.iter().map(|(i, _)| *i).collect::<Vec<_>>(),
+                    actual.len()
+                );
+            }
             let (_, template) = fixed_detcore_unique_template(
                 role,
                 &templates,
