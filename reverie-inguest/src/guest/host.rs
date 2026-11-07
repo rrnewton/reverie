@@ -5448,6 +5448,7 @@ mod process_owner_tests {
             context: &raw const saved as usize,
             dispatch: SyscallDispatch::Trap,
             guest_pkru: None,
+            unsupported_refusal: None,
         };
         let tail = TailResult::default();
         let mut state = State {
@@ -5476,6 +5477,8 @@ mod process_owner_tests {
             exec: None,
             #[cfg(feature = "exec-native-injection")]
             mapping_driver: None,
+            #[cfg(feature = "exec-native-injection")]
+            native_exec_installed: host.native_exec_driver.is_some(),
             unsupported_refusal: None,
             injected_syscalls: 0,
         };
@@ -5576,6 +5579,7 @@ mod process_owner_tests {
             context: &raw const saved as usize,
             dispatch: SyscallDispatch::Trap,
             guest_pkru: None,
+            unsupported_refusal: None,
         };
         // SAFETY: host/event as constructed above; the child resumes at
         // the stub with SEEN's address in rdi and exits by raw syscall.
@@ -6675,22 +6679,22 @@ mod tests {
         fn exec_guard_refuses_unwatched_and_forwards_watched() {
             for number in [libc::SYS_execve, libc::SYS_execveat] {
                 assert_eq!(
-                    injected_syscall_guard(&TailStartRuntime, number, [0; 6]),
+                    injected_syscall_guard(&TailStartRuntime, number, [0; 6], false),
                     Some(Errno::EOPNOTSUPP)
                 );
                 assert_eq!(
-                    injected_syscall_guard(&WatchedRuntime, number, [0; 6]),
+                    injected_syscall_guard(&WatchedRuntime, number, [0; 6], false),
                     None
                 );
             }
             // The watch scopes to exec only: a thread-creating clone
             // (non-null child stack via clone3) stays refused.
             assert_eq!(
-                injected_syscall_guard(&WatchedRuntime, libc::SYS_clone3, [0; 6]),
+                injected_syscall_guard(&WatchedRuntime, libc::SYS_clone3, [0; 6], false),
                 Some(Errno::EOPNOTSUPP)
             );
             assert_eq!(
-                injected_syscall_guard(&WatchedRuntime, libc::SYS_getpid, [0; 6]),
+                injected_syscall_guard(&WatchedRuntime, libc::SYS_getpid, [0; 6], false),
                 None
             );
         }
