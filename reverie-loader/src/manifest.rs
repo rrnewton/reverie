@@ -681,6 +681,62 @@ mod tests {
     }
 
     #[test]
+    fn validate_with_target_aligns_windows_and_gates_at_the_target_page_size() {
+        use crate::image::EM_X86_64;
+        use crate::image::ImageTarget;
+        let aarch64_64k = ImageTarget::aarch64(65_536).unwrap();
+        let x86_64k = ImageTarget::x86_64(65_536).unwrap();
+        // At the default target this is validate() exactly.
+        assert_eq!(
+            RUNTIME_MANIFEST.validate_with_target(ImageTarget::DEFAULT),
+            RUNTIME_MANIFEST.validate()
+        );
+        // The checked-in runtime window is 64 KiB-aligned, but its
+        // gate is one 4 KiB page: refused by name at a 64 KiB
+        // target (either machine; a manifest has no machine),
+        // accepted on the unchanged default path.
+        for target in [aarch64_64k, x86_64k] {
+            assert_eq!(
+                RUNTIME_MANIFEST.validate_with_target(target),
+                Err(ManifestError::GateMisaligned { index: 0 })
+            );
+        }
+        assert_eq!(RUNTIME_MANIFEST.validate(), Ok(()));
+        // The same window with a 64 KiB gate validates at 64 KiB.
+        const GATE64: GateRange = RUNTIME_WINDOW.start..RUNTIME_WINDOW.start + 65_536;
+        const GATES64: &[GateRange] = core::slice::from_ref(&GATE64);
+        assert_eq!(
+            manifest(RUNTIME_WINDOW, GATES64).validate_with_target(aarch64_64k),
+            Ok(())
+        );
+        // A window aligned only to 4 KiB refuses at 64 KiB and
+        // passes on the default path.
+        const SHIFTED: GateRange =
+            RUNTIME_WINDOW.start + 4096..RUNTIME_WINDOW.start + 4096 + 65_536;
+        const SHIFTED_GATES: &[GateRange] = core::slice::from_ref(&SHIFTED);
+        let shifted = manifest(
+            RUNTIME_WINDOW.start + 4096..RUNTIME_WINDOW.end,
+            SHIFTED_GATES,
+        );
+        assert_eq!(
+            shifted.validate_with_target(x86_64k),
+            Err(ManifestError::WindowMisaligned)
+        );
+        assert_eq!(shifted.validate(), Ok(()));
+        // A struct-literal target with an unusable page size is
+        // refused by name, like the constructors refuse it.
+        for page_size in [1000, 2048] {
+            assert_eq!(
+                RUNTIME_MANIFEST.validate_with_target(ImageTarget {
+                    page_size,
+                    machine: EM_X86_64,
+                }),
+                Err(ManifestError::UnsupportedPageSize { page_size })
+            );
+        }
+    }
+
+    #[test]
     fn an_init_entry_mismatch_is_refused_by_name() {
         let entry = 0x6000_e100_1000_u64;
         let mut m = manifest(LOADER_WINDOW, &[LOADER_GATE]);

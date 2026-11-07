@@ -321,6 +321,7 @@ mod tests {
     use super::*;
     use crate::image::tests::Phdr;
     use crate::image::tests::build;
+    use crate::image::tests::build_for_target;
 
     const PT_LOAD: u32 = 1;
     const RX: u32 = 4 | 1;
@@ -470,6 +471,67 @@ mod tests {
         assert_eq!(
             check_image_with_page_size(&bytes, &RUNTIME_MANIFEST, PAGE_SIZE),
             check_image(&bytes, &RUNTIME_MANIFEST)
+        );
+    }
+
+    #[test]
+    fn check_image_with_target_checks_a_synthetic_64k_image_end_to_end() {
+        use crate::manifest::GateRange;
+        use crate::manifest::ManifestError;
+        use crate::manifest::RUNTIME_MANIFEST;
+        // Synthetic hand-built x86-64 ELF (build_for_target, no
+        // linker ran): p_align 65536, a gate segment and a text
+        // segment on 64 KiB boundaries in the runtime window.
+        let target = ImageTarget::x86_64(65_536).unwrap();
+        const GATE64_START: u64 = RUNTIME_WINDOW.start;
+        const GATE64: GateRange = GATE64_START..GATE64_START + 65_536;
+        const GATES64: &[GateRange] = core::slice::from_ref(&GATE64);
+        let mut manifest64 = RUNTIME_MANIFEST.clone();
+        manifest64.gates = GATES64;
+        let mut body = vec![0xc3u8; 65_536 + 16];
+        body[..3].copy_from_slice(&[0x0f, 0x05, 0xc3]);
+        body[65_536] = 0x90;
+        let phdrs: [Phdr; 2] = [
+            (PT_LOAD, RX, 65_536, GATE64_START, 16, 16),
+            (PT_LOAD, RX, 131_072, GATE64_START + 65_536, 16, 16),
+        ];
+        let bytes = build_for_target(GATE64_START + 65_536, &phdrs, &body, target);
+        let image = check_image_with_target(&bytes, &manifest64, target).unwrap();
+        assert_eq!(image.target(), target);
+        // The gate segment's one small segment covers the whole
+        // 64 KiB gate only when rounded at the target page size.
+        let gate_segment = image.segments().next().unwrap();
+        assert_eq!(gate_segment.pages_with_page_size(65_536).unwrap(), GATE64);
+        // The unchanged default paths refuse the same pair for
+        // their own named reasons, so the target form is additive
+        // rather than a change to them: the page-size form still
+        // refuses 64 KiB outright, and the default form rounds the
+        // gate segment to one 4 KiB page, which cannot cover a
+        // 64 KiB gate.
+        assert_eq!(
+            check_image_with_page_size(&bytes, &manifest64, 65_536).map(|_| ()),
+            Err(ArtifactError::Manifest(
+                ManifestError::UnsupportedPageSize { page_size: 65_536 }
+            ))
+        );
+        assert_eq!(
+            check_image(&bytes, &manifest64).map(|_| ()),
+            Err(ArtifactError::GateNotExecutable { gate: GATE64_START })
+        );
+        // The checked-in manifest (one 4 KiB gate) refuses at
+        // manifest validation under the 64 KiB target.
+        assert_eq!(
+            check_image_with_target(&bytes, &RUNTIME_MANIFEST, target).map(|_| ()),
+            Err(ArtifactError::Manifest(ManifestError::GateMisaligned {
+                index: 0
+            }))
+        );
+        // The same x86-64 bytes refuse by name under an AArch64
+        // target, through the manifest path too.
+        assert_eq!(
+            check_image_with_target(&bytes, &manifest64, ImageTarget::aarch64(65_536).unwrap())
+                .map(|_| ()),
+            Err(ArtifactError::Image(ImageError::WrongMachine))
         );
     }
 

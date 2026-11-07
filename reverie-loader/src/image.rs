@@ -102,10 +102,7 @@ impl ImageTarget {
 
     fn new(page_size: u64, machine: u16) -> Result<Self, ImageError> {
         check_page_size(page_size)?;
-        Ok(Self {
-            page_size,
-            machine,
-        })
+        Ok(Self { page_size, machine })
     }
 
     /// Refuses by name if this target's page size could not have
@@ -586,19 +583,37 @@ pub(crate) mod tests {
     use super::*;
 
     /// A program header for [`build`]: (type, flags, offset, vaddr, filesz, memsz).
-    /// [`build`] sets every `p_align` to [`PAGE_SIZE`].
+    /// The builders set every `p_align` to the target's page size.
     pub(crate) type Phdr = (u32, u32, u64, u64, u64, u64);
 
-    /// Builds an ELF64 x86-64 `ET_EXEC` image with `phdrs` and with `body`
-    /// at file offset 4096; the file is at least 8192 bytes.
+    /// Builds a synthetic ELF64 x86-64 `ET_EXEC` image with `phdrs`
+    /// and with `body` at file offset 4096; the file is at least
+    /// 8192 bytes. Synthetic: hand-assembled bytes, never linked.
     pub(crate) fn build(entry: u64, phdrs: &[Phdr], body: &[u8]) -> Vec<u8> {
-        let mut bytes = vec![0u8; (4096 + body.len()).max(8192)];
+        build_for_target(entry, phdrs, body, ImageTarget::DEFAULT)
+    }
+
+    /// Builds a synthetic ELF64 `ET_EXEC` image for `target`: its
+    /// `e_machine` is the target's machine, every `p_align` is the
+    /// target's page size, and `body` sits at file offset
+    /// `target.page_size`; the file is at least two target pages.
+    /// Segment offsets and addresses in `phdrs` are the caller's,
+    /// spelled in the same page units. Synthetic: hand-assembled
+    /// bytes with no toolchain involved, whatever the machine.
+    pub(crate) fn build_for_target(
+        entry: u64,
+        phdrs: &[Phdr],
+        body: &[u8],
+        target: ImageTarget,
+    ) -> Vec<u8> {
+        let page = usize::try_from(target.page_size).unwrap();
+        let mut bytes = vec![0u8; (page + body.len()).max(2 * page)];
         bytes[..4].copy_from_slice(&ELF_MAGIC);
         bytes[4] = ELFCLASS64;
         bytes[5] = ELFDATA2LSB;
         bytes[6] = EV_CURRENT;
         bytes[16..18].copy_from_slice(&ET_EXEC.to_le_bytes());
-        bytes[18..20].copy_from_slice(&EM_X86_64.to_le_bytes());
+        bytes[18..20].copy_from_slice(&target.machine.to_le_bytes());
         bytes[24..32].copy_from_slice(&entry.to_le_bytes());
         bytes[32..40].copy_from_slice(&(EHDR_SIZE as u64).to_le_bytes());
         bytes[54..56].copy_from_slice(&(PHDR_SIZE as u16).to_le_bytes());
@@ -611,9 +626,9 @@ pub(crate) mod tests {
             bytes[at + 16..at + 24].copy_from_slice(&vaddr.to_le_bytes());
             bytes[at + 32..at + 40].copy_from_slice(&filesz.to_le_bytes());
             bytes[at + 40..at + 48].copy_from_slice(&memsz.to_le_bytes());
-            bytes[at + 48..at + 56].copy_from_slice(&PAGE_SIZE.to_le_bytes());
+            bytes[at + 48..at + 56].copy_from_slice(&target.page_size.to_le_bytes());
         }
-        bytes[4096..4096 + body.len()].copy_from_slice(body);
+        bytes[page..page + body.len()].copy_from_slice(body);
         bytes
     }
 
@@ -807,5 +822,205 @@ pub(crate) mod tests {
         let many = [text(16); MAX_SEGMENTS + 1];
         let too_many = build(BASE, &many, &[]);
         assert_eq!(Image::parse(&too_many), Err(ImageError::TooManySegments));
+    }
+
+    #[test]
+    fn target_page_sizes_are_refused_by_name_unless_powers_of_two_at_least_4k() {
+        for page_size in [0, 1, 2048, 4095, 4097, 12_288, 65_535] {
+            assert_eq!(
+                ImageTarget::x86_64(page_size),
+                Err(ImageError::UnsupportedPageSize { page_size }),
+                "x86_64({page_size})"
+            );
+            assert_eq!(
+                ImageTarget::aarch64(page_size),
+                Err(ImageError::UnsupportedPageSize { page_size }),
+                "aarch64({page_size})"
+            );
+        }
+        for page_size in [4096, 16_384, 65_536] {
+            assert_eq!(
+                ImageTarget::x86_64(page_size).unwrap(),
+                ImageTarget {
+                    page_size,
+                    machine: 62
+                }
+            );
+            assert_eq!(
+                ImageTarget::aarch64(page_size).unwrap(),
+                ImageTarget {
+                    page_size,
+                    machine: 183
+                }
+            );
+        }
+        assert_eq!(EM_X86_64, 62);
+        assert_eq!(EM_AARCH64, 183);
+        assert_eq!(
+            ImageTarget::DEFAULT,
+            ImageTarget::x86_64(PAGE_SIZE).unwrap()
+        );
+        // A struct-literal target bypasses the constructors, so
+        // parse re-checks it, before the bytes are read at all.
+        let bogus = ImageTarget {
+            page_size: 3,
+            machine: EM_X86_64,
+        };
+        assert_eq!(
+            Image::parse_with_target(&[0u8; 10], bogus).map(|_| ()),
+            Err(ImageError::UnsupportedPageSize { page_size: 3 })
+        );
+        // Segment rounding refuses a bad explicit page size too.
+        let valid = build(BASE, &[text(16)], &[0xc3; 16]);
+        let image = Image::parse(&valid).unwrap().validate(&policy()).unwrap();
+        let segment = image.segments().next().unwrap();
+        assert_eq!(
+            segment.pages_with_page_size(0),
+            Err(ImageError::UnsupportedPageSize { page_size: 0 })
+        );
+    }
+
+    #[test]
+    fn an_explicit_default_target_matches_the_default_entry_points() {
+        // The 4 KiB case: the existing fixture under an explicit
+        // x86_64(4096) target is the default path exactly.
+        let data = (PT_LOAD, PF_R | PF_W, 8192, BASE + 0x1000, 16, 64);
+        let bytes = build(BASE, &[text(16), data], &[0xc3; 4112]);
+        let explicit = ImageTarget::x86_64(4096).unwrap();
+        assert_eq!(
+            Image::parse_with_target(&bytes, explicit)
+                .unwrap()
+                .validate(&policy()),
+            Image::parse(&bytes).unwrap().validate(&policy())
+        );
+        let image = Image::parse_with_target(&bytes, explicit)
+            .unwrap()
+            .validate(&policy())
+            .unwrap();
+        assert_eq!(image.target(), ImageTarget::DEFAULT);
+        for segment in image.segments() {
+            assert_eq!(
+                segment.pages_with_page_size(4096).unwrap(),
+                segment.pages().unwrap()
+            );
+        }
+    }
+
+    fn synthetic_64k_bytes(target: ImageTarget) -> Vec<u8> {
+        let phdrs: [Phdr; 2] = [
+            (PT_LOAD, PF_R | PF_X, 65_536, BASE, 16, 16),
+            (PT_LOAD, PF_R | PF_W, 131_072, BASE + 65_536, 16, 64),
+        ];
+        build_for_target(BASE, &phdrs, &vec![0xc3u8; 65_552], target)
+    }
+
+    #[test]
+    fn a_synthetic_64k_image_validates_for_a_64k_target() {
+        // Synthetic hand-built ELF, p_align 65536 throughout
+        // (build_for_target), segments on 64 KiB boundaries.
+        let target = ImageTarget::x86_64(65_536).unwrap();
+        let bytes = synthetic_64k_bytes(target);
+        let image = Image::parse_with_target(&bytes, target)
+            .unwrap()
+            .validate(&policy())
+            .unwrap();
+        assert_eq!(image.target(), target);
+        let first = image.segments().next().unwrap();
+        assert_eq!(
+            first.pages_with_page_size(65_536).unwrap(),
+            BASE..BASE + 65_536
+        );
+        assert_eq!(first.pages().unwrap(), BASE..BASE + 4096);
+        // The mapped file bytes run to the target's page boundary.
+        assert_eq!(image.mapped_file_bytes(first).unwrap().len(), 65_536);
+        // At the default target the same bytes also validate, with
+        // 4 KiB rounding: 64 KiB alignment implies every 4 KiB
+        // check (alignment, the p_align floor, congruence), so a
+        // 4 KiB refusal is not what the semantics require here. The
+        // refusing direction is the converse, tested next.
+        let default = Image::parse(&bytes).unwrap().validate(&policy()).unwrap();
+        let first = default.segments().next().unwrap();
+        assert_eq!(default.mapped_file_bytes(first).unwrap().len(), 4096);
+    }
+
+    #[test]
+    fn an_image_aligned_only_to_4k_is_refused_for_a_64k_target() {
+        // The refusal the target page size exists for: an image
+        // that is fine at 4 KiB must not pass at 64 KiB. If
+        // validation hard-coded 4096 in place of the target page
+        // size, both cases below would wrongly pass.
+        let bytes = build(BASE, &[text(16)], &[0xc3; 16]);
+        let target = ImageTarget::x86_64(65_536).unwrap();
+        assert_eq!(
+            Image::parse_with_target(&bytes, target)
+                .unwrap()
+                .validate(&policy()),
+            Err(ImageError::Misaligned { index: 0 })
+        );
+        assert_eq!(validate(&bytes), Ok(()));
+        // p_align is 65536 and address/offset are congruent modulo
+        // it (both 4096), but neither is 64 KiB-aligned: refused at
+        // 64 KiB, accepted at 4 KiB.
+        let phdrs = [(PT_LOAD, PF_R | PF_X, 69_632, BASE + 4096, 16, 16)];
+        let bytes = build_for_target(BASE + 4096, &phdrs, &[0xc3; 16], target);
+        assert_eq!(
+            Image::parse_with_target(&bytes, target)
+                .unwrap()
+                .validate(&policy()),
+            Err(ImageError::Misaligned { index: 0 })
+        );
+        assert_eq!(
+            Image::parse(&bytes)
+                .unwrap()
+                .validate(&policy())
+                .map(|_| ()),
+            Ok(())
+        );
+    }
+
+    #[test]
+    fn a_synthetic_aarch64_64k_image_validates_for_an_aarch64_target() {
+        // Synthetic only: hand-built ELF64 bytes with e_machine 183
+        // (build_for_target); no aarch64 toolchain ran to make this
+        // fixture. It exercises the parser, alignment and rounding
+        // exactly as a linked image's headers would; it proves
+        // nothing about aarch64 instructions.
+        let target = ImageTarget::aarch64(65_536).unwrap();
+        let bytes = synthetic_64k_bytes(target);
+        let image = Image::parse_with_target(&bytes, target)
+            .unwrap()
+            .validate(&policy())
+            .unwrap();
+        assert_eq!(image.target().machine, EM_AARCH64);
+        assert_eq!(image.segments().count(), 2);
+        // Machine and page size are independent inputs.
+        assert!(
+            Image::parse_with_target(&bytes, ImageTarget::aarch64(4096).unwrap())
+                .unwrap()
+                .validate(&policy())
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn a_machine_mismatch_is_refused_by_name_in_both_directions() {
+        let x86_bytes = build(BASE, &[text(16)], &[0xc3; 16]);
+        let aarch64_4k = ImageTarget::aarch64(4096).unwrap();
+        let phdrs = [(PT_LOAD, PF_R | PF_X, 4096, BASE, 16, 16)];
+        let aarch64_bytes = build_for_target(BASE, &phdrs, &[0xc3; 16], aarch64_4k);
+        assert_eq!(
+            Image::parse_with_target(&x86_bytes, aarch64_4k).map(|_| ()),
+            Err(ImageError::WrongMachine)
+        );
+        assert_eq!(
+            Image::parse_with_target(&aarch64_bytes, ImageTarget::x86_64(4096).unwrap())
+                .map(|_| ()),
+            Err(ImageError::WrongMachine)
+        );
+        // The default entry point still refuses it, unchanged.
+        assert_eq!(
+            Image::parse(&aarch64_bytes).map(|_| ()),
+            Err(ImageError::WrongMachine)
+        );
     }
 }
