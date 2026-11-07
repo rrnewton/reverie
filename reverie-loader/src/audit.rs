@@ -42,6 +42,7 @@ use crate::image::gate_encoding;
 /// The x86-64 `syscall` instruction's encoding: the bytes of
 /// `gate_encoding(EM_X86_64)`, kept as an array for the tests that
 /// plant it byte by byte.
+#[cfg(test)]
 pub(crate) const SYSCALL: [u8; 2] = [0x0f, 0x05];
 
 /// A `syscall` encoding found outside every gate range.
