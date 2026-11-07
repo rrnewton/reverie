@@ -1425,8 +1425,8 @@ const CONTENT_REVERIE_CATALOG: [(&str, u64, &str); 83] = [
     // invented number. Size/digest cover both reviewed changes.
     (
         "reverie/src/pmu_config.rs",
-        76782,
-        "637c6fa142ed96a215675e072f2c48152ca3fe11f18a4a0e6d8eaa4bf7124029",
+        78983,
+        "fa0e30d174f53dd047d94e9c55dba50fdc8d114586de4e9b4b706c6a954da5cc",
     ),
     (
         "reverie/src/in_guest_rcb.rs",
