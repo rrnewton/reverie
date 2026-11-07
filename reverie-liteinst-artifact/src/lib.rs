@@ -21035,7 +21035,7 @@ const DETCORE_VALIDATE_DATA: &[DetcoreValidateDataSpec] = &[
         hex: "",
         file_hex: "",
         source_context_key: Some("rv:reverie-inguest/src/guest/tool_region.rs"),
-        line: 89,
+        line: 94,
         column: 36,
     },
     DetcoreValidateDataSpec {
@@ -21044,7 +21044,7 @@ const DETCORE_VALIDATE_DATA: &[DetcoreValidateDataSpec] = &[
         hex: "",
         file_hex: "",
         source_context_key: Some("rv:reverie-inguest/src/guest/tool_region.rs"),
-        line: 138,
+        line: 143,
         column: 36,
     },
     DetcoreValidateDataSpec {
