@@ -7036,6 +7036,7 @@ impl TerminalCleanup {
     /// captures a new identity or signals a numeric PID. Registration failure
     /// is returned without a fallback. Neither success nor ESRCH acknowledges
     /// an exit: callers must consume the actual exit and terminal wait status.
+    #[track_caller]
     pub fn request_sigkill(&self) -> Result<(), Errno> {
         self.request_cancellation_signal(libc::SIGKILL)
     }
@@ -7066,7 +7067,15 @@ impl TerminalCleanup {
             .ok_or_else(|| self.registration_error().unwrap_or(Errno::ENODATA))
     }
 
+    #[track_caller]
     fn request_cancellation_signal(&self, signal: i32) -> Result<(), Errno> {
+        if signal == libc::SIGKILL {
+            eprintln!(
+                "SIGKILL-TRACE caller={} pid={:?}",
+                std::panic::Location::caller(),
+                self.pid
+            );
+        }
         if let Some(error) = self.registration_error() {
             return Err(error);
         }

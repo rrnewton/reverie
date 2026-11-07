@@ -4969,7 +4969,7 @@ static void* tsync_installer(void* arg) {
   return NULL;
 }
 static void sigtrap_tsync_filter(unsigned int action) {
-  int children = 40, ok = 0, sigsys = 0, other = 0;
+  int children = 40, ok = 0, sigsys = 0, other = 0, other_status = 0;
   for (int i = 0; i < children; i++) {
     pid_t pid = fork();
     if (pid < 0)
@@ -4992,6 +4992,14 @@ static void sigtrap_tsync_filter(unsigned int action) {
         if (atomic_load(&tsync_installed))
           after++;
       }
+      /* The delay spread above is what lands the install inside a
+       * repair; the exit verdict must not also race the installer's
+       * scheduling. Under load the loop can exhaust its iteration
+       * budget before a starved installer runs at all, which read
+       * as an "other" child. Join so the verdict sees the final
+       * install result; a failed install still exits 7. */
+      if (pthread_join(b, NULL))
+        die("tsync pthread_join");
       _exit(atomic_load(&tsync_installed) == 1 ? 0 : 7);
     }
     int status;
@@ -5001,11 +5009,14 @@ static void sigtrap_tsync_filter(unsigned int action) {
       ok++;
     else if (WIFSIGNALED(status) && WTERMSIG(status) == SIGSYS)
       sigsys++;
-    else
+    else {
+      if (!other)
+        other_status = status;
       other++;
+    }
   }
-  say("tsync-filter action=%#x children=%d ok=%d sigsys=%d other=%d\n", action, children, ok,
-      sigsys, other);
+  say("tsync-filter action=%#x children=%d ok=%d sigsys=%d other=%d ostatus=%#x\n", action,
+      children, ok, sigsys, other, other_status);
 }
 static void mode_sigtrap_tsync_filter_kill(void) { sigtrap_tsync_filter(SECCOMP_RET_KILL_PROCESS); }
 static void mode_sigtrap_tsync_filter_trap(void) { sigtrap_tsync_filter(SECCOMP_RET_TRAP); }
