@@ -62,6 +62,8 @@ pub mod runtime_seam;
 pub mod sigalrm;
 pub mod signal;
 pub mod support;
+#[cfg(feature = "coordinator-rpc")]
+pub mod tool_dispatcher;
 #[cfg(all(feature = "coordinator-rpc", feature = "rcb-clock"))]
 pub mod tool_install;
 pub mod tool_region;
