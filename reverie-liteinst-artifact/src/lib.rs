@@ -16958,6 +16958,11 @@ const FIXED_DEV_TLS_CELL_GETTER_HEX: &str =
     "4883ec1848897c24084889742410488d3daba42100e8b6321e00488d80480000004883c418c3";
 const FIXED_DEV_TLS_CELL_GETTER_STABLE_HEX: &str =
     "4883ec1848897c24084889742410488d3df3ca1e00e8866f1b00488d80300000004883c418c3";
+const FIXED_OPTIMIZED_PATCH_ALLOC_STABLE_HEX: &str = "41574156415453504889d34989f6ff1534930c004885c074774c8b78204d85ff746e4989c4488d3dec900c00e86f2c0c004883b830000000007463498b542410498b0f498d76ff49f7de31c04889cf4801d7723e4801f772394c21f74989f84929d04901d8410f92c14981f801000002410f93c24508ca75194889c8f04d0fb1074889c1b80000000075c14889f8eb0231c04883c4085b415c415e415fc3bf010000004c89f64889da4883c4085b415c415e415fff250e930c00";
+const FIXED_OPTIMIZED_TLS_THUNK_STABLE_HEX: &str = "50488d3d908e0c00e8132a0c00488d803000000059c3";
+const FIXED_OPTIMIZED_PATCH_ALLOC_STABLE_70_HEX: &str = "41574156415453504889d34989f6ff1514980b004885c074774c8b78204d85ff746e4989c4488d3dcc950b00e84f310b004883b870000000007463498b542410498b0f498d76ff49f7de31c04889cf4801d7723e4801f772394c21f74989f84929d04901d8410f92c14981f801000002410f93c24508ca75194889c8f04d0fb1074889c1b80000000075c14889f8eb0231c04883c4085b415c415e415fc3bf010000004c89f64889da4883c4085b415c415e415fff253e9b0b00";
+const FIXED_OPTIMIZED_TLS_THUNK_STABLE_70_HEX: &str =
+    "50488d3d00930b00e8832e0b00488d807000000059c3";
 const FIXED_DEV_TLS_CELL_GETTER_EVENT_ARGUMENT_HEX: &str =
     "4883ec1848897c24084889742410488d3ddb4a2200e8a6d11e00488d80400000004883c418c3";
 const FIXED_DEV_TLS_CELL_GETTER_DIAGNOSTIC_EVENT_ARGUMENT_HEX: &str =
@@ -16985,6 +16990,24 @@ fn fixed_tls_cell_access_recipe(
         "TLS read lacks its exact authenticated INSTALLATION_DEPTH source identity",
     )?;
     let (hex, displacement, fields): (&str, usize, &[(usize, usize)]) = match (role, cell.address) {
+        ("fixed_patch_alloc", 0x30) => (
+            FIXED_OPTIMIZED_PATCH_ALLOC_STABLE_HEX,
+            0x34,
+            &[(0x10, 0x14), (0x28, 0x2c), (0x2d, 0x31), (0xb6, 0xba)],
+        ),
+        ("fixed_tls_fn_once", 0x30) => {
+            (FIXED_OPTIMIZED_TLS_THUNK_STABLE_HEX, 16, &[(4, 8), (9, 13)])
+        }
+        ("fixed_patch_alloc", 0x70) => (
+            FIXED_OPTIMIZED_PATCH_ALLOC_STABLE_70_HEX,
+            0x34,
+            &[(0x10, 0x14), (0x28, 0x2c), (0x2d, 0x31), (0xb6, 0xba)],
+        ),
+        ("fixed_tls_fn_once", 0x70) => (
+            FIXED_OPTIMIZED_TLS_THUNK_STABLE_70_HEX,
+            16,
+            &[(4, 8), (9, 13)],
+        ),
         ("fixed_patch_alloc", 0x48) => (
             FIXED_OPTIMIZED_PATCH_ALLOC_HEX,
             0x34,
@@ -18450,7 +18473,10 @@ fn validate_fixed_backing_evidence_in_source_context(
             && canonical_rust_symbol(&tls.tls_cell.name).as_deref() == Some(FIXED_TLS_CELL_ROLE)
             && match image_kind {
                 FixedImageKind::Standalone => {
-                    matches!(tls.tls_cell.address, 0x30 | 0x40 | 0x48 | 0x80 | 0x88)
+                    matches!(
+                        tls.tls_cell.address,
+                        0x30 | 0x40 | 0x48 | 0x70 | 0x80 | 0x88
+                    )
                 }
                 FixedImageKind::Detcore => {
                     matches!(
@@ -24404,6 +24430,140 @@ const DETCORE_VALIDATE_TEMPLATES: &[DetcoreValidateTemplate] = &[
             (348, 12),
         ],
     },
+    // Closed actual stable-standalone 0x112250; complete74B SHA2568952018eb350634b29655d964867164120cd99b8ea8cf815426a7d2350f38a94.
+    DetcoreValidateTemplate {
+        role: "fixed_arena_backing",
+        hex: "500fb605c13d050484c0740431c9eb2d488d05b93d0504488904244889e0488b3c24e8f94d000031c94885c0740f807810ff488d055f81f5ff480f45c848890c244889e0488b042459c3",
+        operands: &[
+            DetcoreValidateOperand {
+                displacement: 4,
+                next: 8,
+                key: "fixed_initializing",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 19,
+                next: 23,
+                key: "fixed_region",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 35,
+                next: 39,
+                key: "fixed_region_publication_get_opaque",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 53,
+                next: 57,
+                key: "fixed_backing_object",
+                got: false,
+            },
+        ],
+        transfers: &[(34, 2)],
+    },
+    // Closed actual stable-standalone 0x1122c0; complete77B SHA25608150d6ce132dcf75677a38000263a2135c763c187dc03caa9da69f1801d7b23.
+    DetcoreValidateTemplate {
+        role: "fixed_tool_heap_metadata",
+        hex: "500fb605513d050484c0740431c0eb30488d05493d0504488904244889e0488b3c24e8894d00004885c074e031c9807810ff48b80030020000600000480f44c1488904244889e0488b042459c3",
+        operands: &[
+            DetcoreValidateOperand {
+                displacement: 4,
+                next: 8,
+                key: "fixed_initializing",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 19,
+                next: 23,
+                key: "fixed_region",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 35,
+                next: 39,
+                key: "fixed_region_publication_get_opaque",
+                got: false,
+            },
+        ],
+        transfers: &[(34, 2)],
+    },
+    // Closed actual stable-standalone 0x114a20; complete252B SHA256e6618861767571907ee1d32eef3c4393b422acb6c1998408761f995834e3996a.
+    DetcoreValidateTemplate {
+        role: "fixed_constructor_prepare",
+        hex: "415741564154534883ec284889fb4989e648897c2408488d442408488b7c24084c89742408488b74240848c744240801000000488b5424084c8d7c24104c897c2408488b4c2408e884f3ffff85c07411b8010000004883c4285b415c415e415fc30fb64c2418b80100000084c974e64c8b6424104c89735848b8001000000060000048894424104c89642418884c2420488d1d6915050448895c2408488d442408488b7c24084c897c2408488b742408e8bb25000085c0759749c744244803000000c605301505040048895c2410488d442410488b7c2410e8732500004889c14885c0b8010000000f8467ffffff31c0807910ff0f94c0e959ffffff",
+        operands: &[
+            DetcoreValidateOperand {
+                displacement: 72,
+                next: 76,
+                key: "fixed_native_from_native",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 147,
+                next: 151,
+                key: "fixed_region",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 177,
+                next: 181,
+                key: "fixed_region_publication_set_opaque",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 196,
+                next: 201,
+                key: "fixed_initializing",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 217,
+                next: 221,
+                key: "fixed_region_publication_get_opaque",
+                got: false,
+            },
+        ],
+        transfers: &[(71, 0), (176, 2), (216, 4)],
+    },
+    // Closed actual stable-standalone 0x114c40; complete252B SHA256cc8c8a1ceaed8084eee6108427f8846b370b7b310740e8cdb509ebeb52f80c06.
+    DetcoreValidateTemplate {
+        role: "fixed_generic_prepare",
+        hex: "415741564154534883ec284889fb4989e648897c2408488d442408488b7c24084c89742408488b74240848c744240802000000488b5424084c8d7c24104c897c2408488b4c2408e864f1ffff85c07411b8010000004883c4285b415c415e415fc30fb64c2418b80100000084c974e64c8b6424104c89735848b8001000000060000048894424104c89642418884c2420488d1d4913050448895c2408488d442408488b7c24084c897c2408488b742408e89b23000085c0759749c744244803000000c605101305040048895c2410488d442410488b7c2410e8532300004889c14885c0b8010000000f8467ffffff31c0807910ff0f94c0e959ffffff",
+        operands: &[
+            DetcoreValidateOperand {
+                displacement: 72,
+                next: 76,
+                key: "fixed_native_from_native",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 147,
+                next: 151,
+                key: "fixed_region",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 177,
+                next: 181,
+                key: "fixed_region_publication_set_opaque",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 196,
+                next: 201,
+                key: "fixed_initializing",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 217,
+                next: 221,
+                key: "fixed_region_publication_get_opaque",
+                got: false,
+            },
+        ],
+        transfers: &[(71, 0), (176, 2), (216, 4)],
+    },
 ];
 struct DetcoreRecipeBindings<'a> {
     targets: &'a BTreeMap<String, u64>,
@@ -26129,6 +26289,91 @@ const FIXED_NAKED_PINNED_STANDALONE_INCOMING: &[FixedScalarHelperIncoming] = &[
         &[("fixed_native_owner_gettid", 12, false)],
     ),
 ];
+// The stable standalone composition is the pinned standalone tuple with
+// only the four exact stable whole bodies above substituted as an indivisible
+// set. Backing/metadata get_opaque calls move to caller+34, and both prepare
+// bodies use their observed caller+71/+176/+216 edges; every other role and
+// edge in the observed tuple is byte-identical to the pinned cohort.
+const FIXED_NAKED_STABLE_STANDALONE_COHORT: &[(&str, usize)] = &[
+    ("fixed_region_publication_get_opaque", 67),
+    ("fixed_region_publication_set_opaque", 80),
+    ("fixed_tool_heap_metadata", 95),
+    ("fixed_arena_backing", 94),
+    ("fixed_tool_require_owned", 59),
+    ("fixed_tool_alloc", 60),
+    ("fixed_tool_dealloc", 72),
+    ("fixed_tool_realloc", 73),
+    ("fixed_native_from_native", 78),
+    ("fixed_constructor_prepare", 96),
+    ("fixed_generic_prepare", 97),
+    ("fixed_arena_setup", 82),
+    ("fixed_native_owner_gettid", 79),
+];
+const FIXED_NAKED_STABLE_STANDALONE_INCOMING: &[FixedScalarHelperIncoming] = &[
+    (
+        "fixed_region_publication_get_opaque",
+        &[
+            ("fixed_tool_heap_metadata", 34, false),
+            ("fixed_arena_backing", 34, false),
+            ("fixed_native_from_native", 176, false),
+            ("fixed_constructor_prepare", 216, false),
+            ("fixed_generic_prepare", 216, false),
+        ],
+    ),
+    (
+        "fixed_region_publication_set_opaque",
+        &[
+            ("fixed_constructor_prepare", 176, false),
+            ("fixed_generic_prepare", 176, false),
+        ],
+    ),
+    (
+        "fixed_tool_heap_metadata",
+        &[
+            ("fixed_tool_require_owned", 4, false),
+            ("fixed_tool_alloc", 13, false),
+            ("fixed_tool_dealloc", 4, false),
+            ("fixed_tool_realloc", 26, false),
+        ],
+    ),
+    (
+        "fixed_native_from_native",
+        &[
+            ("fixed_constructor_prepare", 71, false),
+            ("fixed_generic_prepare", 71, false),
+        ],
+    ),
+    (
+        "fixed_arena_setup",
+        &[("fixed_native_from_native", 257, false)],
+    ),
+    (
+        "fixed_native_owner_gettid",
+        &[("fixed_native_from_native", 116, false)],
+    ),
+    (
+        "fixed_arena_mprotect",
+        &[
+            ("fixed_arena_setup", 95, false),
+            ("fixed_arena_setup", 119, false),
+        ],
+    ),
+    (
+        "fixed_setup_bitmap_range",
+        &[
+            ("fixed_arena_setup", 16, false),
+            ("fixed_arena_setup", 44, false),
+            ("fixed_arena_setup", 72, false),
+            ("fixed_arena_setup", 184, false),
+            ("fixed_arena_setup", 207, false),
+            ("fixed_arena_setup", 230, false),
+        ],
+    ),
+    (
+        "fixed_scalar_syscall",
+        &[("fixed_native_owner_gettid", 12, false)],
+    ),
+];
 const FIXED_NAKED_PINNED_NATIVE_COHORT: &[(&str, usize)] = &[
     ("fixed_region_publication_get_opaque", 55),
     ("fixed_region_publication_set_opaque", 81),
@@ -26319,6 +26564,13 @@ const FIXED_NAKED_COMPOSITIONS: &[FixedNakedComposition] = &[
         setup_bitmap_template: None,
     },
     FixedNakedComposition {
+        image_kind: FixedImageKind::Standalone,
+        native_syscalls: false,
+        cohort: FIXED_NAKED_STABLE_STANDALONE_COHORT,
+        incoming: FIXED_NAKED_STABLE_STANDALONE_INCOMING,
+        setup_bitmap_template: None,
+    },
+    FixedNakedComposition {
         image_kind: FixedImageKind::Detcore,
         native_syscalls: true,
         cohort: FIXED_NAKED_PINNED_NATIVE_COHORT,
@@ -26333,12 +26585,12 @@ const FIXED_NAKED_COMPOSITIONS: &[FixedNakedComposition] = &[
         setup_bitmap_template: Some(85),
     },
 ];
-const FIXED_SOURCE_OWNED_TEMPLATE_END: usize = 94;
+const FIXED_SOURCE_OWNED_TEMPLATE_END: usize = 98;
 
 fn fixed_naked_publication_present(
     witnesses: &BTreeMap<String, AuthenticatedDetcoreOperation>,
 ) -> bool {
-    // Every appended identity belongs to this one source-owned composition,
+    // Every appended identity belongs to a source-owned composition,
     // including the same-opcode bitmap's new exact readonly-data profile.
     // A fragment cannot enter a historical cohort through an unchanged leaf.
     witnesses.values().any(|w| {
@@ -41567,6 +41819,44 @@ mod tests {
                 "4883ec1848897c24084889742410488d3df3ca1e00e8866f1b00488d80300000004883c418c3",
                 48,
                 &[(17, 21, 3671976), (22, 26, 3451968)],
+            ),
+            (
+                "fixed_patch_alloc",
+                611792,
+                "41574156415453504889d34989f6ff1534930c004885c074774c8b78204d85ff746e4989c4488d3dec900c00e86f2c0c004883b830000000007463498b542410498b0f498d76ff49f7de31c04889cf4801d7723e4801f772394c21f74989f84929d04901d8410f92c14981f801000002410f93c24508ca75194889c8f04d0fb1074889c1b80000000075c14889f8eb0231c04883c4085b415c415e415fc3bf010000004c89f64889da4883c4085b415c415e415fff250e930c00",
+                48,
+                &[
+                    (16, 20, 1435928),
+                    (40, 44, 1435368),
+                    (45, 49, 1409648),
+                    (182, 186, 1436056),
+                ],
+            ),
+            (
+                "fixed_tls_fn_once",
+                612432,
+                "50488d3d908e0c00e8132a0c00488d803000000059c3",
+                48,
+                &[(4, 8, 1435368), (9, 13, 1409648)],
+            ),
+            (
+                "fixed_patch_alloc",
+                675744,
+                "41574156415453504889d34989f6ff1514980b004885c074774c8b78204d85ff746e4989c4488d3dcc950b00e84f310b004883b870000000007463498b542410498b0f498d76ff49f7de31c04889cf4801d7723e4801f772394c21f74989f84929d04901d8410f92c14981f801000002410f93c24508ca75194889c8f04d0fb1074889c1b80000000075c14889f8eb0231c04883c4085b415c415e415fc3bf010000004c89f64889da4883c4085b415c415e415fff253e9b0b00",
+                112,
+                &[
+                    (16, 20, 1435592),
+                    (40, 44, 1435032),
+                    (45, 49, 1409312),
+                    (182, 186, 1436568),
+                ],
+            ),
+            (
+                "fixed_tls_fn_once",
+                676496,
+                "50488d3d00930b00e8832e0b00488d807000000059c3",
+                112,
+                &[(4, 8, 1435032), (9, 13, 1409312)],
             ),
             (
                 "fixed_tls_cell_getter",
