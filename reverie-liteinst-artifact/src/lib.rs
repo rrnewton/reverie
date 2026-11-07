@@ -3965,7 +3965,7 @@ const NO_SCOPE_OTHER_GETTERS: [(&str, u64); 4] = [
     ),
     (
         "_RNvYNCNKNvNtNtCs_15reverie_inguest5guest5alloc14DISPATCH_DEPTH0s_0INtNtNtCs_4core3ops8function6FnOnceTINtNtB1k_6option6OptionQIB1Z_INtNtB1k_4cell4CelljEEEEE9call_onceBc_",
-        0x90,
+        0x190,
     ),
 ];
 
