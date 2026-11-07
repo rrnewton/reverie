@@ -6248,7 +6248,10 @@ fn fixed_whole_recipe(
         )?;
         require(
             fixed_rip_target(address, bytes, displacement, next)? == target,
-            "Fixed recipe operand has the wrong actual target",
+            format!(
+                "DIAG operand disp={displacement} target={target:#x} actual={:#x}",
+                fixed_rip_target(address, bytes, displacement, next)?
+            ),
         )?;
         actual
             .get_mut(displacement..displacement + 4)
@@ -6261,7 +6264,13 @@ fn fixed_whole_recipe(
     }
     require(
         actual == expected,
-        "unrecognized whole Fixed operand/register/CFG recipe",
+        format!(
+            "DIAG recipe len={} firstdiff={:?} actual={:02x?} expected={:02x?}",
+            actual.len(),
+            actual.iter().zip(expected.iter()).position(|(a, b)| a != b),
+            actual,
+            expected,
+        ),
     )
 }
 
