@@ -171,9 +171,14 @@ own ledger entries, not behaviour other cells must reproduce.
 
 The refusal names are catalogued in [Safety](safety.md).
 >
-> 🚧 **Under construction — SUD and page-fault modes.** TODO: document
-> B2 (SUD first-use acceleration *inside* B1/B3 cells — never a
-> correctness requirement, rule I6) and B4 (LiteInst page gates as a
-> selectable Reverie mode) when those lanes land; today the shipped
+> 🚧 **Under construction — SUD and page-fault modes.** Both are
+> named in the selection vocabulary and neither is selectable:
+> B2's fact is probe P4, which admission never consults (SUD is
+> optional acceleration only, per rule I6 — it may speed up a
+> B1/B3 cell, never make one correct); B4 exists as
+> `Mechanism::PageFaultGate`, but no implemented cell carries it
+> (`implemented_cells()` uses exactly `PtraceStops`,
+> `SeccompTrap`, `InPlacePatching`, and `VmExits`). TODO: document
+> B2/B4 as modes when a cell registers them; today the shipped
 > in-guest interception is B1 + B3 only. <!-- UC: mech-sud-gates -->
 > Tracking: [reverie#1272](https://github.com/rrnewton/reverie/issues/1272) (`mech-sud-gates`).

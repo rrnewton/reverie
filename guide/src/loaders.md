@@ -70,7 +70,10 @@ admitted by A1 and refused by A2 (`R-WINDOW`) by name.
 > production interface deliberately exposes no resume path yet — a
 > genuine Detcore-ready release transition is still owed before any
 > production caller can proceed, and no `DetcoreReady` or
-> runtime-readiness token is granted. TODO: rewrite this chapter
+> runtime-readiness token is granted (the typestate chain in
+> `reverie-loader/src/stage.rs` exists, but its constructors are
+> crate-private and marked expected-dead in source until the
+> mapper steps land). TODO: rewrite this chapter
 > against the landed tool-agnostic loader with a non-Hermit
 > `counter-inguest` achieving zero unarmed guest instructions on
 > `hello` and `ls` as the acceptance evidence. Until then, treat A1
@@ -78,8 +81,15 @@ admitted by A1 and refused by A2 (`R-WINDOW`) by name.
 > <!-- UC: loaders-generic -->
 > Tracking: [reverie#1272](https://github.com/rrnewton/reverie/issues/1272) (`loaders-generic`).
 >
-> 🚧 **Under construction — A3/A4/A5 status.** TODO: per-mode status,
-> parity checklist (auxv/stack/TLS/…), and refusal list as the
-> no-ptrace launch lane scopes them; A4/A5 are design rows today.
+> 🚧 **Under construction — A3/A4/A5 status.** Today these are
+> vocabulary, not modes you can select: `Activation` names A3
+> (`CustomLoaderNoPtrace`), A4 (`Attach` — annotated "absent" in
+> source), and A5 (`ExternalDebuggerCoexist`), but no implemented
+> cell uses any of them; the no-ptrace design cells V8/V9 sit in
+> `design_cells()` as *Unbuilt*, and there is no userspace-loader
+> binary in the tree (`reverie-loader` is the `no_std` validator
+> and stage types, with no host-launcher role). TODO: per-mode
+> status, parity checklist (auxv/stack/TLS/…), and refusal list
+> when a no-ptrace launch lane lands a selectable cell.
 > <!-- UC: loaders-a3 -->
 > Tracking: [reverie#1272](https://github.com/rrnewton/reverie/issues/1272) (`loaders-a3`).
