@@ -21238,7 +21238,7 @@ const DETCORE_VALIDATE_DATA: &[DetcoreValidateDataSpec] = &[
         hex: "00000000000000005f000000000000001701000010000000",
         file_hex: "",
         source_context_key: Some("rv:reverie-inguest/src/guest/alloc.rs"),
-        line: 279,
+        line: 287,
         column: 16,
     },
     DetcoreValidateDataSpec {
@@ -21265,7 +21265,7 @@ const DETCORE_VALIDATE_DATA: &[DetcoreValidateDataSpec] = &[
         hex: "000000000000000060000000000000004f0000001a000000",
         file_hex: "",
         source_context_key: Some("rv:reverie-liteinst/src/patch_alloc.rs"),
-        line: 79,
+        line: 86,
         column: 26,
     },
     DetcoreValidateDataSpec {
@@ -21274,7 +21274,7 @@ const DETCORE_VALIDATE_DATA: &[DetcoreValidateDataSpec] = &[
         hex: "000000000000000060000000000000006c00000018000000",
         file_hex: "",
         source_context_key: Some("rv:reverie-liteinst/src/patch_alloc.rs"),
-        line: 108,
+        line: 115,
         column: 24,
     },
     DetcoreValidateDataSpec {
@@ -21283,7 +21283,7 @@ const DETCORE_VALIDATE_DATA: &[DetcoreValidateDataSpec] = &[
         hex: "000000000000000060000000000000006c00000018000000",
         file_hex: "",
         source_context_key: Some("rv:reverie-liteinst/src/patch_alloc.rs"),
-        line: 108,
+        line: 115,
         column: 24,
     },
     DetcoreValidateDataSpec {
@@ -21292,7 +21292,7 @@ const DETCORE_VALIDATE_DATA: &[DetcoreValidateDataSpec] = &[
         hex: "00000000000000005f00000000000000a60000002a000000",
         file_hex: "",
         source_context_key: Some("rv:reverie-inguest/src/guest/alloc.rs"),
-        line: 166,
+        line: 174,
         column: 42,
     },
     DetcoreValidateDataSpec {
@@ -21301,7 +21301,7 @@ const DETCORE_VALIDATE_DATA: &[DetcoreValidateDataSpec] = &[
         hex: "00000000000000005f00000000000000a60000002a000000",
         file_hex: "",
         source_context_key: Some("rv:reverie-inguest/src/guest/alloc.rs"),
-        line: 166,
+        line: 174,
         column: 42,
     },
     DetcoreValidateDataSpec {
@@ -21310,7 +21310,7 @@ const DETCORE_VALIDATE_DATA: &[DetcoreValidateDataSpec] = &[
         hex: "00000000000000005f000000000000009500000022000000",
         file_hex: "",
         source_context_key: Some("rv:reverie-inguest/src/guest/alloc.rs"),
-        line: 149,
+        line: 157,
         column: 34,
     },
     DetcoreValidateDataSpec {
@@ -21319,7 +21319,7 @@ const DETCORE_VALIDATE_DATA: &[DetcoreValidateDataSpec] = &[
         hex: "00000000000000005f00000000000000c000000019000000",
         file_hex: "",
         source_context_key: Some("rv:reverie-inguest/src/guest/alloc.rs"),
-        line: 192,
+        line: 200,
         column: 25,
     },
     DetcoreValidateDataSpec {
@@ -21328,7 +21328,7 @@ const DETCORE_VALIDATE_DATA: &[DetcoreValidateDataSpec] = &[
         hex: "00000000000000005f00000000000000c000000019000000",
         file_hex: "",
         source_context_key: Some("rv:reverie-inguest/src/guest/alloc.rs"),
-        line: 192,
+        line: 200,
         column: 25,
     },
     DetcoreValidateDataSpec {
@@ -21337,7 +21337,7 @@ const DETCORE_VALIDATE_DATA: &[DetcoreValidateDataSpec] = &[
         hex: "00000000000000005f00000000000000b600000029000000",
         file_hex: "",
         source_context_key: Some("rv:reverie-inguest/src/guest/alloc.rs"),
-        line: 182,
+        line: 190,
         column: 41,
     },
     DetcoreValidateDataSpec {
@@ -21346,7 +21346,7 @@ const DETCORE_VALIDATE_DATA: &[DetcoreValidateDataSpec] = &[
         hex: "00000000000000005f00000000000000dd00000017000000",
         file_hex: "",
         source_context_key: Some("rv:reverie-inguest/src/guest/alloc.rs"),
-        line: 221,
+        line: 229,
         column: 23,
     },
     DetcoreValidateDataSpec {
@@ -21373,7 +21373,7 @@ const DETCORE_VALIDATE_DATA: &[DetcoreValidateDataSpec] = &[
         hex: "000000000000000060000000000000006c00000018000000",
         file_hex: "",
         source_context_key: Some("rv:reverie-liteinst/src/patch_alloc.rs"),
-        line: 108,
+        line: 115,
         column: 24,
     },
     DetcoreValidateDataSpec {
@@ -21382,7 +21382,7 @@ const DETCORE_VALIDATE_DATA: &[DetcoreValidateDataSpec] = &[
         hex: "000000000000000060000000000000006c00000018000000",
         file_hex: "",
         source_context_key: Some("rv:reverie-liteinst/src/patch_alloc.rs"),
-        line: 108,
+        line: 115,
         column: 24,
     },
     DetcoreValidateDataSpec {
@@ -21391,7 +21391,7 @@ const DETCORE_VALIDATE_DATA: &[DetcoreValidateDataSpec] = &[
         hex: "000000000000000060000000000000006200000010000000",
         file_hex: "",
         source_context_key: Some("rv:reverie-liteinst/src/patch_alloc.rs"),
-        line: 98,
+        line: 105,
         column: 16,
     },
     DetcoreValidateDataSpec {
@@ -21400,7 +21400,7 @@ const DETCORE_VALIDATE_DATA: &[DetcoreValidateDataSpec] = &[
         hex: "000000000000000060000000000000004f0000001a000000",
         file_hex: "",
         source_context_key: Some("rv:reverie-liteinst/src/patch_alloc.rs"),
-        line: 79,
+        line: 86,
         column: 26,
     },
     DetcoreValidateDataSpec {
@@ -21409,7 +21409,7 @@ const DETCORE_VALIDATE_DATA: &[DetcoreValidateDataSpec] = &[
         hex: "00000000000000005f00000000000000f500000018000000",
         file_hex: "",
         source_context_key: Some("rv:reverie-inguest/src/guest/alloc.rs"),
-        line: 245,
+        line: 253,
         column: 24,
     },
     DetcoreValidateDataSpec {
@@ -21418,7 +21418,7 @@ const DETCORE_VALIDATE_DATA: &[DetcoreValidateDataSpec] = &[
         hex: "00000000000000005f00000000000000f500000018000000",
         file_hex: "",
         source_context_key: Some("rv:reverie-inguest/src/guest/alloc.rs"),
-        line: 245,
+        line: 253,
         column: 24,
     },
     DetcoreValidateDataSpec {
@@ -21427,7 +21427,7 @@ const DETCORE_VALIDATE_DATA: &[DetcoreValidateDataSpec] = &[
         hex: "00000000000000005f00000000000000f80000000d000000",
         file_hex: "",
         source_context_key: Some("rv:reverie-inguest/src/guest/alloc.rs"),
-        line: 248,
+        line: 256,
         column: 13,
     },
     DetcoreValidateDataSpec {
@@ -21436,7 +21436,7 @@ const DETCORE_VALIDATE_DATA: &[DetcoreValidateDataSpec] = &[
         hex: "00000000000000005f00000000000000f80000000d000000",
         file_hex: "",
         source_context_key: Some("rv:reverie-inguest/src/guest/alloc.rs"),
-        line: 248,
+        line: 256,
         column: 13,
     },
     DetcoreValidateDataSpec {
@@ -21445,7 +21445,7 @@ const DETCORE_VALIDATE_DATA: &[DetcoreValidateDataSpec] = &[
         hex: "00000000000000005f00000000000000fc00000011000000",
         file_hex: "",
         source_context_key: Some("rv:reverie-inguest/src/guest/alloc.rs"),
-        line: 252,
+        line: 260,
         column: 17,
     },
     DetcoreValidateDataSpec {
@@ -21454,7 +21454,7 @@ const DETCORE_VALIDATE_DATA: &[DetcoreValidateDataSpec] = &[
         hex: "00000000000000005f00000000000000fc00000011000000",
         file_hex: "",
         source_context_key: Some("rv:reverie-inguest/src/guest/alloc.rs"),
-        line: 252,
+        line: 260,
         column: 17,
     },
     DetcoreValidateDataSpec {
@@ -21463,7 +21463,7 @@ const DETCORE_VALIDATE_DATA: &[DetcoreValidateDataSpec] = &[
         hex: "00000000000000005f000000000000000b01000043000000",
         file_hex: "",
         source_context_key: Some("rv:reverie-inguest/src/guest/alloc.rs"),
-        line: 267,
+        line: 275,
         column: 67,
     },
     DetcoreValidateDataSpec {
@@ -21472,7 +21472,7 @@ const DETCORE_VALIDATE_DATA: &[DetcoreValidateDataSpec] = &[
         hex: "00000000000000005f000000000000000b01000043000000",
         file_hex: "",
         source_context_key: Some("rv:reverie-inguest/src/guest/alloc.rs"),
-        line: 267,
+        line: 275,
         column: 67,
     },
     DetcoreValidateDataSpec {
@@ -21481,7 +21481,7 @@ const DETCORE_VALIDATE_DATA: &[DetcoreValidateDataSpec] = &[
         hex: "00000000000000005f000000000000000d01000040000000",
         file_hex: "",
         source_context_key: Some("rv:reverie-inguest/src/guest/alloc.rs"),
-        line: 269,
+        line: 277,
         column: 64,
     },
     DetcoreValidateDataSpec {
@@ -21490,7 +21490,7 @@ const DETCORE_VALIDATE_DATA: &[DetcoreValidateDataSpec] = &[
         hex: "00000000000000005f000000000000000d01000040000000",
         file_hex: "",
         source_context_key: Some("rv:reverie-inguest/src/guest/alloc.rs"),
-        line: 269,
+        line: 277,
         column: 64,
     },
     DetcoreValidateDataSpec {
@@ -21517,7 +21517,7 @@ const DETCORE_VALIDATE_DATA: &[DetcoreValidateDataSpec] = &[
         hex: "000000000000000060000000000000006c00000018000000",
         file_hex: "",
         source_context_key: Some("rv:reverie-liteinst/src/patch_alloc.rs"),
-        line: 108,
+        line: 115,
         column: 24,
     },
     DetcoreValidateDataSpec {
@@ -21526,7 +21526,7 @@ const DETCORE_VALIDATE_DATA: &[DetcoreValidateDataSpec] = &[
         hex: "000000000000000060000000000000006c00000018000000",
         file_hex: "",
         source_context_key: Some("rv:reverie-liteinst/src/patch_alloc.rs"),
-        line: 108,
+        line: 115,
         column: 24,
     },
     DetcoreValidateDataSpec {
@@ -21535,7 +21535,7 @@ const DETCORE_VALIDATE_DATA: &[DetcoreValidateDataSpec] = &[
         hex: "000000000000000060000000000000006200000010000000",
         file_hex: "",
         source_context_key: Some("rv:reverie-liteinst/src/patch_alloc.rs"),
-        line: 98,
+        line: 105,
         column: 16,
     },
     DetcoreValidateDataSpec {
