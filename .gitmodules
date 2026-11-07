@@ -1,4 +1,0 @@
-[submodule "third-party/dynamorio"]
-	path = third-party/dynamorio
-	url = https://github.com/rrnewton/dynamorio.git
-	update = checkout
