@@ -1502,13 +1502,8 @@ const CONTENT_REVERIE_CATALOG: [(&str, u64, &str); 83] = [
     // Bind the added input-ownership and facility-admission source premises.
     (
         "reverie-inguest/src/launcher/mod.rs",
-<<<<<<< HEAD
-        101571,
-        "d70e686e266a64533aa30b4f5a3979274f72343afefc56d644871b8a4ac5091a",
-=======
         104403,
         "fc2380b73077266fd2d682a4c147ad4448624df780f260d4f768eaaff407c868",
->>>>>>> 72930702311 (inguest: hermetic static fixture for A6 refusal tests)
     ),
     (
         "reverie/src/native_syscall.rs",
