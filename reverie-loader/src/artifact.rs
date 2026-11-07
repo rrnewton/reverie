@@ -41,14 +41,16 @@
 
 use core::ops::Range;
 
-use crate::audit::SYSCALL;
 use crate::audit::StraySyscall;
-use crate::audit::stray_syscall;
+use crate::audit::stray_syscall_with_encoding;
+use crate::image::EM_X86_64;
+use crate::image::GateEncoding;
 use crate::image::Image;
 use crate::image::ImageError;
 use crate::image::PAGE_SIZE;
 use crate::image::Policy;
 use crate::image::ValidatedImage;
+use crate::image::gate_encoding;
 use crate::manifest::InitContract;
 use crate::manifest::ManifestError;
 use crate::manifest::ToolManifest;
@@ -122,6 +124,12 @@ pub enum ArtifactError {
         /// The gate's first address.
         gate: u64,
     },
+    /// The machine the image was checked for has no gate encoding,
+    /// so this crate has no gate contract to audit it against.
+    NoGateEncoding {
+        /// The ELF machine number that was asked for.
+        machine: u16,
+    },
     /// The manifest the image was checked against is not internally
     /// consistent.
     Manifest(ManifestError),
@@ -142,23 +150,61 @@ impl From<ImageError> for ArtifactError {
 /// Parses `bytes`, validates the image against `policy`, requires each of
 /// `gates` to be mapped executable with a `syscall` encoding wholly inside
 /// it, and audits the image for `syscall` encodings outside `gates`. On
-/// success the image may be mapped.
+/// success the image may be mapped. The gate encoding is the x86-64
+/// one; see [`check_at_machine`] for the machine-parameterized form.
 pub fn check<'a>(
     bytes: &'a [u8],
     policy: &Policy,
     gates: &[Range<u64>],
 ) -> Result<ValidatedImage<'a>, ArtifactError> {
+    check_at_machine(bytes, policy, gates, EM_X86_64)
+}
+
+/// [`check`] with the gate encoding of ELF machine `machine`. A
+/// machine with no gate contract refuses as
+/// [`ArtifactError::NoGateEncoding`] before any image byte is parsed.
+///
+/// Image parsing still admits x86-64 ELF headers only, so an image
+/// whose header names another machine refuses as
+/// [`ImageError::WrongMachine`] whatever `machine` says: this form
+/// makes the gate and stray checks machine-correct ahead of
+/// target-parameterized validation; it is not an admission of
+/// foreign-machine images today.
+pub fn check_at_machine<'a>(
+    bytes: &'a [u8],
+    policy: &Policy,
+    gates: &[Range<u64>],
+    machine: u16,
+) -> Result<ValidatedImage<'a>, ArtifactError> {
+    let encoding = gate_encoding(machine).ok_or(ArtifactError::NoGateEncoding { machine })?;
+    check_with_encoding(bytes, policy, gates, &encoding)
+}
+
+/// [`check`] with an explicit [`GateEncoding`]: each gate must hold
+/// the encoding's exact gate instruction
+/// ([`GateEncoding::is_gate_syscall`]) and no syscall instruction of
+/// that machine may lie outside the gates.
+pub fn check_with_encoding<'a>(
+    bytes: &'a [u8],
+    policy: &Policy,
+    gates: &[Range<u64>],
+    encoding: &GateEncoding,
+) -> Result<ValidatedImage<'a>, ArtifactError> {
     let image = Image::parse(bytes)?.validate(policy)?;
     for gate in gates {
-        check_gate(&image, gate)?;
+        check_gate(&image, gate, encoding)?;
     }
-    match stray_syscall(&image, gates)? {
+    match stray_syscall_with_encoding(&image, gates, encoding)? {
         Some(stray) => Err(ArtifactError::StraySyscall(stray)),
         None => Ok(image),
     }
 }
 
-fn check_gate(image: &ValidatedImage<'_>, gate: &Range<u64>) -> Result<(), ArtifactError> {
+fn check_gate(
+    image: &ValidatedImage<'_>,
+    gate: &Range<u64>,
+    encoding: &GateEncoding,
+) -> Result<(), ArtifactError> {
     let not_executable = ArtifactError::GateNotExecutable { gate: gate.start };
     let mut covering = None;
     for segment in image.segments() {
@@ -180,11 +226,16 @@ fn check_gate(image: &ValidatedImage<'_>, gate: &Range<u64>) -> Result<(), Artif
         .get(offset..)
         .map(|rest| &rest[..rest.len().min(length)])
         .unwrap_or(&[]);
-    if inside.windows(2).any(|pair| pair == SYSCALL) {
-        Ok(())
-    } else {
-        Err(ArtifactError::NoGateSyscall { gate: gate.start })
+    for (index, window) in inside.windows(encoding.bytes.len()).enumerate() {
+        let address = gate
+            .start
+            .checked_add(u64::try_from(index).map_err(|_| ImageError::Overflow)?)
+            .ok_or(ImageError::Overflow)?;
+        if encoding.is_gate_syscall(window, address) {
+            return Ok(());
+        }
     }
+    Err(ArtifactError::NoGateSyscall { gate: gate.start })
 }
 
 impl From<ManifestError> for ArtifactError {
@@ -250,6 +301,7 @@ pub fn check_runtime(bytes: &[u8]) -> Result<ValidatedImage<'_>, ArtifactError> 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::audit::stray_syscall;
     use crate::image::tests::Phdr;
     use crate::image::tests::build;
 

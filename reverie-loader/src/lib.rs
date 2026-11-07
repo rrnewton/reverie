@@ -20,8 +20,9 @@
 //!   interpreter, no dynamic section (so no dynamic relocations), W^X,
 //!   page-aligned non-overlapping segments inside an allowed window, and
 //!   optionally no TLS.
-//! - [`audit`] confines `syscall` instructions in an image's executable
-//!   segments to declared gate ranges.
+//! - [`audit`] confines syscall instructions in an image's executable
+//!   segments to declared gate ranges, under the machine's
+//!   [`gate encoding`](image::gate_encoding).
 //! - [`artifact`] fixes where the loader and runtime images live and checks
 //!   a built image (validation plus audit) before it may be mapped,
 //!   against a manifest via [`artifact::check_image`] or through the

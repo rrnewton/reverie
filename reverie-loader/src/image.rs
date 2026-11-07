@@ -37,12 +37,118 @@ pub const PAGE_SIZE: u64 = 4096;
 /// have a handful; a bound keeps parsing allocation-free.
 pub const MAX_SEGMENTS: usize = 16;
 
+/// The ELF machine number for x86-64.
+pub const EM_X86_64: u16 = 62;
+
+/// The ELF machine number for AArch64.
+pub const EM_AARCH64: u16 = 183;
+
+/// How a machine's syscall instruction is recognised outside a gate.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SyscallScan {
+    /// The exact encoding at any byte offset: x86-64 instructions are
+    /// unaligned, so the scan is byte-wise and over-approximates, as
+    /// `audit` documents.
+    ExactBytes,
+    /// A masked instruction class on words aligned to the encoding
+    /// length: AArch64 `svc #imm16` is `0xd400_0001 | imm16 << 5` and
+    /// Linux ignores the immediate for syscall entry, so every `svc`
+    /// is a syscall, not only `svc #0`.
+    AlignedWordClass {
+        /// Bits that identify the instruction class.
+        mask: u32,
+        /// The class value under `mask`.
+        value: u32,
+    },
+}
+
+/// The syscall instruction for a machine, as the gate contract sees it:
+/// the exact encoding a gate must contain, and how the audit
+/// recognises syscall instructions elsewhere. The bytes duplicate
+/// `reverie-inguest`'s `Isa::SYSCALL_INSN` facts, which this `no_std`
+/// data-only crate cannot depend on; unit tests in both crates pin
+/// them to the same literals.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct GateEncoding {
+    /// The exact syscall instruction encoding (`syscall` on x86-64,
+    /// `svc #0` on AArch64), little-endian as it lies in an image.
+    pub bytes: &'static [u8],
+    /// The encoding's length in bytes; always `bytes.len()`. A trap
+    /// filter compares against the address this far past the
+    /// instruction's first byte.
+    pub len: u64,
+    scan: SyscallScan,
+}
+
+/// The widest [`GateEncoding`] in [`gate_encoding`]'s closed table.
+/// Widen this with any wider row.
+pub(crate) const GATE_ENCODING_MAX_LEN: usize = 4;
+
+/// The gate encoding for an ELF machine number, or `None` for a
+/// machine with no gate contract: callers must not audit such an
+/// image with this crate's gate checks.
+///
+/// This table runs ahead of image admission: [`Image::parse`] still
+/// admits x86-64 ELF headers only, so a non-x86-64 row describes how
+/// that machine's images will be audited once validation takes the
+/// machine as an input; it does not admit them today.
+pub const fn gate_encoding(machine: u16) -> Option<GateEncoding> {
+    match machine {
+        EM_X86_64 => Some(GateEncoding {
+            bytes: &[0x0f, 0x05],
+            len: 2,
+            scan: SyscallScan::ExactBytes,
+        }),
+        EM_AARCH64 => Some(GateEncoding {
+            bytes: &[0x01, 0x00, 0x00, 0xd4],
+            len: 4,
+            scan: SyscallScan::AlignedWordClass {
+                mask: 0xffe0_001f,
+                value: 0xd400_0001,
+            },
+        }),
+        _ => None,
+    }
+}
+
+impl GateEncoding {
+    fn aligned(&self, address: u64) -> bool {
+        match self.scan {
+            SyscallScan::ExactBytes => true,
+            SyscallScan::AlignedWordClass { .. } => address.is_multiple_of(self.len),
+        }
+    }
+
+    /// Whether `window`, the `len` bytes at `address`, is this
+    /// machine's exact gate syscall instruction. This is the
+    /// gate-content check: precise, never the stray class rule.
+    pub fn is_gate_syscall(&self, window: &[u8], address: u64) -> bool {
+        window == self.bytes && self.aligned(address)
+    }
+
+    /// Whether `window`, the `len` bytes at `address`, is a syscall
+    /// instruction of this machine found outside a gate. On AArch64
+    /// this matches the whole `svc` class on aligned words, so a
+    /// `svc` with a non-zero immediate refuses like `svc #0`.
+    pub fn is_stray_syscall(&self, window: &[u8], address: u64) -> bool {
+        match self.scan {
+            SyscallScan::ExactBytes => window == self.bytes,
+            SyscallScan::AlignedWordClass { mask, value } => {
+                if !self.aligned(address) || window.len() != 4 {
+                    return false;
+                }
+                let word = u32::from_le_bytes([window[0], window[1], window[2], window[3]]);
+                word & mask == value
+            }
+        }
+    }
+}
+
 const ELF_MAGIC: [u8; 4] = [0x7f, b'E', b'L', b'F'];
 const ELFCLASS64: u8 = 2;
 const ELFDATA2LSB: u8 = 1;
 const EV_CURRENT: u8 = 1;
 const ET_EXEC: u16 = 2;
-const EM_X86_64: u16 = 62;
 const EHDR_SIZE: usize = 64;
 const PHDR_SIZE: usize = 56;
 /// `e_phnum` value meaning the real count is in section header 0.

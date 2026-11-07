@@ -8,27 +8,40 @@
 
 //! The loader's and runtime's syscalls must all go through their declared
 //! gate, the only instruction addresses the trap filter allows. This audit
-//! checks a validated image for `syscall` encodings (`0f 05`) anywhere in
-//! its executable mappings outside the gate ranges.
+//! checks a validated image for syscall instructions anywhere in its
+//! executable mappings outside the gate ranges. What a syscall
+//! instruction is comes from the image machine's
+//! [`GateEncoding`](crate::image::GateEncoding): the x86-64 `syscall`
+//! encoding (`0f 05`) for [`stray_syscall`], or an explicitly passed
+//! encoding for [`stray_syscall_with_encoding`].
 //!
 //! It scans what a page-granular mapping exposes, not only `p_filesz`: the
 //! file bytes up to the end of each executable segment's last file page.
 //! Executable segments whose mappings are adjacent are scanned as one run,
 //! so an encoding split across the boundary is found too.
 //!
-//! The scan is byte-wise, so it also counts `0f 05` pairs that straddle
-//! instruction boundaries or sit inside other instructions' operands. That
-//! over-approximates, which is the safe direction: an image with a false
-//! positive is refused and relinked, never accepted with a stray site.
+//! The x86-64 scan is byte-wise, so it also counts `0f 05` pairs that
+//! straddle instruction boundaries or sit inside other instructions'
+//! operands. That over-approximates, which is the safe direction: an image
+//! with a false positive is refused and relinked, never accepted with a
+//! stray site. The AArch64 scan instead matches the whole `svc` class on
+//! aligned words, because its instructions are always aligned and every
+//! immediate enters the kernel the same way.
 
 use core::ops::Range;
 
+use crate::image::EM_X86_64;
+use crate::image::GATE_ENCODING_MAX_LEN;
+use crate::image::GateEncoding;
 use crate::image::ImageError;
 use crate::image::MAX_SEGMENTS;
 use crate::image::Segment;
 use crate::image::ValidatedImage;
+use crate::image::gate_encoding;
 
-/// The `syscall` instruction's encoding.
+/// The x86-64 `syscall` instruction's encoding: the bytes of
+/// `gate_encoding(EM_X86_64)`, kept as an array for the tests that
+/// plant it byte by byte.
 pub(crate) const SYSCALL: [u8; 2] = [0x0f, 0x05];
 
 /// A `syscall` encoding found outside every gate range.
@@ -38,15 +51,31 @@ pub struct StraySyscall {
     pub address: u64,
 }
 
-/// Returns the lowest-addressed `syscall` encoding in `image`'s executable
-/// mappings that does not lie wholly (both bytes) inside one of `gates`, or
-/// `None` if there
-/// is none. An error means the audit could not be completed, never that the
-/// image is clean.
+/// Returns the lowest-addressed x86-64 `syscall` encoding in `image`'s
+/// executable mappings that does not lie wholly (both bytes) inside one
+/// of `gates`, or `None` if there is none. An error means the audit
+/// could not be completed, never that the image is clean.
 pub fn stray_syscall(
     image: &ValidatedImage<'_>,
     gates: &[Range<u64>],
 ) -> Result<Option<StraySyscall>, ImageError> {
+    // The x86-64 row of the closed gate-encoding table.
+    let encoding = gate_encoding(EM_X86_64).expect("x86-64 has a gate encoding");
+    stray_syscall_with_encoding(image, gates, &encoding)
+}
+
+/// [`stray_syscall`] for an explicit [`GateEncoding`]: the
+/// lowest-addressed syscall instruction of that machine in `image`'s
+/// executable mappings that does not lie wholly (every byte) inside
+/// one of `gates`. The encoding's own rule decides what counts —
+/// byte-wise exact bytes on x86-64, the aligned `svc` class on
+/// AArch64 ([`GateEncoding::is_stray_syscall`]).
+pub fn stray_syscall_with_encoding(
+    image: &ValidatedImage<'_>,
+    gates: &[Range<u64>],
+    encoding: &GateEncoding,
+) -> Result<Option<StraySyscall>, ImageError> {
+    let width = encoding.bytes.len();
     let mut executable: [Option<&Segment>; MAX_SEGMENTS] = [None; MAX_SEGMENTS];
     let mut count = 0;
     for segment in image.segments().filter(|s| s.permissions.execute) {
@@ -60,43 +89,62 @@ pub fn stray_syscall(
     // address is distinct and the order is total.
     executable.sort_unstable_by_key(|segment| segment.map(|s| s.memory.start));
 
+    // Wholly inside a gate: the first byte is in it and every later
+    // byte ends before the gate does.
     let outside_gates = |address: u64| {
-        !gates
-            .iter()
-            .any(|gate| gate.contains(&address) && address < gate.end.saturating_sub(1))
+        !gates.iter().any(|gate| {
+            gate.contains(&address)
+                && address < gate.end.saturating_sub(encoding.len.saturating_sub(1))
+        })
     };
-    // The end of the previous executable mapping and its last byte.
-    let mut previous: Option<(u64, u8)> = None;
+    // The end of the previous executable mapping and its last
+    // `width - 1` mapped bytes, for encodings split across the
+    // boundary with an adjacent mapping.
+    let mut previous: Option<(u64, [u8; GATE_ENCODING_MAX_LEN - 1], usize)> = None;
     for segment in executable.iter().flatten() {
         let bytes = image.mapped_file_bytes(segment)?;
         let pages = segment.pages()?;
-        if let (Some((end, last)), Some(&first)) = (previous, bytes.first())
+        let mapped = pages.end - pages.start;
+        // A mapped byte: file bytes first, then the mapping's zero fill.
+        let byte_at = |position: u64| {
+            usize::try_from(position)
+                .ok()
+                .and_then(|position| bytes.get(position).copied())
+                .unwrap_or(0)
+        };
+        if let Some((end, tail, tail_len)) = previous
             && end == pages.start
-            && [last, first] == SYSCALL
-            && outside_gates(end - 1)
         {
-            return Ok(Some(StraySyscall { address: end - 1 }));
-        }
-        for (offset, pair) in bytes.windows(2).enumerate() {
-            if pair != SYSCALL {
-                continue;
+            for split in 1..width.min(tail_len + 1) {
+                let mut window = [0u8; GATE_ENCODING_MAX_LEN];
+                window[..split].copy_from_slice(&tail[tail_len - split..tail_len]);
+                for (index, byte) in window[split..width].iter_mut().enumerate() {
+                    *byte = byte_at(u64::try_from(index).map_err(|_| ImageError::Overflow)?);
+                }
+                let address = end - u64::try_from(split).map_err(|_| ImageError::Overflow)?;
+                if encoding.is_stray_syscall(&window[..width], address) && outside_gates(address) {
+                    return Ok(Some(StraySyscall { address }));
+                }
             }
+        }
+        for (offset, window) in bytes.windows(width).enumerate() {
             let offset = u64::try_from(offset).map_err(|_| ImageError::Overflow)?;
             let address = pages
                 .start
                 .checked_add(offset)
                 .ok_or(ImageError::Overflow)?;
-            if outside_gates(address) {
+            if encoding.is_stray_syscall(window, address) && outside_gates(address) {
                 return Ok(Some(StraySyscall { address }));
             }
         }
-        // Past the file bytes the mapping is zero-filled.
-        let mapped = pages.end - pages.start;
-        let last = match u64::try_from(bytes.len()) {
-            Ok(len) if len == mapped => bytes.last().copied().unwrap_or(0),
-            _ => 0,
-        };
-        previous = Some((pages.end, last));
+        let tail_len =
+            usize::try_from(encoding.len.saturating_sub(1).min(mapped)).unwrap_or(width - 1);
+        let mut tail = [0u8; GATE_ENCODING_MAX_LEN - 1];
+        for (index, byte) in tail[..tail_len].iter_mut().enumerate() {
+            let from_end = u64::try_from(tail_len - index).map_err(|_| ImageError::Overflow)?;
+            *byte = byte_at(mapped - from_end);
+        }
+        previous = Some((pages.end, tail, tail_len));
     }
     Ok(None)
 }
