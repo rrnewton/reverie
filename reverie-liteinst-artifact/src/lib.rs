@@ -1517,8 +1517,8 @@ const CONTENT_REVERIE_CATALOG: [(&str, u64, &str); 86] = [
     // Bind the added input-ownership and facility-admission source premises.
     (
         "reverie-inguest/src/launcher/mod.rs",
-        94802,
-        "3e2a00f582f24652e81305e659e0960bcf6b334514b58140f886aa292de278f8",
+        104403,
+        "fc2380b73077266fd2d682a4c147ad4448624df780f260d4f768eaaff407c868",
     ),
     (
         "reverie/src/native_syscall.rs",
