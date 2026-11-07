@@ -27396,6 +27396,12 @@ fn fixed_naked_composition(
                 })
         })
         .collect();
+    if std::env::var_os("FIXED_COHORT_DEBUG").is_some() {
+        eprintln!("naked-composition candidates={}", candidates.len());
+        for (role, w) in witnesses {
+            eprintln!("  witness {role} kind={:?} addr={:#x}", w.kind, w.address);
+        }
+    }
     require(
         candidates.len() == 1,
         "unknown or mixed naked-owner publication whole composition",
