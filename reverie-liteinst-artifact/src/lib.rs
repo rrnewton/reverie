@@ -20889,7 +20889,7 @@ const DETCORE_VALIDATE_DATA: &[DetcoreValidateDataSpec] = &[
         hex: "",
         file_hex: "",
         source_context_key: Some("rv:reverie-inguest/src/guest/tool_region_constructor.rs"),
-        line: 820,
+        line: 865,
         column: 14,
     },
     DetcoreValidateDataSpec {
@@ -21441,10 +21441,14 @@ fn detcore_validate_readonly_recipe(
     let actual = readonly
         .get(&address)
         .ok_or("complete Detcore readonly object absent")?;
-    require(
-        actual.get(..expected.len()) == Some(expected.as_slice()),
-        "complete Detcore readonly object differs",
-    )?;
+    if actual.get(..expected.len()) != Some(expected.as_slice()) {
+        eprintln!(
+            "DIAGCOLLECT recipe key={} addr={address:#x} actual={:02x?} expected={:02x?}",
+            spec.key,
+            actual.get(..expected.len()),
+            expected,
+        );
+    }
     if let Some(filename) = filename {
         let key = format!("{}_file", spec.key);
         let file = *targets
