@@ -27257,8 +27257,8 @@ fn fixed_detcore_qualified_operation(
 ) -> Result<AuthenticatedDetcoreOperation> {
     let got = bindings.got;
     let targets = bindings.targets;
-    let recipe =
-        fixed_detcore_validate_recipe_identity(role, address, bytes, bindings, tls_cell_offset)?;
+    let recipe = fixed_detcore_validate_recipe_identity(role, address, bytes, bindings, tls_cell_offset)
+        .map_err(|e| format!("DIAG role={role} len={} : {e}", bytes.len()))?;
     let scalar_storage = if recipe.template_index >= FIXED_SCALAR_TEMPLATE_START {
         Some((
             *targets
