@@ -166,6 +166,18 @@ mod tests {
         stray_syscall(&image, gates).unwrap()
     }
 
+    /// Audits a synthetic body's bytes under `machine`'s encoding.
+    /// `build` writes an x86-64 ELF header (the only one `parse`
+    /// admits today); the body is what the scan reads, so planting
+    /// another machine's instruction bytes there is exactly the
+    /// synthetic-text exercise of its scan rule.
+    fn audit_at_machine(bytes: &[u8], gates: &[Range<u64>], machine: u16) -> Option<StraySyscall> {
+        use crate::image::gate_encoding;
+        let image = Image::parse(bytes).unwrap().validate(&policy()).unwrap();
+        let encoding = gate_encoding(machine).unwrap();
+        stray_syscall_with_encoding(&image, gates, &encoding).unwrap()
+    }
+
     #[test]
     fn a_syscall_inside_the_gate_is_allowed_and_one_outside_is_reported() {
         // nop; syscall; ret; ...; syscall
@@ -250,6 +262,96 @@ mod tests {
                 Err(ImageError::EmptySegment { index })
             );
         }
+    }
+
+    #[test]
+    fn an_aarch64_svc_inside_the_gate_is_allowed_and_one_outside_is_reported() {
+        use crate::image::EM_AARCH64;
+        use crate::image::EM_X86_64;
+        use crate::image::PAGE_SIZE;
+        // svc #0; ret; svc #0 — all aligned words.
+        let body: [u8; 12] = [
+            0x01, 0x00, 0x00, 0xd4, 0xc0, 0x03, 0x5f, 0xd6, 0x01, 0x00, 0x00, 0xd4,
+        ];
+        let bytes = build(
+            BASE,
+            &[(PT_LOAD, RX, PAGE_SIZE, BASE, body.len() as u64, 64)],
+            &body,
+        );
+        let gate = BASE..BASE + 4;
+        assert_eq!(
+            audit_at_machine(&bytes, core::slice::from_ref(&gate), EM_AARCH64),
+            Some(StraySyscall { address: BASE + 8 })
+        );
+        let both = [BASE..BASE + 4, BASE + 8..BASE + 12];
+        assert_eq!(audit_at_machine(&bytes, &both, EM_AARCH64), None);
+        // A gate holding only part of the word does not allow it.
+        let partial = BASE + 8..BASE + 11;
+        assert_eq!(
+            audit_at_machine(&bytes, &[gate, partial], EM_AARCH64),
+            Some(StraySyscall { address: BASE + 8 })
+        );
+        // The same bytes hold no x86-64 syscall at all.
+        assert_eq!(audit_at_machine(&bytes, &[], EM_X86_64), None);
+        assert_eq!(audit(&bytes, &[]), None);
+    }
+
+    #[test]
+    fn an_aarch64_svc_with_an_immediate_is_stray_and_an_unaligned_one_is_not() {
+        use crate::image::EM_AARCH64;
+        use crate::image::PAGE_SIZE;
+        // svc #0x42 at offset 0; the svc #0 byte pattern again at the
+        // unaligned offset 6, where no AArch64 instruction can start.
+        let body: [u8; 12] = [
+            0x41, 0x08, 0x00, 0xd4, 0x1f, 0x20, 0x01, 0x00, 0x00, 0xd4, 0x03, 0xd5,
+        ];
+        let bytes = build(
+            BASE,
+            &[(PT_LOAD, RX, PAGE_SIZE, BASE, body.len() as u64, 64)],
+            &body,
+        );
+        assert_eq!(
+            audit_at_machine(&bytes, &[], EM_AARCH64),
+            Some(StraySyscall { address: BASE })
+        );
+        let gate = BASE..BASE + 4;
+        assert_eq!(
+            audit_at_machine(&bytes, core::slice::from_ref(&gate), EM_AARCH64),
+            None,
+            "the unaligned byte pattern at BASE + 6 is not an instruction"
+        );
+    }
+
+    #[test]
+    fn each_machine_ignores_the_other_machines_encoding() {
+        use crate::image::EM_AARCH64;
+        use crate::image::EM_X86_64;
+        use crate::image::PAGE_SIZE;
+        // x86-64 syscall bytes in the text: a stray for x86-64, plain
+        // data under the AArch64 rule; and the converse for `svc`.
+        let x86_body = [0x90, 0x0f, 0x05, 0xc3];
+        let bytes = build(
+            BASE,
+            &[(PT_LOAD, RX, PAGE_SIZE, BASE, x86_body.len() as u64, 64)],
+            &x86_body,
+        );
+        assert_eq!(
+            audit_at_machine(&bytes, &[], EM_X86_64),
+            Some(StraySyscall { address: BASE + 1 })
+        );
+        assert_eq!(audit_at_machine(&bytes, &[], EM_AARCH64), None);
+
+        let arm_body = [0x01, 0x00, 0x00, 0xd4];
+        let bytes = build(
+            BASE,
+            &[(PT_LOAD, RX, PAGE_SIZE, BASE, arm_body.len() as u64, 64)],
+            &arm_body,
+        );
+        assert_eq!(
+            audit_at_machine(&bytes, &[], EM_AARCH64),
+            Some(StraySyscall { address: BASE })
+        );
+        assert_eq!(audit_at_machine(&bytes, &[], EM_X86_64), None);
     }
 
     #[test]

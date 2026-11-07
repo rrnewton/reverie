@@ -583,6 +583,55 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn gate_encoding_names_each_machines_syscall_instruction() {
+        // The same literals `reverie-inguest`'s Isa implementations
+        // pin as SYSCALL_INSN (guest/isa/x86_64.rs, guest/isa/aarch64.rs):
+        // the loader cannot depend on that crate, so both pin here.
+        let x86_64 = gate_encoding(EM_X86_64).unwrap();
+        assert_eq!(x86_64.bytes, [0x0f, 0x05]);
+        assert_eq!(x86_64.len, 2);
+        assert_eq!(x86_64.len as usize, x86_64.bytes.len());
+
+        let aarch64 = gate_encoding(EM_AARCH64).unwrap();
+        assert_eq!(aarch64.bytes, [0x01, 0x00, 0x00, 0xd4]);
+        assert_eq!(aarch64.len, 4);
+        assert_eq!(aarch64.len as usize, aarch64.bytes.len());
+
+        // EM_ARM (40) and unassigned numbers have no gate contract.
+        assert_eq!(gate_encoding(40), None);
+        assert_eq!(gate_encoding(0), None);
+    }
+
+    #[test]
+    fn gate_encoding_matches_gates_exactly_and_strays_by_machine_rule() {
+        // `svc #0x42` is 0xd400_0001 | 0x42 << 5, little-endian.
+        const SVC_0: [u8; 4] = [0x01, 0x00, 0x00, 0xd4];
+        const SVC_42: [u8; 4] = [0x41, 0x08, 0x00, 0xd4];
+        let x86_64 = gate_encoding(EM_X86_64).unwrap();
+        let aarch64 = gate_encoding(EM_AARCH64).unwrap();
+
+        // x86-64: unaligned instructions, so any address matches.
+        assert!(x86_64.is_gate_syscall(&[0x0f, 0x05], BASE + 1));
+        assert!(x86_64.is_stray_syscall(&[0x0f, 0x05], BASE + 1));
+        assert!(!x86_64.is_gate_syscall(&SVC_0, BASE));
+        assert!(!x86_64.is_stray_syscall(&[0x0f, 0x00], BASE));
+
+        // AArch64 gate content: one exact, aligned `svc #0` only.
+        assert!(aarch64.is_gate_syscall(&SVC_0, BASE));
+        assert!(!aarch64.is_gate_syscall(&SVC_0, BASE + 1));
+        assert!(!aarch64.is_gate_syscall(&SVC_42, BASE));
+        assert!(!aarch64.is_gate_syscall(&[0x0f, 0x05, 0x00, 0x00], BASE));
+
+        // AArch64 strays: the whole aligned `svc` class, because the
+        // kernel ignores the immediate; never unaligned byte patterns
+        // and never the other machine's encoding.
+        assert!(aarch64.is_stray_syscall(&SVC_0, BASE));
+        assert!(aarch64.is_stray_syscall(&SVC_42, BASE));
+        assert!(!aarch64.is_stray_syscall(&SVC_0, BASE + 2));
+        assert!(!aarch64.is_stray_syscall(&[0x0f, 0x05, 0x0f, 0x05], BASE));
+    }
+
+    #[test]
     fn a_fixed_address_image_in_the_window_is_accepted() {
         let data = (PT_LOAD, PF_R | PF_W, 8192, BASE + 0x1000, 16, 64);
         let bytes = build(BASE, &[text(16), data], &[0xc3; 4112]);

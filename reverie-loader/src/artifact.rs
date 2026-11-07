@@ -457,6 +457,127 @@ mod tests {
     }
 
     #[test]
+    fn an_aarch64_gate_and_stray_svc_are_judged_by_the_aarch64_encoding() {
+        use crate::image::EM_AARCH64;
+        const SVC_0: [u8; 4] = [0x01, 0x00, 0x00, 0xd4];
+        // `svc #0x42`, and the AArch64 `nop` word.
+        const SVC_42: [u8; 4] = [0x41, 0x08, 0x00, 0xd4];
+        const NOP: [u8; 4] = [0x1f, 0x20, 0x03, 0xd5];
+        let arm = |bytes: &[u8]| {
+            check_at_machine(
+                bytes,
+                &RUNTIME_POLICY,
+                core::slice::from_ref(&RUNTIME_GATE),
+                EM_AARCH64,
+            )
+            .map(|_| ())
+        };
+
+        // (a) A real `svc #0` gate and clean text passes.
+        let good = image(RX, &body(&SVC_0, &NOP));
+        assert_eq!(arm(&good), Ok(()));
+        // The same bytes are not an x86-64 gate at all.
+        assert_eq!(
+            checked(&good),
+            Err(ArtifactError::NoGateSyscall { gate: GATE })
+        );
+
+        // (b) A `svc #0` in the text refuses at its exact address.
+        let stray = image(RX, &body(&SVC_0, &SVC_0));
+        assert_eq!(
+            arm(&stray),
+            Err(ArtifactError::StraySyscall(StraySyscall { address: TEXT }))
+        );
+
+        // (c) The class rule: `svc #0x42` in the text refuses too.
+        let stray_imm = image(RX, &body(&SVC_0, &SVC_42));
+        assert_eq!(
+            arm(&stray_imm),
+            Err(ArtifactError::StraySyscall(StraySyscall { address: TEXT }))
+        );
+
+        // (d) A gate with no `svc` refuses by name — including a gate
+        // holding only the other machine's encoding as data, and a
+        // gate whose only `svc` carries an immediate.
+        let empty_gate = image(RX, &body(&NOP, &NOP));
+        assert_eq!(
+            arm(&empty_gate),
+            Err(ArtifactError::NoGateSyscall { gate: GATE })
+        );
+        let x86_gate = image(RX, &body(&[0x0f, 0x05], &NOP));
+        assert_eq!(
+            arm(&x86_gate),
+            Err(ArtifactError::NoGateSyscall { gate: GATE })
+        );
+        let imm_gate = image(RX, &body(&SVC_42, &NOP));
+        assert_eq!(
+            arm(&imm_gate),
+            Err(ArtifactError::NoGateSyscall { gate: GATE })
+        );
+
+        // And the converse cross-check: x86-64 encoding bytes in the
+        // text are data under the AArch64 rule, so with an honest
+        // `svc #0` gate the image passes, while the x86-64 check
+        // refuses the same image for its gate.
+        let x86_text = image(RX, &body(&SVC_0, &[0x0f, 0x05]));
+        assert_eq!(arm(&x86_text), Ok(()));
+        assert_eq!(
+            checked(&x86_text),
+            Err(ArtifactError::NoGateSyscall { gate: GATE })
+        );
+    }
+
+    #[test]
+    fn a_machine_with_no_gate_encoding_is_refused_by_name_before_parsing() {
+        use crate::image::EM_X86_64;
+        // EM_ARM (40) has no gate contract; the refusal names it and
+        // comes before the bytes are parsed, valid or not.
+        let good = image(RX, &body(&[0x0f, 0x05, 0xc3], &[0x90]));
+        let refused = Err(ArtifactError::NoGateEncoding { machine: 40 });
+        assert_eq!(
+            check_at_machine(
+                &good,
+                &RUNTIME_POLICY,
+                core::slice::from_ref(&RUNTIME_GATE),
+                40
+            )
+            .map(|_| ()),
+            refused
+        );
+        assert_eq!(
+            check_at_machine(
+                &[0u8; 10],
+                &RUNTIME_POLICY,
+                core::slice::from_ref(&RUNTIME_GATE),
+                40
+            )
+            .map(|_| ()),
+            refused
+        );
+        // The x86-64 machine form agrees with the plain wrapper on
+        // passing and stray images alike.
+        assert_eq!(
+            check_at_machine(
+                &good,
+                &RUNTIME_POLICY,
+                core::slice::from_ref(&RUNTIME_GATE),
+                EM_X86_64
+            ),
+            check_runtime(&good)
+        );
+        let stray = image(RX, &body(&[0x0f, 0x05], &[0x0f, 0x05]));
+        assert_eq!(
+            check_at_machine(
+                &stray,
+                &RUNTIME_POLICY,
+                core::slice::from_ref(&RUNTIME_GATE),
+                EM_X86_64
+            ),
+            check_runtime(&stray)
+        );
+    }
+
+    #[test]
     fn an_encoding_straddling_the_gate_end_is_not_in_the_gate() {
         // The gate's last byte is 0f and the next page starts with 05: the
         // gate holds no whole encoding, and the straddling one is stray.
