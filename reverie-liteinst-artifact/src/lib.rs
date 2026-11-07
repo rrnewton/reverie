@@ -1134,8 +1134,8 @@ const CONTENT_REVERIE_CATALOG: [(&str, u64, &str); 83] = [
     ),
     (
         "reverie-inguest/src/guest/tool_install.rs",
-        25848,
-        "80bb4d540979ad5cfb183faaf8fc74866893e729532f0a14df83bc1b900ba928",
+        26506,
+        "67bb5d005d7befb2b2f1dc2b990fae9c6de03be4a032b3bc4fc7527d180775fc",
     ),
     (
         "reverie-inguest/src/signal.rs",
@@ -1319,18 +1319,18 @@ const CONTENT_REVERIE_CATALOG: [(&str, u64, &str); 83] = [
     ),
     (
         "reverie-liteinst/Cargo.toml",
-        5505,
-        "fd91ba0c9bf4c3819502aaf6ee693752f3991a99fc838b1341c568add207c410",
+        6063,
+        "59093e1dd648258f13d1c729108af3436503e44765616aba786fb67bd6fd6e01",
     ),
     (
         "reverie-liteinst/src/lib.rs",
-        24353,
-        "5a038fb111932c1bc045074cf679dce0bef88e8c50511aee252db24bab9c2a8b",
+        25595,
+        "a3055746ef601a5bf6c3d5ba13dbd221cc6f07944f36ea176fd02ec809def37a",
     ),
     (
         "reverie-liteinst-preload/Cargo.toml",
-        916,
-        "c73713a62257f63df8b4df482f41ac9f6e823e41cea949954c34e12abd5f5d32",
+        941,
+        "ce23b0067a66a66b97a48f0f3543b2910b484598c75269ca985aabcb04eae93b",
     ),
     (
         "reverie-liteinst-preload/src/lib.rs",
@@ -1339,8 +1339,8 @@ const CONTENT_REVERIE_CATALOG: [(&str, u64, &str); 83] = [
     ),
     (
         "reverie-liteinst/src/patch_alloc.rs",
-        24729,
-        "d17373084f4d3b16cd3f5bdf6e8314331de3ca279b1287a89c8b5566e16b5dfa",
+        24942,
+        "3594983133be9a749cdc744717e04b7cfcd793a26d41f34669afbfdc964b3c18",
     ),
     (
         "reverie-inguest/src/guest/alloc.rs",
@@ -1369,8 +1369,8 @@ const CONTENT_REVERIE_CATALOG: [(&str, u64, &str); 83] = [
     ),
     (
         "reverie-inguest/src/guest/installed_tool.rs",
-        26031,
-        "84ba271d1e8be5e9cc665f8ce7440bf99064e84b5b9baee55e69a6e1dd5d8068",
+        26066,
+        "050e6b9e2cecc6d951ba759f0a6c88e2a694d6dabbeb65fabec97187787044c4",
     ),
     (
         "reverie-inguest/src/guest/mod.rs",
@@ -1384,18 +1384,18 @@ const CONTENT_REVERIE_CATALOG: [(&str, u64, &str); 83] = [
     ),
     (
         "reverie-inguest/src/guest/host.rs",
-        224727,
-        "6d9a26c747328ec46fc6ad461002e6ffa6ec243b64cbf62e679b1f6bc63b918a",
+        237218,
+        "e3dbf2053748742fd88dc696d6fe647288710ff3d7f3b7caf28ec72cbf5c8e8d",
     ),
     (
         "reverie-inguest/src/guest/host_linux.rs",
-        24826,
-        "b63d026293b761802a5009d2a421e1f645a72c3f96ff35ba23ff7cee7bf17348",
+        24961,
+        "8787f5067040e371aa48c2b31c306b1c7099b77f34cd920086d5bd94299049ee",
     ),
     (
         "reverie-liteinst/src/tool_host.rs",
-        59026,
-        "fcb1b651f5dc1142521b6ff8140c438c71b7b862ff6feb0d48ac63c52dbb570a",
+        59775,
+        "52b4e6f76a2aa47a7766f770128422cd1e5b94955ab906a6c01000e67ed8208a",
     ),
     (
         "reverie/Cargo.toml",
@@ -33972,32 +33972,32 @@ mod tests {
             (
                 "Cargo.toml",
                 2142,
-                "b3c19cd3f242ba6185a61c596dea3b417be61543c2c83d1d4d358ee6f7fe4930",
+                "44fa1e4c6cae8a913517e223840ed1afe5309f30c179deb903bed42fd8b71233",
             ),
             (
                 "Cargo.toml",
                 2030,
-                "ec6ca86a7e751e556ce92ae82ac349e56b90d509cbddb554abe8b8e7b91cf9e9",
+                "44fa1e4c6cae8a913517e223840ed1afe5309f30c179deb903bed42fd8b71233",
             ),
             (
                 "reverie/src/tool_outcome.rs",
                 10307,
-                "ee28ac21532ccc32d15116a3bab71aea074e5177a8c3f630c09e74e8a16b798c",
+                "09904e7dcaf30866b7a4b64871a18efbaa586cf2fe43c5601e068c5c1a3778b3",
             ),
             (
                 "reverie-inguest/src/tool_host.rs",
                 24858,
-                "571d9604b2894cfb51256bc713d155b3d3ce42eb2cda54c5bc9912435ad96eb3",
+                "243cdd3d67ce1dbe4d539bbd85379983a2b293be582e36b6477e57661b7398ff",
             ),
             (
                 "reverie-inguest/src/guest/host.rs",
                 204181,
-                "3f3a6486819a5af8212f1d6abe42cc1e1cb098ddd45f8bf137790da50ee8c392",
+                "e3dbf2053748742fd88dc696d6fe647288710ff3d7f3b7caf28ec72cbf5c8e8d",
             ),
             (
                 "reverie/src/guest.rs",
                 81764,
-                "b8e45c8b40b0e711fdd01a4a71bbd671c4debcfd1977d44d920446067119dc3a",
+                "bc36728d33e68881868a2a450e3317d6a29bb838180287894dcfe6bcc0084bac",
             ),
         ] {
             let entries: Vec<_> = CONTENT_REVERIE_CATALOG
