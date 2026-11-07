@@ -21485,8 +21485,8 @@ fn detcore_validate_bind_readonly(
     require(
         actual == expected,
         format!(
-            "whole physical Detcore readonly data differs: key={} expected={}:{} address={address:#x}",
-            spec.key, spec.line, spec.column
+            "DIAG readonly key={} expected={}:{} addr={address:#x} actual={:02x?} expected={:02x?}",
+            spec.key, spec.line, spec.column, actual, expected
         ),
     )?;
     let mut file_address = None;
