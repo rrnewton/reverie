@@ -33,7 +33,10 @@
 //! The first page of each window is that image's syscall gate: the only page
 //! its `syscall` instructions may occupy, and so the only instruction
 //! addresses the trap filter needs to allow. An image must map its gate page
-//! executable and have at least one `syscall` in it.
+//! executable and have at least one `syscall` in it. "Page" here is the
+//! checked target's page ([`crate::image::ImageTarget`]): the default
+//! wrappers check at the default 4 KiB, and the `*_with_target` forms take
+//! the page size and ELF machine as runtime inputs.
 //!
 //! [`check`] parses, validates and audits an image's bytes in one call. A
 //! build or launch step reads the image file and calls [`check_loader`] or
@@ -46,6 +49,7 @@ use crate::audit::StraySyscall;
 use crate::audit::stray_syscall;
 use crate::image::Image;
 use crate::image::ImageError;
+use crate::image::ImageTarget;
 use crate::image::PAGE_SIZE;
 use crate::image::Policy;
 use crate::image::ValidatedImage;
@@ -64,10 +68,16 @@ pub const LOADER_WINDOW: Range<u64> = 0x6000_e000_0000..0x6000_e100_0000;
 /// is about 28 MB.
 pub const RUNTIME_WINDOW: Range<u64> = 0x6000_e100_0000..0x6000_ff00_0000;
 
-/// The loader's gate: the first page of [`LOADER_WINDOW`].
+/// The loader's gate: the first page of [`LOADER_WINDOW`] at the
+/// default target's [`PAGE_SIZE`]. A caller checking at another
+/// page size passes its own gate ranges to
+/// [`check_with_target`] (or declares them in a manifest checked
+/// with [`crate::manifest::ToolManifest::validate_with_target`]);
+/// these constants name the default-target gates only.
 pub const LOADER_GATE: Range<u64> = LOADER_WINDOW.start..LOADER_WINDOW.start + PAGE_SIZE;
 
-/// The runtime's gate: the first page of [`RUNTIME_WINDOW`].
+/// The runtime's gate: the first page of [`RUNTIME_WINDOW`] at the
+/// default target's [`PAGE_SIZE`]; see [`LOADER_GATE`].
 pub const RUNTIME_GATE: Range<u64> = RUNTIME_WINDOW.start..RUNTIME_WINDOW.start + PAGE_SIZE;
 
 /// The loader's policy: its window, and no TLS (it runs before any FS base
@@ -88,9 +98,9 @@ const fn disjoint(a: &Range<u64>, b: &Range<u64>) -> bool {
     a.end <= b.start || b.end <= a.start
 }
 
-const fn window_with_gate(window: &Range<u64>, gate: &Range<u64>) -> bool {
-    window.start.is_multiple_of(PAGE_SIZE)
-        && window.end.is_multiple_of(PAGE_SIZE)
+const fn window_with_gate(window: &Range<u64>, gate: &Range<u64>, page_size: u64) -> bool {
+    window.start.is_multiple_of(page_size)
+        && window.end.is_multiple_of(page_size)
         && window.start < window.end
         && gate.start == window.start
         && gate.end <= window.end
@@ -98,10 +108,10 @@ const fn window_with_gate(window: &Range<u64>, gate: &Range<u64>) -> bool {
         && window.end <= TOOL_REGION.end
 }
 
-// The windows are page-aligned, start with their gates, lie inside the
-// ToolRegion and not in each other.
-const _: () = assert!(window_with_gate(&LOADER_WINDOW, &LOADER_GATE));
-const _: () = assert!(window_with_gate(&RUNTIME_WINDOW, &RUNTIME_GATE));
+// The windows are aligned at the default page size, start with
+// their gates, lie inside the ToolRegion and not in each other.
+const _: () = assert!(window_with_gate(&LOADER_WINDOW, &LOADER_GATE, PAGE_SIZE));
+const _: () = assert!(window_with_gate(&RUNTIME_WINDOW, &RUNTIME_GATE, PAGE_SIZE));
 const _: () = assert!(disjoint(&LOADER_WINDOW, &RUNTIME_WINDOW));
 
 /// Why a built image may not be mapped.
@@ -139,16 +149,39 @@ impl From<ImageError> for ArtifactError {
     }
 }
 
-/// Parses `bytes`, validates the image against `policy`, requires each of
-/// `gates` to be mapped executable with a `syscall` encoding wholly inside
-/// it, and audits the image for `syscall` encodings outside `gates`. On
-/// success the image may be mapped.
+/// Parses `bytes` for the default target ([`ImageTarget::DEFAULT`]),
+/// validates the image against `policy`, requires each of `gates`
+/// to be mapped executable with a `syscall` encoding wholly inside
+/// it, and audits the image for `syscall` encodings outside
+/// `gates`. On success the image may be mapped.
 pub fn check<'a>(
     bytes: &'a [u8],
     policy: &Policy,
     gates: &[Range<u64>],
 ) -> Result<ValidatedImage<'a>, ArtifactError> {
-    let image = Image::parse(bytes)?.validate(policy)?;
+    check_with_target(bytes, policy, gates, ImageTarget::DEFAULT)
+}
+
+/// [`check`] for an explicit [`ImageTarget`]: the image's
+/// `e_machine` must be the target's machine, and segment
+/// alignment, gate coverage and the syscall audit's page rounding
+/// all use the target's page size. Gate ranges are the caller's:
+/// at a 64 KiB target a gate is the first 64 KiB of its window,
+/// spelled by the caller (or its manifest), not [`LOADER_GATE`] /
+/// [`RUNTIME_GATE`], which name the default target's first page.
+///
+/// The audit still scans for the x86-64 `syscall` encoding: it is
+/// the gate contract this check enforces. Under a non-x86-64
+/// target that scan can only refuse encodings an image carries as
+/// data; a caller that needs another machine's gate encoding
+/// checks with a different audit, not this one.
+pub fn check_with_target<'a>(
+    bytes: &'a [u8],
+    policy: &Policy,
+    gates: &[Range<u64>],
+    target: ImageTarget,
+) -> Result<ValidatedImage<'a>, ArtifactError> {
+    let image = Image::parse_with_target(bytes, target)?.validate(policy)?;
     for gate in gates {
         check_gate(&image, gate)?;
     }
@@ -162,7 +195,9 @@ fn check_gate(image: &ValidatedImage<'_>, gate: &Range<u64>) -> Result<(), Artif
     let not_executable = ArtifactError::GateNotExecutable { gate: gate.start };
     let mut covering = None;
     for segment in image.segments() {
-        let pages = segment.pages()?;
+        // Gate coverage is judged on mappings rounded at the
+        // validated image's own target page size.
+        let pages = segment.pages_with_page_size(image.target().page_size)?;
         if segment.permissions.execute
             && !segment.permissions.write
             && pages.start <= gate.start
@@ -201,10 +236,12 @@ impl From<ManifestError> for ArtifactError {
 /// image validation already requires an executable entry). On success
 /// the image may be mapped under this manifest.
 ///
-/// This form assumes the loader's own [`PAGE_SIZE`]; a launcher on a
-/// real host should call [`check_image_with_page_size`] with the
-/// host page size so an unsupported host is refused by name here,
-/// at image-check time, instead of being assumed away.
+/// This form checks for the default target and so assumes
+/// [`PAGE_SIZE`]; a launcher on a real host should call
+/// [`check_image_with_page_size`] with the host page size so an
+/// unsupported host is refused by name here, at image-check time,
+/// instead of being assumed away. A launcher checking for another
+/// page size or machine calls [`check_image_with_target`].
 pub fn check_image<'a>(
     bytes: &'a [u8],
     manifest: &ToolManifest,
@@ -212,20 +249,52 @@ pub fn check_image<'a>(
     check_image_with_page_size(bytes, manifest, PAGE_SIZE)
 }
 
-/// [`check_image`] against an explicit host page size: the manifest
-/// must [`validate_with_page_size`](ToolManifest::validate_with_page_size),
-/// so any page size other than the one this x86-64 loader maps with
-/// refuses as [`ManifestError::UnsupportedPageSize`] before the image
-/// bytes are even parsed. The size is a parameter (this crate is
-/// `no_std` and cannot ask the host) so the refused case is testable
-/// without a 64 KiB-page host.
+/// [`check_image`] against an explicit host page size, on the
+/// default-target contract: the manifest must
+/// [`validate_with_page_size`](ToolManifest::validate_with_page_size),
+/// so any page size other than the default target's refuses as
+/// [`ManifestError::UnsupportedPageSize`] before the image bytes
+/// are even parsed. The size is a parameter (this crate is
+/// `no_std` and cannot ask the host) so the refused case is
+/// testable without a 64 KiB-page host. This entry point is
+/// unchanged; [`check_image_with_target`] is the form that
+/// accepts a 64 KiB target.
 pub fn check_image_with_page_size<'a>(
     bytes: &'a [u8],
     manifest: &ToolManifest,
     page_size: u64,
 ) -> Result<ValidatedImage<'a>, ArtifactError> {
     manifest.validate_with_page_size(page_size)?;
-    let image = check(bytes, &manifest.image.policy, manifest.gates)?;
+    check_image_checked_manifest(bytes, manifest, ImageTarget::DEFAULT)
+}
+
+/// [`check_image`] for an explicit [`ImageTarget`]: the manifest
+/// must [`validate_with_target`](ToolManifest::validate_with_target)
+/// (its window and gates are aligned-checked at the target's page
+/// size, so a checked-in manifest with a 4 KiB gate refuses by
+/// name under a 64 KiB target), and the image must pass
+/// [`check_with_target`] under the manifest's policy and declared
+/// gates. The target is one parameter end to end: manifest
+/// alignment, image parsing/validation, gate coverage and the
+/// audit all use it, so no stage can silently assume the
+/// default's 4 KiB/x86-64 while another uses the target's.
+pub fn check_image_with_target<'a>(
+    bytes: &'a [u8],
+    manifest: &ToolManifest,
+    target: ImageTarget,
+) -> Result<ValidatedImage<'a>, ArtifactError> {
+    manifest.validate_with_target(target)?;
+    check_image_checked_manifest(bytes, manifest, target)
+}
+
+/// The image half of the `check_image*` entry points, once the
+/// calling entry point has validated the manifest for `target`.
+fn check_image_checked_manifest<'a>(
+    bytes: &'a [u8],
+    manifest: &ToolManifest,
+    target: ImageTarget,
+) -> Result<ValidatedImage<'a>, ArtifactError> {
+    let image = check_with_target(bytes, &manifest.image.policy, manifest.gates, target)?;
     if let InitContract::Address(address) = manifest.init {
         let executable = image
             .segments()

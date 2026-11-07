@@ -16,9 +16,11 @@
 //!   image's policy, its declared syscall gate ranges, the controls it
 //!   asks the loader to arm, and its init contract. It names no product.
 //! - [`image`] validates a loader or runtime image against the narrow shape
-//!   the loader accepts: a fixed-address `ET_EXEC` x86-64 image with no
-//!   interpreter, no dynamic section (so no dynamic relocations), W^X,
-//!   page-aligned non-overlapping segments inside an allowed window, and
+//!   the loader accepts: a fixed-address `ET_EXEC` image for a target
+//!   ([`image::ImageTarget`]: ELF machine plus page size, a runtime input
+//!   whose default is x86-64 with 4 KiB pages) with no interpreter, no
+//!   dynamic section (so no dynamic relocations), W^X, segments aligned to
+//!   the target's page and non-overlapping inside an allowed window, and
 //!   optionally no TLS.
 //! - [`audit`] confines `syscall` instructions in an image's executable
 //!   segments to declared gate ranges.

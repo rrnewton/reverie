@@ -18,6 +18,13 @@
 //! image (the syscall audit, the mapper) cannot be handed an unchecked one.
 //! Every failure is a distinct [`ImageError`], so a refusal names what is
 //! wrong.
+//!
+//! The ELF machine and the page size are runtime inputs, bundled as an
+//! [`ImageTarget`]: [`Image::parse_with_target`] checks `e_machine` against
+//! the target and retains it, so validation aligns and rounds segments at
+//! the target's page size. [`Image::parse`] delegates with
+//! [`ImageTarget::DEFAULT`] (x86-64, [`PAGE_SIZE`]), which is what every
+//! pre-existing caller still gets.
 
 use core::ops::Range;
 
@@ -26,12 +33,100 @@ pub use private_runtime::PrivateRuntimeMetadata;
 pub use private_runtime::PrivateRuntimeMetadataError;
 pub use private_runtime::TlsTemplate;
 
-/// The page size the loader maps with. This public contract is
-/// x86-64 with 4 KiB pages only; a launcher must refuse other host
-/// page sizes by name (see
-/// [`crate::manifest::ToolManifest::validate_with_page_size`])
+/// The default page size: the 4 KiB page of the default
+/// [`ImageTarget`] ([`ImageTarget::DEFAULT`], x86-64). The page size
+/// and the ELF machine are runtime inputs (an [`ImageTarget`]
+/// parameter) on the `*_with_target` entry points; this constant
+/// names only the value the unchanged default entry points
+/// ([`Image::parse`], [`Segment::pages`],
+/// [`crate::artifact::check_image`]) use. A launcher that stays on
+/// those defaults must still refuse other host page sizes by name
+/// (see [`crate::manifest::ToolManifest::validate_with_page_size`])
 /// instead of assuming this value holds on its host.
 pub const PAGE_SIZE: u64 = 4096;
+
+/// ELF `e_machine` for x86-64.
+pub const EM_X86_64: u16 = 62;
+
+/// ELF `e_machine` for AArch64.
+pub const EM_AARCH64: u16 = 183;
+
+/// The target an image is parsed and validated for: the ELF machine
+/// its `e_machine` must name and the page size its segments are
+/// aligned and rounded to. Page size and machine are inputs, not
+/// baked-in constants: the `*_with_target` entry points take an
+/// `ImageTarget`, and [`Image::parse`] (with everything built on it)
+/// delegates to the [`DEFAULT`](Self::DEFAULT) target, x86-64 with
+/// [`PAGE_SIZE`] pages.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ImageTarget {
+    /// The page size segment addresses, offsets and `p_align` are
+    /// checked against, and that segment page rounding uses. Must
+    /// be a power of two of at least [`PAGE_SIZE`]; any other value
+    /// is refused by name as
+    /// [`ImageError::UnsupportedPageSize`].
+    pub page_size: u64,
+    /// The ELF `e_machine` an image for this target must carry
+    /// ([`EM_X86_64`], [`EM_AARCH64`]); any other `e_machine` is
+    /// refused by name as [`ImageError::WrongMachine`].
+    pub machine: u16,
+}
+
+impl ImageTarget {
+    /// The default target: x86-64 with [`PAGE_SIZE`] pages. Every
+    /// pre-existing entry point ([`Image::parse`],
+    /// [`crate::artifact::check_loader`],
+    /// [`crate::artifact::check_image`]) delegates to its
+    /// `*_with_target` form with this target, so existing callers
+    /// keep byte-identical behaviour.
+    pub const DEFAULT: Self = Self {
+        page_size: PAGE_SIZE,
+        machine: EM_X86_64,
+    };
+
+    /// An x86-64 target with `page_size`-byte pages. A page size
+    /// that is not a power of two of at least [`PAGE_SIZE`] is
+    /// refused by name as [`ImageError::UnsupportedPageSize`].
+    pub fn x86_64(page_size: u64) -> Result<Self, ImageError> {
+        Self::new(page_size, EM_X86_64)
+    }
+
+    /// An AArch64 target with `page_size`-byte pages, for example
+    /// `ImageTarget::aarch64(65_536)`. An image whose `e_machine`
+    /// is not [`EM_AARCH64`] is refused by name as
+    /// [`ImageError::WrongMachine`] under this target; the refusal
+    /// for a bad page size matches [`x86_64`](Self::x86_64).
+    pub fn aarch64(page_size: u64) -> Result<Self, ImageError> {
+        Self::new(page_size, EM_AARCH64)
+    }
+
+    fn new(page_size: u64, machine: u16) -> Result<Self, ImageError> {
+        check_page_size(page_size)?;
+        Ok(Self {
+            page_size,
+            machine,
+        })
+    }
+
+    /// Refuses by name if this target's page size could not have
+    /// been built by a constructor (the fields are public, so a
+    /// struct literal can name any value).
+    fn checked(self) -> Result<Self, ImageError> {
+        check_page_size(self.page_size)?;
+        Ok(self)
+    }
+}
+
+/// Page sizes are powers of two of at least [`PAGE_SIZE`]: there is
+/// no smaller or non-power-of-two page for segment alignment and
+/// rounding to mean anything, so any other value refuses by name.
+fn check_page_size(page_size: u64) -> Result<(), ImageError> {
+    if page_size >= PAGE_SIZE && page_size.is_power_of_two() {
+        Ok(())
+    } else {
+        Err(ImageError::UnsupportedPageSize { page_size })
+    }
+}
 
 /// The most loadable segments an image may have. The loader and runtime
 /// have a handful; a bound keeps parsing allocation-free.
@@ -42,7 +137,6 @@ const ELFCLASS64: u8 = 2;
 const ELFDATA2LSB: u8 = 1;
 const EV_CURRENT: u8 = 1;
 const ET_EXEC: u16 = 2;
-const EM_X86_64: u16 = 62;
 const EHDR_SIZE: usize = 64;
 const PHDR_SIZE: usize = 56;
 /// `e_phnum` value meaning the real count is in section header 0.
@@ -68,8 +162,16 @@ pub enum ImageError {
     UnsupportedIdent,
     /// Not `ET_EXEC`: the loader maps fixed-address images only.
     NotFixedAddress,
-    /// Not x86-64.
+    /// The image's `e_machine` is not the [`ImageTarget`]'s machine:
+    /// for example an x86-64 image under an AArch64 target, or the
+    /// other way round.
     WrongMachine,
+    /// The [`ImageTarget`]'s page size is not a power of two of at
+    /// least [`PAGE_SIZE`] (4 KiB).
+    UnsupportedPageSize {
+        /// The page size that was supplied.
+        page_size: u64,
+    },
     /// The program-header entry size is not the ELF64 size.
     BadProgramHeaderSize,
     /// The image uses extended program-header numbering (`e_phnum` is
@@ -102,9 +204,10 @@ pub enum ImageError {
         /// Index of the program header.
         index: usize,
     },
-    /// A loadable segment's address or file offset is not page-aligned, or
-    /// its `p_align` is not a power of two of at least [`PAGE_SIZE`], or the
-    /// address and offset are not congruent modulo `p_align`.
+    /// A loadable segment's address or file offset is not aligned
+    /// to the target's page size, or its `p_align` is not a power
+    /// of two of at least the target's page size, or the address
+    /// and offset are not congruent modulo `p_align`.
     Misaligned {
         /// Index of the program header.
         index: usize,
@@ -171,10 +274,24 @@ pub struct Segment {
 }
 
 impl Segment {
-    /// The page-rounded addresses the segment's mapping covers.
+    /// The page-rounded addresses the segment's mapping covers, at
+    /// the default [`PAGE_SIZE`]. For an image parsed for another
+    /// target use
+    /// [`pages_with_page_size`](Self::pages_with_page_size) with
+    /// `image.target().page_size`: a segment on its own does not
+    /// know its image's target.
     pub fn pages(&self) -> Result<Range<u64>, ImageError> {
-        let start = self.memory.start & !(PAGE_SIZE - 1);
-        let end = round_up(self.memory.end)?;
+        self.pages_with_page_size(PAGE_SIZE)
+    }
+
+    /// The page-rounded addresses the segment's mapping covers at
+    /// `page_size`. A page size that is not a power of two of at
+    /// least [`PAGE_SIZE`] is refused by name as
+    /// [`ImageError::UnsupportedPageSize`].
+    pub fn pages_with_page_size(&self, page_size: u64) -> Result<Range<u64>, ImageError> {
+        check_page_size(page_size)?;
+        let start = self.memory.start & !(page_size - 1);
+        let end = round_up(self.memory.end, page_size)?;
         Ok(start..end)
     }
 }
@@ -189,10 +306,12 @@ pub struct Policy {
     pub allow_tls: bool,
 }
 
-/// A parsed image: its entry point and loadable segments.
+/// A parsed image: its target, its entry point and its loadable
+/// segments.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Image<'a> {
     bytes: &'a [u8],
+    target: ImageTarget,
     entry: u64,
     segments: [Option<Segment>; MAX_SEGMENTS],
     segment_count: usize,
@@ -202,8 +321,25 @@ pub struct Image<'a> {
 }
 
 impl<'a> Image<'a> {
-    /// Parses the ELF64 header and program headers of `bytes`.
+    /// Parses the ELF64 header and program headers of `bytes` for
+    /// the default target ([`ImageTarget::DEFAULT`]: x86-64 with
+    /// [`PAGE_SIZE`] pages).
     pub fn parse(bytes: &'a [u8]) -> Result<Self, ImageError> {
+        Self::parse_with_target(bytes, ImageTarget::DEFAULT)
+    }
+
+    /// Parses the ELF64 header and program headers of `bytes` for
+    /// `target`: the image's `e_machine` must be the target's
+    /// machine (refused by name as [`ImageError::WrongMachine`]),
+    /// and the target is retained so
+    /// [`validate`](Self::validate) checks segment alignment and
+    /// page rounding at the target's page size. The target's own
+    /// page size is checked first, so a struct-literal target with
+    /// a bad page size refuses as
+    /// [`ImageError::UnsupportedPageSize`] before the bytes are
+    /// read.
+    pub fn parse_with_target(bytes: &'a [u8], target: ImageTarget) -> Result<Self, ImageError> {
+        let target = target.checked()?;
         let header = bytes.get(..EHDR_SIZE).ok_or(ImageError::Truncated)?;
         if header[..4] != ELF_MAGIC {
             return Err(ImageError::NotElf);
@@ -214,7 +350,7 @@ impl<'a> Image<'a> {
         if read_u16(header, 16)? != ET_EXEC {
             return Err(ImageError::NotFixedAddress);
         }
-        if read_u16(header, 18)? != EM_X86_64 {
+        if read_u16(header, 18)? != target.machine {
             return Err(ImageError::WrongMachine);
         }
         let entry = read_u64(header, 24)?;
@@ -233,6 +369,7 @@ impl<'a> Image<'a> {
 
         let mut image = Self {
             bytes,
+            target,
             entry,
             segments: Default::default(),
             segment_count: 0,
@@ -274,6 +411,11 @@ impl<'a> Image<'a> {
         Ok(())
     }
 
+    /// The target this image was parsed for.
+    pub fn target(&self) -> ImageTarget {
+        self.target
+    }
+
     /// The entry point.
     pub fn entry(&self) -> u64 {
         self.entry
@@ -284,11 +426,16 @@ impl<'a> Image<'a> {
         self.segments[..self.segment_count].iter().flatten()
     }
 
-    /// Checks the image against `policy`. On success every segment lies in
-    /// the file and in the window, is non-empty and page-aligned, is not
-    /// writable and executable, and overlaps no other, and the entry point is
-    /// executable.
+    /// Checks the image against `policy`, at the page size of the
+    /// target it was parsed for ([`target`](Self::target)): segment
+    /// address/offset alignment, the `p_align` floor and page
+    /// rounding (window and overlap) all use that page size, never
+    /// a baked-in constant. On success every segment lies in
+    /// the file and in the window, is non-empty and aligned to the
+    /// target's page, is not writable and executable, and overlaps
+    /// no other, and the entry point is executable.
     pub fn validate(&self, policy: &Policy) -> Result<ValidatedImage<'a>, ImageError> {
+        let page_size = self.target.page_size;
         if self.has_interpreter {
             return Err(ImageError::HasInterpreter);
         }
@@ -314,10 +461,10 @@ impl<'a> Image<'a> {
                 return Err(ImageError::EmptySegment { index });
             }
             let align_ok = segment.align.is_power_of_two()
-                && segment.align >= PAGE_SIZE
+                && segment.align >= page_size
                 && segment.memory.start % segment.align == segment.file.start % segment.align;
-            if segment.memory.start % PAGE_SIZE != 0
-                || segment.file.start % PAGE_SIZE != 0
+            if segment.memory.start % page_size != 0
+                || segment.file.start % page_size != 0
                 || !align_ok
             {
                 return Err(ImageError::Misaligned { index });
@@ -325,15 +472,15 @@ impl<'a> Image<'a> {
             if segment.permissions.write && segment.permissions.execute {
                 return Err(ImageError::WritableAndExecutable { index });
             }
-            let pages = segment.pages()?;
+            let pages = segment.pages_with_page_size(page_size)?;
             if pages.start < policy.window.start || pages.end > policy.window.end {
                 return Err(ImageError::OutsideWindow { index });
             }
         }
         for (position, earlier) in self.segments().enumerate() {
-            let earlier_pages = earlier.pages()?;
+            let earlier_pages = earlier.pages_with_page_size(page_size)?;
             for later in self.segments().skip(position + 1) {
-                let later_pages = later.pages()?;
+                let later_pages = later.pages_with_page_size(page_size)?;
                 if earlier_pages.start < later_pages.end && later_pages.start < earlier_pages.end {
                     return Err(ImageError::Overlapping {
                         first: earlier.index,
@@ -358,6 +505,15 @@ impl<'a> Image<'a> {
 pub struct ValidatedImage<'a>(Image<'a>);
 
 impl<'a> ValidatedImage<'a> {
+    /// The target this image was parsed and validated for: the page
+    /// size its segments were aligned and rounded at, and the
+    /// machine its `e_machine` matched. Callers rounding segments
+    /// themselves use `target().page_size` with
+    /// [`Segment::pages_with_page_size`].
+    pub fn target(&self) -> ImageTarget {
+        self.0.target
+    }
+
     /// The entry point.
     pub fn entry(&self) -> u64 {
         self.0.entry
@@ -371,7 +527,10 @@ impl<'a> ValidatedImage<'a> {
     /// The file bytes a page-granular mapping of `segment` exposes: from its
     /// page-aligned file offset up to its file size rounded up to a page,
     /// clipped to the end of the file. This includes any file bytes after
-    /// `p_filesz` that share the segment's last page.
+    /// `p_filesz` that share the segment's last page. The page is the
+    /// validated target's page size, so at a 64 KiB target the exposed
+    /// tail runs to the next 64 KiB boundary, exactly as a 64 KiB-page
+    /// mapping would expose it.
     pub fn mapped_file_bytes(&self, segment: &Segment) -> Result<&'a [u8], ImageError> {
         let index = segment.index;
         let size = segment
@@ -382,7 +541,7 @@ impl<'a> ValidatedImage<'a> {
         let end = segment
             .file
             .start
-            .checked_add(round_up(size)?)
+            .checked_add(round_up(size, self.0.target.page_size)?)
             .ok_or(ImageError::Overflow)?;
         let file_len = u64::try_from(self.0.bytes.len()).map_err(|_| ImageError::Overflow)?;
         let start = usize::try_from(segment.file.start).map_err(|_| ImageError::Overflow)?;
@@ -394,10 +553,14 @@ impl<'a> ValidatedImage<'a> {
     }
 }
 
-fn round_up(address: u64) -> Result<u64, ImageError> {
+/// Rounds `address` up to a `page_size` boundary. Callers pass a
+/// page size already accepted by [`check_page_size`] (a validated
+/// target's, or one checked on entry), so the mask arithmetic
+/// cannot underflow.
+fn round_up(address: u64, page_size: u64) -> Result<u64, ImageError> {
     address
-        .checked_add(PAGE_SIZE - 1)
-        .map(|value| value & !(PAGE_SIZE - 1))
+        .checked_add(page_size - 1)
+        .map(|value| value & !(page_size - 1))
         .ok_or(ImageError::Overflow)
 }
 

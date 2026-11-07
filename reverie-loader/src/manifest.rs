@@ -33,6 +33,7 @@ use crate::artifact::RUNTIME_GATE;
 use crate::artifact::RUNTIME_POLICY;
 use crate::artifact::RUNTIME_WINDOW;
 use crate::artifact::TOOL_REGION;
+use crate::image::ImageTarget;
 use crate::image::PAGE_SIZE;
 use crate::image::Policy;
 
@@ -203,11 +204,15 @@ pub enum ManifestError {
         /// The init address.
         address: u64,
     },
-    /// The page size is not the one this x86-64 loader maps with
-    /// ([`crate::image::PAGE_SIZE`], 4 KiB). Returned by
-    /// [`ToolManifest::validate_with_page_size`] so a launcher on a
-    /// host with any other page size refuses by name instead of
-    /// silently assuming 4 KiB alignment.
+    /// The page size is not a usable one for the entry point that
+    /// was called. [`ToolManifest::validate_with_page_size`]
+    /// accepts only the default target's page size
+    /// ([`crate::image::PAGE_SIZE`], 4 KiB), so a launcher on the
+    /// unchanged default path refuses any other host by name
+    /// instead of silently assuming 4 KiB alignment;
+    /// [`ToolManifest::validate_with_target`] returns this only
+    /// for a target page size that is not a power of two of at
+    /// least [`crate::image::PAGE_SIZE`].
     UnsupportedPageSize {
         /// The page size that was supplied.
         page_size: u64,
@@ -278,19 +283,48 @@ impl ToolManifest {
         self.validate_with_page_size(PAGE_SIZE)
     }
 
-    /// [`validate`](Self::validate) against an explicit page size.
+    /// [`validate`](Self::validate) against an explicit page size,
+    /// on the default-target contract.
     ///
-    /// This loader contract is x86-64 with 4 KiB pages only: image
-    /// validation, gate pages and segment rounding all use
-    /// [`crate::image::PAGE_SIZE`]. Taking the size as an input lets
-    /// a launcher pass its host page size and get a named
-    /// [`ManifestError::UnsupportedPageSize`] refusal on any other
-    /// host (for example a 64 KiB-page host) instead of the 4 KiB
-    /// assumption being baked in silently.
+    /// This entry point is unchanged: it accepts only the default
+    /// target's [`crate::image::PAGE_SIZE`] and refuses every other
+    /// size (for example a 64 KiB-page host) by name as
+    /// [`ManifestError::UnsupportedPageSize`], so a launcher built
+    /// on the default x86-64/4 KiB path gets that named refusal
+    /// instead of the 4 KiB assumption being baked in silently. A
+    /// launcher validating for another page size or machine calls
+    /// [`validate_with_target`](Self::validate_with_target).
     pub fn validate_with_page_size(&self, page_size: u64) -> Result<(), ManifestError> {
         if page_size != PAGE_SIZE {
             return Err(ManifestError::UnsupportedPageSize { page_size });
         }
+        self.validate_aligned(page_size)
+    }
+
+    /// [`validate`](Self::validate) for an explicit
+    /// [`ImageTarget`]: window and gate alignment are checked at
+    /// the target's page size, so a manifest whose gate is one 4
+    /// KiB page ([`crate::artifact::LOADER_GATE`]) refuses by name
+    /// as [`ManifestError::GateMisaligned`] under a 64 KiB target
+    /// instead of being silently assumed to fit. The target's
+    /// machine does not affect a manifest — windows and gates are
+    /// address ranges, checked against an image's bytes by
+    /// [`crate::artifact::check_image_with_target`] — so only its
+    /// page size is consulted. A target page size that is not a
+    /// power of two of at least [`PAGE_SIZE`] refuses as
+    /// [`ManifestError::UnsupportedPageSize`].
+    pub fn validate_with_target(&self, target: ImageTarget) -> Result<(), ManifestError> {
+        let page_size = target.page_size;
+        if page_size < PAGE_SIZE || !page_size.is_power_of_two() {
+            return Err(ManifestError::UnsupportedPageSize { page_size });
+        }
+        self.validate_aligned(page_size)
+    }
+
+    /// Window, gate and init consistency at `page_size`, which the
+    /// calling entry point has already accepted (the default size,
+    /// or a target's valid page size).
+    fn validate_aligned(&self, page_size: u64) -> Result<(), ManifestError> {
         let window = &self.image.policy.window;
         if window.is_empty() {
             return Err(ManifestError::EmptyWindow);

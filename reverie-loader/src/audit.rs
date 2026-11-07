@@ -69,7 +69,9 @@ pub fn stray_syscall(
     let mut previous: Option<(u64, u8)> = None;
     for segment in executable.iter().flatten() {
         let bytes = image.mapped_file_bytes(segment)?;
-        let pages = segment.pages()?;
+        // Round at the validated image's own target page size: the
+        // scan covers what a mapping at that page size exposes.
+        let pages = segment.pages_with_page_size(image.target().page_size)?;
         if let (Some((end, last)), Some(&first)) = (previous, bytes.first())
             && end == pages.start
             && [last, first] == SYSCALL
