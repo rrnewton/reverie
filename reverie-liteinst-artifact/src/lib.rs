@@ -25345,6 +25345,14 @@ fn fixed_detcore_got_discriminate<'a>(
                 .all(|(index, _)| binds_at(template, index))
                 && differing.iter().any(|&index| !binds_at(template, index))
         });
+    if std::env::var_os("FIXED_GOT_DEBUG").is_some() {
+        eprintln!(
+            "got-discriminate role={} candidates={:?} bound={:?} dropped_callee_only={dropped_are_callee_only} differing={differing:?}",
+            first.role,
+            candidates.iter().map(|(i, _)| *i).collect::<Vec<_>>(),
+            bound.iter().map(|(i, _)| *i).collect::<Vec<_>>(),
+        );
+    }
     if !bound.is_empty() && bound.len() < candidates.len() && dropped_are_callee_only {
         bound
     } else {
