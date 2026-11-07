@@ -505,7 +505,7 @@ pub(crate) unsafe fn prepare_mapping_parts<'fd>(
             state.prevalidation = Some(PrevalidationObservation {
                 registers: super::register_words(&task.getregs()?),
                 signal_mask: task.getsigmask()?,
-                xstate_exact: super::arch::capture_extended(task)? == state.context.xstate,
+                xstate_exact: task.getxstate()? == state.context.xstate,
             });
         }
         // Complete shared numeric checks precede EVERY child mutation,
@@ -749,7 +749,7 @@ impl PreparedMapping<'_> {
         Ok(PreparationObservation {
             registers: super::register_words(&task.getregs()?),
             signal_mask: task.getsigmask()?,
-            xstate_exact: super::arch::capture_extended(task)? == self.context.xstate,
+            xstate_exact: task.getxstate()? == self.context.xstate,
             stack_exact: super::trace::read(
                 task,
                 self.context.stack_start,

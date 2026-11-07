@@ -58,17 +58,10 @@ impl Injector {
     /// Save and temporarily patch this actual stop's entry for syscall injection.
     pub fn new(mut task: Stopped) -> Result<Self> {
         let entry = task.getregs()?;
-        let original = read(
-            &task,
-            super::arch::instruction_pointer(&entry),
-            super::arch::SAVED_ENTRY_BYTES,
-        )?;
-        let injected = super::arch::patched_entry(&original);
-        write(
-            &mut task,
-            super::arch::instruction_pointer(&entry),
-            &injected,
-        )?;
+        let original = read(&task, entry.rip, 8)?;
+        let mut injected = original.clone();
+        injected[..3].copy_from_slice(&[0x0f, 0x05, 0xcc]);
+        write(&mut task, entry.rip, &injected)?;
         Ok(Self {
             task: Some(task),
             entry,
@@ -134,28 +127,35 @@ impl Injector {
 
     fn syscall_inner(&mut self, number: u64, args: [u64; 6]) -> Result<u64> {
         let task = self.task.take().ok_or("lost stopped injection owner")?;
-        let regs = super::arch::prepare_syscall_regs(&self.entry, number, args);
+        let mut regs = self.entry;
+        regs.rax = number;
+        regs.orig_rax = u64::MAX;
+        regs.rdi = args[0];
+        regs.rsi = args[1];
+        regs.rdx = args[2];
+        regs.r10 = args[3];
+        regs.r8 = args[4];
+        regs.r9 = args[5];
         task.setregs(&regs)?;
         let (task, event) = stopped(task.resume(None)?, "injected syscall completion")?;
         let completed = task.getregs()?;
-        let result = super::arch::syscall_result(&completed);
-        let marker = matches!(event, Event::Signal(Signal::SIGTRAP))
-            && super::arch::at_marker(&completed, &self.entry);
+        let marker =
+            matches!(event, Event::Signal(Signal::SIGTRAP)) && completed.rip == self.entry.rip + 3;
         self.task = Some(task);
         if !marker {
             return Err(
                 format!("loader refused: injection stopped outside its marker: {event:?}").into(),
             );
         }
-        self.calls.push((number, args, result));
-        if (result as i64) < 0 && result >= (-4095_i64) as u64 {
+        self.calls.push((number, args, completed.rax));
+        if (completed.rax as i64) < 0 && completed.rax >= (-4095_i64) as u64 {
             return Err(format!(
                 "loader injected syscall {number} refused with errno {}",
-                -(result as i64)
+                -(completed.rax as i64)
             )
             .into());
         }
-        Ok(result)
+        Ok(completed.rax)
     }
 
     /// Acquire the complete fixed tool reservation without replacing guest pages.
@@ -483,17 +483,8 @@ impl Injector {
             return Err("loader refused: poisoned injection transaction".into());
         }
         let mut task = self.task.take().ok_or("lost stopped owner")?;
-        write(
-            &mut task,
-            super::arch::instruction_pointer(&self.entry),
-            &self.original,
-        )?;
-        if read(
-            &task,
-            super::arch::instruction_pointer(&self.entry),
-            self.original.len(),
-        )? != self.original
-        {
+        write(&mut task, self.entry.rip, &self.original)?;
+        if read(&task, self.entry.rip, self.original.len())? != self.original {
             return Err("loader refused: original entry bytes did not restore".into());
         }
         task.setregs(&self.entry)?;

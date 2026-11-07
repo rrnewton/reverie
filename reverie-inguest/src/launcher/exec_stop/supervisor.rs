@@ -873,9 +873,7 @@ impl<'fd> SuccessorStop<'fd> {
     /// Read the successor's original input bytes from this actual
     /// stopped generation, exactly as
     /// [`super::InitialExecStop::capture_initial_inputs`] does for a
-    /// first image. No resume capability escapes. The copied-input
-    /// wire codec is x86-64-shaped today, so this exists only there.
-    #[cfg(target_arch = "x86_64")]
+    /// first image. No resume capability escapes.
     pub fn capture_initial_inputs(&self) -> Result<super::initial_inputs::CapturedInitialInputs> {
         super::initial_inputs::capture_initial_inputs_parts(&self.task, &self.context, &self.owner)
     }
@@ -884,7 +882,7 @@ impl<'fd> SuccessorStop<'fd> {
     /// exactly as [`super::InitialExecStop::prepare_copied_inputs`]
     /// does for a first image. Returns no handoff or entry
     /// capability.
-    #[cfg(all(target_arch = "x86_64", feature = "loader-private-runtime"))]
+    #[cfg(feature = "loader-private-runtime")]
     pub fn prepare_copied_inputs(
         &self,
         captured: &super::initial_inputs::CapturedInitialInputs,
@@ -1023,10 +1021,7 @@ mod tests {
                     execs += 1;
                     assert_eq!(stop.pid(), watched_pid);
                     assert_eq!(stop.former_tid(), watched_pid);
-                    assert_eq!(
-                        super::super::arch::instruction_pointer(stop.entry().regs()),
-                        super::super::arch::instruction_pointer(&stop.boundary().exit_regs)
-                    );
+                    assert_eq!(stop.entry().regs().rip, stop.boundary().exit_regs.rip);
                     watched = stop
                         .rearm_and_resume(|task, _entry, _boundary| Ok(task))
                         .unwrap();
@@ -1075,14 +1070,7 @@ mod tests {
                     watched = stop
                         .rearm_and_resume(|task, _entry, _boundary| {
                             let mut regs = task.getregs()?;
-                            #[cfg(target_arch = "x86_64")]
-                            {
-                                regs.rip = 0x4141_4141;
-                            }
-                            #[cfg(target_arch = "aarch64")]
-                            {
-                                regs.pc = 0x4141_4141;
-                            }
+                            regs.rip = 0x4141_4141;
                             task.setregs(&regs)?;
                             Ok(task)
                         })
@@ -1652,12 +1640,7 @@ mod tests {
         ) {
             let original_regs = register_words(stop.entry().regs());
             let original_mask = stop.entry().signal_mask();
-            let original_entry = trace::read(
-                &stop.task,
-                crate::launcher::exec_stop::arch::instruction_pointer(stop.entry().regs()),
-                16,
-            )
-            .unwrap();
+            let original_entry = trace::read(&stop.task, stop.entry().regs().rip, 16).unwrap();
             let image = validated(runtime);
             let captured = stop.capture_initial_inputs().unwrap();
             let copied = stop
