@@ -7194,13 +7194,27 @@ async fn a_sibling_tsync_filter_kills_no_guest_unless_the_contract_is_broken() {
                     line.starts_with(&format!("tsync-filter action={action} children=40 ")),
                     "{what}: {line}"
                 );
-                let (ok, sigsys) = (count("ok="), count("sigsys="));
+                let (ok, sigsys, sigkill) = (count("ok="), count("sigsys="), count("sigkill="));
                 assert_eq!(count("other="), 0, "{what}: {line}");
-                assert_eq!(ok + sigsys, 40, "{what}: {line}");
+                assert_eq!(ok + sigsys + sigkill, 40, "{what}: {line}");
+                // Only a KILL_PROCESS death can wait as SIGKILL: under
+                // a tracer the coredump thread races its zapped
+                // siblings to set group_exit_code, and a sibling's
+                // SIGKILL can win over the leader's SIGSYS
+                // (kernel/signal.c get_signal coredump path). Every
+                // other mode keeps sigkill at exactly 0.
+                if mode != "sigtrap_tsync_filter_kill" {
+                    assert_eq!(sigkill, 0, "{what}: {line}");
+                }
                 if no_serialization_contract || mode == "sigtrap_tsync_filter_errno" {
                     assert_eq!(sigsys, 0, "{what}: {line}");
+                    assert_eq!(sigkill, 0, "{what}: {line}");
                 } else if configuration == "tail" {
-                    assert!(sigsys > 0, "{what}: {line}");
+                    if mode == "sigtrap_tsync_filter_kill" {
+                        assert!(sigsys + sigkill > 0, "{what}: {line}");
+                    } else {
+                        assert!(sigsys > 0, "{what}: {line}");
+                    }
                 }
             }
         }
