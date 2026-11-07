@@ -855,8 +855,7 @@ checksum = "32a66949e030da00e8c7d4434b251670a91556f4144941d37452769c25d58a53"
 [[package]]
 name = "liteinst"
 version = "0.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "38e2e683117ef65c460ef78aa3d4e80a8ba5f8c81890bed76c799cc7a0b7d828"
+source = "git+https://github.com/rrnewton/liteinst2?rev=34901a29a0070f30398f237839a567720c739af5#34901a29a0070f30398f237839a567720c739af5"
 dependencies = [
  "iced-x86",
  "libc",
@@ -868,8 +867,7 @@ dependencies = [
 [[package]]
 name = "liteinst-x86"
 version = "0.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c663b904c7a56bd98d1acc594d0b26d4eee1c96a6c50eb4a982505f0ced3bad3"
+source = "git+https://github.com/rrnewton/liteinst2?rev=34901a29a0070f30398f237839a567720c739af5#34901a29a0070f30398f237839a567720c739af5"
 dependencies = [
  "iced-x86",
 ]
