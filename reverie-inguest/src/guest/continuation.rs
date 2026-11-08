@@ -222,17 +222,30 @@ impl NativeExecResumeReceipt {
 /// mask. No whole-owner/context reference is formed: the Tool already owns a
 /// mutable borrow of the disjoint context field for this callback.
 #[cfg(feature = "exec-native-injection")]
+/// Reads of the continuation cells go through these accessors so the
+/// compiler keeps one outlined access site per cell (the recognizer
+/// authenticates that site in the built image).
+#[inline(never)]
+fn owner_get() -> *mut Continuation {
+    OWNER.get()
+}
+
+#[inline(never)]
+fn pending_get() -> Option<Pending> {
+    PENDING.get()
+}
+
 pub fn native_exec_resume_receipt(
     event: &super::event::SyscallEvent,
 ) -> Option<NativeExecResumeReceipt> {
     if !matches!(event.dispatch, super::event::SyscallDispatch::Fallback) {
         return None;
     }
-    let pointer = OWNER.get();
+    let pointer = owner_get();
     if pointer.is_null() {
         return None;
     }
-    let pending = PENDING.get()?;
+    let pending = pending_get()?;
     // Retained storage, exclusively owned by this thread; disjoint fields.
     let receipt = unsafe { (&raw const (*pointer).native_exec_resume).read() }?;
     let phase = unsafe { (&raw const (*pointer).phase).read() };
