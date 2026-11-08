@@ -428,11 +428,14 @@ impl<T: Tool, R: HostRuntime> ToolHost<T, R> {
     /// dispatch currently holding the state lock, is refused without replacing
     /// anything. No production backend calls this inactive input seam.
     pub fn restore_current_thread_state(&self, state: T::ThreadState) -> io::Result<()> {
+        // Read the occupancy flag, not the lock: momentary contention
+        // (a writer updating the slot) must not read as a pending
+        // successor and spuriously refuse a legitimate restore (same
+        // misread the dh-n6qjq dispatch probes had).
         #[cfg(feature = "exec-private-successor")]
         if self
-            .prepared_exec
-            .try_lock()
-            .is_none_or(|pending| pending.is_some())
+            .prepared_exec_pending
+            .load(core::sync::atomic::Ordering::Acquire)
         {
             return Err(io::Error::other(
                 "successor lifecycle state is not complete",
@@ -4760,6 +4763,52 @@ mod process_owner_tests {
                 );
             },
             0,
+        );
+    }
+
+    /// The restore seam's twin of the dispatch regression above:
+    /// the empty `prepared_exec` slot being *locked* by a sibling
+    /// must not read as a pending successor. The pre-fix
+    /// `try_lock().is_none_or(..)` refused a legitimate restore
+    /// spuriously for exactly the duration of the contention.
+    #[cfg(feature = "exec-private-successor")]
+    #[test]
+    fn restore_current_thread_state_with_prepared_exec_slot_under_contention_completes() {
+        let _test = TEST_LOCK.lock().unwrap();
+        let (host, _peer) = host(false, false);
+        let host = std::sync::Arc::new(host);
+        let (locked_tx, locked_rx) = std::sync::mpsc::channel::<()>();
+        let locker_host = std::sync::Arc::clone(&host);
+        let locker = std::thread::spawn(move || {
+            let guard = locker_host.prepared_exec.lock();
+            assert!(guard.is_none());
+            locked_tx.send(()).unwrap();
+            std::thread::sleep(std::time::Duration::from_millis(200));
+            drop(guard);
+        });
+        locked_rx.recv().unwrap();
+        let pid = raw_pid(libc::SYS_getpid).as_raw();
+        let tid = std::thread::scope(|scope| {
+            scope
+                .spawn(|| {
+                    let tid = raw_pid(libc::SYS_gettid).as_raw();
+                    host.restore_current_thread_state(State {
+                        pid,
+                        tid,
+                        attempts: 7,
+                    })
+                    .unwrap();
+                    tid
+                })
+                .join()
+                .unwrap()
+        });
+        locker.join().unwrap();
+        assert_eq!(
+            host.states
+                .with_state(tid, |state| state.unwrap().attempts),
+            7,
+            "the restored state must publish under slot contention"
         );
     }
 
