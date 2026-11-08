@@ -347,13 +347,23 @@ impl SiteSlot {
         }
     }
 
-    #[cfg(all(feature = "liteinst", any(test, feature = "native-exec-state")))]
+    // Callers: `native_exec_site_cut` (native-exec-state) and a unit test
+    // gated on exec-private-init, which native-exec-state implies.
+    #[cfg(all(
+        feature = "liteinst",
+        feature = "exec-private-init",
+        any(test, feature = "native-exec-state")
+    ))]
     fn has_installed_hook_or_adapter(&self) -> bool {
         !self.hook.load(Ordering::Acquire).is_null()
             || !self.adapter.load(Ordering::Acquire).is_null()
     }
 
-    #[cfg(all(not(feature = "liteinst"), any(test, feature = "native-exec-state")))]
+    #[cfg(all(
+        not(feature = "liteinst"),
+        feature = "exec-private-init",
+        any(test, feature = "native-exec-state")
+    ))]
     fn has_installed_hook_or_adapter(&self) -> bool {
         // Without site patching there are no hook/adapter slots to install.
         false
