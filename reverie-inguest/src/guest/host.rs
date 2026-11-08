@@ -358,6 +358,13 @@ pub struct ToolHost<T: Tool, R: HostRuntime> {
     runtime: R,
     #[cfg(feature = "exec-private-successor")]
     prepared_exec: SpinMutex<Option<PreparedExecState<T>>>,
+    /// Whether `prepared_exec` currently holds a state, mirrored under
+    /// its lock so the ordinary dispatch entries can check it without
+    /// contending for the lock: concurrent dispatches both probe it,
+    /// and the loser of a lock race must not be read as a pending
+    /// successor. Writers store while holding the lock.
+    #[cfg(feature = "exec-private-successor")]
+    prepared_exec_pending: core::sync::atomic::AtomicBool,
     #[cfg(feature = "exec-native-injection")]
     native_exec_driver: Option<std::sync::Arc<dyn super::native_exec::NativeExecDriver<T>>>,
 }
@@ -633,6 +640,8 @@ where
             runtime,
             #[cfg(feature = "exec-private-successor")]
             prepared_exec: SpinMutex::new(None),
+            #[cfg(feature = "exec-private-successor")]
+            prepared_exec_pending: core::sync::atomic::AtomicBool::new(false),
             #[cfg(feature = "exec-native-injection")]
             native_exec_driver: None,
         }
@@ -776,6 +785,8 @@ where
                 binding: control.binding(),
                 phase: PreparedExecPhase::Pending,
             });
+            self.prepared_exec_pending
+                .store(true, core::sync::atomic::Ordering::Release);
             control.restore_completed();
             Ok(())
         })();
@@ -855,6 +866,8 @@ where
         // ExecComplete publication uses the same restored state. Dispatch now
         // observes an existing state and cannot repeat either startup hook.
         let completed = pending.take().expect("owned successor state");
+        self.prepared_exec_pending
+            .store(false, core::sync::atomic::Ordering::Release);
         drop(pending);
         self.states
             .publish(tid.as_raw(), completed.state)
@@ -1011,9 +1024,8 @@ where
         }
         #[cfg(feature = "exec-private-successor")]
         if self
-            .prepared_exec
-            .try_lock()
-            .is_none_or(|pending| pending.is_some())
+            .prepared_exec_pending
+            .load(core::sync::atomic::Ordering::Acquire)
         {
             unsafe { super::exec_private::initialization_failed(core::ptr::null_mut()) }
         }
@@ -1320,9 +1332,8 @@ where
         }
         #[cfg(feature = "exec-private-successor")]
         if self
-            .prepared_exec
-            .try_lock()
-            .is_none_or(|pending| pending.is_some())
+            .prepared_exec_pending
+            .load(core::sync::atomic::Ordering::Acquire)
         {
             unsafe { super::exec_private::initialization_failed(core::ptr::null_mut()) }
         }
@@ -4683,6 +4694,73 @@ mod process_owner_tests {
             );
         }
         assert_ne!(results[0].0, results[1].0);
+    }
+
+    fn isolated(body: impl FnOnce() + std::panic::UnwindSafe, expected: i32) {
+        let pid = unsafe { libc::fork() };
+        assert!(pid >= 0);
+        if pid == 0 {
+            let status = if std::panic::catch_unwind(body).is_ok() {
+                0
+            } else {
+                125
+            };
+            unsafe { libc::_exit(status) };
+        }
+        let mut status = 0;
+        assert_eq!(unsafe { libc::waitpid(pid, &mut status, 0) }, pid);
+        assert!(libc::WIFEXITED(status), "child wait status {status}");
+        assert_eq!(libc::WEXITSTATUS(status), expected);
+    }
+
+    /// Plain contention on the `prepared_exec` slot must not be read as
+    /// a pending successor state: the slot is empty here, and an
+    /// ordinary dispatch that loses the momentary lock race used to
+    /// take the "initialization failed" exit and jump at the unmapped
+    /// fixed native gate (SIGSEGV, dh-n6qjq; 14/200 unpatched,
+    /// 3/3 pre-flight aborts). Under `isolated` so the unfixed crash
+    /// is a clean child failure rather than a whole-harness death.
+    #[cfg(feature = "exec-private-successor")]
+    #[test]
+    fn dispatch_with_prepared_exec_slot_under_contention_completes() {
+        let _test = TEST_LOCK.lock().unwrap();
+        isolated(
+            || {
+                let (host, _peer) = host(false, false);
+                let host = std::sync::Arc::new(host);
+                let (locked_tx, locked_rx) = std::sync::mpsc::channel::<()>();
+                let locker_host = std::sync::Arc::clone(&host);
+                let locker = std::thread::spawn(move || {
+                    let guard = locker_host.prepared_exec.lock();
+                    assert!(guard.is_none());
+                    locked_tx.send(()).unwrap();
+                    std::thread::sleep(std::time::Duration::from_millis(200));
+                    drop(guard);
+                });
+                locked_rx.recv().unwrap();
+                let (tid, result) = std::thread::scope(|scope| {
+                    scope
+                        .spawn(|| {
+                            let tid = raw_pid(libc::SYS_gettid).as_raw();
+                            let mut call = event(libc::SYS_getpid, [0; 6]);
+                            // SAFETY: this thread owns the event and its
+                            // argument-free call; dispatch runs as this thread.
+                            unsafe { host.dispatch(&mut call) };
+                            (tid, call.result)
+                        })
+                        .join()
+                        .unwrap()
+                });
+                locker.join().unwrap();
+                assert_eq!(result, 71);
+                assert_eq!(
+                    host.states.with_state(tid, |state| state.unwrap().attempts),
+                    2,
+                    "restart protocol must run under slot contention"
+                );
+            },
+            0,
+        );
     }
 
     #[test]
