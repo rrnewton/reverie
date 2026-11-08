@@ -358,6 +358,13 @@ pub struct ToolHost<T: Tool, R: HostRuntime> {
     runtime: R,
     #[cfg(feature = "exec-private-successor")]
     prepared_exec: SpinMutex<Option<PreparedExecState<T>>>,
+    /// Whether `prepared_exec` currently holds a state, mirrored under
+    /// its lock so the ordinary dispatch entries can check it without
+    /// contending for the lock: concurrent dispatches both probe it,
+    /// and the loser of a lock race must not be read as a pending
+    /// successor. Writers store while holding the lock.
+    #[cfg(feature = "exec-private-successor")]
+    prepared_exec_pending: core::sync::atomic::AtomicBool,
     #[cfg(feature = "exec-native-injection")]
     native_exec_driver: Option<std::sync::Arc<dyn super::native_exec::NativeExecDriver<T>>>,
 }
@@ -633,6 +640,8 @@ where
             runtime,
             #[cfg(feature = "exec-private-successor")]
             prepared_exec: SpinMutex::new(None),
+            #[cfg(feature = "exec-private-successor")]
+            prepared_exec_pending: core::sync::atomic::AtomicBool::new(false),
             #[cfg(feature = "exec-native-injection")]
             native_exec_driver: None,
         }
@@ -776,6 +785,8 @@ where
                 binding: control.binding(),
                 phase: PreparedExecPhase::Pending,
             });
+            self.prepared_exec_pending
+                .store(true, core::sync::atomic::Ordering::Release);
             control.restore_completed();
             Ok(())
         })();
@@ -855,6 +866,8 @@ where
         // ExecComplete publication uses the same restored state. Dispatch now
         // observes an existing state and cannot repeat either startup hook.
         let completed = pending.take().expect("owned successor state");
+        self.prepared_exec_pending
+            .store(false, core::sync::atomic::Ordering::Release);
         drop(pending);
         self.states
             .publish(tid.as_raw(), completed.state)
@@ -1011,9 +1024,8 @@ where
         }
         #[cfg(feature = "exec-private-successor")]
         if self
-            .prepared_exec
-            .try_lock()
-            .is_none_or(|pending| pending.is_some())
+            .prepared_exec_pending
+            .load(core::sync::atomic::Ordering::Acquire)
         {
             unsafe { super::exec_private::initialization_failed(core::ptr::null_mut()) }
         }
@@ -1320,9 +1332,8 @@ where
         }
         #[cfg(feature = "exec-private-successor")]
         if self
-            .prepared_exec
-            .try_lock()
-            .is_none_or(|pending| pending.is_some())
+            .prepared_exec_pending
+            .load(core::sync::atomic::Ordering::Acquire)
         {
             unsafe { super::exec_private::initialization_failed(core::ptr::null_mut()) }
         }
