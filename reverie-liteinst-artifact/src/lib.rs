@@ -1344,8 +1344,8 @@ const CONTENT_REVERIE_CATALOG: [(&str, u64, &str); 83] = [
     ),
     (
         "reverie-inguest/src/guest/alloc.rs",
-        36599,
-        "3c6e8229d6daf422036416d30e8c868040a9b3fff5c719af6d3f40320b23cdef",
+        45552,
+        "d28b5c790467e2588597342ec9175d83c0b6d5965858b013e5a1cfa982ce253b",
     ),
     (
         "reverie-inguest/src/guest/tool_region_constructor.rs",
@@ -1379,13 +1379,13 @@ const CONTENT_REVERIE_CATALOG: [(&str, u64, &str); 83] = [
     ),
     (
         "reverie-inguest/src/guest/rpc.rs",
-        34100,
-        "1c6b58596ef2108d7173ade0926c060aa357da30e12fdc6a4d6bcb9525293e7c",
+        40649,
+        "aa4c16176a24656169bba161ce87ad99aeb8a6b1d8a85a938d7e12f76543f9f4",
     ),
     (
         "reverie-inguest/src/guest/host.rs",
-        284627,
-        "9f98e1ca34d5b2053f272ec5b9c48e3244239be0d51cface97d0592952ee994e",
+        378144,
+        "4398d3b584374e1ee6a9db9dfcd797dee24a9d12576695ceeb9b9b92441d3267",
     ),
     (
         "reverie-inguest/src/guest/host_linux.rs",
