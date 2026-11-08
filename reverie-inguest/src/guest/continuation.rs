@@ -226,13 +226,13 @@ impl NativeExecResumeReceipt {
 /// compiler keeps one outlined access site per cell (the recognizer
 /// authenticates that site in the built image).
 #[inline(never)]
-fn owner_get() -> *mut Continuation {
-    OWNER.get()
+pub fn owner_get() -> *mut Continuation {
+    OWNER.with(|cell| cell.get())
 }
 
 #[inline(never)]
-fn pending_get() -> Option<Pending> {
-    PENDING.get()
+pub fn pending_get() -> Option<Pending> {
+    PENDING.with(|cell| cell.get())
 }
 
 pub fn native_exec_resume_receipt(
