@@ -45,12 +45,18 @@
 //! `release_detached`, the detached wait is terminal-only: a
 //! guest that then stops itself is reported as an unexpected
 //! post-detach stop and cancelled. The watched path traces only
-//! one thread-group leader: other threads are untraced, so an
-//! exec from a non-leader thread is not observed and supervision
-//! silently ends when the kernel releases the leader; detecting
-//! that case, fork-following, and thread supervision are not
-//! part of this module.
+//! one thread-group leader plus its fork tree: forked children
+//! are seized on creation, their execs are caught, drained and
+//! resumed seized, and exit-only vfork children are observed to
+//! exit without re-arm. Other threads of a task are untraced, so
+//! an exec from a non-leader thread is not observed and
+//! supervision silently ends when the kernel releases the leader;
+//! detecting that case and thread supervision are not part of
+//! this module.
 
+use std::task::Context;
+use std::task::Poll;
+use std::task::Waker;
 use std::time::Duration;
 use std::time::Instant;
 
@@ -505,11 +511,86 @@ fn launch_failure<'fd>(
     }
 }
 
+/// Seize options for the supervisor. Fork following is watched-only:
+/// the dormant path detaches at the first exec and must not
+/// auto-attach children it would never drive.
+fn supervisor_options(follow_forks: bool) -> Options {
+    let base =
+        Options::PTRACE_O_EXITKILL | Options::PTRACE_O_TRACEEXEC | Options::PTRACE_O_TRACESYSGOOD;
+    if follow_forks {
+        base | Options::PTRACE_O_TRACEFORK | Options::PTRACE_O_TRACEVFORK
+    } else {
+        base
+    }
+}
+
+/// One auto-attached fork child being driven by the watched
+/// supervisor. Its wait is polled, never blocked on, so the leader
+/// and every sibling keep making progress.
+struct ChildWait {
+    driver: safeptrace::PtracerWaitDriver,
+    initialized: bool,
+}
+
+impl ChildWait {
+    fn new(running: Running) -> Self {
+        Self::from_running(running, false)
+    }
+
+    fn from_running(running: Running, initialized: bool) -> Self {
+        Self {
+            driver: running.wait_owned_on_ptracer_thread().into_driver(),
+            initialized,
+        }
+    }
+}
+
+fn poll_driver(driver: &mut safeptrace::PtracerWaitDriver) -> Option<Result<Wait>> {
+    let waker = Waker::noop();
+    let mut cx = Context::from_waker(waker);
+    match driver.poll_on_ptracer_thread(&mut cx) {
+        Poll::Ready(Ok(wait)) => Some(Ok(wait)),
+        Poll::Ready(Err(error)) => Some(Err(format!(
+            "exec supervisor fork-child wait failed: {error:?}"
+        )
+        .into())),
+        Poll::Pending => None,
+    }
+}
+
+/// Detach every driven fork child, interrupting running ones first.
+/// Used when the leader is released or terminates: no child may be
+/// left seized by a supervisor that will never wait it again.
+fn detach_children(children: Vec<ChildWait>) -> Result<()> {
+    for mut child in children {
+        let Some(generation) = child.driver.generation() else {
+            continue;
+        };
+        let pid = generation.pid();
+        if let Ok(running) = Running::new_on_ptracer_thread(pid) {
+            let _ = running.interrupt();
+        }
+        loop {
+            match poll_driver(&mut child.driver) {
+                Some(Ok(Wait::Stopped(task, _event))) => {
+                    task.detach(Some(Signal::SIGCONT))?;
+                    break;
+                }
+                Some(Ok(Wait::Exited(_, _))) => break,
+                Some(Err(_)) => break,
+                None => std::thread::sleep(Duration::from_millis(1)),
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Claim the receipt, clone one owned child and seize it before its
 /// initial exec. Shared by the detached and watched entry points.
 fn seize_child<'fd>(
     mut request: PreparedExec<'fd>,
     receipt: CleanupReceipt,
+    follow_forks: bool,
     before_seize: &mut dyn FnMut(safeptrace::Pid),
 ) -> std::result::Result<
     (
@@ -562,10 +643,7 @@ fn seize_child<'fd>(
     };
     let pid = pending.pid();
     before_seize(pid);
-    let running = match Running::seize_on_ptracer_thread(
-        pid,
-        Options::PTRACE_O_EXITKILL | Options::PTRACE_O_TRACEEXEC | Options::PTRACE_O_TRACESYSGOOD,
-    ) {
+    let running = match Running::seize_on_ptracer_thread(pid, supervisor_options(follow_forks)) {
         Ok(running) => running,
         Err(error) => {
             let parent_stdio = request.take_parent_stdio();
@@ -633,7 +711,7 @@ impl Supervisor {
             });
         }
         let (mut owner, running, pid, started, receipt) =
-            seize_child(request, receipt, before_seize)?;
+            seize_child(request, receipt, false, before_seize)?;
         let result = catch_initial_exec(&mut owner, running, pid, started, before_initial_resume);
         match result {
             Ok((running, former_tid, spawn_to_after_detach)) => Ok(DetachedSupervisor {
@@ -669,7 +747,7 @@ impl Supervisor {
         before_initial_resume: &mut dyn FnMut(safeptrace::Pid),
     ) -> std::result::Result<WatchedSupervisor<'fd>, LaunchFailure<'fd>> {
         let (mut owner, running, pid, started, receipt) =
-            seize_child(request, receipt, before_seize)?;
+            seize_child(request, receipt, true, before_seize)?;
         match consume_handshake(&mut owner, running, pid, before_initial_resume) {
             Ok((running, group_stop_clear_pending)) => Ok(WatchedSupervisor {
                 pid,
@@ -680,6 +758,7 @@ impl Supervisor {
                 pre_first_exec: true,
                 group_stop_clear_pending,
                 execs_seen: 0,
+                children: Vec::new(),
             }),
             Err(error) => Err(launch_failure(owner, receipt, error)),
         }
@@ -720,6 +799,59 @@ enum NextExec {
     Finished(ExitStatus),
 }
 
+/// Drive one stopped fork child to its next running state. Its
+/// first stop is the auto-attach initial stop: install the same
+/// exec/fork options and suppress it. Later execs are drained,
+/// restored, and resumed still seized (the internal re-arm; no
+/// caller hook runs for fork children), signals forward, group
+/// stops are cleared with a real `SIGCONT`, and nested forks are
+/// captured as new driven children. An exit-only child needs no
+/// exec handling: its `Exited` wait is consumed by the caller and
+/// the guest parent's own wait proceeds.
+fn handle_child_stop(
+    task: Stopped,
+    event: Event,
+    initialized: &mut bool,
+    new_children: &mut Vec<ChildWait>,
+) -> Result<Running> {
+    if !*initialized {
+        task.setoptions(supervisor_options(true))?;
+        *initialized = true;
+        if matches!(event, Event::Stop | Event::Signal(Signal::SIGSTOP)) {
+            return Ok(task.resume(None)?);
+        }
+    }
+    match event {
+        Event::Exec(former) => {
+            let (task, context, _boundary) = super::drain_and_capture(task, former)?;
+            context.restore(&task)?;
+            Ok(task.resume(None)?)
+        }
+        Event::NewChild(_op, child) => {
+            new_children.push(ChildWait::new(child));
+            Ok(task.resume(None)?)
+        }
+        Event::VforkDone => Ok(task.resume(None)?),
+        Event::Signal(signal) => Ok(task.resume(Some(signal))?),
+        Event::RawSignal(raw) => Ok(task.resume_raw(raw)?),
+        Event::Stop => {
+            let pid = task.pid();
+            let signo = classify_group_stop_trap(
+                &task,
+                pid,
+                "exec supervisor encountered unexpected fork-child stop trap",
+            )?;
+            if signo == libc::SIGTRAP {
+                Ok(task.resume(None)?)
+            } else {
+                send_own_sigcont(pid)?;
+                Ok(task.resume(None)?)
+            }
+        }
+        Event::Seccomp | Event::Syscall | Event::Exit => Ok(task.resume(None)?),
+    }
+}
+
 /// Drive the seized guest until its next exec event or terminal
 /// exit. Before the first exec, only this supervisor's own
 /// group-stop-clearing SIGCONT trap/delivery may be suppressed;
@@ -731,88 +863,166 @@ enum NextExec {
 /// zero guest-visible time and the guest observes a SIGCONT from
 /// the supervisor pid.
 fn wait_watched(
-    mut running: Running,
+    running: Running,
     pid: safeptrace::Pid,
     pre_first_exec: bool,
     group_stop_clear_pending: &mut bool,
+    children: &mut Vec<ChildWait>,
 ) -> Result<NextExec> {
+    let result = wait_watched_inner(
+        running,
+        pid,
+        pre_first_exec,
+        group_stop_clear_pending,
+        children,
+    );
+    if result.is_err() {
+        let _ = detach_children(std::mem::take(children));
+    }
+    result
+}
+
+fn wait_watched_inner(
+    running: Running,
+    pid: safeptrace::Pid,
+    pre_first_exec: bool,
+    group_stop_clear_pending: &mut bool,
+    children: &mut Vec<ChildWait>,
+) -> Result<NextExec> {
+    let mut leader = running.wait_owned_on_ptracer_thread().into_driver();
     loop {
-        match trace::wait(running)? {
-            Wait::Exited(_, status) => return Ok(NextExec::Finished(status)),
-            Wait::Stopped(task, Event::Exec(former)) => {
-                if former != pid {
+        let mut progressed = false;
+        let mut index = 0;
+        while index < children.len() {
+            match poll_driver(&mut children[index].driver) {
+                Some(Ok(Wait::Exited(_, _))) => {
+                    children.remove(index);
+                    progressed = true;
+                }
+                Some(Ok(Wait::Stopped(task, event))) => {
+                    progressed = true;
+                    let mut new_children = Vec::new();
+                    let next = handle_child_stop(
+                        task,
+                        event,
+                        &mut children[index].initialized,
+                        &mut new_children,
+                    )?;
+                    let initialized = children[index].initialized;
+                    children[index] = ChildWait::from_running(next, initialized);
+                    children.extend(new_children);
+                    index += 1;
+                }
+                Some(Err(error)) => return Err(error),
+                None => index += 1,
+            }
+        }
+        if let Some(waited) = poll_driver(&mut leader) {
+            progressed = true;
+            match waited? {
+                Wait::Exited(_, status) => {
+                    detach_children(std::mem::take(children))?;
+                    return Ok(NextExec::Finished(status));
+                }
+                Wait::Stopped(task, Event::Exec(former)) => {
+                    if former != pid {
+                        return Err(format!(
+                            "exec supervisor expected exec of {pid:?}, got former {former:?}"
+                        )
+                        .into());
+                    }
+                    return Ok(NextExec::Exec(task));
+                }
+                Wait::Stopped(task, Event::NewChild(_op, child)) => {
+                    children.push(ChildWait::new(child));
+                    leader = task
+                        .resume(None)?
+                        .wait_owned_on_ptracer_thread()
+                        .into_driver();
+                }
+                Wait::Stopped(task, Event::Stop) if pre_first_exec && *group_stop_clear_pending => {
+                    require_group_stop_clear_trap(&task, pid)?;
+                    leader = task
+                        .resume(None)?
+                        .wait_owned_on_ptracer_thread()
+                        .into_driver();
+                }
+                Wait::Stopped(task, Event::Signal(Signal::SIGCONT))
+                    if pre_first_exec && *group_stop_clear_pending =>
+                {
+                    require_owned_sigcont(&task)?;
+                    *group_stop_clear_pending = false;
+                    leader = task
+                        .resume(None)?
+                        .wait_owned_on_ptracer_thread()
+                        .into_driver();
+                }
+                Wait::Stopped(task, Event::Signal(Signal::SIGSTOP)) if pre_first_exec => {
+                    require_owned_handshake_sigstop(&task, pid)?;
+                    return Err(
+                        "exec supervisor encountered SIGSTOP before exec: no handshake signal was pending"
+                            .into(),
+                    );
+                }
+                Wait::Stopped(task, Event::Signal(signal)) => {
+                    leader = task
+                        .resume(Some(signal))?
+                        .wait_owned_on_ptracer_thread()
+                        .into_driver();
+                }
+                Wait::Stopped(task, Event::RawSignal(raw)) => {
+                    leader = task
+                        .resume_raw(raw)?
+                        .wait_owned_on_ptracer_thread()
+                        .into_driver();
+                }
+                Wait::Stopped(task, Event::Stop) => {
+                    // Classify by siginfo, with no pending flag: every
+                    // SIGCONT to a seized task arms a SIGTRAP notify
+                    // trap, whether or not the guest was stopped, and a
+                    // SIGCONT delivery need not reach the traced leader.
+                    let signo = classify_group_stop_trap(
+                        &task,
+                        pid,
+                        "exec supervisor encountered unexpected watched stop trap",
+                    )?;
+                    if signo == libc::SIGTRAP {
+                        // SIGCONT notify trap. No PTRACE_INTERRUPT or
+                        // PTRACE_LISTEN is issued by this module; a
+                        // future interrupt-based cancel must not reuse
+                        // this resume without distinguishing its trap.
+                        leader = task
+                            .resume(None)?
+                            .wait_owned_on_ptracer_thread()
+                            .into_driver();
+                        continue;
+                    }
+                    if pre_first_exec {
+                        return Err(
+                            "exec supervisor encountered unexpected group stop before exec".into(),
+                        );
+                    }
+                    // A signal injected on the group-stop resume would be
+                    // ignored and leave the natural-parent stop report
+                    // for after detach. Generate a real SIGCONT instead;
+                    // its notify trap is consumed above and its delivery
+                    // reaches the general signal arm.
+                    send_own_sigcont(pid)?;
+                    leader = task
+                        .resume(None)?
+                        .wait_owned_on_ptracer_thread()
+                        .into_driver();
+                }
+                Wait::Stopped(_task, other_event) => {
                     return Err(format!(
-                        "exec supervisor expected exec of {pid:?}, got former {former:?}"
+                        "exec supervisor encountered unexpected stop while watched: {other_event:?}"
                     )
                     .into());
                 }
-                return Ok(NextExec::Exec(task));
             }
-            Wait::Stopped(task, Event::Stop) if pre_first_exec && *group_stop_clear_pending => {
-                require_group_stop_clear_trap(&task, pid)?;
-                running = task.resume(None)?;
-            }
-            Wait::Stopped(task, Event::Signal(Signal::SIGCONT))
-                if pre_first_exec && *group_stop_clear_pending =>
-            {
-                require_owned_sigcont(&task)?;
-                *group_stop_clear_pending = false;
-                running = task.resume(None)?;
-            }
-            Wait::Stopped(task, Event::Signal(Signal::SIGSTOP)) if pre_first_exec => {
-                // Same ownership proof as the detached path: no
-                // handshake signal-delivery phase remains, so any
-                // pre-exec SIGSTOP fails closed rather than being
-                // swallowed as handshake residue.
-                require_owned_handshake_sigstop(&task, pid)?;
-                return Err(
-                    "exec supervisor encountered SIGSTOP before exec: no handshake signal was pending"
-                        .into(),
-                );
-            }
-            Wait::Stopped(task, Event::Signal(signal)) => {
-                running = task.resume(Some(signal))?;
-            }
-            Wait::Stopped(task, Event::RawSignal(raw)) => {
-                running = task.resume_raw(raw)?;
-            }
-            Wait::Stopped(task, Event::Stop) => {
-                // Classify by siginfo, with no pending flag: every
-                // SIGCONT to a seized task arms a SIGTRAP notify
-                // trap, whether or not the guest was stopped, and a
-                // SIGCONT delivery need not reach the traced leader.
-                let signo = classify_group_stop_trap(
-                    &task,
-                    pid,
-                    "exec supervisor encountered unexpected watched stop trap",
-                )?;
-                if signo == libc::SIGTRAP {
-                    // SIGCONT notify trap. No PTRACE_INTERRUPT or
-                    // PTRACE_LISTEN is issued by this module; a
-                    // future interrupt-based cancel must not reuse
-                    // this resume without distinguishing its trap.
-                    running = task.resume(None)?;
-                    continue;
-                }
-                if pre_first_exec {
-                    return Err(
-                        "exec supervisor encountered unexpected group stop before exec".into(),
-                    );
-                }
-                // A signal injected on the group-stop resume would be
-                // ignored and leave the natural-parent stop report
-                // for after detach. Generate a real SIGCONT instead;
-                // its notify trap is consumed above and its delivery
-                // reaches the general signal arm.
-                send_own_sigcont(pid)?;
-                running = task.resume(None)?;
-            }
-            Wait::Stopped(_task, other_event) => {
-                return Err(format!(
-                    "exec supervisor encountered unexpected stop while watched: {other_event:?}"
-                )
-                .into());
-            }
+        }
+        if !progressed {
+            std::thread::sleep(Duration::from_millis(1));
         }
     }
 }
@@ -831,6 +1041,7 @@ pub struct WatchedSupervisor<'fd> {
     pre_first_exec: bool,
     group_stop_clear_pending: bool,
     execs_seen: u64,
+    children: Vec<ChildWait>,
 }
 
 impl std::fmt::Debug for WatchedSupervisor<'_> {
@@ -838,6 +1049,7 @@ impl std::fmt::Debug for WatchedSupervisor<'_> {
         f.debug_struct("WatchedSupervisor")
             .field("pid", &self.pid)
             .field("execs_seen", &self.execs_seen)
+            .field("children", &self.children.len())
             .field("owner", &self.owner)
             .field("seized", &self.running.is_some())
             .field("cleanup", &self.receipt.snapshot())
@@ -876,9 +1088,16 @@ impl<'fd> WatchedSupervisor<'fd> {
             pre_first_exec,
             mut group_stop_clear_pending,
             execs_seen,
+            mut children,
             ..
         } = self;
-        let next = wait_watched(running, pid, pre_first_exec, &mut group_stop_clear_pending);
+        let next = wait_watched(
+            running,
+            pid,
+            pre_first_exec,
+            &mut group_stop_clear_pending,
+            &mut children,
+        );
         match next {
             Ok(NextExec::Finished(status)) => {
                 owner.record_detached_terminal(status);
@@ -900,6 +1119,7 @@ impl<'fd> WatchedSupervisor<'fd> {
                     pid,
                     started,
                     execs_seen: execs_seen + 1,
+                    children,
                 }))),
                 Err(error) => Err(launch_failure(owner, receipt, error)),
             },
@@ -908,7 +1128,8 @@ impl<'fd> WatchedSupervisor<'fd> {
     }
 
     /// Cancel while seized, before any terminal outcome.
-    pub fn cancel(self) -> std::result::Result<CleanupState, Box<ChildOwner<'fd>>> {
+    pub fn cancel(mut self) -> std::result::Result<CleanupState, Box<ChildOwner<'fd>>> {
+        let _ = detach_children(std::mem::take(&mut self.children));
         self.owner.cancel()
     }
 }
@@ -929,6 +1150,7 @@ pub struct SuccessorStop<'fd> {
     pid: safeptrace::Pid,
     started: Instant,
     execs_seen: u64,
+    children: Vec<ChildWait>,
 }
 
 impl std::fmt::Debug for SuccessorStop<'_> {
@@ -937,6 +1159,7 @@ impl std::fmt::Debug for SuccessorStop<'_> {
             .field("pid", &self.pid)
             .field("former_tid", &self.boundary.former_tid)
             .field("execs_seen", &self.execs_seen)
+            .field("children", &self.children.len())
             .field("owner", &self.owner)
             .field("cleanup", &self.receipt.snapshot())
             .finish()
@@ -999,6 +1222,7 @@ impl<'fd> SuccessorStop<'fd> {
             pid,
             started,
             execs_seen,
+            children,
         } = self;
         let result = hook(task, &context, &boundary).and_then(|task| {
             context.restore(&task)?;
@@ -1014,6 +1238,7 @@ impl<'fd> SuccessorStop<'fd> {
                 pre_first_exec: false,
                 group_stop_clear_pending: false,
                 execs_seen,
+                children,
             }),
             Err(error) => Err(launch_failure(owner, receipt, error)),
         }
@@ -1039,7 +1264,11 @@ impl<'fd> SuccessorStop<'fd> {
             pid,
             started,
             execs_seen: _,
+            children,
         } = self;
+        if let Err(error) = detach_children(children) {
+            return Err(launch_failure(owner, receipt, error));
+        }
         let former_tid = boundary.former_tid;
         // Detach with SIGCONT, like the dormant path. Group stops
         // encountered while watched were already cleared while
@@ -1064,7 +1293,8 @@ impl<'fd> SuccessorStop<'fd> {
     }
 
     /// Cancel while the successor is stopped, before any release.
-    pub fn cancel(self) -> std::result::Result<CleanupState, Box<ChildOwner<'fd>>> {
+    pub fn cancel(mut self) -> std::result::Result<CleanupState, Box<ChildOwner<'fd>>> {
+        let _ = detach_children(std::mem::take(&mut self.children));
         self.owner.cancel()
     }
 
@@ -1102,7 +1332,11 @@ impl<'fd> SuccessorStop<'fd> {
     /// physical-preparation entry in this crate may split it, and
     /// the parts are rechecked against each other there.
     #[cfg(feature = "loader-private-runtime")]
-    pub(crate) fn into_parts(self) -> (Stopped, EntryContext, ExecBoundary, ChildOwner<'fd>) {
+    pub(crate) fn into_parts(mut self) -> (Stopped, EntryContext, ExecBoundary, ChildOwner<'fd>) {
+        // The prepared-mapping path owns only the leader stop; fork
+        // children of the old image are detached here rather than
+        // left seized with nobody left to wait them.
+        let _ = detach_children(std::mem::take(&mut self.children));
         (self.task, self.context, self.boundary, self.owner)
     }
 }
@@ -1503,6 +1737,89 @@ mod tests {
             CleanupReceipt::default(),
         )
         .unwrap();
+        let outcome = rearm_until_finished(watched);
+        assert_eq!(outcome.status, ExitStatus::Exited(7));
+        assert!(outcome.cleanup.confirmed);
+    }
+
+    #[test]
+    fn watched_fork_child_group_stop_is_continued_and_execs() {
+        // The inner shell is a forked new leader: it execs, stops
+        // itself, and only then execs /bin/true. Without fork
+        // following it stays stopped forever and the outer shell
+        // never reaches exit 7.
+        let watched = Supervisor::spawn_watched(
+            request(
+                "/bin/sh",
+                &["sh", "-c", "sh -c 'kill -STOP $$; exec /bin/true'; exit 7"],
+            ),
+            CleanupReceipt::default(),
+        )
+        .unwrap();
+        let outcome = rearm_until_finished(watched);
+        assert_eq!(outcome.status, ExitStatus::Exited(7));
+        assert!(outcome.cleanup.confirmed);
+    }
+
+    #[test]
+    fn watched_sh_chain_fork_tree_runs_to_completion() {
+        // Outer shell -> forked inner shell -> forked innermost
+        // shell: every level execs under supervision, then the
+        // outer shell exits with its own status.
+        let watched = Supervisor::spawn_watched(
+            request(
+                "/bin/sh",
+                &["sh", "-c", "sh -c 'sh -c \"exec /bin/true\"'; exit 7"],
+            ),
+            CleanupReceipt::default(),
+        )
+        .unwrap();
+        let outcome = rearm_until_finished(watched);
+        assert_eq!(outcome.status, ExitStatus::Exited(7));
+        assert!(outcome.cleanup.confirmed);
+    }
+
+    #[test]
+    #[allow(unsafe_code, deprecated)]
+    fn watched_vfork_guest_entrypoint() {
+        if std::env::var_os("REVERIE_SUPERVISOR_VFORK_GUEST").is_none() {
+            return;
+        }
+        // SAFETY: this process is the dedicated watched guest. The
+        // vfork child only calls _exit before touching the shared
+        // address space; the parent waits for exactly that child.
+        unsafe {
+            let child = libc::vfork();
+            if child == 0 {
+                libc::_exit(5);
+            }
+            assert!(child > 0);
+            let mut status = 0;
+            assert_eq!(libc::waitpid(child, &mut status, 0), child);
+            assert!(libc::WIFEXITED(status));
+            assert_eq!(libc::WEXITSTATUS(status), 5);
+            libc::_exit(7);
+        }
+    }
+
+    #[test]
+    fn watched_exit_only_vfork_child_is_unchanged() {
+        let exe = std::env::current_exe().unwrap();
+        let args: Vec<OsString> = [
+            exe.as_os_str().to_owned(),
+            OsString::from(
+                "launcher::exec_stop::supervisor::tests::watched_vfork_guest_entrypoint",
+            ),
+            OsString::from("--exact"),
+            OsString::from("--nocapture"),
+        ]
+        .to_vec();
+        let env = [(
+            OsString::from("REVERIE_SUPERVISOR_VFORK_GUEST"),
+            OsString::from("1"),
+        )];
+        let request = PreparedExec::new(&exe, &args, &env, None, Vec::new()).unwrap();
+        let watched = Supervisor::spawn_watched(request, CleanupReceipt::default()).unwrap();
         let outcome = rearm_until_finished(watched);
         assert_eq!(outcome.status, ExitStatus::Exited(7));
         assert!(outcome.cleanup.confirmed);
