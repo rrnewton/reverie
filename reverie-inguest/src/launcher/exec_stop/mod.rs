@@ -221,7 +221,9 @@ impl<'fd> ChildOwner<'fd> {
         if self.complete {
             return;
         }
-        let killed = self.cleanup.shared().request_sigkill();
+        // Process-directed: a thread-directed kill would be absorbed by
+        // an exited leader thread whose sibling threads still run.
+        let killed = self.cleanup.shared().request_process_sigkill();
         {
             let mut receipt = self.receipt.borrow_mut();
             receipt.kill_requested = true;
