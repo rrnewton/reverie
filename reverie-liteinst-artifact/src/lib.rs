@@ -1254,13 +1254,13 @@ const CONTENT_REVERIE_CATALOG: [(&str, u64, &str); 86] = [
     ),
     (
         "reverie-liteinst-artifact/src/private_static/selected_initializers.rs",
-        240984,
-        "386d565e8ef2d80ae52a9069f7a7cda61df761601907f6594cedd47301c1b6e5",
+        256236,
+        "55d6b83c3677725e1eaf0d176102f0330fa21e888bc2b341931cc676c683304b",
     ),
     (
         "reverie-liteinst-artifact/src/private_static/selected_initializers/package_roles.rs",
-        81170,
-        "148d46702286ef359c7613c490083877d4bbc134972b2ae509760b2bb51bb55e",
+        81441,
+        "7a0119b202fe9a3d3927b56b098fac9a94afc1b878306a3a1971c1bcf46d8ef0",
     ),
     (
         "reverie-liteinst-artifact/tests/fixtures/package_roles_fallback_member.rs",
@@ -1324,8 +1324,8 @@ const CONTENT_REVERIE_CATALOG: [(&str, u64, &str); 86] = [
     ),
     (
         "reverie-liteinst-artifact/src/private_static/selected_initializers/terminal_observation.rs",
-        31604,
-        "1beca894cd78b0c3a877af1285bed1dfd288486d3978f6626359e1e0f8f0ae6c",
+        34191,
+        "5f75e628016105e7b568887028a48d3207c49774597383372497761234375a9f",
     ),
     (
         "reverie-liteinst-artifact/tests/fixtures/ordinary_preceding_gate_page.rs",
@@ -38587,6 +38587,21 @@ mod tests {
                 "reverie-inguest/src/guest/installed_tool.rs",
                 35715,
                 "0119bc667ad13b526a923981f8040a356c159e681c67fae4e8030e2d90da58a9",
+            ),
+            (
+                "reverie-liteinst-artifact/src/private_static/selected_initializers.rs",
+                240984,
+                "386d565e8ef2d80ae52a9069f7a7cda61df761601907f6594cedd47301c1b6e5",
+            ),
+            (
+                "reverie-liteinst-artifact/src/private_static/selected_initializers/package_roles.rs",
+                81170,
+                "148d46702286ef359c7613c490083877d4bbc134972b2ae509760b2bb51bb55e",
+            ),
+            (
+                "reverie-liteinst-artifact/src/private_static/selected_initializers/terminal_observation.rs",
+                31604,
+                "1beca894cd78b0c3a877af1285bed1dfd288486d3978f6626359e1e0f8f0ae6c",
             ),
             (
                 "Cargo.toml",
