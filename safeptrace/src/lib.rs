@@ -3095,6 +3095,57 @@ mod test {
         panic!("listened child did not exit after SIGCONT");
     }
 
+    #[cfg(feature = "notifier")]
+    #[test]
+    fn process_sigkill_kills_group_of_exited_leader_thread()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let (pid, stopped) = trace(
+            || {
+                thread::spawn(|| {
+                    thread::sleep(std::time::Duration::from_secs(5));
+                    unsafe { libc::_exit(0) }
+                });
+                // End only the traced main thread. The sibling keeps the
+                // group alive, leaving a zombie group leader.
+                loop {
+                    unsafe { libc::syscall(libc::SYS_exit, 0) };
+                }
+            },
+            Options::PTRACE_O_EXITKILL,
+        )?;
+        let cleanup = stopped.terminal_cleanup();
+        let running = stopped.resume(None)?;
+        let status_path = format!("/proc/{}/status", pid.as_raw());
+        let zombie = (0..200).any(|_| {
+            let state = std::fs::read_to_string(&status_path).unwrap_or_default();
+            if state
+                .lines()
+                .any(|line| line.starts_with("State:") && line.contains("zombie"))
+            {
+                return true;
+            }
+            thread::sleep(std::time::Duration::from_millis(10));
+            false
+        });
+        assert!(zombie, "traced leader thread did not become a zombie");
+        // A thread-directed SIGKILL would stay pending on the zombie and
+        // the sibling would exit 0 after 5 s instead.
+        let started = std::time::Instant::now();
+        cleanup.request_process_sigkill()?;
+        match running.wait()? {
+            Wait::Exited(got, status) => {
+                assert_eq!(got, pid);
+                assert!(
+                    matches!(status, ExitStatus::Signaled(Signal::SIGKILL, _)),
+                    "unexpected status {status:?}"
+                );
+            }
+            other => panic!("expected the group's terminal status, got {other:?}"),
+        }
+        assert!(started.elapsed() < std::time::Duration::from_secs(3));
+        Ok(())
+    }
+
     #[test]
     fn fpu_register_writes_fail_once_forbidden() -> Result<(), Box<dyn std::error::Error + 'static>>
     {

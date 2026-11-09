@@ -148,6 +148,10 @@ pub struct CleanupState {
     pub wait_error: Option<CleanupWaitFailure>,
     /// Actual terminal status when directly returned by the owned wait.
     pub terminal_status: Option<ExitStatus>,
+    /// First failure while a watched supervisor tore down its driven fork
+    /// children (detach, or the bounded kill of a child it could not
+    /// detach). The leader's terminal status above is unaffected.
+    pub child_detach_error: Option<String>,
 }
 
 /// Original physical child owner, retained through detach and terminal wait.
