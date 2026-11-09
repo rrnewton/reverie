@@ -66107,11 +66107,9 @@ pub mod private_static {
     const LAYOUT: &str = selected_initializers::MappedConsumer::Detcore
         .source()
         .layout();
-    const FEATURES: [&str; 3] = [
-        "exec-native-injection",
-        "exec-private-init",
-        "loader-private-runtime",
-    ];
+    const FEATURES: &[&str] = selected_initializers::MappedConsumer::Detcore
+        .source()
+        .features();
 
     /// Independently selected exact Git/compiler inputs, never receipt JSON.
     pub struct SourceExpectation<'a> {
@@ -66565,6 +66563,19 @@ pub mod private_static {
                     && expected.target_dir == expected.workspace.join("target"),
                 "static producer requires canonical sole H/target",
             )?;
+            // The Detcore source transaction is the only
+            // implemented workspace binding today; its package
+            // identity comes from the selected consumer
+            // descriptor, not per-site literals.
+            let consumer = selected_initializers::MappedConsumer::Detcore.source();
+            let gitlink = match consumer.binding() {
+                selected_initializers::WorkspaceBinding::HermitGitlink {
+                    reverie_gitlink_relative,
+                } => reverie_gitlink_relative,
+                selected_initializers::WorkspaceBinding::CargoGitRev => {
+                    return Err("static CargoGitRev workspace binding not yet implemented".into());
+                }
+            };
             let mut guard = Guard {
                 roots: Vec::new(),
                 files: vec![cargo.clone(), rustc],
@@ -66573,24 +66584,24 @@ pub mod private_static {
             let result = (|| {
                 guard.root(expected.workspace, expected.workspace_head, runner)?;
                 guard.root(
-                    &expected.workspace.join("reverie"),
+                    &expected.workspace.join(gitlink),
                     expected.reverie_pin,
                     runner,
                 )?;
                 let link = runner.text(
                     "git",
-                    &["--no-replace-objects", "ls-tree", "HEAD", "--", "reverie"],
+                    &["--no-replace-objects", "ls-tree", "HEAD", "--", gitlink],
                     expected.workspace,
                 )?;
                 require(
-                    link == format!("160000 commit {}\treverie\n", expected.reverie_pin),
+                    link == format!("160000 commit {}\t{gitlink}\n", expected.reverie_pin),
                     "static H gitlink mismatch",
                 )?;
                 for relative in [
-                    "Cargo.toml",
-                    "Cargo.lock",
-                    "detcore-liteinst/Cargo.toml",
-                    "detcore-liteinst/src/lib.rs",
+                    consumer.root_manifest_relative(),
+                    consumer.root_lock_relative(),
+                    consumer.manifest_relative(),
+                    consumer.lib_rs_relative(),
                 ] {
                     guard.files.push(compiled_blob_file(
                         expected.workspace,
@@ -66599,7 +66610,7 @@ pub mod private_static {
                         runner,
                     )?);
                 }
-                let manifest = expected.workspace.join("detcore-liteinst/Cargo.toml");
+                let manifest = expected.workspace.join(consumer.manifest_relative());
                 let output = runner.run(
                     cargo.path.to_str().ok_or("non-UTF8 cargo")?,
                     &[
@@ -66656,18 +66667,22 @@ pub mod private_static {
                 guard.cache_root(&roots[0], expected.reverie_pin, runner)?;
                 let rows: Vec<_> = packages
                     .iter()
-                    .filter(|p| p["name"] == "detcore-liteinst")
+                    .filter(|p| p["name"] == consumer.package_name())
                     .collect();
                 require(rows.len() == 1, "static metadata leaf ambiguous")?;
                 let leaf = rows[0];
                 let id = format!(
-                    "path+file://{}#0.5.5",
-                    expected.workspace.join("detcore-liteinst").display()
+                    "path+file://{}#{}",
+                    manifest
+                        .parent()
+                        .ok_or("static leaf manifest parent")?
+                        .display(),
+                    consumer.package_version()
                 );
                 require(
                     leaf["id"] == id
                         && leaf["source"].is_null()
-                        && leaf["version"] == "0.5.5"
+                        && leaf["version"] == consumer.package_version()
                         && leaf["manifest_path"].as_str() == manifest.to_str(),
                     "static leaf package identity mismatch",
                 )?;
@@ -66676,17 +66691,14 @@ pub mod private_static {
                     .ok_or("static leaf targets absent")?;
                 let lib: Vec<_> = targets
                     .iter()
-                    .filter(|t| t["name"] == "detcore_liteinst")
+                    .filter(|t| t["name"] == consumer.lib_target())
                     .collect();
                 require(
                     lib.len() == 1
                         && strings(&lib[0]["kind"])? == ["cdylib"]
                         && strings(&lib[0]["crate_types"])? == ["cdylib"]
                         && lib[0]["src_path"].as_str()
-                            == expected
-                                .workspace
-                                .join("detcore-liteinst/src/lib.rs")
-                                .to_str(),
+                            == expected.workspace.join(consumer.lib_rs_relative()).to_str(),
                     "static explicit Cargo override requires actual cdylib metadata target",
                 )?;
                 let mut target = lib[0].clone();
@@ -66696,13 +66708,13 @@ pub mod private_static {
                 target["crate_types"] = serde_json::json!(["staticlib"]);
                 let package = PackageIdentity {
                     id,
-                    name: "detcore-liteinst".into(),
-                    manifest,
+                    name: consumer.package_name().into(),
+                    manifest: manifest.clone(),
                     source: None,
-                    target: "detcore_liteinst".into(),
+                    target: consumer.lib_target().into(),
                     kind: vec!["staticlib".into()],
                     crate_types: vec!["staticlib".into()],
-                    target_source: expected.workspace.join("detcore-liteinst/src/lib.rs"),
+                    target_source: expected.workspace.join(consumer.lib_rs_relative()),
                 };
                 Ok((
                     package,
@@ -66887,11 +66899,12 @@ pub mod private_static {
             retained.push(file);
         }
         let files = strings(&roots[0]["filenames"])?;
+        let expected_archive_name = format!("lib{}.a", package.target);
         require(
             files.len() == 1
                 && Path::new(&files[0])
                     .file_name()
-                    .is_some_and(|s| s == "libdetcore_liteinst.a"),
+                    .is_some_and(|s| s.to_str() == Some(expected_archive_name.as_str())),
             "static archive output ambiguous",
         )?;
         let file = FileIdentity::read(Path::new(&files[0]))?;
