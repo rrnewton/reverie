@@ -66504,6 +66504,19 @@ pub mod private_static {
         }
     }
 
+    /// The Hermit refusal text is unchanged from the Detcore-only
+    /// producer; only CargoGitRev names its own rule.
+    fn target_dir_refusal(binding: selected_initializers::WorkspaceBinding) -> &'static str {
+        match binding {
+            selected_initializers::WorkspaceBinding::HermitGitlink { .. } => {
+                "static producer requires canonical sole H/target"
+            }
+            selected_initializers::WorkspaceBinding::CargoGitRev => {
+                "static producer requires canonical explicit target"
+            }
+        }
+    }
+
     /// Cargo's canonical git source string for the pinned
     /// Reverie rev. Cargo strips the `.git` suffix when it
     /// canonicalizes git URLs, so lockfiles and metadata name
@@ -66601,7 +66614,7 @@ pub mod private_static {
                         expected.workspace,
                         expected.target_dir,
                     ),
-                "static producer requires canonical explicit target",
+                target_dir_refusal(consumer.binding()),
             )?;
             let gitlink = match consumer.binding() {
                 selected_initializers::WorkspaceBinding::HermitGitlink {
@@ -67776,6 +67789,15 @@ pub mod private_static {
                 workspace,
                 Path::new("relative/target")
             ));
+            // Detcore keeps the pre-generalization refusal text.
+            assert_eq!(
+                target_dir_refusal(hermit),
+                "static producer requires canonical sole H/target"
+            );
+            assert_eq!(
+                target_dir_refusal(cargo),
+                "static producer requires canonical explicit target"
+            );
 
             // Verbatim line from a real literoot Cargo.lock
             // (reverie-core entry), so the control cannot
