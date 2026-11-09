@@ -1254,8 +1254,8 @@ const CONTENT_REVERIE_CATALOG: [(&str, u64, &str); 86] = [
     ),
     (
         "reverie-liteinst-artifact/src/private_static/selected_initializers.rs",
-        256236,
-        "55d6b83c3677725e1eaf0d176102f0330fa21e888bc2b341931cc676c683304b",
+        256897,
+        "9275ffb2e91ddb8014703c140e8d535e893a223d98956e6bb094216ba87f16ac",
     ),
     (
         "reverie-liteinst-artifact/src/private_static/selected_initializers/package_roles.rs",
@@ -38602,6 +38602,11 @@ mod tests {
                 "reverie-liteinst-artifact/src/private_static/selected_initializers/terminal_observation.rs",
                 31604,
                 "1beca894cd78b0c3a877af1285bed1dfd288486d3978f6626359e1e0f8f0ae6c",
+            ),
+            (
+                "reverie-liteinst-artifact/src/private_static/selected_initializers.rs",
+                256236,
+                "55d6b83c3677725e1eaf0d176102f0330fa21e888bc2b341931cc676c683304b",
             ),
             (
                 "Cargo.toml",
