@@ -1541,8 +1541,8 @@ const CONTENT_REVERIE_CATALOG: [(&str, u64, &str); 86] = [
     ),
     (
         "reverie-rpc-transport/src/server.rs",
-        124661,
-        "dced4ec2c6a35adf3835b8cc632d32d88bca89ffbc29d6c5073d3ec3e67815e5",
+        129280,
+        "36277ed3bd85e2ee454e0a6ffebd469c9389a0a1322551dc0a3970dad1a8945d",
     ),
     (
         "reverie-rpc-transport/src/blocking_client.rs",
@@ -38544,6 +38544,11 @@ mod tests {
                 "reverie-liteinst/Cargo.toml",
                 6589,
                 "c39c8a6d516187302f1e4de686c13eee2d5a4b89519af0578f7e251792113db2",
+            ),
+            (
+                "reverie-rpc-transport/src/server.rs",
+                124661,
+                "dced4ec2c6a35adf3835b8cc632d32d88bca89ffbc29d6c5073d3ec3e67815e5",
             ),
         ] {
             let entries: Vec<_> = CONTENT_REVERIE_CATALOG
