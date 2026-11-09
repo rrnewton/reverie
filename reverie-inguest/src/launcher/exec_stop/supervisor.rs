@@ -1218,6 +1218,7 @@ mod tests {
 
     #[test]
     fn supervisor_foreign_sigcont_during_group_stop_clear_is_refused() {
+        let _guard = super::super::forked_child_test_guard();
         let mut injected_pid = None;
         let failure = Supervisor::spawn_inner(
             request("/bin/true", &["true"]),
@@ -1249,6 +1250,7 @@ mod tests {
 
     #[test]
     fn watched_foreign_sigcont_during_group_stop_clear_is_refused() {
+        let _guard = super::super::forked_child_test_guard();
         let watched = Supervisor::spawn_watched_inner(
             request("/bin/true", &["true"]),
             CleanupReceipt::default(),
@@ -1278,6 +1280,7 @@ mod tests {
 
     #[test]
     fn supervisor_sigqueue_sigcont_during_group_stop_clear_is_refused() {
+        let _guard = super::super::forked_child_test_guard();
         let mut injected_pid = None;
         let failure = Supervisor::spawn_inner(
             request("/bin/true", &["true"]),
@@ -1318,6 +1321,7 @@ mod tests {
 
     #[test]
     fn supervisor_group_stop_handshake_detached_wait_reaps_running_guest() {
+        let _guard = super::super::forked_child_test_guard();
         // Delaying seize until after the child's self-SIGSTOP forces
         // the pre-seize group-stop handshake. The detached guest then
         // sleeps long enough that a stale group-stop wait report, if
@@ -1338,6 +1342,7 @@ mod tests {
 
     #[test]
     fn watched_group_stop_release_detached_wait_reaps_running_guest() {
+        let _guard = super::super::forked_child_test_guard();
         let watched = Supervisor::spawn_watched_inner(
             request("/bin/sh", &["sh", "-c", "exec sleep 0.2"]),
             CleanupReceipt::default(),
@@ -1464,6 +1469,17 @@ mod tests {
 
     #[test]
     fn watched_blocked_sigcont_two_stops_run_to_completion() {
+        assert!(
+            Path::new("/usr/bin/perl").exists(),
+            "blocked SIGCONT guest requires /usr/bin/perl (perl-interpreter)"
+        );
+        assert!(
+            std::process::Command::new("/usr/bin/perl")
+                .args(["-MPOSIX=:signal_h,sigprocmask", "-e", "1"])
+                .status()
+                .is_ok_and(|status| status.success()),
+            "blocked SIGCONT guest requires perl POSIX (perl-POSIX)"
+        );
         // A single-threaded perl guest blocks SIGCONT process-wide
         // for its only thread, stops itself twice, then execs from
         // the traced leader. Both execs must be observed; a libtest
@@ -1474,8 +1490,8 @@ mod tests {
             "my $set = POSIX::SigSet->new(); ",
             "$set->addset(SIGCONT); ",
             "sigprocmask(SIG_BLOCK, $set) or die $!; ",
-            "kill STOP => $$; ",
-            "kill STOP => $$; ",
+            "kill STOP => $$ or die $!; ",
+            "kill STOP => $$ or die $!; ",
             "exec '/bin/true' or die $!;"
         );
         let watched = Supervisor::spawn_watched(
