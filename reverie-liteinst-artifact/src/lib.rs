@@ -1254,8 +1254,8 @@ const CONTENT_REVERIE_CATALOG: [(&str, u64, &str); 86] = [
     ),
     (
         "reverie-liteinst-artifact/src/private_static/selected_initializers.rs",
-        258234,
-        "20632624870e19d837a736b953e8568edb06d32940ffdb0b9fd01c852854d9dc",
+        258479,
+        "d1269a128256dc032c11e700161c16036b6d5efd056c31b271e9db102a3eb59f",
     ),
     (
         "reverie-liteinst-artifact/src/private_static/selected_initializers/package_roles.rs",
@@ -1324,8 +1324,8 @@ const CONTENT_REVERIE_CATALOG: [(&str, u64, &str); 86] = [
     ),
     (
         "reverie-liteinst-artifact/src/private_static/selected_initializers/terminal_observation.rs",
-        34191,
-        "5f75e628016105e7b568887028a48d3207c49774597383372497761234375a9f",
+        34210,
+        "6aa6b7a657ee90916e83419c45fa4b0babe880d0c13e2d65156772fe0def007b",
     ),
     (
         "reverie-liteinst-artifact/tests/fixtures/ordinary_preceding_gate_page.rs",
@@ -38612,6 +38612,16 @@ mod tests {
                 "reverie-liteinst-artifact/src/private_static/selected_initializers.rs",
                 256897,
                 "9275ffb2e91ddb8014703c140e8d535e893a223d98956e6bb094216ba87f16ac",
+            ),
+            (
+                "reverie-liteinst-artifact/src/private_static/selected_initializers.rs",
+                258234,
+                "20632624870e19d837a736b953e8568edb06d32940ffdb0b9fd01c852854d9dc",
+            ),
+            (
+                "reverie-liteinst-artifact/src/private_static/selected_initializers/terminal_observation.rs",
+                34191,
+                "5f75e628016105e7b568887028a48d3207c49774597383372497761234375a9f",
             ),
             (
                 "Cargo.toml",
