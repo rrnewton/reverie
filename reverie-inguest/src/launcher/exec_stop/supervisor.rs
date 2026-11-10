@@ -77,16 +77,23 @@
 //! (as on `main`). The same exec inside a fork child is refused by
 //! name (`exec_supervisor_fork_child_exec_refused`) before its new
 //! image runs: de_thread kills the child's traced main thread and must
-//! wait for it, and that thread is then held at its exit stop. There
-//! each sibling's `/proc` syscall is read (each with its own 20 ms
-//! bound for a thread shown "running"); a sibling in
-//! `execve`/`execveat`, or, when the main thread was killed, a live
-//! sibling that is unreadable (non-dumpable child) or still running at
-//! its bound and shows no exit or kill, gets the whole group killed
-//! before the main thread is released. Not caught: any sibling exec
-//! that starts after its read, including after a main thread that
-//! exited on its own; that exec's own kill ejects a held main thread,
-//! and the new image runs unarmed and unsupervised.
+//! wait for it, and that thread is then held at its exit stop. When that
+//! main thread was killed (`PF_SIGNALED`, `SIGKILL` pending, or
+//! unreadable evidence), it is released only once the group is shown
+//! to hold no waiting exec: `Threads: 1` in `/proc/<pid>/status`, or a
+//! complete task listing whose every sibling is gone or dying. A sibling
+//! seen in an execve/execveat entry of any host ABI (native, x32, ia32)
+//! refuses at once; anything else unresolved after 1 s refuses then.
+//! A refusal kills the whole group before the main thread is released.
+//! Not caught: when the main thread exited on its own, a sibling exec
+//! still before de_thread that one pass does not see in exec (it starts
+//! after its read, its syscall file is unreadable, it is ia32 `execve`
+//! with an unreadable entry instruction, or the listing skipped it);
+//! that exec's own kill ejects a still-held main thread, and the new
+//! image runs unarmed and unsupervised. A sibling seen inside an execve
+//! that will fail gets a healthy group refused and killed. The check
+//! reads `/proc` by the child's pid, so `/proc` must belong to the
+//! supervisor's pid namespace.
 //!
 //! A fork child's exit stop is released through one check
 //! (`settle_exit_stop`) in the wait loop and in teardown detach; the
@@ -655,9 +662,9 @@ struct ExitStopOutcome {
     refusal: Option<String>,
 }
 
-/// How long one sibling thread reported as "running" is re-read before
-/// it counts as unresolved. Each sibling gets its own bound.
-const SIBLING_EXEC_RECHECK: Duration = Duration::from_millis(20);
+/// How long a killed main thread is held at its exit stop while its
+/// group drains, before the release is refused.
+const EXIT_STOP_DRAIN_BOUND: Duration = Duration::from_secs(1);
 
 /// `PF_EXITING` and `PF_SIGNALED` from the kernel's task flags, as shown
 /// in field 9 of `/proc/<pid>/task/<tid>/stat` (readable even when the
@@ -665,111 +672,142 @@ const SIBLING_EXEC_RECHECK: Duration = Duration::from_millis(20);
 const PF_EXITING: u64 = 0x4;
 const PF_SIGNALED: u64 = 0x400;
 
-/// What one read of a sibling's `/proc/.../syscall` showed.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum SyscallRead {
-    /// The thread is gone (ENOENT/ESRCH).
+/// One read of a `/proc` file of a task.
+enum ProcRead {
+    Text(String),
+    /// ENOENT/ESRCH: the task is released.
     Gone,
-    /// Inside `execve`/`execveat`.
-    Exec,
-    /// In another syscall, or blocked outside one.
-    Other,
-    /// Still "running" when its own bound expired.
-    RunningAtBound,
-    /// The file could not be read (EACCES/EPERM for a non-dumpable
-    /// child, or any other error).
+    /// Any other error (EACCES/EPERM for a non-dumpable child).
     Unreadable,
 }
 
-/// What the exit-stop check concludes for one sibling thread.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum SiblingFinding {
-    Exec,
-    NotExec,
-    /// Alive, not shown to be exiting or killed, and its syscall could
-    /// not be established.
-    Unresolved,
-}
-
-/// Classify one sibling. `exiting_or_killed` is `PF_EXITING` in its task
-/// flags or `SIGKILL` pending for it: such a thread is leaving, and an
-/// exec'ing thread is neither.
-fn classify_sibling(read: SyscallRead, exiting_or_killed: bool) -> SiblingFinding {
-    match read {
-        SyscallRead::Exec => SiblingFinding::Exec,
-        SyscallRead::Gone | SyscallRead::Other => SiblingFinding::NotExec,
-        SyscallRead::RunningAtBound | SyscallRead::Unreadable if exiting_or_killed => {
-            SiblingFinding::NotExec
-        }
-        SyscallRead::RunningAtBound | SyscallRead::Unreadable => SiblingFinding::Unresolved,
+fn read_proc(path: &std::path::Path) -> ProcRead {
+    match std::fs::read_to_string(path) {
+        Ok(text) => ProcRead::Text(text),
+        Err(error) => match error.raw_os_error() {
+            Some(libc::ENOENT | libc::ESRCH) => ProcRead::Gone,
+            _ => ProcRead::Unreadable,
+        },
     }
 }
 
-/// Whether the held main thread's release must be refused. A sibling
-/// seen in exec always refuses. An unresolved sibling refuses when the
-/// main thread was killed (`PF_SIGNALED`, or `SIGKILL` pending), because
-/// de_thread's kill of the old main thread is exactly that; a main
-/// thread that exited on its own beside a busy or unreadable sibling is
-/// not refused.
-fn refuse_exit_stop(main_killed: bool, siblings: &[SiblingFinding]) -> bool {
-    siblings.contains(&SiblingFinding::Exec)
-        || (main_killed && siblings.contains(&SiblingFinding::Unresolved))
+/// What one read of a sibling's `/proc/.../syscall` showed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SyscallRead {
+    Gone,
+    /// Inside an execve/execveat entry (see [`is_exec_entry`]).
+    Exec,
+    /// In another syscall, outside one, or "running".
+    Other,
+    Unreadable,
+}
+
+/// The syscall ABI a blocked task entered through, from the two
+/// instruction bytes before its saved user `pc`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum EntryAbi {
+    /// `syscall` (x86_64 native, or x32 with `__X32_SYSCALL_BIT`).
+    Native,
+    /// `int $0x80`, or the ia32 vDSO's landing pad after `sysenter` or
+    /// `syscall`, which is preceded by `int $0x80`.
+    Ia32,
+    /// The bytes could not be read or are neither.
+    Unknown,
+}
+
+/// Whether syscall `nr`, entered through `abi`, is execve or execveat in
+/// any ABI the host accepts. On x86_64: native 59/322, x32
+/// `0x40000000|520` and `0x40000000|545`, and ia32 11/358. For an
+/// unknown entry the native and x32 numbers and 358 (unused natively)
+/// still count; ia32 11 is native `munmap`, so it counts only for a
+/// known ia32 entry. Elsewhere only the native numbers count.
+#[cfg(target_arch = "x86_64")]
+fn is_exec_entry(nr: i64, abi: EntryAbi) -> bool {
+    const X32: i64 = 0x4000_0000;
+    match abi {
+        EntryAbi::Ia32 => nr == 11 || nr == 358,
+        EntryAbi::Native => matches!(nr, 59 | 322) || matches!(nr ^ X32, 520 | 545),
+        EntryAbi::Unknown => matches!(nr, 59 | 322 | 358) || matches!(nr ^ X32, 520 | 545),
+    }
+}
+
+#[cfg(not(target_arch = "x86_64"))]
+fn is_exec_entry(nr: i64, _abi: EntryAbi) -> bool {
+    nr == libc::SYS_execve || nr == libc::SYS_execveat
+}
+
+/// The entry ABI of the task whose `/proc/.../syscall` fields are
+/// `fields`, read from `mem` (the same `ptrace` access check as the
+/// syscall file).
+#[cfg(target_arch = "x86_64")]
+fn entry_abi(fields: &[&str], mem: &std::path::Path) -> EntryAbi {
+    use std::os::unix::fs::FileExt;
+    let Some(pc) = fields
+        .get(8)
+        .and_then(|pc| u64::from_str_radix(pc.trim_start_matches("0x"), 16).ok())
+        .and_then(|pc| pc.checked_sub(2))
+    else {
+        return EntryAbi::Unknown;
+    };
+    let mut bytes = [0u8; 2];
+    match std::fs::File::open(mem).and_then(|file| file.read_exact_at(&mut bytes, pc)) {
+        Ok(()) => match bytes {
+            [0x0f, 0x05] => EntryAbi::Native,
+            [0xcd, 0x80] | [0x0f, 0x34] => EntryAbi::Ia32,
+            _ => EntryAbi::Unknown,
+        },
+        Err(_) => EntryAbi::Unknown,
+    }
+}
+
+#[cfg(not(target_arch = "x86_64"))]
+fn entry_abi(_fields: &[&str], _mem: &std::path::Path) -> EntryAbi {
+    EntryAbi::Native
 }
 
 #[cfg(test)]
 thread_local! {
-    /// Test-only: every sibling syscall read reports "running" past its
-    /// bound, so the expired-bound path runs deterministically.
-    static FORCE_SIBLING_RUNNING_AT_BOUND: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// Test-only: every sibling syscall read shows "running", so no
+    /// sibling is ever seen in exec.
+    static FORCE_SIBLING_SYSCALL_RUNNING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// Test-only: drop the last entry of every task listing, as an
+    /// incomplete `/proc/<pid>/task` walk would.
+    static DROP_LAST_LISTED_TASK: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
-fn read_sibling_syscall(path: &std::path::Path) -> SyscallRead {
+/// One read (no re-read) of the syscall file in the task directory `dir`.
+fn read_sibling_syscall(dir: &std::path::Path) -> SyscallRead {
     #[cfg(test)]
-    if FORCE_SIBLING_RUNNING_AT_BOUND.with(std::cell::Cell::get) {
-        return SyscallRead::RunningAtBound;
+    if FORCE_SIBLING_SYSCALL_RUNNING.with(std::cell::Cell::get) {
+        return SyscallRead::Other;
     }
-    let deadline = Instant::now() + SIBLING_EXEC_RECHECK;
-    loop {
-        let text = match std::fs::read_to_string(path) {
-            Ok(text) => text,
-            Err(error) => {
-                return match error.raw_os_error() {
-                    Some(libc::ENOENT | libc::ESRCH) => SyscallRead::Gone,
-                    _ => SyscallRead::Unreadable,
-                };
-            }
-        };
-        let first = text.split_whitespace().next().unwrap_or("");
-        if first == "running" {
-            if Instant::now() >= deadline {
-                return SyscallRead::RunningAtBound;
-            }
-            std::thread::sleep(Duration::from_millis(1));
-            continue;
+    let text = match read_proc(&dir.join("syscall")) {
+        ProcRead::Text(text) => text,
+        ProcRead::Gone => return SyscallRead::Gone,
+        ProcRead::Unreadable => return SyscallRead::Unreadable,
+    };
+    let fields: Vec<&str> = text.split_whitespace().collect();
+    match fields.first().map(|nr| nr.parse::<i64>()) {
+        Some(Ok(nr)) if is_exec_entry(nr, entry_abi(&fields, &dir.join("mem"))) => {
+            SyscallRead::Exec
         }
-        return match first.parse::<i64>() {
-            Ok(nr) if nr == libc::SYS_execve || nr == libc::SYS_execveat => SyscallRead::Exec,
-            Ok(_) => SyscallRead::Other,
-            Err(_) => SyscallRead::Unreadable,
-        };
+        // Another syscall, "running", or not a number.
+        _ => SyscallRead::Other,
     }
 }
 
-/// Task flags from field 9 of a `/proc/.../stat` file (after the
+/// Task flags from field 9 of a `/proc/.../stat` text (after the
 /// parenthesized command name, which may itself contain spaces).
-fn task_flags(stat_path: &std::path::Path) -> Option<u64> {
-    let text = std::fs::read_to_string(stat_path).ok()?;
-    let rest = &text[text.rfind(')')? + 1..];
+fn task_flags(stat: &str) -> Option<u64> {
+    let rest = &stat[stat.rfind(')')? + 1..];
     rest.split_whitespace().nth(6)?.parse().ok()
 }
 
-/// Whether `SIGKILL` is pending for a task (`SigPnd` or `ShdPnd` in its
-/// `/proc/.../status`).
-fn sigkill_pending(status_path: &std::path::Path) -> bool {
-    let Ok(text) = std::fs::read_to_string(status_path) else {
-        return false;
-    };
-    text.lines()
+/// Whether a `/proc/.../status` text shows `SIGKILL` pending (`SigPnd`
+/// or `ShdPnd`).
+fn sigkill_pending(status: &str) -> bool {
+    status
+        .lines()
         .filter_map(|line| {
             line.strip_prefix("SigPnd:")
                 .or_else(|| line.strip_prefix("ShdPnd:"))
@@ -778,36 +816,217 @@ fn sigkill_pending(status_path: &std::path::Path) -> bool {
         .any(|mask| mask & (1 << (libc::SIGKILL - 1)) != 0)
 }
 
-/// Examine the threads of the fork child `pid`, whose main thread the
-/// caller holds at its exit stop (so `pid` still names this child).
-/// Returns whether that main thread was killed and each sibling's
-/// finding. An unlistable task directory counts as one unresolved
-/// sibling.
-fn examine_siblings(pid: safeptrace::Pid) -> (bool, Vec<SiblingFinding>) {
-    let main = std::path::PathBuf::from(format!("/proc/{0}/task/{0}", pid.as_raw()));
-    // Fail closed: main-thread evidence that cannot be read counts as
-    // killed.
-    let main_killed = task_flags(&main.join("stat")).is_none_or(|flags| flags & PF_SIGNALED != 0)
-        || sigkill_pending(&main.join("status"));
-    let Ok(tasks) = std::fs::read_dir(format!("/proc/{}/task", pid.as_raw())) else {
-        return (main_killed, vec![SiblingFinding::Unresolved]);
-    };
-    let mut findings = Vec::new();
-    for task in tasks.flatten() {
-        let Ok(tid) = task.file_name().to_string_lossy().parse::<i32>() else {
-            continue;
-        };
-        if tid == pid.as_raw() {
-            continue;
-        }
-        let dir = task.path();
-        let read = read_sibling_syscall(&dir.join("syscall"));
-        let exiting_or_killed = task_flags(&dir.join("stat"))
-            .is_some_and(|flags| flags & PF_EXITING != 0)
-            || sigkill_pending(&dir.join("status"));
-        findings.push(classify_sibling(read, exiting_or_killed));
+/// `Threads:` from a `/proc/<pid>/status` text.
+fn status_threads(status: &str) -> Option<usize> {
+    status
+        .lines()
+        .find_map(|line| line.strip_prefix("Threads:"))
+        .and_then(|count| count.trim().parse().ok())
+}
+
+/// What one pass of the exit-stop check found for one sibling thread.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SiblingFinding {
+    /// Its `/proc` entry is gone (ENOENT/ESRCH on any read).
+    Gone,
+    /// Shown leaving: `SIGKILL` pending, or `PF_EXITING` or
+    /// `PF_SIGNALED` in its flags. A thread waiting in de_thread has
+    /// none of these (if it is killed, its exec is abandoned).
+    Dying,
+    /// In an execve/execveat entry and not shown leaving.
+    Exec,
+    /// Alive with no death evidence and not shown in exec: unreadable,
+    /// running, or in another syscall.
+    Live,
+}
+
+/// Examine one sibling. `status` is read before `stat`: Linux removes
+/// `SIGKILL` from pending before it sets `PF_SIGNALED`, so in the other
+/// order a dying thread could show neither.
+fn examine_sibling(dir: &std::path::Path) -> SiblingFinding {
+    match read_proc(&dir.join("status")) {
+        ProcRead::Gone => return SiblingFinding::Gone,
+        ProcRead::Text(status) if sigkill_pending(&status) => return SiblingFinding::Dying,
+        ProcRead::Text(_) | ProcRead::Unreadable => {}
     }
-    (main_killed, findings)
+    match read_proc(&dir.join("stat")) {
+        ProcRead::Gone => return SiblingFinding::Gone,
+        ProcRead::Text(stat)
+            if task_flags(&stat).is_some_and(|flags| flags & (PF_EXITING | PF_SIGNALED) != 0) =>
+        {
+            return SiblingFinding::Dying;
+        }
+        ProcRead::Text(_) | ProcRead::Unreadable => {}
+    }
+    match read_sibling_syscall(dir) {
+        SyscallRead::Gone => SiblingFinding::Gone,
+        SyscallRead::Exec => SiblingFinding::Exec,
+        SyscallRead::Other | SyscallRead::Unreadable => SiblingFinding::Live,
+    }
+}
+
+/// One pass over a fork child's threads.
+#[derive(Debug, PartialEq, Eq)]
+struct ThreadsPass {
+    /// `Threads:` of the child, read before the listing.
+    threads: Option<usize>,
+    /// The finding for every listed sibling.
+    siblings: Vec<SiblingFinding>,
+    /// The task directory and every entry of it were read without error.
+    listed_ok: bool,
+}
+
+impl ThreadsPass {
+    /// Whether the listing shows every thread of the group. Once the
+    /// main thread was killed, every thread was sent `SIGKILL` and no
+    /// new one can be created (`copy_process` refuses with a fatal
+    /// signal pending), so the group only shrinks: a sibling listed
+    /// after `threads` was read was counted in it, and a listing as long
+    /// as `threads` (with the held main thread) is the whole group.
+    fn complete(&self) -> bool {
+        self.listed_ok && self.threads == Some(self.siblings.len() + 1)
+    }
+
+    fn describe(&self) -> String {
+        let count = |finding| self.siblings.iter().filter(|s| **s == finding).count();
+        format!(
+            "Threads: {:?}; {} siblings listed ({} gone, {} dying, {} live), listing {}",
+            self.threads,
+            self.siblings.len(),
+            count(SiblingFinding::Gone),
+            count(SiblingFinding::Dying),
+            count(SiblingFinding::Live),
+            if self.complete() {
+                "complete"
+            } else {
+                "incomplete"
+            }
+        )
+    }
+}
+
+/// What one pass decides.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PassVerdict {
+    Release,
+    RefuseExec,
+    /// Look again; at the drain bound this refuses.
+    Undecided,
+}
+
+/// Decide one pass at a fork child's exit stop, with its main thread
+/// held there. A non-leader exec's de_thread kills the main thread and
+/// then waits, alive and in the group, until the held main thread is
+/// released. So once the main thread was killed:
+/// - `Threads: 1` (only the held main thread) proves no exec is waiting:
+///   release.
+/// - A complete listing in which every sibling is gone or dying proves
+///   it too: release.
+/// - A sibling in exec refuses at once.
+/// - Anything else (a live sibling, an incomplete listing, an
+///   unreadable count) is undecided, and refused at the drain bound.
+///
+/// A main thread that was not killed cannot be waited on by any exec:
+/// the pass refuses only for a sibling seen in exec (one still before
+/// de_thread) and otherwise releases.
+fn pass_verdict(main_killed: bool, pass: &ThreadsPass) -> PassVerdict {
+    if main_killed && pass.threads == Some(1) {
+        return PassVerdict::Release;
+    }
+    if pass.siblings.contains(&SiblingFinding::Exec) {
+        return PassVerdict::RefuseExec;
+    }
+    if !main_killed
+        || (pass.complete()
+            && pass
+                .siblings
+                .iter()
+                .all(|s| matches!(s, SiblingFinding::Gone | SiblingFinding::Dying)))
+    {
+        return PassVerdict::Release;
+    }
+    PassVerdict::Undecided
+}
+
+/// Whether the held main thread whose task directory is `main` was
+/// killed: `SIGKILL` pending or `PF_SIGNALED`. Evidence that cannot be
+/// read counts as killed.
+fn main_thread_killed(main: &std::path::Path) -> bool {
+    let ProcRead::Text(status) = read_proc(&main.join("status")) else {
+        return true;
+    };
+    let ProcRead::Text(stat) = read_proc(&main.join("stat")) else {
+        return true;
+    };
+    sigkill_pending(&status) || task_flags(&stat).is_none_or(|flags| flags & PF_SIGNALED != 0)
+}
+
+/// One pass over the threads of fork child `pid`, whose main thread the
+/// caller holds at its exit stop (so `pid` still names this child). The
+/// listing is skipped once a killed main thread is alone.
+fn threads_pass(pid: safeptrace::Pid, main_killed: bool) -> ThreadsPass {
+    let threads = match read_proc(std::path::Path::new(&format!(
+        "/proc/{}/status",
+        pid.as_raw()
+    ))) {
+        ProcRead::Text(status) => status_threads(&status),
+        ProcRead::Gone | ProcRead::Unreadable => None,
+    };
+    let mut pass = ThreadsPass {
+        threads,
+        siblings: Vec::new(),
+        listed_ok: true,
+    };
+    if main_killed && threads == Some(1) {
+        return pass;
+    }
+    let mut dirs = Vec::new();
+    match std::fs::read_dir(format!("/proc/{}/task", pid.as_raw())) {
+        Err(_) => pass.listed_ok = false,
+        Ok(tasks) => {
+            for task in tasks {
+                let Ok(task) = task else {
+                    pass.listed_ok = false;
+                    continue;
+                };
+                match task.file_name().to_string_lossy().parse::<i32>() {
+                    Ok(tid) if tid == pid.as_raw() => {}
+                    Ok(_) => dirs.push(task.path()),
+                    Err(_) => pass.listed_ok = false,
+                }
+            }
+        }
+    }
+    #[cfg(test)]
+    if DROP_LAST_LISTED_TASK.with(std::cell::Cell::get) {
+        dirs.pop();
+    }
+    pass.siblings = dirs.iter().map(|dir| examine_sibling(dir)).collect();
+    pass
+}
+
+/// The refusal reason for releasing fork child `pid`'s main thread from
+/// its exit stop, or `None` to release it (see [`pass_verdict`]).
+fn exit_stop_refusal(pid: safeptrace::Pid) -> Option<String> {
+    let main_killed = main_thread_killed(std::path::Path::new(&format!(
+        "/proc/{0}/task/{0}",
+        pid.as_raw()
+    )));
+    let deadline = Instant::now() + EXIT_STOP_DRAIN_BOUND;
+    loop {
+        let pass = threads_pass(pid, main_killed);
+        match pass_verdict(main_killed, &pass) {
+            PassVerdict::Release => return None,
+            PassVerdict::RefuseExec => return Some("exec from a non-leader thread".to_owned()),
+            PassVerdict::Undecided if Instant::now() >= deadline => {
+                return Some(format!(
+                    "a live non-leader thread that could not be ruled out of exec after its main thread was killed ({} after {EXIT_STOP_DRAIN_BOUND:?})",
+                    pass.describe()
+                ));
+            }
+            PassVerdict::Undecided => std::thread::sleep(Duration::from_millis(1)),
+        }
+    }
 }
 
 /// Kill the fork child's whole group: through its retained descriptor,
@@ -829,28 +1048,32 @@ fn kill_child_group(task: &Stopped) -> std::result::Result<(), String> {
 ///
 /// A non-leader exec's de_thread kills the old main thread and then
 /// waits for it, so while this held main thread stays at its exit stop
-/// the new image cannot run. If [`examine_siblings`] finds a sibling in
-/// exec, or a sibling it cannot resolve while the main thread was
-/// killed, the whole group is killed first and the refusal is named;
-/// if that kill cannot be sent, the main thread is not released at all
-/// and the error says so. Then the main thread is detached at its exit
-/// stop: nothing of it is left to supervise, and its zombie is never
-/// traced, so the guest parent reaps it natively.
+/// the new image cannot run. [`exit_stop_refusal`] decides whether the
+/// release is refused (see [`pass_verdict`]); if so, the whole group is
+/// killed first and the refusal is named, and if that kill cannot be
+/// sent, the main thread is not released at all and the error says so.
+/// Then the main thread is detached at its exit stop: nothing of it is
+/// left to supervise, and its zombie is never traced, so the guest
+/// parent reaps it natively.
 ///
-/// Not caught: any sibling exec that starts after its `/proc` read. That
-/// includes a main thread that exited on its own first, and a held main
-/// thread whose sibling enters exec only after being read; that exec's
-/// own kill then ejects the main thread from its exit stop and the new
-/// image runs unarmed and unsupervised.
+/// Once the main thread was killed, no exec waiting on it is released:
+/// the release needs `Threads: 1` or a complete listing of gone or
+/// dying siblings, and otherwise is refused at the drain bound. That
+/// bound also refuses a group exit whose siblings neither finish nor
+/// show death evidence in a complete listing within it.
+///
+/// Not caught, when the main thread exited on its own (not killed, so
+/// no exec can be waiting on it): a sibling exec still before
+/// de_thread that the single pass does not see in exec, because it
+/// starts after its read, its syscall file is unreadable (non-dumpable
+/// child), it is ia32 `execve` (11) whose entry instruction could not
+/// be read, or the listing skipped it. That exec's own kill later
+/// ejects a still-held main thread, and the new image runs unarmed and
+/// unsupervised. Conversely, a sibling seen inside an execve that will
+/// fail gets a healthy group killed.
 fn settle_exit_stop(task: Stopped) -> Result<ExitStopOutcome> {
     let pid = task.pid();
-    let (main_killed, siblings) = examine_siblings(pid);
-    let refusal = if refuse_exit_stop(main_killed, &siblings) {
-        let seen = if siblings.contains(&SiblingFinding::Exec) {
-            "exec from a non-leader thread"
-        } else {
-            "a live non-leader thread that could not be ruled out of exec after its main thread was killed"
-        };
+    let refusal = if let Some(seen) = exit_stop_refusal(pid) {
         if let Err(error) = kill_child_group(&task) {
             // Keep the main thread held: releasing it would let a
             // waiting exec run.
@@ -860,7 +1083,7 @@ fn settle_exit_stop(task: Stopped) -> Result<ExitStopOutcome> {
             .into());
         }
         Some(format!(
-            "exec_supervisor_fork_child_exec_refused: fork child {pid:?} {seen} has no caller re-arm hook; its group was killed before the main thread was released"
+            "exec_supervisor_fork_child_exec_refused: fork child {pid:?} {seen}; it has no caller re-arm hook, so its group was killed before the main thread was released"
         ))
     } else {
         None
@@ -2517,6 +2740,8 @@ mod tests {
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdint.h>
+#include <sys/mman.h>
 #include <sys/prctl.h>
 #include <sys/types.h>
 #include <sys/wait.h>
@@ -2755,6 +2980,108 @@ static int thread_exec_child_marker(const char *marker, int nondumpable) {
   return wait_status(pid) == 0 ? 7 : 9;
 }
 
+#if defined(__x86_64__)
+/* The exec'ing thread enters execve through the ia32 entry (int $0x80,
+ * nr 11), so its /proc syscall file shows 11, not 59. ia32 takes 32-bit
+ * pointers, so the strings and argv live in a MAP_32BIT page. */
+static void *exec_marker_writer_int80(void *unused) {
+  (void)unused;
+  char *low = mmap(NULL, 8192, PROT_READ | PROT_WRITE,
+                   MAP_PRIVATE | MAP_ANONYMOUS | MAP_32BIT, -1, 0);
+  if (low == MAP_FAILED) _exit(114);
+  const char *strs[4] = {"/bin/sh", "-c", ": > \"$0\"", exec_marker};
+  uint32_t *argv32 = (uint32_t *)(void *)low;
+  char *p = low + 64;
+  for (int i = 0; i < 4; i++) {
+    size_t n = strlen(strs[i]) + 1;
+    memcpy(p, strs[i], n);
+    argv32[i] = (uint32_t)(uintptr_t)p;
+    p += n;
+  }
+  argv32[4] = 0;
+  long ret;
+  __asm__ volatile("int $0x80"
+                   : "=a"(ret)
+                   : "a"(11L), "b"((long)argv32[0]), "c"((long)(uintptr_t)argv32),
+                     "d"(0L)
+                   : "memory", "r8", "r9", "r10", "r11");
+  (void)ret;
+  _exit(113);
+}
+
+static int thread_exec_child_marker_int80(const char *marker) {
+  exec_marker = marker;
+  pid_t pid = fork();
+  if (pid == 0) {
+    pthread_t thread;
+    close_output();
+    if (pthread_create(&thread, NULL, exec_marker_writer_int80, NULL) != 0)
+      _exit(10);
+    if (pthread_join(thread, NULL) != 0) _exit(11);
+    _exit(12);
+  }
+  if (pid < 0) return 9;
+  return wait_status(pid) == 0 ? 7 : 9;
+}
+#endif
+
+static void *park_forever(void *unused) {
+  (void)unused;
+  for (;;) pause();
+  return NULL;
+}
+
+static int park_threads(int count) {
+  pthread_attr_t attr;
+  pthread_t thread;
+  if (pthread_attr_init(&attr) != 0) return -1;
+  if (pthread_attr_setstacksize(&attr, 65536) != 0) return -1;
+  for (int i = 0; i < count; i++)
+    if (pthread_create(&thread, &attr, park_forever, NULL) != 0) return -1;
+  return 0;
+}
+
+/* A fork child with `count` parked threads, then a last thread that
+ * execs the marker image: de_thread kills the parked threads while
+ * /proc/<pid>/task is walked, so walks can come up short. */
+static int many_thread_exec_child_marker(const char *marker, int count) {
+  exec_marker = marker;
+  pid_t pid = fork();
+  if (pid == 0) {
+    pthread_t thread;
+    close_output();
+    if (park_threads(count) != 0) _exit(14);
+    if (pthread_create(&thread, NULL, exec_marker_writer, NULL) != 0) _exit(10);
+    if (pthread_join(thread, NULL) != 0) _exit(11);
+    _exit(12);
+  }
+  if (pid < 0) return 9;
+  return wait_status(pid) == 0 ? 7 : 9;
+}
+
+static void *exit_group_zero(void *unused) {
+  (void)unused;
+  usleep(20000);
+  exit(0);
+}
+
+/* Control: a non-dumpable fork child with `count` parked threads, one
+ * of which calls exit(0) (exit_group). Its main thread is killed
+ * (PF_SIGNALED) with no exec anywhere. */
+static int many_thread_exit_group_nondumpable(int count) {
+  pid_t pid = fork();
+  if (pid == 0) {
+    pthread_t thread;
+    close_output();
+    if (prctl(PR_SET_DUMPABLE, 0, 0, 0, 0) != 0) _exit(13);
+    if (park_threads(count) != 0) _exit(14);
+    if (pthread_create(&thread, NULL, exit_group_zero, NULL) != 0) _exit(10);
+    for (;;) pause();
+  }
+  if (pid < 0) return 9;
+  return wait_status(pid) == 0 ? 7 : 9;
+}
+
 static void *busy_then_marker(void *marker) {
   struct timespec start, now;
   clock_gettime(CLOCK_MONOTONIC, &start);
@@ -2879,6 +3206,14 @@ int main(int argc, char **argv) {
     return thread_exec_child_marker(argv[2], 0);
   if (strcmp(argv[1], "thread-exec-child-marker-nondumpable") == 0 && argc == 3)
     return thread_exec_child_marker(argv[2], 1);
+#if defined(__x86_64__)
+  if (strcmp(argv[1], "thread-exec-child-marker-int80") == 0 && argc == 3)
+    return thread_exec_child_marker_int80(argv[2]);
+#endif
+  if (strcmp(argv[1], "many-thread-exec-child-marker") == 0 && argc == 4)
+    return many_thread_exec_child_marker(argv[2], atoi(argv[3]));
+  if (strcmp(argv[1], "many-thread-exit-group-nondumpable") == 0 && argc == 3)
+    return many_thread_exit_group_nondumpable(atoi(argv[2]));
   if (strcmp(argv[1], "busy-sibling-main-exit") == 0 && argc == 3)
     return busy_sibling_main_exit(argv[2]);
   if (strcmp(argv[1], "leader-pthread-exit") == 0 && argc == 3)
@@ -3904,9 +4239,17 @@ int main(int argc, char **argv) {
     struct HookScope(fn(bool));
 
     impl HookScope {
-        fn force_sibling_running_at_bound() -> Self {
+        fn force_sibling_syscall_running() -> Self {
             fn set(on: bool) {
-                super::FORCE_SIBLING_RUNNING_AT_BOUND.with(|hook| hook.set(on));
+                super::FORCE_SIBLING_SYSCALL_RUNNING.with(|hook| hook.set(on));
+            }
+            set(true);
+            Self(set)
+        }
+
+        fn drop_last_listed_task() -> Self {
+            fn set(on: bool) {
+                super::DROP_LAST_LISTED_TASK.with(|hook| hook.set(on));
             }
             set(true);
             Self(set)
@@ -3928,20 +4271,65 @@ int main(int argc, char **argv) {
         }
     }
 
+    /// Which exit-stop refusal must fire.
+    #[derive(Clone, Copy, Debug)]
+    enum RefusalPath {
+        /// A sibling was seen in an exec entry.
+        ExecSeen,
+        /// Nothing proved the group free of a waiting exec within the
+        /// drain bound.
+        NotRuledOut,
+        /// Either; the many-thread walk decides which.
+        Either,
+    }
+
+    /// Whether this test process can read a non-dumpable task's `/proc`
+    /// syscall file (`CAP_SYS_PTRACE` in its effective set, as root
+    /// has). Then the non-dumpable exec is seen in exec rather than
+    /// left unresolved.
+    fn reads_nondumpable_syscalls() -> bool {
+        const CAP_SYS_PTRACE: u32 = 19;
+        fs::read_to_string("/proc/self/status")
+            .unwrap()
+            .lines()
+            .find_map(|line| line.strip_prefix("CapEff:"))
+            .and_then(|mask| u64::from_str_radix(mask.trim(), 16).ok())
+            .is_some_and(|mask| mask & (1 << CAP_SYS_PTRACE) != 0)
+    }
+
+    #[derive(Clone, Copy, Default)]
+    struct Hooks {
+        force_running: bool,
+        drop_last_listed: bool,
+    }
+
+    impl Hooks {
+        fn scopes(self) -> (Option<HookScope>, Option<HookScope>) {
+            (
+                self.force_running
+                    .then(HookScope::force_sibling_syscall_running),
+                self.drop_last_listed.then(HookScope::drop_last_listed_task),
+            )
+        }
+    }
+
     /// A fork child's non-leader (untraced) thread execs an image that
-    /// would write `marker`. de_thread kills the child's traced main
-    /// thread, which is held at its exit stop; the check there must kill
-    /// the group and name the refusal, so the image never runs. Natively
-    /// the guest exits 7. Every case runs with a 300 ms pause after the
+    /// would write the marker (the first argument after the mode).
+    /// de_thread kills the child's traced main thread, which is held at
+    /// its exit stop; the check there must kill the group and name the
+    /// refusal through `path`, so the image never runs. Natively the
+    /// guest exits 7. Every case runs with a 300 ms pause after the
     /// exit-stop detach, so a kill sent after the detach instead of
     /// before it would let the image write its marker.
-    fn assert_nonleader_exec_refused(mode: &str, force_bound: bool) {
+    fn assert_nonleader_exec_refused(mode: &str, extra: &[&str], hooks: Hooks, path: RefusalPath) {
         let marker = supervisor_test_file("thread-exec.marker");
+        let mut args: Vec<&Path> = vec![&marker];
+        args.extend(extra.iter().map(Path::new));
         let _delay = HookScope::delay_after_exit_stop_detach();
-        let _bound = force_bound.then(HookScope::force_sibling_running_at_bound);
+        let _hooks = hooks.scopes();
         let started = Instant::now();
         let watched =
-            Supervisor::spawn_watched(fork_request(mode, &[&marker]), CleanupReceipt::default())
+            Supervisor::spawn_watched(fork_request(mode, &args), CleanupReceipt::default())
                 .unwrap();
         let watched = rearm_ok(watched_next_exec(watched));
         let failure = watched.wait_next().unwrap_err();
@@ -3952,6 +4340,16 @@ int main(int argc, char **argv) {
                 && report.contains("non-leader thread")
                 && report.contains("its group was killed"),
             "{mode}: unexpected failure: {report}"
+        );
+        let exec_seen = report.contains("exec from a non-leader thread");
+        let not_ruled_out = report.contains("could not be ruled out of exec");
+        assert!(
+            match path {
+                RefusalPath::ExecSeen => exec_seen && !not_ruled_out,
+                RefusalPath::NotRuledOut => not_ruled_out && !exec_seen,
+                RefusalPath::Either => exec_seen != not_ruled_out,
+            },
+            "{mode}: expected the {path:?} refusal: {report}"
         );
         assert!(failure.cleanup().confirmed);
         assert_eq!(failure.cleanup().child_detach_error, None);
@@ -3972,31 +4370,138 @@ int main(int argc, char **argv) {
     fn watched_fork_child_nonleader_thread_exec_is_refused_before_image_runs() {
         // Control for a main thread exiting beside a running, not
         // execing, sibling: the zombie-leader and busy-sibling tests.
-        assert_nonleader_exec_refused("thread-exec-child-marker", false);
+        assert_nonleader_exec_refused(
+            "thread-exec-child-marker",
+            &[],
+            Hooks::default(),
+            RefusalPath::ExecSeen,
+        );
     }
 
     #[test]
     fn watched_nondumpable_fork_child_nonleader_exec_is_refused_before_image_runs() {
-        // A non-dumpable child's /proc syscall files are unreadable; the
-        // killed main thread plus a live unresolved sibling must still
-        // refuse, never fail open.
-        assert_nonleader_exec_refused("thread-exec-child-marker-nondumpable", false);
+        // A non-dumpable child's /proc syscall files are unreadable
+        // without CAP_SYS_PTRACE: the killed main thread plus a live
+        // sibling that never drains must still refuse, never fail open.
+        let path = if reads_nondumpable_syscalls() {
+            RefusalPath::ExecSeen
+        } else {
+            RefusalPath::NotRuledOut
+        };
+        assert_nonleader_exec_refused(
+            "thread-exec-child-marker-nondumpable",
+            &[],
+            Hooks::default(),
+            path,
+        );
     }
 
     #[test]
-    fn watched_nonleader_exec_is_refused_when_sibling_bound_expires() {
-        // Every sibling read reports "running" past its own bound: the
-        // killed main thread plus that unresolved sibling must refuse.
-        assert_nonleader_exec_refused("thread-exec-child-marker", true);
+    fn watched_nonleader_exec_is_refused_when_sibling_never_shows_exec() {
+        // Every sibling syscall read shows "running": the exec is never
+        // seen, and its thread keeps the group from draining.
+        assert_nonleader_exec_refused(
+            "thread-exec-child-marker",
+            &[],
+            Hooks {
+                force_running: true,
+                ..Hooks::default()
+            },
+            RefusalPath::NotRuledOut,
+        );
     }
 
-    fn assert_busy_sibling_main_exit_released(force_bound: bool) {
+    #[test]
+    fn watched_nonleader_exec_is_refused_when_listing_is_short() {
+        // Every task listing drops its last entry, the exec'ing thread:
+        // the short listing must not be taken as a drained group.
+        assert_nonleader_exec_refused(
+            "thread-exec-child-marker",
+            &[],
+            Hooks {
+                drop_last_listed: true,
+                ..Hooks::default()
+            },
+            RefusalPath::NotRuledOut,
+        );
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn watched_int80_nonleader_exec_is_refused_before_image_runs() {
+        // The ia32 entry: /proc shows execve as 11 (native munmap); the
+        // int $0x80 instruction before its pc marks it as exec.
+        assert_nonleader_exec_refused(
+            "thread-exec-child-marker-int80",
+            &[],
+            Hooks::default(),
+            RefusalPath::ExecSeen,
+        );
+    }
+
+    #[test]
+    fn watched_many_thread_nonleader_exec_is_refused_before_image_runs() {
+        // 2000 parked threads are killed while /proc/<pid>/task is
+        // walked, so walks come up short; the exec'ing thread is last.
+        assert_nonleader_exec_refused(
+            "many-thread-exec-child-marker",
+            &["2000"],
+            Hooks::default(),
+            RefusalPath::Either,
+        );
+    }
+
+    fn assert_many_thread_exit_group_released(hooks: Hooks) {
+        // Control: a non-dumpable child with 2000 parked threads, one of
+        // which calls exit(0). Its main thread is killed but no thread
+        // execs, so nothing is refused: the leader's 7, no failure,
+        // nothing traced. The hooks show that neither a short listing
+        // nor syscall reads decide this release.
+        let _hooks = hooks.scopes();
+        let watched = Supervisor::spawn_watched(
+            fork_request("many-thread-exit-group-nondumpable", &[Path::new("2000")]),
+            CleanupReceipt::default(),
+        )
+        .unwrap();
+        let outcome = rearm_until_finished(watched);
+        assert_eq!(outcome.status, ExitStatus::Exited(7));
+        assert!(outcome.cleanup.confirmed);
+        assert_eq!(outcome.cleanup.child_detach_error, None);
+        assert_no_traced_by_current_thread("many-thread exit group");
+    }
+
+    #[test]
+    fn watched_nondumpable_many_thread_exit_group_is_not_refused() {
+        assert_many_thread_exit_group_released(Hooks::default());
+    }
+
+    #[test]
+    fn watched_many_thread_exit_group_with_short_listing_is_not_refused() {
+        assert_many_thread_exit_group_released(Hooks {
+            drop_last_listed: true,
+            ..Hooks::default()
+        });
+    }
+
+    #[test]
+    fn watched_many_thread_exit_group_with_running_siblings_is_not_refused() {
+        assert_many_thread_exit_group_released(Hooks {
+            force_running: true,
+            ..Hooks::default()
+        });
+    }
+
+    fn assert_busy_sibling_main_exit_released(force_running: bool) {
         // Control: the non-dumpable child's main thread exits on its own
         // while a sibling spins (unreadable, "running"). That main
         // thread was not killed, so nothing is refused: the leader's 7,
         // no failure, nothing traced, and the sibling runs on to exit 0.
         let marker = supervisor_test_file("busy-sibling.marker");
-        let _bound = force_bound.then(HookScope::force_sibling_running_at_bound);
+        let _hooks = Hooks {
+            force_running,
+            ..Hooks::default()
+        }
+        .scopes();
         let watched = Supervisor::spawn_watched(
             fork_request("busy-sibling-main-exit", &[&marker]),
             CleanupReceipt::default(),
@@ -4016,29 +4521,200 @@ int main(int argc, char **argv) {
     }
 
     #[test]
-    fn watched_main_exit_beside_sibling_past_its_bound_is_not_refused() {
+    fn watched_main_exit_beside_running_sibling_is_not_refused() {
         assert_busy_sibling_main_exit_released(true);
     }
 
     #[test]
-    fn exit_stop_decision_fails_closed_only_for_a_killed_main_thread() {
+    fn exit_stop_pass_releases_a_killed_main_thread_only_on_proof() {
+        use super::PassVerdict::*;
         use super::SiblingFinding::*;
-        use super::SyscallRead;
-        let classify = super::classify_sibling;
-        assert_eq!(classify(SyscallRead::Exec, false), Exec);
-        assert_eq!(classify(SyscallRead::Exec, true), Exec);
-        assert_eq!(classify(SyscallRead::Gone, false), NotExec);
-        assert_eq!(classify(SyscallRead::Other, false), NotExec);
-        assert_eq!(classify(SyscallRead::RunningAtBound, false), Unresolved);
-        assert_eq!(classify(SyscallRead::Unreadable, false), Unresolved);
-        assert_eq!(classify(SyscallRead::RunningAtBound, true), NotExec);
-        assert_eq!(classify(SyscallRead::Unreadable, true), NotExec);
-        let refuse = super::refuse_exit_stop;
-        assert!(refuse(false, &[NotExec, Exec]));
-        assert!(refuse(true, &[NotExec, Unresolved]));
-        assert!(!refuse(false, &[NotExec, Unresolved]));
-        assert!(!refuse(true, &[NotExec, NotExec]));
-        assert!(!refuse(true, &[]));
+        let pass = |threads: Option<usize>, siblings: &[super::SiblingFinding], listed_ok| {
+            super::ThreadsPass {
+                threads,
+                siblings: siblings.to_vec(),
+                listed_ok,
+            }
+        };
+        let verdict = super::pass_verdict;
+        // Killed main thread: drained, or a complete listing of gone or
+        // dying siblings, releases.
+        assert_eq!(verdict(true, &pass(Some(1), &[], true)), Release);
+        assert_eq!(verdict(true, &pass(Some(1), &[], false)), Release);
+        assert_eq!(verdict(true, &pass(Some(3), &[Gone, Dying], true)), Release);
+        // A sibling in exec refuses.
+        assert_eq!(
+            verdict(true, &pass(Some(3), &[Dying, Exec], true)),
+            RefuseExec
+        );
+        assert_eq!(
+            verdict(false, &pass(Some(3), &[Live, Exec], true)),
+            RefuseExec
+        );
+        // Anything unproven waits for the drain bound.
+        assert_eq!(
+            verdict(true, &pass(Some(3), &[Dying, Live], true)),
+            Undecided
+        );
+        assert_eq!(verdict(true, &pass(Some(3), &[Dying], true)), Undecided);
+        assert_eq!(verdict(true, &pass(Some(2), &[Dying], false)), Undecided);
+        assert_eq!(verdict(true, &pass(None, &[Dying], true)), Undecided);
+        assert_eq!(verdict(true, &pass(None, &[], true)), Undecided);
+        // A main thread that exited on its own is released beside any
+        // sibling not seen in exec.
+        assert_eq!(verdict(false, &pass(Some(2), &[Live], true)), Release);
+        assert_eq!(verdict(false, &pass(None, &[], false)), Release);
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn exec_entry_counts_every_x86_64_abi() {
+        use super::EntryAbi::*;
+        let exec = super::is_exec_entry;
+        for abi in [Native, Unknown] {
+            assert!(exec(59, abi) && exec(322, abi));
+            assert!(exec(0x4000_0000 | 520, abi) && exec(0x4000_0000 | 545, abi));
+            assert!(!exec(11, abi), "native 11 is munmap");
+            assert!(!exec(0x4000_0000 | 59, abi), "x32 59 is not exec");
+        }
+        assert!(
+            exec(358, Unknown) && !exec(358, Native),
+            "358 is unused natively"
+        );
+        assert!(exec(11, Ia32) && exec(358, Ia32));
+        assert!(!exec(59, Ia32) && !exec(322, Ia32));
+        assert!(!exec(1, Native) && !exec(-1, Unknown));
+    }
+
+    /// A fake `/proc/<pid>/task/<tid>` directory holding `files`.
+    fn fake_task_dir(files: &[(&str, &[u8])]) -> PathBuf {
+        let dir = supervisor_test_file("task");
+        fs::create_dir(&dir).unwrap();
+        for (name, bytes) in files {
+            fs::write(dir.join(name), bytes).unwrap();
+        }
+        dir
+    }
+
+    const STATUS_CLEAR: &[u8] =
+        b"Threads:\t3\nSigPnd:\t0000000000000000\nShdPnd:\t0000000000000000\n";
+    const STATUS_SIGKILL: &[u8] =
+        b"Threads:\t3\nSigPnd:\t0000000000000100\nShdPnd:\t0000000000000000\n";
+    // Flags 0x400040: neither PF_EXITING nor PF_SIGNALED.
+    const STAT_CLEAR: &[u8] = b"7 (sh) S 1 7 7 0 -1 4194368 0 0";
+    // Flags 0x400448, caught live by review: PF_SIGNALED without
+    // PF_EXITING, after SIGKILL left pending.
+    const STAT_SIGNALED: &[u8] = b"7 (sh) S 1 7 7 0 -1 4195400 0 0";
+    const STAT_EXITING: &[u8] = b"7 (sh) S 1 7 7 0 -1 4194372 0 0";
+
+    #[test]
+    fn exit_stop_sibling_evidence() {
+        use super::SiblingFinding::*;
+        let examine = |files: &[(&str, &[u8])]| {
+            let dir = fake_task_dir(files);
+            let finding = super::examine_sibling(&dir);
+            fs::remove_dir_all(&dir).unwrap();
+            finding
+        };
+        let blocked = b"7 0x0 0x0 0x0 0x0 0x0 0x0 0x7ffd0000 0x100";
+        // Gone: the directory, or any file read, is ENOENT.
+        let missing = supervisor_test_file("no-task");
+        assert_eq!(super::examine_sibling(&missing), Gone);
+        assert_eq!(examine(&[("stat", STAT_CLEAR), ("syscall", blocked)]), Gone);
+        assert_eq!(
+            examine(&[("status", STATUS_CLEAR), ("syscall", blocked)]),
+            Gone
+        );
+        assert_eq!(
+            examine(&[("status", STATUS_CLEAR), ("stat", STAT_CLEAR)]),
+            Gone
+        );
+        // Dying: SIGKILL pending, PF_SIGNALED or PF_EXITING; this wins
+        // over an exec number.
+        let in_execve = b"59 0x0 0x0 0x0 0x0 0x0 0x0 0x7ffd0000 0x100";
+        assert_eq!(
+            examine(&[
+                ("status", STATUS_SIGKILL),
+                ("stat", STAT_CLEAR),
+                ("syscall", in_execve)
+            ]),
+            Dying
+        );
+        assert_eq!(
+            examine(&[
+                ("status", STATUS_CLEAR),
+                ("stat", STAT_SIGNALED),
+                ("syscall", in_execve)
+            ]),
+            Dying
+        );
+        assert_eq!(
+            examine(&[
+                ("status", STATUS_CLEAR),
+                ("stat", STAT_EXITING),
+                ("syscall", in_execve)
+            ]),
+            Dying
+        );
+        // Exec, by number and entry instruction.
+        let live = [("status", STATUS_CLEAR), ("stat", STAT_CLEAR)];
+        let with = |syscall: &'static [u8], mem: Option<&'static [u8]>| {
+            let mut files: Vec<(&str, &[u8])> = live.to_vec();
+            files.push(("syscall", syscall));
+            if let Some(mem) = mem {
+                files.push(("mem", mem));
+            }
+            examine(&files)
+        };
+        let mut syscall_insn = vec![0u8; 0x100];
+        syscall_insn[0xfe..].copy_from_slice(&[0x0f, 0x05]);
+        let syscall_insn: &'static [u8] = syscall_insn.leak();
+        let mut int80_insn = vec![0u8; 0x100];
+        int80_insn[0xfe..].copy_from_slice(&[0xcd, 0x80]);
+        let int80_insn: &'static [u8] = int80_insn.leak();
+        let in_11 = b"11 0x0 0x0 0x0 0x0 0x0 0x0 0x7ffd0000 0x100";
+        assert_eq!(with(in_execve, Some(syscall_insn)), Exec);
+        assert_eq!(with(in_execve, None), Exec);
+        if cfg!(target_arch = "x86_64") {
+            assert_eq!(with(in_11, Some(int80_insn)), Exec);
+            assert_eq!(with(in_11, Some(syscall_insn)), Live, "native 11 is munmap");
+            assert_eq!(with(in_11, None), Live, "unknown entry");
+        }
+        // Live: unreadable, running, or another syscall.
+        assert_eq!(with(b"running", None), Live);
+        assert_eq!(with(blocked, None), Live);
+        assert_eq!(examine(&live), Gone, "no syscall file");
+    }
+
+    #[test]
+    fn exit_stop_main_thread_evidence() {
+        let killed = |files: &[(&str, &[u8])]| {
+            let dir = fake_task_dir(files);
+            let killed = super::main_thread_killed(&dir);
+            fs::remove_dir_all(&dir).unwrap();
+            killed
+        };
+        assert!(!killed(&[("status", STATUS_CLEAR), ("stat", STAT_CLEAR)]));
+        assert!(!killed(&[("status", STATUS_CLEAR), ("stat", STAT_EXITING)]));
+        assert!(killed(&[("status", STATUS_SIGKILL), ("stat", STAT_CLEAR)]));
+        assert!(killed(&[("status", STATUS_CLEAR), ("stat", STAT_SIGNALED)]));
+        // Unreadable evidence counts as killed.
+        assert!(killed(&[("stat", STAT_CLEAR)]));
+        assert!(killed(&[("status", STATUS_CLEAR)]));
+        assert!(killed(&[("status", STATUS_CLEAR), ("stat", b"garbage")]));
+    }
+
+    #[test]
+    fn proc_text_parsers() {
+        let stat = "42 (a (b) c) S 1 42 42 0 -1 4194624 0 0";
+        assert_eq!(super::task_flags(stat), Some(4194624));
+        let status =
+            "Name:\tx\nThreads:\t2\nSigPnd:\t0000000000000100\nShdPnd:\t0000000000000000\n";
+        assert_eq!(super::status_threads(status), Some(2));
+        assert!(super::sigkill_pending(status));
+        assert!(!super::sigkill_pending(
+            "SigPnd:\t0000000000000000\nShdPnd:\t0000000000000000\n"
+        ));
     }
 
     fn exited_leader_thread_teardown(cancel: bool) {
