@@ -6,7 +6,7 @@ authors = ["Meta Platforms"]
 edition = "2021"
 repository = "https://github.com/facebookexperimental/reverie"
 license = "BSD-2-Clause"
-publish = false
+publish = true
 description = "Host-only qualification of Reverie LiteInst artifacts"
 
 [lib]
