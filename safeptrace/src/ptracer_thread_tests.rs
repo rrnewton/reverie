@@ -1640,6 +1640,201 @@ fn dead_generic_owner_retained_driver_does_not_retain_generation() {
     drop(release);
 }
 
+/// TracerPid reads made so far on this thread by the detached-wait check
+/// (`note_detached_wait_if_untraced`).
+#[cfg(not(sanitized))]
+fn tracer_pid_reads() -> usize {
+    TRACER_PID_READS_FOR_TEST.with(Cell::get)
+}
+
+/// Resumes a seized, stopped member and interrupts it again, so that the
+/// generation has seen a resume (whose running state carries a
+/// `ResumeMark`) before the caller detaches.
+#[cfg(not(sanitized))]
+fn resumed_and_stopped_again(stopped: Stopped) -> Stopped {
+    let running = stopped.resume(None).unwrap();
+    running.interrupt().unwrap();
+    let (stopped, event) = running
+        .wait_sync_on_ptracer_thread()
+        .wait()
+        .unwrap()
+        .assume_stopped();
+    assert_eq!(event, crate::Event::Stop);
+    stopped
+}
+
+/// A wait built on the running state of a detach still reads TracerPid and
+/// records its detached-wait note after the generation has been resumed
+/// before: a detach never yields a `ResumeMark`. Covers the explicit
+/// synchronous and asynchronous drivers, which bind the live owner the
+/// handoff needs, and the generic wait, whose note is ownerless.
+#[test]
+#[cfg(not(sanitized))]
+fn detached_waits_after_a_resume_still_record_the_handoff() {
+    for driver in ["sync", "async", "generic"] {
+        let (root, tid, release, mut root_cleanup) = legacy_owner_guest();
+        let stopped = resumed_and_stopped_again(seized_stopped_sync(tid));
+        let running = stopped.detach(None).unwrap();
+        let terminal = running.terminal_cleanup();
+        let reads = tracer_pid_reads();
+        // Each wait drops at the end of its arm, which ends its note.
+        let noted = match driver {
+            "sync" => running
+                .wait_sync_on_ptracer_thread()
+                .into_driver()
+                .detached_wait
+                .is_some(),
+            "async" => running
+                .wait_owned_on_ptracer_thread()
+                .into_driver()
+                .inner
+                .detached_wait
+                .is_some(),
+            _ => running.wait_owned().detached_wait.is_some(),
+        };
+        assert_eq!(
+            tracer_pid_reads(),
+            reads + 1,
+            "a wait on a detach's running state must read TracerPid ({driver})"
+        );
+        assert!(
+            noted,
+            "a wait created after a detach must record its note ({driver})"
+        );
+        assert!(
+            terminal.wait(TRACEE_WAIT_TIMEOUT),
+            "the generation retires once the detached wait is dropped ({driver})"
+        );
+        legacy_owner_reap_root(root, &mut root_cleanup);
+        drop(release);
+    }
+}
+
+/// The explicit drivers' notes are bound to the live owner, so the Event
+/// reports the handoff pending while they are held. This takes the
+/// retaining detach, as reverie-inguest's mapped handover does.
+#[test]
+#[cfg(not(sanitized))]
+fn owned_detached_wait_after_a_resume_keeps_the_handoff_pending() {
+    let (root, tid, release, mut root_cleanup) = legacy_owner_guest();
+    let stopped = resumed_and_stopped_again(seized_stopped_sync(tid));
+    let running = stopped
+        .detach_retaining(None)
+        .map_err(|(_, error)| error)
+        .unwrap();
+    let terminal = running.terminal_cleanup();
+    let reads = tracer_pid_reads();
+    let driver = running.wait_owned_on_ptracer_thread().into_driver();
+    assert_eq!(
+        tracer_pid_reads(),
+        reads + 1,
+        "a wait on a retaining detach's running state must read TracerPid"
+    );
+    assert!(driver.inner.detached_wait.is_some());
+    assert!(
+        terminal.event.event().detach_handoff_pending(),
+        "a held explicit wait created after a detach keeps the handoff pending"
+    );
+    drop(driver);
+    assert!(terminal.wait(TRACEE_WAIT_TIMEOUT));
+    legacy_owner_reap_root(root, &mut root_cleanup);
+    drop(release);
+}
+
+/// Waits until `tid` is in a ptrace stop (`/proc/<tid>/stat` state `t`),
+/// without consuming its report.
+#[cfg(not(sanitized))]
+fn wait_for_tracing_stop(tid: Pid) {
+    let deadline = Instant::now() + TRACEE_WAIT_TIMEOUT;
+    loop {
+        let stat = fs::read_to_string(format!("/proc/{tid}/stat")).unwrap();
+        let state = stat
+            .rsplit_once(')')
+            .and_then(|(_, rest)| rest.split_whitespace().next())
+            .unwrap();
+        if state == "t" {
+            return;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "{tid} reached no ptrace stop (state {state})"
+        );
+        thread::sleep(Duration::from_millis(1));
+    }
+}
+
+/// A resume's mark does not survive a detach made through another
+/// capability of the same generation before the wait is built: the detach
+/// epoch moved, so the wait reads TracerPid, finds the task untraced and
+/// records the handoff.
+#[test]
+#[cfg(not(sanitized))]
+fn resume_mark_does_not_survive_a_detach_through_another_capability() {
+    let (root, tid, release, mut root_cleanup) = legacy_owner_guest();
+    let stopped = seized_stopped_sync(tid);
+    let generation = stopped.generation();
+    let running = stopped.resume(None).unwrap();
+    running.interrupt().unwrap();
+    wait_for_tracing_stop(tid);
+    let detached = generation.assume_stopped().detach(None).unwrap();
+    let terminal = running.terminal_cleanup();
+    let reads = tracer_pid_reads();
+    let driver = running.wait_owned_on_ptracer_thread().into_driver();
+    assert_eq!(
+        tracer_pid_reads(),
+        reads + 1,
+        "a resume's mark must not skip the read after a later detach"
+    );
+    assert!(driver.inner.detached_wait.is_some());
+    assert!(
+        terminal.event.event().detach_handoff_pending(),
+        "the wait finds the task untraced and must record the handoff"
+    );
+    drop(driver);
+    drop(detached);
+    assert!(terminal.wait(TRACEE_WAIT_TIMEOUT));
+    legacy_owner_reap_root(root, &mut root_cleanup);
+    drop(release);
+}
+
+/// The other half: a wait built on a resume's running state, with no detach
+/// since, makes no TracerPid read (the per-step cost of
+/// https://github.com/rrnewton/reverie/issues/1439), on the synchronous and
+/// the asynchronous waits. The member is detached before the cleanup kill,
+/// so that no exit stop holds it.
+#[tokio::test(flavor = "current_thread")]
+#[cfg(not(sanitized))]
+async fn resumed_waits_skip_the_tracer_pid_read() {
+    let (root, tid, release, mut root_cleanup) = legacy_owner_guest();
+    let stopped = seized_stopped_sync(tid);
+    let reads = tracer_pid_reads();
+    // The synchronous wait on a resume's running state.
+    let stopped = resumed_and_stopped_again(stopped);
+    // The asynchronous driver on another resume's.
+    let running = stopped.resume(None).unwrap();
+    running.interrupt().unwrap();
+    let mut driver = running.wait_owned_on_ptracer_thread().into_driver();
+    assert!(driver.inner.detached_wait.is_none());
+    let (stopped, event) = tokio::time::timeout(
+        TRACEE_WAIT_TIMEOUT,
+        futures::future::poll_fn(|cx| driver.poll_on_ptracer_thread(cx)),
+    )
+    .await
+    .unwrap()
+    .unwrap()
+    .assume_stopped();
+    assert_eq!(event, crate::Event::Stop);
+    assert_eq!(
+        tracer_pid_reads(),
+        reads,
+        "waits on a resume's running state must not read TracerPid"
+    );
+    drop(driver);
+    drop(stopped.detach(None).unwrap());
+    legacy_owner_reap_root(root, &mut root_cleanup);
+    drop(release);
+}
+
 #[tokio::test(flavor = "current_thread")]
 #[cfg(not(sanitized))]
 async fn explicit_copied_owner_namespace_refuses_before_consuming_any_report() {
