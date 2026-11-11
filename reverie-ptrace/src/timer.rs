@@ -3457,9 +3457,12 @@ impl TimerImpl {
                     .unwrap_or_else(|err| format!("(unreadable: {err})")),
                 regs.display_with_options(RegDisplayOptions { multiline: true })
             );
+            // The code at rip, read once for both decoders below.
+            #[cfg(target_arch = "x86_64")]
+            let code = StepCode::read(&task, regs.rip);
             #[cfg(target_arch = "x86_64")]
             let start = StepStart {
-                instruction: stepped_instruction(&task, &regs),
+                instruction: stepped_instruction(&task, &regs, &code),
                 rip: regs.rip,
                 rsp: regs.rsp,
                 rax: regs.rax,
@@ -3467,9 +3470,9 @@ impl TimerImpl {
             };
             #[cfg(target_arch = "x86_64")]
             let unit = self.step_unit(
-                &task,
                 &regs,
                 &start,
+                &code,
                 guest_trap_flag,
                 current.rcbs(),
                 target_rcb,
@@ -4120,9 +4123,9 @@ impl TimerImpl {
     #[cfg(target_arch = "x86_64")]
     fn step_unit(
         &mut self,
-        task: &Stopped,
         regs: &Regs,
         start: &StepStart,
+        code: &StepCode,
         guest_trap_flag: bool,
         clock: u64,
         target_rcb: u64,
@@ -4136,7 +4139,7 @@ impl TimerImpl {
         {
             return StepUnit::Instruction;
         }
-        match self.block_bounds.bound(task, regs.rip) {
+        match self.block_bounds.bound(regs.rip, code) {
             Some(branches) if u64::from(branches) < target_rcb - clock => StepUnit::Block,
             _ => StepUnit::Instruction,
         }
@@ -4175,6 +4178,7 @@ fn instruction_may_run_in_place(task: &Stopped, ip: u64) -> bool {
     const LONGEST: usize = 15;
     let mut code = CodeReader {
         task,
+        code: None,
         word_addr: None,
         word: [0; 8],
     };
@@ -4274,6 +4278,47 @@ const BLOCK_WINDOW: usize = 512;
 #[cfg(target_arch = "x86_64")]
 #[repr(C, align(1024))]
 struct CodeWindow([u8; 2 * BLOCK_WINDOW]);
+
+/// The guest code at a timer step's rip, read once with `process_vm_readv`
+/// for both of the step's decoders: [`stepped_instruction`] and
+/// [`BlockBounds::bound`]. `len` bytes were read: fewer than
+/// [`BLOCK_WINDOW`] where the read reached an unreadable page, none from an
+/// execute-only one (which [`CodeReader`] then reads with PTRACE_PEEKDATA).
+/// The bytes start the aligned [`CodeWindow`], as decoding requires.
+#[cfg(target_arch = "x86_64")]
+struct StepCode {
+    rip: u64,
+    window: CodeWindow,
+    len: usize,
+}
+
+#[cfg(target_arch = "x86_64")]
+impl StepCode {
+    fn read(task: &Stopped, rip: u64) -> Self {
+        let mut window = CodeWindow([0; 2 * BLOCK_WINDOW]);
+        let len = read_code(task, rip, &mut window.0[..BLOCK_WINDOW]);
+        Self { rip, window, len }
+    }
+
+    /// Code already read, for tests.
+    #[cfg(test)]
+    fn from_bytes(rip: u64, bytes: &[u8]) -> Self {
+        let mut window = CodeWindow([0; 2 * BLOCK_WINDOW]);
+        let len = bytes.len().min(BLOCK_WINDOW);
+        window.0[..len].copy_from_slice(&bytes[..len]);
+        Self { rip, window, len }
+    }
+
+    fn bytes(&self) -> &[u8] {
+        &self.window.0[..self.len]
+    }
+
+    /// The byte at `addr`, if this read holds it.
+    fn byte(&self, addr: u64) -> Option<u8> {
+        let offset = usize::try_from(addr.checked_sub(self.rip)?).ok()?;
+        self.bytes().get(offset).copied()
+    }
+}
 
 /// What one block step from an address can retire, decoded from its code.
 #[cfg(target_arch = "x86_64")]
@@ -4716,35 +4761,35 @@ impl BlockBounds {
     /// Entries kept before the cache starts over.
     const CAPACITY: usize = 4096;
 
-    /// The bound of a block step from `rip` (see [`decode_block_bound`]).
-    fn bound(&mut self, task: &Stopped, rip: u64) -> Option<u32> {
+    /// The bound of a block step from `rip` (see [`decode_block_bound`]),
+    /// from `current`, the code at `rip` read at this stop. A read that stops
+    /// at an unreadable page still returns every byte before it, so `current`
+    /// holds an entry's bytes exactly when a read of only those would succeed.
+    fn bound(&mut self, rip: u64, current: &StepCode) -> Option<u32> {
         use std::sync::atomic::Ordering::Relaxed;
-        let mut window = CodeWindow([0; 2 * BLOCK_WINDOW]);
-        if let Some((code, branches)) = self.entries.get(&rip) {
-            let current = &mut window.0[..code.len()];
-            if read_code(task, rip, current) == code.len() && *current == **code {
-                BLOCK_BOUND_HITS.fetch_add(1, Relaxed);
-                if verify_block_bound_cache() {
-                    let mut fresh = CodeWindow([0; 2 * BLOCK_WINDOW]);
-                    let len = read_code(task, rip, &mut fresh.0[..BLOCK_WINDOW]);
-                    let decoded = decode_block_bound(rip, &fresh.0[..len]).branches;
-                    assert_eq!(
-                        decoded, *branches,
-                        "the block bound cached for {rip:#x} differs from a fresh decode"
-                    );
-                }
-                return *branches;
+        debug_assert_eq!(current.rip, rip);
+        let bytes = current.bytes();
+        if let Some((code, branches)) = self.entries.get(&rip)
+            && bytes.get(..code.len()) == Some(&**code)
+        {
+            BLOCK_BOUND_HITS.fetch_add(1, Relaxed);
+            if verify_block_bound_cache() {
+                let decoded = decode_block_bound(rip, bytes).branches;
+                assert_eq!(
+                    decoded, *branches,
+                    "the block bound cached for {rip:#x} differs from a fresh decode"
+                );
             }
+            return *branches;
         }
         BLOCK_BOUND_MISSES.fetch_add(1, Relaxed);
-        let len = read_code(task, rip, &mut window.0[..BLOCK_WINDOW]);
-        let bound = decode_block_bound(rip, &window.0[..len]);
+        let bound = decode_block_bound(rip, bytes);
         if let Some(decided_by) = bound.decided_by {
             if self.entries.len() >= Self::CAPACITY {
                 self.entries.clear();
             }
             self.entries
-                .insert(rip, (window.0[..decided_by].into(), bound.branches));
+                .insert(rip, (bytes[..decided_by].into(), bound.branches));
         }
         bound.branches
     }
@@ -4847,10 +4892,12 @@ struct StepStart {
 
 /// Reads guest code in aligned words with PTRACE_PEEKDATA, which also reads
 /// execute-only pages and never reads past the word holding the last byte
-/// examined.
+/// examined. A byte that `code`, the step's code already read, holds is
+/// taken from there instead, with no request.
 #[cfg(target_arch = "x86_64")]
 struct CodeReader<'a> {
     task: &'a Stopped,
+    code: Option<&'a StepCode>,
     word_addr: Option<u64>,
     word: [u8; 8],
 }
@@ -4858,6 +4905,9 @@ struct CodeReader<'a> {
 #[cfg(target_arch = "x86_64")]
 impl CodeReader<'_> {
     fn byte(&mut self, addr: u64) -> Option<u8> {
+        if let Some(byte) = self.code.and_then(|code| code.byte(addr)) {
+            return Some(byte);
+        }
         if self.word_addr != Some(addr & !7) {
             self.word = read_aligned_word(self.task, addr & !7).ok()?.to_ne_bytes();
             self.word_addr = Some(addr & !7);
@@ -4881,14 +4931,14 @@ const RESTART_ERRORS: [i64; 4] = [-512, -513, -514, -516];
 /// Linux reads the syscall number from the low 32 bits of orig_rax, and
 /// orig_rax is -1 if the stop was not in a syscall.
 #[cfg(target_arch = "x86_64")]
-fn stepped_instruction(task: &Stopped, regs: &Regs) -> FlagsInstruction {
+fn stepped_instruction(task: &Stopped, regs: &Regs, code: &StepCode) -> FlagsInstruction {
     if regs.orig_rax as i32 != -1 && RESTART_ERRORS.contains(&(regs.rax as i64)) {
-        let restarted = flags_instruction(task, regs.rip.wrapping_sub(2));
+        let restarted = flags_instruction(task, regs.rip.wrapping_sub(2), Some(code));
         if matches!(restarted, FlagsInstruction::Syscall { end, .. } if end == regs.rip) {
             return restarted;
         }
     }
-    flags_instruction(task, regs.rip)
+    flags_instruction(task, regs.rip, Some(code))
 }
 
 /// Decodes enough of the instruction at `ip` to tell whether it is `pushf`,
@@ -4898,10 +4948,14 @@ fn stepped_instruction(task: &Stopped, regs: &Regs) -> FlagsInstruction {
 /// run, so a step that starts there runs both, and the second decides what
 /// the step leaks. Code that cannot be read is `Other`; the step itself then
 /// reports the fault.
+///
+/// Bytes that `code` holds come from it; the rest are read with
+/// PTRACE_PEEKDATA ([`CodeReader`]).
 #[cfg(target_arch = "x86_64")]
-fn flags_instruction(task: &Stopped, ip: u64) -> FlagsInstruction {
+fn flags_instruction(task: &Stopped, ip: u64, code: Option<&StepCode>) -> FlagsInstruction {
     let mut code = CodeReader {
         task,
+        code,
         word_addr: None,
         word: [0; 8],
     };
@@ -9494,5 +9548,79 @@ mod block_bound_tests {
     #[test]
     fn a_full_window_without_a_transfer_is_undecided() {
         assert_eq!(bound(&[0x90; BLOCK_WINDOW]), UNDECIDED);
+    }
+
+    /// A step's code read holds exactly the bytes it read, from its rip on;
+    /// anything before rip or past the read is left to PTRACE_PEEKDATA.
+    #[test]
+    fn step_code_holds_only_the_bytes_it_read() {
+        let code = super::StepCode::from_bytes(IP, &[0x0f, 0x05, 0x90]);
+        assert_eq!(code.byte(IP), Some(0x0f));
+        assert_eq!(code.byte(IP + 2), Some(0x90));
+        assert_eq!(code.byte(IP + 3), None);
+        assert_eq!(code.byte(IP - 1), None);
+        let unreadable = super::StepCode::from_bytes(IP, &[]);
+        assert_eq!(unreadable.byte(IP), None);
+    }
+
+    /// The flags decode of a step reads its bytes from the step's code
+    /// read, and decodes as it does from the same bytes read word by word.
+    #[test]
+    fn flags_decode_from_the_step_code_matches_the_bytes() {
+        let cases: &[&[u8]] = &[
+            &[0x0f, 0x05],
+            &[0x9c],
+            &[0x9d],
+            &[0xcf],
+            &[0x8e, 0xd0, 0x9d],
+            &[0x8e, 0xd0, 0x0f, 0x05],
+            &[0x66, 0x9c],
+            &[0x90, 0x0f, 0x05],
+            &[0x48, 0x89, 0xc0],
+        ];
+        for bytes in cases {
+            let code = super::StepCode::from_bytes(IP, bytes);
+            let from_code = super::decode_flags_instruction(IP, &mut |addr| code.byte(addr));
+            let from_bytes = super::decode_flags_instruction(IP, &mut |addr| {
+                bytes.get(usize::try_from(addr - IP).ok()?).copied()
+            });
+            assert_eq!(from_code, from_bytes, "{bytes:02x?}");
+        }
+    }
+
+    /// `BlockBounds::bound` decodes from the step's code read, keeps an entry
+    /// for the bytes that decided it, uses it only while those bytes are
+    /// unchanged, and treats a read that stops short of them as a miss.
+    #[test]
+    fn block_bounds_decode_and_validate_from_the_step_code() {
+        // jz +0; jmp +0: two branches, decided by four bytes.
+        let first: &[u8] = &[0x74, 0x00, 0xeb, 0x00, 0x90];
+        // nop; ret: no conditional branch.
+        let changed: &[u8] = &[0x90, 0xc3, 0x90, 0x90, 0x90];
+        let mut bounds = super::BlockBounds::default();
+        let expected = bound(first).branches;
+        assert!(expected.is_some());
+        assert_eq!(
+            bounds.bound(IP, &super::StepCode::from_bytes(IP, first)),
+            expected
+        );
+        // Cached, and the same bytes hit it.
+        assert_eq!(bounds.entries.len(), 1);
+        assert_eq!(
+            bounds.bound(IP, &super::StepCode::from_bytes(IP, first)),
+            expected
+        );
+        // Changed code at the same rip is decoded afresh, never served stale.
+        assert_eq!(
+            bounds.bound(IP, &super::StepCode::from_bytes(IP, changed)),
+            bound(changed).branches
+        );
+        // A read that stopped before the cached bytes misses, and decodes
+        // only what it read.
+        let short = &first[..1];
+        assert_eq!(
+            bounds.bound(IP, &super::StepCode::from_bytes(IP, short)),
+            bound(short).branches
+        );
     }
 }
