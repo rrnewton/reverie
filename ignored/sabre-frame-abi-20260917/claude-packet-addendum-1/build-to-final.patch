@@ -1,0 +1,26 @@
+--- native-build-3/experimental/reverie-sabre/tests/fixtures/syscall_frame/frame_probe.c
++++ 610989/experimental/reverie-sabre/tests/fixtures/syscall_frame/frame_probe.c
+@@ -125,6 +125,7 @@
+   for (size_t i = 0; i < PROBE_WORDS; ++i)
+     printf("%s%lu", i ? "," : "", child[i]);
+   printf("]}\n");
++  fflush(stdout);
+   return failures != 0;
+ }
+ 
+--- native-build-3/experimental/reverie-sabre/vendor/sabre/arch/x86_64/handle_syscall_loader.s
++++ 610989/experimental/reverie-sabre/vendor/sabre/arch/x86_64/handle_syscall_loader.s
+@@ -15,12 +15,12 @@
+   .cfi_startproc
+   .cfi_def_cfa rsp, 0x88
+   .cfi_offset rip, -0x88
+-  .cfi_remember_state
+ 
+   # The rewriter captured the guest flags in r11. Use the same frame as
+   # handle_syscall: ld_sc_handler may forward it to the plugin router.
+   pushq %r11
+   .cfi_adjust_cfa_offset 8
++  .cfi_remember_state
+   cld
+ 
+   # Prologue

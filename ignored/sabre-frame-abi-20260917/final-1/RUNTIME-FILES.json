@@ -1,0 +1,22 @@
+[
+  {
+    "kind": "normal-built-loader-current-after-CFI",
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-sabre-frame-abi-20260917/ignored/sabre-frame-abi-20260917/native-build-3/target/debug/build/reverie-sabre-a9ad6049195e9f01/out/sabre-build-v4/sabre",
+    "sha256": "d0ffd274d188619012a157d4765735c7a0b44655208fe4b3eb689b44ba3e8de1"
+  },
+  {
+    "kind": "test-executable",
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-sabre-frame-abi-20260917/ignored/sabre-frame-abi-20260917/native-build-3/target/debug/deps/syscall_frame_abi-78c76c9c98540bb1",
+    "sha256": "77ac175dae0359f322b3794eb19e30572b0896ebcca6379bba5bd8529225093d"
+  },
+  {
+    "kind": "normal-built-loader-current-after-CFI",
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-sabre-frame-abi-20260917/ignored/sabre-frame-abi-20260917/native-build-3/target/debug/build/reverie-sabre-a9ad6049195e9f01/out/sabre-build-v4/sabre",
+    "sha256": "d0ffd274d188619012a157d4765735c7a0b44655208fe4b3eb689b44ba3e8de1"
+  },
+  {
+    "kind": "test-executable",
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-sabre-frame-abi-20260917/ignored/sabre-frame-abi-20260917/native-build-3/target/debug/deps/reverie_sabre-22a6b8a133e88e10",
+    "sha256": "4a9de58eead3996e02fe2776a81a30194fdddc34da6ea781f0264e086800211b"
+  }
+]

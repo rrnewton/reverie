@@ -1,0 +1,14 @@
+{
+  "argv": [
+    "git",
+    "diff-tree",
+    "--no-commit-id",
+    "--name-only",
+    "-r",
+    "HEAD"
+  ],
+  "actual_exit": 0,
+  "seconds": 0.021509616170078516,
+  "stdout": "experimental/reverie-sabre/src/ffi/clone.rs\nexperimental/reverie-sabre/src/ffi/mod.rs\nexperimental/reverie-sabre/src/reverie_adapter.rs\nexperimental/reverie-sabre/tests/fixtures/syscall_frame/frame_probe.S\nexperimental/reverie-sabre/tests/fixtures/syscall_frame/frame_probe.c\nexperimental/reverie-sabre/tests/fixtures/syscall_frame/frame_probe.h\nexperimental/reverie-sabre/tests/syscall_frame_abi.rs\nexperimental/reverie-sabre/vendor/sabre/arch/x86_64/handle_syscall_loader.s\nexperimental/reverie-sabre/vendor/sabre/arch/x86_64/syscall_stackframe.c\nexperimental/reverie-sabre/vendor/sabre/plugin_api/arch/x86_64/vfork_return_from_child.s\n",
+  "stderr": ""
+}

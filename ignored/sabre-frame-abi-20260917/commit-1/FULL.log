@@ -1,0 +1,5 @@
+Traceback (most recent call last):
+  File "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-sabre-frame-abi-20260917/ignored/sabre-frame-abi-20260917/commit-1/commit.py", line 16, in <module>
+    untracked=call('untracked-before',['git','ls-files','--others','--exclude-standard']).splitlines();assert sorted(untracked)==sorted(set(paths)-set(expected));assert not (S/'HANDOFF.md').exists()
+                                                                                                              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError

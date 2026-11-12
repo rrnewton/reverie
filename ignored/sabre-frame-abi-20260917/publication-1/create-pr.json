@@ -1,0 +1,27 @@
+{
+  "argv": [
+    "with-proxy",
+    "/home/newton/work/dev-hermit/ci-hub/bin/gh",
+    "--task",
+    "hermit-main-tip-d0b1468b-not-validated-22-nodes-mostly-exit-2",
+    "pr",
+    "create",
+    "--repo",
+    "rrnewton/reverie",
+    "--draft",
+    "--base",
+    "main",
+    "--head",
+    "dev-hermit/sabre-frame-abi-20260917",
+    "--title",
+    "Repair SaBRe syscall frames and child continuations",
+    "--body-file",
+    "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-sabre-frame-abi-20260917/ignored/sabre-frame-abi-20260917/publication-1/body.md",
+    "--label",
+    "post-facto-human-review"
+  ],
+  "actual_exit": 0,
+  "seconds": 4.443944022990763,
+  "stdout": "https://github.com/rrnewton/reverie/pull/563\n",
+  "stderr": "gh: recorded task/PR ownership https://github.com/rrnewton/reverie/pull/563 on hermit-main-tip-d0b1468b-not-validated-22-nodes-mostly-exit-2\n"
+}

@@ -1,0 +1,14 @@
+{
+  "argv": [
+    "with-proxy",
+    "git",
+    "ls-remote",
+    "--exit-code",
+    "origin",
+    "refs/heads/main"
+  ],
+  "actual_exit": 0,
+  "seconds": 0.3406302770599723,
+  "stdout": "24cd5bb518b027eddb62a226805210d74d31c3d8\trefs/heads/main\n",
+  "stderr": ""
+}

@@ -1,0 +1,116 @@
+{
+  "native_build_git_head": "24cd5bb518b027eddb62a226805210d74d31c3d8",
+  "final_head": "61098967f47041f96a43995f5272412cf9fe5761",
+  "all_ten": [
+    {
+      "path": "experimental/reverie-sabre/src/ffi/clone.rs",
+      "native_build_3": "28b1f98fff13134fb0d9a2860068a7765e660e80179685aedb3a726aa9f9ca8c",
+      "committed_610989": "28b1f98fff13134fb0d9a2860068a7765e660e80179685aedb3a726aa9f9ca8c",
+      "equal": true
+    },
+    {
+      "path": "experimental/reverie-sabre/src/ffi/mod.rs",
+      "native_build_3": "37ea743e7b1a78d21aeee5b3d95b31199270546222c2e9fcacd324a168017077",
+      "committed_610989": "37ea743e7b1a78d21aeee5b3d95b31199270546222c2e9fcacd324a168017077",
+      "equal": true
+    },
+    {
+      "path": "experimental/reverie-sabre/src/reverie_adapter.rs",
+      "native_build_3": "084a097d7bd44d64f3ed1ae2462d0302e94d691093f0dc2216b37f8a23c8305d",
+      "committed_610989": "084a097d7bd44d64f3ed1ae2462d0302e94d691093f0dc2216b37f8a23c8305d",
+      "equal": true
+    },
+    {
+      "path": "experimental/reverie-sabre/tests/fixtures/syscall_frame/frame_probe.S",
+      "native_build_3": "6e95df32cada9c7059437b3f12625a4fb229ee5cf44288ad8da95c151bbac1a3",
+      "committed_610989": "6e95df32cada9c7059437b3f12625a4fb229ee5cf44288ad8da95c151bbac1a3",
+      "equal": true
+    },
+    {
+      "path": "experimental/reverie-sabre/tests/fixtures/syscall_frame/frame_probe.c",
+      "native_build_3": "c5c0b34faff5f6089e3f72ca1265504a6a284bdb8fce0ae29fb96d175f86d44d",
+      "committed_610989": "9da521926e0b407d129f3400ccbe096bbaa6b09893a8ee00d6d778053e9cd565",
+      "equal": false
+    },
+    {
+      "path": "experimental/reverie-sabre/tests/fixtures/syscall_frame/frame_probe.h",
+      "native_build_3": "a2faeb5db71400ae54f6245bbb0dc413ace8c7ddcc718960c3628a70d953ce33",
+      "committed_610989": "a2faeb5db71400ae54f6245bbb0dc413ace8c7ddcc718960c3628a70d953ce33",
+      "equal": true
+    },
+    {
+      "path": "experimental/reverie-sabre/tests/syscall_frame_abi.rs",
+      "native_build_3": "ca3f952f497fba9f67d6cb5c12bd39a4ca129893583f943e0fdc8a257af6903f",
+      "committed_610989": "ca3f952f497fba9f67d6cb5c12bd39a4ca129893583f943e0fdc8a257af6903f",
+      "equal": true
+    },
+    {
+      "path": "experimental/reverie-sabre/vendor/sabre/arch/x86_64/handle_syscall_loader.s",
+      "native_build_3": "45e0753b0e593f00b81e247ee41605377b966ccae2dd19975f4e050c0a2edcd6",
+      "committed_610989": "2a440aaa2469303ad12a7e9f41f6efc14650236376499d8e5ae72db53c2d1991",
+      "equal": false
+    },
+    {
+      "path": "experimental/reverie-sabre/vendor/sabre/arch/x86_64/syscall_stackframe.c",
+      "native_build_3": "0bf733297b07e6ad618728e0e6b8f65cb25af5bae50272b2e9825e06c06a0089",
+      "committed_610989": "0bf733297b07e6ad618728e0e6b8f65cb25af5bae50272b2e9825e06c06a0089",
+      "equal": true
+    },
+    {
+      "path": "experimental/reverie-sabre/vendor/sabre/plugin_api/arch/x86_64/vfork_return_from_child.s",
+      "native_build_3": "9479d129e61cf1fcf67ba3e3ab95ed7961d653e3e7f64076609d9f8fae3175b9",
+      "committed_610989": "9479d129e61cf1fcf67ba3e3ab95ed7961d653e3e7f64076609d9f8fae3175b9",
+      "equal": true
+    }
+  ],
+  "deltas": [
+    {
+      "path": "experimental/reverie-sabre/tests/fixtures/syscall_frame/frame_probe.c",
+      "before": {
+        "path": "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/sabre-frame-abi-1/checkpoint-3/source/experimental/reverie-sabre/tests/fixtures/syscall_frame/frame_probe.c",
+        "realpath": "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/sabre-frame-abi-1/checkpoint-3/source/experimental/reverie-sabre/tests/fixtures/syscall_frame/frame_probe.c",
+        "mode": 33188,
+        "device": 48,
+        "inode": 784685076,
+        "size": 5676,
+        "mtime_ns": 1789616336165512952,
+        "sha256": "c5c0b34faff5f6089e3f72ca1265504a6a284bdb8fce0ae29fb96d175f86d44d"
+      },
+      "after": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-sabre-frame-abi-20260917/experimental/reverie-sabre/tests/fixtures/syscall_frame/frame_probe.c",
+        "realpath": "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-sabre-frame-abi-20260917/experimental/reverie-sabre/tests/fixtures/syscall_frame/frame_probe.c",
+        "mode": 33188,
+        "device": 48,
+        "inode": 784597641,
+        "size": 5694,
+        "mtime_ns": 1789616625091708547,
+        "sha256": "9da521926e0b407d129f3400ccbe096bbaa6b09893a8ee00d6d778053e9cd565"
+      },
+      "patch": "--- native-build-3/experimental/reverie-sabre/tests/fixtures/syscall_frame/frame_probe.c\n+++ 610989/experimental/reverie-sabre/tests/fixtures/syscall_frame/frame_probe.c\n@@ -125,6 +125,7 @@\n   for (size_t i = 0; i < PROBE_WORDS; ++i)\n     printf(\"%s%lu\", i ? \",\" : \"\", child[i]);\n   printf(\"]}\\n\");\n+  fflush(stdout);\n   return failures != 0;\n }\n \n"
+    },
+    {
+      "path": "experimental/reverie-sabre/vendor/sabre/arch/x86_64/handle_syscall_loader.s",
+      "before": {
+        "path": "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/sabre-frame-abi-1/checkpoint-3/source/experimental/reverie-sabre/vendor/sabre/arch/x86_64/handle_syscall_loader.s",
+        "realpath": "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/sabre-frame-abi-1/checkpoint-3/source/experimental/reverie-sabre/vendor/sabre/arch/x86_64/handle_syscall_loader.s",
+        "mode": 33188,
+        "device": 48,
+        "inode": 784685083,
+        "size": 1985,
+        "mtime_ns": 1789616336165933714,
+        "sha256": "45e0753b0e593f00b81e247ee41605377b966ccae2dd19975f4e050c0a2edcd6"
+      },
+      "after": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-sabre-frame-abi-20260917/experimental/reverie-sabre/vendor/sabre/arch/x86_64/handle_syscall_loader.s",
+        "realpath": "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-sabre-frame-abi-20260917/experimental/reverie-sabre/vendor/sabre/arch/x86_64/handle_syscall_loader.s",
+        "mode": 33188,
+        "device": 48,
+        "inode": 784549010,
+        "size": 1985,
+        "mtime_ns": 1789616625091528386,
+        "sha256": "2a440aaa2469303ad12a7e9f41f6efc14650236376499d8e5ae72db53c2d1991"
+      },
+      "patch": "--- native-build-3/experimental/reverie-sabre/vendor/sabre/arch/x86_64/handle_syscall_loader.s\n+++ 610989/experimental/reverie-sabre/vendor/sabre/arch/x86_64/handle_syscall_loader.s\n@@ -15,12 +15,12 @@\n   .cfi_startproc\n   .cfi_def_cfa rsp, 0x88\n   .cfi_offset rip, -0x88\n-  .cfi_remember_state\n \n   # The rewriter captured the guest flags in r11. Use the same frame as\n   # handle_syscall: ld_sc_handler may forward it to the plugin router.\n   pushq %r11\n   .cfi_adjust_cfa_offset 8\n+  .cfi_remember_state\n   cld\n \n   # Prologue\n"
+    }
+  ]
+}

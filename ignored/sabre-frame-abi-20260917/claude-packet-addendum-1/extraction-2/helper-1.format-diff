@@ -1,0 +1,16 @@
+--- retained-original
++++ objdump2.37-now
+@@ -23,10 +23,10 @@
+    c91fd:	5b                   	pop    %rbx
+    c91fe:	5d                   	pop    %rbp
+    c91ff:	b8 00 00 00 00       	mov    $0x0,%eax
+-   c9204:	9d                   	popf
++   c9204:	9d                   	popf   
+    c9205:	48 8d 64 24 08       	lea    0x8(%rsp),%rsp
+-   c920a:	c3                   	ret
+-   c920b:	0f 0b                	ud2
++   c920a:	c3                   	ret    
++   c920b:	0f 0b                	ud2    
+ 
+ Disassembly of section .init:
+ 

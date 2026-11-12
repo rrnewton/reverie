@@ -1,0 +1,19 @@
+{
+  "at_utc": "2026-09-17T04:01:47Z",
+  "pid": 497124,
+  "start": 177659745,
+  "same_generation_present": false,
+  "cgroup": "/sys/fs/cgroup/user.slice/user-212630.slice/user@212630.service/app.slice/sabre-frame-abi-body2-20260917.scope",
+  "cgroup_absent": true,
+  "unit_argv": [
+    "systemctl",
+    "--user",
+    "show",
+    "sabre-frame-abi-body2-20260917.scope",
+    "--property=LoadState,ActiveState,SubState,InvocationID,ControlGroup",
+    "--no-pager"
+  ],
+  "unit_exit": 0,
+  "unit_stdout": "LoadState=not-found\nActiveState=inactive\nSubState=dead\nInvocationID=\nControlGroup=\n",
+  "unit_stderr": ""
+}

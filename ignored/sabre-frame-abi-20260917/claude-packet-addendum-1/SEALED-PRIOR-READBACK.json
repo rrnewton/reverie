@@ -1,0 +1,12 @@
+{
+  "at_utc": "2026-09-17T04:15:19Z",
+  "prior_artifacts_rehashed": 349,
+  "source_entries": 2555,
+  "all_source_bytes_equal": true,
+  "known_final_hashes_equal": {
+    "REPORT.md": "794539cd7719097abdd0a3133e23d639af031aaf0e99a7f15d4f5852221c8918",
+    "EVIDENCE-MANIFEST.json": "789e493ffb0f55b36941368848cd5169b08b2dcbbe831a9ea4efe6a0e02de598",
+    "SOURCE.json": "51729426942460c81169a74a7a9806b9249356fc7976a50d3e01d3942586dbf1",
+    "RUNTIME-FILES.json": "1b12500abeb0536d74e273ff35dca98293d4b9a5cc7eb69758be1f0f15e75ccf"
+  }
+}

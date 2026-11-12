@@ -1,0 +1,18 @@
+{
+  "argv": [
+    "/home/newton/work/dev-hermit/ci-hub/bin/who-am-i",
+    "--tag",
+    "--role",
+    "impl",
+    "--task",
+    "hermit-main-tip-d0b1468b-not-validated-22-nodes-mostly-exit-2",
+    "--repo-root",
+    "/home/newton/work/dev-hermit",
+    "--db",
+    "/home/newton/.tg/hermit2.db"
+  ],
+  "actual_exit": 0,
+  "seconds": 0.17621670686639845,
+  "stdout": "[hermit2, degraded-dev-hermit, gpt-6-astra, devbig014, role=impl]",
+  "stderr": "who-am-i: fields: team, agent, model, machine, role\nwho-am-i: DEGRADED: identity resolver returned UNRESOLVED\nwho-am-i: NEXT: run with --diagnostics to see the missing or conflicting signals. If --pid was supplied, pass a live agent PID or omit --pid to inspect the caller.\n"
+}

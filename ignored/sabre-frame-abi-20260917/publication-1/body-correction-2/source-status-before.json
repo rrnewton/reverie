@@ -1,0 +1,12 @@
+{
+  "argv": [
+    "git",
+    "status",
+    "--porcelain=v1",
+    "--untracked-files=all"
+  ],
+  "actual_exit": 0,
+  "seconds": 0.10148177482187748,
+  "stdout_path": "source-status-before.stdout",
+  "stderr_path": "source-status-before.stderr"
+}

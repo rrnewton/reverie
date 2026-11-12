@@ -1,0 +1,35 @@
+
+/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-sabre-frame-abi-20260917/ignored/sabre-frame-abi-20260917/native-build-3/target/debug/deps/syscall_frame_abi-78c76c9c98540bb1:     file format elf64-x86-64
+
+
+Disassembly of section .text:
+
+00000000000c91e0 <_RNvNtNtCskEW6L6tZ6A8_13reverie_sabre3ffi5clone17resume_fork_child>:
+   c91e0:	50                   	push   %rax
+   c91e1:	48 89 3c 24          	mov    %rdi,(%rsp)
+   c91e5:	48 8d 67 08          	lea    0x8(%rdi),%rsp
+   c91e9:	41 5f                	pop    %r15
+   c91eb:	41 5e                	pop    %r14
+   c91ed:	41 5d                	pop    %r13
+   c91ef:	41 5c                	pop    %r12
+   c91f1:	41 5b                	pop    %r11
+   c91f3:	41 5a                	pop    %r10
+   c91f5:	41 59                	pop    %r9
+   c91f7:	41 58                	pop    %r8
+   c91f9:	5f                   	pop    %rdi
+   c91fa:	5e                   	pop    %rsi
+   c91fb:	5a                   	pop    %rdx
+   c91fc:	59                   	pop    %rcx
+   c91fd:	5b                   	pop    %rbx
+   c91fe:	5d                   	pop    %rbp
+   c91ff:	b8 00 00 00 00       	mov    $0x0,%eax
+   c9204:	9d                   	popf   
+   c9205:	48 8d 64 24 08       	lea    0x8(%rsp),%rsp
+   c920a:	c3                   	ret    
+   c920b:	0f 0b                	ud2    
+
+Disassembly of section .init:
+
+Disassembly of section .fini:
+
+Disassembly of section .plt:

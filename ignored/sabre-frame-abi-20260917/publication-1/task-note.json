@@ -1,0 +1,12 @@
+{
+  "argv": [
+    "/home/newton/work/dev-hermit/ci-hub/bin/tg-note-verified",
+    "hermit-main-tip-d0b1468b-not-validated-22-nodes-mostly-exit-2",
+    "--file",
+    "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-sabre-frame-abi-20260917/ignored/sabre-frame-abi-20260917/publication-1/task-note.txt"
+  ],
+  "actual_exit": 0,
+  "seconds": 0.5155447190627456,
+  "stdout": "tg-note-verified: STORED AND VERIFIED byte-for-byte (686 bytes, 1 lines) on hermit-main-tip-d0b1468b-not-validated-22-nodes-mostly-exit-2\n",
+  "stderr": ""
+}

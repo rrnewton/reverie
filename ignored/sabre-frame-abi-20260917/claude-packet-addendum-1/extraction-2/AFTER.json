@@ -1,0 +1,77 @@
+{
+  "binary": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-sabre-frame-abi-20260917/ignored/sabre-frame-abi-20260917/native-build-3/target/debug/deps/syscall_frame_abi-78c76c9c98540bb1",
+    "realpath": "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-sabre-frame-abi-20260917/ignored/sabre-frame-abi-20260917/native-build-3/target/debug/deps/syscall_frame_abi-78c76c9c98540bb1",
+    "sha256": "77ac175dae0359f322b3794eb19e30572b0896ebcca6379bba5bd8529225093d",
+    "size": 60137072,
+    "mode": 33261,
+    "device": 48,
+    "inode": 784775669,
+    "mtime_ns": 1789616475639750629
+  },
+  "objdump": {
+    "path": "/usr/local/bin/objdump",
+    "realpath": "/usr/local/fbcode/platform010/bin/objdump",
+    "sha256": "8481f31cf570b693d50469c36f84c899d146e3b2cfcc198aa91a85fc956dfb6b",
+    "size": 19240128,
+    "mode": 33261,
+    "device": 33,
+    "inode": 169527,
+    "mtime_ns": 1781294015000000000
+  },
+  "binary_before_after_equal": true,
+  "tool_before_after_equal": true,
+  "prior_binary_receipt_digest_equal": true,
+  "disassembly_comparisons": [
+    {
+      "symbol": "helper-0",
+      "original": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-sabre-frame-abi-20260917/ignored/sabre-frame-abi-20260917/native-build-3/helper-0.disassembly",
+        "realpath": "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-sabre-frame-abi-20260917/ignored/sabre-frame-abi-20260917/native-build-3/helper-0.disassembly",
+        "sha256": "3a9818c05ec7fb2ff0bbf8c44e5eff56c6f0bfaa92fefbae342538a5bd0e0632",
+        "size": 5400,
+        "mode": 33188,
+        "device": 48,
+        "inode": 784794078,
+        "mtime_ns": 1789616498754664740
+      },
+      "fresh": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-sabre-frame-abi-20260917/ignored/sabre-frame-abi-20260917/claude-packet-addendum-1/extraction-2/helper-0.stdout",
+        "realpath": "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-sabre-frame-abi-20260917/ignored/sabre-frame-abi-20260917/claude-packet-addendum-1/extraction-2/helper-0.stdout",
+        "sha256": "9f54b811335156dae2db0c6f3edc21459177b4bddad72e0380a9f6d7d58c29b3",
+        "size": 5412,
+        "mode": 33188,
+        "device": 48,
+        "inode": 785846586,
+        "mtime_ns": 1789618420494662826
+      },
+      "byte_identical": false,
+      "equal_after_only_trailing_line_whitespace_removal": true
+    },
+    {
+      "symbol": "helper-1",
+      "original": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-sabre-frame-abi-20260917/ignored/sabre-frame-abi-20260917/native-build-3/helper-1.disassembly",
+        "realpath": "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-sabre-frame-abi-20260917/ignored/sabre-frame-abi-20260917/native-build-3/helper-1.disassembly",
+        "sha256": "1b678d78731df0323226e8704c36dfc068c95e5ec7ff4c03370087a9b82a4589",
+        "size": 1400,
+        "mode": 33188,
+        "device": 48,
+        "inode": 784794079,
+        "mtime_ns": 1789616498759735807
+      },
+      "fresh": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-sabre-frame-abi-20260917/ignored/sabre-frame-abi-20260917/claude-packet-addendum-1/extraction-2/helper-1.stdout",
+        "realpath": "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-sabre-frame-abi-20260917/ignored/sabre-frame-abi-20260917/claude-packet-addendum-1/extraction-2/helper-1.stdout",
+        "sha256": "b09d28b5ca3cef1e50f01a47eca443e65902acef36794d3b5c3e9251da910d53",
+        "size": 1411,
+        "mode": 33188,
+        "device": 48,
+        "inode": 785846590,
+        "mtime_ns": 1789618420669931603
+      },
+      "byte_identical": false,
+      "equal_after_only_trailing_line_whitespace_removal": true
+    }
+  ]
+}

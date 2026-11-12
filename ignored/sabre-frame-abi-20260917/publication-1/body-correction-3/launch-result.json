@@ -1,0 +1,20 @@
+{
+  "argv": [
+    "systemd-run",
+    "--user",
+    "--scope",
+    "--quiet",
+    "--collect",
+    "--unit=sabre-frame-abi-body4-20260917.scope",
+    "--property=CPUQuota=400%",
+    "--property=MemoryMax=8G",
+    "--property=MemorySwapMax=0",
+    "--property=TasksMax=1024",
+    "--property=RuntimeMaxSec=900",
+    "--",
+    "python3",
+    "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-sabre-frame-abi-20260917/ignored/sabre-frame-abi-20260917/publication-1/body-correction-3/run.py"
+  ],
+  "actual_exit": 0,
+  "elapsed_seconds": 3.3872768240980804
+}

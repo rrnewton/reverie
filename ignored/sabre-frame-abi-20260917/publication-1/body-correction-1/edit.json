@@ -1,0 +1,17 @@
+{
+  "argv": [
+    "with-proxy",
+    "/home/newton/work/dev-hermit/ci-hub/bin/gh",
+    "pr",
+    "edit",
+    "563",
+    "--repo",
+    "rrnewton/reverie",
+    "--body-file",
+    "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-sabre-frame-abi-20260917/ignored/sabre-frame-abi-20260917/publication-1/body-correction-1/body-v2.md"
+  ],
+  "actual_exit": 0,
+  "seconds": 2.0447018682025373,
+  "stdout": "https://github.com/rrnewton/reverie/pull/563\n",
+  "stderr": ""
+}

@@ -1,0 +1,16 @@
+[
+  "systemd-run",
+  "--user",
+  "--scope",
+  "--quiet",
+  "--collect",
+  "--unit=sabre-frame-abi-commit2-20260917.scope",
+  "--property=CPUQuota=400%",
+  "--property=MemoryMax=8G",
+  "--property=MemorySwapMax=0",
+  "--property=TasksMax=1024",
+  "--property=RuntimeMaxSec=900",
+  "--",
+  "python3",
+  "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-sabre-frame-abi-20260917/ignored/sabre-frame-abi-20260917/commit-2/run.py"
+]

@@ -1,0 +1,60 @@
+{
+  "utc": "2026-09-17T04:24:35.397812+00:00",
+  "unit": "sabre-frame-abi-body3-20260917.scope",
+  "argv": [
+    "systemctl",
+    "--user",
+    "show",
+    "sabre-frame-abi-body3-20260917.scope",
+    "-p",
+    "LoadState",
+    "-p",
+    "ActiveState",
+    "-p",
+    "SubState",
+    "-p",
+    "ControlGroup"
+  ],
+  "actual_exit": 0,
+  "stdout": "LoadState=not-found\nActiveState=inactive\nSubState=dead\nControlGroup=\n",
+  "stderr": "",
+  "recorded_generation_present": false,
+  "cgroup_exists": false,
+  "runtime_result": {
+    "argv": [
+      "python3",
+      "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-sabre-frame-abi-20260917/ignored/sabre-frame-abi-20260917/publication-1/body-correction-2/edit.py"
+    ],
+    "actual_exit": 0,
+    "elapsed_seconds": 3.454572841990739,
+    "raw": {
+      "memory.max": "8589934592\n",
+      "memory.swap.max": "0\n",
+      "memory.events": "low 0\nhigh 0\nmax 0\noom 0\noom_kill 0\noom_group_kill 0\nsock_throttled 0\n",
+      "memory.peak": "264847360\n",
+      "cpu.max": "400000 100000\n",
+      "pids.max": "1024\n",
+      "pids.events": "max 0\n"
+    }
+  },
+  "launch": {
+    "argv": [
+      "systemd-run",
+      "--user",
+      "--scope",
+      "--quiet",
+      "--collect",
+      "--unit=sabre-frame-abi-body3-20260917.scope",
+      "--property=CPUQuota=400%",
+      "--property=MemoryMax=8G",
+      "--property=MemorySwapMax=0",
+      "--property=TasksMax=1024",
+      "--property=RuntimeMaxSec=900",
+      "--",
+      "python3",
+      "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-sabre-frame-abi-20260917/ignored/sabre-frame-abi-20260917/publication-1/body-correction-2/run.py"
+    ],
+    "actual_exit": 0,
+    "elapsed_seconds": 3.734704480972141
+  }
+}

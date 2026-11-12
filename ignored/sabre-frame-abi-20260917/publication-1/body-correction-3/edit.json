@@ -1,0 +1,17 @@
+{
+  "argv": [
+    "with-proxy",
+    "/home/newton/work/dev-hermit/ci-hub/bin/gh",
+    "pr",
+    "edit",
+    "563",
+    "--repo",
+    "rrnewton/reverie",
+    "--body-file",
+    "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-sabre-frame-abi-20260917/ignored/sabre-frame-abi-20260917/publication-1/body-correction-3/body-v4.md"
+  ],
+  "actual_exit": 0,
+  "seconds": 1.4399130349047482,
+  "stdout_path": "edit.stdout",
+  "stderr_path": "edit.stderr"
+}

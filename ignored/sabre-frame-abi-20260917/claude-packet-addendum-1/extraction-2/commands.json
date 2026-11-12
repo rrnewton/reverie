@@ -1,0 +1,27 @@
+[
+  [
+    "version",
+    [
+      "/usr/local/bin/objdump",
+      "--version"
+    ]
+  ],
+  [
+    "helper-0",
+    [
+      "/usr/local/bin/objdump",
+      "-d",
+      "--disassemble=_RNvNtNtCskEW6L6tZ6A8_13reverie_sabre3ffi5clone12fork_syscall",
+      "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-sabre-frame-abi-20260917/ignored/sabre-frame-abi-20260917/native-build-3/target/debug/deps/syscall_frame_abi-78c76c9c98540bb1"
+    ]
+  ],
+  [
+    "helper-1",
+    [
+      "/usr/local/bin/objdump",
+      "-d",
+      "--disassemble=_RNvNtNtCskEW6L6tZ6A8_13reverie_sabre3ffi5clone17resume_fork_child",
+      "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-sabre-frame-abi-20260917/ignored/sabre-frame-abi-20260917/native-build-3/target/debug/deps/syscall_frame_abi-78c76c9c98540bb1"
+    ]
+  ]
+]

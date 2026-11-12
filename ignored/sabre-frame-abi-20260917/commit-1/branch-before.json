@@ -1,0 +1,11 @@
+{
+  "argv": [
+    "git",
+    "branch",
+    "--show-current"
+  ],
+  "actual_exit": 0,
+  "seconds": 0.01884134905412793,
+  "stdout": "dev-hermit/sabre-frame-abi-20260917\n",
+  "stderr": ""
+}

@@ -1,0 +1,15 @@
+Repair SaBRe syscall frames and child continuations
+
+[hermit2, degraded-dev-hermit, gpt-6-astra, devbig014, role=impl]
+
+Plain Language Summary
+The x86 syscall wrapper saves RFLAGS before the register frame, but its Rust/C declarations and fork-form child epilogues omitted that word. A child selected the architectural return instead of the scratch continuation, bypassing displaced instructions and resuming with the stack128+8 bytes low. Match the real18-word frame, return through scratch, preserve original flags, and make the loader entry and register readers use the same layout.
+
+Project Impact
+Preserves original fork/clone assertions and the separate RISC-V layout. New native tests exercise actual wrapper assembler, C accessors and real Rust fork/vfork child-return helpers, with exact stack, scratch, displaced instruction, flags and all128 red-zone bytes. Existing vfork and register-reader tests also pass. The CFI correction changes unwind metadata only; emitted loader instruction bytes are identical. The existing SIGILL bridge remains a return-pointer-only path; no full-frame guarantee for that bridge, kernel clone3 execution, new-stack clone register parity, Hermit guest success or full-main validation is claimed here.
+
+Validation: old actual-wrapper12/12 failures versus corrected12/12 passes; three real Rust integration methods across both wrappers/two flag patterns; existing vfork and register-reader methods; genuine Cargo build.rs/native build, ordinary fmt and relevant all-target Clippy. Exact-child wait preserves failure status, and flushing fixture stdout preserves complete raw observations. No assertion, case, comparator, timeout or failure classification was relaxed. Historical regular-sink RIP0 attribution remains source/stack evidence, not a captured last-branch trace.
+
+Critical review: trigger2 applies to the public frame/interception ABI. Independent native and actual Claude source reviews/manual publication gate are required; this local checkpoint is not approval or publication.
+
+Task: hermit-main-tip-d0b1468b-not-validated-22-nodes-mostly-exit-2

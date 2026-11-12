@@ -1,0 +1,14 @@
+{
+  "url": "https://github.com/rrnewton/reverie/pull/563",
+  "head": "61098967f47041f96a43995f5272412cf9fe5761",
+  "tree": "a575118fc65729e451e64f3c328510075ae38947",
+  "draft": true,
+  "task": "hermit-main-tip-d0b1468b-not-validated-22-nodes-mostly-exit-2",
+  "remote_all_source_entries_equal": 2555,
+  "all10prfiles_equal": true,
+  "body_readback_equal_after_GitHub_newline_normalization": true,
+  "body_sha256": "edd5d004c74ba79be3ffffeb1e24888fe1a57e2697387e9695ebe606596bcebf",
+  "no_merge": true,
+  "no_self_attestation": true,
+  "source_main_before": "24cd5bb518b027eddb62a226805210d74d31c3d8"
+}

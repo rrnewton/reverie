@@ -1,0 +1,18 @@
+{
+  "argv": [
+    "cargo",
+    "clippy",
+    "--offline",
+    "--locked",
+    "-p",
+    "reverie-sabre",
+    "--all-targets",
+    "--",
+    "-D",
+    "warnings"
+  ],
+  "actual_exit": 0,
+  "seconds": 2.9857021959032863,
+  "stdout": "",
+  "stderr": "   Compiling reverie-sabre v0.2.0 (/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-sabre-frame-abi-20260917/experimental/reverie-sabre)\nwarning: reverie-sabre@0.2.0: /home/newton/work/dev-hermit/worktrees/slots/dev-hermit-sabre-frame-abi-20260917/experimental/reverie-sabre/vendor/libelf/elf_begin.c: In function 'elf_begin':\nwarning: reverie-sabre@0.2.0: /home/newton/work/dev-hermit/worktrees/slots/dev-hermit-sabre-frame-abi-20260917/experimental/reverie-sabre/vendor/libelf/elf_begin.c:1176:10: warning: this statement may fall through [-Wimplicit-fallthrough=]\nwarning: reverie-sabre@0.2.0:  1176 |       if (unlikely (ref != NULL && ref->cmd != ELF_C_READ_MMAP_PRIVATE))\nwarning: reverie-sabre@0.2.0:       |          ^\nwarning: reverie-sabre@0.2.0: /home/newton/work/dev-hermit/worktrees/slots/dev-hermit-sabre-frame-abi-20260917/experimental/reverie-sabre/vendor/libelf/elf_begin.c:1184:5: note: here\nwarning: reverie-sabre@0.2.0:  1184 |     case ELF_C_READ:\nwarning: reverie-sabre@0.2.0:       |     ^~~~\nwarning: reverie-sabre@0.2.0: /home/newton/work/dev-hermit/worktrees/slots/dev-hermit-sabre-frame-abi-20260917/experimental/reverie-sabre/vendor/libelf/elf_cntl.c: In function 'elf_cntl':\nwarning: reverie-sabre@0.2.0: /home/newton/work/dev-hermit/worktrees/slots/dev-hermit-sabre-frame-abi-20260917/experimental/reverie-sabre/vendor/libelf/elf_cntl.c:57:10: warning: this statement may fall through [-Wimplicit-fallthrough=]\nwarning: reverie-sabre@0.2.0:    57 |       if (elf->map_address == NULL && __libelf_readall (elf) == NULL)\nwarning: reverie-sabre@0.2.0:       |          ^\nwarning: reverie-sabre@0.2.0: /home/newton/work/dev-hermit/worktrees/slots/dev-hermit-sabre-frame-abi-20260917/experimental/reverie-sabre/vendor/libelf/elf_cntl.c:65:5: note: here\nwarning: reverie-sabre@0.2.0:    65 |     case ELF_C_FDDONE:\nwarning: reverie-sabre@0.2.0:       |     ^~~~\nwarning: reverie-sabre@0.2.0: SaBRe source build completed in 0.29s (jobs=4)\n    Finished `dev` profile [unoptimized + debuginfo] target(s) in 2.92s\n"
+}

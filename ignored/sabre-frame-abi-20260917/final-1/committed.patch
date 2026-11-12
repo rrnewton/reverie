@@ -1,0 +1,804 @@
+diff --git a/experimental/reverie-sabre/src/ffi/clone.rs b/experimental/reverie-sabre/src/ffi/clone.rs
+index c2fb173b8e5de755084f2df8c7856cfeeb01b351..14a9e407200594d7502f26c51371ad9c9ee713c5 100644
+--- a/experimental/reverie-sabre/src/ffi/clone.rs
++++ b/experimental/reverie-sabre/src/ffi/clone.rs
+@@ -122,8 +122,9 @@ pub unsafe fn clone_syscall(
+ ///
+ /// This routine instead reproduces SaBRe's normal `handle_syscall` epilogue for
+ /// the child: it restores the guest's saved general-purpose registers and its
+-/// original `%rsp` (`wrapper_sp + 0x88`) from the syscall frame, then jumps to
+-/// the saved return address with `%rax = 0`.
++/// scratch-continuation stack pointer from the syscall frame, then resumes the
++/// saved continuation with `%rax = 0` and the original guest RFLAGS. The
++/// continuation restores the reserved red zone and runs displaced instructions.
+ ///
+ /// # Safety
+ ///
+@@ -163,27 +164,10 @@ pub unsafe fn fork_syscall(
+         "call qword ptr [rip + reverie_sabre_after_clone_child@GOTPCREL]",
+         "4:",
+         "call qword ptr [rip + exit_plugin@GOTPCREL]",
+-        "mov rdi, r12",                     // rdi = wrapper_sp (frame base)
+-        // Restore the guest's saved registers from the frame, mirroring the
+-        // pops in SaBRe's handle_syscall.S epilogue. rcx/r11 were clobbered by
+-        // the guest's own syscall, and r11 is reused below as the jump target.
+-        "mov r15, qword ptr [rdi + 0x8]",
+-        "mov r14, qword ptr [rdi + 0x10]",
+-        "mov r13, qword ptr [rdi + 0x18]",
+-        "mov r10, qword ptr [rdi + 0x30]",
+-        "mov r9,  qword ptr [rdi + 0x38]",
+-        "mov r8,  qword ptr [rdi + 0x40]",
+-        "mov rsi, qword ptr [rdi + 0x50]",
+-        "mov rdx, qword ptr [rdi + 0x58]",
+-        "mov rcx, qword ptr [rdi + 0x60]",
+-        "mov rbx, qword ptr [rdi + 0x68]",
+-        "mov rbp, qword ptr [rdi + 0x70]",
+-        "mov r12, qword ptr [rdi + 0x20]",  // restore guest r12 (held wrapper_sp)
+-        "mov r11, qword ptr [rdi + 0x80]",  // guest return RIP -> jump target
+-        "lea rsp, [rdi + 0x88]",            // guest's original %rsp
+-        "mov rdi, qword ptr [rdi + 0x48]",  // guest rdi (final use of frame base)
+-        "xor eax, eax",                     // fork/clone returns 0 in the child
+-        "jmp r11",
++        "mov rdi, r12",
++        // This is an ordinary extern-C function: CALL supplies its ABI entry
++        // return word. It never returns and replaces RSP with the saved frame.
++        "call {resume_child}",
+ 
+         // ---- Parent ----
+         "2:",
+@@ -196,6 +180,7 @@ pub unsafe fn fork_syscall(
+         in("r8") tls,
+         in("r12") wrapper_sp,
+         in("xmm0") vfork_slot,
++        resume_child = sym resume_fork_child,
+         clone_vm = const libc::CLONE_VM,
+         vfork_flags = const (libc::CLONE_VM | libc::CLONE_VFORK),
+         // syscall instructions clobber rcx and r11
+@@ -342,24 +327,10 @@ pub unsafe fn clone3_fork_syscall(
+         "call qword ptr [rip + reverie_sabre_after_clone_child@GOTPCREL]",
+         "4:",
+         "call qword ptr [rip + exit_plugin@GOTPCREL]",
+-        "mov rdi, r12",                     // rdi = wrapper_sp (frame base)
+-        "mov r15, qword ptr [rdi + 0x8]",
+-        "mov r14, qword ptr [rdi + 0x10]",
+-        "mov r13, qword ptr [rdi + 0x18]",
+-        "mov r10, qword ptr [rdi + 0x30]",
+-        "mov r9,  qword ptr [rdi + 0x38]",
+-        "mov r8,  qword ptr [rdi + 0x40]",
+-        "mov rsi, qword ptr [rdi + 0x50]",
+-        "mov rdx, qword ptr [rdi + 0x58]",
+-        "mov rcx, qword ptr [rdi + 0x60]",
+-        "mov rbx, qword ptr [rdi + 0x68]",
+-        "mov rbp, qword ptr [rdi + 0x70]",
+-        "mov r12, qword ptr [rdi + 0x20]",
+-        "mov r11, qword ptr [rdi + 0x80]",
+-        "lea rsp, [rdi + 0x88]",
+-        "mov rdi, qword ptr [rdi + 0x48]",
+-        "xor eax, eax",
+-        "jmp r11",
++        "mov rdi, r12",
++        // This is an ordinary extern-C function: CALL supplies its ABI entry
++        // return word. It never returns and replaces RSP with the saved frame.
++        "call {resume_child}",
+ 
+         // ---- Parent ----
+         "2:",
+@@ -373,6 +344,7 @@ pub unsafe fn clone3_fork_syscall(
+         in("r12") wrapper_sp,
+         in("xmm0") clone_flags,
+         in("xmm1") vfork_slot,
++        resume_child = sym resume_fork_child,
+         clone_vm = const libc::CLONE_VM,
+         vfork_flags = const (libc::CLONE_VM | libc::CLONE_VFORK),
+         lateout("rcx") _,
+@@ -394,43 +366,41 @@ pub unsafe fn clone3_fork_syscall(
+ /// current guest thread.
+ pub unsafe extern "C" fn vfork_return_from_child(wrapper_sp: *const syscall_stackframe) -> ! {
+     super::exit_plugin();
++    resume_fork_child(wrapper_sp)
++}
+ 
++/// Complete the actual handle_syscall epilogue on the copied guest frame.
++/// All fork-form child paths abandon their intervening Rust frames here.
++unsafe extern "C" fn resume_fork_child(wrapper_sp: *const syscall_stackframe) -> ! {
+     core::arch::asm! {
+-        // Load registers from the syscall_stackframe struct. These are all
+-        // offsets into the struct.
+-        //
+-        // FIXME: Don't hard code these struct field offsets.
+-        "mov r15, qword ptr [rdi + 0x8]",
+-        "mov r14, qword ptr [rdi + 0x10]",
+-        "mov r13, qword ptr [rdi + 0x18]",
+-        "mov r12, qword ptr [rdi + 0x20]",
+-        "mov r11, qword ptr [rdi + 0x28]",
+-        "mov r10, qword ptr [rdi + 0x30]",
+-        "mov r9, qword ptr [rdi + 0x38]",
+-        "mov r8, qword ptr [rdi + 0x40]",
+-        // Skip rdi because we are reading it for the pointer offset.
+-        "mov rsi, qword ptr [rdi + 0x50]",
+-        "mov rdx, qword ptr [rdi + 0x58]",
+-        "mov rcx, qword ptr [rdi + 0x60]",
+-        "mov rbx, qword ptr [rdi + 0x68]",
+-        "mov rbp, qword ptr [rdi + 0x70]",
+-
+-        // Its safe to clobber r11 to load *ret.
+-        "mov r11, qword ptr [rdi + 0x80]",
+-
+-        // Finally, set rdi.
+-        "mov rdi, qword ptr [rdi + 0x48]",
+-
+-        // The child always returns 0.
+-        "mov rax, 0",
+-
+-        "sub rsp, 0x80",
+-
+-        // Jump back to the client.
+-        "jmp r11",
+-
++        "lea rsp, [rdi + {saved_registers}]",
++        "pop r15",
++        "pop r14",
++        "pop r13",
++        "pop r12",
++        "pop r11",
++        "pop r10",
++        "pop r9",
++        "pop r8",
++        "pop rdi",
++        "pop rsi",
++        "pop rdx",
++        "pop rcx",
++        "pop rbx",
++        "pop rbp",
++        // MOV does not change RFLAGS. Restore flags only after all work that
++        // might change them, then skip the architectural return and RET into
++        // the scratch continuation exactly as the normal wrapper does.
++        "mov eax, 0",
++        "popfq",
++        "lea rsp, [rsp + {skip_fake_return}]",
++        "ret",
++        saved_registers = const std::mem::offset_of!(syscall_stackframe, r15),
++        skip_fake_return = const (
++            std::mem::offset_of!(syscall_stackframe, ret)
++                - std::mem::offset_of!(syscall_stackframe, fake_ret)
++        ),
+         in("rdi") wrapper_sp,
+-
+         options(noreturn),
+     }
+ }
+diff --git a/experimental/reverie-sabre/src/ffi/mod.rs b/experimental/reverie-sabre/src/ffi/mod.rs
+index 8b84d377bdf9e33bc61e37733c562f6fd28d48b6..3d6385688d4f03238acccd5c2b673a33e8e36e21 100644
+--- a/experimental/reverie-sabre/src/ffi/mod.rs
++++ b/experimental/reverie-sabre/src/ffi/mod.rs
+@@ -88,6 +88,8 @@ pub struct syscall_stackframe {
+     pub rcx: *mut libc::c_void,
+     pub rbx: *mut libc::c_void,
+     pub rbp_prologue: *mut libc::c_void,
++    /// Original guest RFLAGS, saved separately from the writable r11 register.
++    pub rflags: u64,
+     /// Architectural guest return address after the patched syscall. SaBRe's
+     /// assembly calls this the fake return because the handler discards this
+     /// stack slot before returning through the scratch trampoline.
+@@ -97,6 +99,13 @@ pub struct syscall_stackframe {
+     pub ret: *mut libc::c_void,
+ }
+ 
++impl syscall_stackframe {
++    /// The rewrite reserves the x86-64 red zone before pushing its two returns.
++    pub(crate) fn guest_stack_pointer(&self) -> u64 {
++        self as *const Self as u64 + std::mem::size_of::<Self>() as u64 + 0x80
++    }
++}
++
+ pub type handle_syscall_fn = extern "C" fn(
+     syscall: isize,
+     arg1: usize,
+diff --git a/experimental/reverie-sabre/src/reverie_adapter.rs b/experimental/reverie-sabre/src/reverie_adapter.rs
+index 1636fa5b4fab512c66a37fe8f5f6c3d0db7c09f8..45fecd99acec4345a708ab4270b806dedaaffeca 100644
+--- a/experimental/reverie-sabre/src/reverie_adapter.rs
++++ b/experimental/reverie-sabre/src/reverie_adapter.rs
+@@ -1196,7 +1196,8 @@ where
+         regs.rsi = frame.rsi as u64;
+         regs.rdi = frame.rdi as u64;
+         regs.rip = frame.fake_ret as u64;
+-        regs.rsp = unsafe { (frame as *const crate::ffi::syscall_stackframe).add(1) as u64 };
++        regs.rsp = frame.guest_stack_pointer();
++        regs.eflags = frame.rflags;
+         regs
+     }
+ 
+@@ -2018,6 +2019,9 @@ mod tests {
+             assert_eq!(regs.rsi, 20);
+             assert_eq!(regs.rdx, 30);
+             assert_eq!(regs.rip, 0xf00d);
++            assert_eq!(regs.eflags, 0x647);
++            let frame = crate::callbacks::current_syscall_frame().unwrap();
++            assert_eq!(regs.rsp, frame as u64 + 0x90 + 0x80);
+             assert_eq!(guest.backtrace().unwrap().iter().next().unwrap().ip, 0xf00d);
+ 
+             let mut unsupported_rsp = regs;
+@@ -2028,6 +2032,10 @@ mod tests {
+             unsupported_rip.rip = 0xbeef;
+             assert!(guest.set_regs(unsupported_rip).await.is_err());
+ 
++            let mut unsupported_flags = regs;
++            unsupported_flags.eflags ^= 1;
++            assert!(guest.set_regs(unsupported_flags).await.is_err());
++
+             regs.r15 = 1515;
+             regs.rcx = 0xcafe;
+             regs.r11 = 0x202;
+@@ -2048,6 +2056,7 @@ mod tests {
+         frame.rdx = 30usize as *mut libc::c_void;
+         frame.fake_ret = 0xf00dusize as *mut libc::c_void;
+         frame.ret = 0xdeadusize as *mut libc::c_void;
++        frame.rflags = 0x647;
+ 
+         assert!(crate::callbacks::current_syscall_frame().is_none());
+         {
+@@ -2063,6 +2072,7 @@ mod tests {
+         assert_eq!(frame.r11 as usize, 0x202);
+         assert_eq!(frame.fake_ret as usize, 0xf00d);
+         assert_eq!(frame.ret as usize, 0xdead);
++        assert_eq!(frame.rflags, 0x647);
+     }
+ 
+     #[derive(Default)]
+diff --git a/experimental/reverie-sabre/tests/fixtures/syscall_frame/frame_probe.S b/experimental/reverie-sabre/tests/fixtures/syscall_frame/frame_probe.S
+new file mode 100644
+index 0000000000000000000000000000000000000000..bbfb497cdf5c545e2ce097b483a944820538d41a
+--- /dev/null
++++ b/experimental/reverie-sabre/tests/fixtures/syscall_frame/frame_probe.S
+@@ -0,0 +1,82 @@
++#include "frame_probe.h"
++  .text
++  .globl frame_probe
++  .type frame_probe,@function
++frame_probe:
++  push %rbp
++  push %rbx
++  push %r12
++  push %r13
++  push %r14
++  push %r15
++  mov %rdi,%r15
++  mov %rsp,SLOT(ORIGINAL_RSP)(%r15)
++  pushq SLOT(EXPECTED_FLAGS)(%r15)
++  popfq
++  pushfq
++  pop %r11
++  movabs $0x718293a4b5c6d7e8,%rax
++  .irp distance,8,16,24,32,40,48,56,64,72,80,88,96,104,112,120,128
++  mov %rax,-\distance(%rsp)
++  .endr
++  mov $0xb0b0,%ebp
++  mov $0xbbbb,%ebx
++  mov $0x1212,%r12d
++  mov $0x3131,%r13d
++  mov $0x1414,%r14d
++  mov $0x9999,%r9d
++  mov $0x8888,%r8d
++  mov $0xaaaa,%r10d
++  mov $17,%edi
++  mov $0,%esi
++  mov $0,%edx
++  # Same entry contract as the real rewriter: reserve red zone, push scratch
++  # continuation and architectural return, and enter the actual wrapper.
++  # These instructions deliberately leave the selected flags unchanged.
++  lea -0x80(%rsp),%rsp
++  lea probe_scratch(%rip),%rcx
++  push %rcx
++  lea probe_after(%rip),%rcx
++  push %rcx
++  mov $56,%eax
++  jmp *probe_handler(%rip)
++  .globl probe_scratch
++probe_scratch:
++  lea 0x80(%rsp),%rsp
++  movq $1,SLOT(SCRATCH_SEEN)(%r15)
++  # A displaced instruction that must execute exactly once.
++  lea 0x10(%r12),%r12
++  .globl probe_after
++probe_after:
++  mov %rax,SLOT(RESULT_RAX)(%r15)
++  mov %rsp,SLOT(RETURNED_RSP)(%r15)
++  mov %r11,SLOT(RESULT_R11)(%r15)
++  mov %r12,SLOT(RESULT_R12)(%r15)
++  mov %rbp,SLOT(RESULT_RBP)(%r15)
++  mov %r15,SLOT(RESULT_R15)(%r15)
++  mov %r13,SLOT(RESULT_R13)(%r15)
++  mov %rcx,SLOT(RESULT_RCX)(%r15)
++  mov SLOT(ORIGINAL_RSP)(%r15),%rcx
++  # Read the whole protected red zone before PUSHFQ consumes one stack word.
++  .set probe_index,0
++  .irp distance,128,120,112,104,96,88,80,72,64,56,48,40,32,24,16,8
++  mov -\distance(%rcx),%rax
++  mov %rax,(SLOT(REDZONE_START)+probe_index*8)(%r15)
++  .set probe_index,probe_index+1
++  .endr
++  pushfq
++  pop %rax
++  mov %rax,SLOT(RESULT_FLAGS)(%r15)
++  cld
++  # Always recover the fixture's own caller stack so a wrong child offset is
++  # an explicit failed observation, rather than hiding it in a secondary RET.
++  mov SLOT(ORIGINAL_RSP)(%r15),%rsp
++  pop %r15
++  pop %r14
++  pop %r13
++  pop %r12
++  pop %rbx
++  pop %rbp
++  ret
++  .size frame_probe,.-frame_probe
++  .section .note.GNU-stack,"",@progbits
+diff --git a/experimental/reverie-sabre/tests/fixtures/syscall_frame/frame_probe.c b/experimental/reverie-sabre/tests/fixtures/syscall_frame/frame_probe.c
+new file mode 100644
+index 0000000000000000000000000000000000000000..a7454a2380c5ddfb24945be018a55a9a9b3b939c
+--- /dev/null
++++ b/experimental/reverie-sabre/tests/fixtures/syscall_frame/frame_probe.c
+@@ -0,0 +1,149 @@
++#define _GNU_SOURCE
++#include "frame_probe.h"
++#include <errno.h>
++#include <stdint.h>
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++#include <sys/syscall.h>
++#include <sys/wait.h>
++#include <unistd.h>
++
++extern void handle_syscall(void);
++extern void handle_syscall_loader(void);
++extern void frame_probe(uint64_t *) __attribute__((returns_twice));
++extern void probe_scratch(void);
++extern void probe_after(void);
++extern void *get_syscall_return_address(void *);
++extern size_t get_offsetof_syscall_return_address(void);
++extern long vfork_return_from_child(void *);
++void (*probe_handler)(void);
++static uint64_t *active;
++static int mode;
++typedef long (*rust_router_fn)(int, void *, uint64_t *);
++static rust_router_fn rust_router;
++
++long runtime_syscall_router(long sc, long a, long b, long c, long d, long e,
++                            long f, void *frame) {
++  (void)sc; (void)a; (void)b; (void)c; (void)d; (void)e; (void)f;
++  active[FRAME_BASE] = (uintptr_t)frame;
++  active[FRAME_RETURN] = (uintptr_t)get_syscall_return_address(frame);
++  active[FRAME_RETURN_OFFSET] = get_offsetof_syscall_return_address();
++  if (rust_router != NULL) return rust_router(mode, frame, active);
++  if (mode == 1) {
++    long child = syscall(SYS_clone, SIGCHLD, 0, 0, 0, 0);
++    if (child != 0) return child;
++  } else if (mode == 0) {
++    return 0x55;
++  }
++  vfork_return_from_child(frame);
++  _exit(98);
++}
++
++long ld_sc_handler(long sc, long a, long b, long c, long d, long e, long f,
++                   void *frame) {
++  return runtime_syscall_router(sc, a, b, c, d, e, f, frame);
++}
++
++static unsigned check(const uint64_t *p, int child) {
++  unsigned failures = 0;
++  failures |= p[RETURNED_RSP] != p[ORIGINAL_RSP] ? 1 : 0;
++  failures |= p[FRAME_RETURN] != (uintptr_t)probe_scratch ? 2 : 0;
++  failures |= p[FRAME_RETURN_OFFSET] != 0x88 ? 4 : 0;
++  failures |= p[FRAME_BASE] + 0x90 + 0x80 != p[ORIGINAL_RSP] ? 8 : 0;
++  failures |= p[SCRATCH_SEEN] != 1 || p[RESULT_R12] != 0x1222 ? 16 : 0;
++  failures |= ((p[RESULT_FLAGS] ^ p[EXPECTED_FLAGS]) & 0xcd5) != 0 ? 32 : 0;
++  failures |= p[RESULT_R11] != p[EXPECTED_FLAGS] ? 64 : 0;
++  failures |= p[RESULT_RBP] != 0xb0b0 || p[RESULT_R13] != 0x3131 ? 128 : 0;
++  failures |= p[RESULT_RCX] != (uintptr_t)probe_after ? 256 : 0;
++  failures |= child && p[RESULT_RAX] != 0 ? 512 : 0;
++  for (size_t i = REDZONE_START; i < REDZONE_END; ++i)
++    failures |= p[i] != UINT64_C(0x718293a4b5c6d7e8) ? 1024 : 0;
++  if (rust_router != NULL) {
++    failures |= p[RUST_FRAME_RETURN] != (uintptr_t)probe_scratch ? 8192 : 0;
++    failures |= p[RUST_FRAME_FAKE_RETURN] != (uintptr_t)probe_after ? 16384 : 0;
++    failures |= p[RUST_GUEST_RSP] != p[ORIGINAL_RSP] ? 32768 : 0;
++  }
++  return failures;
++}
++
++static int transfer(int fd, void *buffer, size_t length, int sending) {
++  size_t done = 0;
++  while (done < length) {
++    ssize_t n = sending ? write(fd, (char *)buffer + done, length - done)
++                        : read(fd, (char *)buffer + done, length - done);
++    if (n < 0 && errno == EINTR) continue;
++    if (n <= 0) return -1;
++    done += (size_t)n;
++  }
++  return 0;
++}
++
++int frame_probe_run(int requested_mode, int loader_entry, unsigned long flags,
++                    rust_router_fn callback) {
++  if (requested_mode < 0 || requested_mode > 2 ||
++      (flags != 0x647 && flags != 0xa96)) return 2;
++  mode = requested_mode;
++  rust_router = callback;
++  probe_handler = loader_entry ? handle_syscall_loader : handle_syscall;
++  uint64_t result[PROBE_WORDS] = {0};
++  active = result;
++  result[EXPECTED_FLAGS] = flags;
++  int pipefd[2];
++  if (pipe(pipefd) != 0) return 2;
++  frame_probe(result);
++  if (mode == 1 && result[RESULT_RAX] == 0) {
++    close(pipefd[0]);
++    int rc = transfer(pipefd[1], result, sizeof(result), 1);
++    _exit(rc == 0 ? (check(result, 1) != 0) : 2);
++  }
++  close(pipefd[1]);
++  unsigned failures = check(result, mode == 2);
++  int child_status = -1;
++  uint64_t child[PROBE_WORDS] = {0};
++  if (mode == 1) {
++    pid_t pid = (pid_t)result[RESULT_RAX];
++    if (pid <= 0) return 2;
++    int captured = transfer(pipefd[0], child, sizeof(child), 0);
++    pid_t reaped;
++    do { reaped = waitpid(pid, &child_status, 0); } while (reaped < 0 && errno == EINTR);
++    if (reaped != pid) return 2;
++    // A failed capture must still reap this exact child and retain its status.
++    failures |= captured != 0 ? 65536 : 0;
++    failures |= check(child, 1);
++    failures |= !WIFEXITED(child_status) || WEXITSTATUS(child_status) != 0
++                    ? 2048 : 0;
++  } else if (mode == 0 && result[RESULT_RAX] != 0x55) failures |= 4096;
++  close(pipefd[0]);
++  printf("{\"mode\":\"%s\",\"entry\":\"%s\",\"failures\":%u,"
++         "\"child_status\":%d,\"parent\":[", mode == 0 ? "normal" : (mode == 1 ? "fork" : "restore"),
++         loader_entry ? "loader" : "guest", failures,
++         child_status);
++  for (size_t i = 0; i < PROBE_WORDS; ++i)
++    printf("%s%lu", i ? "," : "", result[i]);
++  printf("],\"child\":[");
++  for (size_t i = 0; i < PROBE_WORDS; ++i)
++    printf("%s%lu", i ? "," : "", child[i]);
++  printf("]}\n");
++  fflush(stdout);
++  return failures != 0;
++}
++
++#ifndef FRAME_PROBE_LIBRARY
++int main(int argc, char **argv) {
++  if (argc != 4) return 2;
++  int requested_mode;
++  if (strcmp(argv[1], "normal") == 0) requested_mode = 0;
++  else if (strcmp(argv[1], "fork") == 0) requested_mode = 1;
++  else if (strcmp(argv[1], "restore") == 0) requested_mode = 2;
++  else return 2;
++  int loader_entry;
++  if (strcmp(argv[2], "guest") == 0) loader_entry = 0;
++  else if (strcmp(argv[2], "loader") == 0) loader_entry = 1;
++  else return 2;
++  char *end = NULL;
++  unsigned long flags = strtoul(argv[3], &end, 16);
++  if (*end) return 2;
++  return frame_probe_run(requested_mode, loader_entry, flags, NULL);
++}
++#endif
+diff --git a/experimental/reverie-sabre/tests/fixtures/syscall_frame/frame_probe.h b/experimental/reverie-sabre/tests/fixtures/syscall_frame/frame_probe.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..aa1097a6e25bacfd1a58d8fc594c235ba90c2ed1
+--- /dev/null
++++ b/experimental/reverie-sabre/tests/fixtures/syscall_frame/frame_probe.h
+@@ -0,0 +1,25 @@
++#ifndef FRAME_PROBE_H
++#define FRAME_PROBE_H
++#define ORIGINAL_RSP 0
++#define RETURNED_RSP 1
++#define RESULT_RAX 2
++#define RESULT_FLAGS 3
++#define RESULT_R11 4
++#define RESULT_R12 5
++#define RESULT_RBP 6
++#define RESULT_R15 7
++#define FRAME_BASE 8
++#define EXPECTED_FLAGS 9
++#define FRAME_RETURN 10
++#define FRAME_RETURN_OFFSET 11
++#define SCRATCH_SEEN 12
++#define RESULT_R13 13
++#define RESULT_RCX 14
++#define REDZONE_START 16
++#define RUST_FRAME_RETURN 32
++#define RUST_FRAME_FAKE_RETURN 33
++#define RUST_GUEST_RSP 34
++#define PROBE_WORDS 35
++#define REDZONE_END 32
++#define SLOT(n) ((n) * 8)
++#endif
+diff --git a/experimental/reverie-sabre/tests/syscall_frame_abi.rs b/experimental/reverie-sabre/tests/syscall_frame_abi.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..b4a430d6935e87f4ccffd251b1b85e81719b1841
+--- /dev/null
++++ b/experimental/reverie-sabre/tests/syscall_frame_abi.rs
+@@ -0,0 +1,145 @@
++//! Execute the production x86 wrappers and Rust child-return helpers against a
++//! scratch continuation, displaced instruction, and full red-zone sentinel.
++
++#![cfg(target_arch = "x86_64")]
++
++use std::ffi::CString;
++use std::path::PathBuf;
++use std::process::Command;
++use std::sync::Mutex;
++use std::sync::atomic::AtomicUsize;
++use std::sync::atomic::Ordering;
++
++use reverie_sabre::ffi;
++
++static NEXT: AtomicUsize = AtomicUsize::new(0);
++static SERIAL: Mutex<()> = Mutex::new(());
++
++type Router = unsafe extern "C" fn(i32, *mut libc::c_void, *mut u64) -> libc::c_long;
++type Probe = unsafe extern "C" fn(i32, i32, libc::c_ulong, Option<Router>) -> i32;
++
++struct Library {
++    handle: *mut libc::c_void,
++    run: Probe,
++}
++
++impl Library {
++    fn build() -> Self {
++        let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
++        let fixture = manifest.join("tests/fixtures/syscall_frame");
++        let vendor = manifest.join("vendor/sabre");
++        let output = std::env::temp_dir().join(format!(
++            "reverie-sabre-frame-{}-{}",
++            std::process::id(),
++            NEXT.fetch_add(1, Ordering::Relaxed)
++        ));
++        std::fs::create_dir(&output).expect("create private ABI fixture directory");
++        let library = output.join("frame_probe.so");
++        let mut command = Command::new(std::env::var_os("CC").unwrap_or_else(|| "cc".into()));
++        command.args([
++            "-std=c11",
++            "-O2",
++            "-Wall",
++            "-Wextra",
++            "-Werror",
++            "-fno-omit-frame-pointer",
++            "-fPIC",
++            "-shared",
++            "-Wl,-Bsymbolic",
++            "-Wl,-z,defs",
++            "-DFRAME_PROBE_LIBRARY",
++        ]);
++        command.arg("-I").arg(&fixture);
++        command.arg("-I").arg(vendor.join("includes"));
++        command.arg("-I").arg(vendor.join("includes/arch"));
++        for file in [
++            fixture.join("frame_probe.c"),
++            fixture.join("frame_probe.S"),
++            vendor.join("arch/x86_64/handle_syscall.S"),
++            vendor.join("arch/x86_64/handle_syscall_loader.s"),
++            vendor.join("arch/x86_64/syscall_stackframe.c"),
++            vendor.join("plugin_api/arch/x86_64/vfork_return_from_child.s"),
++            manifest.join("src/ffi/recursion_protector.c"),
++        ] {
++            command.arg(file);
++        }
++        command.arg("-o").arg(&library);
++        let result = command
++            .output()
++            .expect("compile actual SaBRe frame producers");
++        std::fs::write(output.join("compile.stdout"), &result.stdout).unwrap();
++        std::fs::write(output.join("compile.stderr"), &result.stderr).unwrap();
++        eprintln!("ABI fixture retained at {}", output.display());
++        assert!(result.status.success(), "{command:?}: {result:?}");
++        let path = CString::new(library.as_os_str().as_encoded_bytes()).unwrap();
++        unsafe {
++            let handle = libc::dlopen(path.as_ptr(), libc::RTLD_NOW | libc::RTLD_LOCAL);
++            assert!(!handle.is_null(), "load compiled ABI fixture");
++            let symbol = libc::dlsym(handle, c"frame_probe_run".as_ptr());
++            assert!(!symbol.is_null(), "resolve ABI fixture entry");
++            Self {
++                handle,
++                run: std::mem::transmute::<*mut libc::c_void, Probe>(symbol),
++            }
++        }
++    }
++}
++
++impl Drop for Library {
++    fn drop(&mut self) {
++        unsafe {
++            libc::dlclose(self.handle);
++        }
++    }
++}
++
++unsafe extern "C" fn route(mode: i32, raw: *mut libc::c_void, output: *mut u64) -> libc::c_long {
++    let frame = &*raw.cast::<ffi::syscall_stackframe>();
++    // The C fixture obtains its return through the actual C accessor. These
++    // independently observed Rust fields must name the same live frame slots.
++    *output.add(32) = frame.ret as u64;
++    *output.add(33) = frame.fake_ret as u64;
++    *output.add(34) = raw as u64 + std::mem::size_of::<ffi::syscall_stackframe>() as u64 + 0x80;
++    match mode {
++        0 => 0x55,
++        1 => ffi::fork_syscall(
++            libc::SIGCHLD as usize,
++            std::ptr::null_mut(),
++            std::ptr::null_mut(),
++            0,
++            frame,
++            usize::MAX as u64,
++        ) as libc::c_long,
++        2 => ffi::vfork_return_from_child(frame),
++        _ => libc::_exit(97),
++    }
++}
++
++fn exercise(mode: i32) {
++    // A forked child exits inside the C fixture after writing its fixed-size
++    // capture; only the original parent returns to libtest. No broad wait or
++    // process cleanup domain is adopted, even under concurrent cargo test.
++    let _guard = SERIAL.lock().unwrap();
++    let fixture = Library::build();
++    for loader in [0, 1] {
++        for flags in [0x647, 0xa96] {
++            let result = unsafe { (fixture.run)(mode, loader, flags, Some(route)) };
++            assert_eq!(result, 0, "mode={mode}, loader={loader}, flags={flags:#x}");
++        }
++    }
++}
++
++#[test]
++fn rust_frame_matches_both_actual_wrapper_entries() {
++    exercise(0);
++}
++
++#[test]
++fn fork_child_runs_scratch_and_preserves_flags_stack_and_red_zone() {
++    exercise(1);
++}
++
++#[test]
++fn vfork_return_restores_the_same_actual_frame() {
++    exercise(2);
++}
+diff --git a/experimental/reverie-sabre/vendor/sabre/arch/x86_64/handle_syscall_loader.s b/experimental/reverie-sabre/vendor/sabre/arch/x86_64/handle_syscall_loader.s
+index 8ab40b5631f9460af45c56847eb55af966875d8f..b3c680b41bfdc715a7984bd8713d2d8d222c1dfe 100644
+--- a/experimental/reverie-sabre/vendor/sabre/arch/x86_64/handle_syscall_loader.s
++++ b/experimental/reverie-sabre/vendor/sabre/arch/x86_64/handle_syscall_loader.s
+@@ -15,7 +15,13 @@ handle_syscall_loader:
+   .cfi_startproc
+   .cfi_def_cfa rsp, 0x88
+   .cfi_offset rip, -0x88
++
++  # The rewriter captured the guest flags in r11. Use the same frame as
++  # handle_syscall: ld_sc_handler may forward it to the plugin router.
++  pushq %r11
++  .cfi_adjust_cfa_offset 8
+   .cfi_remember_state
++  cld
+ 
+   # Prologue
+   push %rbp
+@@ -31,6 +37,7 @@ handle_syscall_loader:
+   pushq %rsi
+   pushq %rdi
+   pushq %r8
++  pushq %r9
+   pushq %r10
+   pushq %r11
+   pushq %r12
+@@ -41,13 +48,12 @@ handle_syscall_loader:
+   # Align the stack on a 16-byte boundary before the call
+   push %rbp
+   mov %rsp, %rbp
+-  .cfi_adjust_cfa_offset 0x68
++  .cfi_adjust_cfa_offset 0x70
+   and $0xfffffffffffffff0, %rsp
+ 
+   # Adjust the arguments
+-  pushq %rsp         # reserve space for wrapper_sp
++  pushq %rbp         # wrapper_sp
+   pushq %r9          # arg6
+-  movq %rsp, 8(%rsp) # wrapper_sp
+   movq %r8, %r9      # arg5
+   movq %r10, %r8     # arg4
+   movq %rdx, %rcx    # arg3
+@@ -74,6 +80,7 @@ handle_syscall_loader:
+   popq %r12
+   popq %r11
+   popq %r10
++  popq %r9
+   popq %r8
+   popq %rdi
+   popq %rsi
+@@ -84,7 +91,9 @@ handle_syscall_loader:
+   # Epilogue
+   pop %rbp
+   .cfi_restore_state
+-  addq $8, %rsp	# drop fake return address
++  popfq
++  .cfi_adjust_cfa_offset -8
++  leaq 8(%rsp), %rsp # drop fake return without changing RFLAGS
+   .cfi_undefined rip
+   ret
+   .cfi_endproc
+diff --git a/experimental/reverie-sabre/vendor/sabre/arch/x86_64/syscall_stackframe.c b/experimental/reverie-sabre/vendor/sabre/arch/x86_64/syscall_stackframe.c
+index b5c0a8b83ae4ce22d43ac05483ce6c1827e1911b..d65aea275db8cdc95b464f68b54850bf32b0b3b2 100644
+--- a/experimental/reverie-sabre/vendor/sabre/arch/x86_64/syscall_stackframe.c
++++ b/experimental/reverie-sabre/vendor/sabre/arch/x86_64/syscall_stackframe.c
+@@ -25,6 +25,7 @@ struct syscall_stackframe {
+   void *rcx;
+   void *rbx;
+   void *rbp_prologue;
++  unsigned long rflags;
+   // trampoline
+   void *fake_ret;
+   void *ret;
+diff --git a/experimental/reverie-sabre/vendor/sabre/plugin_api/arch/x86_64/vfork_return_from_child.s b/experimental/reverie-sabre/vendor/sabre/plugin_api/arch/x86_64/vfork_return_from_child.s
+index 9db9090294ad02348c362aacc0dd9ec85d83d300..a83f7f128f5cd784e6898ce8a95cb084b6ffedca 100644
+--- a/experimental/reverie-sabre/vendor/sabre/plugin_api/arch/x86_64/vfork_return_from_child.s
++++ b/experimental/reverie-sabre/vendor/sabre/plugin_api/arch/x86_64/vfork_return_from_child.s
+@@ -21,34 +21,27 @@ vfork_return_from_child:
+   call *exit_plugin@GOTPCREL(%rip)
+   popq %rdi
+ 
+-  movq 0x8(%rdi), %r15
+-  movq 0x10(%rdi), %r14
+-  movq 0x18(%rdi), %r13
+-  movq 0x20(%rdi), %r12
+-  movq 0x28(%rdi), %r11
+-  movq 0x30(%rdi), %r10
+-  movq 0x38(%rdi), %r9
+-  movq 0x40(%rdi), %r8
+-  # Skip %rdi because we are reading it.
+-  movq 0x50(%rdi), %rsi
+-  movq 0x58(%rdi), %rdx
+-  movq 0x60(%rdi), %rcx
+-  movq 0x68(%rdi), %rbx
+-  movq 0x70(%rdi), %rbp
+-
+-  # It's safe to clobber %r11 to load *ret.
+-  # *ret will jump back to the trampoline
+-  # and then in the first instruction after
+-  # the vfork syscall.
+-  movq 0x80(%rdi), %r11
+-
+-  movq 0x48(%rdi), %rdi
+-
+-  # The child always returns 0.
++  # Resume from the saved registers, then flags and the scratch continuation,
++  # matching handle_syscall's epilogue. The first frame word is stack alignment.
++  leaq 8(%rdi), %rsp
++  popq %r15
++  popq %r14
++  popq %r13
++  popq %r12
++  popq %r11
++  popq %r10
++  popq %r9
++  popq %r8
++  popq %rdi
++  popq %rsi
++  popq %rdx
++  popq %rcx
++  popq %rbx
++  popq %rbp
+   movq $0, %rax
+-
+-  subq $0x80, %rsp
+-  jmp *%r11 # We are going back to the client.
++  popfq
++  leaq 8(%rsp), %rsp
++  ret
+ 
+   .size vfork_return_from_child, .-vfork_return_from_child
+   .section .note.GNU-stack,"",@progbits

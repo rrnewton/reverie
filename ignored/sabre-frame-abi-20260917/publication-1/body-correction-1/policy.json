@@ -1,0 +1,9 @@
+{
+  "argv": [
+    "/home/newton/work/dev-hermit/hermit/scripts/core-review-protocol-lint.sh"
+  ],
+  "actual_exit": 1,
+  "seconds": 0.13046405115164816,
+  "stdout": "PR #563: post-facto-human-review present; enforcing the core-change review protocol.\n::error::PR #563: no accepted claude round label is present in the supplied labels (need one of adversarial-review-claude1, adversarial-review-claude2, adversarial-review-claude3, adversarial-review-claude4).\n::error::PR #563: passed-review-claude is absent from the supplied labels, and none of adversarial-review-claude1, adversarial-review-claude2, adversarial-review-claude3, adversarial-review-claude4 is present: no round label for claude is present at all. No claude review is recorded on this PR.\n::error::PR #563: core-change review protocol NOT satisfied (2 problem(s)); blocking landing.\n",
+  "stderr": ""
+}

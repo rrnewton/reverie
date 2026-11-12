@@ -1,0 +1,36 @@
+--- retained-original
++++ objdump2.37-now
+@@ -40,13 +40,13 @@
+    c9101:	48 8b 7c 24 10       	mov    0x10(%rsp),%rdi
+    c9106:	48 8b 4c 24 38       	mov    0x38(%rsp),%rcx
+    c910b:	8b 44 24 40          	mov    0x40(%rsp),%eax
+-   c910f:	48 98                	cltq
++   c910f:	48 98                	cltq   
+    c9111:	48 89 44 24 48       	mov    %rax,0x48(%rsp)
+    c9116:	48 8b 44 24 48       	mov    0x48(%rsp),%rax
+    c911b:	66 48 0f 6e c1       	movq   %rcx,%xmm0
+    c9120:	31 c9                	xor    %ecx,%ecx
+    c9122:	89 ce                	mov    %ecx,%esi
+-   c9124:	0f 05                	syscall
++   c9124:	0f 05                	syscall 
+    c9126:	48 85 c0             	test   %rax,%rax
+    c9129:	75 32                	jne    c915d <_RNvNtNtCskEW6L6tZ6A8_13reverie_sabre3ffi5clone12fork_syscall+0xed>
+    c912b:	48 89 f8             	mov    %rdi,%rax
+@@ -68,7 +68,7 @@
+    c9177:	48 8b 44 24 08       	mov    0x8(%rsp),%rax
+    c917c:	48 81 c4 90 00 00 00 	add    $0x90,%rsp
+    c9183:	41 5c                	pop    %r12
+-   c9185:	c3                   	ret
++   c9185:	c3                   	ret    
+    c9186:	48 8d 3d 93 a8 08 00 	lea    0x8a893(%rip),%rdi        # 153a20 <__dso_handle+0x5560>
+    c918d:	48 8b 05 44 2d 09 00 	mov    0x92d44(%rip),%rax        # 15bed8 <_DYNAMIC+0x320>
+    c9194:	ff d0                	call   *%rax
+@@ -83,7 +83,7 @@
+    c91b4:	00 
+    c91b5:	89 84 24 88 00 00 00 	mov    %eax,0x88(%rsp)
+    c91bc:	eb da                	jmp    c9198 <_RNvNtNtCskEW6L6tZ6A8_13reverie_sabre3ffi5clone12fork_syscall+0x128>
+-   c91be:	0f 0b                	ud2
++   c91be:	0f 0b                	ud2    
+    c91c0:	ff 15 b2 2c 09 00    	call   *0x92cb2(%rip)        # 15be78 <_DYNAMIC+0x2c0>
+    c91c6:	48 8b bc 24 80 00 00 	mov    0x80(%rsp),%rdi
+    c91cd:	00 

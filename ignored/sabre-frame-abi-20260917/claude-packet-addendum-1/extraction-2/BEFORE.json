@@ -1,0 +1,23 @@
+{
+  "binary": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-sabre-frame-abi-20260917/ignored/sabre-frame-abi-20260917/native-build-3/target/debug/deps/syscall_frame_abi-78c76c9c98540bb1",
+    "realpath": "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-sabre-frame-abi-20260917/ignored/sabre-frame-abi-20260917/native-build-3/target/debug/deps/syscall_frame_abi-78c76c9c98540bb1",
+    "sha256": "77ac175dae0359f322b3794eb19e30572b0896ebcca6379bba5bd8529225093d",
+    "size": 60137072,
+    "mode": 33261,
+    "device": 48,
+    "inode": 784775669,
+    "mtime_ns": 1789616475639750629
+  },
+  "objdump": {
+    "path": "/usr/local/bin/objdump",
+    "realpath": "/usr/local/fbcode/platform010/bin/objdump",
+    "sha256": "8481f31cf570b693d50469c36f84c899d146e3b2cfcc198aa91a85fc956dfb6b",
+    "size": 19240128,
+    "mode": 33261,
+    "device": 33,
+    "inode": 169527,
+    "mtime_ns": 1781294015000000000
+  },
+  "source_head": "61098967f47041f96a43995f5272412cf9fe5761"
+}

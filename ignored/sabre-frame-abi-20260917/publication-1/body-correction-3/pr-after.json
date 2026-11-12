@@ -1,0 +1,12 @@
+{
+  "argv": [
+    "with-proxy",
+    "/home/newton/work/dev-hermit/ci-hub/bin/gh",
+    "api",
+    "repos/rrnewton/reverie/pulls/563"
+  ],
+  "actual_exit": 0,
+  "seconds": 0.7414622989017516,
+  "stdout_path": "pr-after.stdout",
+  "stderr_path": "pr-after.stderr"
+}

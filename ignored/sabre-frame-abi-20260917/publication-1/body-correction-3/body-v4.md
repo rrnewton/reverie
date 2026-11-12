@@ -1,0 +1,40 @@
+[hermit2, degraded-dev-hermit, gpt-6-astra, devbig014, role=impl]
+
+## Plain Language Summary and Project Impact
+
+The x86 syscall wrapper saves an extra RFLAGS word that its C/Rust frame declarations and fork-form child returns omitted. A child could select the architectural return instead of the scratch continuation, skip displaced instructions, and resume with its stack 136 bytes too low. Align both wrapper entries, the declarations/accessors, register readers, and fork/clone3-fork/vfork-return epilogues with the actual 18-word frame. This addresses a concrete native ABI defect found while investigating the retained SaBRe regular-file fork failure.
+
+## Summary
+
+Make the x86 C/Rust frame layout and child-return paths agree with the actual syscall wrappers, preserving flags, scratch continuation, stack position, and red zone.
+
+## Determinism
+
+Resume from the saved guest frame using the same epilogue as the normal wrapper: restore registers, set child RAX to 0 without changing flags, restore the saved RFLAGS, and RET through the scratch continuation. That continuation restores the 128-byte red zone and executes displaced instructions once. The change introduces no scheduler ordering, time, randomness, or external-input policy. Rust derives its resume offsets from the frame type and enters the ordinary helper with an ABI-correct CALL.
+
+## Linux Semantics
+
+Fork-form children retain the original guest stack/register state and receive the required zero syscall result. Architectural and scratch return slots remain distinct. The loader wrapper now saves the missing r9 and flags word; register readers expose original guest RSP and saved flags while continuing to reject unsupported mutations. RISC-V layout and original fork/clone assertions are unchanged. Unwind rows match the normal wrapper without changing the corrected loader's 100 instruction bytes.
+
+## Validation
+
+- Identical native fixture against actual old/new C wrapper/accessor/child-return source: 12 old failures, 12 corrected passes, including real clone(SIGCHLD,NULL), both entries, two flags patterns, exact scratch/displaced instruction, stack/registers, and all 128 red-zone bytes. Actual 2.078 s under 2 CPUs / 2 GiB / no swap / 256 tasks / 180 s.
+- Three permanent integration methods call the complete linked production Rust fork/vfork-return helpers through the actual compiled wrappers; all pass across both entries and two flags patterns. Existing real vfork and register-reader methods also pass. The 80-method library was collected, with only those two existing methods selected for execution.
+- Genuine normal Cargo/build.rs native build and integration/library compilation, normal fmt and all-target Clippy pass. Actual 68.874 s under 4 CPUs / 8 GiB / no swap / 1024 tasks / 900 s, CARGO_BUILD_JOBS=4; native build reports 1.50 s at 4 jobs.
+- CFI readback proves identical loader instructions and corrected CFA rows. Final three-method check passes with 12 intact raw JSON records, independently recomputed. Exact-child wait retains failure status even after short capture; a stdout flush preserves records. Final warm fmt/Clippy pass in 1.513 s / 2.986 s. All owned scopes/cgroups are terminal; recorded OOM/kill/group counters are zero.
+
+No assertion, comparator, original case, timeout or failure classification was weakened. Setup refusals and earlier failed controls are retained. Local evidence packet: `ignored/sabre-frame-abi-20260917/final-1/REPORT.md`, SHA-256 `794539cd7719097abdd0a3133e23d639af031aaf0e99a7f15d4f5852221c8918`.
+
+## Human Review Required
+
+Trigger 2: the public `ffi::syscall_stackframe` and syscall-interception/child-resume ABI are core abstractions. The `post-facto-human-review` route remains applied. Both independent exact-head reviews approved `61098967f47041f96a43995f5272412cf9fe5761`: [native Codex source review](https://github.com/rrnewton/reverie/pull/563#issuecomment-5708261839) and [actual Claude source-and-packet review](https://github.com/rrnewton/reverie/pull/563#issuecomment-5708481526). The Claude follow-up discharged the packet conditions using the retained raw controls and the explicit limits below. The normal protocol gate and verified merge completed; this pull request landed on 2026-09-17 at `b3049e54c644e28e2894402a36bb65664ab4508b`, with all ten changed files and modes identical to the reviewed head. Hermit consumer execution remains a separate pending step.
+
+## Evidence Limits
+
+The corrected `frame.ret` offset also redirects new-stack clone/clone3 children from the architectural return to the scratch continuation. Those new-stack paths and kernel clone3-fork execution are untested in this packet.
+
+The genuine `native-build-3` compilation used the pre-commit working snapshot on `24cd5bb5`, with eight of ten final files identical. The later two-file delta adds only the C fixture stdout flush and corrects one loader CFI directive placement. The separately retained final CFI/fixture execution and final fmt/Clippy checks cover that delta; the original build is not presented as an exact-final-source rebuild. Fresh recorded objdump extractions bind the same retained integration binary before and after.
+
+The native fixture supplies a rewriter-shaped entry into the actual wrappers; it is not a full rewritten Hermit guest run. The existing SIGILL fallback synthesizes only a return-address pointer and has no newly established full-frame guarantee. Kernel clone3 execution, new-stack clone register/flag parity, full vfork lifecycle equivalence, and full-main success are not newly proved. Historical regular-sink RIP0 attribution has source/disassembly and exact stack arithmetic, but no captured last-branch trace. Reverie must land before any Hermit pin adopts this change.
+
+Task: hermit-main-tip-d0b1468b-not-validated-22-nodes-mostly-exit-2

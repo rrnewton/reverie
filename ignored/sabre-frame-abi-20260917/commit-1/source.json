@@ -1,0 +1,42 @@
+[
+  {
+    "path": "experimental/reverie-sabre/src/ffi/clone.rs",
+    "sha256": "28b1f98fff13134fb0d9a2860068a7765e660e80179685aedb3a726aa9f9ca8c"
+  },
+  {
+    "path": "experimental/reverie-sabre/src/ffi/mod.rs",
+    "sha256": "37ea743e7b1a78d21aeee5b3d95b31199270546222c2e9fcacd324a168017077"
+  },
+  {
+    "path": "experimental/reverie-sabre/src/reverie_adapter.rs",
+    "sha256": "084a097d7bd44d64f3ed1ae2462d0302e94d691093f0dc2216b37f8a23c8305d"
+  },
+  {
+    "path": "experimental/reverie-sabre/tests/fixtures/syscall_frame/frame_probe.S",
+    "sha256": "6e95df32cada9c7059437b3f12625a4fb229ee5cf44288ad8da95c151bbac1a3"
+  },
+  {
+    "path": "experimental/reverie-sabre/tests/fixtures/syscall_frame/frame_probe.c",
+    "sha256": "9da521926e0b407d129f3400ccbe096bbaa6b09893a8ee00d6d778053e9cd565"
+  },
+  {
+    "path": "experimental/reverie-sabre/tests/fixtures/syscall_frame/frame_probe.h",
+    "sha256": "a2faeb5db71400ae54f6245bbb0dc413ace8c7ddcc718960c3628a70d953ce33"
+  },
+  {
+    "path": "experimental/reverie-sabre/tests/syscall_frame_abi.rs",
+    "sha256": "ca3f952f497fba9f67d6cb5c12bd39a4ca129893583f943e0fdc8a257af6903f"
+  },
+  {
+    "path": "experimental/reverie-sabre/vendor/sabre/arch/x86_64/handle_syscall_loader.s",
+    "sha256": "2a440aaa2469303ad12a7e9f41f6efc14650236376499d8e5ae72db53c2d1991"
+  },
+  {
+    "path": "experimental/reverie-sabre/vendor/sabre/arch/x86_64/syscall_stackframe.c",
+    "sha256": "0bf733297b07e6ad618728e0e6b8f65cb25af5bae50272b2e9825e06c06a0089"
+  },
+  {
+    "path": "experimental/reverie-sabre/vendor/sabre/plugin_api/arch/x86_64/vfork_return_from_child.s",
+    "sha256": "9479d129e61cf1fcf67ba3e3ab95ed7961d653e3e7f64076609d9f8fae3175b9"
+  }
+]

@@ -1,0 +1,2096 @@
+[
+  {
+    "path": "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/sabre-frame-abi-1/PLAN-2.md",
+    "sha256": "d2350874e213c33337e03983ae6109c84f8702a0a31df55315f18b648527ab83",
+    "bytes": 4662,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/sabre-frame-abi-1/cfi-controls-1/FULL.log",
+    "sha256": "267ce886b566d3f8ed1cd87a1b10facfea37555fa32150cbe94dcd3736893dfc",
+    "bytes": 286,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/sabre-frame-abi-1/cfi-controls-1/INPUTS.json",
+    "sha256": "f514a5d8ceb9fe23d0e8ff8aa2ff063d3864a8a5d14b56817a7a67d2a4ab26cc",
+    "bytes": 4397,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/sabre-frame-abi-1/cfi-controls-1/READBACK.json",
+    "sha256": "b9a0dc16b31dba76da84aa0b19572330bc3bc6686d8e81556ee891591f49d0fc",
+    "bytes": 924,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/sabre-frame-abi-1/cfi-controls-1/RESULT.json",
+    "sha256": "a5b71ba2d8dcf8e26c0b0bcf8d83f26ce5b58b48cc356cb11874ed677b307d3a",
+    "bytes": 10973,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/sabre-frame-abi-1/cfi-controls-1/TERMINAL.json",
+    "sha256": "ec74b90b5fb75d79d43944634cda93ce595518f5a19c09350010ff162f68415c",
+    "bytes": 501,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/sabre-frame-abi-1/cfi-controls-1/before.json",
+    "sha256": "a24dfa9488699e07e41f0e27119295309761d7490214190599d1f93fdb5dd3dc",
+    "bytes": 4978,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/sabre-frame-abi-1/cfi-controls-1/commands.json",
+    "sha256": "d126cbd6196c089f931aa673a12d420aba840da6d6fdd9a95df9ef966a2273fc",
+    "bytes": 4957,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/sabre-frame-abi-1/cfi-controls-1/fork_child_runs_scratch_and_preserves_flags_stack_and_red_zone.json",
+    "sha256": "ccd34c2a0d006c64d70747c2c82a7639ab003b767ee2dec9992161da283f4b95",
+    "bytes": 869,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/sabre-frame-abi-1/cfi-controls-1/fork_child_runs_scratch_and_preserves_flags_stack_and_red_zone.stderr",
+    "sha256": "303fbd9807208578903256bce1d1c9ce7afcbd4661df680a567383e1f75dd700",
+    "bytes": 164,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/sabre-frame-abi-1/cfi-controls-1/fork_child_runs_scratch_and_preserves_flags_stack_and_red_zone.stdout",
+    "sha256": "c36ab723ddaf1865f905d76d4aff6171760f4f4a959cfa0d979adf5a16c1fc2d",
+    "bytes": 4593,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/sabre-frame-abi-1/cfi-controls-1/launch-command.json",
+    "sha256": "e2bd6c45eafb9aab6c4e9911bcf484f0c61098142cd587f9c6a4fcb86337885a",
+    "bytes": 423,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/sabre-frame-abi-1/cfi-controls-1/launch-result.json",
+    "sha256": "00a6ab75d3511f4faafa1cc6d5ad878181b9432f51773078c272dd1302fba53c",
+    "bytes": 23,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/sabre-frame-abi-1/cfi-controls-1/new-assemble.json",
+    "sha256": "a147845bd8283258aa537fb03d7c67d6b7b4ca66716eb4fdbeef63521f82ca05",
+    "bytes": 782,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/sabre-frame-abi-1/cfi-controls-1/new-assemble.stderr",
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "bytes": 0,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/sabre-frame-abi-1/cfi-controls-1/new-assemble.stdout",
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "bytes": 0,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/sabre-frame-abi-1/cfi-controls-1/new-frames.json",
+    "sha256": "7d300f371d4a45d9a5411f5fe5a60065cfdb9dd8a69203ebdced15cd947c2623",
+    "bytes": 690,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/sabre-frame-abi-1/cfi-controls-1/new-frames.stderr",
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "bytes": 0,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/sabre-frame-abi-1/cfi-controls-1/new-frames.stdout",
+    "sha256": "0aa859ab23069f376438b569e943b7670fd9ab107ea8d101b7b61a1ee22f4daf",
+    "bytes": 586,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/sabre-frame-abi-1/cfi-controls-1/new-text.json",
+    "sha256": "11b038f71c17f791605a3477f487fbfd9c392c149c6d764d30e29c5f8c72d893",
+    "bytes": 804,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/sabre-frame-abi-1/cfi-controls-1/new-text.stderr",
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "bytes": 0,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/sabre-frame-abi-1/cfi-controls-1/new-text.stdout",
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "bytes": 0,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/sabre-frame-abi-1/cfi-controls-1/new.o",
+    "sha256": "3fa777b6d438032784c45ae328e404332e73f25ce7a04046372e379f8cb742d7",
+    "bytes": 1400,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/sabre-frame-abi-1/cfi-controls-1/new.text",
+    "sha256": "bd3303166392e5111e0e73af93e8f2b57ad50c4efb3fc841de498a206dc6b07a",
+    "bytes": 100,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/sabre-frame-abi-1/cfi-controls-1/normal-assemble.json",
+    "sha256": "4b11903ffdaa748b1677c856535e65e33c87f480c594daa26f272f16f1f189ec",
+    "bytes": 781,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/sabre-frame-abi-1/cfi-controls-1/normal-assemble.stderr",
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "bytes": 0,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/sabre-frame-abi-1/cfi-controls-1/normal-assemble.stdout",
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "bytes": 0,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/sabre-frame-abi-1/cfi-controls-1/normal-frames.json",
+    "sha256": "2e78b2dc85a80b02d49f59e044c367860d42d0dcaf5f64fae6f80e0c3432a5e6",
+    "bytes": 696,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/sabre-frame-abi-1/cfi-controls-1/normal-frames.stderr",
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "bytes": 0,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/sabre-frame-abi-1/cfi-controls-1/normal-frames.stdout",
+    "sha256": "b08ef0f1c965ab9923ff03b82e58cff216856d7efc308e3f53872b74c920850f",
+    "bytes": 586,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/sabre-frame-abi-1/cfi-controls-1/normal-text.json",
+    "sha256": "3c10ae3ba13918ff04ace661c19f150b0141e1fb62291a09e8c11b4875e05992",
+    "bytes": 812,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/sabre-frame-abi-1/cfi-controls-1/normal-text.stderr",
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "bytes": 0,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/sabre-frame-abi-1/cfi-controls-1/normal-text.stdout",
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "bytes": 0,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/sabre-frame-abi-1/cfi-controls-1/normal.o",
+    "sha256": "aa1a3635e0617a08a3ff823470fdbfb7e53b1256de14a96f9352c549e81ab8ef",
+    "bytes": 1424,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/sabre-frame-abi-1/cfi-controls-1/normal.text",
+    "sha256": "64a764af23b8935a87e13b6c7315368ddd4293ec7cf59c4c6a1c139f608801ae",
+    "bytes": 127,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/sabre-frame-abi-1/cfi-controls-1/old-assemble.json",
+    "sha256": "33c0be5691dd14f82b6a42f4c5bc1d251935f4b273d5c5ead924450503f28f49",
+    "bytes": 812,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/sabre-frame-abi-1/cfi-controls-1/old-assemble.stderr",
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "bytes": 0,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/sabre-frame-abi-1/cfi-controls-1/old-assemble.stdout",
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "bytes": 0,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/sabre-frame-abi-1/cfi-controls-1/old-frames.json",
+    "sha256": "6261be42388894b655f8e1b2ff3266df50114b5db87378b3bfe745bd7745969a",
+    "bytes": 690,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/sabre-frame-abi-1/cfi-controls-1/old-frames.stderr",
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "bytes": 0,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/sabre-frame-abi-1/cfi-controls-1/old-frames.stdout",
+    "sha256": "55b8ffd5633bbf33d8d57ef12eda4b1e1e8cf53247421b81fd08ad5803e3cd83",
+    "bytes": 586,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/sabre-frame-abi-1/cfi-controls-1/old-text.json",
+    "sha256": "4026bddfbf46d7f1ba1336c3fef5d6ab2862ce7a0451f70794bc7764d2b95cc8",
+    "bytes": 804,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/sabre-frame-abi-1/cfi-controls-1/old-text.stderr",
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "bytes": 0,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/sabre-frame-abi-1/cfi-controls-1/old-text.stdout",
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "bytes": 0,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/sabre-frame-abi-1/cfi-controls-1/old.o",
+    "sha256": "c69931853bfa8de0c6c6bfa975b461949f35c2b182bdc3fab2df8f6bd416c7f2",
+    "bytes": 1400,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/sabre-frame-abi-1/cfi-controls-1/old.text",
+    "sha256": "bd3303166392e5111e0e73af93e8f2b57ad50c4efb3fc841de498a206dc6b07a",
+    "bytes": 100,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/sabre-frame-abi-1/cfi-controls-1/run.py",
+    "sha256": "a04f5972f2bd495194713ec7b11f2e5733ae1cd7b3de566ab5842256c2adb258",
+    "bytes": 2154,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/sabre-frame-abi-1/cfi-controls-1/rust_frame_matches_both_actual_wrapper_entries.json",
+    "sha256": "02a9ad44a224856aaf5d0d1b0681b5cc59dfb03acc882dbc0b3a151c6a92501a",
+    "bytes": 836,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/sabre-frame-abi-1/cfi-controls-1/rust_frame_matches_both_actual_wrapper_entries.stderr",
+    "sha256": "e66cf395dce8f6dbc4724811573a70ba0ca492977d4ca819e5599f21f84b7966",
+    "bytes": 164,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/sabre-frame-abi-1/cfi-controls-1/rust_frame_matches_both_actual_wrapper_entries.stdout",
+    "sha256": "e53c37fb3b2e62fbed4a4e93c632fa7f3475bc480d651996fe8613c3783e8500",
+    "bytes": 2825,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/sabre-frame-abi-1/cfi-controls-1/tmp/reverie-sabre-frame-3285555-0/compile.stderr",
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "bytes": 0,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/sabre-frame-abi-1/cfi-controls-1/tmp/reverie-sabre-frame-3285555-0/compile.stdout",
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "bytes": 0,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/sabre-frame-abi-1/cfi-controls-1/tmp/reverie-sabre-frame-3285555-0/frame_probe.so",
+    "sha256": "c65ac6229fd7ec90100dd7d01bb2d4bf463a3c50495ef6ab27254bcf4f444ba0",
+    "bytes": 18296,
+    "mode": 493
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/sabre-frame-abi-1/cfi-controls-1/tmp/reverie-sabre-frame-3285743-0/compile.stderr",
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "bytes": 0,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/sabre-frame-abi-1/cfi-controls-1/tmp/reverie-sabre-frame-3285743-0/compile.stdout",
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "bytes": 0,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/sabre-frame-abi-1/cfi-controls-1/tmp/reverie-sabre-frame-3285743-0/frame_probe.so",
+    "sha256": "f85be5617a864ef6c85fd62195030c9ce301f4d25882385183372ca0947b31a9",
+    "bytes": 18296,
+    "mode": 493
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/sabre-frame-abi-1/cfi-controls-1/tmp/reverie-sabre-frame-3285835-0/compile.stderr",
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "bytes": 0,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/sabre-frame-abi-1/cfi-controls-1/tmp/reverie-sabre-frame-3285835-0/compile.stdout",
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "bytes": 0,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/sabre-frame-abi-1/cfi-controls-1/tmp/reverie-sabre-frame-3285835-0/frame_probe.so",
+    "sha256": "8c339bb8eb06234799a827fe787277204f00b673313a9ed7492737c67e762623",
+    "bytes": 18296,
+    "mode": 493
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/sabre-frame-abi-1/cfi-controls-1/vfork_return_restores_the_same_actual_frame.json",
+    "sha256": "5cfddc098cd42a9cb451e6c673150b104bec70113774ba284d4a5d14358aaac5",
+    "bytes": 831,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/sabre-frame-abi-1/cfi-controls-1/vfork_return_restores_the_same_actual_frame.stderr",
+    "sha256": "09f3d4026095b5b797fa0c6d2d5ddab6ed780015988a104d78e408a9f1c0d1e8",
+    "bytes": 164,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/sabre-frame-abi-1/cfi-controls-1/vfork_return_restores_the_same_actual_frame.stdout",
+    "sha256": "367dd127f752f31396141adee2e7bf016a99270ed567b9479543fd5c168ebc7b",
+    "bytes": 2822,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/sabre-frame-abi-1/checkpoint-1/SOURCE.json",
+    "sha256": "2afd70c2d0e2ba48f3e8f0e05d2f4383b54a6027bfcfc32f8e253626387fc67d",
+    "bytes": 1691,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/sabre-frame-abi-1/checkpoint-1/candidate.patch",
+    "sha256": "a44726b94b189fda297f01912980a3b856f948d898a524239bad35ba289accd2",
+    "bytes": 29540,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/sabre-frame-abi-1/checkpoint-1/source/experimental/reverie-sabre/src/ffi/clone.rs",
+    "sha256": "368ba880286eb6853f41f1fbcc306fe86508c5c17c87f5240283ab3ab5f6ed76",
+    "bytes": 16839,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/sabre-frame-abi-1/checkpoint-1/source/experimental/reverie-sabre/src/ffi/mod.rs",
+    "sha256": "37ea743e7b1a78d21aeee5b3d95b31199270546222c2e9fcacd324a168017077",
+    "bytes": 4832,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/sabre-frame-abi-1/checkpoint-1/source/experimental/reverie-sabre/src/reverie_adapter.rs",
+    "sha256": "084a097d7bd44d64f3ed1ae2462d0302e94d691093f0dc2216b37f8a23c8305d",
+    "bytes": 87505,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/sabre-frame-abi-1/checkpoint-1/source/experimental/reverie-sabre/tests/fixtures/syscall_frame/frame_probe.S",
+    "sha256": "6e95df32cada9c7059437b3f12625a4fb229ee5cf44288ad8da95c151bbac1a3",
+    "bytes": 2198,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/sabre-frame-abi-1/checkpoint-1/source/experimental/reverie-sabre/tests/fixtures/syscall_frame/frame_probe.c",
+    "sha256": "3cf66df018d21b3445da5791f6967212d0d920e72849b70cafb2797ce6d1a1ad",
+    "bytes": 5449,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/sabre-frame-abi-1/checkpoint-1/source/experimental/reverie-sabre/tests/fixtures/syscall_frame/frame_probe.h",
+    "sha256": "a2faeb5db71400ae54f6245bbb0dc413ace8c7ddcc718960c3628a70d953ce33",
+    "bytes": 580,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/sabre-frame-abi-1/checkpoint-1/source/experimental/reverie-sabre/tests/syscall_frame_abi.rs",
+    "sha256": "ca3f952f497fba9f67d6cb5c12bd39a4ca129893583f943e0fdc8a257af6903f",
+    "bytes": 5142,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/sabre-frame-abi-1/checkpoint-1/source/experimental/reverie-sabre/vendor/sabre/arch/x86_64/handle_syscall_loader.s",
+    "sha256": "45e0753b0e593f00b81e247ee41605377b966ccae2dd19975f4e050c0a2edcd6",
+    "bytes": 1985,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/sabre-frame-abi-1/checkpoint-1/source/experimental/reverie-sabre/vendor/sabre/arch/x86_64/syscall_stackframe.c",
+    "sha256": "0bf733297b07e6ad618728e0e6b8f65cb25af5bae50272b2e9825e06c06a0089",
+    "bytes": 751,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/sabre-frame-abi-1/checkpoint-1/source/experimental/reverie-sabre/vendor/sabre/plugin_api/arch/x86_64/vfork_return_from_child.s",
+    "sha256": "9479d129e61cf1fcf67ba3e3ab95ed7961d653e3e7f64076609d9f8fae3175b9",
+    "bytes": 976,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/sabre-frame-abi-1/checkpoint-2/SOURCE.json",
+    "sha256": "9b9a277b732fb154206f8aead12cdcf2ebf8486fdb5c9c1953a7275079139b18",
+    "bytes": 1691,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/sabre-frame-abi-1/checkpoint-2/candidate.patch",
+    "sha256": "624050b1de8af8b79c64e53275c43a9de04973aa045b28a81e9e912fd6709f11",
+    "bytes": 29864,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/sabre-frame-abi-1/checkpoint-2/entry-abi-correction.patch",
+    "sha256": "1c49a2a5aab8af09f1f264f64738c1c3339dc8c15593d416a6e1af50567bd249",
+    "bytes": 1510,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/sabre-frame-abi-1/checkpoint-2/source/experimental/reverie-sabre/src/ffi/clone.rs",
+    "sha256": "28b1f98fff13134fb0d9a2860068a7765e660e80179685aedb3a726aa9f9ca8c",
+    "bytes": 17157,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/sabre-frame-abi-1/checkpoint-2/source/experimental/reverie-sabre/src/ffi/mod.rs",
+    "sha256": "37ea743e7b1a78d21aeee5b3d95b31199270546222c2e9fcacd324a168017077",
+    "bytes": 4832,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/sabre-frame-abi-1/checkpoint-2/source/experimental/reverie-sabre/src/reverie_adapter.rs",
+    "sha256": "084a097d7bd44d64f3ed1ae2462d0302e94d691093f0dc2216b37f8a23c8305d",
+    "bytes": 87505,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/sabre-frame-abi-1/checkpoint-2/source/experimental/reverie-sabre/tests/fixtures/syscall_frame/frame_probe.S",
+    "sha256": "6e95df32cada9c7059437b3f12625a4fb229ee5cf44288ad8da95c151bbac1a3",
+    "bytes": 2198,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/sabre-frame-abi-1/checkpoint-2/source/experimental/reverie-sabre/tests/fixtures/syscall_frame/frame_probe.c",
+    "sha256": "3cf66df018d21b3445da5791f6967212d0d920e72849b70cafb2797ce6d1a1ad",
+    "bytes": 5449,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/sabre-frame-abi-1/checkpoint-2/source/experimental/reverie-sabre/tests/fixtures/syscall_frame/frame_probe.h",
+    "sha256": "a2faeb5db71400ae54f6245bbb0dc413ace8c7ddcc718960c3628a70d953ce33",
+    "bytes": 580,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/sabre-frame-abi-1/checkpoint-2/source/experimental/reverie-sabre/tests/syscall_frame_abi.rs",
+    "sha256": "ca3f952f497fba9f67d6cb5c12bd39a4ca129893583f943e0fdc8a257af6903f",
+    "bytes": 5142,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/sabre-frame-abi-1/checkpoint-2/source/experimental/reverie-sabre/vendor/sabre/arch/x86_64/handle_syscall_loader.s",
+    "sha256": "45e0753b0e593f00b81e247ee41605377b966ccae2dd19975f4e050c0a2edcd6",
+    "bytes": 1985,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/sabre-frame-abi-1/checkpoint-2/source/experimental/reverie-sabre/vendor/sabre/arch/x86_64/syscall_stackframe.c",
+    "sha256": "0bf733297b07e6ad618728e0e6b8f65cb25af5bae50272b2e9825e06c06a0089",
+    "bytes": 751,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/sabre-frame-abi-1/checkpoint-2/source/experimental/reverie-sabre/vendor/sabre/plugin_api/arch/x86_64/vfork_return_from_child.s",
+    "sha256": "9479d129e61cf1fcf67ba3e3ab95ed7961d653e3e7f64076609d9f8fae3175b9",
+    "bytes": 976,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/sabre-frame-abi-1/checkpoint-3/SOURCE.json",
+    "sha256": "b23ef98cb705cb514c3cb06d3970c8e001021881b58a732ec0d85dde83f01287",
+    "bytes": 1691,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/sabre-frame-abi-1/checkpoint-3/fixture-exact-reap.patch",
+    "sha256": "0d285f891143a81f2d5225f5a4d0ba2d1e76a7f7906d69734a61519810cdb448",
+    "bytes": 1562,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/sabre-frame-abi-1/checkpoint-3/source/experimental/reverie-sabre/src/ffi/clone.rs",
+    "sha256": "28b1f98fff13134fb0d9a2860068a7765e660e80179685aedb3a726aa9f9ca8c",
+    "bytes": 17157,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/sabre-frame-abi-1/checkpoint-3/source/experimental/reverie-sabre/src/ffi/mod.rs",
+    "sha256": "37ea743e7b1a78d21aeee5b3d95b31199270546222c2e9fcacd324a168017077",
+    "bytes": 4832,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/sabre-frame-abi-1/checkpoint-3/source/experimental/reverie-sabre/src/reverie_adapter.rs",
+    "sha256": "084a097d7bd44d64f3ed1ae2462d0302e94d691093f0dc2216b37f8a23c8305d",
+    "bytes": 87505,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/sabre-frame-abi-1/checkpoint-3/source/experimental/reverie-sabre/tests/fixtures/syscall_frame/frame_probe.S",
+    "sha256": "6e95df32cada9c7059437b3f12625a4fb229ee5cf44288ad8da95c151bbac1a3",
+    "bytes": 2198,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/sabre-frame-abi-1/checkpoint-3/source/experimental/reverie-sabre/tests/fixtures/syscall_frame/frame_probe.c",
+    "sha256": "c5c0b34faff5f6089e3f72ca1265504a6a284bdb8fce0ae29fb96d175f86d44d",
+    "bytes": 5676,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/sabre-frame-abi-1/checkpoint-3/source/experimental/reverie-sabre/tests/fixtures/syscall_frame/frame_probe.h",
+    "sha256": "a2faeb5db71400ae54f6245bbb0dc413ace8c7ddcc718960c3628a70d953ce33",
+    "bytes": 580,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/sabre-frame-abi-1/checkpoint-3/source/experimental/reverie-sabre/tests/syscall_frame_abi.rs",
+    "sha256": "ca3f952f497fba9f67d6cb5c12bd39a4ca129893583f943e0fdc8a257af6903f",
+    "bytes": 5142,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/sabre-frame-abi-1/checkpoint-3/source/experimental/reverie-sabre/vendor/sabre/arch/x86_64/handle_syscall_loader.s",
+    "sha256": "45e0753b0e593f00b81e247ee41605377b966ccae2dd19975f4e050c0a2edcd6",
+    "bytes": 1985,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/sabre-frame-abi-1/checkpoint-3/source/experimental/reverie-sabre/vendor/sabre/arch/x86_64/syscall_stackframe.c",
+    "sha256": "0bf733297b07e6ad618728e0e6b8f65cb25af5bae50272b2e9825e06c06a0089",
+    "bytes": 751,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/sabre-frame-abi-1/checkpoint-3/source/experimental/reverie-sabre/vendor/sabre/plugin_api/arch/x86_64/vfork_return_from_child.s",
+    "sha256": "9479d129e61cf1fcf67ba3e3ab95ed7961d653e3e7f64076609d9f8fae3175b9",
+    "bytes": 976,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/sabre-frame-abi-1/checkpoint-4/SOURCE.json",
+    "sha256": "952d6a4ae63bcda0ff5c09ee0fee7ec384a4d1a231ea0d1466db2e322fe5d141",
+    "bytes": 1691,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/sabre-frame-abi-1/checkpoint-4/candidate.patch",
+    "sha256": "73d79f2f974cf69f79851b57d4002785e052a9c46486af098799c5ab52b7e236",
+    "bytes": 30131,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/sabre-frame-abi-1/checkpoint-4/source/experimental/reverie-sabre/src/ffi/clone.rs",
+    "sha256": "28b1f98fff13134fb0d9a2860068a7765e660e80179685aedb3a726aa9f9ca8c",
+    "bytes": 17157,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/sabre-frame-abi-1/checkpoint-4/source/experimental/reverie-sabre/src/ffi/mod.rs",
+    "sha256": "37ea743e7b1a78d21aeee5b3d95b31199270546222c2e9fcacd324a168017077",
+    "bytes": 4832,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/sabre-frame-abi-1/checkpoint-4/source/experimental/reverie-sabre/src/reverie_adapter.rs",
+    "sha256": "084a097d7bd44d64f3ed1ae2462d0302e94d691093f0dc2216b37f8a23c8305d",
+    "bytes": 87505,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/sabre-frame-abi-1/checkpoint-4/source/experimental/reverie-sabre/tests/fixtures/syscall_frame/frame_probe.S",
+    "sha256": "6e95df32cada9c7059437b3f12625a4fb229ee5cf44288ad8da95c151bbac1a3",
+    "bytes": 2198,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/sabre-frame-abi-1/checkpoint-4/source/experimental/reverie-sabre/tests/fixtures/syscall_frame/frame_probe.c",
+    "sha256": "9da521926e0b407d129f3400ccbe096bbaa6b09893a8ee00d6d778053e9cd565",
+    "bytes": 5694,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/sabre-frame-abi-1/checkpoint-4/source/experimental/reverie-sabre/tests/fixtures/syscall_frame/frame_probe.h",
+    "sha256": "a2faeb5db71400ae54f6245bbb0dc413ace8c7ddcc718960c3628a70d953ce33",
+    "bytes": 580,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/sabre-frame-abi-1/checkpoint-4/source/experimental/reverie-sabre/tests/syscall_frame_abi.rs",
+    "sha256": "ca3f952f497fba9f67d6cb5c12bd39a4ca129893583f943e0fdc8a257af6903f",
+    "bytes": 5142,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/sabre-frame-abi-1/checkpoint-4/source/experimental/reverie-sabre/vendor/sabre/arch/x86_64/handle_syscall_loader.s",
+    "sha256": "2a440aaa2469303ad12a7e9f41f6efc14650236376499d8e5ae72db53c2d1991",
+    "bytes": 1985,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/sabre-frame-abi-1/checkpoint-4/source/experimental/reverie-sabre/vendor/sabre/arch/x86_64/syscall_stackframe.c",
+    "sha256": "0bf733297b07e6ad618728e0e6b8f65cb25af5bae50272b2e9825e06c06a0089",
+    "bytes": 751,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/sabre-frame-abi-1/checkpoint-4/source/experimental/reverie-sabre/vendor/sabre/plugin_api/arch/x86_64/vfork_return_from_child.s",
+    "sha256": "9479d129e61cf1fcf67ba3e3ab95ed7961d653e3e7f64076609d9f8fae3175b9",
+    "bytes": 976,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/sabre-frame-abi-1/native-controls-1/FULL.log",
+    "sha256": "8d1624cc473975babd21cfec36e852939e3c1a8199972b03da33dd1b82327d8c",
+    "bytes": 588,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/sabre-frame-abi-1/native-controls-1/INPUTS.json",
+    "sha256": "6c941eadf8e40017b2a8b05328f8b161360610337aecb49cc120e2e80c6513a0",
+    "bytes": 3118,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/sabre-frame-abi-1/native-controls-1/RESULT.json",
+    "sha256": "4037804ad7568702c2952300f1029a28d7151d2a0354249007ecf3fac1e5957a",
+    "bytes": 25492,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/sabre-frame-abi-1/native-controls-1/TERMINAL.json",
+    "sha256": "9af6dc2bd0f44e0b12a332f88fa359c0c32055fef3c2c012af9e2919b3402abd",
+    "bytes": 3517,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/sabre-frame-abi-1/native-controls-1/before.json",
+    "sha256": "6daf93459aad43a6ea8ac9d35e488c744a2a35b7601f3bc553a835d1f4def632",
+    "bytes": 3683,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/sabre-frame-abi-1/native-controls-1/commands.json",
+    "sha256": "fefda84557efba1fe40f93957389cd9a01a8ec0d2a39fee412cb41b40c2bc747",
+    "bytes": 12744,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/sabre-frame-abi-1/native-controls-1/compiler.json",
+    "sha256": "50b8fd8abb7d888b1b8989b8988907ba2d7290e6f01a6d9d0a3ccadaab2332d9",
+    "bytes": 389,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/sabre-frame-abi-1/native-controls-1/launch-command.json",
+    "sha256": "cfc863c9f72c101eb4b9f28e47aaa462aa56ac0cc03dd1342661c6c909df4983",
+    "bytes": 420,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/sabre-frame-abi-1/native-controls-1/launch-result.json",
+    "sha256": "00a6ab75d3511f4faafa1cc6d5ad878181b9432f51773078c272dd1302fba53c",
+    "bytes": 23,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/sabre-frame-abi-1/native-controls-1/new-compile.json",
+    "sha256": "f5bf0f5dd5cfb4d09d2e18526c7798735a28d9666657ac77f2f1c603719195f9",
+    "bytes": 2311,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/sabre-frame-abi-1/native-controls-1/new-compile.stderr",
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "bytes": 0,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/sabre-frame-abi-1/native-controls-1/new-compile.stdout",
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "bytes": 0,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/sabre-frame-abi-1/native-controls-1/new-fork-guest-647.json",
+    "sha256": "3adaaf34b175ed356aa5affd80a4bfd4b0dcb2ebf9fe4a501c3ba382a23c89ae",
+    "bytes": 721,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/sabre-frame-abi-1/native-controls-1/new-fork-guest-647.stderr",
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "bytes": 0,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/sabre-frame-abi-1/native-controls-1/new-fork-guest-647.stdout",
+    "sha256": "0550f9205cc0a874d20e5e2c71340122f383c342b3ddcf416f8690c7566cfe7e",
+    "bytes": 985,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/sabre-frame-abi-1/native-controls-1/new-fork-guest-a96.json",
+    "sha256": "867354934eb67a20ab33c295839a7537cc1597b00092ad6d819c85b146dc0969",
+    "bytes": 721,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/sabre-frame-abi-1/native-controls-1/new-fork-guest-a96.stderr",
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "bytes": 0,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/sabre-frame-abi-1/native-controls-1/new-fork-guest-a96.stdout",
+    "sha256": "8103eae8d294f512b84a9d269fd929f2036f2477f65840be07f741cfff121aa0",
+    "bytes": 985,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/sabre-frame-abi-1/native-controls-1/new-fork-loader-647.json",
+    "sha256": "03e2f103ff6b8515501f71967275e055857b0943e882f0cbf45bd6fc02b605cf",
+    "bytes": 723,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/sabre-frame-abi-1/native-controls-1/new-fork-loader-647.stderr",
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "bytes": 0,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/sabre-frame-abi-1/native-controls-1/new-fork-loader-647.stdout",
+    "sha256": "4da0961688b41c0274921d9f8a305ad09894b1ed730d268deec091b72b8fac0b",
+    "bytes": 986,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/sabre-frame-abi-1/native-controls-1/new-fork-loader-a96.json",
+    "sha256": "480f07d568a3b88494203f50619b6dc3f4f4bd129fda7ee29071d288eb5242b0",
+    "bytes": 722,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/sabre-frame-abi-1/native-controls-1/new-fork-loader-a96.stderr",
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "bytes": 0,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/sabre-frame-abi-1/native-controls-1/new-fork-loader-a96.stdout",
+    "sha256": "61ca51f42fd1c64d7cef24eeb94538426b4dae97b52c28b4180ca181ec72404c",
+    "bytes": 986,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/sabre-frame-abi-1/native-controls-1/new-frame-probe",
+    "sha256": "dd1ac3c29008868781b00dadeccb836a69aeb4bbb24ebc2a01a63aa2daa5566f",
+    "bytes": 19416,
+    "mode": 493
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/sabre-frame-abi-1/native-controls-1/new-normal-guest-647.json",
+    "sha256": "0eb05263046c19c858c78c33e8869f1ea92823925c05aff814f7e1b558b64c77",
+    "bytes": 723,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/sabre-frame-abi-1/native-controls-1/new-normal-guest-647.stderr",
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "bytes": 0,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/sabre-frame-abi-1/native-controls-1/new-normal-guest-647.stdout",
+    "sha256": "681757a81c42da9f7fcc504a2ac472f1b76ee450ea74b5e83ec14771ab7cb1d3",
+    "bytes": 605,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/sabre-frame-abi-1/native-controls-1/new-normal-guest-a96.json",
+    "sha256": "e847faccd10318f5a55eb4acabffae9365b11b25f6d65d0a5abcf92bb3cae227",
+    "bytes": 724,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/sabre-frame-abi-1/native-controls-1/new-normal-guest-a96.stderr",
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "bytes": 0,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/sabre-frame-abi-1/native-controls-1/new-normal-guest-a96.stdout",
+    "sha256": "4f964552e0d7181b34a8029fed80ffb56cc197a329b9a48d843d199edbe2e88c",
+    "bytes": 605,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/sabre-frame-abi-1/native-controls-1/new-normal-loader-647.json",
+    "sha256": "1ad2f13e2cfbfc2c3519db80b0575bb9ba5d4c7b9a0df5109ff44c28891ea10b",
+    "bytes": 727,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/sabre-frame-abi-1/native-controls-1/new-normal-loader-647.stderr",
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "bytes": 0,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/sabre-frame-abi-1/native-controls-1/new-normal-loader-647.stdout",
+    "sha256": "5eb21453feb91fd204a97de1f60b97cd177172acb86e3cd2594386d8eafd89c7",
+    "bytes": 606,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/sabre-frame-abi-1/native-controls-1/new-normal-loader-a96.json",
+    "sha256": "da11dd9d21ae6de99c9dcce451684af783f7d653de3d8a32a7173084ed657d38",
+    "bytes": 727,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/sabre-frame-abi-1/native-controls-1/new-normal-loader-a96.stderr",
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "bytes": 0,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/sabre-frame-abi-1/native-controls-1/new-normal-loader-a96.stdout",
+    "sha256": "e91d42f4ddbef489cee384d29910c1aeb12dce6b90e9e3e8ca0361a568bf6d08",
+    "bytes": 606,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/sabre-frame-abi-1/native-controls-1/new-restore-guest-647.json",
+    "sha256": "c6ca2570dab37974dd0c57a7fdbeddaa7f37366ff376a04335735fac74a987d6",
+    "bytes": 726,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/sabre-frame-abi-1/native-controls-1/new-restore-guest-647.stderr",
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "bytes": 0,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/sabre-frame-abi-1/native-controls-1/new-restore-guest-647.stdout",
+    "sha256": "286484c76e1891f9eed2a7ba1abc5505fc03bc5a855801a9034cd5c4d0446cd2",
+    "bytes": 605,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/sabre-frame-abi-1/native-controls-1/new-restore-guest-a96.json",
+    "sha256": "cec5c2e82d683698cc5f3167bc3b2feeff601ad4712ecdd6c8ac4d707efd5e7a",
+    "bytes": 725,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/sabre-frame-abi-1/native-controls-1/new-restore-guest-a96.stderr",
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "bytes": 0,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/sabre-frame-abi-1/native-controls-1/new-restore-guest-a96.stdout",
+    "sha256": "5dfef238f2e51b8355aeac508d311384738ac4dfdc8012875d840a1ea66d2cc7",
+    "bytes": 605,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/sabre-frame-abi-1/native-controls-1/new-restore-loader-647.json",
+    "sha256": "07335c463e94c9c755f714f9864a2ef570e81e9c4771ce545ff936206ba82168",
+    "bytes": 728,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/sabre-frame-abi-1/native-controls-1/new-restore-loader-647.stderr",
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "bytes": 0,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/sabre-frame-abi-1/native-controls-1/new-restore-loader-647.stdout",
+    "sha256": "b7f3a5ac343a2aadc7d81f2705a4a72a5d811a452bb573c4fdb413640070725d",
+    "bytes": 606,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/sabre-frame-abi-1/native-controls-1/new-restore-loader-a96.json",
+    "sha256": "5550015e38cd01ced8a072fa55c07c3d06cbfb5d10ba6fb17ee3ee60189694a0",
+    "bytes": 729,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/sabre-frame-abi-1/native-controls-1/new-restore-loader-a96.stderr",
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "bytes": 0,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/sabre-frame-abi-1/native-controls-1/new-restore-loader-a96.stdout",
+    "sha256": "9664d2b21034e074b41cd16c431476e5b49a402fc30a57a951829189a392216a",
+    "bytes": 606,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/sabre-frame-abi-1/native-controls-1/old-compile.json",
+    "sha256": "112c264b17265bfc7b1e4ddd1506beb3b55e29c54b1e18a873527667f80e7561",
+    "bytes": 2399,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/sabre-frame-abi-1/native-controls-1/old-compile.stderr",
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "bytes": 0,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/sabre-frame-abi-1/native-controls-1/old-compile.stdout",
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "bytes": 0,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/sabre-frame-abi-1/native-controls-1/old-fork-guest-647.json",
+    "sha256": "6a105f7fe54f45bdc5726ca33f76a0dd518ac2c951c03019b005ecbed7ea7491",
+    "bytes": 721,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/sabre-frame-abi-1/native-controls-1/old-fork-guest-647.stderr",
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "bytes": 0,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/sabre-frame-abi-1/native-controls-1/old-fork-guest-647.stdout",
+    "sha256": "36ec4e07a52c4c441ffa3ca3508f5d4b21d29d34d6ea361979832225971297be",
+    "bytes": 992,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/sabre-frame-abi-1/native-controls-1/old-fork-guest-a96.json",
+    "sha256": "03f5d68063138aa1d0d271e1f81615257155ae0d5f6a875096a275a0f558cbd6",
+    "bytes": 721,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/sabre-frame-abi-1/native-controls-1/old-fork-guest-a96.stderr",
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "bytes": 0,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/sabre-frame-abi-1/native-controls-1/old-fork-guest-a96.stdout",
+    "sha256": "35e6b3180a6d935bb79301ba7ffefe598b48f34f2c37eb5c62270e2df9e4da97",
+    "bytes": 992,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/sabre-frame-abi-1/native-controls-1/old-fork-loader-647.json",
+    "sha256": "1607e33ddebcaabf78f3bd5eafe6dad4f38b27badecbfa89319dbc88de9f0c82",
+    "bytes": 720,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/sabre-frame-abi-1/native-controls-1/old-fork-loader-647.stderr",
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "bytes": 0,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/sabre-frame-abi-1/native-controls-1/old-fork-loader-647.stdout",
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "bytes": 0,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/sabre-frame-abi-1/native-controls-1/old-fork-loader-a96.json",
+    "sha256": "f338593f602130efdc9043db6b85227ab76ffa543c36b7ed98a8c6bfff88f47b",
+    "bytes": 721,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/sabre-frame-abi-1/native-controls-1/old-fork-loader-a96.stderr",
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "bytes": 0,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/sabre-frame-abi-1/native-controls-1/old-fork-loader-a96.stdout",
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "bytes": 0,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/sabre-frame-abi-1/native-controls-1/old-frame-probe",
+    "sha256": "1c3b0b0aaa5721354dca97760913febf6a07d15f72a8965b30ba85ce39eef37e",
+    "bytes": 19416,
+    "mode": 493
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/sabre-frame-abi-1/native-controls-1/old-normal-guest-647.json",
+    "sha256": "790aabb2fbfec8e01dc1e04cdbb8172acbfb7dadfc7b885b5be4f7f35a4e9045",
+    "bytes": 722,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/sabre-frame-abi-1/native-controls-1/old-normal-guest-647.stderr",
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "bytes": 0,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/sabre-frame-abi-1/native-controls-1/old-normal-guest-647.stdout",
+    "sha256": "bca9596a9d0c832e3349d621e6877edb1a5617aeda0d027d9748b4583e70b036",
+    "bytes": 605,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/sabre-frame-abi-1/native-controls-1/old-normal-guest-a96.json",
+    "sha256": "bf72dcd944a93374e23a68dc490e176494c620309efba43c8f2ccf800251afbc",
+    "bytes": 724,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/sabre-frame-abi-1/native-controls-1/old-normal-guest-a96.stderr",
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "bytes": 0,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/sabre-frame-abi-1/native-controls-1/old-normal-guest-a96.stdout",
+    "sha256": "7d7055f0a6d7f7fef712d55232a220314ab1a6ff30eb942f487c0781b47d1f6d",
+    "bytes": 605,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/sabre-frame-abi-1/native-controls-1/old-normal-loader-647.json",
+    "sha256": "0a57c10d82edbed2135426c0c4972a1eec1e9fc7ff3d9ad44c34d2f50ee09eb8",
+    "bytes": 727,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/sabre-frame-abi-1/native-controls-1/old-normal-loader-647.stderr",
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "bytes": 0,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/sabre-frame-abi-1/native-controls-1/old-normal-loader-647.stdout",
+    "sha256": "2c7fb50f5013609887228e7b93857b49ab8c3b820a669da1d4f83fea8e750f70",
+    "bytes": 605,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/sabre-frame-abi-1/native-controls-1/old-normal-loader-a96.json",
+    "sha256": "b9a9efc84fcb56dfca7d76cd44bdf6600348a3318e0d93608884ae8ac323f671",
+    "bytes": 727,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/sabre-frame-abi-1/native-controls-1/old-normal-loader-a96.stderr",
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "bytes": 0,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/sabre-frame-abi-1/native-controls-1/old-normal-loader-a96.stdout",
+    "sha256": "b4e3cb99adede55e9eb6c675a9e51bbce61dcb2751ca9a6149c1f54074024d3b",
+    "bytes": 604,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/sabre-frame-abi-1/native-controls-1/old-restore-guest-647.json",
+    "sha256": "be9b2361f516df3def7eacb29f234c7d2f098c52e55d38e10cc75ee61cc84962",
+    "bytes": 726,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/sabre-frame-abi-1/native-controls-1/old-restore-guest-647.stderr",
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "bytes": 0,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/sabre-frame-abi-1/native-controls-1/old-restore-guest-647.stdout",
+    "sha256": "656c23af20a17f36dfb7d4e891317437e8b3ec6a7093ccbb28082a44981249ad",
+    "bytes": 609,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/sabre-frame-abi-1/native-controls-1/old-restore-guest-a96.json",
+    "sha256": "7e021f89e877a5fa52bba6f937775764701cb6dd5bf03d3e1e3577bdbee65e81",
+    "bytes": 726,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/sabre-frame-abi-1/native-controls-1/old-restore-guest-a96.stderr",
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "bytes": 0,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/sabre-frame-abi-1/native-controls-1/old-restore-guest-a96.stdout",
+    "sha256": "1b1f3546aa4a715dcde5fff380f45356c52246b9a70d75a240572e4d6195588a",
+    "bytes": 609,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/sabre-frame-abi-1/native-controls-1/old-restore-loader-647.json",
+    "sha256": "40e278d032cde4a7fdc0644873c81cddd83346f3d39067f46dcf550e237e80c0",
+    "bytes": 728,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/sabre-frame-abi-1/native-controls-1/old-restore-loader-647.stderr",
+    "sha256": "de25f493e2a030af329f5f01121c9f9249da8508936bfa0a119d0a5c8f638731",
+    "bytes": 43,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/sabre-frame-abi-1/native-controls-1/old-restore-loader-647.stdout",
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "bytes": 0,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/sabre-frame-abi-1/native-controls-1/old-restore-loader-a96.json",
+    "sha256": "b06df256519a6cb14a3d7e1c0e89b55351c95d4377297ab7e16a37830ea3461e",
+    "bytes": 728,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/sabre-frame-abi-1/native-controls-1/old-restore-loader-a96.stderr",
+    "sha256": "de25f493e2a030af329f5f01121c9f9249da8508936bfa0a119d0a5c8f638731",
+    "bytes": 43,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/sabre-frame-abi-1/native-controls-1/old-restore-loader-a96.stdout",
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "bytes": 0,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/sabre-frame-abi-1/native-controls-1/run.py",
+    "sha256": "0e9b0a5b656682ae3ddd80ecf3396e2178e2eff434a2fd84cf26fae163569292",
+    "bytes": 2457,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/sabre-frame-abi-1/rust-native-controls-1/FULL.log",
+    "sha256": "fa8f97b65b2e4dfa34c3bacbe4d146c2aed043418c1b9fdcf8acc6ea0387f67a",
+    "bytes": 361,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/sabre-frame-abi-1/rust-native-controls-1/INPUTS.json",
+    "sha256": "0f8303f908b085f5e27511dc6239e06b78066cbb8ac97755e1164a5dc9b49f4e",
+    "bytes": 4137,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/sabre-frame-abi-1/rust-native-controls-1/RESULT.json",
+    "sha256": "515465d0db2b52a8a381450490cc2bcafd7699e22cff4e8d36b19aa9aa85a1d1",
+    "bytes": 11017,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/sabre-frame-abi-1/rust-native-controls-1/TERMINAL.json",
+    "sha256": "f2ad9a2cd6c46d92783e9137cacdbf004469d08f88697ae0289c412c7a03667b",
+    "bytes": 508,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/sabre-frame-abi-1/rust-native-controls-1/before.json",
+    "sha256": "65356f1108b762884d730e5ac455dd3191bf967363cb1da49e5c6e2222fb0085",
+    "bytes": 4717,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/sabre-frame-abi-1/rust-native-controls-1/commands.json",
+    "sha256": "52cb5a39fd9f467d2f2ed6cc1802d359f12150f1a4cba1cc61f0f19379ab4741",
+    "bytes": 5861,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/sabre-frame-abi-1/rust-native-controls-1/ffi-clone-tests-test_vfork.json",
+    "sha256": "66b5d7876554d7e5a2cafb08247ad242642924e2e0b7f367f4fbda761755a74f",
+    "bytes": 797,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/sabre-frame-abi-1/rust-native-controls-1/ffi-clone-tests-test_vfork.stderr",
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "bytes": 0,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/sabre-frame-abi-1/rust-native-controls-1/ffi-clone-tests-test_vfork.stdout",
+    "sha256": "9eb07f8fcee22e07a359948a52c7ebb3a87331ab4913a445baec3df2571454e5",
+    "bytes": 155,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/sabre-frame-abi-1/rust-native-controls-1/fork_child_runs_scratch_and_preserves_flags_stack_and_red_zone.json",
+    "sha256": "4415def74ab24b0d10a4e4d0bc2b03ef552987a6f749fe72d98b260782d3c755",
+    "bytes": 868,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/sabre-frame-abi-1/rust-native-controls-1/fork_child_runs_scratch_and_preserves_flags_stack_and_red_zone.stderr",
+    "sha256": "0086e2be3d1445ef895e55d9a5032b7c829965ac8b7dc95249fd4d420605088f",
+    "bytes": 172,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/sabre-frame-abi-1/rust-native-controls-1/fork_child_runs_scratch_and_preserves_flags_stack_and_red_zone.stdout",
+    "sha256": "8c23d9c1c97b7ac8ee7affcda647303ae3b71e2135732201b491b033d383eb2c",
+    "bytes": 4593,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/sabre-frame-abi-1/rust-native-controls-1/integration-list.json",
+    "sha256": "103eb39eef18ddffc4727e8998fe870fe4d8b1f4302e7f0823b51432b0a2b668",
+    "bytes": 734,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/sabre-frame-abi-1/rust-native-controls-1/integration-list.stderr",
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "bytes": 0,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/sabre-frame-abi-1/rust-native-controls-1/integration-list.stdout",
+    "sha256": "1dd94c540f6434dfb577c3bd76210eb30cfa7afeb5f4158b7f5709a3eeddd041",
+    "bytes": 195,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/sabre-frame-abi-1/rust-native-controls-1/launch-command.json",
+    "sha256": "dbf5daf6637cd8a6c9bda472e37e09a2985702365c12738786c9508a6f2d251f",
+    "bytes": 432,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/sabre-frame-abi-1/rust-native-controls-1/launch-result.json",
+    "sha256": "00a6ab75d3511f4faafa1cc6d5ad878181b9432f51773078c272dd1302fba53c",
+    "bytes": 23,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/sabre-frame-abi-1/rust-native-controls-1/lib-list.json",
+    "sha256": "846920ca05aed18d63e443ec8fe733a423b7d718205bc62bd7840044cd7fb857",
+    "bytes": 722,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/sabre-frame-abi-1/rust-native-controls-1/lib-list.stderr",
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "bytes": 0,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/sabre-frame-abi-1/rust-native-controls-1/lib-list.stdout",
+    "sha256": "6ef0e8571f5e3f0ad1ecd63ca000025879e949ffaf3fea199a4741d928f54591",
+    "bytes": 5837,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/sabre-frame-abi-1/rust-native-controls-1/old-compile-exact-reap.json",
+    "sha256": "a443a665775e0eef895e8070ae9c14bae5c6b06e6405dbf94f2b6f5e0b8804b8",
+    "bytes": 2396,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/sabre-frame-abi-1/rust-native-controls-1/old-compile-exact-reap.stderr",
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "bytes": 0,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/sabre-frame-abi-1/rust-native-controls-1/old-compile-exact-reap.stdout",
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "bytes": 0,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/sabre-frame-abi-1/rust-native-controls-1/old-fork-loader-647.json",
+    "sha256": "19a1a273ccd150322402c1b2e7b72733facc36297e8530c7224c4da7aea39453",
+    "bytes": 705,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/sabre-frame-abi-1/rust-native-controls-1/old-fork-loader-647.stderr",
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "bytes": 0,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/sabre-frame-abi-1/rust-native-controls-1/old-fork-loader-647.stdout",
+    "sha256": "fe0be0e497702a25bdbcabb4af539254da81685cd7c3a091b60141ce9c1d95c0",
+    "bytes": 612,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/sabre-frame-abi-1/rust-native-controls-1/old-fork-loader-a96.json",
+    "sha256": "6d667f84a37a6c665d70227abd1e1eb130c47485d4784467de744bff07ad8d3b",
+    "bytes": 705,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/sabre-frame-abi-1/rust-native-controls-1/old-fork-loader-a96.stderr",
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "bytes": 0,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/sabre-frame-abi-1/rust-native-controls-1/old-fork-loader-a96.stdout",
+    "sha256": "d77c2b1ff9a3c6345d7fd70ae937f3163f594463469f952e8388373901fa69b4",
+    "bytes": 611,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/sabre-frame-abi-1/rust-native-controls-1/old-frame-probe",
+    "sha256": "01d630e7ff670c27060887b38165f05e331b9a35787d819fa1e3054d755a9e30",
+    "bytes": 19528,
+    "mode": 493
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/sabre-frame-abi-1/rust-native-controls-1/reverie_adapter-tests-exposes_and_updates_the_live_sabre_syscall_frame.json",
+    "sha256": "9f65c6e370de39463807e73b8c381b9bf43e895ead4c3d7191d309ebd658369c",
+    "bytes": 884,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/sabre-frame-abi-1/rust-native-controls-1/reverie_adapter-tests-exposes_and_updates_the_live_sabre_syscall_frame.stderr",
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "bytes": 0,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/sabre-frame-abi-1/rust-native-controls-1/reverie_adapter-tests-exposes_and_updates_the_live_sabre_syscall_frame.stdout",
+    "sha256": "c2ab73a952b527784a621dcad1e351449fd21e1cfb6dcaf8b1ae78a38d1decf6",
+    "bytes": 198,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/sabre-frame-abi-1/rust-native-controls-1/run.py",
+    "sha256": "fb5429a6b2bfacc18707cce47b6e05eb3be6eb62d31a7aac22f703c992f8487f",
+    "bytes": 2155,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/sabre-frame-abi-1/rust-native-controls-1/rust_frame_matches_both_actual_wrapper_entries.json",
+    "sha256": "8b6a0cadc87ea0e82d55ffddab89eb9f48bb145b06d69665a3f7bba5aefae32d",
+    "bytes": 836,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/sabre-frame-abi-1/rust-native-controls-1/rust_frame_matches_both_actual_wrapper_entries.stderr",
+    "sha256": "ef6e6e4131f7ef015ac79d37e6b5fe6b3b0449645c9505538a694a5eecb88244",
+    "bytes": 172,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/sabre-frame-abi-1/rust-native-controls-1/rust_frame_matches_both_actual_wrapper_entries.stdout",
+    "sha256": "afb26c6df4ca4fda6fe6c5b8a24a235ebae8d5cd9872f1cfef25f9ef23087c95",
+    "bytes": 2825,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/sabre-frame-abi-1/rust-native-controls-1/tmp/reverie-sabre-frame-3174171-0/compile.stderr",
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "bytes": 0,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/sabre-frame-abi-1/rust-native-controls-1/tmp/reverie-sabre-frame-3174171-0/compile.stdout",
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "bytes": 0,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/sabre-frame-abi-1/rust-native-controls-1/tmp/reverie-sabre-frame-3174171-0/frame_probe.so",
+    "sha256": "7ebe669a1df1d3822964f1bc2d52c73c8c6376ef4243abfe0b0255e24a9ec45e",
+    "bytes": 18208,
+    "mode": 493
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/sabre-frame-abi-1/rust-native-controls-1/tmp/reverie-sabre-frame-3174405-0/compile.stderr",
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "bytes": 0,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/sabre-frame-abi-1/rust-native-controls-1/tmp/reverie-sabre-frame-3174405-0/compile.stdout",
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "bytes": 0,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/sabre-frame-abi-1/rust-native-controls-1/tmp/reverie-sabre-frame-3174405-0/frame_probe.so",
+    "sha256": "87585962a75f4f6e2d94594a5879730ae6b2311a8183d4912657d4a3870d7274",
+    "bytes": 18208,
+    "mode": 493
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/sabre-frame-abi-1/rust-native-controls-1/tmp/reverie-sabre-frame-3174971-0/compile.stderr",
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "bytes": 0,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/sabre-frame-abi-1/rust-native-controls-1/tmp/reverie-sabre-frame-3174971-0/compile.stdout",
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "bytes": 0,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/sabre-frame-abi-1/rust-native-controls-1/tmp/reverie-sabre-frame-3174971-0/frame_probe.so",
+    "sha256": "5ad4ab4bab31d67c363b661f300b4f004c42e893e9eb1dcb07f177fe337def3b",
+    "bytes": 18208,
+    "mode": 493
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/sabre-frame-abi-1/rust-native-controls-1/vfork_return_restores_the_same_actual_frame.json",
+    "sha256": "6833cd495235b5bd93cc664342ae582eac38f198128911776e3f0f0e0ed257fd",
+    "bytes": 831,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/sabre-frame-abi-1/rust-native-controls-1/vfork_return_restores_the_same_actual_frame.stderr",
+    "sha256": "96428deb1c2d4c10a599324b6e85dd5d9fc365c98d604953bfcb216feb33647d",
+    "bytes": 172,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/sabre-frame-abi-1/rust-native-controls-1/vfork_return_restores_the_same_actual_frame.stdout",
+    "sha256": "1a9621993b9545c79261247f570ffae105f94c18058763cfd5ec2e4a52772726",
+    "bytes": 2822,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-sabre-frame-abi-20260917/ignored/sabre-frame-abi-20260917/commit-1/FULL.log",
+    "sha256": "709db220cd1790bccd4276355f1e65925ee73185476439add32b0930f9f86f00",
+    "bytes": 575,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-sabre-frame-abi-20260917/ignored/sabre-frame-abi-20260917/commit-1/RESULT.json",
+    "sha256": "c16eecb436f7220e7304152aa964668a51e5b9bcb2a470668ead571b93626aaf",
+    "bytes": 540,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-sabre-frame-abi-20260917/ignored/sabre-frame-abi-20260917/commit-1/TERMINAL.json",
+    "sha256": "14f6f396c5dce53d4cdb90b06d80caec5b531e2b607bef40a050bae02482903e",
+    "bytes": 137,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-sabre-frame-abi-20260917/ignored/sabre-frame-abi-20260917/commit-1/before.json",
+    "sha256": "05a6a22b7c772d208ab878d8382841fa9c0a9f601b7a0d7ec785e71953ea484f",
+    "bytes": 496,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-sabre-frame-abi-20260917/ignored/sabre-frame-abi-20260917/commit-1/branch-before.json",
+    "sha256": "48c84e87fd24d3881dac4f91497bc11d379b0c9ce77b9d34d39e262056904b7c",
+    "bytes": 189,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-sabre-frame-abi-20260917/ignored/sabre-frame-abi-20260917/commit-1/command.json",
+    "sha256": "6add0130b28be72a6d19954047f4a9abbb8348cbbb78ea47cae9ac642d159d88",
+    "bytes": 435,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-sabre-frame-abi-20260917/ignored/sabre-frame-abi-20260917/commit-1/commit.py",
+    "sha256": "a8fc7b1c173f26abcae79623ece1418f931bd08d92dfb5ef449e4b48e094806c",
+    "bytes": 5072,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-sabre-frame-abi-20260917/ignored/sabre-frame-abi-20260917/commit-1/head-before.json",
+    "sha256": "37d8d607e36258373714b0a1cbe0d4e7a1c28e3824deb4c86745d3f292777114",
+    "bytes": 187,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-sabre-frame-abi-20260917/ignored/sabre-frame-abi-20260917/commit-1/index-before.json",
+    "sha256": "8972dc4bc94de21439625337867699a6a7f579bbe0cee27007cffe0cf0942e58",
+    "bytes": 163,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-sabre-frame-abi-20260917/ignored/sabre-frame-abi-20260917/commit-1/launch-result.json",
+    "sha256": "481fba223260245cdc5a18865cf346a37fc09261fe8ffd2fd8fd62ae881bd3e1",
+    "bytes": 23,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-sabre-frame-abi-20260917/ignored/sabre-frame-abi-20260917/commit-1/run.py",
+    "sha256": "6f6efa186e90798d3b5d3c90e00067c35e2d8e6a768ce45344654b1c1c35ca22",
+    "bytes": 1114,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-sabre-frame-abi-20260917/ignored/sabre-frame-abi-20260917/commit-1/source.json",
+    "sha256": "952d6a4ae63bcda0ff5c09ee0fee7ec384a4d1a231ea0d1466db2e322fe5d141",
+    "bytes": 1691,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-sabre-frame-abi-20260917/ignored/sabre-frame-abi-20260917/commit-1/tracked-before.json",
+    "sha256": "5ece730b548da565cf49e9705440448e5cc1d81b9998e590c8592bf0bda3879a",
+    "bytes": 526,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-sabre-frame-abi-20260917/ignored/sabre-frame-abi-20260917/commit-1/untracked-before.json",
+    "sha256": "c08e550ef205600a835c6c0f3b90533f035b31a5676edceeada1148fc7d6c7f3",
+    "bytes": 2621989,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-sabre-frame-abi-20260917/ignored/sabre-frame-abi-20260917/commit-2/COMMITTED.json",
+    "sha256": "24f530d53a73cfed27987aab57b891ec7bf08e183a01bc1d0ffde75cdf9f4e49",
+    "bytes": 2038,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-sabre-frame-abi-20260917/ignored/sabre-frame-abi-20260917/commit-2/FULL.log",
+    "sha256": "388855da3d2620e0cd544f03b2f21a7a9be870792c43d25afd09ebed265d151f",
+    "bytes": 82,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-sabre-frame-abi-20260917/ignored/sabre-frame-abi-20260917/commit-2/RESULT.json",
+    "sha256": "6d70dd01f731c7e2ec2a9f29d2c004745f9fdd7ec78e829e19b9d953fb5937c3",
+    "bytes": 539,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-sabre-frame-abi-20260917/ignored/sabre-frame-abi-20260917/commit-2/TERMINAL.json",
+    "sha256": "14f6f396c5dce53d4cdb90b06d80caec5b531e2b607bef40a050bae02482903e",
+    "bytes": 137,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-sabre-frame-abi-20260917/ignored/sabre-frame-abi-20260917/commit-2/add.json",
+    "sha256": "13e27a226bb0761b201c19dc517ddcbc7833cf3105d01e346fdd2db7104d2316",
+    "bytes": 845,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-sabre-frame-abi-20260917/ignored/sabre-frame-abi-20260917/commit-2/before.json",
+    "sha256": "507c0acb0c0b809ce3df3dfbf6f3e7a58b05674bfe8dec73045b3e096863c2ba",
+    "bytes": 496,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-sabre-frame-abi-20260917/ignored/sabre-frame-abi-20260917/commit-2/branch-before.json",
+    "sha256": "004a65e8ff0063a5d0e8ef00097ee3fbbab08a6f2163b1facbff2428e5ce9685",
+    "bytes": 190,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-sabre-frame-abi-20260917/ignored/sabre-frame-abi-20260917/commit-2/clippy.json",
+    "sha256": "4139f59013763ac81caab164160ee8117e980bfd7d427aa8570e4dd26d2dc509",
+    "bytes": 2311,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-sabre-frame-abi-20260917/ignored/sabre-frame-abi-20260917/commit-2/command.json",
+    "sha256": "20c1d21dd7ab8a52cc5468aa8814e52c89effe77a3870203bc21e46ff97fadf6",
+    "bytes": 435,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-sabre-frame-abi-20260917/ignored/sabre-frame-abi-20260917/commit-2/commit-paths.json",
+    "sha256": "89aae3004d24df53f0cde39220eba2bb76c61f8db61df39fe4401568455df318",
+    "bytes": 845,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-sabre-frame-abi-20260917/ignored/sabre-frame-abi-20260917/commit-2/commit.json",
+    "sha256": "b85e5c65275718bc5ca10a8181876f2ebb1df3351d621662631d7e028aa203fc",
+    "bytes": 784,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-sabre-frame-abi-20260917/ignored/sabre-frame-abi-20260917/commit-2/commit.py",
+    "sha256": "a8fc7b1c173f26abcae79623ece1418f931bd08d92dfb5ef449e4b48e094806c",
+    "bytes": 5072,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-sabre-frame-abi-20260917/ignored/sabre-frame-abi-20260917/commit-2/diff-check.json",
+    "sha256": "40c1ba4c48123d181618415a99994a8ed419335672034c6d6175918d39d6aa52",
+    "bytes": 159,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-sabre-frame-abi-20260917/ignored/sabre-frame-abi-20260917/commit-2/fmt.json",
+    "sha256": "ddb40a65e5477ec96d9e911d06fc522853e8fde49d760ba5ef667cf383967d04",
+    "bytes": 165,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-sabre-frame-abi-20260917/ignored/sabre-frame-abi-20260917/commit-2/head-after.json",
+    "sha256": "d829c1477fa77c6b0e2f5d75dfbd193d9b3ebfac9bf85e577706cf06b6a2a02f",
+    "bytes": 187,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-sabre-frame-abi-20260917/ignored/sabre-frame-abi-20260917/commit-2/head-before.json",
+    "sha256": "56d950f25303115f63965b66fcca5610cde602b38a9a08450337ee0ad4cb8a55",
+    "bytes": 188,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-sabre-frame-abi-20260917/ignored/sabre-frame-abi-20260917/commit-2/index-before.json",
+    "sha256": "5a81530c9594cd08daeac94644517056932e2bb8aac954253038271bf382485c",
+    "bytes": 164,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-sabre-frame-abi-20260917/ignored/sabre-frame-abi-20260917/commit-2/launch-result.json",
+    "sha256": "00a6ab75d3511f4faafa1cc6d5ad878181b9432f51773078c272dd1302fba53c",
+    "bytes": 23,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-sabre-frame-abi-20260917/ignored/sabre-frame-abi-20260917/commit-2/message.txt",
+    "sha256": "f03bcabd5554a475d874981e51ca0d9010246a3bc7156069367fed3a673f2461",
+    "bytes": 2099,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-sabre-frame-abi-20260917/ignored/sabre-frame-abi-20260917/commit-2/remote-main.json",
+    "sha256": "fbdd7f1543dc1ff70eb0df0f88dfae5c9a342ac58947e40d3fd29627f865eb08",
+    "bytes": 279,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-sabre-frame-abi-20260917/ignored/sabre-frame-abi-20260917/commit-2/run.py",
+    "sha256": "ab5ed0ca3e3581158c6a83d9d5fe5b44ca0e7cdce2e1a59d26ed8b4722ad4e54",
+    "bytes": 1114,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-sabre-frame-abi-20260917/ignored/sabre-frame-abi-20260917/commit-2/source.json",
+    "sha256": "952d6a4ae63bcda0ff5c09ee0fee7ec384a4d1a231ea0d1466db2e322fe5d141",
+    "bytes": 1691,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-sabre-frame-abi-20260917/ignored/sabre-frame-abi-20260917/commit-2/staged.json",
+    "sha256": "268b0b8251b01e5f7f7274f783b3c752cc974853bc1a43734e365317f5e19fa4",
+    "bytes": 811,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-sabre-frame-abi-20260917/ignored/sabre-frame-abi-20260917/commit-2/status-after.json",
+    "sha256": "519b0bed6849e02e822691f5b17a7e45285f49a1ccfe22670d553eb5d4616fa7",
+    "bytes": 181,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-sabre-frame-abi-20260917/ignored/sabre-frame-abi-20260917/commit-2/tracked-before.json",
+    "sha256": "56c1347dd55637b6695d48c0ca877a53a3f4efd7b42702958b7f81c1b4735184",
+    "bytes": 527,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-sabre-frame-abi-20260917/ignored/sabre-frame-abi-20260917/commit-2/tree-after.json",
+    "sha256": "f22c8b2707c248eb9adcdec9758110b909160950c2882e7d8647c12fa2f132a8",
+    "bytes": 194,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-sabre-frame-abi-20260917/ignored/sabre-frame-abi-20260917/commit-2/untracked-before.json",
+    "sha256": "87fdcd7ba68c2523451360a08ebbf93f5f8bcd5165131da67df296a0d4f5e5d8",
+    "bytes": 443,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-sabre-frame-abi-20260917/ignored/sabre-frame-abi-20260917/commit-2/who-am-i.json",
+    "sha256": "24c937b4736ee56c89ae506c0562a4242b6e9d071023d53d6933e481bbb18916",
+    "bytes": 727,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-sabre-frame-abi-20260917/ignored/sabre-frame-abi-20260917/final-1/IDENTITY.json",
+    "sha256": "f5af8741d53c8b186968e5cc0629fa10d71ffe172bf305b5e8cf82b389849883",
+    "bytes": 1246,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-sabre-frame-abi-20260917/ignored/sabre-frame-abi-20260917/final-1/REPORT.md",
+    "sha256": "794539cd7719097abdd0a3133e23d639af031aaf0e99a7f15d4f5852221c8918",
+    "bytes": 4526,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-sabre-frame-abi-20260917/ignored/sabre-frame-abi-20260917/final-1/SOURCE.json",
+    "sha256": "51729426942460c81169a74a7a9806b9249356fc7976a50d3e01d3942586dbf1",
+    "bytes": 665334,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-sabre-frame-abi-20260917/ignored/sabre-frame-abi-20260917/final-1/committed.patch",
+    "sha256": "d6b847e1858a2b6aab683ce4fe52c4c38c079e7dc33ca699db2462c0fb0fa58a",
+    "bytes": 30143,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-sabre-frame-abi-20260917/ignored/sabre-frame-abi-20260917/native-build-2/FULL.log",
+    "sha256": "28b501b98a8dc2b2ffcb3f6c21ff6f60e04cab8032e6848a29130ab8f456decd",
+    "bytes": 1317,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-sabre-frame-abi-20260917/ignored/sabre-frame-abi-20260917/native-build-2/RESULT.json",
+    "sha256": "fbb7830b59853412384aacdb2885377da817b55dd3b4beaf4337d68a5084e453",
+    "bytes": 545,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-sabre-frame-abi-20260917/ignored/sabre-frame-abi-20260917/native-build-2/SEALED.json",
+    "sha256": "aa7f1e0f9b7a591e7047dff6eb75c34175f0081d2c6daf2d04bd83b3410fd6b9",
+    "bytes": 341,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-sabre-frame-abi-20260917/ignored/sabre-frame-abi-20260917/native-build-2/TERMINAL.json",
+    "sha256": "14f6f396c5dce53d4cdb90b06d80caec5b531e2b607bef40a050bae02482903e",
+    "bytes": 137,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-sabre-frame-abi-20260917/ignored/sabre-frame-abi-20260917/native-build-2/before.json",
+    "sha256": "e1e6988d80a451ffa2d7a7324337911d87ac68e1ebbcb1240cb0456c08dffabc",
+    "bytes": 500,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-sabre-frame-abi-20260917/ignored/sabre-frame-abi-20260917/native-build-2/build.py",
+    "sha256": "e951276112873194b1d86394d531b31281a9f4214b4df00690b25e151824f6ac",
+    "bytes": 4030,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-sabre-frame-abi-20260917/ignored/sabre-frame-abi-20260917/native-build-2/launch-command.json",
+    "sha256": "20afa7f6b067c81965374124d4e92855b04cc21121bc2efd432e7fbc47df5da7",
+    "bytes": 445,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-sabre-frame-abi-20260917/ignored/sabre-frame-abi-20260917/native-build-2/launch-result.json",
+    "sha256": "481fba223260245cdc5a18865cf346a37fc09261fe8ffd2fd8fd62ae881bd3e1",
+    "bytes": 23,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-sabre-frame-abi-20260917/ignored/sabre-frame-abi-20260917/native-build-2/run.py",
+    "sha256": "990934ca6329b02038de0cdc61eea7453bc643d5082137d064ea534569a77a91",
+    "bytes": 1117,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-sabre-frame-abi-20260917/ignored/sabre-frame-abi-20260917/native-build-2/spec.json",
+    "sha256": "fb60016211fb8d15999c15eeb466a5aa9870b35ef0a15f35a982c555623fbf51",
+    "bytes": 2987,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-sabre-frame-abi-20260917/ignored/sabre-frame-abi-20260917/native-build-3/FULL.log",
+    "sha256": "dfce28d40fe65c72af2685cc15902c8281a84c0ee1d141fef581a108fe898d2b",
+    "bytes": 1218,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-sabre-frame-abi-20260917/ignored/sabre-frame-abi-20260917/native-build-3/RESULT.json",
+    "sha256": "5738ed6305e007a6d6467d25d8fc6e4d62b0253ea8c70c46aaf1d1c43ebd8bd0",
+    "bytes": 545,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-sabre-frame-abi-20260917/ignored/sabre-frame-abi-20260917/native-build-3/SEALED.json",
+    "sha256": "faacaaf0d1b8e3f28356679a3affa00e733c58e6054dc8ae04debacb95ac2d9a",
+    "bytes": 341,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-sabre-frame-abi-20260917/ignored/sabre-frame-abi-20260917/native-build-3/TERMINAL.json",
+    "sha256": "14f6f396c5dce53d4cdb90b06d80caec5b531e2b607bef40a050bae02482903e",
+    "bytes": 137,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-sabre-frame-abi-20260917/ignored/sabre-frame-abi-20260917/native-build-3/before.json",
+    "sha256": "8f0494b09db4ebe8f7726c0259ce3ad57e8a3d9c91ea347568c4fdab5371705b",
+    "bytes": 500,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-sabre-frame-abi-20260917/ignored/sabre-frame-abi-20260917/native-build-3/build.py",
+    "sha256": "8bec49f58b55853daf0167cbf94359a0ebe28ba3d72858e7170bda9690a644d2",
+    "bytes": 4541,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-sabre-frame-abi-20260917/ignored/sabre-frame-abi-20260917/native-build-3/cargo-version.json",
+    "sha256": "51d31e174481bf7191b5f7098ddb76b6311b317030161a7f4a7c3ec3080192f5",
+    "bytes": 446,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-sabre-frame-abi-20260917/ignored/sabre-frame-abi-20260917/native-build-3/cc-version.json",
+    "sha256": "aa8d029f1761f80965cba83d4f9e19a1f7bb4e03b6c13ae9f39afb86024e8e44",
+    "bytes": 359,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-sabre-frame-abi-20260917/ignored/sabre-frame-abi-20260917/native-build-3/command-1.json",
+    "sha256": "881d2489be3d667358f804d89143c7832ca23476a0c13a69c89fb33e37b02971",
+    "bytes": 135,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-sabre-frame-abi-20260917/ignored/sabre-frame-abi-20260917/native-build-3/command-1.stderr",
+    "sha256": "e7e85f2609c5fc1f9ed1db3e05f034adccedd3f70941ecf551f19d4ddd294cb5",
+    "bytes": 428,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-sabre-frame-abi-20260917/ignored/sabre-frame-abi-20260917/native-build-3/command-1.stdout",
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "bytes": 0,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-sabre-frame-abi-20260917/ignored/sabre-frame-abi-20260917/native-build-3/command-2.json",
+    "sha256": "9e7d6dca657cbae839703390d36dc36c64adf5c69bd1be98505ebf18aeb04b6e",
+    "bytes": 252,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-sabre-frame-abi-20260917/ignored/sabre-frame-abi-20260917/native-build-3/command-2.stderr",
+    "sha256": "06f92a24bbc244f4b9f63e4558cb491fe524cd1909dc5016e77c8f424f58aba1",
+    "bytes": 7089,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-sabre-frame-abi-20260917/ignored/sabre-frame-abi-20260917/native-build-3/command-2.stdout",
+    "sha256": "15bc9f6755da76cd7990bb5e0cea1fa7b26579e0cdb51cdbc4539d7974513a1e",
+    "bytes": 187968,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-sabre-frame-abi-20260917/ignored/sabre-frame-abi-20260917/native-build-3/command-3.json",
+    "sha256": "890a7fb162eecc71c2fd1f94a7950c97df06714ccf7f9d01adfb610d6081a8f2",
+    "bytes": 227,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-sabre-frame-abi-20260917/ignored/sabre-frame-abi-20260917/native-build-3/command-3.stderr",
+    "sha256": "f41cf47a002eab01d786753d4c68e03527b59973a1d6384344ece9ba585b097e",
+    "bytes": 2043,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-sabre-frame-abi-20260917/ignored/sabre-frame-abi-20260917/native-build-3/command-3.stdout",
+    "sha256": "ce8b8bf706e398d99f6467d5fff60151284a48d66bfba1228d19dfef4b1db277",
+    "bytes": 186684,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-sabre-frame-abi-20260917/ignored/sabre-frame-abi-20260917/native-build-3/command-4.json",
+    "sha256": "356530cef104154332f931d5b00e2745cb3d3b64f53e1085e317e97c1eddd0d1",
+    "bytes": 142,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-sabre-frame-abi-20260917/ignored/sabre-frame-abi-20260917/native-build-3/command-4.stderr",
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "bytes": 0,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-sabre-frame-abi-20260917/ignored/sabre-frame-abi-20260917/native-build-3/command-4.stdout",
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "bytes": 0,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-sabre-frame-abi-20260917/ignored/sabre-frame-abi-20260917/native-build-3/command-5.json",
+    "sha256": "6c376d134369672b6c953f05cdf7d0f63888c154ab6c3a2c1e630460945630e5",
+    "bytes": 228,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-sabre-frame-abi-20260917/ignored/sabre-frame-abi-20260917/native-build-3/command-5.stderr",
+    "sha256": "57ab056860ce0359164b625d2c8bc2b89cb5f1a0d850f0220a0a9e3657c204c8",
+    "bytes": 6212,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-sabre-frame-abi-20260917/ignored/sabre-frame-abi-20260917/native-build-3/command-5.stdout",
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "bytes": 0,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-sabre-frame-abi-20260917/ignored/sabre-frame-abi-20260917/native-build-3/commands-result.json",
+    "sha256": "2752d9391bb9f8c9369b12041f6ffd505ddd635f1575866dce638ba808a41a60",
+    "bytes": 1126,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-sabre-frame-abi-20260917/ignored/sabre-frame-abi-20260917/native-build-3/copy-results.json",
+    "sha256": "045a3d05deefe936e029ebf06f9cd45ee6452913fb77b6c90c8c9de331e75b27",
+    "bytes": 809,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-sabre-frame-abi-20260917/ignored/sabre-frame-abi-20260917/native-build-3/environment.json",
+    "sha256": "ccde982627115b360fd821c1f9f848e7e0d91d32b1d1547cf3083b5f752be9c9",
+    "bytes": 539,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-sabre-frame-abi-20260917/ignored/sabre-frame-abi-20260917/native-build-3/generated-lock.json",
+    "sha256": "a629d200780b6704bcf345d88fdebfc55d05b207ce9c905969753f5ca2ec5c9a",
+    "bytes": 188,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-sabre-frame-abi-20260917/ignored/sabre-frame-abi-20260917/native-build-3/git-copy.json",
+    "sha256": "72c6b2ed800622e40ffd0e2c9f29878a672c7a9027ed8b217d92fba7cf94ad0a",
+    "bytes": 6707383,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-sabre-frame-abi-20260917/ignored/sabre-frame-abi-20260917/native-build-3/git-donor-after.json",
+    "sha256": "304de32c0a00f841053c672fdd364eb78da33c4ac330aa0438aacb1732a8b440",
+    "bytes": 6707383,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-sabre-frame-abi-20260917/ignored/sabre-frame-abi-20260917/native-build-3/git-donor-before.json",
+    "sha256": "304de32c0a00f841053c672fdd364eb78da33c4ac330aa0438aacb1732a8b440",
+    "bytes": 6707383,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-sabre-frame-abi-20260917/ignored/sabre-frame-abi-20260917/native-build-3/helper-0.disassembly",
+    "sha256": "3a9818c05ec7fb2ff0bbf8c44e5eff56c6f0bfaa92fefbae342538a5bd0e0632",
+    "bytes": 5400,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-sabre-frame-abi-20260917/ignored/sabre-frame-abi-20260917/native-build-3/helper-1.disassembly",
+    "sha256": "1b678d78731df0323226e8704c36dfc068c95e5ec7ff4c03370087a9b82a4589",
+    "bytes": 1400,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-sabre-frame-abi-20260917/ignored/sabre-frame-abi-20260917/native-build-3/integration-binary.json",
+    "sha256": "97802a4006268ffa8056fb5f557a180f53946796a55919feca7fcdac4e5afafe",
+    "bytes": 1450,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-sabre-frame-abi-20260917/ignored/sabre-frame-abi-20260917/native-build-3/launch-command.json",
+    "sha256": "d5d4283f37091d982483a84bac0ed6cfbec682a4768d2248d5f8c29a0dc84ef4",
+    "bytes": 445,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-sabre-frame-abi-20260917/ignored/sabre-frame-abi-20260917/native-build-3/launch-result.json",
+    "sha256": "00a6ab75d3511f4faafa1cc6d5ad878181b9432f51773078c272dd1302fba53c",
+    "bytes": 23,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-sabre-frame-abi-20260917/ignored/sabre-frame-abi-20260917/native-build-3/registry-copy.json",
+    "sha256": "54dbb3aa9485b2e8ba725805135372a59dbf6e1953df13d0492c53d031295c32",
+    "bytes": 6808396,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-sabre-frame-abi-20260917/ignored/sabre-frame-abi-20260917/native-build-3/registry-donor-after.json",
+    "sha256": "375ee5afc4db3eb68701951e6e5c15ef005c7247bfcd46dbd67b2d1942737b8d",
+    "bytes": 6808396,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-sabre-frame-abi-20260917/ignored/sabre-frame-abi-20260917/native-build-3/registry-donor-before.json",
+    "sha256": "375ee5afc4db3eb68701951e6e5c15ef005c7247bfcd46dbd67b2d1942737b8d",
+    "bytes": 6808396,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-sabre-frame-abi-20260917/ignored/sabre-frame-abi-20260917/native-build-3/run.py",
+    "sha256": "3f073b7e87fa7530de6d8a2c71efbfd52335320accdd6d86dd49d4773c4526a5",
+    "bytes": 1117,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-sabre-frame-abi-20260917/ignored/sabre-frame-abi-20260917/native-build-3/rustc-version.json",
+    "sha256": "ca3016d1b23d53d6e79542be6ec84062c1ac0bf0db5234e9af5205e0fce5d80b",
+    "bytes": 314,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-sabre-frame-abi-20260917/ignored/sabre-frame-abi-20260917/native-build-3/source-after.json",
+    "sha256": "783e6ac5db215278ac5477c05c76eb9ad29099fd71f51c2cf430b488309179dc",
+    "bytes": 415752,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-sabre-frame-abi-20260917/ignored/sabre-frame-abi-20260917/native-build-3/source-before.json",
+    "sha256": "783e6ac5db215278ac5477c05c76eb9ad29099fd71f51c2cf430b488309179dc",
+    "bytes": 415752,
+    "mode": 420
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-sabre-frame-abi-20260917/ignored/sabre-frame-abi-20260917/native-build-3/spec.json",
+    "sha256": "889a1a40a5945aeef3819baac3674cc2cb2b4ca4ae7b51cf159808311c7f4d14",
+    "bytes": 2987,
+    "mode": 420
+  }
+]

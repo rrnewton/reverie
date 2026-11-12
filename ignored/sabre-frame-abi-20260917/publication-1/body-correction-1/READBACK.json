@@ -1,0 +1,13 @@
+{
+  "url": "https://github.com/rrnewton/reverie/pull/563",
+  "head": "61098967f47041f96a43995f5272412cf9fe5761",
+  "body_sha256": "845d8c7bbe3cee7bb623c6437e64111e1254126f25f3f7a9252b7f996e73cfe9",
+  "body_readback_equal": true,
+  "labels": [
+    "post-facto-human-review",
+    "passed-review-codex",
+    "adversarial-review-codex1"
+  ],
+  "source_unchanged": true,
+  "no_self_attestation": true
+}

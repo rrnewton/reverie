@@ -1,0 +1,12 @@
+{
+  "argv": [
+    "with-proxy",
+    "/home/newton/work/dev-hermit/ci-hub/bin/gh",
+    "api",
+    "repos/rrnewton/reverie/labels/post-facto-human-review"
+  ],
+  "actual_exit": 0,
+  "seconds": 0.434517557034269,
+  "stdout": "{\"id\":11603654135,\"node_id\":\"LA_kwDOTfjBAs8AAAACs6G19w\",\"url\":\"https://api.github.com/repos/rrnewton/reverie/labels/post-facto-human-review\",\"name\":\"post-facto-human-review\",\"color\":\"D4C5F9\",\"default\":false,\"description\":\"Landed after autonomous adversarial review; human follow-up requested\",\"archived_at\":null,\"archived_by\":null}",
+  "stderr": ""
+}

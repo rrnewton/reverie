@@ -1,0 +1,23 @@
+{
+  "head": "61098967f47041f96a43995f5272412cf9fe5761",
+  "tree": "a575118fc65729e451e64f3c328510075ae38947",
+  "parent": "24cd5bb518b027eddb62a226805210d74d31c3d8",
+  "source_entries": 2555,
+  "patch_sha256": "d6b847e1858a2b6aab683ce4fe52c4c38c079e7dc33ca699db2462c0fb0fa58a",
+  "checkpoint4_all_ten_hashes_equal": true,
+  "source_manifest_sha256": "51729426942460c81169a74a7a9806b9249356fc7976a50d3e01d3942586dbf1",
+  "paths": [
+    "experimental/reverie-sabre/src/ffi/clone.rs",
+    "experimental/reverie-sabre/src/ffi/mod.rs",
+    "experimental/reverie-sabre/src/reverie_adapter.rs",
+    "experimental/reverie-sabre/tests/fixtures/syscall_frame/frame_probe.S",
+    "experimental/reverie-sabre/tests/fixtures/syscall_frame/frame_probe.c",
+    "experimental/reverie-sabre/tests/fixtures/syscall_frame/frame_probe.h",
+    "experimental/reverie-sabre/tests/syscall_frame_abi.rs",
+    "experimental/reverie-sabre/vendor/sabre/arch/x86_64/handle_syscall_loader.s",
+    "experimental/reverie-sabre/vendor/sabre/arch/x86_64/syscall_stackframe.c",
+    "experimental/reverie-sabre/vendor/sabre/plugin_api/arch/x86_64/vfork_return_from_child.s"
+  ],
+  "disclosure": "[hermit2, degraded-dev-hermit, gpt-6-astra, devbig014, role=impl]",
+  "clean": true
+}

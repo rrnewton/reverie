@@ -1,0 +1,12 @@
+{
+  "argv": [
+    "git",
+    "commit",
+    "-F",
+    "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-sabre-frame-abi-20260917/ignored/sabre-frame-abi-20260917/commit-2/message.txt"
+  ],
+  "actual_exit": 0,
+  "seconds": 0.216816098196432,
+  "stdout": "[dev-hermit/sabre-frame-abi-20260917 61098967] Repair SaBRe syscall frames and child continuations\n 10 files changed, 500 insertions(+), 107 deletions(-)\n create mode 100644 experimental/reverie-sabre/tests/fixtures/syscall_frame/frame_probe.S\n create mode 100644 experimental/reverie-sabre/tests/fixtures/syscall_frame/frame_probe.c\n create mode 100644 experimental/reverie-sabre/tests/fixtures/syscall_frame/frame_probe.h\n create mode 100644 experimental/reverie-sabre/tests/syscall_frame_abi.rs\n",
+  "stderr": ""
+}

@@ -1,0 +1,96 @@
+
+/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-sabre-frame-abi-20260917/ignored/sabre-frame-abi-20260917/native-build-3/target/debug/deps/syscall_frame_abi-78c76c9c98540bb1:     file format elf64-x86-64
+
+
+Disassembly of section .text:
+
+00000000000c9070 <_RNvNtNtCskEW6L6tZ6A8_13reverie_sabre3ffi5clone12fork_syscall>:
+   c9070:	41 54                	push   %r12
+   c9072:	48 81 ec 90 00 00 00 	sub    $0x90,%rsp
+   c9079:	48 89 7c 24 10       	mov    %rdi,0x10(%rsp)
+   c907e:	48 89 74 24 18       	mov    %rsi,0x18(%rsp)
+   c9083:	48 89 54 24 20       	mov    %rdx,0x20(%rsp)
+   c9088:	48 89 4c 24 28       	mov    %rcx,0x28(%rsp)
+   c908d:	4c 89 44 24 30       	mov    %r8,0x30(%rsp)
+   c9092:	4c 89 4c 24 38       	mov    %r9,0x38(%rsp)
+   c9097:	48 89 7c 24 50       	mov    %rdi,0x50(%rsp)
+   c909c:	48 89 74 24 58       	mov    %rsi,0x58(%rsp)
+   c90a1:	48 89 54 24 60       	mov    %rdx,0x60(%rsp)
+   c90a6:	48 89 4c 24 68       	mov    %rcx,0x68(%rsp)
+   c90ab:	4c 89 44 24 70       	mov    %r8,0x70(%rsp)
+   c90b0:	4c 89 4c 24 78       	mov    %r9,0x78(%rsp)
+   c90b5:	48 81 e7 00 01 00 00 	and    $0x100,%rdi
+   c90bc:	48 83 ff 00          	cmp    $0x0,%rdi
+   c90c0:	0f 94 c0             	sete   %al
+   c90c3:	0f b6 f8             	movzbl %al,%edi
+   c90c6:	83 e7 01             	and    $0x1,%edi
+   c90c9:	48 8b 05 48 37 09 00 	mov    0x93748(%rip),%rax        # 15c818 <_DYNAMIC+0xc60>
+   c90d0:	ff d0                	call   *%rax
+   c90d2:	24 01                	and    $0x1,%al
+   c90d4:	88 44 24 47          	mov    %al,0x47(%rsp)
+   c90d8:	b8 38 00 00 00       	mov    $0x38,%eax
+   c90dd:	83 c0 00             	add    $0x0,%eax
+   c90e0:	89 44 24 40          	mov    %eax,0x40(%rsp)
+   c90e4:	0f 90 c0             	seto   %al
+   c90e7:	0f 80 99 00 00 00    	jo     c9186 <_RNvNtNtCskEW6L6tZ6A8_13reverie_sabre3ffi5clone12fork_syscall+0x116>
+   c90ed:	4c 8b 64 24 30       	mov    0x30(%rsp),%r12
+   c90f2:	4c 8b 44 24 28       	mov    0x28(%rsp),%r8
+   c90f7:	4c 8b 54 24 20       	mov    0x20(%rsp),%r10
+   c90fc:	48 8b 54 24 18       	mov    0x18(%rsp),%rdx
+   c9101:	48 8b 7c 24 10       	mov    0x10(%rsp),%rdi
+   c9106:	48 8b 4c 24 38       	mov    0x38(%rsp),%rcx
+   c910b:	8b 44 24 40          	mov    0x40(%rsp),%eax
+   c910f:	48 98                	cltq   
+   c9111:	48 89 44 24 48       	mov    %rax,0x48(%rsp)
+   c9116:	48 8b 44 24 48       	mov    0x48(%rsp),%rax
+   c911b:	66 48 0f 6e c1       	movq   %rcx,%xmm0
+   c9120:	31 c9                	xor    %ecx,%ecx
+   c9122:	89 ce                	mov    %ecx,%esi
+   c9124:	0f 05                	syscall 
+   c9126:	48 85 c0             	test   %rax,%rax
+   c9129:	75 32                	jne    c915d <_RNvNtNtCskEW6L6tZ6A8_13reverie_sabre3ffi5clone12fork_syscall+0xed>
+   c912b:	48 89 f8             	mov    %rdi,%rax
+   c912e:	48 a9 00 01 00 00    	test   $0x100,%rax
+   c9134:	74 0e                	je     c9144 <_RNvNtNtCskEW6L6tZ6A8_13reverie_sabre3ffi5clone12fork_syscall+0xd4>
+   c9136:	48 25 00 41 00 00    	and    $0x4100,%rax
+   c913c:	48 3d 00 41 00 00    	cmp    $0x4100,%rax
+   c9142:	75 0b                	jne    c914f <_RNvNtNtCskEW6L6tZ6A8_13reverie_sabre3ffi5clone12fork_syscall+0xdf>
+   c9144:	66 48 0f 7e c6       	movq   %xmm0,%rsi
+   c9149:	ff 15 b9 2c 09 00    	call   *0x92cb9(%rip)        # 15be08 <_DYNAMIC+0x250>
+   c914f:	ff 15 23 37 09 00    	call   *0x93723(%rip)        # 15c878 <_DYNAMIC+0xcc0>
+   c9155:	4c 89 e7             	mov    %r12,%rdi
+   c9158:	e8 83 00 00 00       	call   c91e0 <_RNvNtNtCskEW6L6tZ6A8_13reverie_sabre3ffi5clone17resume_fork_child>
+   c915d:	48 89 44 24 48       	mov    %rax,0x48(%rsp)
+   c9162:	48 8b 44 24 48       	mov    0x48(%rsp),%rax
+   c9167:	48 89 44 24 08       	mov    %rax,0x8(%rsp)
+   c916c:	48 8d 7c 24 47       	lea    0x47(%rsp),%rdi
+   c9171:	ff 15 81 35 09 00    	call   *0x93581(%rip)        # 15c6f8 <_DYNAMIC+0xb40>
+   c9177:	48 8b 44 24 08       	mov    0x8(%rsp),%rax
+   c917c:	48 81 c4 90 00 00 00 	add    $0x90,%rsp
+   c9183:	41 5c                	pop    %r12
+   c9185:	c3                   	ret    
+   c9186:	48 8d 3d 93 a8 08 00 	lea    0x8a893(%rip),%rdi        # 153a20 <__dso_handle+0x5560>
+   c918d:	48 8b 05 44 2d 09 00 	mov    0x92d44(%rip),%rax        # 15bed8 <_DYNAMIC+0x320>
+   c9194:	ff d0                	call   *%rax
+   c9196:	eb 26                	jmp    c91be <_RNvNtNtCskEW6L6tZ6A8_13reverie_sabre3ffi5clone12fork_syscall+0x14e>
+   c9198:	48 8b 05 59 35 09 00 	mov    0x93559(%rip),%rax        # 15c6f8 <_DYNAMIC+0xb40>
+   c919f:	48 8d 7c 24 47       	lea    0x47(%rsp),%rdi
+   c91a4:	ff d0                	call   *%rax
+   c91a6:	eb 1e                	jmp    c91c6 <_RNvNtNtCskEW6L6tZ6A8_13reverie_sabre3ffi5clone12fork_syscall+0x156>
+   c91a8:	48 89 c1             	mov    %rax,%rcx
+   c91ab:	89 d0                	mov    %edx,%eax
+   c91ad:	48 89 8c 24 80 00 00 	mov    %rcx,0x80(%rsp)
+   c91b4:	00 
+   c91b5:	89 84 24 88 00 00 00 	mov    %eax,0x88(%rsp)
+   c91bc:	eb da                	jmp    c9198 <_RNvNtNtCskEW6L6tZ6A8_13reverie_sabre3ffi5clone12fork_syscall+0x128>
+   c91be:	0f 0b                	ud2    
+   c91c0:	ff 15 b2 2c 09 00    	call   *0x92cb2(%rip)        # 15be78 <_DYNAMIC+0x2c0>
+   c91c6:	48 8b bc 24 80 00 00 	mov    0x80(%rsp),%rdi
+   c91cd:	00 
+   c91ce:	e8 0d 41 08 00       	call   14d2e0 <_Unwind_Resume@plt>
+
+Disassembly of section .init:
+
+Disassembly of section .fini:
+
+Disassembly of section .plt:

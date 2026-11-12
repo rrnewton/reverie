@@ -1,0 +1,16 @@
+{
+  "url": "https://github.com/rrnewton/reverie/pull/563",
+  "head": "61098967f47041f96a43995f5272412cf9fe5761",
+  "tree": "a575118fc65729e451e64f3c328510075ae38947",
+  "body_path": "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-sabre-frame-abi-20260917/ignored/sabre-frame-abi-20260917/publication-1/body-correction-1/body-v2.md",
+  "body_sha256": "845d8c7bbe3cee7bb623c6437e64111e1254126f25f3f7a9252b7f996e73cfe9",
+  "original_body_and_policy_preserved": true,
+  "policy_actual_exit": 1,
+  "policy_output": "PR #563: post-facto-human-review present; enforcing the core-change review protocol.\n::error::PR #563: no accepted claude round label is present in the supplied labels (need one of adversarial-review-claude1, adversarial-review-claude2, adversarial-review-claude3, adversarial-review-claude4).\n::error::PR #563: passed-review-claude is absent from the supplied labels, and none of adversarial-review-claude1, adversarial-review-claude2, adversarial-review-claude3, adversarial-review-claude4 is present: no round label for claude is present at all. No claude review is recorded on this PR.\n::error::PR #563: core-change review protocol NOT satisfied (2 problem(s)); blocking landing.\n",
+  "frozen_leaf_entries": 2555,
+  "working_regular_or_symlink_bytes_rehashed": 2552,
+  "source_unchanged": true,
+  "publication_and_body_scopes_absent": true,
+  "no_merge": true,
+  "no_self_attestation": true
+}

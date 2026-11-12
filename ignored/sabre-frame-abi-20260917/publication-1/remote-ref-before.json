@@ -1,0 +1,14 @@
+{
+  "argv": [
+    "with-proxy",
+    "git",
+    "ls-remote",
+    "--exit-code",
+    "origin",
+    "refs/heads/dev-hermit/sabre-frame-abi-20260917"
+  ],
+  "actual_exit": 2,
+  "seconds": 0.3463349661324173,
+  "stdout": "",
+  "stderr": ""
+}

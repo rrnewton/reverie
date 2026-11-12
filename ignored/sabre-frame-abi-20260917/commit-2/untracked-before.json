@@ -1,0 +1,12 @@
+{
+  "argv": [
+    "git",
+    "ls-files",
+    "--others",
+    "--exclude-standard"
+  ],
+  "actual_exit": 0,
+  "seconds": 0.027705551823601127,
+  "stdout": "experimental/reverie-sabre/tests/fixtures/syscall_frame/frame_probe.S\nexperimental/reverie-sabre/tests/fixtures/syscall_frame/frame_probe.c\nexperimental/reverie-sabre/tests/fixtures/syscall_frame/frame_probe.h\nexperimental/reverie-sabre/tests/syscall_frame_abi.rs\n",
+  "stderr": ""
+}

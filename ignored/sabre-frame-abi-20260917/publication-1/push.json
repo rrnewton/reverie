@@ -1,0 +1,12 @@
+{
+  "argv": [
+    "with-proxy",
+    "/home/newton/work/dev-hermit/ci-hub/bin/git-push-verified",
+    "origin",
+    "61098967f47041f96a43995f5272412cf9fe5761:refs/heads/dev-hermit/sabre-frame-abi-20260917"
+  ],
+  "actual_exit": 0,
+  "seconds": 4.626135006081313,
+  "stdout": "git-push-verified: intending 61098967f470 -> origin refs/heads/dev-hermit/sabre-frame-abi-20260917\ngit-push-verified: remote is currently (absent)\ngit-push-verified: format CHECKED and clean (4 .rs file(s))\nremote: \nremote: Create a pull request for 'dev-hermit/sabre-frame-abi-20260917' on GitHub by visiting:        \nremote:      https://github.com/rrnewton/reverie/pull/new/dev-hermit/sabre-frame-abi-20260917        \nremote: \nTo https://github.com/rrnewton/reverie.git\n * [new branch]        61098967f47041f96a43995f5272412cf9fe5761 -> dev-hermit/sabre-frame-abi-20260917\ngit-push-verified: VERIFIED origin refs/heads/dev-hermit/sabre-frame-abi-20260917 = 61098967f47041f96a43995f5272412cf9fe5761\n",
+  "stderr": ""
+}

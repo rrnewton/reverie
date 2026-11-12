@@ -1,0 +1,34 @@
+{
+  "at_utc": "2026-09-17T04:12:37Z",
+  "binary": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-sabre-frame-abi-20260917/ignored/sabre-frame-abi-20260917/native-build-3/target/debug/deps/syscall_frame_abi-78c76c9c98540bb1",
+    "realpath": "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-sabre-frame-abi-20260917/ignored/sabre-frame-abi-20260917/native-build-3/target/debug/deps/syscall_frame_abi-78c76c9c98540bb1",
+    "mode": 33261,
+    "device": 48,
+    "inode": 784775669,
+    "size": 60137072,
+    "mtime_ns": 1789616475639750629,
+    "sha256": "77ac175dae0359f322b3794eb19e30572b0896ebcca6379bba5bd8529225093d"
+  },
+  "tool": {
+    "path": "/usr/local/bin/objdump",
+    "realpath": "/usr/local/fbcode/platform010/bin/objdump",
+    "mode": 33261,
+    "device": 33,
+    "inode": 169527,
+    "size": 19240128,
+    "mtime_ns": 1781294015000000000,
+    "sha256": "8481f31cf570b693d50469c36f84c899d146e3b2cfcc198aa91a85fc956dfb6b"
+  },
+  "original_binary_receipt": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-sabre-frame-abi-20260917/ignored/sabre-frame-abi-20260917/native-build-3/integration-binary.json",
+    "realpath": "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-sabre-frame-abi-20260917/ignored/sabre-frame-abi-20260917/native-build-3/integration-binary.json",
+    "mode": 33188,
+    "device": 48,
+    "inode": 784794077,
+    "size": 1450,
+    "mtime_ns": 1789616498738960573,
+    "sha256": "97802a4006268ffa8056fb5f557a180f53946796a55919feca7fcdac4e5afafe"
+  },
+  "source_git_head": "61098967f47041f96a43995f5272412cf9fe5761"
+}

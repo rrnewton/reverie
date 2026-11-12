@@ -1,0 +1,21 @@
+{
+  "argv": [
+    "git",
+    "add",
+    "--",
+    "experimental/reverie-sabre/src/ffi/clone.rs",
+    "experimental/reverie-sabre/src/ffi/mod.rs",
+    "experimental/reverie-sabre/src/reverie_adapter.rs",
+    "experimental/reverie-sabre/tests/fixtures/syscall_frame/frame_probe.S",
+    "experimental/reverie-sabre/tests/fixtures/syscall_frame/frame_probe.c",
+    "experimental/reverie-sabre/tests/fixtures/syscall_frame/frame_probe.h",
+    "experimental/reverie-sabre/tests/syscall_frame_abi.rs",
+    "experimental/reverie-sabre/vendor/sabre/arch/x86_64/handle_syscall_loader.s",
+    "experimental/reverie-sabre/vendor/sabre/arch/x86_64/syscall_stackframe.c",
+    "experimental/reverie-sabre/vendor/sabre/plugin_api/arch/x86_64/vfork_return_from_child.s"
+  ],
+  "actual_exit": 0,
+  "seconds": 0.04495956702157855,
+  "stdout": "",
+  "stderr": ""
+}

@@ -1,0 +1,28 @@
+{
+  "argv": [
+    "/usr/local/bin/objdump",
+    "--version"
+  ],
+  "actual_exit": 0,
+  "elapsed_seconds": 0.0010417550802230835,
+  "stdout": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-sabre-frame-abi-20260917/ignored/sabre-frame-abi-20260917/claude-packet-addendum-1/extraction-2/version.stdout",
+    "realpath": "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-sabre-frame-abi-20260917/ignored/sabre-frame-abi-20260917/claude-packet-addendum-1/extraction-2/version.stdout",
+    "sha256": "728a642bba72b5a30a3f3af03c1451443b5794cb576c739dde206bc1fe411231",
+    "size": 277,
+    "mode": 33188,
+    "device": 48,
+    "inode": 785846581,
+    "mtime_ns": 1789618420320723517
+  },
+  "stderr": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-sabre-frame-abi-20260917/ignored/sabre-frame-abi-20260917/claude-packet-addendum-1/extraction-2/version.stderr",
+    "realpath": "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-sabre-frame-abi-20260917/ignored/sabre-frame-abi-20260917/claude-packet-addendum-1/extraction-2/version.stderr",
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "size": 0,
+    "mode": 33188,
+    "device": 48,
+    "inode": 785846582,
+    "mtime_ns": 1789618420320723517
+  }
+}

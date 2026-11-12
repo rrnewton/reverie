@@ -1,0 +1,5 @@
+{
+  "unit": "LoadState=not-found\nActiveState=inactive\nSubState=dead\nControlGroup=\n",
+  "cgroup_absent": true,
+  "pid_absent": true
+}
