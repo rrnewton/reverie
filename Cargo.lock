@@ -1322,6 +1322,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "reverie-inguest-preload"
+version = "0.5.4"
+dependencies = [
+ "libc",
+ "reverie-inguest",
+]
+
+[[package]]
 name = "reverie-kvm"
 version = "0.5.4"
 dependencies = [

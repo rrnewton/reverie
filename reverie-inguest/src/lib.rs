@@ -46,8 +46,10 @@
 //! * **As a library (`rlib`):** e9patch/liteinst embed the runtime, register a
 //!   custom [`SyscallDispatcher`], and call
 //!   [`install`].
-//! * **As a standalone `LD_PRELOAD` (`cdylib`):** set `REVERIE_INGUEST_TOOL` and
-//!   preload `libreverie_inguest.so`; the constructor installs a built-in tool.
+//! * **As a standalone `LD_PRELOAD` (`cdylib`):** use the cdylib-only
+//!   `reverie-inguest-preload` leaf, set `REVERIE_INGUEST_TOOL`, and preload
+//!   `libreverie_inguest.so`; its unconditional constructor calls
+//!   [`reverie_inguest_initialize`] to install a built-in tool.
 
 #![forbid(unsafe_op_in_unsafe_fn)]
 
@@ -290,11 +292,6 @@ pub unsafe extern "C" fn reverie_inguest_initialize() {
         unsafe { libc::_exit(127) };
     }
 }
-
-#[cfg(feature = "preload-constructor")]
-#[used]
-#[unsafe(link_section = ".init_array")]
-static REVERIE_INGUEST_INIT: unsafe extern "C" fn() = reverie_inguest_initialize;
 
 #[cfg(test)]
 mod tests {

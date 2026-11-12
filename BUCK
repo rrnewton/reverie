@@ -764,7 +764,7 @@ rust_library(
                     "reverie",
                     "reverie-rpc-transport",
                 ],
-                "default": ["preload-constructor"],
+                "default": [],
                 "exec-stop": ["launcher", "dep:reverie-loader", "dep:safeptrace", "dep:reverie-memory", "dep:nix"],
                 "fixed-syscall-gates": [],
                 "exec-private-init": ["fixed-syscall-gates"],
