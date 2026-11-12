@@ -1,0 +1,15 @@
+{
+  "install": "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/native-build-2/target/debug/reverie-dbt-native-cache/dynamorio-install-0aa6d84239b5a04b7cda124ebed4c7e3adc8b62f5b4c96011a9b971e90d6b0a4",
+  "all_install_entries_equal": 125,
+  "mismatches": [],
+  "test_executables": [
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/native-build-2/target/debug/deps/private_loader_search-6a547da09fd7b499",
+      "sha256": "0b5df401d7a31e03be3eec96ebb7e1fdc23b5c2bbedd0936c8455daa33231611",
+      "bytes": 67621976,
+      "mode": "0o755",
+      "device": 48,
+      "inode": 782556989
+    }
+  ]
+}

@@ -1,0 +1,23 @@
+{
+  "cwd": "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917",
+  "argv": [
+    "with-proxy",
+    "cargo",
+    "fetch"
+  ],
+  "env": {
+    "CARGO_HOME": "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/native-build-1/cargo",
+    "CARGO_TARGET_DIR": "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/native-build-1/target",
+    "CARGO_HTTP_CAINFO": "/etc/pki/tls/certs/fb_certs.pem"
+  },
+  "bounds": {
+    "cpu": 2,
+    "memory_bytes": 2147483648,
+    "swap_bytes": 0,
+    "tasks": 256,
+    "seconds": 600
+  },
+  "purpose": "ordinary missing quickcheck_macros/workspace resolution and ignored Cargo.lock creation; no compilation",
+  "preserve": "all native-build-1 logs/identities remain immutable; own private cache may receive downloaded inputs",
+  "verification": "TLS verification remains enabled; bind public CA and exact before/after source/generated lock; no credential values retained"
+}

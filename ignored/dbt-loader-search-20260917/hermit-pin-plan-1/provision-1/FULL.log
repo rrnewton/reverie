@@ -1,0 +1,786 @@
+WARNING: registry/storage state remains INCONSISTENT (64 finding(s)); this create target is distinct and none of the reported state was changed
+INCONSISTENT kind=directory-without-row target=agent/fix-2953: /home/newton/work/dev-hermit/worktrees/slots/fix-2953 exists but no active agent row claims it
+  REMEDY: inspect the directory, then run 'wrkslots register fix-2953 --help' to record a live agent slot
+INCONSISTENT kind=directory-without-row target=agent/ignored: /home/newton/work/dev-hermit/worktrees/slots/ignored exists but no active agent row claims it
+  REMEDY: inspect the directory, then run 'wrkslots register ignored --help' to record a live agent slot
+INCONSISTENT kind=directory-without-row target=agent/kvm-sysinfo-tool-2979: /home/newton/work/dev-hermit/worktrees/slots/kvm-sysinfo-tool-2979 exists but no active agent row claims it
+  REMEDY: inspect the directory, then run 'wrkslots register kvm-sysinfo-tool-2979 --help' to record a live agent slot
+INCONSISTENT kind=git-registration-without-row target=agent/kvm-sysinfo-tool-2979: source repository /home/newton/work/dev-hermit (Git common directory /home/newton/work/dev-hermit/.git) registers /home/newton/work/dev-hermit/worktrees/slots/kvm-sysinfo-tool-2979 inside the managed agent root, but no active checkout row for that repository names it
+  REMEDY: inspect 'git -C /home/newton/work/dev-hermit worktree list --porcelain'; restore and register the live slot or remove the stale Git registration before reusing any overlapping path
+INCONSISTENT kind=directory-without-row target=agent/lander-2-pr2799-final: /home/newton/work/dev-hermit/worktrees/slots/lander-2-pr2799-final exists but no active agent row claims it
+  REMEDY: inspect the directory, then run 'wrkslots register lander-2-pr2799-final --help' to record a live agent slot
+INCONSISTENT kind=git-registration-without-row target=agent/lander-2-pr2799-final: source repository /home/newton/work/dev-hermit/hermit (Git common directory /home/newton/work/dev-hermit/hermit/.git) registers /home/newton/work/dev-hermit/worktrees/slots/lander-2-pr2799-final inside the managed agent root, but no active checkout row for that repository names it
+  REMEDY: inspect 'git -C /home/newton/work/dev-hermit/hermit worktree list --porcelain'; restore and register the live slot or remove the stale Git registration before reusing any overlapping path
+INCONSISTENT kind=directory-without-row target=agent/liteinst-ratchet: /home/newton/work/dev-hermit/worktrees/slots/liteinst-ratchet exists but no active agent row claims it
+  REMEDY: inspect the directory, then run 'wrkslots register liteinst-ratchet --help' to record a live agent slot
+INCONSISTENT kind=git-registration-without-row target=agent/liteinst-ratchet: source repository /home/newton/work/dev-hermit/hermit (Git common directory /home/newton/work/dev-hermit/hermit/.git) registers /home/newton/work/dev-hermit/worktrees/slots/liteinst-ratchet inside the managed agent root, but no active checkout row for that repository names it
+  REMEDY: inspect 'git -C /home/newton/work/dev-hermit/hermit worktree list --porcelain'; restore and register the live slot or remove the stale Git registration before reusing any overlapping path
+INCONSISTENT kind=directory-without-row target=agent/review-521-fix: /home/newton/work/dev-hermit/worktrees/slots/review-521-fix exists but no active agent row claims it
+  REMEDY: inspect the directory, then run 'wrkslots register review-521-fix --help' to record a live agent slot
+INCONSISTENT kind=git-registration-without-row target=agent/review-521-fix: source repository /home/newton/work/dev-hermit (Git common directory /home/newton/work/dev-hermit/.git) registers /home/newton/work/dev-hermit/worktrees/slots/review-521-fix inside the managed agent root, but no active checkout row for that repository names it
+  REMEDY: inspect 'git -C /home/newton/work/dev-hermit worktree list --porcelain'; restore and register the live slot or remove the stale Git registration before reusing any overlapping path
+INCONSISTENT kind=directory-without-row target=agent/review-reverie-529: /home/newton/work/dev-hermit/worktrees/slots/review-reverie-529 exists but no active agent row claims it
+  REMEDY: inspect the directory, then run 'wrkslots register review-reverie-529 --help' to record a live agent slot
+INCONSISTENT kind=git-registration-without-row target=agent/review-reverie-529: source repository /home/newton/work/dev-hermit/reverie (Git common directory /home/newton/work/dev-hermit/.git/modules/reverie) registers /home/newton/work/dev-hermit/worktrees/slots/review-reverie-529 inside the managed agent root, but no active checkout row for that repository names it
+  REMEDY: inspect 'git -C /home/newton/work/dev-hermit/reverie worktree list --porcelain'; restore and register the live slot or remove the stale Git registration before reusing any overlapping path
+INCONSISTENT kind=directory-without-row target=agent/scorecard-combined-writer-stack-c: /home/newton/work/dev-hermit/worktrees/slots/scorecard-combined-writer-stack-c exists but no active agent row claims it
+  REMEDY: inspect the directory, then run 'wrkslots register scorecard-combined-writer-stack-c --help' to record a live agent slot
+INCONSISTENT kind=git-registration-without-row target=agent/scorecard-combined-writer-stack-c: source repository /home/newton/work/dev-hermit/hermit (Git common directory /home/newton/work/dev-hermit/hermit/.git) registers /home/newton/work/dev-hermit/worktrees/slots/scorecard-combined-writer-stack-c inside the managed agent root, but no active checkout row for that repository names it
+  REMEDY: inspect 'git -C /home/newton/work/dev-hermit/hermit worktree list --porcelain'; restore and register the live slot or remove the stale Git registration before reusing any overlapping path
+INCONSISTENT kind=directory-without-row target=agent/series-rows: /home/newton/work/dev-hermit/worktrees/slots/series-rows exists but no active agent row claims it
+  REMEDY: inspect the directory, then run 'wrkslots register series-rows --help' to record a live agent slot
+INCONSISTENT kind=git-registration-without-row target=agent/series-rows: source repository /home/newton/work/dev-hermit (Git common directory /home/newton/work/dev-hermit/.git) registers /home/newton/work/dev-hermit/worktrees/slots/series-rows inside the managed agent root, but no active checkout row for that repository names it
+  REMEDY: inspect 'git -C /home/newton/work/dev-hermit worktree list --porcelain'; restore and register the live slot or remove the stale Git registration before reusing any overlapping path
+INCONSISTENT kind=git-registration-without-row target=agent/series-rows: source repository /home/newton/work/dev-hermit (Git common directory /home/newton/work/dev-hermit/.git) registers /home/newton/work/dev-hermit/worktrees/slots/series-rows/ignored/series-rows/tool-root inside the managed agent root, but no active checkout row for that repository names it
+  REMEDY: inspect 'git -C /home/newton/work/dev-hermit worktree list --porcelain'; restore and register the live slot or remove the stale Git registration before reusing any overlapping path
+INCONSISTENT kind=directory-without-row target=validate/dev-hermit-demo02-review-20260916: /home/newton/work/dev-hermit/worktrees/validate/dev-hermit-demo02-review-20260916 exists but no active validate row claims it
+  REMEDY: inspect the retained validation directory, then run 'wrkslots import-existing --help'
+INCONSISTENT kind=directory-without-row target=validate/gate-after-1e64: /home/newton/work/dev-hermit/worktrees/validate/gate-after-1e64 exists but no active validate row claims it
+  REMEDY: inspect the retained validation directory, then run 'wrkslots import-existing --help'
+INCONSISTENT kind=directory-without-row target=validate/gate-baseline-e008: /home/newton/work/dev-hermit/worktrees/validate/gate-baseline-e008 exists but no active validate row claims it
+  REMEDY: inspect the retained validation directory, then run 'wrkslots import-existing --help'
+INCONSISTENT kind=directory-without-row target=validate/hermit-001-cells-regeneration-check: /home/newton/work/dev-hermit/worktrees/validate/hermit-001-cells-regeneration-check exists but no active validate row claims it
+  REMEDY: inspect the retained validation directory, then run 'wrkslots import-existing --help'
+INCONSISTENT kind=git-registration-without-row target=validate/hermit-001-cells-regeneration-check: source repository /home/newton/work/dev-hermit/hermit (Git common directory /home/newton/work/dev-hermit/hermit/.git) registers /home/newton/work/dev-hermit/worktrees/validate/hermit-001-cells-regeneration-check inside the managed validate root, but no active checkout row for that repository names it
+  REMEDY: inspect 'git -C /home/newton/work/dev-hermit/hermit worktree list --porcelain'; restore and register the live slot or remove the stale Git registration before reusing any overlapping path
+INCONSISTENT kind=directory-without-row target=validate/ignored: /home/newton/work/dev-hermit/worktrees/validate/ignored exists but no active validate row claims it
+  REMEDY: inspect the retained validation directory, then run 'wrkslots import-existing --help'
+INCONSISTENT kind=directory-without-row target=validate/kvm-ratchet-90-tool-root-run9-v7: /home/newton/work/dev-hermit/worktrees/validate/kvm-ratchet-90-tool-root-run9-v7 exists but no active validate row claims it
+  REMEDY: inspect the retained validation directory, then run 'wrkslots import-existing --help'
+INCONSISTENT kind=git-registration-without-row target=validate/kvm-ratchet-90-tool-root-run9-v7: source repository /home/newton/work/dev-hermit (Git common directory /home/newton/work/dev-hermit/.git) registers /home/newton/work/dev-hermit/worktrees/validate/kvm-ratchet-90-tool-root-run9-v7 inside the managed validate root, but no active checkout row for that repository names it
+  REMEDY: inspect 'git -C /home/newton/work/dev-hermit worktree list --porcelain'; restore and register the live slot or remove the stale Git registration before reusing any overlapping path
+INCONSISTENT kind=directory-without-row target=validate/pr2971-source-2eb46e9b: /home/newton/work/dev-hermit/worktrees/validate/pr2971-source-2eb46e9b exists but no active validate row claims it
+  REMEDY: inspect the retained validation directory, then run 'wrkslots import-existing --help'
+INCONSISTENT kind=git-registration-without-row target=validate/pr2971-source-2eb46e9b: source repository /home/newton/work/dev-hermit/hermit (Git common directory /home/newton/work/dev-hermit/hermit/.git) registers /home/newton/work/dev-hermit/worktrees/validate/pr2971-source-2eb46e9b inside the managed validate root, but no active checkout row for that repository names it
+  REMEDY: inspect 'git -C /home/newton/work/dev-hermit/hermit worktree list --porcelain'; restore and register the live slot or remove the stale Git registration before reusing any overlapping path
+INCONSISTENT kind=directory-without-row target=validate/reverie-wave12-pr539-gauss: /home/newton/work/dev-hermit/worktrees/validate/reverie-wave12-pr539-gauss exists but no active validate row claims it
+  REMEDY: inspect the retained validation directory, then run 'wrkslots import-existing --help'
+INCONSISTENT kind=directory-without-row target=validate/reverie-wave13-pr536-canonical-0e1cc55: /home/newton/work/dev-hermit/worktrees/validate/reverie-wave13-pr536-canonical-0e1cc55 exists but no active validate row claims it
+  REMEDY: inspect the retained validation directory, then run 'wrkslots import-existing --help'
+INCONSISTENT kind=directory-without-row target=validate/review-inotify-repair4: /home/newton/work/dev-hermit/worktrees/validate/review-inotify-repair4 exists but no active validate row claims it
+  REMEDY: inspect the retained validation directory, then run 'wrkslots import-existing --help'
+INCONSISTENT kind=git-registration-without-row target=validate/review-inotify-repair4: source repository /home/newton/work/dev-hermit/reverie (Git common directory /home/newton/work/dev-hermit/.git/modules/reverie) registers /home/newton/work/dev-hermit/worktrees/validate/review-inotify-repair4 inside the managed validate root, but no active checkout row for that repository names it
+  REMEDY: inspect 'git -C /home/newton/work/dev-hermit/reverie worktree list --porcelain'; restore and register the live slot or remove the stale Git registration before reusing any overlapping path
+INCONSISTENT kind=directory-without-row target=validate/vectored-review-34299: /home/newton/work/dev-hermit/worktrees/validate/vectored-review-34299 exists but no active validate row claims it
+  REMEDY: inspect the retained validation directory, then run 'wrkslots import-existing --help'
+INCONSISTENT kind=row-without-directory target=devbig014/agent/agent-utils-sibling-owner-pin: active row but no slot directory at /home/newton/work/dev-hermit/worktrees/slots/agent-utils-sibling-owner-pin
+  REMEDY: preserve the active row; restore its exact slot directory or use the supported recovery command after proving the storage is intentionally absent
+INCONSISTENT kind=row-without-directory target=devbig014/agent/audit-2765: active row but no slot directory at /home/newton/work/dev-hermit/worktrees/slots/audit-2765
+  REMEDY: preserve the active row; restore its exact slot directory or use the supported recovery command after proving the storage is intentionally absent
+INCONSISTENT kind=row-without-directory target=devbig014/agent/capfree: active row but no slot directory at /home/newton/work/dev-hermit/worktrees/slots/capfree
+  REMEDY: preserve the active row; restore its exact slot directory or use the supported recovery command after proving the storage is intentionally absent
+INCONSISTENT kind=row-without-directory target=devbig014/agent/command-strict-timeout-30s: active row but no slot directory at /home/newton/work/dev-hermit/worktrees/slots/command-strict-timeout-30s
+  REMEDY: preserve the active row; restore its exact slot directory or use the supported recovery command after proving the storage is intentionally absent
+INCONSISTENT kind=row-without-directory target=devbig014/agent/concurrent-registry-fix: active row but no slot directory at /home/newton/work/dev-hermit/worktrees/slots/concurrent-registry-fix
+  REMEDY: preserve the active row; restore its exact slot directory or use the supported recovery command after proving the storage is intentionally absent
+INCONSISTENT kind=row-without-directory target=devbig014/agent/implement_2799_r5: active row but no slot directory at /home/newton/work/dev-hermit/worktrees/slots/implement_2799_r5
+  REMEDY: preserve the active row; restore its exact slot directory or use the supported recovery command after proving the storage is intentionally absent
+INCONSISTENT kind=row-without-directory target=devbig014/agent/integration-artifact-consumers: active row but no slot directory at /home/newton/work/dev-hermit/worktrees/slots/integration-artifact-consumers
+  REMEDY: preserve the active row; restore its exact slot directory or use the supported recovery command after proving the storage is intentionally absent
+INCONSISTENT kind=row-without-directory target=devbig014/agent/lander-3: active row but no slot directory at /home/newton/work/dev-hermit/worktrees/slots/lander-3
+  REMEDY: preserve the active row; restore its exact slot directory or use the supported recovery command after proving the storage is intentionally absent
+INCONSISTENT kind=row-without-directory target=devbig014/agent/lint-fixture-verify: active row but no slot directory at /home/newton/work/dev-hermit/worktrees/slots/lint-fixture-verify
+  REMEDY: preserve the active row; restore its exact slot directory or use the supported recovery command after proving the storage is intentionally absent
+INCONSISTENT kind=git-registration-without-row target=devbig014/agent/liteinst-session-recovery: source repository /home/newton/work/dev-hermit (Git common directory /home/newton/work/dev-hermit/.git) registers /home/newton/work/dev-hermit/worktrees/slots/liteinst-session-recovery/target/reverie-emergency-drain/parent-validation-v4 inside the managed agent root, but no active checkout row for that repository names it
+  REMEDY: inspect 'git -C /home/newton/work/dev-hermit worktree list --porcelain'; restore and register the live slot or remove the stale Git registration before reusing any overlapping path
+INCONSISTENT kind=git-registration-without-row target=devbig014/agent/liteinst-session-recovery: source repository /home/newton/work/dev-hermit/hermit (Git common directory /home/newton/work/dev-hermit/hermit/.git) registers /home/newton/work/dev-hermit/worktrees/slots/liteinst-session-recovery/target/reverie-emergency-drain/parent-validation-v4/hermit inside the managed agent root, but no active checkout row for that repository names it
+  REMEDY: inspect 'git -C /home/newton/work/dev-hermit/hermit worktree list --porcelain'; restore and register the live slot or remove the stale Git registration before reusing any overlapping path
+INCONSISTENT kind=git-registration-without-row target=devbig014/agent/liteinst-session-recovery: source repository /home/newton/work/dev-hermit/hermit/agent-utils (Git common directory /home/newton/work/dev-hermit/hermit/.git/modules/agent-utils) registers /home/newton/work/dev-hermit/worktrees/slots/liteinst-session-recovery/target/reverie-emergency-drain/parent-validation-v4/hermit/agent-utils inside the managed agent root, but no active checkout row for that repository names it
+  REMEDY: inspect 'git -C /home/newton/work/dev-hermit/hermit/agent-utils worktree list --porcelain'; restore and register the live slot or remove the stale Git registration before reusing any overlapping path
+INCONSISTENT kind=row-without-directory target=devbig014/agent/make-validate-entry-fix: active row but no slot directory at /home/newton/work/dev-hermit/worktrees/slots/make-validate-entry-fix
+  REMEDY: preserve the active row; restore its exact slot directory or use the supported recovery command after proving the storage is intentionally absent
+INCONSISTENT kind=row-without-directory target=devbig014/agent/scorecard-notrun: active row but no slot directory at /home/newton/work/dev-hermit/worktrees/slots/scorecard-notrun
+  REMEDY: preserve the active row; restore its exact slot directory or use the supported recovery command after proving the storage is intentionally absent
+INCONSISTENT kind=git-registration-without-row target=devbig014/agent/scorecard-website: source repository /home/newton/work/dev-hermit (Git common directory /home/newton/work/dev-hermit/.git) registers /home/newton/work/dev-hermit/worktrees/slots/scorecard-website/.keep-validate-status inside the managed agent root, but no active checkout row for that repository names it
+  REMEDY: inspect 'git -C /home/newton/work/dev-hermit worktree list --porcelain'; restore and register the live slot or remove the stale Git registration before reusing any overlapping path
+INCONSISTENT kind=git-registration-without-row target=devbig014/agent/scorecard-website: source repository /home/newton/work/dev-hermit (Git common directory /home/newton/work/dev-hermit/.git) registers /home/newton/work/dev-hermit/worktrees/slots/scorecard-website/.keep-validate-status-final inside the managed agent root, but no active checkout row for that repository names it
+  REMEDY: inspect 'git -C /home/newton/work/dev-hermit worktree list --porcelain'; restore and register the live slot or remove the stale Git registration before reusing any overlapping path
+INCONSISTENT kind=git-registration-without-row target=devbig014/agent/scorecard-website: source repository /home/newton/work/dev-hermit (Git common directory /home/newton/work/dev-hermit/.git) registers /home/newton/work/dev-hermit/worktrees/slots/scorecard-website/ignored/ci-hub-inflight inside the managed agent root, but no active checkout row for that repository names it
+  REMEDY: inspect 'git -C /home/newton/work/dev-hermit worktree list --porcelain'; restore and register the live slot or remove the stale Git registration before reusing any overlapping path
+INCONSISTENT kind=row-without-directory target=devbig014/agent/strict-compat-flat: active row but no slot directory at /home/newton/work/dev-hermit/worktrees/slots/strict-compat-flat
+  REMEDY: preserve the active row; restore its exact slot directory or use the supported recovery command after proving the storage is intentionally absent
+INCONSISTENT kind=row-without-directory target=devbig014/agent/submodule-visibility-hermit-pin: active row but no slot directory at /home/newton/work/dev-hermit/worktrees/slots/submodule-visibility-hermit-pin
+  REMEDY: preserve the active row; restore its exact slot directory or use the supported recovery command after proving the storage is intentionally absent
+INCONSISTENT kind=row-without-directory target=devbig014/agent/unselected-cells: active row but no slot directory at /home/newton/work/dev-hermit/worktrees/slots/unselected-cells
+  REMEDY: preserve the active row; restore its exact slot directory or use the supported recovery command after proving the storage is intentionally absent
+INCONSISTENT kind=row-without-directory target=devbig014/agent/validate-self-attribution: active row but no slot directory at /home/newton/work/dev-hermit/worktrees/slots/validate-self-attribution
+  REMEDY: preserve the active row; restore its exact slot directory or use the supported recovery command after proving the storage is intentionally absent
+INCONSISTENT kind=row-without-directory target=devbig014/agent/validate-submodule-recursion: active row but no slot directory at /home/newton/work/dev-hermit/worktrees/slots/validate-submodule-recursion
+  REMEDY: preserve the active row; restore its exact slot directory or use the supported recovery command after proving the storage is intentionally absent
+INCONSISTENT kind=row-without-directory target=devbig014/agent/wrkslots-registry-repair: active row but no slot directory at /home/newton/work/dev-hermit/worktrees/slots/wrkslots-registry-repair
+  REMEDY: preserve the active row; restore its exact slot directory or use the supported recovery command after proving the storage is intentionally absent
+INCONSISTENT kind=row-without-directory target=devbig014/agent/wrkslots-registry-repair-hermit: active row but no slot directory at /home/newton/work/dev-hermit/worktrees/slots/wrkslots-registry-repair-hermit
+  REMEDY: preserve the active row; restore its exact slot directory or use the supported recovery command after proving the storage is intentionally absent
+INCONSISTENT kind=row-without-directory target=devbig014/validate/current-main-47a-source: active row but no slot directory at /home/newton/work/dev-hermit/worktrees/validate/current-main-47a-source
+  REMEDY: preserve the active row; restore its exact slot directory or use the supported recovery command after proving the storage is intentionally absent
+INCONSISTENT kind=row-without-directory target=devbig014/validate/current-main-47a-tool: active row but no slot directory at /home/newton/work/dev-hermit/worktrees/validate/current-main-47a-tool
+  REMEDY: preserve the active row; restore its exact slot directory or use the supported recovery command after proving the storage is intentionally absent
+INCONSISTENT kind=row-without-directory target=devbig014/validate/validate-fresh-12b7951ef5fd-1775793-660e5545: active row but no slot directory at /home/newton/work/dev-hermit/worktrees/validate/validate-fresh-12b7951ef5fd-1775793-660e5545
+  REMEDY: preserve the active row; restore its exact slot directory or use the supported recovery command after proving the storage is intentionally absent
+INCONSISTENT kind=row-without-directory target=devbig014/validate/validate-fresh-3f4ae57e656e-3681042-bab83a07: active row but no slot directory at /home/newton/work/dev-hermit/worktrees/validate/validate-fresh-3f4ae57e656e-3681042-bab83a07
+  REMEDY: preserve the active row; restore its exact slot directory or use the supported recovery command after proving the storage is intentionally absent
+INCONSISTENT kind=row-without-directory target=devbig014/validate/validate-fresh-47a0a523b75c-469244-54f2517c: active row but no slot directory at /home/newton/work/dev-hermit/worktrees/validate/validate-fresh-47a0a523b75c-469244-54f2517c
+  REMEDY: preserve the active row; restore its exact slot directory or use the supported recovery command after proving the storage is intentionally absent
+INCONSISTENT kind=row-without-directory target=devbig014/validate/validate-fresh-908570031e17-202009-512c8edc: active row but no slot directory at /home/newton/work/dev-hermit/worktrees/validate/validate-fresh-908570031e17-202009-512c8edc
+  REMEDY: preserve the active row; restore its exact slot directory or use the supported recovery command after proving the storage is intentionally absent
+INCONSISTENT kind=row-without-directory target=devbig014/validate/validate-fresh-908570031e17-4048943-ee261f42: active row but no slot directory at /home/newton/work/dev-hermit/worktrees/validate/validate-fresh-908570031e17-4048943-ee261f42
+  REMEDY: preserve the active row; restore its exact slot directory or use the supported recovery command after proving the storage is intentionally absent
+INCONSISTENT kind=row-without-directory target=devbig014/validate/validate-fresh-e340d7f9160f-3559011-ab802b91: active row but no slot directory at /home/newton/work/dev-hermit/worktrees/validate/validate-fresh-e340d7f9160f-3559011-ab802b91
+  REMEDY: preserve the active row; restore its exact slot directory or use the supported recovery command after proving the storage is intentionally absent
+post-provision hook 1/1 checkout=hermit: git submodule update --init --recursive
+{
+  "agent": "dev-hermit-dbt-loader-pin",
+  "checkouts": [
+    {
+      "head": "2a4142371e74aebea3cbd8b4c8329fc819d324f9",
+      "name": "hermit",
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-pin-20260917"
+    }
+  ],
+  "generation": 1,
+  "owner_process": "bound",
+  "retained_storage_inconsistencies": [
+    {
+      "checkout": null,
+      "detail": "/home/newton/work/dev-hermit/worktrees/slots/fix-2953 exists but no active agent row claims it",
+      "kind": "directory-without-row",
+      "machine": null,
+      "remedy": "inspect the directory, then run 'wrkslots register fix-2953 --help' to record a live agent slot",
+      "scope": "directory",
+      "slot": "fix-2953",
+      "slot_type": "agent"
+    },
+    {
+      "checkout": null,
+      "detail": "/home/newton/work/dev-hermit/worktrees/slots/ignored exists but no active agent row claims it",
+      "kind": "directory-without-row",
+      "machine": null,
+      "remedy": "inspect the directory, then run 'wrkslots register ignored --help' to record a live agent slot",
+      "scope": "directory",
+      "slot": "ignored",
+      "slot_type": "agent"
+    },
+    {
+      "checkout": null,
+      "detail": "/home/newton/work/dev-hermit/worktrees/slots/kvm-sysinfo-tool-2979 exists but no active agent row claims it",
+      "kind": "directory-without-row",
+      "machine": null,
+      "remedy": "inspect the directory, then run 'wrkslots register kvm-sysinfo-tool-2979 --help' to record a live agent slot",
+      "scope": "directory",
+      "slot": "kvm-sysinfo-tool-2979",
+      "slot_type": "agent"
+    },
+    {
+      "checkout": null,
+      "detail": "source repository /home/newton/work/dev-hermit (Git common directory /home/newton/work/dev-hermit/.git) registers /home/newton/work/dev-hermit/worktrees/slots/kvm-sysinfo-tool-2979 inside the managed agent root, but no active checkout row for that repository names it",
+      "kind": "git-registration-without-row",
+      "machine": null,
+      "remedy": "inspect 'git -C /home/newton/work/dev-hermit worktree list --porcelain'; restore and register the live slot or remove the stale Git registration before reusing any overlapping path",
+      "scope": "directory",
+      "slot": "kvm-sysinfo-tool-2979",
+      "slot_type": "agent"
+    },
+    {
+      "checkout": null,
+      "detail": "/home/newton/work/dev-hermit/worktrees/slots/lander-2-pr2799-final exists but no active agent row claims it",
+      "kind": "directory-without-row",
+      "machine": null,
+      "remedy": "inspect the directory, then run 'wrkslots register lander-2-pr2799-final --help' to record a live agent slot",
+      "scope": "directory",
+      "slot": "lander-2-pr2799-final",
+      "slot_type": "agent"
+    },
+    {
+      "checkout": null,
+      "detail": "source repository /home/newton/work/dev-hermit/hermit (Git common directory /home/newton/work/dev-hermit/hermit/.git) registers /home/newton/work/dev-hermit/worktrees/slots/lander-2-pr2799-final inside the managed agent root, but no active checkout row for that repository names it",
+      "kind": "git-registration-without-row",
+      "machine": null,
+      "remedy": "inspect 'git -C /home/newton/work/dev-hermit/hermit worktree list --porcelain'; restore and register the live slot or remove the stale Git registration before reusing any overlapping path",
+      "scope": "directory",
+      "slot": "lander-2-pr2799-final",
+      "slot_type": "agent"
+    },
+    {
+      "checkout": null,
+      "detail": "/home/newton/work/dev-hermit/worktrees/slots/liteinst-ratchet exists but no active agent row claims it",
+      "kind": "directory-without-row",
+      "machine": null,
+      "remedy": "inspect the directory, then run 'wrkslots register liteinst-ratchet --help' to record a live agent slot",
+      "scope": "directory",
+      "slot": "liteinst-ratchet",
+      "slot_type": "agent"
+    },
+    {
+      "checkout": null,
+      "detail": "source repository /home/newton/work/dev-hermit/hermit (Git common directory /home/newton/work/dev-hermit/hermit/.git) registers /home/newton/work/dev-hermit/worktrees/slots/liteinst-ratchet inside the managed agent root, but no active checkout row for that repository names it",
+      "kind": "git-registration-without-row",
+      "machine": null,
+      "remedy": "inspect 'git -C /home/newton/work/dev-hermit/hermit worktree list --porcelain'; restore and register the live slot or remove the stale Git registration before reusing any overlapping path",
+      "scope": "directory",
+      "slot": "liteinst-ratchet",
+      "slot_type": "agent"
+    },
+    {
+      "checkout": null,
+      "detail": "/home/newton/work/dev-hermit/worktrees/slots/review-521-fix exists but no active agent row claims it",
+      "kind": "directory-without-row",
+      "machine": null,
+      "remedy": "inspect the directory, then run 'wrkslots register review-521-fix --help' to record a live agent slot",
+      "scope": "directory",
+      "slot": "review-521-fix",
+      "slot_type": "agent"
+    },
+    {
+      "checkout": null,
+      "detail": "source repository /home/newton/work/dev-hermit (Git common directory /home/newton/work/dev-hermit/.git) registers /home/newton/work/dev-hermit/worktrees/slots/review-521-fix inside the managed agent root, but no active checkout row for that repository names it",
+      "kind": "git-registration-without-row",
+      "machine": null,
+      "remedy": "inspect 'git -C /home/newton/work/dev-hermit worktree list --porcelain'; restore and register the live slot or remove the stale Git registration before reusing any overlapping path",
+      "scope": "directory",
+      "slot": "review-521-fix",
+      "slot_type": "agent"
+    },
+    {
+      "checkout": null,
+      "detail": "/home/newton/work/dev-hermit/worktrees/slots/review-reverie-529 exists but no active agent row claims it",
+      "kind": "directory-without-row",
+      "machine": null,
+      "remedy": "inspect the directory, then run 'wrkslots register review-reverie-529 --help' to record a live agent slot",
+      "scope": "directory",
+      "slot": "review-reverie-529",
+      "slot_type": "agent"
+    },
+    {
+      "checkout": null,
+      "detail": "source repository /home/newton/work/dev-hermit/reverie (Git common directory /home/newton/work/dev-hermit/.git/modules/reverie) registers /home/newton/work/dev-hermit/worktrees/slots/review-reverie-529 inside the managed agent root, but no active checkout row for that repository names it",
+      "kind": "git-registration-without-row",
+      "machine": null,
+      "remedy": "inspect 'git -C /home/newton/work/dev-hermit/reverie worktree list --porcelain'; restore and register the live slot or remove the stale Git registration before reusing any overlapping path",
+      "scope": "directory",
+      "slot": "review-reverie-529",
+      "slot_type": "agent"
+    },
+    {
+      "checkout": null,
+      "detail": "/home/newton/work/dev-hermit/worktrees/slots/scorecard-combined-writer-stack-c exists but no active agent row claims it",
+      "kind": "directory-without-row",
+      "machine": null,
+      "remedy": "inspect the directory, then run 'wrkslots register scorecard-combined-writer-stack-c --help' to record a live agent slot",
+      "scope": "directory",
+      "slot": "scorecard-combined-writer-stack-c",
+      "slot_type": "agent"
+    },
+    {
+      "checkout": null,
+      "detail": "source repository /home/newton/work/dev-hermit/hermit (Git common directory /home/newton/work/dev-hermit/hermit/.git) registers /home/newton/work/dev-hermit/worktrees/slots/scorecard-combined-writer-stack-c inside the managed agent root, but no active checkout row for that repository names it",
+      "kind": "git-registration-without-row",
+      "machine": null,
+      "remedy": "inspect 'git -C /home/newton/work/dev-hermit/hermit worktree list --porcelain'; restore and register the live slot or remove the stale Git registration before reusing any overlapping path",
+      "scope": "directory",
+      "slot": "scorecard-combined-writer-stack-c",
+      "slot_type": "agent"
+    },
+    {
+      "checkout": null,
+      "detail": "/home/newton/work/dev-hermit/worktrees/slots/series-rows exists but no active agent row claims it",
+      "kind": "directory-without-row",
+      "machine": null,
+      "remedy": "inspect the directory, then run 'wrkslots register series-rows --help' to record a live agent slot",
+      "scope": "directory",
+      "slot": "series-rows",
+      "slot_type": "agent"
+    },
+    {
+      "checkout": null,
+      "detail": "source repository /home/newton/work/dev-hermit (Git common directory /home/newton/work/dev-hermit/.git) registers /home/newton/work/dev-hermit/worktrees/slots/series-rows inside the managed agent root, but no active checkout row for that repository names it",
+      "kind": "git-registration-without-row",
+      "machine": null,
+      "remedy": "inspect 'git -C /home/newton/work/dev-hermit worktree list --porcelain'; restore and register the live slot or remove the stale Git registration before reusing any overlapping path",
+      "scope": "directory",
+      "slot": "series-rows",
+      "slot_type": "agent"
+    },
+    {
+      "checkout": null,
+      "detail": "source repository /home/newton/work/dev-hermit (Git common directory /home/newton/work/dev-hermit/.git) registers /home/newton/work/dev-hermit/worktrees/slots/series-rows/ignored/series-rows/tool-root inside the managed agent root, but no active checkout row for that repository names it",
+      "kind": "git-registration-without-row",
+      "machine": null,
+      "remedy": "inspect 'git -C /home/newton/work/dev-hermit worktree list --porcelain'; restore and register the live slot or remove the stale Git registration before reusing any overlapping path",
+      "scope": "directory",
+      "slot": "series-rows",
+      "slot_type": "agent"
+    },
+    {
+      "checkout": null,
+      "detail": "/home/newton/work/dev-hermit/worktrees/validate/dev-hermit-demo02-review-20260916 exists but no active validate row claims it",
+      "kind": "directory-without-row",
+      "machine": null,
+      "remedy": "inspect the retained validation directory, then run 'wrkslots import-existing --help'",
+      "scope": "directory",
+      "slot": "dev-hermit-demo02-review-20260916",
+      "slot_type": "validate"
+    },
+    {
+      "checkout": null,
+      "detail": "/home/newton/work/dev-hermit/worktrees/validate/gate-after-1e64 exists but no active validate row claims it",
+      "kind": "directory-without-row",
+      "machine": null,
+      "remedy": "inspect the retained validation directory, then run 'wrkslots import-existing --help'",
+      "scope": "directory",
+      "slot": "gate-after-1e64",
+      "slot_type": "validate"
+    },
+    {
+      "checkout": null,
+      "detail": "/home/newton/work/dev-hermit/worktrees/validate/gate-baseline-e008 exists but no active validate row claims it",
+      "kind": "directory-without-row",
+      "machine": null,
+      "remedy": "inspect the retained validation directory, then run 'wrkslots import-existing --help'",
+      "scope": "directory",
+      "slot": "gate-baseline-e008",
+      "slot_type": "validate"
+    },
+    {
+      "checkout": null,
+      "detail": "/home/newton/work/dev-hermit/worktrees/validate/hermit-001-cells-regeneration-check exists but no active validate row claims it",
+      "kind": "directory-without-row",
+      "machine": null,
+      "remedy": "inspect the retained validation directory, then run 'wrkslots import-existing --help'",
+      "scope": "directory",
+      "slot": "hermit-001-cells-regeneration-check",
+      "slot_type": "validate"
+    },
+    {
+      "checkout": null,
+      "detail": "source repository /home/newton/work/dev-hermit/hermit (Git common directory /home/newton/work/dev-hermit/hermit/.git) registers /home/newton/work/dev-hermit/worktrees/validate/hermit-001-cells-regeneration-check inside the managed validate root, but no active checkout row for that repository names it",
+      "kind": "git-registration-without-row",
+      "machine": null,
+      "remedy": "inspect 'git -C /home/newton/work/dev-hermit/hermit worktree list --porcelain'; restore and register the live slot or remove the stale Git registration before reusing any overlapping path",
+      "scope": "directory",
+      "slot": "hermit-001-cells-regeneration-check",
+      "slot_type": "validate"
+    },
+    {
+      "checkout": null,
+      "detail": "/home/newton/work/dev-hermit/worktrees/validate/ignored exists but no active validate row claims it",
+      "kind": "directory-without-row",
+      "machine": null,
+      "remedy": "inspect the retained validation directory, then run 'wrkslots import-existing --help'",
+      "scope": "directory",
+      "slot": "ignored",
+      "slot_type": "validate"
+    },
+    {
+      "checkout": null,
+      "detail": "/home/newton/work/dev-hermit/worktrees/validate/kvm-ratchet-90-tool-root-run9-v7 exists but no active validate row claims it",
+      "kind": "directory-without-row",
+      "machine": null,
+      "remedy": "inspect the retained validation directory, then run 'wrkslots import-existing --help'",
+      "scope": "directory",
+      "slot": "kvm-ratchet-90-tool-root-run9-v7",
+      "slot_type": "validate"
+    },
+    {
+      "checkout": null,
+      "detail": "source repository /home/newton/work/dev-hermit (Git common directory /home/newton/work/dev-hermit/.git) registers /home/newton/work/dev-hermit/worktrees/validate/kvm-ratchet-90-tool-root-run9-v7 inside the managed validate root, but no active checkout row for that repository names it",
+      "kind": "git-registration-without-row",
+      "machine": null,
+      "remedy": "inspect 'git -C /home/newton/work/dev-hermit worktree list --porcelain'; restore and register the live slot or remove the stale Git registration before reusing any overlapping path",
+      "scope": "directory",
+      "slot": "kvm-ratchet-90-tool-root-run9-v7",
+      "slot_type": "validate"
+    },
+    {
+      "checkout": null,
+      "detail": "/home/newton/work/dev-hermit/worktrees/validate/pr2971-source-2eb46e9b exists but no active validate row claims it",
+      "kind": "directory-without-row",
+      "machine": null,
+      "remedy": "inspect the retained validation directory, then run 'wrkslots import-existing --help'",
+      "scope": "directory",
+      "slot": "pr2971-source-2eb46e9b",
+      "slot_type": "validate"
+    },
+    {
+      "checkout": null,
+      "detail": "source repository /home/newton/work/dev-hermit/hermit (Git common directory /home/newton/work/dev-hermit/hermit/.git) registers /home/newton/work/dev-hermit/worktrees/validate/pr2971-source-2eb46e9b inside the managed validate root, but no active checkout row for that repository names it",
+      "kind": "git-registration-without-row",
+      "machine": null,
+      "remedy": "inspect 'git -C /home/newton/work/dev-hermit/hermit worktree list --porcelain'; restore and register the live slot or remove the stale Git registration before reusing any overlapping path",
+      "scope": "directory",
+      "slot": "pr2971-source-2eb46e9b",
+      "slot_type": "validate"
+    },
+    {
+      "checkout": null,
+      "detail": "/home/newton/work/dev-hermit/worktrees/validate/reverie-wave12-pr539-gauss exists but no active validate row claims it",
+      "kind": "directory-without-row",
+      "machine": null,
+      "remedy": "inspect the retained validation directory, then run 'wrkslots import-existing --help'",
+      "scope": "directory",
+      "slot": "reverie-wave12-pr539-gauss",
+      "slot_type": "validate"
+    },
+    {
+      "checkout": null,
+      "detail": "/home/newton/work/dev-hermit/worktrees/validate/reverie-wave13-pr536-canonical-0e1cc55 exists but no active validate row claims it",
+      "kind": "directory-without-row",
+      "machine": null,
+      "remedy": "inspect the retained validation directory, then run 'wrkslots import-existing --help'",
+      "scope": "directory",
+      "slot": "reverie-wave13-pr536-canonical-0e1cc55",
+      "slot_type": "validate"
+    },
+    {
+      "checkout": null,
+      "detail": "/home/newton/work/dev-hermit/worktrees/validate/review-inotify-repair4 exists but no active validate row claims it",
+      "kind": "directory-without-row",
+      "machine": null,
+      "remedy": "inspect the retained validation directory, then run 'wrkslots import-existing --help'",
+      "scope": "directory",
+      "slot": "review-inotify-repair4",
+      "slot_type": "validate"
+    },
+    {
+      "checkout": null,
+      "detail": "source repository /home/newton/work/dev-hermit/reverie (Git common directory /home/newton/work/dev-hermit/.git/modules/reverie) registers /home/newton/work/dev-hermit/worktrees/validate/review-inotify-repair4 inside the managed validate root, but no active checkout row for that repository names it",
+      "kind": "git-registration-without-row",
+      "machine": null,
+      "remedy": "inspect 'git -C /home/newton/work/dev-hermit/reverie worktree list --porcelain'; restore and register the live slot or remove the stale Git registration before reusing any overlapping path",
+      "scope": "directory",
+      "slot": "review-inotify-repair4",
+      "slot_type": "validate"
+    },
+    {
+      "checkout": null,
+      "detail": "/home/newton/work/dev-hermit/worktrees/validate/vectored-review-34299 exists but no active validate row claims it",
+      "kind": "directory-without-row",
+      "machine": null,
+      "remedy": "inspect the retained validation directory, then run 'wrkslots import-existing --help'",
+      "scope": "directory",
+      "slot": "vectored-review-34299",
+      "slot_type": "validate"
+    },
+    {
+      "checkout": null,
+      "detail": "active row but no slot directory at /home/newton/work/dev-hermit/worktrees/slots/agent-utils-sibling-owner-pin",
+      "kind": "row-without-directory",
+      "machine": "devbig014",
+      "remedy": "preserve the active row; restore its exact slot directory or use the supported recovery command after proving the storage is intentionally absent",
+      "scope": "row",
+      "slot": "agent-utils-sibling-owner-pin",
+      "slot_type": "agent"
+    },
+    {
+      "checkout": null,
+      "detail": "active row but no slot directory at /home/newton/work/dev-hermit/worktrees/slots/audit-2765",
+      "kind": "row-without-directory",
+      "machine": "devbig014",
+      "remedy": "preserve the active row; restore its exact slot directory or use the supported recovery command after proving the storage is intentionally absent",
+      "scope": "row",
+      "slot": "audit-2765",
+      "slot_type": "agent"
+    },
+    {
+      "checkout": null,
+      "detail": "active row but no slot directory at /home/newton/work/dev-hermit/worktrees/slots/capfree",
+      "kind": "row-without-directory",
+      "machine": "devbig014",
+      "remedy": "preserve the active row; restore its exact slot directory or use the supported recovery command after proving the storage is intentionally absent",
+      "scope": "row",
+      "slot": "capfree",
+      "slot_type": "agent"
+    },
+    {
+      "checkout": null,
+      "detail": "active row but no slot directory at /home/newton/work/dev-hermit/worktrees/slots/command-strict-timeout-30s",
+      "kind": "row-without-directory",
+      "machine": "devbig014",
+      "remedy": "preserve the active row; restore its exact slot directory or use the supported recovery command after proving the storage is intentionally absent",
+      "scope": "row",
+      "slot": "command-strict-timeout-30s",
+      "slot_type": "agent"
+    },
+    {
+      "checkout": null,
+      "detail": "active row but no slot directory at /home/newton/work/dev-hermit/worktrees/slots/concurrent-registry-fix",
+      "kind": "row-without-directory",
+      "machine": "devbig014",
+      "remedy": "preserve the active row; restore its exact slot directory or use the supported recovery command after proving the storage is intentionally absent",
+      "scope": "row",
+      "slot": "concurrent-registry-fix",
+      "slot_type": "agent"
+    },
+    {
+      "checkout": null,
+      "detail": "active row but no slot directory at /home/newton/work/dev-hermit/worktrees/slots/implement_2799_r5",
+      "kind": "row-without-directory",
+      "machine": "devbig014",
+      "remedy": "preserve the active row; restore its exact slot directory or use the supported recovery command after proving the storage is intentionally absent",
+      "scope": "row",
+      "slot": "implement_2799_r5",
+      "slot_type": "agent"
+    },
+    {
+      "checkout": null,
+      "detail": "active row but no slot directory at /home/newton/work/dev-hermit/worktrees/slots/integration-artifact-consumers",
+      "kind": "row-without-directory",
+      "machine": "devbig014",
+      "remedy": "preserve the active row; restore its exact slot directory or use the supported recovery command after proving the storage is intentionally absent",
+      "scope": "row",
+      "slot": "integration-artifact-consumers",
+      "slot_type": "agent"
+    },
+    {
+      "checkout": null,
+      "detail": "active row but no slot directory at /home/newton/work/dev-hermit/worktrees/slots/lander-3",
+      "kind": "row-without-directory",
+      "machine": "devbig014",
+      "remedy": "preserve the active row; restore its exact slot directory or use the supported recovery command after proving the storage is intentionally absent",
+      "scope": "row",
+      "slot": "lander-3",
+      "slot_type": "agent"
+    },
+    {
+      "checkout": null,
+      "detail": "active row but no slot directory at /home/newton/work/dev-hermit/worktrees/slots/lint-fixture-verify",
+      "kind": "row-without-directory",
+      "machine": "devbig014",
+      "remedy": "preserve the active row; restore its exact slot directory or use the supported recovery command after proving the storage is intentionally absent",
+      "scope": "row",
+      "slot": "lint-fixture-verify",
+      "slot_type": "agent"
+    },
+    {
+      "checkout": null,
+      "detail": "source repository /home/newton/work/dev-hermit (Git common directory /home/newton/work/dev-hermit/.git) registers /home/newton/work/dev-hermit/worktrees/slots/liteinst-session-recovery/target/reverie-emergency-drain/parent-validation-v4 inside the managed agent root, but no active checkout row for that repository names it",
+      "kind": "git-registration-without-row",
+      "machine": "devbig014",
+      "remedy": "inspect 'git -C /home/newton/work/dev-hermit worktree list --porcelain'; restore and register the live slot or remove the stale Git registration before reusing any overlapping path",
+      "scope": "row",
+      "slot": "liteinst-session-recovery",
+      "slot_type": "agent"
+    },
+    {
+      "checkout": null,
+      "detail": "source repository /home/newton/work/dev-hermit/hermit (Git common directory /home/newton/work/dev-hermit/hermit/.git) registers /home/newton/work/dev-hermit/worktrees/slots/liteinst-session-recovery/target/reverie-emergency-drain/parent-validation-v4/hermit inside the managed agent root, but no active checkout row for that repository names it",
+      "kind": "git-registration-without-row",
+      "machine": "devbig014",
+      "remedy": "inspect 'git -C /home/newton/work/dev-hermit/hermit worktree list --porcelain'; restore and register the live slot or remove the stale Git registration before reusing any overlapping path",
+      "scope": "row",
+      "slot": "liteinst-session-recovery",
+      "slot_type": "agent"
+    },
+    {
+      "checkout": null,
+      "detail": "source repository /home/newton/work/dev-hermit/hermit/agent-utils (Git common directory /home/newton/work/dev-hermit/hermit/.git/modules/agent-utils) registers /home/newton/work/dev-hermit/worktrees/slots/liteinst-session-recovery/target/reverie-emergency-drain/parent-validation-v4/hermit/agent-utils inside the managed agent root, but no active checkout row for that repository names it",
+      "kind": "git-registration-without-row",
+      "machine": "devbig014",
+      "remedy": "inspect 'git -C /home/newton/work/dev-hermit/hermit/agent-utils worktree list --porcelain'; restore and register the live slot or remove the stale Git registration before reusing any overlapping path",
+      "scope": "row",
+      "slot": "liteinst-session-recovery",
+      "slot_type": "agent"
+    },
+    {
+      "checkout": null,
+      "detail": "active row but no slot directory at /home/newton/work/dev-hermit/worktrees/slots/make-validate-entry-fix",
+      "kind": "row-without-directory",
+      "machine": "devbig014",
+      "remedy": "preserve the active row; restore its exact slot directory or use the supported recovery command after proving the storage is intentionally absent",
+      "scope": "row",
+      "slot": "make-validate-entry-fix",
+      "slot_type": "agent"
+    },
+    {
+      "checkout": null,
+      "detail": "active row but no slot directory at /home/newton/work/dev-hermit/worktrees/slots/scorecard-notrun",
+      "kind": "row-without-directory",
+      "machine": "devbig014",
+      "remedy": "preserve the active row; restore its exact slot directory or use the supported recovery command after proving the storage is intentionally absent",
+      "scope": "row",
+      "slot": "scorecard-notrun",
+      "slot_type": "agent"
+    },
+    {
+      "checkout": null,
+      "detail": "source repository /home/newton/work/dev-hermit (Git common directory /home/newton/work/dev-hermit/.git) registers /home/newton/work/dev-hermit/worktrees/slots/scorecard-website/.keep-validate-status inside the managed agent root, but no active checkout row for that repository names it",
+      "kind": "git-registration-without-row",
+      "machine": "devbig014",
+      "remedy": "inspect 'git -C /home/newton/work/dev-hermit worktree list --porcelain'; restore and register the live slot or remove the stale Git registration before reusing any overlapping path",
+      "scope": "row",
+      "slot": "scorecard-website",
+      "slot_type": "agent"
+    },
+    {
+      "checkout": null,
+      "detail": "source repository /home/newton/work/dev-hermit (Git common directory /home/newton/work/dev-hermit/.git) registers /home/newton/work/dev-hermit/worktrees/slots/scorecard-website/.keep-validate-status-final inside the managed agent root, but no active checkout row for that repository names it",
+      "kind": "git-registration-without-row",
+      "machine": "devbig014",
+      "remedy": "inspect 'git -C /home/newton/work/dev-hermit worktree list --porcelain'; restore and register the live slot or remove the stale Git registration before reusing any overlapping path",
+      "scope": "row",
+      "slot": "scorecard-website",
+      "slot_type": "agent"
+    },
+    {
+      "checkout": null,
+      "detail": "source repository /home/newton/work/dev-hermit (Git common directory /home/newton/work/dev-hermit/.git) registers /home/newton/work/dev-hermit/worktrees/slots/scorecard-website/ignored/ci-hub-inflight inside the managed agent root, but no active checkout row for that repository names it",
+      "kind": "git-registration-without-row",
+      "machine": "devbig014",
+      "remedy": "inspect 'git -C /home/newton/work/dev-hermit worktree list --porcelain'; restore and register the live slot or remove the stale Git registration before reusing any overlapping path",
+      "scope": "row",
+      "slot": "scorecard-website",
+      "slot_type": "agent"
+    },
+    {
+      "checkout": null,
+      "detail": "active row but no slot directory at /home/newton/work/dev-hermit/worktrees/slots/strict-compat-flat",
+      "kind": "row-without-directory",
+      "machine": "devbig014",
+      "remedy": "preserve the active row; restore its exact slot directory or use the supported recovery command after proving the storage is intentionally absent",
+      "scope": "row",
+      "slot": "strict-compat-flat",
+      "slot_type": "agent"
+    },
+    {
+      "checkout": null,
+      "detail": "active row but no slot directory at /home/newton/work/dev-hermit/worktrees/slots/submodule-visibility-hermit-pin",
+      "kind": "row-without-directory",
+      "machine": "devbig014",
+      "remedy": "preserve the active row; restore its exact slot directory or use the supported recovery command after proving the storage is intentionally absent",
+      "scope": "row",
+      "slot": "submodule-visibility-hermit-pin",
+      "slot_type": "agent"
+    },
+    {
+      "checkout": null,
+      "detail": "active row but no slot directory at /home/newton/work/dev-hermit/worktrees/slots/unselected-cells",
+      "kind": "row-without-directory",
+      "machine": "devbig014",
+      "remedy": "preserve the active row; restore its exact slot directory or use the supported recovery command after proving the storage is intentionally absent",
+      "scope": "row",
+      "slot": "unselected-cells",
+      "slot_type": "agent"
+    },
+    {
+      "checkout": null,
+      "detail": "active row but no slot directory at /home/newton/work/dev-hermit/worktrees/slots/validate-self-attribution",
+      "kind": "row-without-directory",
+      "machine": "devbig014",
+      "remedy": "preserve the active row; restore its exact slot directory or use the supported recovery command after proving the storage is intentionally absent",
+      "scope": "row",
+      "slot": "validate-self-attribution",
+      "slot_type": "agent"
+    },
+    {
+      "checkout": null,
+      "detail": "active row but no slot directory at /home/newton/work/dev-hermit/worktrees/slots/validate-submodule-recursion",
+      "kind": "row-without-directory",
+      "machine": "devbig014",
+      "remedy": "preserve the active row; restore its exact slot directory or use the supported recovery command after proving the storage is intentionally absent",
+      "scope": "row",
+      "slot": "validate-submodule-recursion",
+      "slot_type": "agent"
+    },
+    {
+      "checkout": null,
+      "detail": "active row but no slot directory at /home/newton/work/dev-hermit/worktrees/slots/wrkslots-registry-repair",
+      "kind": "row-without-directory",
+      "machine": "devbig014",
+      "remedy": "preserve the active row; restore its exact slot directory or use the supported recovery command after proving the storage is intentionally absent",
+      "scope": "row",
+      "slot": "wrkslots-registry-repair",
+      "slot_type": "agent"
+    },
+    {
+      "checkout": null,
+      "detail": "active row but no slot directory at /home/newton/work/dev-hermit/worktrees/slots/wrkslots-registry-repair-hermit",
+      "kind": "row-without-directory",
+      "machine": "devbig014",
+      "remedy": "preserve the active row; restore its exact slot directory or use the supported recovery command after proving the storage is intentionally absent",
+      "scope": "row",
+      "slot": "wrkslots-registry-repair-hermit",
+      "slot_type": "agent"
+    },
+    {
+      "checkout": null,
+      "detail": "active row but no slot directory at /home/newton/work/dev-hermit/worktrees/validate/current-main-47a-source",
+      "kind": "row-without-directory",
+      "machine": "devbig014",
+      "remedy": "preserve the active row; restore its exact slot directory or use the supported recovery command after proving the storage is intentionally absent",
+      "scope": "row",
+      "slot": "current-main-47a-source",
+      "slot_type": "validate"
+    },
+    {
+      "checkout": null,
+      "detail": "active row but no slot directory at /home/newton/work/dev-hermit/worktrees/validate/current-main-47a-tool",
+      "kind": "row-without-directory",
+      "machine": "devbig014",
+      "remedy": "preserve the active row; restore its exact slot directory or use the supported recovery command after proving the storage is intentionally absent",
+      "scope": "row",
+      "slot": "current-main-47a-tool",
+      "slot_type": "validate"
+    },
+    {
+      "checkout": null,
+      "detail": "active row but no slot directory at /home/newton/work/dev-hermit/worktrees/validate/validate-fresh-12b7951ef5fd-1775793-660e5545",
+      "kind": "row-without-directory",
+      "machine": "devbig014",
+      "remedy": "preserve the active row; restore its exact slot directory or use the supported recovery command after proving the storage is intentionally absent",
+      "scope": "row",
+      "slot": "validate-fresh-12b7951ef5fd-1775793-660e5545",
+      "slot_type": "validate"
+    },
+    {
+      "checkout": null,
+      "detail": "active row but no slot directory at /home/newton/work/dev-hermit/worktrees/validate/validate-fresh-3f4ae57e656e-3681042-bab83a07",
+      "kind": "row-without-directory",
+      "machine": "devbig014",
+      "remedy": "preserve the active row; restore its exact slot directory or use the supported recovery command after proving the storage is intentionally absent",
+      "scope": "row",
+      "slot": "validate-fresh-3f4ae57e656e-3681042-bab83a07",
+      "slot_type": "validate"
+    },
+    {
+      "checkout": null,
+      "detail": "active row but no slot directory at /home/newton/work/dev-hermit/worktrees/validate/validate-fresh-47a0a523b75c-469244-54f2517c",
+      "kind": "row-without-directory",
+      "machine": "devbig014",
+      "remedy": "preserve the active row; restore its exact slot directory or use the supported recovery command after proving the storage is intentionally absent",
+      "scope": "row",
+      "slot": "validate-fresh-47a0a523b75c-469244-54f2517c",
+      "slot_type": "validate"
+    },
+    {
+      "checkout": null,
+      "detail": "active row but no slot directory at /home/newton/work/dev-hermit/worktrees/validate/validate-fresh-908570031e17-202009-512c8edc",
+      "kind": "row-without-directory",
+      "machine": "devbig014",
+      "remedy": "preserve the active row; restore its exact slot directory or use the supported recovery command after proving the storage is intentionally absent",
+      "scope": "row",
+      "slot": "validate-fresh-908570031e17-202009-512c8edc",
+      "slot_type": "validate"
+    },
+    {
+      "checkout": null,
+      "detail": "active row but no slot directory at /home/newton/work/dev-hermit/worktrees/validate/validate-fresh-908570031e17-4048943-ee261f42",
+      "kind": "row-without-directory",
+      "machine": "devbig014",
+      "remedy": "preserve the active row; restore its exact slot directory or use the supported recovery command after proving the storage is intentionally absent",
+      "scope": "row",
+      "slot": "validate-fresh-908570031e17-4048943-ee261f42",
+      "slot_type": "validate"
+    },
+    {
+      "checkout": null,
+      "detail": "active row but no slot directory at /home/newton/work/dev-hermit/worktrees/validate/validate-fresh-e340d7f9160f-3559011-ab802b91",
+      "kind": "row-without-directory",
+      "machine": "devbig014",
+      "remedy": "preserve the active row; restore its exact slot directory or use the supported recovery command after proving the storage is intentionally absent",
+      "scope": "row",
+      "slot": "validate-fresh-e340d7f9160f-3559011-ab802b91",
+      "slot_type": "validate"
+    }
+  ],
+  "slot": "dev-hermit-dbt-loader-pin-20260917",
+  "slot_type": "agent"
+}

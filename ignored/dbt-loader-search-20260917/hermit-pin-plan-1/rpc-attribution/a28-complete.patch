@@ -1,0 +1,5327 @@
+diff --git a/reverie-rpc-transport/Cargo.toml b/reverie-rpc-transport/Cargo.toml
+index 637ecc65a769ccd2b0ce31f1fc7b2429a8a7717a..e83107d2356f3417e51e6f58c8691a40179082a1 100644
+--- a/reverie-rpc-transport/Cargo.toml
++++ b/reverie-rpc-transport/Cargo.toml
+@@ -14,6 +14,7 @@ description = "Cross-process transport for the Reverie GlobalTool RPC (Unix-doma
+ [dependencies]
+ async-trait = "0.1.86"
+ bincode = { version = "2", features = ["serde"] }
++libc = "0.2.186"
+ reverie = { version = "0.2.0", path = "../reverie", package = "reverie-core" }
+ serde = { version = "1.0.219", features = ["derive"] }
+ thiserror = "2.0.18"
+diff --git a/reverie-rpc-transport/src/blocking_client.rs b/reverie-rpc-transport/src/blocking_client.rs
+index c3af8ce5d1eb6b7fe5a56a7f7d87efeda6578370..8340a27b98c3c88ef27cd722a0be40a76e83a4d5 100644
+--- a/reverie-rpc-transport/src/blocking_client.rs
++++ b/reverie-rpc-transport/src/blocking_client.rs
+@@ -43,16 +43,16 @@ use crate::error::RpcError;
+ /// across threads could otherwise deadlock behind the single in-flight request.
+ // AUTONOMOUS-BOT-IMPLEMENTED
+ // TODO-HUMAN-REVIEW(PR-128): Review the blocking transport used by synchronous in-guest backends.
+-pub struct BlockingRpcClient<G: GlobalTool> {
++pub struct BlockingRpcClient<G: GlobalTool, S = UnixStream> {
+     tid: Tid,
+     config: G::Config,
+-    stream: Mutex<UnixStream>,
++    stream: Mutex<S>,
+     _phantom: PhantomData<fn() -> G>,
+ }
+ 
+ // TODO-HUMAN-REVIEW(PR-212): Review raw descriptor exposure for in-guest
+ // runtimes that must hide coordinator transport descriptors from the guest.
+-impl<G: GlobalTool> AsRawFd for BlockingRpcClient<G> {
++impl<G: GlobalTool, S: AsRawFd> AsRawFd for BlockingRpcClient<G, S> {
+     fn as_raw_fd(&self) -> RawFd {
+         self.stream
+             .lock()
+@@ -67,7 +67,20 @@ where
+ {
+     /// Connect and synchronously receive the coordinator's config handshake.
+     pub fn connect(path: impl AsRef<Path>, tid: Tid) -> Result<Self, RpcError> {
+-        let mut stream = UnixStream::connect(path)?;
++        Self::from_connected_stream(UnixStream::connect(path)?, tid)
++    }
++}
++
++impl<G, S> BlockingRpcClient<G, S>
++where
++    G: GlobalTool,
++    S: Read + Write + Send,
++{
++    /// Receive the config handshake from an already connected byte stream.
++    ///
++    /// Deserialization happens synchronously on the caller. Keep a separate
++    /// stream/client for every thread that can have an independent pending RPC.
++    pub fn from_connected_stream(mut stream: S, tid: Tid) -> Result<Self, RpcError> {
+         let config_bytes = read_message(&mut stream, DEFAULT_MAX_FRAME_LEN)?;
+         let config = decode(&config_bytes)?;
+         Ok(Self {
+@@ -94,16 +107,50 @@ where
+                 "reverie-rpc-transport: blocking client mutex poisoned",
+             ))
+         })?;
+-        write_message(&mut stream, &request_bytes)?;
+-        let response_bytes = read_message(&mut stream, DEFAULT_MAX_FRAME_LEN)?;
++        write_message(&mut *stream, &request_bytes)?;
++        let response_bytes = read_message(&mut *stream, DEFAULT_MAX_FRAME_LEN)?;
++        decode(&response_bytes)
++    }
++}
++
++impl<G: GlobalTool> BlockingRpcClient<G> {
++    /// Send a request, entering a caller-owned scope only around stream I/O.
++    ///
++    /// In-process backends use this to permit access to a private coordinator
++    /// descriptor. Request serialization and response deserialization run
++    /// outside the scope. Each read or write drops its scope before returning,
++    /// including on an I/O error; framing and error handling are unchanged.
++    pub fn try_send_rpc_with_io_scope<Scope>(
++        &self,
++        message: G::Request,
++        mut enter: impl FnMut(RawFd) -> Scope,
++    ) -> Result<G::Response, RpcError> {
++        let request_bytes = encode(&RequestEnvelope {
++            from: self.tid,
++            request: message,
++        })?;
++        let mut stream = self.stream.lock().map_err(|_| {
++            RpcError::Io(io::Error::other(
++                "reverie-rpc-transport: blocking client mutex poisoned",
++            ))
++        })?;
++        let response_bytes = {
++            let mut io = ScopedIo {
++                stream: &mut stream,
++                enter: &mut enter,
++            };
++            write_message(&mut io, &request_bytes)?;
++            read_message(&mut io, DEFAULT_MAX_FRAME_LEN)?
++        };
+         decode(&response_bytes)
+     }
+ }
+ 
+ #[async_trait]
+-impl<G> GlobalRPC<G> for BlockingRpcClient<G>
++impl<G, S> GlobalRPC<G> for BlockingRpcClient<G, S>
+ where
+     G: GlobalTool,
++    S: Read + Write + Send,
+ {
+     async fn send_rpc(&self, message: G::Request) -> G::Response {
+         self.try_send_rpc(message)
+@@ -115,7 +162,31 @@ where
+     }
+ }
+ 
+-fn write_message(stream: &mut UnixStream, payload: &[u8]) -> Result<(), RpcError> {
++struct ScopedIo<'a, Enter> {
++    stream: &'a mut UnixStream,
++    enter: &'a mut Enter,
++}
++
++impl<Scope, Enter: FnMut(RawFd) -> Scope> Read for ScopedIo<'_, Enter> {
++    fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
++        let _scope = (self.enter)(self.stream.as_raw_fd());
++        self.stream.read(buffer)
++    }
++}
++
++impl<Scope, Enter: FnMut(RawFd) -> Scope> Write for ScopedIo<'_, Enter> {
++    fn write(&mut self, buffer: &[u8]) -> io::Result<usize> {
++        let _scope = (self.enter)(self.stream.as_raw_fd());
++        self.stream.write(buffer)
++    }
++
++    fn flush(&mut self) -> io::Result<()> {
++        // UnixStream::flush performs no I/O and needs no descriptor exception.
++        self.stream.flush()
++    }
++}
++
++fn write_message(stream: &mut impl Write, payload: &[u8]) -> Result<(), RpcError> {
+     let len = u32::try_from(payload.len()).map_err(|_| RpcError::FrameTooLarge {
+         len: payload.len(),
+         max: u32::MAX as usize,
+@@ -126,7 +197,7 @@ fn write_message(stream: &mut UnixStream, payload: &[u8]) -> Result<(), RpcError
+     Ok(())
+ }
+ 
+-fn read_message(stream: &mut UnixStream, max_len: usize) -> Result<Vec<u8>, RpcError> {
++fn read_message(stream: &mut impl Read, max_len: usize) -> Result<Vec<u8>, RpcError> {
+     // Read the 4-byte length prefix in one `read` on the common path. The loop
+     // only re-enters the kernel on a short read or `EINTR`, collapsing the
+     // former 1-byte probe + 3-byte remainder into a single syscall per hop.
+@@ -154,3 +225,6 @@ fn read_message(stream: &mut UnixStream, max_len: usize) -> Result<Vec<u8>, RpcE
+     stream.read_exact(&mut payload)?;
+     Ok(payload)
+ }
++
++#[cfg(test)]
++mod io_scope_tests;
+diff --git a/reverie-rpc-transport/src/blocking_client/io_scope_tests.rs b/reverie-rpc-transport/src/blocking_client/io_scope_tests.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..1c718ceec22970fce083259cc2e4814cac34b784
+--- /dev/null
++++ b/reverie-rpc-transport/src/blocking_client/io_scope_tests.rs
+@@ -0,0 +1,251 @@
++use std::cell::Cell;
++use std::panic::AssertUnwindSafe;
++use std::panic::catch_unwind;
++use std::sync::Arc;
++use std::sync::atomic::AtomicUsize;
++use std::sync::atomic::Ordering;
++use std::time::Duration;
++
++use serde::Deserialize;
++use serde::Deserializer;
++use serde::Serialize;
++use serde::Serializer;
++
++use super::*;
++
++thread_local! {
++    static ACTIVE: Cell<i32> = const { Cell::new(-1) };
++    static SERIALIZED: Cell<usize> = const { Cell::new(0) };
++    static DESERIALIZED: Cell<usize> = const { Cell::new(0) };
++}
++
++#[derive(Debug, PartialEq, Eq)]
++struct Value(u8);
++
++impl Serialize for Value {
++    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
++        assert_eq!(ACTIVE.get(), -1, "user Serialize ran inside I/O scope");
++        SERIALIZED.set(SERIALIZED.get() + 1);
++        assert_ne!(self.0, 255, "deliberate Serialize panic");
++        if self.0 == 254 {
++            return Err(serde::ser::Error::custom("deliberate Serialize error"));
++        }
++        self.0.serialize(serializer)
++    }
++}
++
++impl<'de> Deserialize<'de> for Value {
++    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
++        assert_eq!(ACTIVE.get(), -1, "user Deserialize ran inside I/O scope");
++        DESERIALIZED.set(DESERIALIZED.get() + 1);
++        let value = u8::deserialize(deserializer)?;
++        assert_ne!(value, 255, "deliberate Deserialize panic");
++        if value == 254 {
++            return Err(serde::de::Error::custom("deliberate Deserialize error"));
++        }
++        Ok(Self(value))
++    }
++}
++
++#[derive(Default)]
++struct Global;
++
++#[async_trait]
++impl GlobalTool for Global {
++    type Request = Value;
++    type Response = Value;
++    type Config = ();
++
++    async fn receive_rpc(&self, _: Tid, _: Value) -> Value {
++        unreachable!("test peer verifies the actual wire frames")
++    }
++}
++
++struct Scope {
++    previous: i32,
++    dropped: Arc<AtomicUsize>,
++}
++
++impl Drop for Scope {
++    fn drop(&mut self) {
++        ACTIVE.set(self.previous);
++        self.dropped.fetch_add(1, Ordering::SeqCst);
++    }
++}
++
++fn enter(fd: RawFd, entered: &AtomicUsize, dropped: &Arc<AtomicUsize>) -> Scope {
++    assert!(fd >= 0);
++    entered.fetch_add(1, Ordering::SeqCst);
++    Scope {
++        previous: ACTIVE.replace(fd),
++        dropped: dropped.clone(),
++    }
++}
++
++fn pair() -> (BlockingRpcClient<Global>, UnixStream) {
++    let (stream, peer) = UnixStream::pair().unwrap();
++    for socket in [&stream, &peer] {
++        socket
++            .set_read_timeout(Some(Duration::from_secs(3)))
++            .unwrap();
++        socket
++            .set_write_timeout(Some(Duration::from_secs(3)))
++            .unwrap();
++    }
++    (
++        BlockingRpcClient {
++            tid: Tid::from_raw(17),
++            config: (),
++            stream: Mutex::new(stream),
++            _phantom: PhantomData,
++        },
++        peer,
++    )
++}
++
++fn receive_request(peer: &mut UnixStream) {
++    let bytes = read_message(peer, DEFAULT_MAX_FRAME_LEN).unwrap();
++    let request: RequestEnvelope<Value> = decode(&bytes).unwrap();
++    assert_eq!(request.from, Tid::from_raw(17));
++    assert_eq!(request.request, Value(7));
++}
++
++#[test]
++fn user_callbacks_run_outside_each_actual_stream_scope() {
++    let (client, mut peer) = pair();
++    let server = std::thread::spawn(move || {
++        receive_request(&mut peer);
++        write_message(&mut peer, &encode(&9u8).unwrap()).unwrap();
++    });
++    let entered = AtomicUsize::new(0);
++    let dropped = Arc::new(AtomicUsize::new(0));
++    let fd = client.as_raw_fd();
++    let response = client
++        .try_send_rpc_with_io_scope(Value(7), |actual| {
++            assert_eq!(actual, fd);
++            assert_eq!(ACTIVE.get(), -1);
++            enter(actual, &entered, &dropped)
++        })
++        .unwrap();
++    assert_eq!(response, Value(9));
++    assert!(SERIALIZED.get() > 0);
++    assert!(DESERIALIZED.get() > 0);
++    assert!(entered.load(Ordering::SeqCst) >= 4);
++    assert_eq!(
++        entered.load(Ordering::SeqCst),
++        dropped.load(Ordering::SeqCst)
++    );
++    assert_eq!(ACTIVE.get(), -1);
++    server.join().unwrap();
++}
++
++#[test]
++fn request_errors_and_panics_never_enter_io_scope() {
++    for value in [254, 255] {
++        let (client, _peer) = pair();
++        let entered = AtomicUsize::new(0);
++        let dropped = Arc::new(AtomicUsize::new(0));
++        let result = catch_unwind(AssertUnwindSafe(|| {
++            client.try_send_rpc_with_io_scope(Value(value), |fd| enter(fd, &entered, &dropped))
++        }));
++        if value == 254 {
++            assert!(result.unwrap().is_err());
++        } else {
++            assert!(result.is_err());
++        }
++        assert_eq!(entered.load(Ordering::SeqCst), 0);
++        assert_eq!(dropped.load(Ordering::SeqCst), 0);
++        assert_eq!(ACTIVE.get(), -1);
++    }
++}
++
++#[test]
++fn response_errors_and_panics_follow_completed_io_scopes() {
++    for value in [254u8, 255] {
++        let (client, mut peer) = pair();
++        let server = std::thread::spawn(move || {
++            receive_request(&mut peer);
++            write_message(&mut peer, &encode(&value).unwrap()).unwrap();
++        });
++        let entered = AtomicUsize::new(0);
++        let dropped = Arc::new(AtomicUsize::new(0));
++        let result = catch_unwind(AssertUnwindSafe(|| {
++            client.try_send_rpc_with_io_scope(Value(7), |fd| enter(fd, &entered, &dropped))
++        }));
++        if value == 254 {
++            assert!(result.unwrap().is_err());
++        } else {
++            assert!(result.is_err());
++        }
++        assert!(entered.load(Ordering::SeqCst) >= 4);
++        assert_eq!(
++            entered.load(Ordering::SeqCst),
++            dropped.load(Ordering::SeqCst)
++        );
++        assert_eq!(ACTIVE.get(), -1);
++        server.join().unwrap();
++    }
++}
++
++#[test]
++fn stream_errors_drop_the_scope_before_returning() {
++    for read_failure in [false, true] {
++        let (client, mut peer) = pair();
++        let server = read_failure.then(|| std::thread::spawn(move || receive_request(&mut peer)));
++        let entered = AtomicUsize::new(0);
++        let dropped = Arc::new(AtomicUsize::new(0));
++        let result =
++            client.try_send_rpc_with_io_scope(Value(7), |fd| enter(fd, &entered, &dropped));
++        if read_failure {
++            assert!(matches!(result, Err(RpcError::Closed)), "{result:?}");
++        } else {
++            assert!(matches!(result, Err(RpcError::Io(_))), "{result:?}");
++        }
++        assert!(entered.load(Ordering::SeqCst) > 0);
++        assert_eq!(
++            entered.load(Ordering::SeqCst),
++            dropped.load(Ordering::SeqCst)
++        );
++        assert_eq!(ACTIVE.get(), -1);
++        if let Some(server) = server {
++            server.join().unwrap();
++        }
++    }
++}
++
++#[test]
++fn native_blocked_read_holds_scope_until_completion() {
++    let (mut stream, mut peer) = UnixStream::pair().unwrap();
++    stream
++        .set_read_timeout(Some(Duration::from_secs(3)))
++        .unwrap();
++    let (started, ready) = std::sync::mpsc::sync_channel(0);
++    let active = Arc::new(AtomicUsize::new(0));
++    let reader_active = active.clone();
++    let reader = std::thread::spawn(move || {
++        struct Active(Arc<AtomicUsize>);
++        impl Drop for Active {
++            fn drop(&mut self) {
++                self.0.store(0, Ordering::SeqCst);
++            }
++        }
++        let mut scope = |_| {
++            reader_active.store(1, Ordering::SeqCst);
++            started.send(()).unwrap();
++            Active(reader_active.clone())
++        };
++        let mut io = ScopedIo {
++            stream: &mut stream,
++            enter: &mut scope,
++        };
++        let mut byte = [0];
++        assert_eq!(io.read(&mut byte).unwrap(), 1);
++        assert_eq!(byte, [91]);
++        assert_eq!(reader_active.load(Ordering::SeqCst), 0);
++    });
++    ready.recv_timeout(Duration::from_secs(3)).unwrap();
++    assert_eq!(active.load(Ordering::SeqCst), 1);
++    peer.write_all(&[91]).unwrap();
++    reader.join().unwrap();
++    assert_eq!(active.load(Ordering::SeqCst), 0);
++}
+diff --git a/reverie-rpc-transport/src/codec.rs b/reverie-rpc-transport/src/codec.rs
+index 8fb3f740c0477e3a5b4f8f8db4520dee759fdd96..db1aaba217d1e7f9c9b1f1e7c5614f7b5f81fdf6 100644
+--- a/reverie-rpc-transport/src/codec.rs
++++ b/reverie-rpc-transport/src/codec.rs
+@@ -93,13 +93,19 @@ where
+     R: AsyncRead + Unpin,
+ {
+     let mut header = [0u8; 4];
+-    match reader.read_exact(&mut header).await {
+-        Ok(_) => {}
+-        // A clean EOF *before any byte of the header* is a graceful close.
+-        Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => {
+-            return Err(RpcError::Closed);
++    let mut filled = 0;
++    while filled < header.len() {
++        match reader.read(&mut header[filled..]).await {
++            Ok(0) if filled == 0 => return Err(RpcError::Closed),
++            Ok(0) => {
++                return Err(RpcError::Io(std::io::Error::from(
++                    std::io::ErrorKind::UnexpectedEof,
++                )));
++            }
++            Ok(n) => filled += n,
++            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
++            Err(e) => return Err(RpcError::Io(e)),
+         }
+-        Err(e) => return Err(RpcError::Io(e)),
+     }
+ 
+     let len = u32::from_be_bytes(header) as usize;
+diff --git a/reverie-rpc-transport/src/lib.rs b/reverie-rpc-transport/src/lib.rs
+index 1dc0cb9b9847d0948e8ab85544f1f1d0bdffb870..49cde7e2cd6526178ef073312498b9ad265a5a0d 100644
+--- a/reverie-rpc-transport/src/lib.rs
++++ b/reverie-rpc-transport/src/lib.rs
+@@ -71,6 +71,9 @@ mod envelope;
+ mod error;
+ mod server;
+ 
++#[cfg(target_os = "linux")]
++pub mod mapped;
++
+ pub use blocking_client::BlockingRpcClient;
+ pub use client::RpcClient;
+ pub use envelope::RequestEnvelope;
+@@ -78,3 +81,4 @@ pub use error::RpcError;
+ pub use server::ConnectionMonitor;
+ pub use server::RpcServer;
+ pub use server::serve_connection;
++pub use server::serve_stream;
+diff --git a/reverie-rpc-transport/src/mapped.rs b/reverie-rpc-transport/src/mapped.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..9488857296e9dbc1fa285af5dc9edf5e2dc40403
+--- /dev/null
++++ b/reverie-rpc-transport/src/mapped.rs
+@@ -0,0 +1,546 @@
++/*
++ * Copyright (c) Meta Platforms, Inc. and affiliates.
++ * All rights reserved.
++ * This source code is licensed under the BSD-style license found in the
++ * LICENSE file in the root directory of this source tree.
++ */
++
++//! Bounded, independently owned byte streams in a shared Linux mapping.
++//!
++//! Each connection has two single-producer/single-consumer queues. A transfer
++//! can exceed the queue capacity: writers apply backpressure until readers
++//! advance. There is no registry or participant limit in this component.
++//!
++//! Setup returns one transferable memfd. Import maps and closes it before
++//! returning a stream; neither stream retains a descriptor. This component
++//! provides logical close and explicit abort, not kernel process lifetime,
++//! early loader initialization, fork registration, or a backend selection.
++//! A lifecycle owner must abort an abandoned connection and independently
++//! establish actual process exit. Shared memory is not a security boundary.
++
++use std::io::Read;
++use std::io::Write;
++use std::io::{self};
++use std::mem::size_of;
++use std::os::fd::AsRawFd;
++use std::os::fd::FromRawFd;
++use std::os::fd::OwnedFd;
++use std::ptr::NonNull;
++use std::sync::Arc;
++use std::sync::atomic::AtomicU32;
++use std::sync::atomic::AtomicU64;
++use std::sync::atomic::Ordering;
++
++mod asynchronous;
++mod workers;
++pub use asynchronous::AsyncMappedStream;
++pub use workers::MappedCompletion;
++pub use workers::MappedHelperFailure;
++pub use workers::MappedReaperCleanup;
++pub use workers::MappedStartError;
++pub use workers::MappedStartStage;
++pub use workers::MappedWorkerFailure;
++
++const MAGIC: [u8; 8] = *b"RVPRPC01";
++const VERSION: u32 = 1;
++const SEALS: libc::c_int = libc::F_SEAL_SEAL | libc::F_SEAL_SHRINK | libc::F_SEAL_GROW;
++const WAIT_NS: libc::c_long = 100_000_000;
++
++#[repr(C, align(64))]
++struct Queue {
++    read: AtomicU64,
++    written: AtomicU64,
++    writer_closed: AtomicU32,
++    reader_closed: AtomicU32,
++}
++
++impl Queue {
++    fn new() -> Self {
++        Self {
++            read: AtomicU64::new(0),
++            written: AtomicU64::new(0),
++            writer_closed: AtomicU32::new(0),
++            reader_closed: AtomicU32::new(0),
++        }
++    }
++}
++
++#[repr(C, align(64))]
++struct Header {
++    magic: [u8; 8],
++    version: u32,
++    header_len: u32,
++    mapped_len: u64,
++    capacity: u64,
++    offsets: [u64; 2],
++    peer_claimed: AtomicU32,
++    failure: AtomicU32,
++    progress: AtomicU32,
++    queues: [Queue; 2],
++}
++
++/// Persistent connection failure, distinct from a graceful write-side close.
++#[derive(Clone, Copy, Debug, Eq, PartialEq)]
++#[repr(u32)]
++pub enum MappedFailure {
++    /// Its owner cancelled the connection.
++    Cancelled = 1,
++    /// Its owner observed a failed or abandoned peer.
++    /// This value does not itself certify kernel process exit.
++    PeerFailed = 2,
++    /// The mapping's cursor or protocol invariants failed.
++    Protocol = 3,
++}
++
++/// A handle for a lifecycle owner to fail a connection and wake its waiters.
++///
++/// Aborting is sticky. Dropping this handle has no effect. It is not a process
++/// handle, and connection failure cannot replace actual process-exit evidence.
++#[derive(Clone)]
++pub struct MappedAbort {
++    mapping: Arc<Mapping>,
++}
++
++impl MappedAbort {
++    pub fn abort(&self, failure: MappedFailure) {
++        self.mapping.abort(failure);
++    }
++}
++
++/// One end of a shared-memory byte stream. It deliberately has no AsRawFd.
++///
++/// Move this value to its originating client thread before receiving the RPC
++/// config handshake. Do not inherit an active endpoint into another process
++/// and operate both copies: each direction requires one producer and consumer.
++pub struct MappedStream {
++    mapping: Arc<Mapping>,
++    side: usize,
++}
++
++impl MappedStream {
++    /// Create one endpoint and a memfd for importing its peer during setup.
++    /// The returned fd is close-on-exec and is not retained by this endpoint.
++    /// Prefer [`Self::pair`] when both endpoints are created in this process.
++    ///
++    /// # Safety
++    /// From the moment this function returns until all associated streams,
++    /// abort handles, and notification workers have released their mappings,
++    /// the caller must prevent writes through the descriptor, its duplicates,
++    /// inherited descriptors, or any other mapping of this backing storage.
++    /// Only this endpoint, one peer imported with [`Self::from_owned_fd`],
++    /// and their associated abort handles and notification workers may access
++    /// the shared protocol and payload through this module's operations.
++    /// In particular, safe file writes through the returned descriptor would
++    /// violate this contract even before the peer is imported. The size seals
++    /// do not prevent writes. Transfer the descriptor only to a trusted setup
++    /// owner that observes the same contract and consumes it during import.
++    /// Neither endpoint may be duplicated by fork and operated concurrently.
++    ///
++    /// ```compile_fail,E0133
++    /// use reverie_rpc_transport::mapped::MappedStream;
++    /// // Exporting writable backing storage requires an explicit unsafe call.
++    /// let _ = MappedStream::create(31);
++    /// ```
++    pub unsafe fn create(capacity: usize) -> io::Result<(Self, OwnedFd)> {
++        let len = layout_len(capacity)?;
++        let raw = unsafe {
++            libc::syscall(
++                libc::SYS_memfd_create,
++                c"reverie-rpc".as_ptr(),
++                libc::MFD_CLOEXEC | libc::MFD_ALLOW_SEALING,
++            )
++        };
++        if raw < 0 {
++            return Err(io::Error::last_os_error());
++        }
++        let fd = unsafe { OwnedFd::from_raw_fd(raw as libc::c_int) };
++        if unsafe { libc::ftruncate(fd.as_raw_fd(), len as libc::off_t) } != 0
++            || unsafe { libc::fcntl(fd.as_raw_fd(), libc::F_ADD_SEALS, SEALS) } != 0
++        {
++            return Err(io::Error::last_os_error());
++        }
++        let mut mapping = Mapping::map(&fd, len)?;
++        mapping.capacity = capacity;
++        mapping.offsets = [size_of::<Header>(), size_of::<Header>() + capacity];
++        let header = Header {
++            magic: MAGIC,
++            version: VERSION,
++            header_len: size_of::<Header>() as u32,
++            mapped_len: len as u64,
++            capacity: capacity as u64,
++            offsets: mapping.offsets.map(|offset| offset as u64),
++            peer_claimed: AtomicU32::new(0),
++            failure: AtomicU32::new(0),
++            progress: AtomicU32::new(0),
++            queues: [Queue::new(), Queue::new()],
++        };
++        // No peer can see the descriptor until this constructor returns.
++        unsafe { mapping.ptr.as_ptr().cast::<Header>().write(header) };
++        Ok((
++            Self {
++                mapping: Arc::new(mapping),
++                side: 0,
++            },
++            fd,
++        ))
++    }
++
++    /// Map the peer endpoint and consume/close its setup descriptor.
++    /// Duplicate imports are rejected; an endpoint cannot be reopened.
++    ///
++    /// # Safety
++    /// The descriptor must be exclusively transferred by a trusted setup
++    /// owner. After import, only the opposite MappedStream may change queue
++    /// state/data; no other mapping or file writer may modify this memory.
++    /// Neither endpoint may be duplicated by fork and operated concurrently.
++    /// Initial malformed headers are checked and return an error.
++    pub unsafe fn from_owned_fd(fd: OwnedFd) -> io::Result<Self> {
++        let seals = unsafe { libc::fcntl(fd.as_raw_fd(), libc::F_GET_SEALS) };
++        if seals < 0 || seals & SEALS != SEALS {
++            return Err(invalid(
++                "mapped RPC requires sealed, fixed-size backing storage",
++            ));
++        }
++        let mut stat: libc::stat = unsafe { std::mem::zeroed() };
++        if unsafe { libc::fstat(fd.as_raw_fd(), &mut stat) } != 0 {
++            return Err(io::Error::last_os_error());
++        }
++        let len =
++            usize::try_from(stat.st_size).map_err(|_| invalid("invalid mapped RPC length"))?;
++        if len < size_of::<Header>() || len > isize::MAX as usize {
++            return Err(invalid("invalid mapped RPC length"));
++        }
++        let mut mapping = Mapping::map(&fd, len)?;
++        let header = mapping.header();
++        let capacity =
++            usize::try_from(header.capacity).map_err(|_| invalid("invalid queue capacity"))?;
++        let offsets = header.offsets;
++        if header.magic != MAGIC
++            || header.version != VERSION
++            || header.header_len as usize != size_of::<Header>()
++            || header.mapped_len != len as u64
++            || layout_len(capacity)? != len
++            || offsets
++                != [
++                    size_of::<Header>() as u64,
++                    (size_of::<Header>() + capacity) as u64,
++                ]
++        {
++            return Err(invalid("invalid mapped RPC header or offsets"));
++        }
++        if header
++            .peer_claimed
++            .compare_exchange(0, 1, Ordering::AcqRel, Ordering::Acquire)
++            .is_err()
++        {
++            return Err(io::Error::new(
++                io::ErrorKind::AlreadyExists,
++                "mapped RPC peer already imported",
++            ));
++        }
++        mapping.capacity = capacity;
++        mapping.offsets = offsets.map(|offset| offset as usize);
++        // Closure precedes construction/publication of the usable endpoint.
++        drop(fd);
++        Ok(Self {
++            mapping: Arc::new(mapping),
++            side: 1,
++        })
++    }
++
++    /// Create a pair in this process, closing its setup memfd before returning.
++    pub fn pair(capacity: usize) -> io::Result<(Self, Self)> {
++        // The fresh descriptor is never exposed to callers or external writers;
++        // it is consumed by exactly one peer import before either endpoint escapes.
++        let (first, fd) = unsafe { Self::create(capacity) }?;
++        let second = unsafe { Self::from_owned_fd(fd) }?;
++        Ok((first, second))
++    }
++
++    pub fn abort_handle(&self) -> MappedAbort {
++        MappedAbort {
++            mapping: self.mapping.clone(),
++        }
++    }
++
++    /// Finish this endpoint's writes. Buffered bytes remain readable before EOF.
++    /// This is logical stream closure and does not imply process exit.
++    pub fn close_write(&mut self) {
++        self.mapping.header().queues[self.side]
++            .writer_closed
++            .store(1, Ordering::Release);
++        self.mapping.notify();
++    }
++
++    /// Adapt the host endpoint to Tokio without occupying a blocking-pool worker.
++    /// One dedicated host thread waits for shared-memory progress notifications.
++    pub fn into_async(self) -> io::Result<AsyncMappedStream> {
++        AsyncMappedStream::new(self)
++    }
++
++    fn try_read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
++        if buffer.is_empty() {
++            return Ok(0);
++        }
++        self.mapping.check_failure()?;
++        let side = 1 - self.side;
++        let queue = &self.mapping.header().queues[side];
++        // Acquiring close before the cursor includes every preceding write.
++        let closed = queue.writer_closed.load(Ordering::Acquire) != 0;
++        let read = queue.read.load(Ordering::Relaxed);
++        let written = queue.written.load(Ordering::Acquire);
++        let used = self.mapping.used(read, written)?;
++        if used == 0 {
++            return if closed {
++                Ok(0)
++            } else {
++                Err(io::ErrorKind::WouldBlock.into())
++            };
++        }
++        let count = used.min(buffer.len());
++        let next = read
++            .checked_add(count as u64)
++            .ok_or_else(|| self.mapping.protocol_error())?;
++        let start = (read % self.mapping.capacity as u64) as usize;
++        let first = count.min(self.mapping.capacity - start);
++        // The producer published these bytes before its release store. It may
++        // not reuse them until the consumer's release store below.
++        unsafe {
++            std::ptr::copy_nonoverlapping(
++                self.mapping.data(side, start),
++                buffer.as_mut_ptr(),
++                first,
++            );
++            std::ptr::copy_nonoverlapping(
++                self.mapping.data(side, 0),
++                buffer.as_mut_ptr().add(first),
++                count - first,
++            );
++        }
++        queue.read.store(next, Ordering::Release);
++        self.mapping.notify();
++        Ok(count)
++    }
++
++    fn try_write(&mut self, buffer: &[u8]) -> io::Result<usize> {
++        if buffer.is_empty() {
++            return Ok(0);
++        }
++        self.mapping.check_failure()?;
++        let queue = &self.mapping.header().queues[self.side];
++        if queue.reader_closed.load(Ordering::Acquire) != 0
++            || queue.writer_closed.load(Ordering::Acquire) != 0
++        {
++            return Err(io::ErrorKind::BrokenPipe.into());
++        }
++        let written = queue.written.load(Ordering::Relaxed);
++        let read = queue.read.load(Ordering::Acquire);
++        let free = self.mapping.capacity - self.mapping.used(read, written)?;
++        if free == 0 {
++            return Err(io::ErrorKind::WouldBlock.into());
++        }
++        let count = free.min(buffer.len());
++        let next = written
++            .checked_add(count as u64)
++            .ok_or_else(|| self.mapping.protocol_error())?;
++        let start = (written % self.mapping.capacity as u64) as usize;
++        let first = count.min(self.mapping.capacity - start);
++        // This endpoint alone produces this queue. The peer's release cursor
++        // proves these slots are no longer being read.
++        unsafe {
++            std::ptr::copy_nonoverlapping(
++                buffer.as_ptr(),
++                self.mapping.data(self.side, start),
++                first,
++            );
++            std::ptr::copy_nonoverlapping(
++                buffer.as_ptr().add(first),
++                self.mapping.data(self.side, 0),
++                count - first,
++            );
++        }
++        queue.written.store(next, Ordering::Release);
++        self.mapping.notify();
++        Ok(count)
++    }
++}
++
++impl Read for MappedStream {
++    fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
++        loop {
++            let progress = self.mapping.header().progress.load(Ordering::Acquire);
++            match self.try_read(buffer) {
++                Err(e) if e.kind() == io::ErrorKind::WouldBlock => self.mapping.wait(progress)?,
++                result => return result,
++            }
++        }
++    }
++}
++
++impl Write for MappedStream {
++    fn write(&mut self, buffer: &[u8]) -> io::Result<usize> {
++        loop {
++            let progress = self.mapping.header().progress.load(Ordering::Acquire);
++            match self.try_write(buffer) {
++                Err(e) if e.kind() == io::ErrorKind::WouldBlock => self.mapping.wait(progress)?,
++                result => return result,
++            }
++        }
++    }
++    fn flush(&mut self) -> io::Result<()> {
++        self.mapping.check_failure()
++    }
++}
++
++impl Drop for MappedStream {
++    fn drop(&mut self) {
++        let header = self.mapping.header();
++        header.queues[self.side]
++            .writer_closed
++            .store(1, Ordering::Release);
++        header.queues[1 - self.side]
++            .reader_closed
++            .store(1, Ordering::Release);
++        self.mapping.notify();
++    }
++}
++
++struct Mapping {
++    ptr: NonNull<u8>,
++    len: usize,
++    capacity: usize,
++    offsets: [usize; 2],
++}
++
++// The immutable layout is checked once and cached. Queue ownership belongs to
++// non-Clone endpoints; byte access is synchronized by the queue's atomics.
++// Other shared owners touch only atomic progress/failure state.
++unsafe impl Send for Mapping {}
++unsafe impl Sync for Mapping {}
++
++impl Mapping {
++    fn map(fd: &OwnedFd, len: usize) -> io::Result<Self> {
++        let ptr = unsafe {
++            libc::mmap(
++                std::ptr::null_mut(),
++                len,
++                libc::PROT_READ | libc::PROT_WRITE,
++                libc::MAP_SHARED,
++                fd.as_raw_fd(),
++                0,
++            )
++        };
++        if ptr == libc::MAP_FAILED {
++            return Err(io::Error::last_os_error());
++        }
++        let Some(ptr) = NonNull::new(ptr.cast()) else {
++            unsafe { libc::munmap(ptr, len) };
++            return Err(invalid("mapped RPC cannot use a null mapping"));
++        };
++        Ok(Self {
++            ptr,
++            len,
++            capacity: 0,
++            offsets: [0; 2],
++        })
++    }
++    fn header(&self) -> &Header {
++        unsafe { &*self.ptr.as_ptr().cast::<Header>() }
++    }
++    unsafe fn data(&self, side: usize, start: usize) -> *mut u8 {
++        // Offset/capacity arithmetic was checked before this mapping was used.
++        unsafe { self.ptr.as_ptr().add(self.offsets[side] + start) }
++    }
++    fn used(&self, read: u64, written: u64) -> io::Result<usize> {
++        match written.checked_sub(read) {
++            Some(used) if used <= self.capacity as u64 => Ok(used as usize),
++            _ => Err(self.protocol_error()),
++        }
++    }
++    fn protocol_error(&self) -> io::Error {
++        self.abort(MappedFailure::Protocol);
++        invalid("mapped RPC cursor invariant failed")
++    }
++    fn abort(&self, failure: MappedFailure) {
++        let _ = self.header().failure.compare_exchange(
++            0,
++            failure as u32,
++            Ordering::AcqRel,
++            Ordering::Acquire,
++        );
++        self.notify();
++    }
++    fn check_failure(&self) -> io::Result<()> {
++        match self.header().failure.load(Ordering::Acquire) {
++            0 => Ok(()),
++            1 => Err(io::Error::new(
++                io::ErrorKind::ConnectionAborted,
++                "mapped RPC cancelled",
++            )),
++            2 => Err(io::Error::new(
++                io::ErrorKind::ConnectionReset,
++                "mapped RPC peer failed",
++            )),
++            _ => Err(invalid("mapped RPC protocol failure")),
++        }
++    }
++    fn notify(&self) {
++        self.header().progress.fetch_add(1, Ordering::Release);
++        unsafe {
++            libc::syscall(
++                libc::SYS_futex,
++                self.header().progress.as_ptr(),
++                libc::FUTEX_WAKE,
++                libc::c_int::MAX,
++            )
++        };
++    }
++    fn wait(&self, progress: u32) -> io::Result<()> {
++        let timeout = libc::timespec {
++            tv_sec: 0,
++            tv_nsec: WAIT_NS,
++        };
++        let rc = unsafe {
++            libc::syscall(
++                libc::SYS_futex,
++                self.header().progress.as_ptr(),
++                libc::FUTEX_WAIT,
++                progress,
++                &timeout,
++            )
++        };
++        if rc >= 0 {
++            return Ok(());
++        }
++        let error = io::Error::last_os_error();
++        match error.raw_os_error() {
++            Some(libc::EAGAIN | libc::EINTR | libc::ETIMEDOUT) => Ok(()),
++            _ => {
++                self.abort(MappedFailure::PeerFailed);
++                Err(error)
++            }
++        }
++    }
++}
++
++impl Drop for Mapping {
++    fn drop(&mut self) {
++        unsafe { libc::munmap(self.ptr.as_ptr().cast(), self.len) };
++    }
++}
++
++fn layout_len(capacity: usize) -> io::Result<usize> {
++    capacity
++        .checked_mul(2)
++        .and_then(|bytes| bytes.checked_add(size_of::<Header>()))
++        .filter(|len| {
++            capacity != 0 && *len <= isize::MAX as usize && *len <= libc::off_t::MAX as usize
++        })
++        .ok_or_else(|| invalid("invalid mapped RPC queue capacity"))
++}
++fn invalid(message: &'static str) -> io::Error {
++    io::Error::new(io::ErrorKind::InvalidData, message)
++}
++
++#[cfg(test)]
++mod tests;
+diff --git a/reverie-rpc-transport/src/mapped/asynchronous.rs b/reverie-rpc-transport/src/mapped/asynchronous.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..aa83034c64d561fdc17b8ec9f13e85ad68132598
+--- /dev/null
++++ b/reverie-rpc-transport/src/mapped/asynchronous.rs
+@@ -0,0 +1,388 @@
++use std::io;
++use std::pin::Pin;
++use std::sync::Arc;
++use std::sync::Condvar;
++use std::sync::Mutex;
++use std::sync::atomic::AtomicBool;
++use std::sync::atomic::Ordering;
++use std::task::Context;
++use std::task::Poll;
++use std::task::Waker;
++
++use tokio::io::AsyncRead;
++use tokio::io::AsyncWrite;
++use tokio::io::ReadBuf;
++
++use super::MappedCompletion;
++use super::MappedFailure;
++use super::MappedStream;
++use super::MappedWorkerFailure;
++use super::Mapping;
++
++/// Host-side asynchronous adapter. Its dedicated notification thread never
++/// reads requests, writes responses, serializes values, or runs Tool callbacks.
++/// It does not use Tokio's blocking pool. Dropping it requests worker stop and
++/// closes the logical stream without waiting for user Wakers. A shared reaper
++/// joins the per-connection joining helpers. Each helper joins its notification
++/// worker and publishes [`Self::completion`] independently. Custom Wakers and
++/// their TLS destructors must return before that worker can finish. Helper
++/// cleanup is a separate observation and may remain pending longer.
++pub struct AsyncMappedStream {
++    stream: MappedStream,
++    wake: Arc<Wake>,
++    completion: MappedCompletion,
++}
++
++// Every admitted registration owns an empty node before calling arbitrary clone.
++// Once clone returns, only the notification worker may consume the new Waker.
++struct Node {
++    waker: Option<Waker>,
++    next: Option<Box<Node>>,
++    notify: bool,
++}
++
++struct Registrations {
++    accepting: bool,
++    cloning: usize,
++    slots: [Option<Box<Node>>; 2],
++    retired: Option<Box<Node>>,
++}
++
++struct Wake {
++    stopped: Arc<AtomicBool>,
++    registrations: Mutex<Registrations>,
++    changed: Condvar,
++}
++
++struct Registration<'a> {
++    wake: &'a Wake,
++    slot: usize,
++    node: Option<Box<Node>>,
++}
++
++impl Drop for Registration<'_> {
++    fn drop(&mut self) {
++        let mut state = self
++            .wake
++            .registrations
++            .lock()
++            .unwrap_or_else(std::sync::PoisonError::into_inner);
++        let mut node = self.node.take().unwrap();
++        if node.waker.is_some() {
++            if state.accepting {
++                let prior = state.slots[self.slot].replace(node);
++                if let Some(mut prior) = prior {
++                    prior.notify = false;
++                    prior.next = state.retired.take();
++                    state.retired = Some(prior);
++                }
++            } else {
++                node.next = state.retired.take();
++                state.retired = Some(node);
++            }
++        }
++        state.cloning -= 1;
++        self.wake.changed.notify_all();
++    }
++}
++
++impl Wake {
++    fn register(&self, slot: usize, waker: &Waker) {
++        let node = Box::new(Node {
++            waker: None,
++            next: None,
++            notify: true,
++        });
++        {
++            let mut state = self
++                .registrations
++                .lock()
++                .unwrap_or_else(std::sync::PoisonError::into_inner);
++            if !state.accepting {
++                return;
++            }
++            state.cloning = state
++                .cloning
++                .checked_add(1)
++                .expect("Waker registration count overflow");
++        }
++        let mut registration = Registration {
++            wake: self,
++            slot,
++            node: Some(node),
++        };
++        // A clone panic propagates unchanged. The guard releases its reservation;
++        // it never catches or owns that caller's panic payload.
++        registration.node.as_mut().unwrap().waker = Some(waker.clone());
++        drop(registration);
++    }
++
++    fn take(&self, slot: usize) -> Option<Box<Node>> {
++        self.registrations
++            .lock()
++            .unwrap_or_else(std::sync::PoisonError::into_inner)
++            .slots[slot]
++            .take()
++    }
++
++    fn consume(mut node: Node) {
++        // The node was unlinked while locked. No arbitrary user code runs there.
++        let waker = node.waker.take().unwrap();
++        if node.notify {
++            waker.wake();
++        } else {
++            drop(waker);
++        }
++    }
++
++    fn wake_all(&self) {
++        for slot in 0..2 {
++            if let Some(node) = self.take(slot) {
++                Self::consume(*node);
++            }
++        }
++        loop {
++            let node = {
++                let mut state = self
++                    .registrations
++                    .lock()
++                    .unwrap_or_else(std::sync::PoisonError::into_inner);
++                state.retired.take().map(|mut node| {
++                    state.retired = node.next.take();
++                    node
++                })
++            };
++            match node {
++                Some(node) => Self::consume(*node),
++                None => break,
++            }
++        }
++    }
++
++    fn close_and_drain(
++        &self,
++        mapping: &Mapping,
++        outcome: &mut Result<(), MappedWorkerFailure>,
++        completion: &MappedCompletion,
++    ) {
++        let mut state = self
++            .registrations
++            .lock()
++            .unwrap_or_else(std::sync::PoisonError::into_inner);
++        state.accepting = false;
++        for slot in 0..2 {
++            if let Some(mut node) = state.slots[slot].take() {
++                node.next = state.retired.take();
++                state.retired = Some(node);
++            }
++        }
++        loop {
++            if let Some(mut node) = state.retired.take() {
++                state.retired = node.next.take();
++                drop(state);
++                if let Err(payload) =
++                    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| Self::consume(*node)))
++                {
++                    mapping.abort(MappedFailure::PeerFailed);
++                    if outcome.is_ok() {
++                        *outcome = Err(MappedWorkerFailure::Panicked);
++                    }
++                    if super::workers::discard_panic(Some(payload)) {
++                        completion.record_payload_leak();
++                    }
++                }
++                state = self
++                    .registrations
++                    .lock()
++                    .unwrap_or_else(std::sync::PoisonError::into_inner);
++            } else if state.cloning == 0 {
++                // This worker owns no local node here. Closed admission plus no
++                // admitted clone and an empty list is the final drain boundary.
++                break;
++            } else {
++                state = self
++                    .changed
++                    .wait(state)
++                    .unwrap_or_else(std::sync::PoisonError::into_inner);
++            }
++        }
++    }
++}
++
++impl AsyncMappedStream {
++    pub(super) fn new(stream: MappedStream) -> io::Result<Self> {
++        let wake = Arc::new(Wake {
++            stopped: Arc::new(AtomicBool::new(false)),
++            registrations: Mutex::new(Registrations {
++                accepting: true,
++                cloning: 0,
++                slots: [None, None],
++                retired: None,
++            }),
++            changed: Condvar::new(),
++        });
++        let state = wake.clone();
++        let mapping = stream.mapping.clone();
++        let completion = MappedCompletion::new();
++        let worker_completion = completion.clone();
++        let stopped = wake.stopped.clone();
++        let abort = stream.abort_handle();
++        let completion = super::workers::spawn(
++            move |ready| {
++                struct UnexpectedPanic<'a>(&'a Mapping);
++                impl Drop for UnexpectedPanic<'_> {
++                    fn drop(&mut self) {
++                        if std::thread::panicking() {
++                            self.0.abort(MappedFailure::PeerFailed);
++                        }
++                    }
++                }
++                let _unexpected_panic = UnexpectedPanic(&mapping);
++                let mut outcome =
++                    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
++                        ready.mark();
++                        monitor(&mapping, &state)
++                    })) {
++                        Ok(result) => result.map_err(MappedWorkerFailure::from),
++                        Err(payload) => {
++                            mapping.abort(MappedFailure::PeerFailed);
++                            if super::workers::discard_panic(Some(payload)) {
++                                worker_completion.record_payload_leak();
++                            }
++                            Err(MappedWorkerFailure::Panicked)
++                        }
++                    };
++                if outcome.is_err() {
++                    mapping.abort(MappedFailure::PeerFailed);
++                }
++                state.close_and_drain(&mapping, &mut outcome, &worker_completion);
++                outcome
++            },
++            completion,
++            stopped,
++            Some(abort),
++        )?;
++        Ok(Self {
++            stream,
++            wake,
++            completion,
++        })
++    }
++
++    /// Observe notification worker termination separately from logical closure.
++    /// Clone this handle before cancelling or dropping the stream.
++    pub fn completion(&self) -> MappedCompletion {
++        self.completion.clone()
++    }
++}
++
++fn monitor(mapping: &Mapping, wake: &Wake) -> io::Result<()> {
++    while !wake.stopped.load(Ordering::Acquire) {
++        let progress = mapping.header().progress.load(Ordering::Acquire);
++        if wake.stopped.load(Ordering::Acquire) {
++            break;
++        }
++        // A wake registered after this observation is covered by the poller's
++        // second queue check. Timeouts only recheck state, never imply death.
++        wake.wake_all();
++        mapping.wait(progress)?;
++    }
++    Ok(())
++}
++
++impl AsyncRead for AsyncMappedStream {
++    fn poll_read(
++        self: Pin<&mut Self>,
++        cx: &mut Context<'_>,
++        buffer: &mut ReadBuf<'_>,
++    ) -> Poll<io::Result<()>> {
++        let this = self.get_mut();
++        match this.stream.try_read(buffer.initialize_unfilled()) {
++            Ok(count) => {
++                buffer.advance(count);
++                Poll::Ready(Ok(()))
++            }
++            Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
++                this.wake.register(0, cx.waker());
++                match this.stream.try_read(buffer.initialize_unfilled()) {
++                    Ok(count) => {
++                        buffer.advance(count);
++                        Poll::Ready(Ok(()))
++                    }
++                    Err(error) if error.kind() == io::ErrorKind::WouldBlock => Poll::Pending,
++                    Err(error) => Poll::Ready(Err(error)),
++                }
++            }
++            Err(error) => Poll::Ready(Err(error)),
++        }
++    }
++}
++
++impl AsyncWrite for AsyncMappedStream {
++    fn poll_write(
++        self: Pin<&mut Self>,
++        cx: &mut Context<'_>,
++        buffer: &[u8],
++    ) -> Poll<io::Result<usize>> {
++        let this = self.get_mut();
++        match this.stream.try_write(buffer) {
++            Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
++                this.wake.register(1, cx.waker());
++                match this.stream.try_write(buffer) {
++                    Err(error) if error.kind() == io::ErrorKind::WouldBlock => Poll::Pending,
++                    result => Poll::Ready(result),
++                }
++            }
++            result => Poll::Ready(result),
++        }
++    }
++    fn poll_flush(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<io::Result<()>> {
++        Poll::Ready(self.stream.mapping.check_failure())
++    }
++    fn poll_shutdown(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<io::Result<()>> {
++        let this = self.get_mut();
++        this.stream.close_write();
++        Poll::Ready(this.stream.mapping.check_failure())
++    }
++}
++
++impl Drop for AsyncMappedStream {
++    fn drop(&mut self) {
++        self.wake.stopped.store(true, Ordering::Release);
++        self.stream.mapping.notify();
++    }
++}
++
++#[cfg(test)]
++mod tests {
++    use std::task::RawWaker;
++    use std::task::RawWakerVTable;
++
++    use super::*;
++
++    #[test]
++    fn closed_registration_does_not_clone_or_retain_a_new_waker() {
++        unsafe fn clone(_: *const ()) -> RawWaker {
++            panic!("closed registration cloned a Waker");
++        }
++        unsafe fn consume(_: *const ()) {}
++        static VTABLE: RawWakerVTable = RawWakerVTable::new(clone, consume, consume, consume);
++        let (host, _peer) = MappedStream::pair(7).unwrap();
++        let stream = host.into_async().unwrap();
++        let completion = stream.completion();
++        let wake = stream.wake.clone();
++        drop(stream);
++        assert_eq!(
++            completion.wait_timeout(std::time::Duration::from_secs(3)),
++            Some(Ok(()))
++        );
++        // The zero-sized raw handle owns nothing. Only clone is observable.
++        let waker = unsafe { Waker::from_raw(RawWaker::new(std::ptr::null(), &VTABLE)) };
++        wake.register(0, &waker);
++        wake.register(1, &waker);
++        assert_eq!(
++            completion.wait_helper_timeout(std::time::Duration::from_secs(3)),
++            Some(Ok(()))
++        );
++    }
++}
+diff --git a/reverie-rpc-transport/src/mapped/tests.rs b/reverie-rpc-transport/src/mapped/tests.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..6f045825a3662b8418b863e68e8ca825bb6340cf
+--- /dev/null
++++ b/reverie-rpc-transport/src/mapped/tests.rs
+@@ -0,0 +1,214 @@
++use std::os::fd::AsFd;
++use std::time::Duration;
++
++fn descriptor_identity(fd: i32) -> Option<(u64, u64)> {
++    let mut stat: libc::stat = unsafe { std::mem::zeroed() };
++    (unsafe { libc::fstat(fd, &mut stat) } == 0).then_some((stat.st_dev, stat.st_ino))
++}
++
++use super::*;
++
++#[test]
++fn malformed_lengths_offsets_and_version_are_rejected_before_peer_use() {
++    for corrupt in 0..5 {
++        // The creator's mapping is destroyed before modifying this fixture.
++        let (stream, fd) = unsafe { MappedStream::create(31) }.unwrap();
++        drop(stream);
++        let setup = Mapping::map(&fd, layout_len(31).unwrap()).unwrap();
++        // No endpoint or abort/worker mapping exists during metadata mutation.
++        unsafe {
++            let header = setup.ptr.as_ptr().cast::<Header>();
++            match corrupt {
++                0 => (*header).version += 1,
++                1 => (*header).offsets[0] += 1,
++                2 => (*header).offsets[1] = u64::MAX,
++                3 => (*header).mapped_len -= 1,
++                _ => (*header).capacity = u64::MAX,
++            }
++        }
++        drop(setup);
++        let number = fd.as_raw_fd();
++        let identity = descriptor_identity(number);
++        let error = unsafe { MappedStream::from_owned_fd(fd) }.err().unwrap();
++        assert_eq!(error.kind(), io::ErrorKind::InvalidData, "case {corrupt}");
++        assert_ne!(
++            descriptor_identity(number),
++            identity,
++            "failed import retained its descriptor"
++        );
++    }
++}
++
++#[test]
++fn setup_descriptor_closes_and_duplicate_peer_is_rejected() {
++    // Both descriptors are used only for the imports below, never file writes.
++    let (first, fd) = unsafe { MappedStream::create(7) }.unwrap();
++    let duplicate = fd.as_fd().try_clone_to_owned().unwrap();
++    let number = fd.as_raw_fd();
++    let identity = descriptor_identity(number);
++    let mut second = unsafe { MappedStream::from_owned_fd(fd) }.unwrap();
++    assert_ne!(
++        descriptor_identity(number),
++        identity,
++        "import retained its descriptor"
++    );
++    assert_eq!(
++        unsafe { MappedStream::from_owned_fd(duplicate) }
++            .err()
++            .unwrap()
++            .kind(),
++        io::ErrorKind::AlreadyExists
++    );
++    drop(first);
++    assert_eq!(second.read(&mut [0]).unwrap(), 0);
++}
++
++#[test]
++fn zero_and_overflowing_capacity_are_errors() {
++    for size in [0, usize::MAX, isize::MAX as usize] {
++        assert_eq!(
++            // These invalid capacities return no endpoint or descriptor.
++            unsafe { MappedStream::create(size) }.err().unwrap().kind(),
++            io::ErrorKind::InvalidData
++        );
++    }
++}
++
++#[test]
++fn transfer_wraps_and_exceeds_capacity_with_exact_bytes() {
++    let (mut first, mut second) = MappedStream::pair(7).unwrap();
++    let abort = first.abort_handle();
++    let sent: Vec<u8> = (0..65_537).map(|i| (i * 31) as u8).collect();
++    let expected = sent.clone();
++    let (done, finished) = std::sync::mpsc::channel();
++    let writer = std::thread::spawn(move || {
++        first.write_all(&sent).unwrap();
++        first.close_write();
++        done.send(()).unwrap();
++    });
++    let reader = std::thread::spawn(move || {
++        let mut received = Vec::new();
++        second.read_to_end(&mut received).unwrap();
++        assert_eq!(received, expected, "mapped transfer changed bytes");
++    });
++    if finished.recv_timeout(Duration::from_secs(5)).is_err() {
++        abort.abort(MappedFailure::Cancelled);
++        panic!("large mapped transfer did not complete");
++    }
++    writer.join().unwrap();
++    reader.join().unwrap();
++}
++
++#[test]
++fn logical_close_drains_bytes_before_eof_and_stops_peer_writes() {
++    let (mut first, mut second) = MappedStream::pair(17).unwrap();
++    first.write_all(b"last record").unwrap();
++    first.close_write();
++    let abort = first.abort_handle();
++    let (done, finished) = std::sync::mpsc::channel();
++    let reader = std::thread::spawn(move || {
++        let mut bytes = Vec::new();
++        second.read_to_end(&mut bytes).unwrap();
++        assert!(done.send((bytes, second)).is_ok());
++    });
++    let (bytes, second) = match finished.recv_timeout(Duration::from_secs(2)) {
++        Ok(result) => result,
++        Err(_) => {
++            abort.abort(MappedFailure::Cancelled);
++            panic!("logical write close did not deliver EOF");
++        }
++    };
++    reader.join().unwrap();
++    assert_eq!(
++        bytes, b"last record",
++        "closed stream changed retained bytes"
++    );
++    assert_eq!(
++        first.write(b"after close").unwrap_err().kind(),
++        io::ErrorKind::BrokenPipe
++    );
++    drop(second);
++    assert_eq!(
++        first.write(b"after peer").unwrap_err().kind(),
++        io::ErrorKind::BrokenPipe
++    );
++}
++
++#[test]
++fn abort_wakes_blocked_read_and_write_and_keeps_first_failure() {
++    for writing in [false, true] {
++        let (mut first, _second) = MappedStream::pair(1).unwrap();
++        if writing {
++            first.write_all(b"x").unwrap();
++        }
++        let abort = first.abort_handle();
++        let (ready, started) = std::sync::mpsc::channel();
++        let (done, result) = std::sync::mpsc::channel();
++        let worker = std::thread::spawn(move || {
++            ready.send(()).unwrap();
++            let error = if writing {
++                first.write(b"y").unwrap_err()
++            } else {
++                first.read(&mut [0]).unwrap_err()
++            };
++            done.send(error.kind()).unwrap();
++        });
++        started.recv_timeout(Duration::from_secs(2)).unwrap();
++        assert!(
++            result.recv_timeout(Duration::from_millis(30)).is_err(),
++            "operation did not remain blocked"
++        );
++        abort.abort(MappedFailure::Cancelled);
++        abort.abort(MappedFailure::PeerFailed);
++        assert_eq!(
++            result.recv_timeout(Duration::from_secs(2)).unwrap(),
++            io::ErrorKind::ConnectionAborted
++        );
++        worker.join().unwrap();
++    }
++}
++
++#[test]
++fn impossible_cursors_fail_before_accessing_payload() {
++    for (read, written) in [(1, 0), (0, 18), (u64::MAX, 0)] {
++        let (mut first, _second) = MappedStream::pair(17).unwrap();
++        let queue = &first.mapping.header().queues[0];
++        queue.read.store(read, Ordering::Relaxed);
++        queue.written.store(written, Ordering::Relaxed);
++        assert_eq!(
++            first.write(b"a").unwrap_err().kind(),
++            io::ErrorKind::InvalidData
++        );
++        assert_eq!(
++            first.mapping.header().failure.load(Ordering::Acquire),
++            MappedFailure::Protocol as u32
++        );
++    }
++}
++
++#[test]
++fn unsealed_backing_is_rejected_and_closed() {
++    let fd = unsafe {
++        libc::syscall(
++            libc::SYS_memfd_create,
++            c"invalid-rpc".as_ptr(),
++            libc::MFD_CLOEXEC | libc::MFD_ALLOW_SEALING,
++        )
++    };
++    assert!(fd >= 0);
++    let fd = unsafe { OwnedFd::from_raw_fd(fd as libc::c_int) };
++    let number = fd.as_raw_fd();
++    let identity = descriptor_identity(number);
++    assert_eq!(
++        unsafe { MappedStream::from_owned_fd(fd) }
++            .err()
++            .unwrap()
++            .kind(),
++        io::ErrorKind::InvalidData
++    );
++    assert_ne!(
++        descriptor_identity(number),
++        identity,
++        "import retained its descriptor"
++    );
++}
+diff --git a/reverie-rpc-transport/src/mapped/workers.rs b/reverie-rpc-transport/src/mapped/workers.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..dded9d949d9672f86b542d4a030e85eb2616d159
+--- /dev/null
++++ b/reverie-rpc-transport/src/mapped/workers.rs
+@@ -0,0 +1,998 @@
++use std::io;
++use std::sync::Arc;
++use std::sync::Condvar;
++use std::sync::Mutex;
++use std::sync::OnceLock;
++use std::sync::atomic::AtomicBool;
++use std::sync::atomic::Ordering;
++use std::thread::JoinHandle;
++use std::time::Duration;
++
++use super::MappedAbort;
++use super::MappedFailure;
++
++const RECHECK: Duration = Duration::from_millis(100);
++
++/// The notification worker's failure, recorded after its thread was joined.
++#[derive(Clone, Copy, Debug, Eq, PartialEq)]
++pub enum MappedWorkerFailure {
++    /// A custom Waker or the notification worker panicked.
++    Panicked,
++    /// The shared futex wait failed. The original OS error is retained.
++    Io {
++        kind: io::ErrorKind,
++        raw_os_error: Option<i32>,
++    },
++}
++impl From<io::Error> for MappedWorkerFailure {
++    fn from(error: io::Error) -> Self {
++        Self::Io {
++            kind: error.kind(),
++            raw_os_error: error.raw_os_error(),
++        }
++    }
++}
++type Outcome = Result<(), MappedWorkerFailure>;
++
++/// Cleanup of the joining helper, separately from notification-worker join.
++#[derive(Clone, Copy, Debug, Eq, PartialEq)]
++pub enum MappedHelperFailure {
++    /// The helper panicked, including before its private entry.
++    Panicked,
++    /// A panic payload's destructor panicked; its secondary payload was retained
++    /// without destruction to contain a second arbitrary destructor panic.
++    PanicPayloadLeaked,
++}
++type Cleanup = Result<(), MappedHelperFailure>;
++
++/// Actual cleanup of either reaper handle assigned to startup recovery.
++#[derive(Clone, Copy, Debug, Eq, PartialEq)]
++pub enum MappedReaperCleanup {
++    NotRequired,
++    Pending,
++    Joined,
++    Panicked,
++    PanicPayloadLeaked,
++}
++
++struct Observation<T> {
++    result: Mutex<Option<T>>,
++    changed: Condvar,
++}
++impl<T: Copy> Observation<T> {
++    fn new() -> Self {
++        Self {
++            result: Mutex::new(None),
++            changed: Condvar::new(),
++        }
++    }
++    fn get(&self) -> Option<T> {
++        *self
++            .result
++            .lock()
++            .unwrap_or_else(std::sync::PoisonError::into_inner)
++    }
++    fn wait(&self, timeout: Duration) -> Option<T> {
++        let result = self
++            .result
++            .lock()
++            .unwrap_or_else(std::sync::PoisonError::into_inner);
++        let (result, _) = self
++            .changed
++            .wait_timeout_while(result, timeout, |r| r.is_none())
++            .unwrap_or_else(std::sync::PoisonError::into_inner);
++        *result
++    }
++    fn publish(&self, value: T) {
++        let mut result = self
++            .result
++            .lock()
++            .unwrap_or_else(std::sync::PoisonError::into_inner);
++        assert!(result.is_none(), "completion published twice");
++        *result = Some(value);
++        self.changed.notify_all();
++    }
++}
++
++/// Observes actual notification-thread join, independently of stream Drop.
++///
++/// Each connection has a notification thread and a dedicated Rust joining
++/// helper. `result` is published by that helper only after actual worker join,
++/// including native TLS destruction. It does not mean the helper has finished.
++/// Use `helper_result` for its separate reclamation boundary. Release task
++/// locks and allow custom callbacks to return before waiting. These observations
++/// certify neither peer-process exit nor the shared reaper's own reclamation.
++#[derive(Clone)]
++pub struct MappedCompletion {
++    state: Arc<CompletionState>,
++}
++struct CompletionState {
++    worker: Observation<Outcome>,
++    helper: Observation<Cleanup>,
++    leaked: AtomicBool,
++    reapers: Mutex<[MappedReaperCleanup; 2]>,
++}
++impl MappedCompletion {
++    pub(super) fn new() -> Self {
++        Self {
++            state: Arc::new(CompletionState {
++                worker: Observation::new(),
++                helper: Observation::new(),
++                leaked: AtomicBool::new(false),
++                reapers: Mutex::new([MappedReaperCleanup::NotRequired; 2]),
++            }),
++        }
++    }
++    /// None until the notification thread has actually been joined.
++    pub fn result(&self) -> Option<Outcome> {
++        self.state.worker.get()
++    }
++    /// Wait for notification-thread join. Never hold a lock needed by a Waker.
++    pub fn wait_timeout(&self, timeout: Duration) -> Option<Outcome> {
++        self.state.worker.wait(timeout)
++    }
++    /// None while helper execution, native TLS, joining or payload disposal is
++    /// pending. A failed startup can retain a handle at rest until a later
++    /// successful constructor starts the resource reaper; no automatic cleanup
++    /// is promised in that case.
++    pub fn helper_result(&self) -> Option<Cleanup> {
++        self.state.helper.get()
++    }
++    /// Wait separately for actual helper join and retained payload disposal.
++    pub fn wait_helper_timeout(&self, timeout: Duration) -> Option<Cleanup> {
++        self.state.helper.wait(timeout)
++    }
++    /// Startup recovery's current and retiring reapers, in that order. Pending
++    /// remains pending through native TLS and payload disposal. This reports
++    /// recovery ownership only, not the active resource reaper's eventual exit.
++    pub fn reaper_recovery(&self) -> [MappedReaperCleanup; 2] {
++        *self
++            .state
++            .reapers
++            .lock()
++            .unwrap_or_else(std::sync::PoisonError::into_inner)
++    }
++    fn complete(&self, outcome: Outcome) {
++        self.state.worker.publish(outcome);
++    }
++    pub(super) fn record_payload_leak(&self) {
++        self.state.leaked.store(true, Ordering::Release);
++    }
++}
++
++/// The stage where asynchronous adapter construction failed.
++#[derive(Clone, Copy, Debug, Eq, PartialEq)]
++pub enum MappedStartStage {
++    HelperSpawn,
++    HelperReadiness,
++    ReaperSpawn,
++    ReaperReadiness,
++    WorkerSpawn,
++    WorkerReadiness,
++}
++
++/// An inspectable startup error, available through `io::Error::get_ref` and
++/// `downcast_ref`. No adapter was published. Its completion handle preserves
++/// cleanup observations even if a started helper is still running or retained.
++#[derive(Debug)]
++pub struct MappedStartError {
++    stage: MappedStartStage,
++    cause: io::Error,
++    completion: MappedCompletion,
++}
++impl std::fmt::Debug for MappedCompletion {
++    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
++        f.debug_struct("MappedCompletion")
++            .field("worker", &self.result())
++            .field("helper", &self.helper_result())
++            .finish()
++    }
++}
++impl MappedStartError {
++    pub fn stage(&self) -> MappedStartStage {
++        self.stage
++    }
++    pub fn completion(&self) -> MappedCompletion {
++        self.completion.clone()
++    }
++}
++impl std::fmt::Display for MappedStartError {
++    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
++        write!(f, "mapped RPC {:?}: {}", self.stage, self.cause)
++    }
++}
++impl std::error::Error for MappedStartError {
++    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
++        Some(&self.cause)
++    }
++}
++
++pub(super) struct Ready {
++    record: Arc<Record>,
++}
++impl Ready {
++    /// Called only after the notification closure installed its containment and
++    /// Waker drain path. Until then the constructor cannot publish the adapter.
++    pub(super) fn mark(self) {
++        let mut state = self
++            .record
++            .state
++            .lock()
++            .unwrap_or_else(std::sync::PoisonError::into_inner);
++        assert!(!state.worker_ready);
++        state.worker_ready = true;
++        self.record.changed.notify_all();
++    }
++}
++
++struct Record {
++    state: Mutex<RecordState>,
++    changed: Condvar,
++    completion: MappedCompletion,
++    stopped: Arc<AtomicBool>,
++    abort: Option<MappedAbort>,
++}
++struct RecordState {
++    helper: Option<JoinHandle<Cleanup>>,
++    helper_joining: bool,
++    helper_started: bool,
++    helper_ready: bool,
++    helper_failed_start: bool,
++    worker_ready: bool,
++    worker_failed_start: bool,
++    assignment: Assignment,
++}
++enum Assignment {
++    Waiting,
++    Worker(JoinHandle<Outcome>),
++    Abandoned,
++    Recovery(ReaperHandles),
++    Taken,
++}
++struct ReaperHandles {
++    current: Option<JoinHandle<()>>,
++    retiring: Option<JoinHandle<()>>,
++}
++#[derive(Clone, Copy, Debug, Eq, PartialEq)]
++enum Phase {
++    Idle,
++    Starting,
++    Running,
++    Recovering,
++}
++struct ReaperStart {
++    entered: AtomicBool,
++    cancelled: AtomicBool,
++}
++struct State {
++    records: Vec<Arc<Record>>,
++    reservations: usize,
++    current: Option<JoinHandle<()>>,
++    retiring: Option<JoinHandle<()>>,
++    phase: Phase,
++    start: Option<Arc<ReaperStart>>,
++    // Handles local to the recovery helper remain counted until actual join.
++    recovering_current: bool,
++    recovering_retiring: bool,
++    reaper_panics: usize,
++    reaper_payload_leaks: usize,
++}
++impl Default for State {
++    fn default() -> Self {
++        Self {
++            records: Vec::new(),
++            reservations: 0,
++            current: None,
++            retiring: None,
++            phase: Phase::Idle,
++            start: None,
++            recovering_current: false,
++            recovering_retiring: false,
++            reaper_panics: 0,
++            reaper_payload_leaks: 0,
++        }
++    }
++}
++#[derive(Default)]
++struct Registry {
++    state: Mutex<State>,
++    changed: Condvar,
++    #[cfg(test)]
++    hooks: tests::Hooks,
++}
++
++/// Local returned handles are handed to preallocated shared cells on unwind.
++/// Drop never joins and never calls user code.
++struct Constructor {
++    registry: Arc<Registry>,
++    record: Arc<Record>,
++    helper: Option<JoinHandle<Cleanup>>,
++    worker: Option<JoinHandle<Outcome>>,
++    reaper: Option<JoinHandle<()>>,
++    owns_start: bool,
++    published: bool,
++}
++impl Constructor {
++    fn handoff_helper(&mut self) {
++        if let Some(handle) = self.helper.take() {
++            let mut state = self
++                .record
++                .state
++                .lock()
++                .unwrap_or_else(std::sync::PoisonError::into_inner);
++            assert!(state.helper.is_none() && !state.helper_joining);
++            state.helper_started = true;
++            state.helper = Some(handle);
++            self.registry.changed.notify_all();
++        }
++    }
++    fn handoff_reaper(&mut self) {
++        if let Some(handle) = self.reaper.take() {
++            let mut state = self
++                .registry
++                .state
++                .lock()
++                .unwrap_or_else(std::sync::PoisonError::into_inner);
++            assert_eq!(state.phase, Phase::Starting);
++            assert!(state.current.is_none());
++            state.current = Some(handle);
++            self.registry.changed.notify_all();
++        }
++    }
++    fn handoff_worker(&mut self) {
++        if let Some(handle) = self.worker.take() {
++            let mut state = self
++                .record
++                .state
++                .lock()
++                .unwrap_or_else(std::sync::PoisonError::into_inner);
++            assert!(matches!(state.assignment, Assignment::Waiting));
++            state.assignment = Assignment::Worker(handle);
++            self.record.changed.notify_all();
++        }
++    }
++    fn error(&self, stage: MappedStartStage, cause: io::Error) -> io::Error {
++        io::Error::new(
++            cause.kind(),
++            MappedStartError {
++                stage,
++                cause,
++                completion: self.record.completion.clone(),
++            },
++        )
++    }
++}
++impl Drop for Constructor {
++    fn drop(&mut self) {
++        self.handoff_helper();
++        self.handoff_reaper();
++        self.handoff_worker();
++        let mut registry = self
++            .registry
++            .state
++            .lock()
++            .unwrap_or_else(std::sync::PoisonError::into_inner);
++        let mut state = self
++            .record
++            .state
++            .lock()
++            .unwrap_or_else(std::sync::PoisonError::into_inner);
++        if !self.published {
++            self.record.stopped.store(true, Ordering::Release);
++            if let Some(abort) = &self.record.abort {
++                abort.abort(MappedFailure::PeerFailed);
++            }
++            if self.owns_start {
++                assert_eq!(registry.phase, Phase::Starting);
++                registry
++                    .start
++                    .as_ref()
++                    .unwrap()
++                    .cancelled
++                    .store(true, Ordering::Release);
++                if registry.current.is_some() {
++                    assert!(state.helper_ready);
++                    assert!(matches!(state.assignment, Assignment::Waiting));
++                    registry.phase = Phase::Recovering;
++                    registry.recovering_current = registry.current.is_some();
++                    registry.recovering_retiring = registry.retiring.is_some();
++                    *self
++                        .record
++                        .completion
++                        .state
++                        .reapers
++                        .lock()
++                        .unwrap_or_else(std::sync::PoisonError::into_inner) = [
++                        MappedReaperCleanup::Pending,
++                        if registry.retiring.is_some() {
++                            MappedReaperCleanup::Pending
++                        } else {
++                            MappedReaperCleanup::NotRequired
++                        },
++                    ];
++                    state.assignment = Assignment::Recovery(ReaperHandles {
++                        current: registry.current.take(),
++                        retiring: registry.retiring.take(),
++                    });
++                } else {
++                    // The reaper spawn itself failed: there is no new handle.
++                    registry.current = registry.retiring.take();
++                    registry.phase = Phase::Idle;
++                    registry.start = None;
++                }
++            }
++            if matches!(state.assignment, Assignment::Waiting) {
++                state.assignment = Assignment::Abandoned;
++            }
++            self.record.changed.notify_all();
++        }
++        registry.reservations -= 1;
++        if !state.helper_started {
++            // Spawn Err produced no handle. No worker exists at this stage.
++            assert!(!state.helper_ready);
++            registry
++                .records
++                .retain(|record| !Arc::ptr_eq(record, &self.record));
++        }
++        self.registry.changed.notify_all();
++    }
++}
++
++pub(super) fn spawn(
++    work: impl FnOnce(Ready) -> Outcome + Send + 'static,
++    completion: MappedCompletion,
++    stopped: Arc<AtomicBool>,
++    abort: Option<MappedAbort>,
++) -> io::Result<MappedCompletion> {
++    static REGISTRY: OnceLock<Arc<Registry>> = OnceLock::new();
++    REGISTRY
++        .get_or_init(Default::default)
++        .spawn(work, completion, stopped, abort)
++}
++
++impl Registry {
++    fn spawn(
++        self: &Arc<Self>,
++        work: impl FnOnce(Ready) -> Outcome + Send + 'static,
++        completion: MappedCompletion,
++        stopped: Arc<AtomicBool>,
++        abort: Option<MappedAbort>,
++    ) -> io::Result<MappedCompletion> {
++        let record = Arc::new(Record {
++            state: Mutex::new(RecordState {
++                helper: None,
++                helper_joining: false,
++                helper_started: false,
++                helper_ready: false,
++                helper_failed_start: false,
++                worker_ready: false,
++                worker_failed_start: false,
++                assignment: Assignment::Waiting,
++            }),
++            changed: Condvar::new(),
++            completion,
++            stopped,
++            abort,
++        });
++        {
++            let mut state = self
++                .state
++                .lock()
++                .unwrap_or_else(std::sync::PoisonError::into_inner);
++            state.records.try_reserve(1).map_err(io::Error::other)?;
++            state.reservations = state
++                .reservations
++                .checked_add(1)
++                .expect("constructor reservation overflow");
++            state.records.push(record.clone());
++        }
++        let mut owner = Constructor {
++            registry: self.clone(),
++            record: record.clone(),
++            helper: None,
++            worker: None,
++            reaper: None,
++            owns_start: false,
++            published: false,
++        };
++        #[cfg(test)]
++        self.hooks.at(tests::Point::Reserved);
++        let registry = self.clone();
++        let helper_record = record.clone();
++        #[cfg(test)]
++        self.hooks
++            .spawn_error(tests::Point::HelperSpawn)
++            .map_err(|e| owner.error(MappedStartStage::HelperSpawn, e))?;
++        owner.helper = Some(
++            std::thread::Builder::new()
++                .name("reverie-rpc-join".into())
++                .spawn(move || registry.helper(helper_record))
++                .map_err(|e| owner.error(MappedStartStage::HelperSpawn, e))?,
++        );
++        #[cfg(test)]
++        self.hooks.at(tests::Point::HelperReturned);
++        owner.handoff_helper();
++        #[cfg(test)]
++        self.hooks.at(tests::Point::HelperHandedOff);
++        {
++            let mut state = record
++                .state
++                .lock()
++                .unwrap_or_else(std::sync::PoisonError::into_inner);
++            while !state.helper_ready {
++                if state.helper_failed_start
++                    || state.helper.as_ref().is_some_and(JoinHandle::is_finished)
++                {
++                    state.helper_failed_start = true;
++                    return Err(owner.error(
++                        MappedStartStage::HelperReadiness,
++                        io::Error::other("helper ended before readiness"),
++                    ));
++                }
++                state = record
++                    .changed
++                    .wait_timeout(state, RECHECK)
++                    .unwrap_or_else(std::sync::PoisonError::into_inner)
++                    .0;
++            }
++        }
++        self.ensure_reaper(&mut owner)?;
++        #[cfg(test)]
++        self.hooks.at(tests::Point::BeforeWorker);
++        #[cfg(test)]
++        self.hooks
++            .spawn_error(tests::Point::WorkerSpawn)
++            .map_err(|e| owner.error(MappedStartStage::WorkerSpawn, e))?;
++        let worker_registry = self.clone();
++        let worker_record = record.clone();
++        owner.worker = Some(
++            std::thread::Builder::new()
++                .name("reverie-rpc-wake".into())
++                .spawn(move || {
++                    #[cfg(test)]
++                    worker_registry.hooks.at(tests::Point::WorkerEntry);
++                    let _ = worker_registry;
++                    work(Ready {
++                        record: worker_record,
++                    })
++                })
++                .map_err(|e| owner.error(MappedStartStage::WorkerSpawn, e))?,
++        );
++        #[cfg(test)]
++        self.hooks.at(tests::Point::WorkerReturned);
++        owner.handoff_worker();
++        #[cfg(test)]
++        self.hooks.at(tests::Point::WorkerHandedOff);
++        {
++            let mut state = record
++                .state
++                .lock()
++                .unwrap_or_else(std::sync::PoisonError::into_inner);
++            while !state.worker_ready {
++                if state.worker_failed_start {
++                    return Err(owner.error(
++                        MappedStartStage::WorkerReadiness,
++                        io::Error::other("notification worker ended before readiness"),
++                    ));
++                }
++                state = record
++                    .changed
++                    .wait(state)
++                    .unwrap_or_else(std::sync::PoisonError::into_inner);
++            }
++        }
++        let completion = record.completion.clone();
++        #[cfg(test)]
++        self.hooks.at(tests::Point::BeforePublication);
++        owner.published = true;
++        Ok(completion)
++    }
++
++    fn ensure_reaper(self: &Arc<Self>, owner: &mut Constructor) -> io::Result<()> {
++        {
++            let mut state = self
++                .state
++                .lock()
++                .unwrap_or_else(std::sync::PoisonError::into_inner);
++            loop {
++                match state.phase {
++                    Phase::Running => return Ok(()),
++                    Phase::Idle => {
++                        assert!(state.retiring.is_none());
++                        assert!(!state.recovering_current && !state.recovering_retiring);
++                        state.retiring = state.current.take();
++                        state.phase = Phase::Starting;
++                        state.start = Some(Arc::new(ReaperStart {
++                            entered: AtomicBool::new(false),
++                            cancelled: AtomicBool::new(false),
++                        }));
++                        owner.owns_start = true;
++                        break;
++                    }
++                    Phase::Starting | Phase::Recovering => {
++                        state = self
++                            .changed
++                            .wait(state)
++                            .unwrap_or_else(std::sync::PoisonError::into_inner);
++                    }
++                }
++            }
++        }
++        let start = self
++            .state
++            .lock()
++            .unwrap_or_else(std::sync::PoisonError::into_inner)
++            .start
++            .as_ref()
++            .unwrap()
++            .clone();
++        #[cfg(test)]
++        self.hooks.at(tests::Point::ReaperReserved);
++        #[cfg(test)]
++        self.hooks
++            .spawn_error(tests::Point::ReaperSpawn)
++            .map_err(|e| owner.error(MappedStartStage::ReaperSpawn, e))?;
++        let registry = self.clone();
++        let entry_start = start.clone();
++        owner.reaper = Some(
++            std::thread::Builder::new()
++                .name("reverie-rpc-reap".into())
++                .spawn(move || registry.reap(entry_start))
++                .map_err(|e| owner.error(MappedStartStage::ReaperSpawn, e))?,
++        );
++        #[cfg(test)]
++        self.hooks.at(tests::Point::ReaperReturned);
++        owner.handoff_reaper();
++        #[cfg(test)]
++        self.hooks.at(tests::Point::ReaperHandedOff);
++        let mut state = self
++            .state
++            .lock()
++            .unwrap_or_else(std::sync::PoisonError::into_inner);
++        while !start.entered.load(Ordering::Acquire) {
++            if state.current.as_ref().unwrap().is_finished() {
++                return Err(owner.error(
++                    MappedStartStage::ReaperReadiness,
++                    io::Error::other("reaper ended before readiness"),
++                ));
++            }
++            state = self
++                .changed
++                .wait_timeout(state, RECHECK)
++                .unwrap_or_else(std::sync::PoisonError::into_inner)
++                .0;
++        }
++        state.phase = Phase::Running;
++        owner.owns_start = false;
++        self.changed.notify_all();
++        Ok(())
++    }
++
++    fn helper(self: &Arc<Self>, record: Arc<Record>) -> Cleanup {
++        #[cfg(test)]
++        self.hooks.at(tests::Point::HelperEntry);
++        // The assignment guard in helper_assignment is installed before it
++        // publishes readiness, including on a resumed cleanup after unwind.
++        let mut panicked = false;
++        loop {
++            match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
++                self.helper_assignment(&record)
++            })) {
++                Ok(()) => break,
++                Err(payload) => {
++                    panicked = true;
++                    if discard_panic(Some(payload)) {
++                        record.completion.record_payload_leak();
++                    }
++                    let state = record
++                        .state
++                        .lock()
++                        .unwrap_or_else(std::sync::PoisonError::into_inner);
++                    if matches!(state.assignment, Assignment::Taken) {
++                        break;
++                    }
++                }
++            }
++        }
++        if record.completion.state.leaked.load(Ordering::Acquire) {
++            Err(MappedHelperFailure::PanicPayloadLeaked)
++        } else if panicked {
++            Err(MappedHelperFailure::Panicked)
++        } else {
++            Ok(())
++        }
++    }
++
++    fn helper_assignment(self: &Arc<Self>, record: &Arc<Record>) {
++        let mut assigned = AssignedWorker {
++            record: record.clone(),
++            handle: None,
++        };
++        let mut state = record
++            .state
++            .lock()
++            .unwrap_or_else(std::sync::PoisonError::into_inner);
++        state.helper_ready = true;
++        record.changed.notify_all();
++        while matches!(state.assignment, Assignment::Waiting) {
++            state = record
++                .changed
++                .wait(state)
++                .unwrap_or_else(std::sync::PoisonError::into_inner);
++        }
++        let assignment = std::mem::replace(&mut state.assignment, Assignment::Taken);
++        drop(state);
++        match assignment {
++            Assignment::Worker(handle) => {
++                assigned.handle = Some(handle);
++                {
++                    let mut state = record
++                        .state
++                        .lock()
++                        .unwrap_or_else(std::sync::PoisonError::into_inner);
++                    while !state.worker_ready {
++                        if assigned.handle.as_ref().unwrap().is_finished() {
++                            // This says entry cannot become ready later, not that
++                            // native TLS or actual join has completed.
++                            state.worker_failed_start = true;
++                            record.changed.notify_all();
++                            break;
++                        }
++                        state = record
++                            .changed
++                            .wait_timeout(state, RECHECK)
++                            .unwrap_or_else(std::sync::PoisonError::into_inner)
++                            .0;
++                    }
++                }
++                // An internal unwind restores this permission to the record;
++                // the outer private entry catches it and resumes cleanup.
++                #[cfg(test)]
++                self.hooks.at(tests::Point::BeforeJoin);
++                let (outcome, payload) = match assigned.handle.take().unwrap().join() {
++                    Ok(outcome) => (outcome, None),
++                    Err(payload) => {
++                        if let Some(abort) = &record.abort {
++                            abort.abort(MappedFailure::PeerFailed);
++                        }
++                        (Err(MappedWorkerFailure::Panicked), Some(payload))
++                    }
++                };
++                record.completion.complete(outcome);
++                if discard_panic(payload) {
++                    record.completion.record_payload_leak();
++                }
++            }
++            Assignment::Abandoned => {}
++            Assignment::Recovery(handles) => self.recover(handles, record),
++            Assignment::Waiting | Assignment::Taken => {
++                unreachable!("helper assignment consumed twice")
++            }
++        }
++        #[cfg(test)]
++        self.hooks.at(tests::Point::HelperAfterWorker);
++    }
++
++    fn recover(&self, handles: ReaperHandles, record: &Arc<Record>) {
++        let mut owned = AssignedReapers {
++            handles,
++            record: record.clone(),
++        };
++        // These are reaper handles, never notification-worker handles. Recovery
++        // cannot delay another dedicated helper's worker-result publication.
++        if let Some(handle) = owned.handles.current.take() {
++            let result = self.join_reaper(handle);
++            if result == MappedReaperCleanup::PanicPayloadLeaked {
++                record.completion.record_payload_leak();
++            }
++            record
++                .completion
++                .state
++                .reapers
++                .lock()
++                .unwrap_or_else(std::sync::PoisonError::into_inner)[0] = result;
++            self.state
++                .lock()
++                .unwrap_or_else(std::sync::PoisonError::into_inner)
++                .recovering_current = false;
++        }
++        if let Some(handle) = owned.handles.retiring.take() {
++            let result = self.join_reaper(handle);
++            if result == MappedReaperCleanup::PanicPayloadLeaked {
++                record.completion.record_payload_leak();
++            }
++            record
++                .completion
++                .state
++                .reapers
++                .lock()
++                .unwrap_or_else(std::sync::PoisonError::into_inner)[1] = result;
++            self.state
++                .lock()
++                .unwrap_or_else(std::sync::PoisonError::into_inner)
++                .recovering_retiring = false;
++        }
++        let mut state = self
++            .state
++            .lock()
++            .unwrap_or_else(std::sync::PoisonError::into_inner);
++        assert_eq!(state.phase, Phase::Recovering);
++        assert!(state.current.is_none() && state.retiring.is_none());
++        assert!(!state.recovering_current && !state.recovering_retiring);
++        state.start = None;
++        state.phase = Phase::Idle;
++        self.changed.notify_all();
++        // No automatic retry. Our own helper handle remains a visible pending
++        // record until a later successful constructor supplies a resource reaper.
++    }
++
++    fn join_reaper(&self, handle: JoinHandle<()>) -> MappedReaperCleanup {
++        let payload = handle.join().err();
++        let panicked = payload.is_some();
++        let leaked = discard_panic(payload);
++        let mut state = self
++            .state
++            .lock()
++            .unwrap_or_else(std::sync::PoisonError::into_inner);
++        state.reaper_panics = state.reaper_panics.saturating_add(usize::from(panicked));
++        state.reaper_payload_leaks = state
++            .reaper_payload_leaks
++            .saturating_add(usize::from(leaked));
++        if leaked {
++            MappedReaperCleanup::PanicPayloadLeaked
++        } else if panicked {
++            MappedReaperCleanup::Panicked
++        } else {
++            MappedReaperCleanup::Joined
++        }
++    }
++
++    fn reap(&self, start: Arc<ReaperStart>) {
++        #[cfg(test)]
++        self.hooks.at(tests::Point::ReaperEntry);
++        start.entered.store(true, Ordering::Release);
++        self.changed.notify_all();
++        let mut state = self
++            .state
++            .lock()
++            .unwrap_or_else(std::sync::PoisonError::into_inner);
++        while state.phase == Phase::Starting && !start.cancelled.load(Ordering::Acquire) {
++            state = self
++                .changed
++                .wait(state)
++                .unwrap_or_else(std::sync::PoisonError::into_inner);
++        }
++        if start.cancelled.load(Ordering::Acquire) {
++            return;
++        }
++        drop(state);
++        loop {
++            let mut state = self
++                .state
++                .lock()
++                .unwrap_or_else(std::sync::PoisonError::into_inner);
++            assert_eq!(state.phase, Phase::Running);
++            let finished = state.records.iter().find_map(|record| {
++                let mut rs = record
++                    .state
++                    .lock()
++                    .unwrap_or_else(std::sync::PoisonError::into_inner);
++                if rs.helper.as_ref().is_some_and(JoinHandle::is_finished) {
++                    // Publish startup failure before a possibly blocking join.
++                    if !rs.helper_ready {
++                        rs.helper_failed_start = true;
++                        record.changed.notify_all();
++                    }
++                    rs.helper_joining = true;
++                    Some((record.clone(), rs.helper.take().unwrap()))
++                } else {
++                    None
++                }
++            });
++            if let Some((record, handle)) = finished {
++                drop(state);
++                let (mut result, payload) = match handle.join() {
++                    Ok(result) => (result, None),
++                    Err(payload) => (Err(MappedHelperFailure::Panicked), Some(payload)),
++                };
++                if discard_panic(payload) {
++                    result = Err(MappedHelperFailure::PanicPayloadLeaked);
++                }
++                record.completion.state.helper.publish(result);
++                let mut state = self
++                    .state
++                    .lock()
++                    .unwrap_or_else(std::sync::PoisonError::into_inner);
++                record
++                    .state
++                    .lock()
++                    .unwrap_or_else(std::sync::PoisonError::into_inner)
++                    .helper_joining = false;
++                state.records.retain(|r| !Arc::ptr_eq(r, &record));
++                self.changed.notify_all();
++                continue;
++            }
++            if state.retiring.as_ref().is_some_and(JoinHandle::is_finished) {
++                let handle = state.retiring.take().unwrap();
++                // Keep the retiring ownership counted during native TLS and
++                // panic-payload disposal, so this generation cannot retire.
++                state.recovering_retiring = true;
++                drop(state);
++                self.join_reaper(handle);
++                let mut state = self
++                    .state
++                    .lock()
++                    .unwrap_or_else(std::sync::PoisonError::into_inner);
++                state.recovering_retiring = false;
++                continue;
++            }
++            if state.records.is_empty() && state.reservations == 0 && state.retiring.is_none() {
++                assert!(!state.recovering_current && !state.recovering_retiring);
++                state.phase = Phase::Idle;
++                state.start = None;
++                drop(state);
++                #[cfg(test)]
++                self.hooks.at(tests::Point::ReaperExit);
++                return;
++            }
++            let _ = self
++                .changed
++                .wait_timeout(state, RECHECK)
++                .unwrap_or_else(std::sync::PoisonError::into_inner);
++        }
++    }
++}
++
++struct AssignedReapers {
++    handles: ReaperHandles,
++    record: Arc<Record>,
++}
++impl Drop for AssignedReapers {
++    fn drop(&mut self) {
++        if self.handles.current.is_some() || self.handles.retiring.is_some() {
++            let mut state = self
++                .record
++                .state
++                .lock()
++                .unwrap_or_else(std::sync::PoisonError::into_inner);
++            assert!(matches!(state.assignment, Assignment::Taken));
++            state.assignment = Assignment::Recovery(ReaperHandles {
++                current: self.handles.current.take(),
++                retiring: self.handles.retiring.take(),
++            });
++        }
++    }
++}
++
++struct AssignedWorker {
++    record: Arc<Record>,
++    handle: Option<JoinHandle<Outcome>>,
++}
++impl Drop for AssignedWorker {
++    fn drop(&mut self) {
++        if let Some(handle) = self.handle.take() {
++            let mut state = self
++                .record
++                .state
++                .lock()
++                .unwrap_or_else(std::sync::PoisonError::into_inner);
++            assert!(matches!(state.assignment, Assignment::Taken));
++            state.assignment = Assignment::Worker(handle);
++            self.record.changed.notify_all();
++        }
++    }
++}
++
++/// Returns true when a secondary panic payload had to be retained undestroyed.
++pub(super) fn discard_panic(payload: Option<Box<dyn std::any::Any + Send>>) -> bool {
++    if let Err(second) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| drop(payload))) {
++        std::mem::forget(second);
++        true
++    } else {
++        false
++    }
++}
++
++#[cfg(test)]
++#[path = "workers/tests.rs"]
++mod tests;
+diff --git a/reverie-rpc-transport/src/mapped/workers/tests.rs b/reverie-rpc-transport/src/mapped/workers/tests.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..81af1fcf5516fd3632eb29cd3b76b3766acf3460
+--- /dev/null
++++ b/reverie-rpc-transport/src/mapped/workers/tests.rs
+@@ -0,0 +1,760 @@
++use std::collections::HashMap;
++use std::sync::mpsc;
++
++use super::*;
++
++const LIMIT: Duration = Duration::from_secs(3);
++#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
++pub(super) enum Point {
++    Reserved,
++    HelperSpawn,
++    HelperEntry,
++    HelperReturned,
++    HelperHandedOff,
++    ReaperReserved,
++    ReaperSpawn,
++    ReaperEntry,
++    ReaperReturned,
++    ReaperHandedOff,
++    BeforeWorker,
++    WorkerSpawn,
++    WorkerEntry,
++    WorkerReturned,
++    WorkerHandedOff,
++    BeforePublication,
++    BeforeJoin,
++    HelperAfterWorker,
++    ReaperExit,
++}
++#[derive(Default)]
++pub(super) struct Hooks {
++    actions: Mutex<HashMap<Point, Action>>,
++    entries: Mutex<Vec<(Point, i32)>>,
++}
++enum Action {
++    Pause(mpsc::Sender<()>, mpsc::Receiver<()>),
++    Panic,
++    Error,
++    Tls(HeldPayload),
++    PanicTls(HeldPayload),
++}
++impl Hooks {
++    pub(super) fn at(&self, point: Point) {
++        if matches!(
++            point,
++            Point::HelperEntry | Point::WorkerEntry | Point::ReaperEntry
++        ) {
++            self.entries
++                .lock()
++                .unwrap()
++                .push((point, unsafe { libc::gettid() }));
++        }
++        let action = self.actions.lock().unwrap().remove(&point);
++        match action {
++            Some(Action::Pause(entered, release)) => {
++                entered.send(()).unwrap();
++                release.recv_timeout(LIMIT).unwrap();
++            }
++            Some(Action::Panic) => panic!("controlled {point:?} unwind"),
++            Some(Action::Tls(payload)) => {
++                HELPER_TLS.with(|slot| *slot.borrow_mut() = Some(payload))
++            }
++            Some(Action::PanicTls(payload)) => {
++                HELPER_TLS.with(|slot| *slot.borrow_mut() = Some(payload));
++                panic!("controlled pre-readiness panic with native TLS cleanup");
++            }
++            Some(Action::Error) => panic!("spawn error hook used as callback"),
++            None => {}
++        }
++    }
++    pub(super) fn spawn_error(&self, point: Point) -> io::Result<()> {
++        match self.actions.lock().unwrap().remove(&point) {
++            Some(Action::Error) => Err(io::Error::from_raw_os_error(libc::EAGAIN)),
++            None => Ok(()),
++            _ => panic!("non-error action at spawn hook"),
++        }
++    }
++    fn pause(&self, point: Point) -> (mpsc::Receiver<()>, mpsc::Sender<()>) {
++        let (entered, waiting) = mpsc::channel();
++        let (release, resume) = mpsc::channel();
++        assert!(
++            self.actions
++                .lock()
++                .unwrap()
++                .insert(point, Action::Pause(entered, resume))
++                .is_none()
++        );
++        (waiting, release)
++    }
++    fn panic(&self, point: Point) {
++        self.actions.lock().unwrap().insert(point, Action::Panic);
++    }
++    fn error(&self, point: Point) {
++        self.actions.lock().unwrap().insert(point, Action::Error);
++    }
++}
++fn start(
++    registry: &Arc<Registry>,
++    work: impl FnOnce() -> Outcome + Send + 'static,
++) -> io::Result<MappedCompletion> {
++    registry.spawn(
++        move |ready| {
++            ready.mark();
++            work()
++        },
++        MappedCompletion::new(),
++        Arc::new(AtomicBool::new(false)),
++        None,
++    )
++}
++fn drain(registry: &Arc<Registry>) {
++    let deadline = std::time::Instant::now() + LIMIT;
++    loop {
++        let mut state = registry.state.lock().unwrap();
++        // is_finished bounds Rust-body progress only. The actual join below
++        // remains responsible for native TLS completion and runs without this lock.
++        if state.current.as_ref().unwrap().is_finished() {
++            assert_eq!(state.phase, Phase::Idle);
++            assert!(state.records.is_empty());
++            assert_eq!(state.reservations, 0);
++            assert!(state.retiring.is_none());
++            assert!(!state.recovering_current && !state.recovering_retiring);
++            let handle = state.current.take().unwrap();
++            drop(state);
++            handle.join().unwrap();
++            return;
++        }
++        assert!(
++            std::time::Instant::now() < deadline,
++            "registry cleanup remained pending"
++        );
++        drop(state);
++        std::thread::sleep(Duration::from_millis(5));
++    }
++}
++#[test]
++fn completion_retains_io_error_and_unexpected_thread_panic() {
++    let registry = Arc::new(Registry::default());
++    let io = start(&registry, || {
++        Err(io::Error::from_raw_os_error(libc::EINVAL).into())
++    })
++    .unwrap();
++    assert_eq!(
++        io.wait_timeout(LIMIT),
++        Some(Err(MappedWorkerFailure::Io {
++            kind: io::ErrorKind::InvalidInput,
++            raw_os_error: Some(libc::EINVAL)
++        }))
++    );
++    let panic = start(&registry, || panic!("intentional uncontained worker panic")).unwrap();
++    assert_eq!(
++        panic.wait_timeout(LIMIT),
++        Some(Err(MappedWorkerFailure::Panicked))
++    );
++    assert_eq!(io.wait_helper_timeout(LIMIT), Some(Ok(())));
++    assert_eq!(panic.wait_helper_timeout(LIMIT), Some(Ok(())));
++    drain(&registry);
++}
++#[test]
++fn registration_while_previous_reaper_is_exiting_keeps_all_handles_owned() {
++    let registry = Arc::new(Registry::default());
++    let (exiting, release) = registry.hooks.pause(Point::ReaperExit);
++    let first = start(&registry, || Ok(())).unwrap();
++    assert_eq!(first.wait_timeout(LIMIT), Some(Ok(())));
++    exiting.recv_timeout(LIMIT).unwrap();
++    {
++        let state = registry.state.lock().unwrap();
++        assert_eq!(state.phase, Phase::Idle);
++        assert!(!state.current.as_ref().unwrap().is_finished());
++    }
++    let (created, received) = mpsc::channel();
++    let registering = registry.clone();
++    let creator = std::thread::spawn(move || {
++        created
++            .send(start(&registering, || Ok(())).unwrap())
++            .unwrap()
++    });
++    let second = received
++        .recv_timeout(LIMIT)
++        .expect("registration joined a still-exiting reaper");
++    creator.join().unwrap();
++    assert_eq!(second.wait_timeout(LIMIT), Some(Ok(())));
++    {
++        let state = registry.state.lock().unwrap();
++        assert_eq!(
++            state.phase,
++            Phase::Running,
++            "successor retired before joining its predecessor"
++        );
++        assert!(!state.retiring.as_ref().unwrap().is_finished());
++    }
++    release.send(()).unwrap();
++    drain(&registry);
++    assert_eq!(first.helper_result(), Some(Ok(())));
++    assert_eq!(second.helper_result(), Some(Ok(())));
++}
++
++#[test]
++fn every_constructor_unwind_after_spawn_keeps_owned_handles() {
++    for point in [
++        Point::HelperReturned,
++        Point::HelperHandedOff,
++        Point::ReaperReserved,
++        Point::ReaperReturned,
++        Point::ReaperHandedOff,
++        Point::BeforeWorker,
++        Point::WorkerReturned,
++        Point::WorkerHandedOff,
++        Point::BeforePublication,
++    ] {
++        let registry = Arc::new(Registry::default());
++        registry.hooks.panic(point);
++        let completion = MappedCompletion::new();
++        let stopped = Arc::new(AtomicBool::new(false));
++        let stop = stopped.clone();
++        let entered = Arc::new(AtomicBool::new(false));
++        let worker_entered = entered.clone();
++        let attempt = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
++            registry.spawn(
++                move |ready| {
++                    ready.mark();
++                    worker_entered.store(true, Ordering::Release);
++                    while !stop.load(Ordering::Acquire) {
++                        std::thread::yield_now();
++                    }
++                    Ok(())
++                },
++                completion.clone(),
++                stopped,
++                None,
++            )
++        }));
++        assert!(attempt.is_err(), "unwind point was not reached: {point:?}");
++        let next = start(&registry, || Ok(())).unwrap();
++        assert_eq!(next.wait_timeout(LIMIT), Some(Ok(())));
++        drain(&registry);
++        let spawned = matches!(
++            point,
++            Point::WorkerReturned | Point::WorkerHandedOff | Point::BeforePublication
++        );
++        assert_eq!(entered.load(Ordering::Acquire), spawned, "{point:?}");
++        assert_eq!(
++            completion.result(),
++            if spawned { Some(Ok(())) } else { None },
++            "{point:?}"
++        );
++        assert_eq!(
++            completion.helper_result(),
++            Some(Ok(())),
++            "unjoined helper at {point:?}"
++        );
++    }
++}
++
++#[test]
++fn spawn_failures_preserve_error_and_leave_no_notification_worker() {
++    for (point, stage) in [
++        (Point::HelperSpawn, MappedStartStage::HelperSpawn),
++        (Point::ReaperSpawn, MappedStartStage::ReaperSpawn),
++        (Point::WorkerSpawn, MappedStartStage::WorkerSpawn),
++    ] {
++        let registry = Arc::new(Registry::default());
++        registry.hooks.error(point);
++        let entered = Arc::new(AtomicBool::new(false));
++        let worker_entered = entered.clone();
++        let error = start(&registry, move || {
++            worker_entered.store(true, Ordering::Release);
++            Ok(())
++        })
++        .unwrap_err();
++        let source = error
++            .get_ref()
++            .unwrap()
++            .downcast_ref::<MappedStartError>()
++            .unwrap();
++        assert_eq!(source.stage(), stage);
++        assert_eq!(source.cause.raw_os_error(), Some(libc::EAGAIN));
++        let observed = source.completion();
++        assert_eq!(observed.result(), None);
++        let next = start(&registry, || Ok(())).unwrap();
++        assert_eq!(next.wait_timeout(LIMIT), Some(Ok(())));
++        drain(&registry);
++        assert!(!entered.load(Ordering::Acquire));
++        assert_eq!(
++            observed.helper_result(),
++            if point == Point::HelperSpawn {
++                None
++            } else {
++                Some(Ok(()))
++            }
++        );
++    }
++}
++
++#[test]
++fn failed_helper_readiness_stays_owned_until_later_successful_constructor() {
++    let registry = Arc::new(Registry::default());
++    registry.hooks.panic(Point::HelperEntry);
++    let error = start(&registry, || {
++        panic!("worker started before helper readiness")
++    })
++    .unwrap_err();
++    let source = error
++        .get_ref()
++        .unwrap()
++        .downcast_ref::<MappedStartError>()
++        .unwrap();
++    assert_eq!(source.stage(), MappedStartStage::HelperReadiness);
++    let completion = source.completion();
++    assert_eq!(completion.result(), None);
++    assert_eq!(completion.helper_result(), None);
++    {
++        let state = registry.state.lock().unwrap();
++        assert_eq!(state.records.len(), 1);
++        assert_eq!(state.phase, Phase::Idle);
++        assert!(state.current.is_none());
++    }
++    let next = start(&registry, || Ok(())).unwrap();
++    assert_eq!(next.wait_timeout(LIMIT), Some(Ok(())));
++    drain(&registry);
++    assert_eq!(
++        completion.helper_result(),
++        Some(Err(MappedHelperFailure::Panicked))
++    );
++}
++
++#[test]
++fn pending_helper_readiness_does_not_serialize_another_constructor() {
++    let registry = Arc::new(Registry::default());
++    let (entered, release) = registry.hooks.pause(Point::HelperEntry);
++    let other = registry.clone();
++    let (ready, received) = mpsc::channel();
++    let constructor =
++        std::thread::spawn(move || ready.send(start(&other, || Ok(())).unwrap()).unwrap());
++    entered.recv_timeout(LIMIT).unwrap();
++    let second = start(&registry, || Ok(())).unwrap();
++    let independent = second.wait_timeout(Duration::from_millis(400));
++    assert!(received.try_recv().is_err());
++    release.send(()).unwrap();
++    let first = received.recv_timeout(LIMIT).unwrap();
++    constructor.join().unwrap();
++    assert_eq!(first.wait_timeout(LIMIT), Some(Ok(())));
++    drain(&registry);
++    assert_eq!(
++        independent,
++        Some(Ok(())),
++        "another constructor waited for A's helper readiness"
++    );
++}
++
++#[test]
++fn failed_successor_recovery_retains_two_handles_without_retry() {
++    let registry = Arc::new(Registry::default());
++    let (exiting, release) = registry.hooks.pause(Point::ReaperExit);
++    let first = start(&registry, || Ok(())).unwrap();
++    assert_eq!(first.wait_timeout(LIMIT), Some(Ok(())));
++    exiting.recv_timeout(LIMIT).unwrap();
++    registry.hooks.panic(Point::ReaperEntry);
++    let error = start(&registry, || {
++        panic!("worker started after failed reaper readiness")
++    })
++    .unwrap_err();
++    let source = error
++        .get_ref()
++        .unwrap()
++        .downcast_ref::<MappedStartError>()
++        .unwrap();
++    assert_eq!(source.stage(), MappedStartStage::ReaperReadiness);
++    let failed = source.completion();
++    {
++        let state = registry.state.lock().unwrap();
++        assert_eq!(state.phase, Phase::Recovering);
++        assert!(state.current.is_none() && state.retiring.is_none());
++        assert!(state.recovering_retiring);
++    }
++    assert_eq!(failed.result(), None);
++    assert_eq!(failed.helper_result(), None);
++    release.send(()).unwrap();
++    let deadline = std::time::Instant::now() + LIMIT;
++    loop {
++        let state = registry.state.lock().unwrap();
++        if state.phase == Phase::Idle {
++            assert!(state.current.is_none() && state.retiring.is_none());
++            assert!(!state.recovering_current && !state.recovering_retiring);
++            assert_eq!(state.records.len(), 1);
++            break;
++        }
++        assert!(std::time::Instant::now() < deadline);
++        drop(state);
++        std::thread::yield_now();
++    }
++    assert_eq!(
++        failed.helper_result(),
++        None,
++        "recovery helper was reported joined without a cleanup actor"
++    );
++    let next = start(&registry, || Ok(())).unwrap();
++    assert_eq!(next.wait_timeout(LIMIT), Some(Ok(())));
++    drain(&registry);
++    assert_eq!(failed.helper_result(), Some(Ok(())));
++    assert_eq!(
++        failed.reaper_recovery(),
++        [MappedReaperCleanup::Panicked, MappedReaperCleanup::Joined]
++    );
++    assert_eq!(registry.state.lock().unwrap().reaper_panics, 1);
++}
++
++#[test]
++fn constructor_reservation_prevents_reaper_retirement_during_spawn_handoff() {
++    let registry = Arc::new(Registry::default());
++    let (finish, finished) = mpsc::channel();
++    let first = start(&registry, move || {
++        finished.recv_timeout(LIMIT).unwrap();
++        Ok(())
++    })
++    .unwrap();
++    let (reserved, release) = registry.hooks.pause(Point::Reserved);
++    let other = registry.clone();
++    let creator = std::thread::spawn(move || start(&other, || Ok(())).unwrap());
++    reserved.recv_timeout(LIMIT).unwrap();
++    finish.send(()).unwrap();
++    assert_eq!(first.wait_timeout(LIMIT), Some(Ok(())));
++    assert_eq!(first.wait_helper_timeout(LIMIT), Some(Ok(())));
++    {
++        let state = registry.state.lock().unwrap();
++        assert_eq!(state.phase, Phase::Running);
++        assert_eq!(state.reservations, 1);
++        assert!(state.current.is_some());
++    }
++    release.send(()).unwrap();
++    let second = creator.join().unwrap();
++    assert_eq!(second.wait_timeout(LIMIT), Some(Ok(())));
++    drain(&registry);
++}
++
++#[test]
++fn helper_pre_join_unwind_restores_then_consumes_exact_worker_handle() {
++    let registry = Arc::new(Registry::default());
++    registry.hooks.panic(Point::BeforeJoin);
++    let completion = start(&registry, || Ok(())).unwrap();
++    assert_eq!(completion.wait_timeout(LIMIT), Some(Ok(())));
++    assert_eq!(
++        completion.wait_helper_timeout(LIMIT),
++        Some(Err(MappedHelperFailure::Panicked))
++    );
++    drain(&registry);
++}
++
++struct HeldPayload {
++    entered: mpsc::Sender<()>,
++    release: mpsc::Receiver<()>,
++}
++impl Drop for HeldPayload {
++    fn drop(&mut self) {
++        self.entered.send(()).unwrap();
++        self.release.recv_timeout(LIMIT).unwrap();
++    }
++}
++#[test]
++fn worker_result_precedes_helper_payload_cleanup_and_other_worker_join() {
++    let registry = Arc::new(Registry::default());
++    let (entered, waiting) = mpsc::channel();
++    let (release, resume) = mpsc::channel();
++    let first = start(&registry, move || {
++        std::panic::panic_any(HeldPayload {
++            entered,
++            release: resume,
++        })
++    })
++    .unwrap();
++    waiting.recv_timeout(LIMIT).unwrap();
++    assert_eq!(first.result(), Some(Err(MappedWorkerFailure::Panicked)));
++    assert_eq!(first.helper_result(), None);
++    let second = start(&registry, || Ok(())).unwrap();
++    let independent = second.wait_timeout(Duration::from_millis(400));
++    release.send(()).unwrap();
++    drain(&registry);
++    assert_eq!(first.helper_result(), Some(Ok(())));
++    assert_eq!(second.helper_result(), Some(Ok(())));
++    assert_eq!(
++        independent,
++        Some(Ok(())),
++        "A's helper payload cleanup delayed B's worker join"
++    );
++}
++
++thread_local! { static HELPER_TLS: std::cell::RefCell<Option<HeldPayload>> = const { std::cell::RefCell::new(None) }; }
++#[test]
++fn helper_native_tls_keeps_cleanup_pending_without_delaying_other_worker() {
++    let registry = Arc::new(Registry::default());
++    let (entered, waiting) = mpsc::channel();
++    let (release, resume) = mpsc::channel();
++    registry.hooks.actions.lock().unwrap().insert(
++        Point::HelperAfterWorker,
++        Action::Tls(HeldPayload {
++            entered,
++            release: resume,
++        }),
++    );
++    let first = start(&registry, || Ok(())).unwrap();
++    waiting.recv_timeout(LIMIT).unwrap();
++    assert_eq!(first.result(), Some(Ok(())));
++    assert_eq!(first.helper_result(), None);
++    let second = start(&registry, || Ok(())).unwrap();
++    let independent = second.wait_timeout(Duration::from_millis(400));
++    release.send(()).unwrap();
++    drain(&registry);
++    assert_eq!(first.helper_result(), Some(Ok(())));
++    assert_eq!(second.helper_result(), Some(Ok(())));
++    assert_eq!(
++        independent,
++        Some(Ok(())),
++        "held helper native TLS delayed B's notification-worker join"
++    );
++}
++
++#[test]
++fn secondary_payload_panic_is_reported_as_incomplete_reclamation() {
++    struct Primary(Arc<std::sync::atomic::AtomicUsize>);
++    struct Secondary(Arc<std::sync::atomic::AtomicUsize>);
++    impl Drop for Primary {
++        fn drop(&mut self) {
++            std::panic::panic_any(Secondary(self.0.clone()));
++        }
++    }
++    impl Drop for Secondary {
++        fn drop(&mut self) {
++            self.0.fetch_add(1, Ordering::SeqCst);
++            panic!("secondary destructor must not run");
++        }
++    }
++    let drops = Arc::new(std::sync::atomic::AtomicUsize::new(0));
++    let observed = drops.clone();
++    let registry = Arc::new(Registry::default());
++    let completion = start(&registry, move || std::panic::panic_any(Primary(drops))).unwrap();
++    assert_eq!(
++        completion.wait_timeout(LIMIT),
++        Some(Err(MappedWorkerFailure::Panicked))
++    );
++    assert_eq!(
++        completion.wait_helper_timeout(LIMIT),
++        Some(Err(MappedHelperFailure::PanicPayloadLeaked))
++    );
++    drain(&registry);
++    assert_eq!(observed.load(Ordering::SeqCst), 0);
++}
++
++#[test]
++fn two_connections_own_two_notification_threads_two_helpers_and_one_reaper() {
++    let registry = Arc::new(Registry::default());
++    let (release_a, wait_a) = mpsc::channel();
++    let (release_b, wait_b) = mpsc::channel();
++    let a = start(&registry, move || {
++        wait_a.recv_timeout(LIMIT).unwrap();
++        Ok(())
++    })
++    .unwrap();
++    let b = start(&registry, move || {
++        wait_b.recv_timeout(LIMIT).unwrap();
++        Ok(())
++    })
++    .unwrap();
++    let deadline = std::time::Instant::now() + LIMIT;
++    let entries = loop {
++        let entries = registry.hooks.entries.lock().unwrap().clone();
++        if entries.len() == 5 {
++            break entries;
++        }
++        assert!(std::time::Instant::now() < deadline);
++        std::thread::yield_now();
++    };
++    let unique: std::collections::HashSet<_> = entries.iter().map(|(_, tid)| *tid).collect();
++    assert_eq!(unique.len(), 5);
++    for (point, expected) in [
++        (Point::WorkerEntry, 2),
++        (Point::HelperEntry, 2),
++        (Point::ReaperEntry, 1),
++    ] {
++        assert_eq!(
++            entries.iter().filter(|(p, _)| *p == point).count(),
++            expected
++        );
++    }
++    let names: Vec<_> = entries
++        .iter()
++        .map(|(point, tid)| {
++            (
++                *point,
++                *tid,
++                std::fs::read_to_string(format!("/proc/self/task/{tid}/comm")).unwrap(),
++            )
++        })
++        .collect();
++    eprintln!(
++        "MAPPED_THREAD_RESOURCES connections=2 notification_threads=2 joining_helpers=2 resource_reapers=1 live={names:?}"
++    );
++    release_a.send(()).unwrap();
++    release_b.send(()).unwrap();
++    assert_eq!(a.wait_timeout(LIMIT), Some(Ok(())));
++    assert_eq!(b.wait_timeout(LIMIT), Some(Ok(())));
++    drain(&registry);
++}
++
++#[test]
++fn failed_helper_native_tls_does_not_delay_startup_error_or_b_worker_join() {
++    let registry = Arc::new(Registry::default());
++    let (entered, waiting) = mpsc::channel();
++    let (release, resume) = mpsc::channel();
++    registry.hooks.actions.lock().unwrap().insert(
++        Point::HelperEntry,
++        Action::PanicTls(HeldPayload {
++            entered,
++            release: resume,
++        }),
++    );
++    let error = start(&registry, || panic!("worker started before readiness")).unwrap_err();
++    let source = error
++        .get_ref()
++        .unwrap()
++        .downcast_ref::<MappedStartError>()
++        .unwrap();
++    assert_eq!(source.stage(), MappedStartStage::HelperReadiness);
++    let first = source.completion();
++    waiting.recv_timeout(LIMIT).unwrap();
++    assert_eq!(first.result(), None);
++    assert_eq!(first.helper_result(), None);
++    let second = start(&registry, || Ok(())).unwrap();
++    let independent = second.wait_timeout(Duration::from_millis(400));
++    release.send(()).unwrap();
++    drain(&registry);
++    assert_eq!(
++        first.helper_result(),
++        Some(Err(MappedHelperFailure::Panicked))
++    );
++    assert_eq!(second.helper_result(), Some(Ok(())));
++    assert_eq!(
++        independent,
++        Some(Ok(())),
++        "failed helper native TLS delayed B's notification-worker join"
++    );
++}
++
++#[test]
++fn repeated_failed_start_records_have_no_automatic_retries_and_later_drain() {
++    let registry = Arc::new(Registry::default());
++    let mut completions = Vec::new();
++    for point in [
++        Point::HelperEntry,
++        Point::HelperEntry,
++        Point::ReaperEntry,
++        Point::ReaperEntry,
++    ] {
++        registry.hooks.panic(point);
++        let error = start(&registry, || {
++            panic!("notification worker admitted on failed startup")
++        })
++        .unwrap_err();
++        let completion = error
++            .get_ref()
++            .unwrap()
++            .downcast_ref::<MappedStartError>()
++            .unwrap()
++            .completion();
++        let deadline = std::time::Instant::now() + LIMIT;
++        loop {
++            let state = registry.state.lock().unwrap();
++            if state.phase == Phase::Idle {
++                assert_eq!(state.records.len(), completions.len() + 1);
++                break;
++            }
++            assert!(std::time::Instant::now() < deadline);
++            drop(state);
++            std::thread::yield_now();
++        }
++        assert_eq!(completion.result(), None);
++        assert_eq!(completion.helper_result(), None);
++        completions.push(completion);
++    }
++    let entries = registry.hooks.entries.lock().unwrap().clone();
++    assert_eq!(
++        entries
++            .iter()
++            .filter(|(p, _)| *p == Point::ReaperEntry)
++            .count(),
++        2
++    );
++    assert_eq!(
++        entries
++            .iter()
++            .filter(|(p, _)| *p == Point::WorkerEntry)
++            .count(),
++        0
++    );
++    let next = start(&registry, || Ok(())).unwrap();
++    assert_eq!(next.wait_timeout(LIMIT), Some(Ok(())));
++    drain(&registry);
++    for (index, completion) in completions.iter().enumerate() {
++        assert_eq!(
++            completion.helper_result(),
++            Some(if index < 2 {
++                Err(MappedHelperFailure::Panicked)
++            } else {
++                Ok(())
++            })
++        );
++        assert_eq!(
++            completion.reaper_recovery(),
++            if index < 2 {
++                [MappedReaperCleanup::NotRequired; 2]
++            } else {
++                [
++                    MappedReaperCleanup::Panicked,
++                    MappedReaperCleanup::NotRequired,
++                ]
++            }
++        );
++    }
++}
++
++#[test]
++fn failed_notification_entry_keeps_adapter_unpublished_and_preserves_actual_join() {
++    let registry = Arc::new(Registry::default());
++    let (entered, waiting) = mpsc::channel();
++    let (release, resume) = mpsc::channel();
++    registry.hooks.actions.lock().unwrap().insert(
++        Point::WorkerEntry,
++        Action::PanicTls(HeldPayload {
++            entered,
++            release: resume,
++        }),
++    );
++    let error = start(&registry, || {
++        panic!("private notification body ran after its pre-entry panic")
++    })
++    .unwrap_err();
++    let source = error
++        .get_ref()
++        .unwrap()
++        .downcast_ref::<MappedStartError>()
++        .unwrap();
++    assert_eq!(source.stage(), MappedStartStage::WorkerReadiness);
++    let first = source.completion();
++    waiting.recv_timeout(LIMIT).unwrap();
++    assert_eq!(first.result(), None);
++    assert_eq!(first.helper_result(), None);
++    let second = start(&registry, || Ok(())).unwrap();
++    let independent = second.wait_timeout(Duration::from_millis(400));
++    release.send(()).unwrap();
++    assert_eq!(
++        first.wait_timeout(LIMIT),
++        Some(Err(MappedWorkerFailure::Panicked))
++    );
++    drain(&registry);
++    assert_eq!(first.helper_result(), Some(Ok(())));
++    assert_eq!(second.helper_result(), Some(Ok(())));
++    assert_eq!(
++        independent,
++        Some(Ok(())),
++        "A's failed notification entry delayed B's actual worker join"
++    );
++}
+diff --git a/reverie-rpc-transport/src/server.rs b/reverie-rpc-transport/src/server.rs
+index 28857d0b6ed1d93552e4ede98793f0697218f88c..03350db7db803fb5c29fc9d519427e3657cfc72f 100644
+--- a/reverie-rpc-transport/src/server.rs
++++ b/reverie-rpc-transport/src/server.rs
+@@ -24,6 +24,8 @@ use std::sync::atomic::AtomicUsize;
+ use std::sync::atomic::Ordering;
+ 
+ use reverie::GlobalTool;
++use tokio::io::AsyncRead;
++use tokio::io::AsyncWrite;
+ use tokio::net::UnixListener;
+ use tokio::net::UnixStream;
+ use tokio::sync::Notify;
+@@ -268,15 +270,34 @@ where
+     serve_connection_inner(global, config, stream, None, None).await
+ }
+ 
+-async fn serve_connection_inner<G>(
++/// Serve an independently owned asynchronous byte stream using the same
++/// handshake, framing and GlobalTool dispatch as a Unix connection.
++///
++/// This reports logical connection completion, not process exit. The caller
++/// owns task lifetime/cancellation and must keep separate streams independently
++/// polled; a pending response must not block other connections.
++pub async fn serve_stream<G, S>(
++    global: Arc<G>,
++    config: G::Config,
++    stream: S,
++) -> Result<(), RpcError>
++where
++    G: GlobalTool,
++    S: AsyncRead + AsyncWrite + Unpin + Send,
++{
++    serve_connection_inner(global, config, stream, None, None).await
++}
++
++async fn serve_connection_inner<G, S>(
+     global: Arc<G>,
+     config: G::Config,
+-    mut stream: UnixStream,
++    mut stream: S,
+     readiness: Option<Arc<AtomicBool>>,
+     connection_readiness: Option<Arc<AtomicBool>>,
+ ) -> Result<(), RpcError>
+ where
+     G: GlobalTool,
++    S: AsyncRead + AsyncWrite + Unpin + Send,
+ {
+     // space (it is a separate process), so the coordinator sends it first.
+     //
+diff --git a/reverie-rpc-transport/tests/mapped_rpc.rs b/reverie-rpc-transport/tests/mapped_rpc.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..3beafaf09087e7f746e3fb07a614b182b36fd50d
+--- /dev/null
++++ b/reverie-rpc-transport/tests/mapped_rpc.rs
+@@ -0,0 +1,334 @@
++#![cfg(target_os = "linux")]
++
++use std::io::Read;
++use std::io::Write;
++use std::io::{self};
++use std::sync::Arc;
++use std::sync::atomic::AtomicI64;
++use std::sync::atomic::AtomicUsize;
++use std::sync::atomic::Ordering;
++use std::time::Duration;
++
++use async_trait::async_trait;
++use reverie::GlobalRPC;
++use reverie::GlobalTool;
++use reverie::Tid;
++use reverie_rpc_transport::BlockingRpcClient;
++use reverie_rpc_transport::RequestEnvelope;
++use reverie_rpc_transport::RpcError;
++use reverie_rpc_transport::codec;
++use reverie_rpc_transport::mapped::MappedFailure;
++use reverie_rpc_transport::mapped::MappedStream;
++use reverie_rpc_transport::serve_stream;
++use serde::Deserialize;
++use serde::Deserializer;
++use serde::Serialize;
++use serde::Serializer;
++
++const LIMIT: Duration = Duration::from_secs(5);
++
++#[derive(Debug, Serialize, Deserialize)]
++enum Request {
++    Wait,
++    Release,
++    Large,
++    Echo(Vec<u8>),
++}
++#[derive(Default)]
++struct Global {
++    entered: tokio::sync::Notify,
++    release: tokio::sync::Notify,
++}
++#[async_trait]
++impl GlobalTool for Global {
++    type Request = Request;
++    type Response = Vec<u8>;
++    type Config = Vec<u8>;
++    async fn receive_rpc(&self, _: Tid, request: Request) -> Vec<u8> {
++        match request {
++            Request::Wait => {
++                self.entered.notify_one();
++                self.release.notified().await;
++                b"released".to_vec()
++            }
++            Request::Release => {
++                self.release.notify_one();
++                b"release acknowledged".to_vec()
++            }
++            Request::Large => {
++                self.entered.notify_one();
++                vec![0x93; 262_147]
++            }
++            Request::Echo(bytes) => bytes,
++        }
++    }
++}
++
++fn runtime() -> tokio::runtime::Runtime {
++    tokio::runtime::Builder::new_current_thread()
++        .enable_all()
++        .max_blocking_threads(1)
++        .build()
++        .unwrap()
++}
++
++#[test]
++fn independent_pending_rpcs_can_release_each_other() {
++    runtime().block_on(async {
++        let global = Arc::new(Global::default());
++        let (host_a, guest_a) = MappedStream::pair(17).unwrap();
++        let (host_b, guest_b) = MappedStream::pair(19).unwrap();
++        let a = tokio::spawn(serve_stream(
++            global.clone(),
++            b"config-a".to_vec(),
++            host_a.into_async().unwrap(),
++        ));
++        let b = tokio::spawn(serve_stream(
++            global.clone(),
++            b"config-b".to_vec(),
++            host_b.into_async().unwrap(),
++        ));
++        let (done_a, result_a) = tokio::sync::oneshot::channel();
++        let client_a = std::thread::spawn(move || {
++            let client =
++                BlockingRpcClient::<Global, _>::from_connected_stream(guest_a, Tid::from_raw(1))
++                    .unwrap();
++            assert_eq!(client.config(), b"config-a");
++            done_a
++                .send(client.try_send_rpc(Request::Wait).unwrap())
++                .unwrap();
++        });
++        tokio::time::timeout(LIMIT, global.entered.notified())
++            .await
++            .unwrap();
++        let (done_b, result_b) = tokio::sync::oneshot::channel();
++        let client_b = std::thread::spawn(move || {
++            let client =
++                BlockingRpcClient::<Global, _>::from_connected_stream(guest_b, Tid::from_raw(2))
++                    .unwrap();
++            assert_eq!(client.config(), b"config-b");
++            done_b
++                .send(client.try_send_rpc(Request::Release).unwrap())
++                .unwrap();
++        });
++        assert_eq!(
++            tokio::time::timeout(LIMIT, result_b)
++                .await
++                .expect("B was blocked behind A")
++                .unwrap(),
++            b"release acknowledged"
++        );
++        assert_eq!(
++            tokio::time::timeout(LIMIT, result_a)
++                .await
++                .unwrap()
++                .unwrap(),
++            b"released"
++        );
++        client_a.join().unwrap();
++        client_b.join().unwrap();
++        tokio::time::timeout(LIMIT, a)
++            .await
++            .unwrap()
++            .unwrap()
++            .unwrap();
++        tokio::time::timeout(LIMIT, b)
++            .await
++            .unwrap()
++            .unwrap()
++            .unwrap();
++    });
++}
++
++fn read_frame(stream: &mut MappedStream) -> Vec<u8> {
++    let mut header = [0; 4];
++    stream.read_exact(&mut header).unwrap();
++    let len = u32::from_be_bytes(header) as usize;
++    assert!(len <= codec::DEFAULT_MAX_FRAME_LEN);
++    let mut bytes = vec![0; len];
++    stream.read_exact(&mut bytes).unwrap();
++    bytes
++}
++fn write_frame(stream: &mut MappedStream, bytes: &[u8]) {
++    stream
++        .write_all(&(bytes.len() as u32).to_be_bytes())
++        .unwrap();
++    stream.write_all(bytes).unwrap();
++    stream.flush().unwrap();
++}
++
++#[test]
++fn blocked_large_response_leaves_other_connection_and_blocking_pool_available() {
++    runtime().block_on(async {
++        let global = Arc::new(Global::default());
++        let (host_a, mut guest_a) = MappedStream::pair(31).unwrap();
++        let (host_b, guest_b) = MappedStream::pair(23).unwrap();
++        let a = tokio::spawn(serve_stream(
++            global.clone(),
++            vec![],
++            host_a.into_async().unwrap(),
++        ));
++        let b = tokio::spawn(serve_stream(
++            global.clone(),
++            vec![],
++            host_b.into_async().unwrap(),
++        ));
++        let (release, allow_read) = std::sync::mpsc::channel();
++        let (done_a, result_a) = tokio::sync::oneshot::channel();
++        let client_a = std::thread::spawn(move || {
++            assert_eq!(
++                codec::decode::<Vec<u8>>(&read_frame(&mut guest_a)).unwrap(),
++                Vec::<u8>::new()
++            );
++            write_frame(
++                &mut guest_a,
++                &codec::encode(&RequestEnvelope {
++                    from: Tid::from_raw(3),
++                    request: Request::Large,
++                })
++                .unwrap(),
++            );
++            allow_read.recv_timeout(LIMIT).unwrap();
++            let response: Vec<u8> = codec::decode(&read_frame(&mut guest_a)).unwrap();
++            assert_eq!(
++                response,
++                vec![0x93; 262_147],
++                "large response changed bytes"
++            );
++            done_a.send(()).unwrap();
++        });
++        tokio::time::timeout(LIMIT, global.entered.notified())
++            .await
++            .unwrap();
++        let marker = tokio::task::spawn_blocking(|| 42);
++        assert_eq!(
++            tokio::time::timeout(LIMIT, marker)
++                .await
++                .expect("mapped response occupied the sole blocking worker")
++                .unwrap(),
++            42
++        );
++        let (done_b, result_b) = tokio::sync::oneshot::channel();
++        let client_b = std::thread::spawn(move || {
++            let client =
++                BlockingRpcClient::<Global, _>::from_connected_stream(guest_b, Tid::from_raw(4))
++                    .unwrap();
++            let sent: Vec<u8> = (0..8193).map(|i| (i * 7) as u8).collect();
++            assert_eq!(
++                client.try_send_rpc(Request::Echo(sent.clone())).unwrap(),
++                sent
++            );
++            done_b.send(()).unwrap();
++        });
++        tokio::time::timeout(LIMIT, result_b)
++            .await
++            .expect("unread A response blocked B")
++            .unwrap();
++        release.send(()).unwrap();
++        tokio::time::timeout(LIMIT, result_a)
++            .await
++            .unwrap()
++            .unwrap();
++        client_a.join().unwrap();
++        client_b.join().unwrap();
++        tokio::time::timeout(LIMIT, a)
++            .await
++            .unwrap()
++            .unwrap()
++            .unwrap();
++        tokio::time::timeout(LIMIT, b)
++            .await
++            .unwrap()
++            .unwrap()
++            .unwrap();
++    });
++}
++
++#[test]
++fn partial_headers_are_failures_and_empty_eof_remains_closed() {
++    runtime().block_on(async {
++        use tokio::io::AsyncWriteExt;
++        for prefix in 0..4 {
++            let (mut writer, mut reader) = tokio::io::duplex(8);
++            writer.write_all(&[0, 0, 0][..prefix]).await.unwrap(); drop(writer);
++            let error = codec::read_message(&mut reader, 1024).await.unwrap_err();
++            if prefix == 0 { assert!(matches!(error, RpcError::Closed)); }
++            else { assert!(matches!(error, RpcError::Io(ref e) if e.kind() == io::ErrorKind::UnexpectedEof), "partial header {prefix} was accepted as clean closure: {error:?}"); }
++        }
++        for payload in [b"".as_slice(), b"whole"] {
++            let (mut writer, mut reader) = tokio::io::duplex(32);
++            codec::write_message(&mut writer, payload).await.unwrap(); drop(writer);
++            assert_eq!(codec::read_message(&mut reader, 1024).await.unwrap(), payload);
++            assert!(matches!(codec::read_message(&mut reader, 1024).await, Err(RpcError::Closed)));
++        }
++    });
++}
++
++#[test]
++fn mapped_partial_request_is_not_a_successful_server_completion() {
++    runtime().block_on(async {
++        for prefix in 1..4 {
++            let (host, mut guest) = MappedStream::pair(32).unwrap();
++            let server = tokio::spawn(serve_stream(
++                Arc::new(Global::default()),
++                vec![],
++                host.into_async().unwrap(),
++            ));
++            let (done, result) = tokio::sync::oneshot::channel();
++            let sender = std::thread::spawn(move || {
++                read_frame(&mut guest);
++                guest.write_all(&[0, 0, 0][..prefix]).unwrap();
++                guest.close_write();
++                done.send(()).unwrap();
++            });
++            tokio::time::timeout(LIMIT, result).await.unwrap().unwrap();
++            let error = tokio::time::timeout(LIMIT, server)
++                .await
++                .unwrap()
++                .unwrap()
++                .unwrap_err();
++            assert!(
++                matches!(error, RpcError::Io(ref e) if e.kind() == io::ErrorKind::UnexpectedEof),
++                "partial mapped header {prefix}: {error:?}"
++            );
++            sender.join().unwrap();
++        }
++    });
++}
++
++#[test]
++fn cancellation_wakes_client_waiting_inside_rpc() {
++    runtime().block_on(async {
++        let global = Arc::new(Global::default());
++        let (host, guest) = MappedStream::pair(7).unwrap();
++        let abort = host.abort_handle();
++        let server = tokio::spawn(serve_stream(global.clone(), vec![], host.into_async().unwrap()));
++        let (done, result) = tokio::sync::oneshot::channel();
++        let client = std::thread::spawn(move || {
++            let client = BlockingRpcClient::<Global, _>::from_connected_stream(guest, Tid::from_raw(5)).unwrap();
++            let error = client.try_send_rpc(Request::Wait).unwrap_err();
++            assert!(matches!(error, RpcError::Io(ref e) if e.kind() == io::ErrorKind::ConnectionAborted), "{error:?}");
++            done.send(()).unwrap();
++        });
++        tokio::time::timeout(LIMIT, global.entered.notified()).await.unwrap();
++        abort.abort(MappedFailure::Cancelled);
++        server.abort();
++        assert!(server.await.unwrap_err().is_cancelled());
++        tokio::time::timeout(LIMIT, result).await.unwrap().unwrap(); client.join().unwrap();
++    });
++}
++
++#[path = "mapped_rpc/process.rs"]
++mod process;
++
++#[path = "mapped_rpc/wakers.rs"]
++mod wakers;
++
++#[path = "mapped_rpc/late_registration.rs"]
++mod late_registration;
++
++#[path = "mapped_rpc/tls_join.rs"]
++mod tls_join;
++
++#[path = "mapped_rpc/registration.rs"]
++mod registration;
+diff --git a/reverie-rpc-transport/tests/mapped_rpc/late_registration.rs b/reverie-rpc-transport/tests/mapped_rpc/late_registration.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..4f491c1c85b75d166263b47335e2c5bfc4054770
+--- /dev/null
++++ b/reverie-rpc-transport/tests/mapped_rpc/late_registration.rs
+@@ -0,0 +1,215 @@
++use std::io;
++use std::mem::ManuallyDrop;
++use std::pin::Pin;
++use std::sync::Arc;
++use std::sync::Mutex;
++use std::sync::atomic::AtomicBool;
++use std::sync::atomic::Ordering;
++use std::sync::mpsc;
++use std::task::Context;
++use std::task::Poll;
++use std::task::RawWaker;
++use std::task::RawWakerVTable;
++use std::task::Wake;
++use std::task::Waker;
++use std::time::Duration;
++
++use reverie_rpc_transport::mapped::AsyncMappedStream;
++use reverie_rpc_transport::mapped::MappedStream;
++use reverie_rpc_transport::mapped::MappedWorkerFailure;
++use tokio::io::AsyncRead;
++use tokio::io::ReadBuf;
++
++const LIMIT: Duration = Duration::from_secs(3);
++type Task = Arc<Mutex<Option<AsyncMappedStream>>>;
++
++struct FirstWake {
++    entered: mpsc::Sender<()>,
++    release: Mutex<mpsc::Receiver<()>>,
++    fail: bool,
++}
++impl Wake for FirstWake {
++    fn wake(self: Arc<Self>) {
++        eprintln!("FIRST_WAKE_ENTER {:?}", std::thread::current().id());
++        self.entered.send(()).unwrap();
++        self.release.lock().unwrap().recv_timeout(LIMIT).unwrap();
++        if self.fail {
++            panic!("controlled first Waker failure");
++        }
++        eprintln!("FIRST_WAKE_RETURN");
++    }
++}
++
++struct Late {
++    task: Task,
++    in_stream_drop: Arc<AtomicBool>,
++    normal_stop: bool,
++    cloning: mpsc::Sender<()>,
++    release_clone: Mutex<mpsc::Receiver<()>>,
++    dropping: mpsc::Sender<()>,
++    dropped: mpsc::Sender<()>,
++}
++impl Drop for Late {
++    fn drop(&mut self) {
++        eprintln!("LATE_OWNER_DROP_ENTER {:?}", std::thread::current().id());
++        self.dropping.send(()).unwrap();
++        // An ordinary task-owned destructor. The failed-worker ordering leaves
++        // this final reference inside the stream being dropped under this lock.
++        // Do not turn the fixture's own reference disposal into a production
++        // failure. This callback models cleanup requiring the task mutex only
++        // during cancellation; ordinary owner disposal needs no such cleanup.
++        if self.normal_stop || self.in_stream_drop.load(Ordering::SeqCst) {
++            let _guard = self.task.lock().unwrap();
++            eprintln!("LATE_OWNER_DROP_ACQUIRED_TASK");
++        } else {
++            eprintln!("LATE_OWNER_DROP_OUTSIDE_STREAM_DROP");
++        }
++        self.dropped.send(()).unwrap();
++    }
++}
++
++// Each raw handle owns exactly one Arc strong reference. The clone callback is
++// thread-safe and preserves the original reference; only it adds a reference.
++// Wake/drop consume one reference, wake_by_ref preserves it. No product pointer
++// or shared-mapping memory is accessed by this vtable.
++unsafe fn clone_late(data: *const ()) -> RawWaker {
++    let arc = ManuallyDrop::new(unsafe { Arc::<Late>::from_raw(data.cast()) });
++    eprintln!("LATE_CLONE_ENTER {:?}", std::thread::current().id());
++    arc.cloning.send(()).unwrap();
++    arc.release_clone
++        .lock()
++        .unwrap()
++        .recv_timeout(LIMIT)
++        .unwrap();
++    let copy = Arc::clone(&arc);
++    eprintln!("LATE_CLONE_RETURN");
++    RawWaker::new(Arc::into_raw(copy).cast(), &LATE_VTABLE)
++}
++unsafe fn wake_late(data: *const ()) {
++    drop(unsafe { Arc::<Late>::from_raw(data.cast()) });
++}
++unsafe fn wake_late_ref(_: *const ()) {}
++unsafe fn drop_late(data: *const ()) {
++    drop(unsafe { Arc::<Late>::from_raw(data.cast()) });
++}
++static LATE_VTABLE: RawWakerVTable =
++    RawWakerVTable::new(clone_late, wake_late, wake_late_ref, drop_late);
++
++fn poll(stream: &mut AsyncMappedStream, waker: &Waker) -> Poll<io::Result<()>> {
++    let mut byte = [0];
++    let mut buffer = ReadBuf::new(&mut byte);
++    Pin::new(stream).poll_read(&mut Context::from_waker(waker), &mut buffer)
++}
++
++fn scenario(fail: bool) {
++    let (host, mut peer) = MappedStream::pair(17).unwrap();
++    let stream = host.into_async().unwrap();
++    let completion = stream.completion();
++    let task = Arc::new(Mutex::new(Some(stream)));
++    let (entered, first_entered) = mpsc::channel();
++    let (release_first, first_release) = mpsc::channel();
++    let first = Waker::from(Arc::new(FirstWake {
++        entered,
++        release: Mutex::new(first_release),
++        fail,
++    }));
++    assert!(poll(task.lock().unwrap().as_mut().unwrap(), &first).is_pending());
++    first_entered.recv_timeout(LIMIT).unwrap();
++    drop(first);
++
++    let (cloning, clone_entered) = mpsc::channel();
++    let (release_clone, clone_release) = mpsc::channel();
++    let (dropping, drop_entered) = mpsc::channel();
++    let (late_dropped, late_drop_done) = mpsc::channel();
++    let (stream_dropped, stream_drop_done) = mpsc::channel();
++    let (unlock, unlocked) = mpsc::channel();
++    let cancel_task = task.clone();
++    let in_stream_drop = Arc::new(AtomicBool::new(false));
++    let canceller = std::thread::spawn(move || {
++        let mut guard = cancel_task.lock().unwrap();
++        let owner = Arc::new(Late {
++            task: cancel_task.clone(),
++            in_stream_drop: in_stream_drop.clone(),
++            normal_stop: !fail,
++            cloning,
++            release_clone: Mutex::new(clone_release),
++            dropping,
++            dropped: late_dropped,
++        });
++        let late =
++            unsafe { Waker::from_raw(RawWaker::new(Arc::into_raw(owner).cast(), &LATE_VTABLE)) };
++        let result = poll(guard.as_mut().unwrap(), &late);
++        eprintln!("LATE_POLL_RESULT {result:?}");
++        if fail {
++            assert!(
++                matches!(result, Poll::Ready(Err(ref e)) if e.kind() == io::ErrorKind::ConnectionReset)
++            );
++        } else {
++            assert!(result.is_pending());
++        }
++        drop(late);
++        eprintln!("STREAM_DROP_ENTER {:?}", std::thread::current().id());
++        in_stream_drop.store(true, Ordering::SeqCst);
++        drop(guard.take());
++        in_stream_drop.store(false, Ordering::SeqCst);
++        eprintln!("STREAM_DROP_RETURN");
++        stream_dropped.send(()).unwrap();
++        unlocked.recv_timeout(LIMIT).unwrap();
++        drop(guard);
++    });
++    clone_entered.recv_timeout(LIMIT).unwrap();
++    // Safe normal Drop cannot access this stream while the in-flight poll owns
++    // its task guard. In the failing case, worker failure is independent of it.
++    assert!(matches!(
++        task.try_lock(),
++        Err(std::sync::TryLockError::WouldBlock)
++    ));
++    eprintln!("TASK_GUARD_EXCLUSIVE_DURING_CLONE");
++    if fail {
++        release_first.send(()).unwrap();
++        use std::io::Read;
++        assert_eq!(
++            peer.read(&mut [0]).unwrap_err().kind(),
++            io::ErrorKind::ConnectionReset
++        );
++        assert_eq!(
++            completion.wait_timeout(Duration::from_millis(100)),
++            None,
++            "worker joined while an admitted Waker clone was still paused"
++        );
++        eprintln!("FAILED_WORKER_COMPLETION_PENDING_DURING_ADMITTED_CLONE");
++    }
++    release_clone.send(()).unwrap();
++    if fail {
++        drop_entered.recv_timeout(LIMIT).unwrap();
++    }
++    assert!(
++        stream_drop_done.recv_timeout(LIMIT).is_ok(),
++        "stream Drop consumed a Waker published after failed-worker cleanup and blocked on the task lock"
++    );
++    if !fail {
++        release_first.send(()).unwrap();
++        drop_entered.recv_timeout(LIMIT).unwrap();
++        assert_eq!(completion.result(), None);
++    }
++    unlock.send(()).unwrap();
++    late_drop_done.recv_timeout(LIMIT).unwrap();
++    canceller.join().unwrap();
++    assert_eq!(
++        completion.wait_timeout(LIMIT),
++        Some(if fail {
++            Err(MappedWorkerFailure::Panicked)
++        } else {
++            Ok(())
++        })
++    );
++}
++
++#[test]
++fn failed_worker_late_registration_must_not_block_stream_drop() {
++    scenario(true);
++}
++#[test]
++fn normal_stop_waits_for_exclusive_poll_and_reaps_registered_waker() {
++    scenario(false);
++}
+diff --git a/reverie-rpc-transport/tests/mapped_rpc/native.rs b/reverie-rpc-transport/tests/mapped_rpc/native.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..19b45383d3fc5e2b44b3ceb07adb323af9550ac6
+--- /dev/null
++++ b/reverie-rpc-transport/tests/mapped_rpc/native.rs
+@@ -0,0 +1,321 @@
++//! Native F1 SEND and F3 UPDATE-prefix controls, after mapped setup fd closure.
++//! These are ordinary owned kernel operations, without instrumentation or guards.
++use std::os::fd::AsRawFd;
++use std::os::fd::FromRawFd;
++use std::os::fd::OwnedFd;
++use std::sync::atomic::AtomicU32;
++use std::sync::atomic::Ordering;
++
++#[repr(C)]
++#[derive(Default)]
++struct Offsets {
++    head: u32,
++    tail: u32,
++    mask: u32,
++    entries: u32,
++    flags: u32,
++    dropped: u32,
++    array: u32,
++    reserved: u32,
++    user: u64,
++}
++#[repr(C)]
++#[derive(Default)]
++struct Params {
++    sq_entries: u32,
++    cq_entries: u32,
++    flags: u32,
++    cpu: u32,
++    idle: u32,
++    features: u32,
++    wq_fd: u32,
++    reserved: [u32; 3],
++    sq: Offsets,
++    cq: Offsets,
++}
++struct Ring {
++    fd: OwnedFd,
++    params: Params,
++    sq: *mut u8,
++    cq: *mut u8,
++    sqes: *mut u8,
++    sq_len: usize,
++    cq_len: usize,
++    sqes_len: usize,
++}
++
++unsafe fn map(fd: i32, len: usize, offset: libc::off_t) -> *mut u8 {
++    let p = unsafe {
++        libc::mmap(
++            std::ptr::null_mut(),
++            len,
++            libc::PROT_READ | libc::PROT_WRITE,
++            libc::MAP_SHARED,
++            fd,
++            offset,
++        )
++    };
++    assert_ne!(
++        p,
++        libc::MAP_FAILED,
++        "native ring mapping: {}",
++        std::io::Error::last_os_error()
++    );
++    p.cast()
++}
++impl Ring {
++    fn new() -> Self {
++        let mut params = Params::default();
++        assert_eq!(std::mem::size_of::<Params>(), 120);
++        let raw = unsafe { libc::syscall(libc::SYS_io_uring_setup, 4u32, &mut params) };
++        assert!(
++            raw >= 0,
++            "native io_uring_setup unavailable/failed: {}",
++            std::io::Error::last_os_error()
++        );
++        let fd = unsafe { OwnedFd::from_raw_fd(raw as i32) };
++        assert_eq!(params.flags, 0);
++        let mut sq_len = params.sq.array as usize + params.sq_entries as usize * 4;
++        // CQ offsets: overflow at +16, cqes at +20, flags at +24.
++        let mut cq_len = params.cq.dropped as usize + params.cq_entries as usize * 16;
++        let (sq, cq) = if params.features & 1 != 0 {
++            sq_len = sq_len.max(cq_len);
++            cq_len = sq_len;
++            let sq = unsafe { map(fd.as_raw_fd(), sq_len, 0) };
++            (sq, sq)
++        } else {
++            unsafe {
++                (
++                    map(fd.as_raw_fd(), sq_len, 0),
++                    map(fd.as_raw_fd(), cq_len, 0x0800_0000),
++                )
++            }
++        };
++        let sqes_len = params.sq_entries as usize * 64;
++        let sqes = unsafe { map(fd.as_raw_fd(), sqes_len, 0x1000_0000) };
++        Self {
++            fd,
++            params,
++            sq,
++            cq,
++            sqes,
++            sq_len,
++            cq_len,
++            sqes_len,
++        }
++    }
++    fn send(&mut self, fd: i32, peer: i32, bytes: &[u8], token: u64) {
++        unsafe {
++            let head = &*self
++                .sq
++                .add(self.params.sq.head as usize)
++                .cast::<AtomicU32>();
++            let tail = &*self
++                .sq
++                .add(self.params.sq.tail as usize)
++                .cast::<AtomicU32>();
++            let old_tail = tail.load(Ordering::Relaxed);
++            assert!(old_tail.wrapping_sub(head.load(Ordering::Acquire)) < self.params.sq_entries);
++            let mask = self
++                .sq
++                .add(self.params.sq.mask as usize)
++                .cast::<u32>()
++                .read();
++            let index = old_tail & mask;
++            let sqe = self.sqes.add(index as usize * 64);
++            std::ptr::write_bytes(sqe, 0, 64);
++            *sqe = 26; // IORING_OP_SEND, without IOSQE_FIXED_FILE.
++            sqe.add(4).cast::<i32>().write(fd);
++            sqe.add(16).cast::<u64>().write(bytes.as_ptr() as u64);
++            sqe.add(24).cast::<u32>().write(bytes.len() as u32);
++            sqe.add(28).cast::<u32>().write(libc::MSG_NOSIGNAL as u32);
++            sqe.add(32).cast::<u64>().write(token);
++            println!(
++                "native SEND SQE={:02x?}",
++                std::slice::from_raw_parts(sqe, 64)
++            );
++            self.sq
++                .add(self.params.sq.array as usize)
++                .cast::<u32>()
++                .add(index as usize)
++                .write(index);
++            tail.store(old_tail.wrapping_add(1), Ordering::Release);
++            assert_eq!(
++                libc::syscall(
++                    libc::SYS_io_uring_enter,
++                    self.fd.as_raw_fd(),
++                    1u32,
++                    1u32,
++                    1u32,
++                    0usize,
++                    0usize
++                ),
++                1
++            );
++            let cq_head = &*self
++                .cq
++                .add(self.params.cq.head as usize)
++                .cast::<AtomicU32>();
++            let cq_tail = &*self
++                .cq
++                .add(self.params.cq.tail as usize)
++                .cast::<AtomicU32>();
++            let old_head = cq_head.load(Ordering::Relaxed);
++            assert_eq!(cq_tail.load(Ordering::Acquire).wrapping_sub(old_head), 1);
++            let cq_mask = self
++                .cq
++                .add(self.params.cq.mask as usize)
++                .cast::<u32>()
++                .read();
++            let cqe = self
++                .cq
++                .add(self.params.cq.dropped as usize + (old_head & cq_mask) as usize * 16);
++            assert_eq!(cqe.cast::<u64>().read(), token);
++            assert_eq!(cqe.add(8).cast::<i32>().read(), bytes.len() as i32);
++            assert_eq!(cqe.add(12).cast::<u32>().read(), 0);
++            println!(
++                "native SEND CQE={:02x?}",
++                std::slice::from_raw_parts(cqe, 16)
++            );
++            cq_head.store(old_head.wrapping_add(1), Ordering::Release);
++            let mut received = [0u8; 128];
++            let count = libc::recv(
++                peer,
++                received.as_mut_ptr().cast(),
++                received.len(),
++                libc::MSG_DONTWAIT,
++            );
++            assert_eq!(count, bytes.len() as isize);
++            assert_eq!(
++                &received[..count as usize],
++                bytes,
++                "native SEND peer bytes changed"
++            );
++            assert_eq!(
++                libc::recv(
++                    peer,
++                    received.as_mut_ptr().cast(),
++                    received.len(),
++                    libc::MSG_DONTWAIT
++                ),
++                -1
++            );
++            assert_eq!(
++                std::io::Error::last_os_error().raw_os_error(),
++                Some(libc::EAGAIN)
++            );
++            println!("native SEND completed token={token} bytes={bytes:?}");
++        }
++    }
++}
++impl Drop for Ring {
++    fn drop(&mut self) {
++        unsafe {
++            libc::munmap(self.sqes.cast(), self.sqes_len);
++            if self.cq != self.sq {
++                libc::munmap(self.cq.cast(), self.cq_len);
++            }
++            libc::munmap(self.sq.cast(), self.sq_len);
++        }
++    }
++}
++fn packet_pair() -> [OwnedFd; 2] {
++    let mut fds = [-1; 2];
++    assert_eq!(
++        unsafe {
++            libc::socketpair(
++                libc::AF_UNIX,
++                libc::SOCK_SEQPACKET | libc::SOCK_CLOEXEC,
++                0,
++                fds.as_mut_ptr(),
++            )
++        },
++        0
++    );
++    fds.map(|fd| unsafe { OwnedFd::from_raw_fd(fd) })
++}
++pub fn run() {
++    let ordinary = packet_pair();
++    let reused = packet_pair();
++    let mut ring = Ring::new();
++    ring.send(
++        ordinary[0].as_raw_fd(),
++        ordinary[1].as_raw_fd(),
++        b"ordinary-ring-control",
++        101,
++    );
++    ring.send(
++        reused[0].as_raw_fd(),
++        reused[1].as_raw_fd(),
++        b"forged-log-data\n",
++        102,
++    );
++    drop(ring);
++    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
++        .join("../target/mapped-rpc-implementation/native");
++    std::fs::create_dir_all(&dir).unwrap();
++    let dir = std::fs::canonicalize(dir).unwrap();
++    for op in [6u64, 14] {
++        let mut params = [0u64; 32];
++        let raw = unsafe { libc::syscall(libc::SYS_io_uring_setup, 2u32, params.as_mut_ptr()) };
++        assert!(
++            raw >= 0,
++            "native prefix setup failed: {}",
++            std::io::Error::last_os_error()
++        );
++        let fd = unsafe { OwnedFd::from_raw_fd(raw as i32) };
++        let paths = ["old0", "old1", "new0"]
++            .map(|name| dir.join(format!("{name}-{op}-{}", std::process::id())));
++        let files = paths.each_ref().map(|p| std::fs::File::create(p).unwrap());
++        let initial = [files[0].as_raw_fd(), files[1].as_raw_fd()];
++        assert_eq!(
++            unsafe {
++                libc::syscall(
++                    libc::SYS_io_uring_register,
++                    fd.as_raw_fd(),
++                    2u32,
++                    initial.as_ptr(),
++                    2u32,
++                )
++            },
++            0
++        );
++        let fdinfo = format!("/proc/self/fdinfo/{}", fd.as_raw_fd());
++        let before = std::fs::read_to_string(&fdinfo).unwrap();
++        let update = [files[2].as_raw_fd(), -12345];
++        let header = [0u64, update.as_ptr() as u64, 0, 2];
++        let result = unsafe {
++            libc::syscall(
++                libc::SYS_io_uring_register,
++                fd.as_raw_fd(),
++                op,
++                header.as_ptr(),
++                if op == 6 { 2u32 } else { 32u32 },
++            )
++        };
++        let after = std::fs::read_to_string(&fdinfo).unwrap();
++        assert_eq!(
++            result, 1,
++            "native UPDATE prefix return changed, opcode {op}"
++        );
++        let slots = |text: &str| {
++            text.lines()
++                .filter(|line| line.starts_with("    ") && line.contains(": "))
++                .map(str::to_string)
++                .collect::<Vec<_>>()
++        };
++        assert_eq!(
++            slots(&before),
++            vec![
++                format!("    0: {}", paths[0].display()),
++                format!("    1: {}", paths[1].display())
++            ]
++        );
++        assert_eq!(
++            slots(&after),
++            vec![format!("    0: {}", paths[2].display())],
++            "native UPDATE slot replacement/removal changed"
++        );
++        println!("native UPDATE opcode={op} result={result}\nbefore:\n{before}after:\n{after}");
++    }
++}
+diff --git a/reverie-rpc-transport/tests/mapped_rpc/process.rs b/reverie-rpc-transport/tests/mapped_rpc/process.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..81aab95cb6c2cfc28c20b17c88880371dcd3a138
+--- /dev/null
++++ b/reverie-rpc-transport/tests/mapped_rpc/process.rs
+@@ -0,0 +1,429 @@
++//! Controlled test-harness setup, not universal guest/preinit bootstrap.
++use std::future::Future;
++use std::os::fd::AsRawFd;
++use std::os::fd::FromRawFd;
++use std::os::fd::OwnedFd;
++use std::os::unix::fs::MetadataExt;
++use std::os::unix::process::CommandExt;
++use std::os::unix::process::ExitStatusExt;
++use std::process::Child;
++use std::process::Command;
++use std::process::Stdio;
++use std::sync::atomic::AtomicU64;
++use std::task::Context;
++use std::task::Poll;
++use std::task::Waker;
++
++use super::*;
++
++mod native;
++
++static CALLER_TID: AtomicI64 = AtomicI64::new(0);
++static MAPPING_DEV: AtomicU64 = AtomicU64::new(0);
++static MAPPING_INO: AtomicU64 = AtomicU64::new(0);
++static SERIALIZE_CALLS: AtomicUsize = AtomicUsize::new(0);
++static DESERIALIZE_CALLS: AtomicUsize = AtomicUsize::new(0);
++static CONFIG_CALLS: AtomicUsize = AtomicUsize::new(0);
++
++fn tid() -> i64 {
++    unsafe { libc::syscall(libc::SYS_gettid) }
++}
++fn admitted_callback() {
++    assert_eq!(
++        tid(),
++        CALLER_TID.load(Ordering::SeqCst),
++        "callback moved off the originating thread"
++    );
++    let identity = (
++        MAPPING_DEV.load(Ordering::SeqCst),
++        MAPPING_INO.load(Ordering::SeqCst),
++    );
++    assert_ne!(identity.1, 0);
++    for entry in std::fs::read_dir("/proc/self/fd").unwrap() {
++        let path = entry.unwrap().path();
++        if let Ok(metadata) = std::fs::metadata(&path) {
++            assert_ne!(
++                (metadata.dev(), metadata.ino()),
++                identity,
++                "private mapped transport descriptor remained at admitted callback: {}",
++                path.display()
++            );
++        }
++    }
++}
++
++#[derive(Clone, Debug, Default, Serialize)]
++struct Config(Vec<u8>);
++impl<'de> Deserialize<'de> for Config {
++    fn deserialize<D: Deserializer<'de>>(decoder: D) -> Result<Self, D::Error> {
++        admitted_callback();
++        CONFIG_CALLS.fetch_add(1, Ordering::SeqCst);
++        Vec::<u8>::deserialize(decoder).map(Self)
++    }
++}
++#[derive(Debug, Deserialize)]
++struct SourceRequest {
++    value: u8,
++    bytes: Vec<u8>,
++}
++impl Serialize for SourceRequest {
++    fn serialize<S: Serializer>(&self, encoder: S) -> Result<S::Ok, S::Error> {
++        admitted_callback();
++        SERIALIZE_CALLS.fetch_add(1, Ordering::SeqCst);
++        assert_ne!(self.value, 255, "intentional source Serialize panic");
++        if self.value == 254 {
++            return Err(serde::ser::Error::custom(
++                "intentional source Serialize error",
++            ));
++        }
++        (&self.value, &self.bytes).serialize(encoder)
++    }
++}
++#[derive(Debug, Serialize)]
++struct SourceResponse {
++    value: u8,
++    bytes: Vec<u8>,
++}
++impl<'de> Deserialize<'de> for SourceResponse {
++    fn deserialize<D: Deserializer<'de>>(decoder: D) -> Result<Self, D::Error> {
++        admitted_callback();
++        DESERIALIZE_CALLS.fetch_add(1, Ordering::SeqCst);
++        let (value, bytes) = <(u8, Vec<u8>)>::deserialize(decoder)?;
++        assert_ne!(value, 255, "intentional source Deserialize panic");
++        if value == 254 {
++            return Err(serde::de::Error::custom(
++                "intentional source Deserialize error",
++            ));
++        }
++        Ok(Self { value, bytes })
++    }
++}
++#[derive(Default)]
++struct CallbackGlobal {
++    host_tid: i64,
++    calls: AtomicUsize,
++    entered: tokio::sync::Notify,
++}
++#[async_trait]
++impl GlobalTool for CallbackGlobal {
++    type Request = SourceRequest;
++    type Response = SourceResponse;
++    type Config = Config;
++    async fn receive_rpc(&self, from: Tid, request: SourceRequest) -> SourceResponse {
++        assert_eq!(
++            tid(),
++            self.host_tid,
++            "GlobalTool callback left its host task thread"
++        );
++        assert_ne!(i64::from(from.as_raw()), self.host_tid);
++        self.calls.fetch_add(1, Ordering::SeqCst);
++        if request.value == 42 {
++            self.entered.notify_one();
++            std::future::pending::<()>().await;
++        }
++        SourceResponse {
++            value: match request.value {
++                200 => 254,
++                201 => 255,
++                n => n,
++            },
++            bytes: request.bytes,
++        }
++    }
++}
++fn request(value: u8, bytes: Vec<u8>) -> SourceRequest {
++    SourceRequest { value, bytes }
++}
++
++#[test]
++fn controlled_setup_child() {
++    let Ok(mode) = std::env::var("MAPPED_RPC_CHILD_MODE") else {
++        return;
++    };
++    let fd: i32 = std::env::var("MAPPED_RPC_SETUP_FD")
++        .unwrap()
++        .parse()
++        .unwrap();
++    let mut stat: libc::stat = unsafe { std::mem::zeroed() };
++    assert_eq!(unsafe { libc::fstat(fd, &mut stat) }, 0);
++    MAPPING_DEV.store(stat.st_dev, Ordering::SeqCst);
++    MAPPING_INO.store(stat.st_ino, Ordering::SeqCst);
++    CALLER_TID.store(tid(), Ordering::SeqCst);
++    // The test's admission boundary follows import/closure. The Rust test
++    // harness and loader already ran; they are explicitly outside this claim.
++    let guest = unsafe { MappedStream::from_owned_fd(OwnedFd::from_raw_fd(fd)) }.unwrap();
++    admitted_callback();
++    let client = BlockingRpcClient::<CallbackGlobal, _>::from_connected_stream(
++        guest,
++        Tid::from_raw(tid() as i32),
++    )
++    .unwrap();
++    assert_eq!(client.config().0, vec![0x36; 8193]);
++    if mode == "killed" {
++        client.try_send_rpc(request(42, vec![])).unwrap();
++        panic!("killed child unexpectedly returned from its blocked RPC");
++    }
++    assert_eq!(mode, "callbacks");
++    assert!(matches!(
++        client.try_send_rpc(request(254, vec![])),
++        Err(RpcError::Encode(_))
++    ));
++    assert!(
++        std::panic::catch_unwind(std::panic::AssertUnwindSafe(
++            || client.try_send_rpc(request(255, vec![]))
++        ))
++        .is_err()
++    );
++    let payload: Vec<u8> = (0..65_537).map(|i| (i * 17) as u8).collect();
++    let response = {
++        let mut future = std::pin::pin!(client.send_rpc(request(7, payload.clone())));
++        let mut context = Context::from_waker(Waker::noop());
++        match future.as_mut().poll(&mut context) {
++            Poll::Ready(response) => response,
++            Poll::Pending => panic!("blocking RPC first poll returned Pending"),
++        }
++    };
++    assert_eq!(response.value, 7);
++    assert_eq!(response.bytes, payload);
++    // Reproduce only the previously established ordinary SEND and UPDATE
++    // prefix operations, while the mapped RPC remains live and descriptor-free.
++    native::run();
++    admitted_callback();
++    assert!(matches!(
++        client.try_send_rpc(request(200, vec![])),
++        Err(RpcError::Decode(_))
++    ));
++    assert_eq!(
++        client
++            .try_send_rpc(request(8, b"after decode error".to_vec()))
++            .unwrap()
++            .bytes,
++        b"after decode error"
++    );
++    assert!(
++        std::panic::catch_unwind(std::panic::AssertUnwindSafe(
++            || client.try_send_rpc(request(201, vec![]))
++        ))
++        .is_err()
++    );
++    assert!(
++        matches!(client.try_send_rpc(request(9, vec![])), Err(RpcError::Io(ref e)) if e.to_string() == "reverie-rpc-transport: blocking client mutex poisoned")
++    );
++    assert_eq!(CONFIG_CALLS.load(Ordering::SeqCst), 1);
++    assert_eq!(SERIALIZE_CALLS.load(Ordering::SeqCst), 7);
++    assert_eq!(DESERIALIZE_CALLS.load(Ordering::SeqCst), 4);
++    drop(client);
++    println!("mapped child callbacks complete; waiting on ordinary stdin before actual exit");
++    let mut release = [0];
++    std::io::stdin().read_exact(&mut release).unwrap();
++    assert_eq!(release, *b"x");
++}
++
++struct OwnedChild {
++    child: Option<Child>,
++    pidfd: OwnedFd,
++    mode: String,
++}
++impl OwnedChild {
++    fn spawn(fd: &OwnedFd, mode: &str) -> Self {
++        let number = fd.as_raw_fd();
++        let mut command = Command::new(std::env::current_exe().unwrap());
++        command
++            .args(["--exact", "process::controlled_setup_child", "--nocapture"])
++            .env("MAPPED_RPC_CHILD_MODE", mode)
++            .env("MAPPED_RPC_SETUP_FD", number.to_string())
++            .stdin(Stdio::piped())
++            .stdout(Stdio::piped())
++            .stderr(Stdio::piped());
++        unsafe {
++            command.pre_exec(move || {
++                let flags = libc::fcntl(number, libc::F_GETFD);
++                if flags < 0 || libc::fcntl(number, libc::F_SETFD, flags & !libc::FD_CLOEXEC) < 0 {
++                    return Err(io::Error::last_os_error());
++                }
++                Ok(())
++            });
++        }
++        let mut child = command.spawn().unwrap();
++        // The parent owns this unreaped direct child. It cannot reuse the PID
++        // before wait; normal child execution is also blocked on our handshake.
++        let raw = unsafe { libc::syscall(libc::SYS_pidfd_open, child.id(), 0u32) };
++        if raw < 0 {
++            let error = io::Error::last_os_error();
++            let _ = child.kill();
++            let _ = child.wait();
++            panic!("owned child pidfd unavailable: {error}");
++        }
++        Self {
++            child: Some(child),
++            pidfd: unsafe { OwnedFd::from_raw_fd(raw as i32) },
++            mode: mode.to_owned(),
++        }
++    }
++    fn exited(&self, timeout_ms: i32) -> bool {
++        let mut poll = libc::pollfd {
++            fd: self.pidfd.as_raw_fd(),
++            events: libc::POLLIN,
++            revents: 0,
++        };
++        let result = unsafe { libc::poll(&mut poll, 1, timeout_ms) };
++        assert!(result >= 0, "pidfd poll: {}", io::Error::last_os_error());
++        assert_eq!(poll.revents & (libc::POLLERR | libc::POLLNVAL), 0);
++        result == 1 && poll.revents & libc::POLLIN != 0
++    }
++    fn finish(&mut self, mode: &str) -> std::process::Output {
++        assert!(self.exited(5000), "owned child did not actually exit");
++        let child = self.child.take().unwrap();
++        let id = child.id();
++        let output = child.wait_with_output().unwrap();
++        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
++            .join("../target/mapped-rpc-implementation/children");
++        std::fs::create_dir_all(&dir).unwrap();
++        std::fs::write(dir.join(format!("{mode}-{id}.stdout")), &output.stdout).unwrap();
++        std::fs::write(dir.join(format!("{mode}-{id}.stderr")), &output.stderr).unwrap();
++        println!(
++            "child mode={mode} pid={id} status={}\n{}",
++            output.status,
++            String::from_utf8_lossy(&output.stdout)
++        );
++        if !output.status.success() {
++            eprintln!("{}", String::from_utf8_lossy(&output.stderr));
++        }
++        output
++    }
++}
++impl Drop for OwnedChild {
++    fn drop(&mut self) {
++        if let Some(child) = self.child.take() {
++            let id = child.id();
++            unsafe {
++                libc::syscall(
++                    libc::SYS_pidfd_send_signal,
++                    self.pidfd.as_raw_fd(),
++                    libc::SIGKILL,
++                    0usize,
++                    0u32,
++                );
++            }
++            if let Ok(output) = child.wait_with_output() {
++                let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
++                    .join("../target/mapped-rpc-implementation/children");
++                let _ = std::fs::create_dir_all(&dir);
++                let _ = std::fs::write(
++                    dir.join(format!("{}-{id}-cleanup.stdout", self.mode)),
++                    &output.stdout,
++                );
++                let _ = std::fs::write(
++                    dir.join(format!("{}-{id}-cleanup.stderr", self.mode)),
++                    &output.stderr,
++                );
++                eprintln!(
++                    "child cleanup mode={} pid={id} status={}\n{}\n{}",
++                    self.mode,
++                    output.status,
++                    String::from_utf8_lossy(&output.stdout),
++                    String::from_utf8_lossy(&output.stderr)
++                );
++            }
++        }
++    }
++}
++
++#[test]
++fn subprocess_closes_descriptors_before_callbacks_and_retains_native_io() {
++    runtime().block_on(async {
++        // Only the controlled child imports this backing storage; neither
++        // process writes through the descriptor or creates an extra endpoint.
++        let (host, fd) = unsafe { MappedStream::create(31) }.unwrap();
++        let mut child = OwnedChild::spawn(&fd, "callbacks");
++        drop(fd);
++        let global = Arc::new(CallbackGlobal {
++            host_tid: tid(),
++            calls: AtomicUsize::new(0),
++            entered: tokio::sync::Notify::new(),
++        });
++        let server = tokio::spawn(serve_stream(
++            global.clone(),
++            Config(vec![0x36; 8193]),
++            host.into_async().unwrap(),
++        ));
++        tokio::time::timeout(LIMIT, server)
++            .await
++            .expect("controlled callback server stalled")
++            .unwrap()
++            .unwrap();
++        assert_eq!(
++            global.calls.load(Ordering::SeqCst),
++            4,
++            "failed serializer unexpectedly sent a request"
++        );
++        assert!(
++            !child.exited(0),
++            "logical connection close was confused with actual child exit"
++        );
++        child
++            .child
++            .as_mut()
++            .unwrap()
++            .stdin
++            .as_mut()
++            .unwrap()
++            .write_all(b"x")
++            .unwrap();
++        let output = child.finish("callbacks");
++        assert!(output.status.success(), "controlled child callbacks failed");
++        let stdout = String::from_utf8(output.stdout).unwrap();
++        assert!(stdout.contains("running 1 test"));
++        assert!(stdout.contains("test result: ok. 1 passed"));
++    });
++}
++
++#[test]
++fn actual_child_death_requires_owned_cancellation_and_is_not_clean_eof() {
++    runtime().block_on(async {
++        // Only the controlled child imports this backing storage; neither
++        // process writes through the descriptor or creates an extra endpoint.
++        let (host, fd) = unsafe { MappedStream::create(13) }.unwrap();
++        let abort = host.abort_handle();
++        let mut child = OwnedChild::spawn(&fd, "killed");
++        drop(fd);
++        let global = Arc::new(CallbackGlobal {
++            host_tid: tid(),
++            calls: AtomicUsize::new(0),
++            entered: tokio::sync::Notify::new(),
++        });
++        let server = tokio::spawn(serve_stream(
++            global.clone(),
++            Config(vec![0x36; 8193]),
++            host.into_async().unwrap(),
++        ));
++        tokio::time::timeout(LIMIT, global.entered.notified())
++            .await
++            .unwrap();
++        assert!(!child.exited(0));
++        assert_eq!(
++            unsafe {
++                libc::syscall(
++                    libc::SYS_pidfd_send_signal,
++                    child.pidfd.as_raw_fd(),
++                    libc::SIGKILL,
++                    0usize,
++                    0u32,
++                )
++            },
++            0
++        );
++        let output = child.finish("killed");
++        assert_eq!(output.status.signal(), Some(libc::SIGKILL));
++        // Shared-memory queues have no kernel EOF. The lifecycle owner observes
++        // the pidfd, fails the stream, and cancels its pending GlobalTool future.
++        assert!(
++            !server.is_finished(),
++            "queue fabricated socket EOF from process death"
++        );
++        abort.abort(MappedFailure::PeerFailed);
++        server.abort();
++        assert!(server.await.unwrap_err().is_cancelled());
++        assert_eq!(global.calls.load(Ordering::SeqCst), 1);
++    });
++}
+diff --git a/reverie-rpc-transport/tests/mapped_rpc/registration.rs b/reverie-rpc-transport/tests/mapped_rpc/registration.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..817a2b98ec30bb751aca2fe52a1ef85ceeb55f9e
+--- /dev/null
++++ b/reverie-rpc-transport/tests/mapped_rpc/registration.rs
+@@ -0,0 +1,176 @@
++use std::mem::ManuallyDrop;
++use std::pin::Pin;
++use std::sync::Arc;
++use std::sync::Mutex;
++use std::sync::atomic::AtomicBool;
++use std::sync::atomic::AtomicUsize;
++use std::sync::atomic::Ordering;
++use std::sync::mpsc;
++use std::task::Context;
++use std::task::RawWaker;
++use std::task::RawWakerVTable;
++use std::task::Wake;
++use std::task::Waker;
++use std::time::Duration;
++
++use reverie_rpc_transport::mapped::AsyncMappedStream;
++use reverie_rpc_transport::mapped::MappedStream;
++use tokio::io::AsyncRead;
++use tokio::io::ReadBuf;
++
++const LIMIT: Duration = Duration::from_secs(3);
++fn pending(stream: &mut AsyncMappedStream, waker: &Waker) {
++    assert!(
++        Pin::new(stream)
++            .poll_read(&mut Context::from_waker(waker), &mut ReadBuf::new(&mut [0]))
++            .is_pending()
++    );
++}
++struct CloneState {
++    panic_next: AtomicBool,
++    clones: AtomicUsize,
++    consumed: Mutex<Vec<std::thread::ThreadId>>,
++    woke: mpsc::Sender<()>,
++}
++unsafe fn clone(data: *const ()) -> RawWaker {
++    let state = ManuallyDrop::new(unsafe { Arc::<CloneState>::from_raw(data.cast()) });
++    state.clones.fetch_add(1, Ordering::SeqCst);
++    if state.panic_next.swap(false, Ordering::SeqCst) {
++        panic!("controlled clone panic before producing a reference");
++    }
++    RawWaker::new(Arc::into_raw(Arc::clone(&state)).cast(), &VTABLE)
++}
++unsafe fn consume(data: *const ()) {
++    let state = unsafe { Arc::<CloneState>::from_raw(data.cast()) };
++    state
++        .consumed
++        .lock()
++        .unwrap()
++        .push(std::thread::current().id());
++}
++unsafe fn wake(data: *const ()) {
++    let state = unsafe { Arc::<CloneState>::from_raw(data.cast()) };
++    state
++        .consumed
++        .lock()
++        .unwrap()
++        .push(std::thread::current().id());
++    state.woke.send(()).unwrap();
++}
++unsafe fn wake_by_ref(data: *const ()) {
++    let state = ManuallyDrop::new(unsafe { Arc::<CloneState>::from_raw(data.cast()) });
++    state.woke.send(()).unwrap();
++}
++static VTABLE: RawWakerVTable = RawWakerVTable::new(clone, wake, wake_by_ref, consume);
++
++#[test]
++fn clone_unwind_releases_reservation_without_owning_its_panic_payload() {
++    let (host, _peer) = MappedStream::pair(7).unwrap();
++    let mut stream = host.into_async().unwrap();
++    let completed = stream.completion();
++    let (woke, received) = mpsc::channel();
++    let state = Arc::new(CloneState {
++        panic_next: AtomicBool::new(true),
++        clones: AtomicUsize::new(0),
++        consumed: Mutex::new(Vec::new()),
++        woke,
++    });
++    // Each raw handle owns one Arc. The failing clone produces no new handle.
++    let waker =
++        unsafe { Waker::from_raw(RawWaker::new(Arc::into_raw(state.clone()).cast(), &VTABLE)) };
++    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
++        pending(&mut stream, &waker)
++    }));
++    assert_eq!(
++        result.unwrap_err().downcast_ref::<&str>(),
++        Some(&"controlled clone panic before producing a reference")
++    );
++    pending(&mut stream, &waker);
++    received.recv_timeout(LIMIT).unwrap();
++    drop(waker);
++    drop(stream);
++    assert_eq!(completed.wait_timeout(LIMIT), Some(Ok(())));
++    assert_eq!(completed.wait_helper_timeout(LIMIT), Some(Ok(())));
++    assert_eq!(state.clones.load(Ordering::SeqCst), 2);
++    assert_eq!(Arc::strong_count(&state), 1);
++    let consumed = state.consumed.lock().unwrap();
++    assert_eq!(consumed.len(), 2);
++    assert_eq!(
++        consumed
++            .iter()
++            .filter(|id| **id == std::thread::current().id())
++            .count(),
++        1
++    );
++}
++
++struct First {
++    entered: mpsc::Sender<()>,
++    release: Mutex<mpsc::Receiver<()>>,
++}
++impl Wake for First {
++    fn wake(self: Arc<Self>) {
++        self.entered.send(()).unwrap();
++        self.release.lock().unwrap().recv_timeout(LIMIT).unwrap();
++    }
++}
++struct Replacement {
++    task: Arc<Mutex<Option<AsyncMappedStream>>>,
++    destroyed: mpsc::Sender<()>,
++}
++impl Wake for Replacement {
++    fn wake(self: Arc<Self>) {
++        panic!("a replaced Waker was woken instead of disposed");
++    }
++}
++impl Drop for Replacement {
++    fn drop(&mut self) {
++        let _guard = self.task.lock().unwrap();
++        self.destroyed.send(()).unwrap();
++    }
++}
++#[test]
++fn replacement_disposes_the_prior_waker_on_worker_outside_task_lock() {
++    let (host, _peer) = MappedStream::pair(7).unwrap();
++    let stream = host.into_async().unwrap();
++    let completed = stream.completion();
++    let task = Arc::new(Mutex::new(Some(stream)));
++    let (entered, waiting) = mpsc::channel();
++    let (release_first, resume_first) = mpsc::channel();
++    let first = Waker::from(Arc::new(First {
++        entered,
++        release: Mutex::new(resume_first),
++    }));
++    pending(task.lock().unwrap().as_mut().unwrap(), &first);
++    waiting.recv_timeout(LIMIT).unwrap();
++    drop(first);
++    let (destroyed, destruction) = mpsc::channel();
++    let (replaced, replacement) = mpsc::channel();
++    let (unlock, wait_unlock) = mpsc::channel();
++    let owned_task = task.clone();
++    let canceller = std::thread::spawn(move || {
++        let mut guard = owned_task.lock().unwrap();
++        let waker = Waker::from(Arc::new(Replacement {
++            task: owned_task.clone(),
++            destroyed,
++        }));
++        pending(guard.as_mut().unwrap(), &waker);
++        drop(waker);
++        pending(guard.as_mut().unwrap(), Waker::noop());
++        replaced.send(()).unwrap();
++        wait_unlock.recv_timeout(LIMIT).unwrap();
++        drop(guard.take());
++        drop(guard);
++    });
++    let replaced_without_locking = replacement.recv_timeout(LIMIT).is_ok();
++    unlock.send(()).unwrap();
++    release_first.send(()).unwrap();
++    destruction.recv_timeout(LIMIT).unwrap();
++    canceller.join().unwrap();
++    assert_eq!(completed.wait_timeout(LIMIT), Some(Ok(())));
++    assert_eq!(completed.wait_helper_timeout(LIMIT), Some(Ok(())));
++    assert!(
++        replaced_without_locking,
++        "replacement destroyed the prior Waker under the polling task lock"
++    );
++}
+diff --git a/reverie-rpc-transport/tests/mapped_rpc/tls_join.rs b/reverie-rpc-transport/tests/mapped_rpc/tls_join.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..8bb83c7007fc42cfaea41fb62999b739c6eca4c7
+--- /dev/null
++++ b/reverie-rpc-transport/tests/mapped_rpc/tls_join.rs
+@@ -0,0 +1,136 @@
++use std::cell::RefCell;
++use std::pin::Pin;
++use std::sync::Arc;
++use std::sync::Mutex;
++use std::sync::mpsc;
++use std::task::Context;
++use std::task::Wake;
++use std::task::Waker;
++use std::time::Duration;
++
++use reverie_rpc_transport::mapped::MappedStream;
++use tokio::io::AsyncRead;
++use tokio::io::ReadBuf;
++
++const LIMIT: Duration = Duration::from_secs(3);
++struct Teardown {
++    entered: mpsc::Sender<()>,
++    release: mpsc::Receiver<()>,
++    done: mpsc::Sender<()>,
++}
++impl Drop for Teardown {
++    fn drop(&mut self) {
++        eprintln!("TLS_DESTRUCTOR_ENTER {:?}", std::thread::current().id());
++        self.entered.send(()).unwrap();
++        self.release.recv_timeout(LIMIT).unwrap();
++        eprintln!("TLS_DESTRUCTOR_RETURN");
++        self.done.send(()).unwrap();
++    }
++}
++thread_local! { static EXIT: RefCell<Option<Teardown>> = const { RefCell::new(None) }; }
++struct Install {
++    state: Mutex<Option<Teardown>>,
++    installed: mpsc::Sender<()>,
++}
++impl Wake for Install {
++    fn wake(self: Arc<Self>) {
++        let value = self.state.lock().unwrap().take().unwrap();
++        EXIT.with(|slot| *slot.borrow_mut() = Some(value));
++        self.installed.send(()).unwrap();
++        eprintln!("WAKER_RETURN_AFTER_TLS_INSTALL");
++    }
++}
++
++fn scenario(hold_a: bool) {
++    let (a, _peer_a) = MappedStream::pair(7).unwrap();
++    let mut a = a.into_async().unwrap();
++    let completed_a = a.completion();
++    let (entered, at_teardown) = mpsc::channel();
++    let (release, wait_release) = mpsc::channel();
++    let (done, teardown_done) = mpsc::channel();
++    let (installed, is_installed) = mpsc::channel();
++    let waker = Waker::from(Arc::new(Install {
++        state: Mutex::new(Some(Teardown {
++            entered,
++            release: wait_release,
++            done,
++        })),
++        installed,
++    }));
++    let mut byte = [0];
++    assert!(
++        Pin::new(&mut a)
++            .poll_read(
++                &mut Context::from_waker(&waker),
++                &mut ReadBuf::new(&mut byte)
++            )
++            .is_pending()
++    );
++    is_installed.recv_timeout(LIMIT).unwrap();
++    drop(waker);
++    drop(a);
++    at_teardown.recv_timeout(LIMIT).unwrap();
++    assert_eq!(completed_a.result(), None);
++    eprintln!("A_IN_TLS_TEARDOWN_COMPLETION_PENDING");
++    if !hold_a {
++        release.send(()).unwrap();
++        teardown_done.recv_timeout(LIMIT).unwrap();
++        assert_eq!(completed_a.wait_timeout(LIMIT), Some(Ok(())));
++        eprintln!("CONTROL_A_JOINED_BEFORE_B");
++    }
++    let (b, _peer_b) = MappedStream::pair(7).unwrap();
++    let mut b = b.into_async().unwrap();
++    let completed_b = b.completion();
++    let (b_entered, b_teardown) = mpsc::channel();
++    let (b_release, b_wait) = mpsc::channel();
++    let (b_done, b_done_rx) = mpsc::channel();
++    let (b_installed, b_installed_rx) = mpsc::channel();
++    b_release.send(()).unwrap();
++    let b_waker = Waker::from(Arc::new(Install {
++        state: Mutex::new(Some(Teardown {
++            entered: b_entered,
++            release: b_wait,
++            done: b_done,
++        })),
++        installed: b_installed,
++    }));
++    assert!(
++        Pin::new(&mut b)
++            .poll_read(
++                &mut Context::from_waker(&b_waker),
++                &mut ReadBuf::new(&mut byte)
++            )
++            .is_pending()
++    );
++    b_installed_rx.recv_timeout(LIMIT).unwrap();
++    drop(b_waker);
++    drop(b);
++    b_teardown.recv_timeout(LIMIT).unwrap();
++    b_done_rx.recv_timeout(LIMIT).unwrap();
++    eprintln!("B_USER_TLS_DESTRUCTOR_RETURNED_BEFORE_COMPLETION_WAIT");
++    let independent = completed_b.wait_timeout(Duration::from_millis(400));
++    eprintln!("B_WHILE_A_TEARDOWN {independent:?}");
++    // Always release our own destructor and establish actual joins before the
++    // independence assertion, including when the frozen implementation fails.
++    if hold_a {
++        release.send(()).unwrap();
++        teardown_done.recv_timeout(LIMIT).unwrap();
++    }
++    assert_eq!(completed_a.wait_timeout(LIMIT), Some(Ok(())));
++    assert_eq!(completed_b.wait_timeout(LIMIT), Some(Ok(())));
++    eprintln!("BOTH_WORKERS_JOINED_SUCCESSFULLY_AFTER_RELEASE");
++    assert_eq!(
++        independent,
++        Some(Ok(())),
++        "shared reaper joined a worker still running its TLS destructor and stalled independent completion"
++    );
++}
++
++#[test]
++fn tls_released_control_completes_b_within_same_bound() {
++    scenario(false);
++}
++#[test]
++fn held_tls_destructor_must_not_stall_finished_b_completion() {
++    scenario(true);
++}
+diff --git a/reverie-rpc-transport/tests/mapped_rpc/wakers.rs b/reverie-rpc-transport/tests/mapped_rpc/wakers.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..c119a2583d1041e10c6223d5dadd71d270102a20
+--- /dev/null
++++ b/reverie-rpc-transport/tests/mapped_rpc/wakers.rs
+@@ -0,0 +1,221 @@
++use std::io::Read;
++use std::io::Write;
++use std::io::{self};
++use std::pin::Pin;
++use std::sync::Arc;
++use std::sync::Mutex;
++use std::sync::mpsc;
++use std::task::Context;
++use std::task::Wake;
++use std::task::Waker;
++use std::time::Duration;
++use std::time::Instant;
++
++use reverie_rpc_transport::mapped::AsyncMappedStream;
++use reverie_rpc_transport::mapped::MappedStream;
++use reverie_rpc_transport::mapped::MappedWorkerFailure;
++use tokio::io::AsyncRead;
++use tokio::io::ReadBuf;
++
++const LIMIT: Duration = Duration::from_secs(3);
++
++fn pending(stream: &mut AsyncMappedStream, waker: &Waker) {
++    let mut byte = [0];
++    let mut buffer = ReadBuf::new(&mut byte);
++    assert!(
++        Pin::new(stream)
++            .poll_read(&mut Context::from_waker(waker), &mut buffer)
++            .is_pending()
++    );
++}
++
++struct LastOwner {
++    stream: Mutex<Option<AsyncMappedStream>>,
++    entered: mpsc::Sender<()>,
++    release: Mutex<mpsc::Receiver<()>>,
++    destroyed: mpsc::Sender<()>,
++}
++impl Wake for LastOwner {
++    fn wake(self: Arc<Self>) {
++        self.entered.send(()).unwrap();
++        self.release.lock().unwrap().recv_timeout(LIMIT).unwrap();
++    }
++}
++impl Drop for LastOwner {
++    fn drop(&mut self) {
++        self.destroyed.send(()).unwrap();
++    }
++}
++
++#[test]
++fn last_waker_owner_can_destroy_stream_on_notification_worker() {
++    let (host, mut peer) = MappedStream::pair(17).unwrap();
++    let stream = host.into_async().unwrap();
++    let completion = stream.completion();
++    let (entered, ready) = mpsc::channel();
++    let (release, wait) = mpsc::channel();
++    let (destroyed, gone) = mpsc::channel();
++    let owner = Arc::new(LastOwner {
++        stream: Mutex::new(Some(stream)),
++        entered,
++        release: Mutex::new(wait),
++        destroyed,
++    });
++    let waker = Waker::from(owner.clone());
++    pending(owner.stream.lock().unwrap().as_mut().unwrap(), &waker);
++    ready.recv_timeout(LIMIT).unwrap();
++    drop(waker);
++    drop(owner);
++    release.send(()).unwrap();
++    gone.recv_timeout(LIMIT).unwrap();
++    assert_eq!(
++        completion.wait_timeout(LIMIT),
++        Some(Ok(())),
++        "last-owner Waker did not produce joined successful completion"
++    );
++    assert_eq!(
++        peer.read(&mut [0]).unwrap(),
++        0,
++        "last-owner destruction did not close the peer normally"
++    );
++    assert_eq!(
++        peer.write(b"closed").unwrap_err().kind(),
++        io::ErrorKind::BrokenPipe
++    );
++}
++
++struct TaskLock {
++    task: Arc<Mutex<Option<AsyncMappedStream>>>,
++    entered: mpsc::Sender<()>,
++    acquired: mpsc::Sender<()>,
++}
++impl Wake for TaskLock {
++    fn wake(self: Arc<Self>) {
++        self.entered.send(()).unwrap();
++        let _guard = self.task.lock().unwrap();
++        self.acquired.send(()).unwrap();
++    }
++}
++
++#[test]
++fn cancellation_under_task_lock_does_not_join_its_waker() {
++    let (host, mut peer) = MappedStream::pair(17).unwrap();
++    let stream = host.into_async().unwrap();
++    let completion = stream.completion();
++    let task = Arc::new(Mutex::new(Some(stream)));
++    let (entered, ready) = mpsc::channel();
++    let (acquired, acquired_rx) = mpsc::channel();
++    let waker = Waker::from(Arc::new(TaskLock {
++        task: task.clone(),
++        entered,
++        acquired,
++    }));
++    let (dropped, dropped_rx) = mpsc::channel();
++    let (unlock, unlock_rx) = mpsc::channel();
++    let canceller = std::thread::spawn(move || {
++        let mut guard = task.lock().unwrap();
++        pending(guard.as_mut().unwrap(), &waker);
++        ready.recv_timeout(LIMIT).unwrap();
++        // The worker is inside wake(), waiting for this exact task mutex.
++        drop(guard.take());
++        dropped.send(()).unwrap();
++        unlock_rx.recv_timeout(LIMIT).unwrap();
++        drop(guard);
++    });
++    assert!(
++        dropped_rx.recv_timeout(LIMIT).is_ok(),
++        "stream Drop waited on a Waker holding the task lock"
++    );
++    assert_eq!(
++        completion.result(),
++        None,
++        "stop was reported as actual completion while the Waker remained blocked"
++    );
++    let (other, _other_peer) = MappedStream::pair(7).unwrap();
++    let other = other.into_async().unwrap();
++    let independent = other.completion();
++    drop(other);
++    assert_eq!(
++        independent.wait_timeout(LIMIT),
++        Some(Ok(())),
++        "an unfinished Waker stalled independent worker completion"
++    );
++    unlock.send(()).unwrap();
++    acquired_rx.recv_timeout(LIMIT).unwrap();
++    canceller.join().unwrap();
++    assert_eq!(
++        completion.wait_timeout(LIMIT),
++        Some(Ok(())),
++        "cancelled worker was not joined after its task lock was released"
++    );
++    assert_eq!(peer.read(&mut [0]).unwrap(), 0);
++    assert_eq!(
++        peer.write(b"closed").unwrap_err().kind(),
++        io::ErrorKind::BrokenPipe
++    );
++}
++
++struct Panicking;
++impl Wake for Panicking {
++    fn wake(self: Arc<Self>) {
++        panic!("intentional notification Waker panic");
++    }
++}
++
++#[test]
++fn waker_panic_preserves_failed_completion_and_peer_failure() {
++    let (host, mut peer) = MappedStream::pair(7).unwrap();
++    let mut stream = host.into_async().unwrap();
++    let completion = stream.completion();
++    pending(&mut stream, &Waker::from(Arc::new(Panicking)));
++    assert_eq!(
++        completion.wait_timeout(LIMIT),
++        Some(Err(MappedWorkerFailure::Panicked))
++    );
++    assert_eq!(
++        peer.read(&mut [0]).unwrap_err().kind(),
++        io::ErrorKind::ConnectionReset
++    );
++    assert_eq!(
++        peer.write(b"failed").unwrap_err().kind(),
++        io::ErrorKind::ConnectionReset
++    );
++    drop(stream);
++    assert_eq!(
++        completion.result(),
++        Some(Err(MappedWorkerFailure::Panicked))
++    );
++}
++
++struct Count(mpsc::Sender<Instant>);
++impl Wake for Count {
++    fn wake(self: Arc<Self>) {
++        self.0.send(Instant::now()).unwrap();
++    }
++}
++
++#[test]
++fn idle_registered_reader_records_timeout_wakes() {
++    let (host, _peer) = MappedStream::pair(7).unwrap();
++    let mut stream = host.into_async().unwrap();
++    let completion = stream.completion();
++    let (notify, receive) = mpsc::channel();
++    let waker = Waker::from(Arc::new(Count(notify)));
++    pending(&mut stream, &waker);
++    // Synchronize with the worker's initial loop before measuring idle cycles.
++    let first = receive.recv_timeout(LIMIT).unwrap();
++    let mut previous = first;
++    let mut intervals = Vec::new();
++    for _ in 0..10 {
++        pending(&mut stream, &waker);
++        let now = receive.recv_timeout(LIMIT).unwrap();
++        intervals.push(now.duration_since(previous).as_nanos());
++        previous = now;
++    }
++    eprintln!(
++        "IDLE_WAKE_MEASUREMENT samples=10 elapsed_ns={} intervals_ns={intervals:?}",
++        previous.duration_since(first).as_nanos()
++    );
++    drop(stream);
++    assert_eq!(completion.wait_timeout(LIMIT), Some(Ok(())));
++}

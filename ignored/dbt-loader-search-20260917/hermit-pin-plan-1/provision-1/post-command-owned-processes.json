@@ -1,0 +1,30 @@
+[
+  {
+    "pid": 1594509,
+    "stat": "1594509 (git) S 1 1594509 1594509 0 -1 4194368 92 0 0 0 0 0 0 0 20 0 1 0 177064948 18153472 1511 18446744073709551615 2955280 5845248 140732867980336 0 0 0 0 0 20487 1 0 0 17 185 0 0 0 0 0 5854064 5921024 6078464 140732867987832 140732867987910 140732867987910 140732868001749 0\n",
+    "argv": "/usr/local/libexec/fb-git-core/git maintenance run --auto --no-quiet --detach ",
+    "cwd": "/home/newton/work/dev-hermit/hermit",
+    "cgroup": "0::/user.slice/user-212630.slice/user@212630.service/app.slice/dbt-loader-pin-provision1-20260917.scope\n"
+  },
+  {
+    "pid": 1594511,
+    "stat": "1594511 (git) S 1594509 1594509 1594509 0 -1 4194304 1281 0 0 0 0 0 0 0 20 0 1 0 177064948 18153472 1915 18446744073709551615 2955280 5845248 140723874803696 0 0 0 0 0 20487 1 0 0 17 4 0 0 0 0 0 5854064 5921024 6078464 140723874810131 140723874810223 140723874810223 140723874824149 0\n",
+    "argv": "/usr/local/libexec/fb-git-core/git gc --auto --no-quiet --no-detach --skip-foreground-tasks ",
+    "cwd": "/home/newton/work/dev-hermit/hermit",
+    "cgroup": "0::/user.slice/user-212630.slice/user@212630.service/app.slice/dbt-loader-pin-provision1-20260917.scope\n"
+  },
+  {
+    "pid": 1594523,
+    "stat": "1594523 (git) S 1594511 1594509 1594509 0 -1 4194304 1289 0 0 0 0 0 0 0 20 0 1 0 177064949 18153472 1913 18446744073709551615 2955280 5845248 140736402245136 0 0 0 0 0 4096 1 0 0 17 34 0 0 0 0 0 5854064 5921024 6078464 140736402249945 140736402250017 140736402250017 140736402264021 0\n",
+    "argv": "/usr/local/libexec/fb-git-core/git repack -d -l --no-write-bitmap-index ",
+    "cwd": "/home/newton/work/dev-hermit/hermit",
+    "cgroup": "0::/user.slice/user-212630.slice/user@212630.service/app.slice/dbt-loader-pin-provision1-20260917.scope\n"
+  },
+  {
+    "pid": 1594538,
+    "stat": "1594538 (git) R 1594523 1594509 1594509 0 -1 4194304 22537 0 0 0 323 8625 0 0 20 0 1 0 177064950 1525407744 36812 18446744073709551615 2955280 5845248 140725661518000 0 0 0 0 0 4096 0 0 0 17 312 0 0 0 0 0 5854064 5921024 6078464 140725661525976 140725661526223 140725661526223 140725661540309 0\n",
+    "argv": "/usr/local/libexec/fb-git-core/git pack-objects --local --delta-base-offset --honor-pack-keep .git/objects/pack/.tmp-1594523-pack --keep-true-parents --non-empty --all --reflog --indexed-objects --exclude-promisor-objects --unpacked --incremental ",
+    "cwd": "/home/newton/work/dev-hermit/hermit",
+    "cgroup": "0::/user.slice/user-212630.slice/user@212630.service/app.slice/dbt-loader-pin-provision1-20260917.scope\n"
+  }
+]

@@ -1,0 +1,50 @@
+    Updating crates.io index
+    Updating git repository `https://github.com/rrnewton/liteinst2`
+     Locking 263 packages to latest compatible versions
+      Adding addr2line v0.26.1 (available: v0.27.1)
+      Adding atomic v0.5.3 (available: v0.6.1)
+      Adding bincode v1.3.3 (available: v3.0.0)
+      Adding bincode v2.0.1 (available: v3.0.0)
+      Adding clap v3.2.25 (available: v4.6.7)
+      Adding colored v2.2.0 (available: v3.1.1)
+      Adding darling v0.14.4 (available: v0.24.1)
+      Adding derive_more v1.0.0 (available: v2.1.1)
+      Adding dirs v2.0.2 (available: v7.0.0)
+      Adding generic-array v0.14.7 (available: v0.14.9)
+      Adding heapless v0.8.0 (available: v0.9.3)
+      Adding heck v0.3.3 (available: v0.5.0)
+      Adding nix v0.30.1 (available: v0.31.3)
+      Adding object v0.36.7 (available: v0.40.0)
+      Adding perf-event-open-sys v5.0.0 (available: v7.0.0)
+      Adding raw-cpuid v10.7.0 (available: v11.6.0)
+      Adding sha2 v0.10.9 (available: v0.11.0)
+      Adding syn v1.0.109 (available: v3.0.6)
+      Adding syscalls v0.6.18 (available: v0.8.1)
+ Downloading crates ...
+  Downloaded scroll_derive v0.13.2
+  Downloaded dirs v2.0.2
+  Downloaded quickcheck_macros v1.2.0
+  Downloaded crossbeam-utils v0.8.23
+  Downloaded heck v0.4.1
+  Downloaded hermit-abi v0.5.3
+  Downloaded pkg-config v0.3.34
+  Downloaded dirs-sys v0.3.7
+  Downloaded redox_users v0.4.6
+  Downloaded thiserror-impl v1.0.69
+  Downloaded hermit-abi v0.1.19
+  Downloaded atty v0.2.14
+  Downloaded proc-macro-error-attr v1.0.4
+  Downloaded clap_lex v0.2.4
+  Downloaded libredox v0.1.24
+  Downloaded winapi-util v0.1.11
+  Downloaded cfg-if v0.1.10
+  Downloaded os_str_bytes v6.6.1
+  Downloaded proc-macro-error v1.0.4
+  Downloaded thiserror v1.0.69
+  Downloaded clap_derive v3.2.25
+  Downloaded crossbeam-channel v0.5.17
+  Downloaded termcolor v1.4.1
+  Downloaded indexmap v1.9.3
+  Downloaded textwrap v0.16.4
+  Downloaded hashbrown v0.12.3
+  Downloaded clap v3.2.25

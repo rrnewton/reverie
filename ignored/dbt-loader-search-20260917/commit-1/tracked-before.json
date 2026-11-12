@@ -1,0 +1,11 @@
+{
+  "argv": [
+    "git",
+    "diff",
+    "--name-only"
+  ],
+  "actual_exit": 0,
+  "seconds": 0.050808029947802424,
+  "stdout": "reverie-dbt/vendor/dynamorio/core/unix/loader.c\n",
+  "stderr": ""
+}

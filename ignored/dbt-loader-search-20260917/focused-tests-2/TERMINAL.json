@@ -1,0 +1,8 @@
+{
+  "at_ns": 1789610766909440326,
+  "unit_exit": 0,
+  "stdout": "LoadState=not-found\nActiveState=inactive\nSubState=dead\nInvocationID=\nControlGroup=\n",
+  "stderr": "",
+  "cgroup_absent": true,
+  "generation_absent": true
+}

@@ -1,0 +1,14 @@
+{
+  "argv": [
+    "with-proxy",
+    "cargo",
+    "fetch"
+  ],
+  "env_delta": {
+    "CARGO_HOME": "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/native-build-1/cargo",
+    "CARGO_TARGET_DIR": "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/native-build-1/target",
+    "CARGO_HTTP_CAINFO": "/etc/pki/tls/certs/fb_certs.pem"
+  },
+  "actual_exit": 0,
+  "seconds": 1.1681694420985878
+}

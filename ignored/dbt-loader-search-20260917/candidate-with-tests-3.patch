@@ -1,0 +1,650 @@
+diff --git a/reverie-dbt/vendor/dynamorio/core/unix/loader.c b/reverie-dbt/vendor/dynamorio/core/unix/loader.c
+index 5f05766025cee314d3cc515fbc58aacb88d12129..175515d763e8998be539d45754978791224eea9d 100644
+--- a/reverie-dbt/vendor/dynamorio/core/unix/loader.c
++++ b/reverie-dbt/vendor/dynamorio/core/unix/loader.c
+@@ -923,7 +923,8 @@ privload_load_finalized(privmod_t *mod)
+ /* If runpath, then DT_RUNPATH is searched; else, DT_RPATH. */
+ static bool
+ privload_search_rpath(privmod_t *mod, bool runpath, const char *name,
+-                      char *filename DR_PARAM_OUT /* buffer size is MAXIMUM_PATH */)
++                      char *filename DR_PARAM_OUT /* buffer size is MAXIMUM_PATH */,
++                      bool add_client_paths)
+ {
+ #ifdef LINUX
+     os_privmod_data_t *opd;
+@@ -973,7 +974,7 @@ privload_search_rpath(privmod_t *mod, bool runpath, const char *name,
+                     snprintf(path, BUFFER_SIZE_ELEMENTS(path), "%.*s", len, list);
+                     NULL_TERMINATE_BUFFER(path);
+                 }
+-                if (mod->is_client) {
++                if (mod->is_client && add_client_paths) {
+                     /* We are adding a client's lib rpath to the general search path. This
+                      * is not bullet proof compliant with what the loader should really
+                      * do. The real problem is that the loader is walking library
+@@ -1020,6 +1021,44 @@ privload_search_rpath(privmod_t *mod, bool runpath, const char *name,
+     return false;
+ }
+ 
++/* A client may directly need both A and B, with B later in DT_NEEDED. If A is
++ * found before searching the client's RUNPATH, depth-first loading can reach
++ * A's import of B before the client's RUNPATH has been considered. Consult that
++ * direct declaration only after the ordinary search fails. Do not promote paths
++ * here: RUNPATH does not supply arbitrary indirect dependencies, and existing
++ * successful search choices must retain their precedence.
++ */
++static bool
++privload_search_client_runpath(const char *name,
++                              char *filename DR_PARAM_OUT /* MAXIMUM_PATH */)
++{
++#ifdef LINUX
++    /* DT_NEEDED entries containing '/' are pathnames, not searched SONAMEs. */
++    if (strchr(name, '/') != NULL)
++        return false;
++    ASSERT_OWN_RECURSIVE_LOCK(true, &privload_lock);
++    for (privmod_t *mod = privload_first_module(); mod != NULL;
++         mod = privload_next_module(mod)) {
++        if (!mod->is_top_level_client || mod->os_privmod_data == NULL)
++            continue;
++        os_privmod_data_t *opd = (os_privmod_data_t *)mod->os_privmod_data;
++        ELF_DYNAMIC_ENTRY_TYPE *dyn = (ELF_DYNAMIC_ENTRY_TYPE *)opd->dyn;
++        const char *strtab = (const char *)opd->os_data.dynstr;
++        if (dyn == NULL || strtab == NULL)
++            continue;
++        for (; dyn->d_tag != DT_NULL; ++dyn) {
++            if (dyn->d_tag == DT_NEEDED && strcmp(strtab + dyn->d_un.d_val, name) == 0) {
++                if (privload_search_rpath(mod, true /*runpath*/, name, filename,
++                                          false /*do not promote paths*/))
++                    return true;
++                break;
++            }
++        }
++    }
++#endif
++    return false;
++}
++
+ static bool
+ privload_locate(const char *name, privmod_t *dep,
+                 char *filename DR_PARAM_OUT /* buffer size is MAXIMUM_PATH */,
+@@ -1040,7 +1079,8 @@ privload_locate(const char *name, privmod_t *dep,
+      */
+     /* the loader search order: */
+     /* 0) DT_RPATH */
+-    if (dep != NULL && privload_search_rpath(dep, false /*rpath*/, name, filename))
++    if (dep != NULL &&
++        privload_search_rpath(dep, false /*rpath*/, name, filename, true /*promote paths*/))
+         return true;
+ 
+     /* 1) client lib dir */
+@@ -1087,7 +1127,8 @@ privload_locate(const char *name, privmod_t *dep,
+     }
+ 
+     /* 4) DT_RUNPATH */
+-    if (dep != NULL && privload_search_rpath(dep, true /*runpath*/, name, filename))
++    if (dep != NULL &&
++        privload_search_rpath(dep, true /*runpath*/, name, filename, true /*promote paths*/))
+         return true;
+ 
+     /* 5) XXX i#460: We use our system paths instead of /etc/ld.so.cache. */
+@@ -1112,6 +1153,9 @@ privload_locate(const char *name, privmod_t *dep,
+             return true;
+     }
+ 
++    if (privload_search_client_runpath(name, filename))
++        return true;
++
+     /* Cannot find the library */
+     /* There's a syslog in loader_init() but we want to provide the lib name */
+     SYSLOG(SYSLOG_ERROR, CLIENT_LIBRARY_UNLOADABLE, 4, get_application_name(),
+diff --git a/reverie-dbt/tests/private_loader_search.rs b/reverie-dbt/tests/private_loader_search.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..16a234989f6271091bf3b8b10b6bdce8e4c3910c
+--- /dev/null
++++ b/reverie-dbt/tests/private_loader_search.rs
+@@ -0,0 +1,455 @@
++/* Copyright (c) Meta Platforms, Inc. and affiliates.
++ * All rights reserved.
++ * Licensed under the BSD-style LICENSE in the root directory.
++ */
++
++//! Real private-loader controls: direct RUNPATH dependencies and existing precedence.
++#![cfg(all(target_os = "linux", target_arch = "x86_64"))]
++
++use std::fs::File;
++use std::fs::{self};
++use std::os::unix::process::CommandExt;
++use std::path::Path;
++use std::path::PathBuf;
++use std::process::Command;
++use std::process::ExitStatus;
++
++const LEAF: &str = "libdrsearch_leaf_20260917.so";
++const PARENT: &str = "libdrsearch_parent_20260917.so";
++const OTHER_LEAF: &str = "libdrsearch_other_leaf_20260917.so";
++const OTHER_PARENT: &str = "libdrsearch_other_parent_20260917.so";
++
++#[derive(Clone, Copy, PartialEq, Eq, Debug)]
++enum Case {
++    Direct,
++    Environment,
++    ClientDirectory,
++    Missing,
++    IndirectOnly,
++    Rpath,
++    OrderedRunpath,
++    NoPromotion,
++    Origin,
++    ExplicitPath,
++}
++
++fn checked(command: &mut Command) -> String {
++    let output = command.output().expect("execute fixture compiler/readelf");
++    assert!(output.status.success(), "{command:?}: {output:?}");
++    String::from_utf8(output.stdout).expect("tool output is UTF-8")
++}
++
++fn dynamic(path: &Path, needed: &[&str], tag: Option<&str>) {
++    let text = checked(
++        Command::new("readelf")
++            .env("LC_ALL", "C")
++            .arg("-d")
++            .arg(path),
++    );
++    let actual: Vec<_> = text
++        .lines()
++        .filter_map(|line| {
++            line.split_once("(NEEDED)").and_then(|(_, tail)| {
++                tail.split_once('[')
++                    .and_then(|(_, value)| value.split_once(']'))
++                    .map(|(value, _)| value)
++            })
++        })
++        .collect();
++    assert_eq!(actual, needed, "{path:?}: {text}");
++    assert_eq!(text.contains("(RUNPATH)"), tag == Some("RUNPATH"), "{text}");
++    assert_eq!(text.contains("(RPATH)"), tag == Some("RPATH"), "{text}");
++}
++
++struct Fixture {
++    temp: tempfile::TempDir,
++    sources: PathBuf,
++    drrun: PathBuf,
++    compiler: std::ffi::OsString,
++}
++
++impl Fixture {
++    fn new() -> Self {
++        for name in std::env::vars_os().map(|(name, _)| name) {
++            let name = name.to_string_lossy();
++            assert!(
++                !name.starts_with("LD_") && !name.starts_with("DYNAMORIO_"),
++                "inherited loader override would invalidate fixture: {name}"
++            );
++        }
++        Self {
++            temp: tempfile::tempdir().expect("private loader fixture directory"),
++            sources: Path::new(env!("CARGO_MANIFEST_DIR"))
++                .join("tests/fixtures/private_loader_search"),
++            drrun: reverie_dbt::bundled_drrun_path().to_owned(),
++            compiler: std::env::var_os("CC").unwrap_or_else(|| "cc".into()),
++        }
++    }
++
++    fn cc(&self, source: &str, output: &Path) -> Command {
++        let mut command = Command::new(&self.compiler);
++        command
++            .args(["-fPIC", "-shared", "-nostdlib", "-fno-stack-protector"])
++            .arg(self.sources.join(source))
++            .arg("-o")
++            .arg(output);
++        command
++    }
++
++    fn leaf(&self, directory: &Path, value: u32, other: bool) -> PathBuf {
++        let soname = if other { OTHER_LEAF } else { LEAF };
++        let output = directory.join(soname);
++        let mut command = self.cc("leaf.c", &output);
++        command
++            .arg(format!("-DLEAF_VALUE={value}"))
++            .arg(format!("-Wl,-soname,{soname}"));
++        if other {
++            command.arg("-Dleaf_value=other_leaf_value");
++        }
++        checked(&mut command);
++        dynamic(&output, &[], None);
++        output
++    }
++
++    fn parent(&self, directory: &Path, value: u32, leaf: &Path, other: bool) -> PathBuf {
++        let soname = if other { OTHER_PARENT } else { PARENT };
++        let output = directory.join(soname);
++        let mut command = self.cc("parent.c", &output);
++        command
++            .arg(format!("-DPARENT_VALUE={value}"))
++            .arg(format!("-Wl,-soname,{soname}"))
++            .arg("-Wl,--no-as-needed")
++            .arg(leaf);
++        if other {
++            command.args([
++                "-Dleaf_value=other_leaf_value",
++                "-Dparent_value=other_parent_value",
++            ]);
++        }
++        checked(&mut command);
++        dynamic(&output, &[if other { OTHER_LEAF } else { LEAF }], None);
++        output
++    }
++
++    fn execute(&self, label: &str, argv: &[&Path], environment: &Path) -> (ExitStatus, Vec<u8>) {
++        let config = self.temp.path().join(format!("config-{label}"));
++        fs::create_dir(&config).unwrap();
++        let stdout = self.temp.path().join(format!("{label}.stdout"));
++        let stderr = self.temp.path().join(format!("{label}.stderr"));
++        let mut command = Command::new("timeout");
++        command
++            .args(["--signal=TERM", "--kill-after=2s", "10s"])
++            .args(argv)
++            .current_dir(self.temp.path())
++            .env("LD_LIBRARY_PATH", environment)
++            .env("DYNAMORIO_CONFIGDIR", config)
++            .stdout(File::create(&stdout).unwrap())
++            .stderr(File::create(&stderr).unwrap());
++        // timeout owns the fresh command process group. File capture is bounded
++        // independently of the ten-second timeout, including a noisy loader error.
++        unsafe {
++            command.pre_exec(|| {
++                let core = libc::rlimit {
++                    rlim_cur: 0,
++                    rlim_max: 0,
++                };
++                let capture = libc::rlimit {
++                    rlim_cur: 1 << 20,
++                    rlim_max: 1 << 20,
++                };
++                if libc::setrlimit(libc::RLIMIT_CORE, &core) != 0
++                    || libc::setrlimit(libc::RLIMIT_FSIZE, &capture) != 0
++                {
++                    return Err(std::io::Error::last_os_error());
++                }
++                Ok(())
++            });
++        }
++        let status = command.status().expect("run bounded native/DR fixture");
++        let mut output = fs::read(stdout).unwrap();
++        let error = fs::read(stderr).unwrap();
++        assert!(
++            output.len() < 1 << 20 && error.len() < 1 << 20,
++            "capture overflow"
++        );
++        output.extend(error);
++        assert!(
++            !matches!(status.code(), Some(124 | 137 | 143 | 153)),
++            "timeout/forced termination/output limit: {status}; {}",
++            String::from_utf8_lossy(&output)
++        );
++        (status, output)
++    }
++
++    fn explicit_path(&self) {
++        // The file exists beneath RUNPATH, but DT_NEEDED names a relative
++        // pathname. Neither the native loader nor our new fallback may search it.
++        let root = self.temp.path();
++        let ld = root.join("ld");
++        let paths = root.join("paths");
++        fs::create_dir(&ld).unwrap();
++        fs::create_dir_all(paths.join("needed")).unwrap();
++        let relative = format!("needed/{LEAF}");
++        let leaf = paths.join(&relative);
++        checked(
++            self.cc("leaf.c", &leaf)
++                .arg(format!("-Wl,-soname,{relative}")),
++        );
++        dynamic(&leaf, &[], None);
++        let parent = ld.join(PARENT);
++        checked(
++            self.cc("parent.c", &parent)
++                .arg(format!("-Wl,-soname,{PARENT}"))
++                .arg("-Wl,--no-as-needed")
++                .arg(&leaf),
++        );
++        dynamic(&parent, &[&relative], None);
++        let client = root.join("client.so");
++        let install = self.drrun.parent().unwrap().parent().unwrap();
++        checked(
++            self.cc("client.c", &client)
++                .args(["-DLINUX", "-DX86_64"])
++                .arg("-I")
++                .arg(install.join("include"))
++                .arg("-Wl,--no-as-needed")
++                .arg(&parent)
++                .arg(&leaf)
++                .arg("-Wl,--enable-new-dtags")
++                .arg(format!("-Wl,-rpath,{}", paths.display())),
++        );
++        dynamic(&client, &[PARENT, &relative], Some("RUNPATH"));
++        let app = root.join("app");
++        checked(
++            Command::new(&self.compiler)
++                .args(["-static", "-nostdlib", "-nostartfiles", "-Wl,-e,_start"])
++                .arg(self.sources.join("app.S"))
++                .arg("-o")
++                .arg(&app),
++        );
++        let native = root.join("native");
++        checked(
++            Command::new(&self.compiler)
++                .arg(self.sources.join("native.c"))
++                .arg("-ldl")
++                .arg("-o")
++                .arg(&native),
++        );
++        let (status, output) = self.execute("native", &[&native, &client], &ld);
++        assert_result(
++            "native",
++            Case::ExplicitPath,
++            status,
++            &output,
++            None,
++            &relative,
++        );
++        let (status, output) = self.execute(
++            "dr",
++            &[
++                &self.drrun,
++                Path::new("-quiet"),
++                Path::new("-c"),
++                &client,
++                Path::new("--"),
++                &app,
++            ],
++            &ld,
++        );
++        assert_result("DR", Case::ExplicitPath, status, &output, None, &relative);
++    }
++
++    fn check(&self, case: Case) {
++        let root = self.temp.path();
++        let dirs: Vec<_> = ["client", "ld", "runpath", "second", "link-inputs"]
++            .map(|n| root.join(n))
++            .into();
++        for directory in &dirs {
++            fs::create_dir(directory).unwrap();
++        }
++        let (client_dir, ld, runpath, second, link) =
++            (&dirs[0], &dirs[1], &dirs[2], &dirs[3], &dirs[4]);
++        let leaf = self.leaf(link, 7, false);
++        let parent = self.parent(link, 100, &leaf, false);
++        if case != Case::Missing {
++            self.leaf(runpath, 7, false);
++        }
++        let conflicting = matches!(
++            case,
++            Case::Environment | Case::ClientDirectory | Case::Rpath
++        );
++        self.parent(ld, if conflicting { 200 } else { 100 }, &leaf, false);
++        if conflicting {
++            self.leaf(ld, 11, false);
++        }
++        if matches!(case, Case::Environment | Case::Rpath) {
++            self.parent(runpath, 100, &leaf, false);
++        }
++        if case == Case::ClientDirectory {
++            self.parent(client_dir, 100, &leaf, false);
++        }
++        let client = client_dir.join("client.so");
++        let mut cc = self.cc("client.c", &client);
++        let install = self.drrun.parent().unwrap().parent().unwrap();
++        cc.args(["-DLINUX", "-DX86_64"])
++            .arg("-I")
++            .arg(install.join("include"));
++        if case == Case::IndirectOnly {
++            cc.arg("-DINDIRECT_ONLY");
++        }
++        cc.arg("-Wl,--no-as-needed").arg(parent);
++        let mut needed = vec![PARENT];
++        if case != Case::IndirectOnly {
++            cc.arg(&leaf);
++            needed.push(LEAF);
++        }
++        if case == Case::NoPromotion {
++            let other_leaf = self.leaf(runpath, 19, true);
++            let other_parent = self.parent(ld, 300, &other_leaf, true);
++            cc.arg(other_parent);
++            needed.push(OTHER_PARENT);
++        }
++        let path = if case == Case::Origin {
++            "$ORIGIN/../runpath".to_owned()
++        } else if case == Case::OrderedRunpath {
++            self.leaf(second, 13, false);
++            format!("{}:{}", runpath.display(), second.display())
++        } else {
++            runpath.display().to_string()
++        };
++        cc.arg(if case == Case::Rpath {
++            "-Wl,--disable-new-dtags"
++        } else {
++            "-Wl,--enable-new-dtags"
++        })
++        .arg(format!("-Wl,-rpath,{path}"));
++        checked(&mut cc);
++        dynamic(
++            &client,
++            &needed,
++            Some(if case == Case::Rpath {
++                "RPATH"
++            } else {
++                "RUNPATH"
++            }),
++        );
++        let app = root.join("app");
++        checked(
++            Command::new(&self.compiler)
++                .args(["-static", "-nostdlib", "-nostartfiles", "-Wl,-e,_start"])
++                .arg(self.sources.join("app.S"))
++                .arg("-o")
++                .arg(&app),
++        );
++        let native = root.join("native");
++        checked(
++            Command::new(&self.compiler)
++                .arg(self.sources.join("native.c"))
++                .arg("-ldl")
++                .arg("-o")
++                .arg(&native),
++        );
++        let expected = match case {
++            Case::Environment => Some(211011),
++            Case::ClientDirectory => Some(111011),
++            Case::Missing | Case::IndirectOnly | Case::NoPromotion => None,
++            _ => Some(107007),
++        };
++        let missing = if case == Case::NoPromotion {
++            OTHER_LEAF
++        } else {
++            LEAF
++        };
++        if case != Case::ClientDirectory {
++            let (status, output) = self.execute("native", &[&native, &client], ld);
++            assert_result("native", case, status, &output, expected, missing);
++        }
++        let (status, output) = self.execute(
++            "dr",
++            &[
++                &self.drrun,
++                Path::new("-quiet"),
++                Path::new("-c"),
++                &client,
++                Path::new("--"),
++                &app,
++            ],
++            ld,
++        );
++        assert_result("DR", case, status, &output, expected, missing);
++    }
++}
++
++fn assert_result(
++    engine: &str,
++    case: Case,
++    status: ExitStatus,
++    output: &[u8],
++    expected: Option<u32>,
++    missing: &str,
++) {
++    let text = String::from_utf8_lossy(output);
++    let markers: Vec<_> = text
++        .lines()
++        .filter(|line| line.starts_with("LOADER_VALUE="))
++        .collect();
++    if let Some(value) = expected {
++        assert!(status.success(), "{engine} {case:?}: {status}: {text}");
++        assert_eq!(
++            markers,
++            [format!("LOADER_VALUE={value:06}")],
++            "{engine} {case:?}: {text}"
++        );
++    } else {
++        assert_eq!(
++            status.code(),
++            Some(if engine == "native" { 1 } else { 255 }),
++            "{engine} {case:?} must retain the loader failure status: {text}"
++        );
++        assert!(
++            markers.is_empty() && text.contains(missing),
++            "{engine} {case:?}: {status}: {text}"
++        );
++    }
++}
++
++#[test]
++fn later_direct_dependency_uses_client_runpath() {
++    Fixture::new().check(Case::Direct);
++}
++#[test]
++fn environment_keeps_existing_search_precedence() {
++    Fixture::new().check(Case::Environment);
++}
++#[test]
++fn client_directory_keeps_existing_search_precedence() {
++    Fixture::new().check(Case::ClientDirectory);
++}
++#[test]
++fn missing_direct_dependency_still_fails() {
++    Fixture::new().check(Case::Missing);
++}
++#[test]
++fn runpath_does_not_supply_indirect_only_dependency() {
++    Fixture::new().check(Case::IndirectOnly);
++}
++#[test]
++fn legacy_rpath_keeps_existing_search_precedence() {
++    Fixture::new().check(Case::Rpath);
++}
++#[test]
++fn fallback_keeps_ordered_runpath_selection() {
++    Fixture::new().check(Case::OrderedRunpath);
++}
++#[test]
++fn fallback_does_not_promote_unrelated_indirect_path() {
++    Fixture::new().check(Case::NoPromotion);
++}
++#[test]
++fn fallback_expands_origin_from_client_directory() {
++    Fixture::new().check(Case::Origin);
++}
++
++#[test]
++fn fallback_does_not_search_explicit_relative_dependency() {
++    Fixture::new().explicit_path();
++}
+diff --git a/reverie-dbt/tests/fixtures/private_loader_search/app.S b/reverie-dbt/tests/fixtures/private_loader_search/app.S
+new file mode 100644
+index 0000000000000000000000000000000000000000..3ce97b0ade3cd3d40a1bfc7b902fc2555b3a9bef
+--- /dev/null
++++ b/reverie-dbt/tests/fixtures/private_loader_search/app.S
+@@ -0,0 +1,7 @@
++.global _start
++.section .text
++_start:
++    mov $60, %rax
++    xor %rdi, %rdi
++    syscall
++.section .note.GNU-stack,"",@progbits
+diff --git a/reverie-dbt/tests/fixtures/private_loader_search/client.c b/reverie-dbt/tests/fixtures/private_loader_search/client.c
+new file mode 100644
+index 0000000000000000000000000000000000000000..fd5b35a90a720f76ffc64479ceff9bce8d776b93
+--- /dev/null
++++ b/reverie-dbt/tests/fixtures/private_loader_search/client.c
+@@ -0,0 +1,33 @@
++#include "dr_api.h"
++extern int parent_value(void);
++#ifndef INDIRECT_ONLY
++extern int leaf_value(void);
++#endif
++
++/* Also callable through native dlopen: the identical ELF dependency graph. */
++DR_EXPORT int fixture_value(void)
++{
++#ifdef INDIRECT_ONLY
++    return parent_value();
++#else
++    return parent_value() * 1000 + leaf_value();
++#endif
++}
++
++static void emit_value(int value)
++{
++    char out[] = "LOADER_VALUE=000000\n";
++    for (int pos = 18; pos >= 13; --pos) {
++        out[pos] = '0' + value % 10;
++        value /= 10;
++    }
++    /* A syscall avoids adding a libc dependency to this tiny client. */
++    __asm__ volatile("syscall" : : "a"(1L), "D"(2L), "S"(out),
++                     "d"((long)(sizeof(out) - 1)) : "rcx", "r11", "memory");
++}
++
++DR_EXPORT void dr_client_main(client_id_t id, int argc, const char *argv[])
++{
++    (void)id; (void)argc; (void)argv;
++    emit_value(fixture_value());
++}
+diff --git a/reverie-dbt/tests/fixtures/private_loader_search/leaf.c b/reverie-dbt/tests/fixtures/private_loader_search/leaf.c
+new file mode 100644
+index 0000000000000000000000000000000000000000..f2651e4d422f888d95e757cdd0321b641ea6e407
+--- /dev/null
++++ b/reverie-dbt/tests/fixtures/private_loader_search/leaf.c
+@@ -0,0 +1,4 @@
++#ifndef LEAF_VALUE
++#define LEAF_VALUE 7
++#endif
++int leaf_value(void) { return LEAF_VALUE; }
+diff --git a/reverie-dbt/tests/fixtures/private_loader_search/native.c b/reverie-dbt/tests/fixtures/private_loader_search/native.c
+new file mode 100644
+index 0000000000000000000000000000000000000000..f4f54edc6a89cf92c4167400095bfb97b0f8f883
+--- /dev/null
++++ b/reverie-dbt/tests/fixtures/private_loader_search/native.c
+@@ -0,0 +1,12 @@
++#include <dlfcn.h>
++#include <stdio.h>
++int main(int argc, char **argv)
++{
++    if (argc != 2) return 64;
++    void *module = dlopen(argv[1], RTLD_NOW | RTLD_LOCAL);
++    if (!module) { fprintf(stderr, "DLOPEN_ERROR=%s\n", dlerror()); return 1; }
++    int (*value)(void) = (int (*)(void))dlsym(module, "fixture_value");
++    if (!value) { fprintf(stderr, "DLSYM_ERROR=%s\n", dlerror()); return 2; }
++    printf("LOADER_VALUE=%06d\n", value());
++    return dlclose(module) != 0;
++}
+diff --git a/reverie-dbt/tests/fixtures/private_loader_search/parent.c b/reverie-dbt/tests/fixtures/private_loader_search/parent.c
+new file mode 100644
+index 0000000000000000000000000000000000000000..df1de8306e7d4c31cfe2b6d5b51b522da5fb00df
+--- /dev/null
++++ b/reverie-dbt/tests/fixtures/private_loader_search/parent.c
+@@ -0,0 +1,5 @@
++#ifndef PARENT_VALUE
++#define PARENT_VALUE 100
++#endif
++extern int leaf_value(void);
++int parent_value(void) { return PARENT_VALUE + leaf_value(); }

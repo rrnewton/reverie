@@ -1,0 +1,8 @@
+{
+  "path": "/etc/pki/tls/certs/fb_certs.pem",
+  "realpath": "/etc/pki/tls/certs/fb_certs.pem",
+  "uid": 0,
+  "mode": "0o644",
+  "bytes": 225080,
+  "sha256": "c61f1588a293a23df78c75cc72e65b39a60fc0c6cbce316301f6f6ed31b97881"
+}

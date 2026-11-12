@@ -1,0 +1,13 @@
+Fix private-loader lookup of later direct dependencies
+
+[hermit2, degraded-dev-hermit, gpt-6-astra, devbig014, role=impl]
+
+Plain Language Summary
+A client can directly depend on both a parent library and a later leaf library. When an existing path resolves the parent first, DynamoRIO descends into it before checking the client RUNPATH and can fail to locate the leaf. After all existing searches fail, consult the client RUNPATH only for a directly declared SONAME, without promoting paths globally.
+
+Project Impact
+Preserves successful search precedence, missing and indirect-only failures, and explicit dependency pathnames. Ten normal Linux/x86_64 integration tests exercise the real private loader and native loader with exact ELF dependency order and provider markers. Native controls change the original direct-leaf failure from255 to0 while retaining negative failures. This does not claim Hermit DBT or full-main validation success.
+
+Validation: actual10/10 integration tests; cargo fmt --all -- --check; relevant cargo clippy --all-targets --all-features; genuine build.rs native source key0aa6d842. Preserve the initial offline missing-index refusal and the first test fixture refusal of Cargo LD_LIBRARY_PATH; the fixture now accepts only that inherited variable because every child explicitly replaces it. No original test, timeout, comparison or failure classification was relaxed.
+
+Task: vision-ci-signal-is-trustworthy-end-to-end

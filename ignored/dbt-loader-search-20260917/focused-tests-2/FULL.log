@@ -1,0 +1,8 @@
+list ['cargo', 'test', '-vv', '--offline', '--locked', '-p', 'reverie-dbt', '--test', 'private_loader_search', '--', '--list']
+list actual 0
+tests ['cargo', 'test', '--offline', '--locked', '-p', 'reverie-dbt', '--test', 'private_loader_search', '--', '--test-threads=1', '--nocapture']
+tests actual 0
+fmt ['cargo', 'fmt', '--all', '--', '--check']
+fmt actual 0
+clippy ['cargo', 'clippy', '--offline', '--locked', '-p', 'reverie-dbt', '--all-targets', '--all-features']
+clippy actual 0

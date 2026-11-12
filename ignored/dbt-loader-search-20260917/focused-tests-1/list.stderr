@@ -1,0 +1,11 @@
+   Compiling generic-array v0.14.7
+   Compiling typenum v1.20.1
+   Compiling cpufeatures v0.2.17
+   Compiling crypto-common v0.1.7
+   Compiling block-buffer v0.10.4
+   Compiling digest v0.10.7
+   Compiling sha2 v0.10.9
+   Compiling reverie-dbt v0.2.0 (/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/reverie-dbt)
+warning: reverie-dbt@0.2.0: DynamoRIO build cache HIT key=sha256:0aa6d84239b5a04b7cda124ebed4c7e3adc8b62f5b4c96011a9b971e90d6b0a4 observed_unix_seconds=1789610454 install=/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/native-build-2/target/debug/reverie-dbt-native-cache/dynamorio-install-0aa6d84239b5a04b7cda124ebed4c7e3adc8b62f5b4c96011a9b971e90d6b0a4
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 10.51s
+     Running tests/private_loader_search.rs (ignored/dbt-loader-search-20260917/native-build-2/target/debug/deps/private_loader_search-6a547da09fd7b499)

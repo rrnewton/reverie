@@ -1,0 +1,42 @@
+{
+  "head": "a28de6f8eb585d7095fa80e5f4c0fc41ec3ba9e4",
+  "patch_sha256": "1925f54b2684de9a343c8bf0494c1caaf137960339c1b7e0a0a509ede025a057",
+  "files": {
+    "reverie-dbt/vendor/dynamorio/core/unix/loader.c": {
+      "sha256": "47519a323785ea317c674062da6e12d7a3dc08de6205c7d44d7fee0248aec4a8",
+      "mode": "0o644",
+      "bytes": 97157
+    },
+    "reverie-dbt/tests/private_loader_search.rs": {
+      "sha256": "178281289c800b6c315367a2c208cbe43adee52348a99829f931992122e15f89",
+      "mode": "0o644",
+      "bytes": 15544
+    },
+    "reverie-dbt/tests/fixtures/private_loader_search/app.S": {
+      "sha256": "22e0d9760ae02f11f615c8aaef676c3999905bccc498ea3ba56e4b367ee84cc3",
+      "mode": "0o644",
+      "bytes": 125
+    },
+    "reverie-dbt/tests/fixtures/private_loader_search/client.c": {
+      "sha256": "7728d11e0c81259bdc3eb697a8b425e556a69cb2cd16281cb3aeb9735d302b39",
+      "mode": "0o644",
+      "bytes": 890
+    },
+    "reverie-dbt/tests/fixtures/private_loader_search/leaf.c": {
+      "sha256": "ccee7d8c426860b9a163d93d95362af90c49e7f13a1fc95e50e1c9cd4bc45101",
+      "mode": "0o644",
+      "bytes": 91
+    },
+    "reverie-dbt/tests/fixtures/private_loader_search/native.c": {
+      "sha256": "65785ebf5fb8af4c99c5772f31f3597fc25fe2a545c0974a21d0024b9da25891",
+      "mode": "0o644",
+      "bytes": 470
+    },
+    "reverie-dbt/tests/fixtures/private_loader_search/parent.c": {
+      "sha256": "598c36f2500cf839cc14afb84c9f50bab764f09bc89774dca55f2ff7e263b48e",
+      "mode": "0o644",
+      "bytes": 145
+    }
+  },
+  "test_setup_correction": "Only inherited LD_LIBRARY_PATH is allowed because execute unconditionally replaces it for every fixture child; other LD_/DYNAMORIO_ overrides still refuse."
+}

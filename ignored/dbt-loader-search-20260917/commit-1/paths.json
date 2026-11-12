@@ -1,0 +1,9 @@
+[
+  "reverie-dbt/vendor/dynamorio/core/unix/loader.c",
+  "reverie-dbt/tests/private_loader_search.rs",
+  "reverie-dbt/tests/fixtures/private_loader_search/app.S",
+  "reverie-dbt/tests/fixtures/private_loader_search/client.c",
+  "reverie-dbt/tests/fixtures/private_loader_search/leaf.c",
+  "reverie-dbt/tests/fixtures/private_loader_search/native.c",
+  "reverie-dbt/tests/fixtures/private_loader_search/parent.c"
+]

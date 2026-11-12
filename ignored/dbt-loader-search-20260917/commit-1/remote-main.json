@@ -1,0 +1,13 @@
+{
+  "argv": [
+    "with-proxy",
+    "git",
+    "ls-remote",
+    "https://github.com/rrnewton/reverie.git",
+    "refs/heads/main"
+  ],
+  "actual_exit": 0,
+  "seconds": 0.40403888281434774,
+  "stdout": "a28de6f8eb585d7095fa80e5f4c0fc41ec3ba9e4\trefs/heads/main\n",
+  "stderr": ""
+}

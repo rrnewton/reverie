@@ -1,0 +1,232 @@
+[
+  {
+    "path": "Cargo.lock",
+    "line": 1374,
+    "text": "source = \"git+https://github.com/rrnewton/reverie.git?rev=d87a03a312421d34dee81dae71aa395b40231e63#d87a03a312421d34dee81dae71aa395b40231e63\""
+  },
+  {
+    "path": "Cargo.lock",
+    "line": 1712,
+    "text": "source = \"git+https://github.com/rrnewton/reverie.git?rev=d87a03a312421d34dee81dae71aa395b40231e63#d87a03a312421d34dee81dae71aa395b40231e63\""
+  },
+  {
+    "path": "Cargo.lock",
+    "line": 1738,
+    "text": "source = \"git+https://github.com/rrnewton/reverie.git?rev=d87a03a312421d34dee81dae71aa395b40231e63#d87a03a312421d34dee81dae71aa395b40231e63\""
+  },
+  {
+    "path": "Cargo.lock",
+    "line": 1756,
+    "text": "source = \"git+https://github.com/rrnewton/reverie.git?rev=d87a03a312421d34dee81dae71aa395b40231e63#d87a03a312421d34dee81dae71aa395b40231e63\""
+  },
+  {
+    "path": "Cargo.lock",
+    "line": 1771,
+    "text": "source = \"git+https://github.com/rrnewton/reverie.git?rev=d87a03a312421d34dee81dae71aa395b40231e63#d87a03a312421d34dee81dae71aa395b40231e63\""
+  },
+  {
+    "path": "Cargo.lock",
+    "line": 1789,
+    "text": "source = \"git+https://github.com/rrnewton/reverie.git?rev=d87a03a312421d34dee81dae71aa395b40231e63#d87a03a312421d34dee81dae71aa395b40231e63\""
+  },
+  {
+    "path": "Cargo.lock",
+    "line": 1797,
+    "text": "source = \"git+https://github.com/rrnewton/reverie.git?rev=d87a03a312421d34dee81dae71aa395b40231e63#d87a03a312421d34dee81dae71aa395b40231e63\""
+  },
+  {
+    "path": "Cargo.lock",
+    "line": 1808,
+    "text": "source = \"git+https://github.com/rrnewton/reverie.git?rev=d87a03a312421d34dee81dae71aa395b40231e63#d87a03a312421d34dee81dae71aa395b40231e63\""
+  },
+  {
+    "path": "Cargo.lock",
+    "line": 1825,
+    "text": "source = \"git+https://github.com/rrnewton/reverie.git?rev=d87a03a312421d34dee81dae71aa395b40231e63#d87a03a312421d34dee81dae71aa395b40231e63\""
+  },
+  {
+    "path": "Cargo.lock",
+    "line": 1856,
+    "text": "source = \"git+https://github.com/rrnewton/reverie.git?rev=d87a03a312421d34dee81dae71aa395b40231e63#d87a03a312421d34dee81dae71aa395b40231e63\""
+  },
+  {
+    "path": "Cargo.lock",
+    "line": 1867,
+    "text": "source = \"git+https://github.com/rrnewton/reverie.git?rev=d87a03a312421d34dee81dae71aa395b40231e63#d87a03a312421d34dee81dae71aa395b40231e63\""
+  },
+  {
+    "path": "Cargo.lock",
+    "line": 1879,
+    "text": "source = \"git+https://github.com/rrnewton/reverie.git?rev=d87a03a312421d34dee81dae71aa395b40231e63#d87a03a312421d34dee81dae71aa395b40231e63\""
+  },
+  {
+    "path": "Cargo.lock",
+    "line": 1892,
+    "text": "source = \"git+https://github.com/rrnewton/reverie.git?rev=d87a03a312421d34dee81dae71aa395b40231e63#d87a03a312421d34dee81dae71aa395b40231e63\""
+  },
+  {
+    "path": "Cargo.lock",
+    "line": 1917,
+    "text": "source = \"git+https://github.com/rrnewton/reverie.git?rev=d87a03a312421d34dee81dae71aa395b40231e63#d87a03a312421d34dee81dae71aa395b40231e63\""
+  },
+  {
+    "path": "Cargo.lock",
+    "line": 1929,
+    "text": "source = \"git+https://github.com/rrnewton/reverie.git?rev=d87a03a312421d34dee81dae71aa395b40231e63#d87a03a312421d34dee81dae71aa395b40231e63\""
+  },
+  {
+    "path": "Cargo.lock",
+    "line": 1938,
+    "text": "source = \"git+https://github.com/rrnewton/reverie.git?rev=d87a03a312421d34dee81dae71aa395b40231e63#d87a03a312421d34dee81dae71aa395b40231e63\""
+  },
+  {
+    "path": "Cargo.lock",
+    "line": 2002,
+    "text": "source = \"git+https://github.com/rrnewton/reverie.git?rev=d87a03a312421d34dee81dae71aa395b40231e63#d87a03a312421d34dee81dae71aa395b40231e63\""
+  },
+  {
+    "path": "detcore-dbt/Cargo.toml",
+    "line": 18,
+    "text": "reverie = { package = \"reverie-core\", version = \"0.2.0\", git = \"https://github.com/rrnewton/reverie.git\", rev = \"d87a03a312421d34dee81dae71aa395b40231e63\" }"
+  },
+  {
+    "path": "detcore-dbt/Cargo.toml",
+    "line": 19,
+    "text": "reverie-dbt = { version = \"0.2.0\", git = \"https://github.com/rrnewton/reverie.git\", rev = \"d87a03a312421d34dee81dae71aa395b40231e63\", default-features = false }"
+  },
+  {
+    "path": "detcore-model/Cargo.toml",
+    "line": 20,
+    "text": "reverie-syscalls = { version = \"0.2.0\", git = \"https://github.com/rrnewton/reverie.git\", rev = \"d87a03a312421d34dee81dae71aa395b40231e63\" }"
+  },
+  {
+    "path": "detcore-sabre/Cargo.toml",
+    "line": 16,
+    "text": "reverie = { package = \"reverie-core\", version = \"0.2.0\", git = \"https://github.com/rrnewton/reverie.git\", rev = \"d87a03a312421d34dee81dae71aa395b40231e63\" }"
+  },
+  {
+    "path": "detcore-sabre/Cargo.toml",
+    "line": 17,
+    "text": "reverie-memory = { version = \"0.2.0\", git = \"https://github.com/rrnewton/reverie.git\", rev = \"d87a03a312421d34dee81dae71aa395b40231e63\" }"
+  },
+  {
+    "path": "detcore-sabre/Cargo.toml",
+    "line": 18,
+    "text": "reverie-rpc-transport = { version = \"0.2.0\", git = \"https://github.com/rrnewton/reverie.git\", rev = \"d87a03a312421d34dee81dae71aa395b40231e63\" }"
+  },
+  {
+    "path": "detcore-sabre/Cargo.toml",
+    "line": 19,
+    "text": "reverie-sabre = { version = \"0.2.0\", git = \"https://github.com/rrnewton/reverie.git\", rev = \"d87a03a312421d34dee81dae71aa395b40231e63\" }"
+  },
+  {
+    "path": "detcore-sabre/Cargo.toml",
+    "line": 20,
+    "text": "reverie-syscalls = { version = \"0.2.0\", git = \"https://github.com/rrnewton/reverie.git\", rev = \"d87a03a312421d34dee81dae71aa395b40231e63\" }"
+  },
+  {
+    "path": "detcore/Cargo.toml",
+    "line": 75,
+    "text": "reverie = { package = \"reverie-core\", version = \"0.2.0\", git = \"https://github.com/rrnewton/reverie.git\", rev = \"d87a03a312421d34dee81dae71aa395b40231e63\" }"
+  },
+  {
+    "path": "detcore/Cargo.toml",
+    "line": 88,
+    "text": "reverie-ptrace = { version = \"0.2.0\", git = \"https://github.com/rrnewton/reverie.git\", rev = \"d87a03a312421d34dee81dae71aa395b40231e63\" }"
+  },
+  {
+    "path": "detcore/tests/testutils/Cargo.toml",
+    "line": 16,
+    "text": "reverie = { package = \"reverie-core\", version = \"0.2.0\", git = \"https://github.com/rrnewton/reverie.git\", rev = \"d87a03a312421d34dee81dae71aa395b40231e63\" }"
+  },
+  {
+    "path": "detcore/tests/testutils/Cargo.toml",
+    "line": 17,
+    "text": "reverie-ptrace = { version = \"0.2.0\", git = \"https://github.com/rrnewton/reverie.git\", rev = \"d87a03a312421d34dee81dae71aa395b40231e63\" }"
+  },
+  {
+    "path": "hermit-cli/Cargo.toml",
+    "line": 54,
+    "text": "reverie = { package = \"reverie-core\", version = \"0.2.0\", git = \"https://github.com/rrnewton/reverie.git\", rev = \"d87a03a312421d34dee81dae71aa395b40231e63\" }"
+  },
+  {
+    "path": "hermit-cli/Cargo.toml",
+    "line": 55,
+    "text": "reverie-dbt = { version = \"0.2.0\", git = \"https://github.com/rrnewton/reverie.git\", rev = \"d87a03a312421d34dee81dae71aa395b40231e63\", default-features = false, optional = true }"
+  },
+  {
+    "path": "hermit-cli/Cargo.toml",
+    "line": 56,
+    "text": "reverie-kvm = { version = \"0.2.0\", git = \"https://github.com/rrnewton/reverie.git\", rev = \"d87a03a312421d34dee81dae71aa395b40231e63\" }"
+  },
+  {
+    "path": "hermit-cli/Cargo.toml",
+    "line": 57,
+    "text": "reverie-ptrace = { version = \"0.2.0\", git = \"https://github.com/rrnewton/reverie.git\", rev = \"d87a03a312421d34dee81dae71aa395b40231e63\" }"
+  },
+  {
+    "path": "hermit-cli/Cargo.toml",
+    "line": 58,
+    "text": "reverie-liteinst = { version = \"0.2.0\", git = \"https://github.com/rrnewton/reverie.git\", rev = \"d87a03a312421d34dee81dae71aa395b40231e63\", default-features = false }"
+  },
+  {
+    "path": "hermit-cli/Cargo.toml",
+    "line": 59,
+    "text": "reverie-rpc-transport = { version = \"0.2.0\", git = \"https://github.com/rrnewton/reverie.git\", rev = \"d87a03a312421d34dee81dae71aa395b40231e63\" }"
+  },
+  {
+    "path": "hermit-install/Cargo.toml",
+    "line": 13,
+    "text": "reverie-dbt = { version = \"0.2.0\", git = \"https://github.com/rrnewton/reverie.git\", rev = \"d87a03a312421d34dee81dae71aa395b40231e63\", default-features = false }"
+  },
+  {
+    "path": "liteinst-runtime-build/Cargo.lock",
+    "line": 899,
+    "text": "source = \"git+https://github.com/rrnewton/reverie.git?rev=d87a03a312421d34dee81dae71aa395b40231e63#d87a03a312421d34dee81dae71aa395b40231e63\""
+  },
+  {
+    "path": "liteinst-runtime-build/Cargo.lock",
+    "line": 925,
+    "text": "source = \"git+https://github.com/rrnewton/reverie.git?rev=d87a03a312421d34dee81dae71aa395b40231e63#d87a03a312421d34dee81dae71aa395b40231e63\""
+  },
+  {
+    "path": "liteinst-runtime-build/Cargo.lock",
+    "line": 943,
+    "text": "source = \"git+https://github.com/rrnewton/reverie.git?rev=d87a03a312421d34dee81dae71aa395b40231e63#d87a03a312421d34dee81dae71aa395b40231e63\""
+  },
+  {
+    "path": "liteinst-runtime-build/Cargo.lock",
+    "line": 951,
+    "text": "source = \"git+https://github.com/rrnewton/reverie.git?rev=d87a03a312421d34dee81dae71aa395b40231e63#d87a03a312421d34dee81dae71aa395b40231e63\""
+  },
+  {
+    "path": "liteinst-runtime-build/Cargo.lock",
+    "line": 962,
+    "text": "source = \"git+https://github.com/rrnewton/reverie.git?rev=d87a03a312421d34dee81dae71aa395b40231e63#d87a03a312421d34dee81dae71aa395b40231e63\""
+  },
+  {
+    "path": "liteinst-runtime-build/Cargo.lock",
+    "line": 979,
+    "text": "source = \"git+https://github.com/rrnewton/reverie.git?rev=d87a03a312421d34dee81dae71aa395b40231e63#d87a03a312421d34dee81dae71aa395b40231e63\""
+  },
+  {
+    "path": "liteinst-runtime-build/Cargo.lock",
+    "line": 1010,
+    "text": "source = \"git+https://github.com/rrnewton/reverie.git?rev=d87a03a312421d34dee81dae71aa395b40231e63#d87a03a312421d34dee81dae71aa395b40231e63\""
+  },
+  {
+    "path": "liteinst-runtime-build/Cargo.lock",
+    "line": 1023,
+    "text": "source = \"git+https://github.com/rrnewton/reverie.git?rev=d87a03a312421d34dee81dae71aa395b40231e63#d87a03a312421d34dee81dae71aa395b40231e63\""
+  },
+  {
+    "path": "liteinst-runtime-build/Cargo.lock",
+    "line": 1081,
+    "text": "source = \"git+https://github.com/rrnewton/reverie.git?rev=d87a03a312421d34dee81dae71aa395b40231e63#d87a03a312421d34dee81dae71aa395b40231e63\""
+  },
+  {
+    "path": "liteinst-runtime-build/runtime/Cargo.toml",
+    "line": 8,
+    "text": "reverie-liteinst = { version = \"0.2.0\", git = \"https://github.com/rrnewton/reverie.git\", rev = \"d87a03a312421d34dee81dae71aa395b40231e63\", default-features = false, features = [\"preload-constructor\"] }"
+  }
+]

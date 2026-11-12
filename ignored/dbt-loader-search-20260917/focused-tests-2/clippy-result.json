@@ -1,0 +1,14 @@
+{
+  "argv": [
+    "cargo",
+    "clippy",
+    "--offline",
+    "--locked",
+    "-p",
+    "reverie-dbt",
+    "--all-targets",
+    "--all-features"
+  ],
+  "actual_exit": 0,
+  "seconds": 13.477735460968688
+}

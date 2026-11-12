@@ -1,0 +1,12 @@
+[
+  "client_directory_keeps_existing_search_precedence",
+  "environment_keeps_existing_search_precedence",
+  "fallback_does_not_promote_unrelated_indirect_path",
+  "fallback_does_not_search_explicit_relative_dependency",
+  "fallback_expands_origin_from_client_directory",
+  "fallback_keeps_ordered_runpath_selection",
+  "later_direct_dependency_uses_client_runpath",
+  "legacy_rpath_keeps_existing_search_precedence",
+  "missing_direct_dependency_still_fails",
+  "runpath_does_not_supply_indirect_only_dependency"
+]

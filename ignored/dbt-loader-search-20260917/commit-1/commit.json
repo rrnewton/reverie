@@ -1,0 +1,12 @@
+{
+  "argv": [
+    "git",
+    "commit",
+    "-F",
+    "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/commit-1/message.txt"
+  ],
+  "actual_exit": 0,
+  "seconds": 0.19882944086566567,
+  "stdout": "[dev-hermit/dbt-loader-search-20260917 066a0fb3] Fix private-loader lookup of later direct dependencies\n 7 files changed, 567 insertions(+), 4 deletions(-)\n create mode 100644 reverie-dbt/tests/fixtures/private_loader_search/app.S\n create mode 100644 reverie-dbt/tests/fixtures/private_loader_search/client.c\n create mode 100644 reverie-dbt/tests/fixtures/private_loader_search/leaf.c\n create mode 100644 reverie-dbt/tests/fixtures/private_loader_search/native.c\n create mode 100644 reverie-dbt/tests/fixtures/private_loader_search/parent.c\n create mode 100644 reverie-dbt/tests/private_loader_search.rs\n",
+  "stderr": ""
+}

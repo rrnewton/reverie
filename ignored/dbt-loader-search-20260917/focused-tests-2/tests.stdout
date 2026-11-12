@@ -1,0 +1,15 @@
+
+running 10 tests
+test client_directory_keeps_existing_search_precedence ... ok
+test environment_keeps_existing_search_precedence ... ok
+test fallback_does_not_promote_unrelated_indirect_path ... ok
+test fallback_does_not_search_explicit_relative_dependency ... ok
+test fallback_expands_origin_from_client_directory ... ok
+test fallback_keeps_ordered_runpath_selection ... ok
+test later_direct_dependency_uses_client_runpath ... ok
+test legacy_rpath_keeps_existing_search_precedence ... ok
+test missing_direct_dependency_still_fails ... ok
+test runpath_does_not_supply_indirect_only_dependency ... ok
+
+test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.00s
+

@@ -1,0 +1,16 @@
+diff --git a/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/test-before-cargo-env.rs b/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/reverie-dbt/tests/private_loader_search.rs
+index 16a234989..054ed11b1 100644
+--- a/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/test-before-cargo-env.rs
++++ b/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/reverie-dbt/tests/private_loader_search.rs
+@@ -73,7 +73,10 @@ impl Fixture {
+         for name in std::env::vars_os().map(|(name, _)| name) {
+             let name = name.to_string_lossy();
+             assert!(
+-                !name.starts_with("LD_") && !name.starts_with("DYNAMORIO_"),
++                // Cargo sets LD_LIBRARY_PATH for libtest. execute() replaces it
++                // explicitly for each child; other loader overrides are not replaced.
++                (!name.starts_with("LD_") || name == "LD_LIBRARY_PATH")
++                    && !name.starts_with("DYNAMORIO_"),
+                 "inherited loader override would invalidate fixture: {name}"
+             );
+         }

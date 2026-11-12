@@ -1,0 +1,35 @@
+{
+  "Cargo.toml": "199ae06c2ef8632dc11c94b7c9ccbf45e399538b40537c358beda98abb6b079c",
+  "rust-toolchain.toml": "8e95dba878d554bb4ce4267bc4cc5be16c20f327d2bc636fa0e25cd9cc2a0909",
+  "reverie-dbt/build.rs": "190bc0889c1428af086a7922e291365df21b337986e1fb345451238eabc7c1d3",
+  "reverie-dbt/vendor/dynamorio/core/unix/loader.c": "5e444f19b7d4c474120c83cea03d15124d01766e79b8c0b7741131606f283f59",
+  "cargo": {
+    "argv": [
+      "cargo",
+      "--version"
+    ],
+    "actual_exit": 0,
+    "stdout": "cargo 1.99.0-nightly (3efb1f477 2026-07-17)\n",
+    "stderr": ""
+  },
+  "rustc": {
+    "argv": [
+      "rustc",
+      "--version"
+    ],
+    "actual_exit": 0,
+    "stdout": "rustc 1.99.0-nightly (26ae60a9e 2026-07-28)\n",
+    "stderr": ""
+  },
+  "cmake": {
+    "argv": [
+      "cmake",
+      "--version"
+    ],
+    "actual_exit": 0,
+    "stdout": "cmake version 3.31.8\n\nCMake suite maintained and supported by Kitware (kitware.com/cmake).\n",
+    "stderr": ""
+  },
+  "Cargo.lock_present": false,
+  "diff_check": 0
+}
