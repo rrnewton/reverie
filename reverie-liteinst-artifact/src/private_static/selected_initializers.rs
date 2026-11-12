@@ -944,7 +944,7 @@ const DETCORE: MappedConsumerSource = MappedConsumerSource {
         reverie_gitlink_relative: "reverie",
     },
     package_name: "detcore-liteinst",
-    package_version: "0.5.6",
+    package_version: "0.5.7",
     lib_target: "detcore_liteinst",
     manifest_relative: "detcore-liteinst/Cargo.toml",
     lib_rs_relative: "detcore-liteinst/src/lib.rs",
