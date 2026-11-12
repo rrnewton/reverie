@@ -1,0 +1,230 @@
+{
+  "plan_sha256": "660938334d260ed3299907c67c917bf0b9bd91170b0fa0e8f4bf4d223fca474d",
+  "accepted": true,
+  "observer_attempted": true,
+  "terminal_authenticated": true,
+  "raw_status": 0,
+  "transport": {
+    "argv": [
+      "/usr/bin/python3",
+      "-B",
+      "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v6/qualification-v1/observer/observer.py",
+      "--out",
+      "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v6/qualification-v1/observer/compile",
+      "--cpu-usec",
+      "600000000",
+      "--wall-seconds",
+      "900",
+      "--log-bytes",
+      "16777216",
+      "/usr/bin/python3",
+      "-B",
+      "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v6/qualification-v1/phase.py",
+      "payload",
+      "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v6/qualification-v1/compile-plan.json",
+      "660938334d260ed3299907c67c917bf0b9bd91170b0fa0e8f4bf4d223fca474d"
+    ],
+    "cwd": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v6/source",
+    "wall_limit_seconds": 950,
+    "forced": false,
+    "returncode": 0,
+    "elapsed_seconds": 67.32367000798695,
+    "stdout": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v6/qualification-v1/controls/compile/observer.stdout",
+      "bytes": 161,
+      "mode": 420,
+      "sha256": "afdf1e0a67cd6a0a6eb5a9f0e65fedaa8d2583a97fa974b765dcfef1172d24b5"
+    },
+    "stderr": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v6/qualification-v1/controls/compile/observer.stderr",
+      "bytes": 0,
+      "mode": 420,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    }
+  },
+  "observer_result": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v6/qualification-v1/observer/compile/result.json",
+    "bytes": 48594,
+    "mode": 384,
+    "sha256": "7174dc635b9011d05a2ca47f48dbd764bdd9d16dd6d73e113f331d9cab0de7c3"
+  },
+  "readback": {
+    "artifacts": {
+      "lib": {
+        "cargo_artifact": {
+          "reason": "compiler-artifact",
+          "package_id": "path+file:///home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v6/source/reverie-kvm#0.2.0",
+          "manifest_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v6/source/reverie-kvm/Cargo.toml",
+          "target": {
+            "kind": [
+              "lib"
+            ],
+            "crate_types": [
+              "lib"
+            ],
+            "name": "reverie_kvm",
+            "src_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v6/source/reverie-kvm/src/lib.rs",
+            "edition": "2024",
+            "doc": true,
+            "doctest": true,
+            "test": true
+          },
+          "profile": {
+            "opt_level": "0",
+            "debuginfo": 2,
+            "debug_assertions": true,
+            "overflow_checks": true,
+            "test": true
+          },
+          "features": [
+            "default"
+          ],
+          "filenames": [
+            "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/target/rdtsc-recovery-v6-cold-v1/debug/deps/reverie_kvm-43ce2f687796397a"
+          ],
+          "executable": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/target/rdtsc-recovery-v6-cold-v1/debug/deps/reverie_kvm-43ce2f687796397a",
+          "fresh": false
+        },
+        "file": {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/target/rdtsc-recovery-v6-cold-v1/debug/deps/reverie_kvm-43ce2f687796397a",
+          "bytes": 126583688,
+          "mode": 493,
+          "sha256": "85f9e1c558c533359b97faad7d845d5e7ce778f4cb013bd34618e0b439b870a7"
+        }
+      },
+      "static": {
+        "cargo_artifact": {
+          "reason": "compiler-artifact",
+          "package_id": "path+file:///home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v6/source/reverie-kvm#0.2.0",
+          "manifest_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v6/source/reverie-kvm/Cargo.toml",
+          "target": {
+            "kind": [
+              "test"
+            ],
+            "crate_types": [
+              "bin"
+            ],
+            "name": "static_elf",
+            "src_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v6/source/reverie-kvm/tests/static_elf.rs",
+            "edition": "2024",
+            "doc": false,
+            "doctest": false,
+            "test": true
+          },
+          "profile": {
+            "opt_level": "0",
+            "debuginfo": 2,
+            "debug_assertions": true,
+            "overflow_checks": true,
+            "test": true
+          },
+          "features": [
+            "default"
+          ],
+          "filenames": [
+            "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/target/rdtsc-recovery-v6-cold-v1/debug/deps/static_elf-8045a74b4f627592"
+          ],
+          "executable": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/target/rdtsc-recovery-v6-cold-v1/debug/deps/static_elf-8045a74b4f627592",
+          "fresh": false
+        },
+        "file": {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/target/rdtsc-recovery-v6-cold-v1/debug/deps/static_elf-8045a74b4f627592",
+          "bytes": 180945104,
+          "mode": 493,
+          "sha256": "39fdd2e646d4c6a605ec15411635e581b04559064488b7add725856a96cc1118"
+        }
+      },
+      "vmcall": {
+        "cargo_artifact": {
+          "reason": "compiler-artifact",
+          "package_id": "path+file:///home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v6/source/reverie-kvm#0.2.0",
+          "manifest_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v6/source/reverie-kvm/Cargo.toml",
+          "target": {
+            "kind": [
+              "test"
+            ],
+            "crate_types": [
+              "bin"
+            ],
+            "name": "vmcall",
+            "src_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v6/source/reverie-kvm/tests/vmcall.rs",
+            "edition": "2024",
+            "doc": false,
+            "doctest": false,
+            "test": true
+          },
+          "profile": {
+            "opt_level": "0",
+            "debuginfo": 2,
+            "debug_assertions": true,
+            "overflow_checks": true,
+            "test": true
+          },
+          "features": [
+            "default"
+          ],
+          "filenames": [
+            "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/target/rdtsc-recovery-v6-cold-v1/debug/deps/vmcall-6f24a603a27fcb71"
+          ],
+          "executable": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/target/rdtsc-recovery-v6-cold-v1/debug/deps/vmcall-6f24a603a27fcb71",
+          "fresh": false
+        },
+        "file": {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/target/rdtsc-recovery-v6-cold-v1/debug/deps/vmcall-6f24a603a27fcb71",
+          "bytes": 87855656,
+          "mode": 493,
+          "sha256": "7c63cde08d01c22660237e59f330d535735019fa77f5b07c4e4fc5e4dc8d5f93"
+        }
+      },
+      "read-clock": {
+        "cargo_artifact": {
+          "reason": "compiler-artifact",
+          "package_id": "path+file:///home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v6/source/reverie-kvm#0.2.0",
+          "manifest_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v6/source/reverie-kvm/Cargo.toml",
+          "target": {
+            "kind": [
+              "test"
+            ],
+            "crate_types": [
+              "bin"
+            ],
+            "name": "read_clock",
+            "src_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v6/source/reverie-kvm/tests/read_clock.rs",
+            "edition": "2024",
+            "doc": false,
+            "doctest": false,
+            "test": true
+          },
+          "profile": {
+            "opt_level": "0",
+            "debuginfo": 2,
+            "debug_assertions": true,
+            "overflow_checks": true,
+            "test": true
+          },
+          "features": [
+            "default"
+          ],
+          "filenames": [
+            "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/target/rdtsc-recovery-v6-cold-v1/debug/deps/read_clock-19dc7265d033212c"
+          ],
+          "executable": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/target/rdtsc-recovery-v6-cold-v1/debug/deps/read_clock-19dc7265d033212c",
+          "fresh": false
+        },
+        "file": {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/target/rdtsc-recovery-v6-cold-v1/debug/deps/read_clock-19dc7265d033212c",
+          "bytes": 97615192,
+          "mode": 493,
+          "sha256": "62b1632b97e7f3a87a3d0240240aaa6d6e91263977cf194e8bab9829354f0703"
+        }
+      }
+    },
+    "compiler_diagnostics": 0
+  },
+  "payload_exit": {
+    "returncode": 0,
+    "reaped": true,
+    "elapsed_seconds": 64.19062840100378
+  },
+  "inputs_unchanged": true
+}

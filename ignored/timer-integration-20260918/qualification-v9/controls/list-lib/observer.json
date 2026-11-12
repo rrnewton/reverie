@@ -1,0 +1,38 @@
+{
+  "argv": [
+    "/usr/bin/python3",
+    "-B",
+    "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/timer-integration-20260918/qualification-v9/observer/observer.py",
+    "--out",
+    "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/timer-integration-20260918/qualification-v9/observer/list-lib",
+    "--cpu-usec",
+    "30000000",
+    "--wall-seconds",
+    "60",
+    "--log-bytes",
+    "16777216",
+    "/usr/bin/python3",
+    "-B",
+    "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/timer-integration-20260918/qualification-v9/phase.py",
+    "payload",
+    "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/timer-integration-20260918/qualification-v9/list-lib-plan.json",
+    "cc4ac77fccbde6890d218fbaa5082a5ee3b4772a0b63549860cb478ccaa9eb68"
+  ],
+  "cwd": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918",
+  "wall_limit_seconds": 110,
+  "forced": false,
+  "returncode": 0,
+  "elapsed_seconds": 2.7585086608305573,
+  "stdout": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/timer-integration-20260918/qualification-v9/controls/list-lib/observer.stdout",
+    "bytes": 159,
+    "mode": 420,
+    "sha256": "995b5e1a4309380dc09a0e3a22385b6d425009390c1d1a1a3559e6ae082e123f"
+  },
+  "stderr": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/timer-integration-20260918/qualification-v9/controls/list-lib/observer.stderr",
+    "bytes": 0,
+    "mode": 420,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  }
+}

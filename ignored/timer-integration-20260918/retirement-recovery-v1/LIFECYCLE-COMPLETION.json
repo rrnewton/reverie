@@ -1,0 +1,16 @@
+{
+  "completion": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/timer-integration-20260918/lease-state/ed118d44d3ac2723333b85b4f4a83f7f6d4bc85c284a717583bae62dc80e5b5d.json",
+    "bytes": 397,
+    "mode": 420,
+    "sha256": "2e4b8917f9bb78f38f5f9d3a8381083d00caf62d5f14443b3a19943bb759295c"
+  },
+  "recovery": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/timer-integration-20260918/retirement-recovery-v1/LIFECYCLE-RECOVERY.json",
+    "bytes": 7016,
+    "mode": 420,
+    "sha256": "bfa9fde41cc52e989b3a173ffc9bdc273b73c0acccf3e9adefe75f09c5e20fba"
+  },
+  "source_unchanged": true,
+  "scope": "Append-only lifecycle completion under the unchanged owned lease token. Original attempt remains unqualified and ran; no new payload yet."
+}

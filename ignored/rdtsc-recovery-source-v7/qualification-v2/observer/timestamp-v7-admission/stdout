@@ -1,0 +1,4 @@
+{ "type": "suite", "event": "started", "test_count": 1 }
+{ "type": "test", "event": "started", "name": "runtime::terminal_tests::timestamp_exit_admission_preserves_returning_ordinary_injections" }
+{ "type": "test", "name": "runtime::terminal_tests::timestamp_exit_admission_preserves_returning_ordinary_injections", "event": "ok" }
+{ "type": "suite", "event": "ok", "passed": 1, "failed": 0, "ignored": 0, "measured": 0, "filtered_out": 511, "exec_time": 0.000260662 }

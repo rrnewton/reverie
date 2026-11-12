@@ -1,0 +1,38 @@
+{
+  "argv": [
+    "/usr/bin/python3",
+    "-B",
+    "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v2/qualification-v1/observer/observer.py",
+    "--out",
+    "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v2/qualification-v1/observer/timestamp-02",
+    "--cpu-usec",
+    "30000000",
+    "--wall-seconds",
+    "60",
+    "--log-bytes",
+    "16777216",
+    "/usr/bin/python3",
+    "-B",
+    "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v2/qualification-v1/phase.py",
+    "payload",
+    "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v2/qualification-v1/timestamp-02-plan.json",
+    "cbfccf47f89044b18b1209d3d20d31a37ec9f3d72431389a304aacafad5e62ce"
+  ],
+  "cwd": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v2/source",
+  "wall_limit_seconds": 110,
+  "forced": false,
+  "returncode": 0,
+  "elapsed_seconds": 3.057864734902978,
+  "stdout": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v2/qualification-v1/controls/timestamp-02/observer.stdout",
+    "bytes": 160,
+    "mode": 420,
+    "sha256": "03456f3bdb915d5f5191b8bb70afc2832730b263c348bc7295e1140242cec6be"
+  },
+  "stderr": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v2/qualification-v1/controls/timestamp-02/observer.stderr",
+    "bytes": 0,
+    "mode": 420,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  }
+}

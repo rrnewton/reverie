@@ -1,0 +1,60 @@
++            backend
++                .memory
++                .write_raw(
++                    0x4000 + 2 * 8,
++                    &(BOUNDARY | 0x87 | (1_u64 << 63)).to_le_bytes(),
++                )
++                .unwrap();
++            backend.set_rdtsc_interception(true).unwrap();
++            assert!(matches!(backend.vcpu.run().unwrap(), VcpuExit::Hlt));
++            let fault = backend.static_elf_exception().unwrap().unwrap();
++            assert_eq!(fault.instruction_pointer, BOUNDARY - 2);
++            assert_eq!(fault.vector, if rdtscp { 14 } else { 13 });
++            let timestamp = backend.timestamp_counter_exception().unwrap();
++            if rdtscp {
++                assert!(
++                    timestamp.is_none(),
++                    "inaccessible third byte must not dispatch"
++                );
++            } else {
++                let timestamp = timestamp.expect("two-byte instruction must not fetch next page");
++                assert_eq!(timestamp.instruction.request, reverie::Rdtsc::Tsc);
++                assert_eq!(timestamp.instruction.length, 2);
++            }
++        }
++    }
++
+     fn backend_at_completed_tool_boundary()
+     -> Option<(KvmBackend, ElfExecutor, CompletedSyscallBoundary)> {
+         const MEMORY_SIZE: usize = 16 * 1024 * 1024;
+--- a/reverie-kvm/tests/static_elf.rs
++++ b/reverie-kvm/tests/static_elf.rs
+@@ -28,6 +28,8 @@
+ use reverie::GlobalTool;
+ use reverie::Guest;
+ use reverie::Pid;
++use reverie::Rdtsc;
++use reverie::RdtscResult;
+ use reverie::SignalEvent;
+ use reverie::SignalTarget;
+ use reverie::Stack;
+@@ -13922,3 +13924,746 @@
+ 
+ #[path = "support/captured_write_signals.rs"]
+ mod captured_write_signals;
++
++const RDTSC_SENTINEL: u64 = 0x1122_3344_5566_7788;
++const RDTSCP_SENTINEL: u64 = 0x99aa_bbcc_ddee_ff00;
++const RDTSCP_AUX_SENTINEL: u32 = 0x1357_9bdf;
++
++#[derive(Debug, Default)]
++struct TimestampLog {
++    calls: Mutex<Vec<(Pid, Rdtsc)>>,
++}
++
++impl TimestampLog {
++    fn calls(&self) -> Vec<(Pid, Rdtsc)> {
++        self.calls
++            .lock()
++            .expect("timestamp log lock poisoned")
++            .clone()

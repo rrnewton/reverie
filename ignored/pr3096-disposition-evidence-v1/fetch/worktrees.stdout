@@ -1,0 +1,877 @@
+worktree /home/newton/work/dev-hermit/hermit
+HEAD 39ac9f8a55f1b4d17b8c4c0001ce6c4d8a763435
+branch refs/heads/main
+
+worktree /home/newton/temp/bracket
+HEAD 1bc8d15c975c989bee700f0253e32ec7ecde991b
+branch refs/heads/review-3069/full-plan-bracket-prepare-full
+
+worktree /home/newton/temp/cleansrc
+HEAD f615104d0df26402babcfd9f642950a31efa57ec
+detached
+
+worktree /home/newton/temp/dev-hermit-image-activation-20260916/hermit
+HEAD d0b1468b0964a16052bd32d90b9990aa0c9ace7a
+detached
+
+worktree /home/newton/temp/dev-hermit/dagrun-solo-source
+HEAD cd976f804de7568e34dc731b859dd7a5a1c1c0b9
+detached
+
+worktree /home/newton/temp/dev-hermit/dagrun-validate-source
+HEAD 283fbb883a890877879eb1679be45ed967ae326d
+detached
+
+worktree /home/newton/temp/disk2/rev3031
+HEAD 964cae008322cbad53cce5016914bfe187f7d81e
+detached
+
+worktree /home/newton/temp/drain-2-hermit-land
+HEAD ba3bfc97671666ae946841804624e7a2c355a0e4
+detached
+
+worktree /home/newton/temp/hermit-journal-bool-consumers
+HEAD 74882f61beada0a7b0295a5cacf9326feec138e7
+branch refs/heads/inventory/journal-boolean-consumers
+
+worktree /home/newton/temp/hermit-portable-ci-20260917
+HEAD f8555259c1f67596aa9600e4adfede365ed2169f
+branch refs/heads/preflight-1/portable-ci-proxy-fallback
+
+worktree /home/newton/temp/hermit/dagrun-move
+HEAD 2738b00dd12f57922a6fca418b0ec6a39d05bf19
+branch refs/heads/scratch/dagrun-move-copy
+
+worktree /home/newton/temp/hermit/dagrun-move-history
+HEAD 6f2a46ffbf0854f99b10109f34b653ef86594cac
+detached
+
+worktree /home/newton/temp/hermit/dagrun-one-dag
+HEAD 80ed010c02e4b82c0512361cbaf835854249c472
+branch refs/heads/agent/one-dag-rebuild
+
+worktree /home/newton/temp/hermit/pr2944-208c-validate-source
+HEAD 084cf4a336f6f929826ee9f239f2352f0eca3f1f
+branch refs/heads/agent/agent-utils-result-manifests-pin
+
+worktree /home/newton/temp/hermit/release-profile-replay-injects
+HEAD 273ac1ea85d74e945ff0b589c9c4cdf47b72d667
+branch refs/heads/agent/dagrun-release-profile-replay-injects
+
+worktree /home/newton/temp/inventory-audit-hermit
+HEAD 70482e9983b54a101811af07497283e2b1ed05ca
+branch refs/heads/inventory/audit-reject-unregistered
+
+worktree /home/newton/temp/lasttested
+HEAD 0b66329cfa73f90a79f9c0b888f768b287322bb9
+branch refs/heads/review-3069/last-tested-check-identity
+
+worktree /home/newton/temp/r2-2904
+HEAD 33a8f546deac001a2ae41f1a1706a0c9f9fc9b85
+branch refs/heads/recon-2/2904-pin-advance
+
+worktree /home/newton/temp/r2-dbt
+HEAD 612d06ab9d047ef0583e5e91d44a3a5e84d3c0f8
+branch refs/heads/recon-2/dbt-failure-diagnostics
+
+worktree /home/newton/temp/r2-harness-wt
+HEAD 964cae008322cbad53cce5016914bfe187f7d81e
+branch refs/heads/recon-2/harness-capability-probe
+
+worktree /home/newton/temp/scorecard-1
+HEAD 79da523137dbac400faca6130593361b58a01468
+branch refs/heads/scorecard-1/backend-leaderboard
+
+worktree /home/newton/temp/validate-cleanup-hermit
+HEAD d2f3d42dbffc05a7c79e0b64873231acccfba9e5
+detached
+
+worktree /home/newton/temp/validate-cleanup-hermit-current
+HEAD a6f0e08508a3c9403a0418627209d0c7aef5f340
+detached
+
+worktree /home/newton/work/dev-hermit/hermit/ignored/dap-rescue
+HEAD f98d538f03b02b631a7c24e80e297eb9e056f263
+branch refs/heads/rescue/hermit-dap-fixture-root-write-guard-wip
+
+worktree /home/newton/work/dev-hermit/ignored/consumed-handoffs/lander-2/review-worktrees/degraded-lander-2-main-3b48-backend-parity
+HEAD 3b48f70eeaf8d4f2edd8d85e56ef56526ac6cc0c
+detached
+
+worktree /home/newton/work/dev-hermit/ignored/consumed-handoffs/lander-2/review-worktrees/degraded-lander-2-pr2427-baseline
+HEAD bbde7e1e89cadac0233c87aad3166eff337e222b
+detached
+
+worktree /home/newton/work/dev-hermit/ignored/consumed-handoffs/lander-2/review-worktrees/degraded-lander-2-pr2427-cells-base-8f07
+HEAD 8f07f6b6d3ab184f0572655b319c5b6dbe434033
+detached
+
+worktree /home/newton/work/dev-hermit/ignored/consumed-handoffs/lander-2/review-worktrees/degraded-lander-2-pr2427-cells-merge-8f07
+HEAD e2a5e774b19eac940fd5222ca25b571623b6ccb8
+detached
+
+worktree /home/newton/work/dev-hermit/ignored/consumed-handoffs/lander-2/review-worktrees/degraded-lander-2-pr2427-current-main
+HEAD 1dc6cec4c46aa86764b516bd87b9522fbb156249
+detached
+
+worktree /home/newton/work/dev-hermit/ignored/consumed-handoffs/lander-2/review-worktrees/degraded-lander-2-pr2427-current-merge
+HEAD e182f913fdbfaab59f03c7bb56149a143c337b61
+detached
+
+worktree /home/newton/work/dev-hermit/ignored/consumed-handoffs/lander-2/review-worktrees/degraded-lander-2-pr2427-current-merge-focused
+HEAD e7f2af1f112970654e224dcea9ea04a0a707b3c8
+detached
+
+worktree /home/newton/work/dev-hermit/ignored/consumed-handoffs/lander-2/review-worktrees/degraded-lander-2-pr2427-refresh-base-c98
+HEAD c98dc60b23b8bd7238a94c3a0f93cc425cf8c6fe
+detached
+
+worktree /home/newton/work/dev-hermit/ignored/consumed-handoffs/lander-2/review-worktrees/degraded-lander-2-pr2427-refresh-merge-c98
+HEAD 09ade7ba3b17d4a2170be650f75ae0197726dd3f
+detached
+
+worktree /home/newton/work/dev-hermit/ignored/consumed-handoffs/lander-2/review-worktrees/degraded-lander-2-pr2838-objection
+HEAD 81bfe1a02da7b25c007a207115e0669b07aeb220
+branch refs/heads/degraded-lander-2/pr2838-objection-fix
+
+worktree /home/newton/work/dev-hermit/ignored/consumed-handoffs/lander-2/review-worktrees/degraded-lander-2-pr2838-residual
+HEAD 734cbf14312068af4f0a812f574d38829bd20f80
+branch refs/heads/degraded-lander-2/pr2838-retry-accounting-final
+
+worktree /home/newton/work/dev-hermit/ignored/consumed-handoffs/lander-2/review-worktrees/pr2427-baseline-850685
+HEAD 850685f6b9f3ae0dbc5a35fd3ec9f2abe867d95a
+detached
+
+worktree /home/newton/work/dev-hermit/ignored/consumed-handoffs/lander-2/review-worktrees/pr2427-merge-850685
+HEAD d7f2c09ef01ff408340186b3bca0d9a45d4a8b9d
+detached
+
+worktree /home/newton/work/dev-hermit/ignored/consumed-handoffs/lander-2/review-worktrees/pr2802-combined-kvm-00fb
+HEAD 00fb0d8285ea3dcf472079ca575289beffd1c550
+detached
+
+worktree /home/newton/work/dev-hermit/ignored/consumed-handoffs/lander-2/review-worktrees/pr2802-combined-kvm-4733
+HEAD 4733542cf689ac99061e83121f3e35d83ca881b8
+detached
+
+worktree /home/newton/work/dev-hermit/ignored/consumed-handoffs/lander-2/review-worktrees/pr2838-734cbf-review
+HEAD 734cbf14312068af4f0a812f574d38829bd20f80
+detached
+
+worktree /home/newton/work/dev-hermit/ignored/consumed-handoffs/lander-2/review-worktrees/pr2838-exact-review
+HEAD 1b35fbc143d5060531b837696ae72c07dad0348c
+detached
+
+worktree /home/newton/work/dev-hermit/ignored/consumed-handoffs/lander-2/review-worktrees/pr2910-main-control-76c2
+HEAD b38586bd6d97a308c4795d920da0bb96044a9407
+detached
+
+worktree /home/newton/work/dev-hermit/ignored/degraded-lander-2-pr2802-rebase-00fb
+HEAD 00fb0d8285ea3dcf472079ca575289beffd1c550
+detached
+
+worktree /home/newton/work/dev-hermit/ignored/degraded-lander-2-pr2802-validate
+HEAD 9628418a6533127b87deb48dcd21b9df3b768b93
+detached
+
+worktree /home/newton/work/dev-hermit/ignored/degraded-lander-2-pr2802-validate-473
+HEAD 4733542cf689ac99061e83121f3e35d83ca881b8
+detached
+
+worktree /home/newton/work/dev-hermit/ignored/degraded-lander-2-pr2802-validate-ec0
+HEAD 5582bec5cf800a8661050d6fcd261bdc3433311d
+detached
+
+worktree /home/newton/work/dev-hermit/ignored/degraded-lander-2-pr2831-validate
+HEAD 35aae1f65126480d5ff1ec6e4cefbe8ab59bbddd
+detached
+
+worktree /home/newton/work/dev-hermit/ignored/degraded-lander-2-pr2861-validate
+HEAD dcdf94ac6bd7a6daa36c6f32d72852a4e7214882
+detached
+
+worktree /home/newton/work/dev-hermit/ignored/review-cpuid/hermit-2950
+HEAD 58bf4f5c17880395400ab3cb6482d0de2ee03a84
+detached
+
+worktree /home/newton/work/dev-hermit/worktrees/bisect-si
+HEAD d9d8d32f9511911ef9becac0220bc5d748a414c2
+detached
+
+worktree /home/newton/work/dev-hermit/worktrees/investigate-cells-repeat-6938
+HEAD 6938fbb06e336d854043697e55017e1e8c993d77
+detached
+
+worktree /home/newton/work/dev-hermit/worktrees/pr2802-residual-evidence
+HEAD d9e195a4cb51ec59acf59b1c92fc58fbeccc9738
+detached
+
+worktree /home/newton/work/dev-hermit/worktrees/review-pr2802-codex
+HEAD d9e195a4cb51ec59acf59b1c92fc58fbeccc9738
+detached
+
+worktree /home/newton/work/dev-hermit/worktrees/review-pr2838-codex
+HEAD 734cbf14312068af4f0a812f574d38829bd20f80
+detached
+
+worktree /home/newton/work/dev-hermit/worktrees/review-pr2980-codex
+HEAD db33afbd3c6cddbbe7c54894061246299770a60d
+detached
+
+worktree /home/newton/work/dev-hermit/worktrees/scorecard-publish-validation-21bfbfee
+HEAD 21bfbfee29bab15e9a6dc14a28faaecab35c267a
+detached
+
+worktree /home/newton/work/dev-hermit/worktrees/scorecard-publish-validation-bad483
+HEAD bad4832126f5fcf4f993f132ce8f1f09cdb6ea90
+detached
+
+worktree /home/newton/work/dev-hermit/worktrees/scorecard-publish-validation-base-a7d266d6
+HEAD a7d266d6df96f7b19eda1a3fa7378820f6f1e05a
+detached
+
+worktree /home/newton/work/dev-hermit/worktrees/scorecard-publish-validation-base-ac2d
+HEAD ac2d9243ea433ec52492ad5a37bd3c337e9595ba
+detached
+
+worktree /home/newton/work/dev-hermit/worktrees/slots/astra-demo-recovery
+HEAD 64e77d6e10fad6f48d0fa3da1fa03fb4ee514065
+branch refs/heads/astra-demo-recovery
+
+worktree /home/newton/work/dev-hermit/worktrees/slots/astra-hermit-drafts
+HEAD 495c61c84515478bdd48ba4d1958ce9ce824f528
+branch refs/heads/astra-hermit-drafts-pr2836-current-main
+
+worktree /home/newton/work/dev-hermit/worktrees/slots/astra-hermit-ready
+HEAD e06ff82c608d4f745182dfca5cfb78e2d2c16ec1
+branch refs/heads/astra-hermit-ipc-determinism-current-20260914
+
+worktree /home/newton/work/dev-hermit/worktrees/slots/claude-family-review-ten-retained
+HEAD be51793c6455fef32ce08b9a70d45bec6fa12d93
+branch refs/heads/codex-auth/claude-family-review-ten
+
+worktree /home/newton/work/dev-hermit/worktrees/slots/claude-review-1
+HEAD 4612aa51913f1cc83f9806a34606c9369dbc9314
+branch refs/heads/claude-review-1/exact-head-review
+
+worktree /home/newton/work/dev-hermit/worktrees/slots/codex-liteinst-01a0a13c
+HEAD 944138ef2b3044cd4576a7d1388075d7260b55e7
+branch refs/heads/codex/liteinst-records-01a0a13c
+
+worktree /home/newton/work/dev-hermit/worktrees/slots/codex-liteinst-resume-01a0a13c
+HEAD 73a60dfa361f3bd1cb92c03f9b750c08e3ee64e2
+branch refs/heads/codex/liteinst-initializer-consumer-01a0a13c
+
+worktree /home/newton/work/dev-hermit/worktrees/slots/demo08review
+HEAD 68605f886745a060e0a2a8e24ab933815acc2d22
+branch refs/heads/demo-08-green-review-for-pr-2904
+
+worktree /home/newton/work/dev-hermit/worktrees/slots/demos-fix
+HEAD ccb3e5c07630c45fddeff69aa23af0b18fc61efc
+branch refs/heads/demos-fix-allow-merge-gate
+
+worktree /home/newton/work/dev-hermit/worktrees/slots/dev-hermit-15-pr2969-rebase-01a0a13c
+HEAD 79da523137dbac400faca6130593361b58a01468
+branch refs/heads/codex/liteinst-pr2969-rebase-01a0a13c
+
+worktree /home/newton/work/dev-hermit/worktrees/slots/dev-hermit-au-offline-fetch-20260916
+HEAD c05225b76f3eeb5691df3949c4098ab20f225971
+branch refs/heads/dev-hermit/au-offline-fetch-20260916
+
+worktree /home/newton/work/dev-hermit/worktrees/slots/dev-hermit-census-consumer-20260917-2
+HEAD 3a1ee064abca6e33c42e1ea1898e870dd25a66f4
+branch refs/heads/dev-hermit/census-consumer-20260917-2
+
+worktree /home/newton/work/dev-hermit/worktrees/slots/dev-hermit-ci-cardinality-fixtures-20260916
+HEAD 84269bc610436eee4405e6177027153d149a0bc6
+branch refs/heads/dev-hermit/ci-cardinality-fixtures-20260916
+
+worktree /home/newton/work/dev-hermit/worktrees/slots/dev-hermit-ci-gate-repairs-20260916
+HEAD 7fc1b1200ebb76a50f7de59822d383b82749ca83
+branch refs/heads/dev-hermit/ci-gate-repairs-20260916
+
+worktree /home/newton/work/dev-hermit/worktrees/slots/dev-hermit-ci-manifest-20260915
+HEAD 631131d42972398fdceabef7023a67116fb43d59
+branch refs/heads/dev-hermit/ci-manifest-safeguards-20260915
+
+worktree /home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-error-cleanup-20260916
+HEAD 946bb11ba23f19a6c670e4b576c7c7f23b93fbcd
+branch refs/heads/dev-hermit/dbt-error-cleanup-20260916
+
+worktree /home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-observer-20260916
+HEAD 6108f3be8d8c4f54107b1cfe19061759903b77e7
+branch refs/heads/dev-hermit/dbt-loader-observer-20260916
+
+worktree /home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-pin-20260917
+HEAD f3e5f57d519099baa9895a47d27ed6375d85ea04
+branch refs/heads/dev-hermit/dbt-loader-pin-20260917
+
+worktree /home/newton/work/dev-hermit/worktrees/slots/dev-hermit-doc-provenance-3093-20260918
+HEAD a331e105467a7937a544eeadbd29f547f8424318
+branch refs/heads/codex/pr3093-doc-provenance-20260918
+
+worktree /home/newton/work/dev-hermit/worktrees/slots/dev-hermit-gdb-replay-diagnostic-20260916
+HEAD 3d6d90350715c56e00c52826231ef621d17e8c17
+branch refs/heads/dev-hermit/gdb-replay-diagnostic-20260916
+
+worktree /home/newton/work/dev-hermit/worktrees/slots/dev-hermit-gdb-vfile-pin-20260916
+HEAD e208b86786ea7d8d7c7eb81e9783c8af04165c7f
+branch refs/heads/dev-hermit/gdb-vfile-pin-20260916
+
+worktree /home/newton/work/dev-hermit/worktrees/slots/dev-hermit-harness-journal-20260916
+HEAD eca475ef908483a50eff603a0c0b245ce60ba978
+branch refs/heads/dev-hermit/harness-journal-isolation-20260916
+
+worktree /home/newton/work/dev-hermit/worktrees/slots/dev-hermit-hermetic-v3-20260916
+HEAD 1d27222def65e704448d48d796c09a678562969b
+branch refs/heads/dev-hermit/hermetic-v3-20260916
+
+worktree /home/newton/work/dev-hermit/worktrees/slots/dev-hermit-host-fetch-proxy-20260917
+HEAD ff810b514d6a93b024d5314186174a94a04fdefc
+branch refs/heads/dev-hermit/host-fetch-proxy-20260917
+
+worktree /home/newton/work/dev-hermit/worktrees/slots/dev-hermit-main1842-compat-env-20260917
+HEAD 57688282221f534dfc5ea29dd61b82a9c0ba943d
+branch refs/heads/dev-hermit/main1842-compat-env-20260917
+
+worktree /home/newton/work/dev-hermit/worktrees/slots/dev-hermit-manifest-fixture-ledger-20260916
+HEAD abd9d6b16bf867313da45d562138db4a92df762b
+branch refs/heads/dev-hermit/manifest-fixture-ledger-20260916
+
+worktree /home/newton/work/dev-hermit/worktrees/slots/dev-hermit-pinned-command-fixtures-20260916
+HEAD 96565ac8b1aaeab56f9ddf0f5357fdd32c04e671
+branch refs/heads/dev-hermit/pinned-command-fixtures-20260916
+
+worktree /home/newton/work/dev-hermit/worktrees/slots/dev-hermit-pinned-guest-paths-20260916
+HEAD f844f8534da43e9e4aea7ed85a06a90a3bbd615e
+branch refs/heads/dev-hermit/pinned-guest-paths-20260916
+
+worktree /home/newton/work/dev-hermit/worktrees/slots/dev-hermit-plan-export-isolation-20260917
+HEAD 2f164bef8b5f05dc6803edcf8b772deeec16385e
+branch refs/heads/dev-hermit/plan-export-isolation-20260917
+
+worktree /home/newton/work/dev-hermit/worktrees/slots/dev-hermit-prepare-full-fixture-20260918
+HEAD 776d60e1ddf0e1e633c07929ba3177f30f1e6b92
+branch refs/heads/codex/adopt-pr3085-check-provenance-20260918
+
+worktree /home/newton/work/dev-hermit/worktrees/slots/dev-hermit-proc-locks-runtime-20260916
+HEAD 505e0641c656ee5651c37be98fcce888fae42631
+branch refs/heads/dev-hermit/proc-locks-runtime-20260916
+
+worktree /home/newton/work/dev-hermit/worktrees/slots/dev-hermit-regular-census-20260918
+HEAD 6908c8f05bb9314aeca06b3c5d529be3c125ee80
+branch refs/heads/dev-hermit/regular-census-20260918
+
+worktree /home/newton/work/dev-hermit/worktrees/slots/dev-hermit-required-cell-count-20260917
+HEAD 37a19ced4f2dec3e16e057cca8923b0a84b332d7
+branch refs/heads/dev-hermit/required-cell-count-20260917
+
+worktree /home/newton/work/dev-hermit/worktrees/slots/dev-hermit-retry-fetch-fixtures-20260918
+HEAD 85bf7c6ef5995a9c2b56abb1e5d664e973a49ff6
+branch refs/heads/codex/retain-retry-helper-test-fixtures-20260918
+
+worktree /home/newton/work/dev-hermit/worktrees/slots/dev-hermit-robust-exit-clocks-20260916
+HEAD f6c7bf19787595d64c55d1516fda99d1187915b0
+branch refs/heads/dev-hermit/robust-exit-clocks-20260916
+
+worktree /home/newton/work/dev-hermit/worktrees/slots/dev-hermit-rust-script-clippy-20260917
+HEAD afdaf632301b5e8650ebbb55f61597f70ed37b21
+detached
+
+worktree /home/newton/work/dev-hermit/worktrees/slots/dev-hermit-sabre-capture-discriminator-20260917
+HEAD 6945e62a7f43610ac4c4559ceaae80110ad81794
+branch refs/heads/dev-hermit/sabre-capture-discriminator-20260917
+
+worktree /home/newton/work/dev-hermit/worktrees/slots/dev-hermit-sabre-frame-pin-20260917
+HEAD b577de8a95c6e9538c6989c122ab613d7c513349
+branch refs/heads/dev-hermit/sabre-frame-pin-20260917
+
+worktree /home/newton/work/dev-hermit/worktrees/slots/dev-hermit-sabre-getrandom-diagnostic-20260917
+HEAD 040cb73298c163cca68ca566fce9a0f17082cd64
+branch refs/heads/dev-hermit/sabre-getrandom-diagnostic-20260917
+
+worktree /home/newton/work/dev-hermit/worktrees/slots/dev-hermit-sabre-random-bootstrap-pin-20260917
+HEAD c0ca7a0666245ce0d71e8e9ca6ba338f2fa22452
+branch refs/heads/dev-hermit/sabre-random-bootstrap-pin-20260917
+
+worktree /home/newton/work/dev-hermit/worktrees/slots/dev-hermit-scorecard-retry-argv-20260917
+HEAD 049197fe7cea82ec4271aa103e9cbfa16bbce9a3
+branch refs/heads/dev-hermit/scorecard-retry-argv-20260917
+
+worktree /home/newton/work/dev-hermit/worktrees/slots/dev-hermit-stdio-flags
+HEAD df5ac0d282fea2ab89ecc03a64c46feff57d97f2
+branch refs/heads/validate-self-test-runner-log-isolation
+
+worktree /home/newton/work/dev-hermit/worktrees/slots/dev-hermit-structured-results-20260918
+HEAD bcd4bb0fc56553ef880c5488364d3de4b1ae387a
+branch refs/heads/dev-hermit/structured-results-20260918
+
+worktree /home/newton/work/dev-hermit/worktrees/slots/dev-hermit-submodule-fixture-producer-reuse-20260917
+HEAD 6247ff5e316dd415db7c2dd436b693eac406952b
+branch refs/heads/dev-hermit/validation-fixture-correctness-20260917
+
+worktree /home/newton/work/dev-hermit/worktrees/slots/dev-hermit-validation-service-schema-fixture-20260917
+HEAD 5f858297b74ec9c8fb8732ea43cb0b5011b0c7d0
+branch refs/heads/dev-hermit/validation-service-schema-fixture-20260917
+
+worktree /home/newton/work/dev-hermit/worktrees/slots/dev-hermit-verify-two-runs-20260915
+HEAD 7611a93d984d7c91dcd56f860ced26382afb598b
+branch refs/heads/dev-hermit/verify-two-runs-20260915
+
+worktree /home/newton/work/dev-hermit/worktrees/slots/drain-2
+HEAD ba93752896fe07ca958e9d6268c7dadb21cb0cfb
+branch refs/heads/drain-2/chaos-oracles
+
+worktree /home/newton/work/dev-hermit/worktrees/slots/drain-verify
+HEAD 24e15d63b2e356b878318faa968691ef3d5eb707
+branch refs/heads/agent/drain-verify
+
+worktree /home/newton/work/dev-hermit/worktrees/slots/exact-test-artifact-verifier
+HEAD 805ecd0042c9746c2eeaadfa5bac2c08490fd733
+branch refs/heads/exact-test-artifact-verifier/schema9-artifact-byte-verifier-refresh-20260913
+
+worktree /home/newton/work/dev-hermit/worktrees/slots/final-validate-status
+HEAD ccde9651fa95b90a0e6e61445a64c717098263c0
+branch refs/heads/final-validate-status/distinguish-refused-to-certify
+
+worktree /home/newton/work/dev-hermit/worktrees/slots/hermetic-validate-v3-backlog-1
+HEAD a2d72bb4b2a62daa8b9e61905cb0d2a14870451f
+branch refs/heads/backlog-1/hermetic-validate-v3
+
+worktree /home/newton/work/dev-hermit/worktrees/slots/hermit-000-hermetic-validate-v3
+HEAD 332a069f4bb0672e456402f7ee6cb2c876106989
+branch refs/heads/hermit-000-hermetic-validate-v3
+
+worktree /home/newton/work/dev-hermit/worktrees/slots/hermit-ecx-complete
+HEAD 58bf4f5c17880395400ab3cb6482d0de2ee03a84
+branch refs/heads/kvm-ratchet-hermit-ecx-complete
+
+worktree /home/newton/work/dev-hermit/worktrees/slots/hermit-ecx-findings
+HEAD 835c48fd257ce2c06fac23323fb03ea82cff493d
+branch refs/heads/hermit-ecx-findings
+
+worktree /home/newton/work/dev-hermit/worktrees/slots/integration-pr529-pr538-diagnostic
+HEAD 5c0bae832d515ce2b8b9cfcf2d7b97f010d641c6
+branch refs/heads/codex/integration-pr529-pr538-diagnostic-5c
+
+worktree /home/newton/work/dev-hermit/worktrees/slots/integration-pr529-pr538-hermit
+HEAD 6c90880ebebcfff80478b555c05f500d6e307716
+branch refs/heads/codex/integration-pr529-pr538-f8bc-hermit
+
+worktree /home/newton/work/dev-hermit/worktrees/slots/kvm-closed-stdin-cdf828dd-source-20260917
+HEAD cdf828ddeb381a51e493b65c1f348f0dae2135e3
+branch refs/heads/codex/kvm-closed-stdin-cdf828dd-source-20260917
+
+worktree /home/newton/work/dev-hermit/worktrees/slots/kvm-detcore-vectored
+HEAD 6c90880ebebcfff80478b555c05f500d6e307716
+branch refs/heads/codex/kvm-detcore-vectored
+
+worktree /home/newton/work/dev-hermit/worktrees/slots/kvm-finalize-profile
+HEAD 88164340decadabdb7a3e0f16018f7d57bc46d43
+branch refs/heads/codex/kvm-finalize-profile
+
+worktree /home/newton/work/dev-hermit/worktrees/slots/kvm-guest-args
+HEAD 635b60f565779e09e0d280c51443a251288249b4
+branch refs/heads/codex/kvm-guest-args
+
+worktree /home/newton/work/dev-hermit/worktrees/slots/kvm-integration-20260915-codex
+HEAD 7089c135e50df0eae8ac22de3ce0d1e165970b14
+branch refs/heads/codex/kvm-integration-20260915
+
+worktree /home/newton/work/dev-hermit/worktrees/slots/kvm-next40-final
+HEAD 40a7bab8e9415b73189ea096714c6e0d1d76fddf
+branch refs/heads/kvm-next40-final
+
+worktree /home/newton/work/dev-hermit/worktrees/slots/kvm-next40-selection
+HEAD a9905b8b4c9afaf880d37ff814e6d92feb045f94
+branch refs/heads/kvm-next40-selection
+
+worktree /home/newton/work/dev-hermit/worktrees/slots/kvm-parity-20260914-codex
+HEAD 01cbf67616660be463bbdf8f3b347006e1f234f6
+branch refs/heads/codex/kvm-parity-20260914
+
+worktree /home/newton/work/dev-hermit/worktrees/slots/kvm-parity-20260915-codex
+HEAD e340d7f9160f5eb5ca052adf2ce05708b0a3790b
+branch refs/heads/codex/kvm-parity-20260915
+
+worktree /home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916
+HEAD 32033aac48055103305b75d5619cbb895e87d81c
+branch refs/heads/codex/kvm-parity-recovery-20260916
+
+worktree /home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-hermit-20260917
+HEAD 7f84482cd88a9fd5701220b200b30e734ffb72db
+branch refs/heads/codex/kvm-prejoin-hermit-20260917
+
+worktree /home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917
+HEAD eea16d7b63b6a2f6ccda461df99662b15778768f
+branch refs/heads/codex/kvm-prejoin-main-20260917
+
+worktree /home/newton/work/dev-hermit/worktrees/slots/kvm-ratchet
+HEAD 5c0bae832d515ce2b8b9cfcf2d7b97f010d641c6
+branch refs/heads/codex/kvm-pr529-cell-measure
+
+worktree /home/newton/work/dev-hermit/worktrees/slots/kvm-ratchet-90-fix6
+HEAD db33afbd3c6cddbbe7c54894061246299770a60d
+branch refs/heads/codex/kvm-ratchet-90-fix6
+
+worktree /home/newton/work/dev-hermit/worktrees/slots/kvm-ratchet-90-run2
+HEAD 086d41a2f2f76e5a2cccceea342feb6957311c2b
+branch refs/heads/codex/kvm-ratchet-90-run2
+
+worktree /home/newton/work/dev-hermit/worktrees/slots/kvm-ratchet-90-run5
+HEAD 086d41a2f2f76e5a2cccceea342feb6957311c2b
+branch refs/heads/codex/kvm-ratchet-90-run5
+
+worktree /home/newton/work/dev-hermit/worktrees/slots/kvm-ratchet-90-run6
+HEAD 086d41a2f2f76e5a2cccceea342feb6957311c2b
+branch refs/heads/codex/kvm-ratchet-90-run6
+
+worktree /home/newton/work/dev-hermit/worktrees/slots/kvm-ratchet-90-run7
+HEAD 2316457596f13741094d56564b3b274a6b723341
+branch refs/heads/codex/kvm-ratchet-90-run7
+
+worktree /home/newton/work/dev-hermit/worktrees/slots/kvm-ratchet-90-run8
+HEAD 9d4bb692ddfe02241e6341a2faeb83782215e1a5
+branch refs/heads/codex/kvm-ratchet-90-run8
+
+worktree /home/newton/work/dev-hermit/worktrees/slots/kvm-raw-stderr-20260917
+HEAD c01b0e11b2121f8486312d1a2f19ed24e477e52d
+branch refs/heads/codex/kvm-raw-stderr-20260917
+
+worktree /home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918
+HEAD 768afd09eea2054af0b2c234cfa9066ecc336788
+branch refs/heads/codex/kvm-replay-prerequisites-20260918
+
+worktree /home/newton/work/dev-hermit/worktrees/slots/kvm-select-21
+HEAD ef698c10b196a49a21bee06a6fa92ca9dfe19bf4
+branch refs/heads/codex/kvm-select-21
+
+worktree /home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-20260918
+HEAD f7ca3fd031f656e11ee3c6d9e47cc2e18d272d37
+branch refs/heads/codex/kvm-setitimer-20260918
+
+worktree /home/newton/work/dev-hermit/worktrees/slots/kvm-signal-abi
+HEAD fcd7d5c0a7e13235b1ced4a8f0c5b81dda15f6fe
+branch refs/heads/codex/kvm-signal-abi
+
+worktree /home/newton/work/dev-hermit/worktrees/slots/kvm-startup-gvisor
+HEAD 2705380724383eeca585a5e9beb28775b62e796a
+branch refs/heads/kvm-startup-gvisor
+
+worktree /home/newton/work/dev-hermit/worktrees/slots/kvm-summary-main-20260917
+HEAD b4a442ef105544fd66f79cf98fee2886eb3877aa
+branch refs/heads/codex/kvm-summary-main-20260917
+
+worktree /home/newton/work/dev-hermit/worktrees/slots/kvm-summary-publication-20260917
+HEAD 8df7f70b468c556cc403b939e735f4a6219ed7dd
+branch refs/heads/codex/kvm-summary-publication-20260917
+
+worktree /home/newton/work/dev-hermit/worktrees/slots/kvm-syscall-benchmark
+HEAD 89e684c8ce72e8cf0ded0cd30506f90b9570d9fd
+branch refs/heads/kvm-ratchet-syscall-benchmark
+
+worktree /home/newton/work/dev-hermit/worktrees/slots/kvm-sysinfo
+HEAD 5e6f00542bfc5cb645aebfeca16135c399f8efea
+branch refs/heads/codex/kvm-sysinfo
+
+worktree /home/newton/work/dev-hermit/worktrees/slots/kvm-sysinfo-land-2979
+HEAD f08bd635dc8bef66cbcdbd40fb6002f21c8796d3
+branch refs/heads/land/kvm-sysinfo-2979
+
+worktree /home/newton/work/dev-hermit/worktrees/slots/kvm-teardown-opt
+HEAD 20d7ea6e10f6e2419dcde08cf6ac8773cd266e8c
+branch refs/heads/codex/kvm-teardown-opt
+
+worktree /home/newton/work/dev-hermit/worktrees/slots/kvm-thread-exit-order-hermit
+HEAD 3dff300f8941f9fe37dc705b0d577f8c4ef16109
+branch refs/heads/codex/kvm-clear-child-tid-detcore-main
+
+worktree /home/newton/work/dev-hermit/worktrees/slots/lander-2
+HEAD 9c4ae3e02c5ddd4f9d72ac43971ac26305ae48f3
+branch refs/heads/lander-2/pr2910-audit
+
+worktree /home/newton/work/dev-hermit/worktrees/slots/lander-2-pr2799-final
+HEAD a2f4ff83c950dc63107b88cec3ee0b1508ae684f
+branch refs/heads/rescue/reclaim-20260901T233832Z/lander-2-pr2799-final
+
+worktree /home/newton/work/dev-hermit/worktrees/slots/liteinst-owner
+HEAD 4d8f866102882b6eeabdf99cc7e81433cc3c95c5
+branch refs/heads/liteinst-owner
+
+worktree /home/newton/work/dev-hermit/worktrees/slots/liteinst-ratchet
+HEAD 1c2cc4d14faacbb108fd625a4d1060705bb7be71
+branch refs/heads/liteinst-ratchet
+
+worktree /home/newton/work/dev-hermit/worktrees/slots/liteinst-session-recovery
+HEAD 4d8f866102882b6eeabdf99cc7e81433cc3c95c5
+branch refs/heads/codex/liteinst-session-recovery
+
+worktree /home/newton/work/dev-hermit/worktrees/slots/liteinst-session-recovery/target/reverie-emergency-drain/parent-validation-v4/hermit
+HEAD 5279d6b16f4452d1b740091cbf20cf3aaeab4d0e
+detached
+
+worktree /home/newton/work/dev-hermit/worktrees/slots/measure-intra-step-20260905
+HEAD 2705380724383eeca585a5e9beb28775b62e796a
+branch refs/heads/codex/measure-intra-step-20260905
+
+worktree /home/newton/work/dev-hermit/worktrees/slots/mega-ci-passed-count-activation-20260915
+HEAD 959ad5f180e8245e15f1588326d8a6a676264312
+branch refs/heads/mega-ci/passed-count-activation-20260915
+
+worktree /home/newton/work/dev-hermit/worktrees/slots/mega-lander-hermit-2970
+HEAD d45a1f49511ba208bc8157da5eb7dcc41b176a4e
+branch refs/heads/mega-lander/pr2970-adapt-reconstruction
+
+worktree /home/newton/work/dev-hermit/worktrees/slots/mega-lander-pr2971-refresh
+HEAD 8ce3276087ddf89a4cc6aac2f47f9f770283c7ef
+branch refs/heads/mega-lander/pr2971-agent-utils-1fdde134
+
+worktree /home/newton/work/dev-hermit/worktrees/slots/parity-scorecard
+HEAD e5ff17ecd0c5d758cd50a45ac0b52a6d0f3df71b
+branch refs/heads/codex/parity-scorecard
+
+worktree /home/newton/work/dev-hermit/worktrees/slots/partial-credit
+HEAD 88af42318cda6d554e8235b05a2edead51c30e3d
+branch refs/heads/codex/partial-credit-score
+
+worktree /home/newton/work/dev-hermit/worktrees/slots/pr-drain-1-hermit
+HEAD 41af2f0115bc5e40864b495f7e90af079914e734
+branch refs/heads/codex/pr-drain-1-pr2943
+
+worktree /home/newton/work/dev-hermit/worktrees/slots/propagate-reason-hermit
+HEAD 3e58d20d6f6c4cf5c66dbbd9c7d37385cdadaef9
+branch refs/heads/propagate-validation-reasons
+
+worktree /home/newton/work/dev-hermit/worktrees/slots/refresh-pr2956
+HEAD 88bd94fdfc841eb0512b81707e6e2e8f56d589a6
+branch refs/heads/refresh-pr2956
+
+worktree /home/newton/work/dev-hermit/worktrees/slots/reverie-exact-count-pin
+HEAD fef2704513e65c0dd979ae6286910e554d0c6e5d
+branch refs/heads/reverie-exact-count-pin
+
+worktree /home/newton/work/dev-hermit/worktrees/slots/review-2956
+HEAD 7140197aa318108043ad3cc8d5ce4ff5e1d7d1e4
+branch refs/heads/review/review-2956
+
+worktree /home/newton/work/dev-hermit/worktrees/slots/review-cpuid
+HEAD c3a85da26110fd8dfc31433c8d4109726127703b
+branch refs/heads/pr2950
+
+worktree /home/newton/work/dev-hermit/worktrees/slots/reviewer-3-hermit
+HEAD a11796fdb813f89b09c3c934bd91acef67cc9004
+detached
+
+worktree /home/newton/work/dev-hermit/worktrees/slots/run1750-fix-source-00ea6c9b
+HEAD 00ea6c9b51fdcceeb17f424f575993e200de5b30
+branch refs/heads/validation/run1750-fix-source-00ea6c9b
+
+worktree /home/newton/work/dev-hermit/worktrees/slots/scorecard-combined-writer-stack-c
+HEAD db986bdb5e6bb9e283f5e933dece79f4a1649398
+branch refs/heads/scorecard-combined-writer/stack-c-after-provider
+
+worktree /home/newton/work/dev-hermit/worktrees/slots/scorecard-pages
+HEAD 8712fc630ab10dcd00b62207dc93d523486571c5
+branch refs/heads/scorecard/pages-docs-agent-utils
+
+worktree /home/newton/work/dev-hermit/worktrees/slots/scorecard-website
+HEAD 58ffdaff87fd8734af4aef8022226556424be41f
+branch refs/heads/scorecard/cold-context-publication
+
+worktree /home/newton/work/dev-hermit/worktrees/slots/service-result-passed-tests
+HEAD 36a7ba1f0b63acbdcb91795f46f7b79d396065ee
+detached
+
+worktree /home/newton/work/dev-hermit/worktrees/slots/test-harness-help
+HEAD efdf11747c8a41a4cf65182a5918ead361d9cf98
+branch refs/heads/mega-lander/proc-locks-concurrent-paths
+
+worktree /home/newton/work/dev-hermit/worktrees/slots/tick-2-cli-skill
+HEAD 41af2f0115bc5e40864b495f7e90af079914e734
+branch refs/heads/tick-2/how-to-build-a-cli
+
+worktree /home/newton/work/dev-hermit/worktrees/slots/tick-repair
+HEAD 53d25184caf32f1d8193c22e272834d86476c86e
+branch refs/heads/tick-repair/tick-budget
+
+worktree /home/newton/work/dev-hermit/worktrees/slots/timeout-multiplier-boundary
+HEAD 8f49227eb69ee189300d0df9786d7bd3f3ab1b95
+branch refs/heads/codex/pinned-root-timeout-multiplier-boundary
+
+worktree /home/newton/work/dev-hermit/worktrees/slots/verify-two-runs
+HEAD 89e684c8ce72e8cf0ded0cd30506f90b9570d9fd
+branch refs/heads/feature/verify-two-harness-managed-runs
+
+worktree /home/newton/work/dev-hermit/worktrees/slots/verify-two-runs-v2
+HEAD f18b76cc464a3f8f7704f2d7abdbf53baff157e0
+branch refs/heads/feature/verify-two-harness-managed-runs-v2
+
+worktree /home/newton/work/dev-hermit/worktrees/slots/verify-two-runs-v3
+HEAD 9b259f3985063d17af319cc9b569ebbd6b3d2e29
+branch refs/heads/feature/verify-two-harness-managed-runs-v3
+
+worktree /home/newton/work/dev-hermit/worktrees/slots/verify-two-runs-v4
+HEAD 086d41a2f2f76e5a2cccceea342feb6957311c2b
+branch refs/heads/feature/shared-bitwise-info-v1-live
+
+worktree /home/newton/work/dev-hermit/worktrees/slots/wrkslots-create-demo-20260914
+HEAD 37a12da4e66da01ee47893c5550b0deaf14b0edd
+branch refs/heads/wrkslots-create-demo-20260914
+
+worktree /home/newton/work/dev-hermit/worktrees/utility-2176
+HEAD 27be9dc9b2a6037daee0328998518b999ff0abc8
+detached
+
+worktree /home/newton/work/dev-hermit/worktrees/utility-2223
+HEAD 2f57dadc235a9576e0ce3711ad389333eeb336bf
+detached
+
+worktree /home/newton/work/dev-hermit/worktrees/utility-2680
+HEAD 7c83bb8d22946f3ec3cea54e796cd224b27191e9
+branch refs/heads/utility/2680-comment-corrections
+
+worktree /home/newton/work/dev-hermit/worktrees/validate/ptrace-skid-f615104d0df2-diagnostic-1
+HEAD f615104d0df26402babcfd9f642950a31efa57ec
+branch refs/heads/wrkslots/validate/devbig014/ptrace-skid-f615104d0df2-diagnostic-1/checkout
+
+worktree /home/newton/work/dev-hermit/worktrees/validate/validate-fresh-2959c577741b-1905994-fb69f4f1
+HEAD 2959c577741bea5312832a6abdf653abbf9c760c
+branch refs/heads/wrkslots/validate/validate-fresh-2959c577741b-1905994-fb69f4f1/checkout
+
+worktree /home/newton/work/dev-hermit/worktrees/validate/validate-fresh-2959c577741b-3910651-643826bb
+HEAD 2959c577741bea5312832a6abdf653abbf9c760c
+branch refs/heads/wrkslots/validate/validate-fresh-2959c577741b-3910651-643826bb/checkout
+
+worktree /home/newton/work/dev-hermit/worktrees/validate/validate-fresh-29faadea03ea-4180122-6cc896a9
+HEAD 29faadea03ea1e7d0384b9236fc49ff43c5caa50
+branch refs/heads/wrkslots/validate/validate-fresh-29faadea03ea-4180122-6cc896a9/checkout
+
+worktree /home/newton/work/dev-hermit/worktrees/validate/validate-fresh-6752f558fdc6-796270-412f69e2
+HEAD 6752f558fdc6049326b763bdb63603762b54aa77
+branch refs/heads/wrkslots/validate/validate-fresh-6752f558fdc6-796270-412f69e2/checkout
+
+worktree /home/newton/work/dev-hermit/worktrees/validate/validate-fresh-6752f558fdc6-972010-26e891bd
+HEAD 6752f558fdc6049326b763bdb63603762b54aa77
+branch refs/heads/wrkslots/validate/validate-fresh-6752f558fdc6-972010-26e891bd/checkout
+
+worktree /home/newton/work/dev-hermit/worktrees/validate/validate-fresh-80ce2ee94689-509588-0c028883
+HEAD 80ce2ee94689d6e23ee2771415e3f7f2ccd598c2
+branch refs/heads/wrkslots/validate/validate-fresh-80ce2ee94689-509588-0c028883/checkout
+
+worktree /home/newton/work/dev-hermit/worktrees/validate/validate-fresh-851501cb10a0-1973183-1baacb95
+HEAD 851501cb10a09b0bed9f809a2d0fd05a8e55d809
+branch refs/heads/wrkslots/validate/validate-fresh-851501cb10a0-1973183-1baacb95/checkout
+
+worktree /home/newton/work/dev-hermit/worktrees/validate/validate-fresh-93b18fd667f2-3244412-5234b6cb
+HEAD 93b18fd667f23b52085fe65ea82b15f6049a36ae
+branch refs/heads/wrkslots/validate/validate-fresh-93b18fd667f2-3244412-5234b6cb/checkout
+
+worktree /home/newton/work/dev-hermit/worktrees/validate/validate-fresh-bc5030fb3feb-3550404-be1d92a6
+HEAD bc5030fb3febf9ac334021136b6a4440673d0a32
+branch refs/heads/wrkslots/validate/validate-fresh-bc5030fb3feb-3550404-be1d92a6/checkout
+
+worktree /home/newton/work/sc-review-3026
+HEAD b5f93f1387c0ee13060c6e62f93c73d32077ea78
+detached
+
+worktree /home/newton/work/sc-review-3027
+HEAD ec8917a695bc4b436729c98dddb064e0a16c0137
+detached
+
+worktree /home/newton/work/scorecard-pin-pr
+HEAD 8309c74e4177c8f000f0d5745f2082509df625ea
+branch refs/heads/scorecard/publish-review-fixes-sept15
+
+worktree /tmp/bisect-si
+HEAD ebc2a64b4f1808ea4314fe41b2ddc3bad48dfc6e
+detached
+
+worktree /tmp/cleanup3-rb
+HEAD 6752f558fdc6049326b763bdb63603762b54aa77
+detached
+
+worktree /tmp/dev-hermit-writer3092-snapshot-20260918/hermit
+HEAD 8255986391593432a8f96a38b7b2a6fc02bfc674
+detached
+
+worktree /tmp/hermit-000-review-2964
+HEAD 3e58d20d6f6c4cf5c66dbbd9c7d37385cdadaef9
+detached
+
+worktree /tmp/hermit-000-review-2971
+HEAD 943a7f6da971c529bbdb051c7cf633a1759086e9
+detached
+
+worktree /tmp/hermit-000-review-2981
+HEAD 8858e91ecc07189d71f6cb58ec53c06aad065131
+detached
+
+worktree /tmp/hermit-000-review-2984
+HEAD 3f6437219c5c1448ae5da5c9b15af4e2c1fd626b
+detached
+
+worktree /tmp/hermit-001-cells-json-rescue
+HEAD 88b4ae63f019d9e95206d2e09e00c17a5671b608
+detached
+
+worktree /tmp/hermit-001-cells-regeneration-check
+HEAD 8a6a3e996d63655bb4cacba54c4dd4a4c9e9f561
+detached
+
+worktree /tmp/hermit-2694-main.58Dmq8
+HEAD c7520a6c38731128ec3e0bf802d80b0d1cca80c0
+detached
+
+worktree /tmp/hermit-2694-review.1jlubM
+HEAD 62c2d56d967c80542999db3b0387e8b62cabbf20
+detached
+
+worktree /tmp/hermit-pin-create-journal-classification-20260914
+HEAD 22f14131256fa515b03e60cd1cd9314cac455742
+branch refs/heads/mega-lander/pin-create-journal-classification
+
+worktree /tmp/hermit-pin-create-journal-classification-final-20260914
+HEAD ee4947190dcc0e86087735b320e687c74223828b
+branch refs/heads/mega-lander/pin-create-journal-classification-final
+
+worktree /tmp/hermit-pin-create-journal-classification-final2-20260914
+HEAD 5b1667a3d378765222a59b6adcf5c4fe09589b67
+branch refs/heads/mega-lander/pin-create-journal-classification-final2
+
+worktree /tmp/kvm-command-guard-parent-pin-20260917/hermit
+HEAD 7e317c09ff410fa1bd70506f336920e3992c6d7d
+detached
+
+worktree /tmp/mega-lander-agent-utils-removal-proof-pin
+HEAD e5a616577279c0bb01cbe56305be15b9031fbea4
+branch refs/heads/mega-lander/activate-agent-utils-removal-proof
+
+worktree /tmp/pp
+HEAD 6eaa46e9b66013b66aa5ecf989a5717c7b34b33b
+detached
+
+worktree /tmp/rb3066
+HEAD 851501cb10a09b0bed9f809a2d0fd05a8e55d809
+detached
+
+worktree /tmp/rb3069
+HEAD 93b18fd667f23b52085fe65ea82b15f6049a36ae
+detached
+
+worktree /tmp/review-2694-667d.nBRIcR/hermit
+HEAD 667d287fccc66c776366457e5593fa8a602d4e3c
+detached
+
+worktree /tmp/rvbump
+HEAD 80ce2ee94689d6e23ee2771415e3f7f2ccd598c2
+detached
+
+worktree /tmp/scorecard-combined-review.iBT0qG
+HEAD 122a38bd831434d5d0c2cae3b60d1e4644ef4402
+detached
+prunable gitdir file points to non-existent location
+
+worktree /tmp/scorecard-web-review-2694.UXxemR/hermit
+HEAD 62c2d56d967c80542999db3b0387e8b62cabbf20
+detached
+

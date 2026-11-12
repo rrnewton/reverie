@@ -1,0 +1,82 @@
+{
+  "plan_sha256": "82d237bec1a0e11157f7d453689c18725df29b640f754c3d7178de8e4653c5a6",
+  "accepted": true,
+  "observer_attempted": true,
+  "terminal_authenticated": true,
+  "raw_status": 0,
+  "transport": {
+    "argv": [
+      "/usr/bin/python3",
+      "-B",
+      "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/timer-integration-20260918/qualification-v9/observer/observer.py",
+      "--out",
+      "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/timer-integration-20260918/qualification-v9/observer/test-domain-lib",
+      "--cpu-usec",
+      "30000000",
+      "--wall-seconds",
+      "60",
+      "--log-bytes",
+      "16777216",
+      "/usr/bin/python3",
+      "-B",
+      "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/timer-integration-20260918/qualification-v9/phase.py",
+      "payload",
+      "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/timer-integration-20260918/qualification-v9/test-domain-lib-plan.json",
+      "82d237bec1a0e11157f7d453689c18725df29b640f754c3d7178de8e4653c5a6"
+    ],
+    "cwd": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918",
+    "wall_limit_seconds": 110,
+    "forced": false,
+    "returncode": 0,
+    "elapsed_seconds": 2.807420772034675,
+    "stdout": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/timer-integration-20260918/qualification-v9/controls/test-domain-lib/observer.stdout",
+      "bytes": 160,
+      "mode": 420,
+      "sha256": "6b8d0f1c8bfc7d391c378dcf0ac58c02b94a1cfae508bab3349a96b8ae6259d0"
+    },
+    "stderr": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/timer-integration-20260918/qualification-v9/controls/test-domain-lib/observer.stderr",
+      "bytes": 0,
+      "mode": 420,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    }
+  },
+  "observer_result": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/timer-integration-20260918/qualification-v9/observer/test-domain-lib/result.json",
+    "bytes": 48106,
+    "mode": 384,
+    "sha256": "2ee37926b075280e3ef52de9c941969639e2c43dd385a333a43d8690a4947cd7"
+  },
+  "readback": {
+    "executed": 10,
+    "summary": {
+      "type": "suite",
+      "event": "ok",
+      "passed": 10,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filtered_out": 463,
+      "exec_time": 0.007654379
+    },
+    "names": [
+      "error::tests::signal_effects_preserve_first_failure_and_cancellation_evidence",
+      "executor::tests::blocked_tool_replacement_requeues_without_consuming_another_event",
+      "executor::tests::delivery_selection_refreshes_every_signalfd_alias_before_filtering",
+      "executor::tests::signal_dequeue_all_consumers_preserve_domain_and_post_copyout_effects",
+      "executor::tests::signal_dequeue_first_private_nonalarm_is_bound_before_any_parked_call",
+      "executor::tests::signal_dequeue_fork_resets_and_exec_retains_process_sequence",
+      "executor::tests::signal_dequeue_readiness_error_retains_complete_removal",
+      "executor::tests::signal_dequeue_reused_task_refuses_before_all_three_removals",
+      "executor::tests::signal_dequeue_sequence_exhaustion_refuses_before_removal",
+      "executor::tests::structured_replacement_uses_replacement_disposition_and_mask"
+    ]
+  },
+  "payload_exit": {
+    "returncode": 0,
+    "reaped": true,
+    "elapsed_seconds": 0.010085166897624731
+  },
+  "inputs_unchanged": true
+}

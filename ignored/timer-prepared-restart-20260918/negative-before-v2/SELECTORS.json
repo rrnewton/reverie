@@ -1,0 +1,22 @@
+{
+  "groups": {
+    "test-eintr": {
+      "artifact": "static",
+      "names": [
+        "parked_signals::parked_signal_prepared_read_returns_eintr_without_restart"
+      ]
+    },
+    "test-restart": {
+      "artifact": "static",
+      "names": [
+        "parked_signals::parked_signal_prepared_read_restarts_only_after_handler"
+      ]
+    },
+    "test-partial": {
+      "artifact": "static",
+      "names": [
+        "parked_signals::parked_signal_prepared_partial_read_is_not_replayed"
+      ]
+    }
+  }
+}

@@ -1,0 +1,24 @@
+{
+  "started": [
+    "executor::tests::process_directed_signal_with_live_sibling_is_schedule_independent_refusal"
+  ],
+  "ended": [
+    {
+      "type": "test",
+      "name": "executor::tests::process_directed_signal_with_live_sibling_is_schedule_independent_refusal",
+      "event": "ok"
+    }
+  ],
+  "suites": [
+    {
+      "type": "suite",
+      "event": "ok",
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filtered_out": 501,
+      "exec_time": 0.005555061
+    }
+  ]
+}

@@ -1,0 +1,9 @@
+{
+  "plan_sha256": "321a82ecb25a379b7b0abc10e59ba20e11d464f8d3f49ef3c21886f7d11298e1",
+  "result": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v4/qualification-v1/controls/timestamp-18/result.json",
+    "bytes": 2833,
+    "mode": 420,
+    "sha256": "95e7fc6e5e78eee8dc0e66e53eda2bfb620e364721b9b21a8fbfbb1cf25cff4e"
+  }
+}

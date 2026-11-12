@@ -1,0 +1,37 @@
+{
+  "authorization_received": true,
+  "payload": {
+    "binary": "/usr/bin/python3",
+    "binary_sha256": "9cfdf1a01d07dadb394dd2dc9fd8316254c36764076d23dc2c895c8401735576",
+    "arguments": [
+      "-B",
+      "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/process-publication-implementation-v1/qualification-v2/phase.py",
+      "payload",
+      "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/process-publication-implementation-v1/qualification-v2/test-01-plan.json",
+      "ce1ef970db4e318d2de51d9d4610cc4bc00925e8bf274b866540b5362e72e328"
+    ]
+  },
+  "pid": 3472199,
+  "start_ticks": 189347123,
+  "restored_limits": {
+    "cpu": [
+      -1,
+      -1
+    ],
+    "as": [
+      -1,
+      -1
+    ],
+    "core": [
+      -1,
+      -1
+    ]
+  },
+  "protocol_environment_keys": [],
+  "handshake_fds_closed": true,
+  "ignore_sigpipe": true,
+  "python_file_size_signals_restored_to_default": true,
+  "environment_sha256": "ff2056c0b15a9a662fc25848992568f8b0d1f78a569e8b0813d4947a803a5419",
+  "monotonic_ns": 1893471295869504,
+  "note": "Written before exec; this is not proof that the payload started."
+}

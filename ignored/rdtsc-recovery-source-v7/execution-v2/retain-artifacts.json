@@ -1,0 +1,9 @@
+{
+  "argv": [
+    "/usr/bin/python3",
+    "-B",
+    "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v7/qualification-v2/retain_artifacts.py"
+  ],
+  "returncode": 0,
+  "elapsed": 3.972220062976703
+}

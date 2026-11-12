@@ -1,0 +1,37 @@
+{
+  "authorization_received": true,
+  "payload": {
+    "binary": "/usr/bin/python3",
+    "binary_sha256": "9cfdf1a01d07dadb394dd2dc9fd8316254c36764076d23dc2c895c8401735576",
+    "arguments": [
+      "-B",
+      "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/kvm-capture-pipe-identity-source-v2/qualification-continuation-v2/phase.py",
+      "payload",
+      "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/kvm-capture-pipe-identity-source-v2/qualification-continuation-v2/neighbor-13-plan.json",
+      "97cc110b2079fc6662d1f72ab5f18931efd2d22396af11a8cd006a9c27933d41"
+    ]
+  },
+  "pid": 3448277,
+  "start_ticks": 191756906,
+  "restored_limits": {
+    "cpu": [
+      -1,
+      -1
+    ],
+    "as": [
+      -1,
+      -1
+    ],
+    "core": [
+      -1,
+      -1
+    ]
+  },
+  "protocol_environment_keys": [],
+  "handshake_fds_closed": true,
+  "ignore_sigpipe": true,
+  "python_file_size_signals_restored_to_default": true,
+  "environment_sha256": "590fd174e677d43ef70df4351fe44a1189fb1783447019f528b693f73243035a",
+  "monotonic_ns": 1917569121801848,
+  "note": "Written before exec; this is not proof that the payload started."
+}

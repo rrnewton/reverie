@@ -1,0 +1,80 @@
+{
+  "plan_sha256": "12588d91031dd53ed7d793b77c55443d0f822562bba80d551d2c351ef3ffc3c0",
+  "accepted": true,
+  "observer_attempted": true,
+  "terminal_authenticated": true,
+  "raw_status": 0,
+  "outcome": "passed",
+  "transport": {
+    "argv": [
+      "/usr/bin/python3",
+      "-B",
+      "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-native-probe-caller-v1/qualification-v1/observer/observer.py",
+      "--out",
+      "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-native-probe-caller-v1/qualification-v1/observer/positive-rdtsc-11",
+      "--cpu-usec",
+      "30000000",
+      "--wall-seconds",
+      "60",
+      "--log-bytes",
+      "16777216",
+      "/usr/bin/python3",
+      "-B",
+      "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-native-probe-caller-v1/qualification-v1/native_phase.py",
+      "payload",
+      "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-native-probe-caller-v1/qualification-v1/plans/positive-rdtsc-11.json",
+      "12588d91031dd53ed7d793b77c55443d0f822562bba80d551d2c351ef3ffc3c0"
+    ],
+    "cwd": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-native-probe-caller-v1",
+    "wall_limit_seconds": 110,
+    "forced": false,
+    "returncode": 0,
+    "elapsed_seconds": 0.6528622668702155,
+    "stdout": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-native-probe-caller-v1/qualification-v1/controls/positive-rdtsc-11/observer.stdout",
+      "bytes": 160,
+      "mode": 420,
+      "sha256": "36ac10f4fd8b862a0d1ee4469998fe7e45042579f52b33784eaa458504b8d958"
+    },
+    "stderr": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-native-probe-caller-v1/qualification-v1/controls/positive-rdtsc-11/observer.stderr",
+      "bytes": 0,
+      "mode": 420,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    }
+  },
+  "observer_result": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-native-probe-caller-v1/qualification-v1/observer/positive-rdtsc-11/result.json",
+    "bytes": 44998,
+    "mode": 384,
+    "sha256": "86520b21b287083e2a4e9d8f894889a93175a00016ae5b338e7879ab4711de95"
+  },
+  "stdout": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-native-probe-caller-v1/qualification-v1/observer/positive-rdtsc-11/stdout",
+    "bytes": 291,
+    "mode": 384,
+    "sha256": "f79038ab5a101cb0bd17ef5fef204e228ef40997fb44d291633d3df0026076e4"
+  },
+  "stderr": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-native-probe-caller-v1/qualification-v1/observer/positive-rdtsc-11/stderr",
+    "bytes": 0,
+    "mode": 384,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "readback": {
+    "outcome": "passed",
+    "native_success": true,
+    "selector": "positive-rdtsc-11",
+    "diagnostic_lines": [
+      "mode=positive instruction=rdtsc prefix=11 signal=0 code=0 trap=0 rip_delta=0 fault_delta=0 rf_stage=0",
+      "registers rax=00000000188e93f9 rdx=00000000000a7df7 rcx=fedcba9876543210 flags=0000000000000ed7 rsp_before=00007ffed04c3e18 rsp_after=00007ffed04c3e18"
+    ],
+    "predicate_authority": "unchanged exact probe source predicates plus raw exit zero"
+  },
+  "payload_exit": {
+    "returncode": 0,
+    "reaped": true,
+    "elapsed_seconds": 0.0016411738470196724
+  },
+  "inputs_unchanged": true
+}

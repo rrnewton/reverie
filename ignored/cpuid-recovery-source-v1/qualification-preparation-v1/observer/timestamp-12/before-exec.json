@@ -1,0 +1,23 @@
+{
+  "payload": {
+    "binary": "/usr/bin/python3",
+    "binary_sha256": "9cfdf1a01d07dadb394dd2dc9fd8316254c36764076d23dc2c895c8401735576",
+    "arguments": [
+      "-B",
+      "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/cpuid-recovery-source-v1/qualification-preparation-v1/phase.py",
+      "payload",
+      "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/cpuid-recovery-source-v1/qualification-preparation-v1/timestamp-12-plan.json",
+      "95352c654b950516d18f99af15610477d73b5472bb7f5751d12349ada3b5b010"
+    ]
+  },
+  "token": "44f870055c38d951d68afffbbb2ddf0625eadf3f476cd06fea6e8f01b3fce714",
+  "observer_pid": 1942137,
+  "locale_environment": {
+    "LC_CTYPE": null,
+    "LC_ALL": "C",
+    "LANG": "C"
+  },
+  "ignore_sigpipe": true,
+  "observer_start_ticks": 191851655,
+  "deadline_monotonic_ns": 1918541600590677
+}

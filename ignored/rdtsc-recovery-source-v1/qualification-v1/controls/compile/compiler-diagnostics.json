@@ -1,0 +1,94 @@
+[
+  {
+    "reason": "compiler-message",
+    "package_id": "path+file:///home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v1/source/reverie-kvm#0.2.0",
+    "manifest_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v1/source/reverie-kvm/Cargo.toml",
+    "target": {
+      "kind": [
+        "lib"
+      ],
+      "crate_types": [
+        "lib"
+      ],
+      "name": "reverie_kvm",
+      "src_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v1/source/reverie-kvm/src/lib.rs",
+      "edition": "2024",
+      "doc": true,
+      "doctest": true,
+      "test": true
+    },
+    "message": {
+      "rendered": "warning: variable does not need to be mutable\n   --> reverie-kvm/src/timestamp.rs:239:13\n    |\n239 |         let mut memory = GuestMemory::new(0, 0x10_000).unwrap();\n    |             ----^^^^^^\n    |             |\n    |             help: remove this `mut`\n    |\n    = note: `#[warn(unused_mut)]` (part of `#[warn(unused)]`) on by default\n\n",
+      "$message_type": "diagnostic",
+      "children": [
+        {
+          "children": [],
+          "code": null,
+          "level": "note",
+          "message": "`#[warn(unused_mut)]` (part of `#[warn(unused)]`) on by default",
+          "rendered": null,
+          "spans": []
+        },
+        {
+          "children": [],
+          "code": null,
+          "level": "help",
+          "message": "remove this `mut`",
+          "rendered": null,
+          "spans": [
+            {
+              "byte_end": 8037,
+              "byte_start": 8033,
+              "column_end": 17,
+              "column_start": 13,
+              "expansion": null,
+              "file_name": "reverie-kvm/src/timestamp.rs",
+              "is_primary": true,
+              "label": null,
+              "line_end": 239,
+              "line_start": 239,
+              "suggested_replacement": "",
+              "suggestion_applicability": "MachineApplicable",
+              "text": [
+                {
+                  "highlight_end": 17,
+                  "highlight_start": 13,
+                  "text": "        let mut memory = GuestMemory::new(0, 0x10_000).unwrap();"
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "level": "warning",
+      "message": "variable does not need to be mutable",
+      "spans": [
+        {
+          "byte_end": 8043,
+          "byte_start": 8033,
+          "column_end": 23,
+          "column_start": 13,
+          "expansion": null,
+          "file_name": "reverie-kvm/src/timestamp.rs",
+          "is_primary": true,
+          "label": null,
+          "line_end": 239,
+          "line_start": 239,
+          "suggested_replacement": null,
+          "suggestion_applicability": null,
+          "text": [
+            {
+              "highlight_end": 23,
+              "highlight_start": 13,
+              "text": "        let mut memory = GuestMemory::new(0, 0x10_000).unwrap();"
+            }
+          ]
+        }
+      ],
+      "code": {
+        "code": "unused_mut",
+        "explanation": null
+      }
+    }
+  }
+]

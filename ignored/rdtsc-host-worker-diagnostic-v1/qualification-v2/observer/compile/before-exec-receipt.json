@@ -1,0 +1,37 @@
+{
+  "authorization_received": true,
+  "payload": {
+    "binary": "/usr/bin/python3",
+    "binary_sha256": "9cfdf1a01d07dadb394dd2dc9fd8316254c36764076d23dc2c895c8401735576",
+    "arguments": [
+      "-B",
+      "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-host-worker-diagnostic-v1/qualification-v2/phase.py",
+      "payload",
+      "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-host-worker-diagnostic-v1/qualification-v2/compile-plan.json",
+      "f54751a32ae2212516dab61c7c4e5a45f397683cc3aeb92852ac3c2acc5559b2"
+    ]
+  },
+  "pid": 1724850,
+  "start_ticks": 190937222,
+  "restored_limits": {
+    "cpu": [
+      -1,
+      -1
+    ],
+    "as": [
+      -1,
+      -1
+    ],
+    "core": [
+      -1,
+      -1
+    ]
+  },
+  "protocol_environment_keys": [],
+  "handshake_fds_closed": true,
+  "ignore_sigpipe": true,
+  "python_file_size_signals_restored_to_default": true,
+  "environment_sha256": "53846e2df2ab6b61cad2c9785f6d212d2950ca448469ac736bf3dd3e15d15144",
+  "monotonic_ns": 1909372304270942,
+  "note": "Written before exec; this is not proof that the payload started."
+}

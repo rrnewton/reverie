@@ -1,0 +1,23 @@
+{
+  "argv": [
+    "/usr/bin/ldd",
+    "/usr/bin/git"
+  ],
+  "cwd": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v7/source",
+  "wall_limit_seconds": 5,
+  "forced": false,
+  "returncode": 0,
+  "elapsed_seconds": 0.05148046696558595,
+  "stdout": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v7/qualification-v2/loader/tool-7-ldd.stdout",
+    "bytes": 318,
+    "mode": 420,
+    "sha256": "293d780c3914116acb115e1d2130fba1183ad10ca0f73a1fa60f605f413e997f"
+  },
+  "stderr": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v7/qualification-v2/loader/tool-7-ldd.stderr",
+    "bytes": 0,
+    "mode": 420,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  }
+}

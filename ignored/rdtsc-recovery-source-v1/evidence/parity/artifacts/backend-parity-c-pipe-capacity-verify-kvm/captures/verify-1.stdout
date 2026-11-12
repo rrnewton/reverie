@@ -1,0 +1,1 @@
+pipecap ok=5 default=8192 set=4096 readback=4096 fits_default=1

@@ -1,0 +1,23 @@
+{
+  "argv": [
+    "/usr/bin/ldd",
+    "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v2/qualification-v1/retained-binaries/read-clock.elf"
+  ],
+  "cwd": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v2/source",
+  "wall_limit_seconds": 5,
+  "forced": false,
+  "returncode": 0,
+  "elapsed_seconds": 0.0513485730625689,
+  "stdout": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v2/qualification-v1/loader/test-read-clock-ldd.stdout",
+    "bytes": 200,
+    "mode": 420,
+    "sha256": "701e4dba14fbcc5718f2f48af17006ed95be74705e61aeb10b1a503c1ea13ca7"
+  },
+  "stderr": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v2/qualification-v1/loader/test-read-clock-ldd.stderr",
+    "bytes": 0,
+    "mode": 420,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  }
+}

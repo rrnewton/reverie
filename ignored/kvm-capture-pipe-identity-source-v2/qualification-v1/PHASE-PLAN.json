@@ -1,0 +1,1371 @@
+{
+  "status": "prospective only; no result",
+  "planned_phases": 72,
+  "exact_tests": 63,
+  "phases": [
+    {
+      "name": "metadata",
+      "kind": "metadata",
+      "argv": [
+        "/home/newton/.rustup/toolchains/nightly-2026-07-29-x86_64-unknown-linux-gnu/bin/cargo",
+        "metadata",
+        "--offline",
+        "--locked",
+        "--format-version",
+        "1"
+      ],
+      "cpu_seconds": 600,
+      "wall_seconds": 900
+    },
+    {
+      "name": "compile",
+      "kind": "compile",
+      "argv": [
+        "/home/newton/.rustup/toolchains/nightly-2026-07-29-x86_64-unknown-linux-gnu/bin/cargo",
+        "test",
+        "--offline",
+        "--locked",
+        "-p",
+        "reverie-kvm",
+        "--lib",
+        "--test",
+        "static_elf",
+        "--test",
+        "vmcall",
+        "--test",
+        "read_clock",
+        "--no-run",
+        "--message-format=json"
+      ],
+      "cpu_seconds": 600,
+      "wall_seconds": 900
+    },
+    {
+      "name": "format",
+      "kind": "format",
+      "argv": [
+        "/home/newton/.rustup/toolchains/nightly-2026-07-29-x86_64-unknown-linux-gnu/bin/rustfmt",
+        "--check",
+        "--edition",
+        "2024",
+        "--config",
+        "skip_children=true",
+        "reverie-kvm/src/bootstrap.rs",
+        "reverie-kvm/src/cpuid.rs",
+        "reverie-kvm/src/lib.rs",
+        "reverie-kvm/src/runtime.rs",
+        "reverie-kvm/src/timestamp.rs",
+        "reverie-kvm/src/vm.rs",
+        "reverie-kvm/tests/static_elf.rs",
+        "reverie-kvm/tests/support/timestamp_terminal.rs",
+        "reverie-kvm/src/terminal_runtime_tests.rs",
+        "reverie-kvm/src/executor.rs",
+        "reverie-kvm/src/capture_identity.rs",
+        "reverie-kvm/src/capture_identity_tests.rs",
+        "reverie-kvm/tests/support/capture_identity.rs"
+      ],
+      "cpu_seconds": 30,
+      "wall_seconds": 60
+    },
+    {
+      "name": "list-lib",
+      "kind": "list",
+      "argv": [
+        "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/kvm-capture-pipe-identity-source-v2/qualification-v1/retained-binaries/lib.elf",
+        "--list",
+        "-Z",
+        "unstable-options",
+        "--format=json"
+      ],
+      "cpu_seconds": 30,
+      "wall_seconds": 60
+    },
+    {
+      "name": "list-static",
+      "kind": "list",
+      "argv": [
+        "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/kvm-capture-pipe-identity-source-v2/qualification-v1/retained-binaries/static.elf",
+        "--list",
+        "-Z",
+        "unstable-options",
+        "--format=json"
+      ],
+      "cpu_seconds": 30,
+      "wall_seconds": 60
+    },
+    {
+      "name": "list-vmcall",
+      "kind": "list",
+      "argv": [
+        "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/kvm-capture-pipe-identity-source-v2/qualification-v1/retained-binaries/vmcall.elf",
+        "--list",
+        "-Z",
+        "unstable-options",
+        "--format=json"
+      ],
+      "cpu_seconds": 30,
+      "wall_seconds": 60
+    },
+    {
+      "name": "list-read-clock",
+      "kind": "list",
+      "argv": [
+        "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/kvm-capture-pipe-identity-source-v2/qualification-v1/retained-binaries/read-clock.elf",
+        "--list",
+        "-Z",
+        "unstable-options",
+        "--format=json"
+      ],
+      "cpu_seconds": 30,
+      "wall_seconds": 60
+    },
+    {
+      "name": "capture-01",
+      "kind": "test",
+      "argv": [
+        "/usr/bin/timeout",
+        "--kill-after=2s",
+        "30s",
+        "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/kvm-capture-pipe-identity-source-v2/qualification-v1/retained-binaries/lib.elf",
+        "executor::tests::captured_output_identity_matches_pipefs_and_preserves_proc_symlinks",
+        "--exact",
+        "--test-threads=1",
+        "--nocapture",
+        "-Z",
+        "unstable-options",
+        "--format=json"
+      ],
+      "cpu_seconds": 30,
+      "wall_seconds": 60
+    },
+    {
+      "name": "capture-02",
+      "kind": "test",
+      "argv": [
+        "/usr/bin/timeout",
+        "--kill-after=2s",
+        "30s",
+        "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/kvm-capture-pipe-identity-source-v2/qualification-v1/retained-binaries/lib.elf",
+        "executor::tests::captured_output_alias_identity_survives_thread_fork_exec_and_replacement",
+        "--exact",
+        "--test-threads=1",
+        "--nocapture",
+        "-Z",
+        "unstable-options",
+        "--format=json"
+      ],
+      "cpu_seconds": 30,
+      "wall_seconds": 60
+    },
+    {
+      "name": "capture-03",
+      "kind": "test",
+      "argv": [
+        "/usr/bin/timeout",
+        "--kill-after=2s",
+        "30s",
+        "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/kvm-capture-pipe-identity-source-v2/qualification-v1/retained-binaries/lib.elf",
+        "executor::tests::capture_identity_keeps_closed_standard_descriptors_closed",
+        "--exact",
+        "--test-threads=1",
+        "--nocapture",
+        "-Z",
+        "unstable-options",
+        "--format=json"
+      ],
+      "cpu_seconds": 30,
+      "wall_seconds": 60
+    },
+    {
+      "name": "capture-04",
+      "kind": "test",
+      "argv": [
+        "/usr/bin/timeout",
+        "--kill-after=2s",
+        "30s",
+        "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/kvm-capture-pipe-identity-source-v2/qualification-v1/retained-binaries/lib.elf",
+        "executor::tests::captured_pipe_root_owner_releases_after_executor_cleanup_and_unwind",
+        "--exact",
+        "--test-threads=1",
+        "--nocapture",
+        "-Z",
+        "unstable-options",
+        "--format=json"
+      ],
+      "cpu_seconds": 30,
+      "wall_seconds": 60
+    },
+    {
+      "name": "capture-05",
+      "kind": "test",
+      "argv": [
+        "/usr/bin/timeout",
+        "--kill-after=2s",
+        "30s",
+        "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/kvm-capture-pipe-identity-source-v2/qualification-v1/retained-binaries/lib.elf",
+        "executor::tests::capture_setup_emfile_preserves_image_and_closes_partial_streams",
+        "--exact",
+        "--test-threads=1",
+        "--nocapture",
+        "-Z",
+        "unstable-options",
+        "--format=json"
+      ],
+      "cpu_seconds": 30,
+      "wall_seconds": 60
+    },
+    {
+      "name": "capture-06",
+      "kind": "test",
+      "argv": [
+        "/usr/bin/timeout",
+        "--kill-after=2s",
+        "30s",
+        "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/kvm-capture-pipe-identity-source-v2/qualification-v1/retained-binaries/static.elf",
+        "capture_identity::direct_and_tool_capture_share_device_with_anonymous_pipe",
+        "--exact",
+        "--test-threads=1",
+        "--nocapture",
+        "-Z",
+        "unstable-options",
+        "--format=json"
+      ],
+      "cpu_seconds": 30,
+      "wall_seconds": 60
+    },
+    {
+      "name": "neighbor-01",
+      "kind": "test",
+      "argv": [
+        "/usr/bin/timeout",
+        "--kill-after=2s",
+        "30s",
+        "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/kvm-capture-pipe-identity-source-v2/qualification-v1/retained-binaries/lib.elf",
+        "executor::tests::captured_output_fstat_is_synthetic_and_stable",
+        "--exact",
+        "--test-threads=1",
+        "--nocapture",
+        "-Z",
+        "unstable-options",
+        "--format=json"
+      ],
+      "cpu_seconds": 30,
+      "wall_seconds": 60
+    },
+    {
+      "name": "neighbor-02",
+      "kind": "test",
+      "argv": [
+        "/usr/bin/timeout",
+        "--kill-after=2s",
+        "30s",
+        "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/kvm-capture-pipe-identity-source-v2/qualification-v1/retained-binaries/lib.elf",
+        "executor::tests::captured_output_stat_and_link_routes_preserve_the_capture_sink",
+        "--exact",
+        "--test-threads=1",
+        "--nocapture",
+        "-Z",
+        "unstable-options",
+        "--format=json"
+      ],
+      "cpu_seconds": 30,
+      "wall_seconds": 60
+    },
+    {
+      "name": "neighbor-03",
+      "kind": "test",
+      "argv": [
+        "/usr/bin/timeout",
+        "--kill-after=2s",
+        "30s",
+        "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/kvm-capture-pipe-identity-source-v2/qualification-v1/retained-binaries/lib.elf",
+        "executor::tests::ordinary_proc_fd_stat_routes_preserve_objects_across_aliases_and_replacement",
+        "--exact",
+        "--test-threads=1",
+        "--nocapture",
+        "-Z",
+        "unstable-options",
+        "--format=json"
+      ],
+      "cpu_seconds": 30,
+      "wall_seconds": 60
+    },
+    {
+      "name": "neighbor-04",
+      "kind": "test",
+      "argv": [
+        "/usr/bin/timeout",
+        "--kill-after=2s",
+        "30s",
+        "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/kvm-capture-pipe-identity-source-v2/qualification-v1/retained-binaries/lib.elf",
+        "executor::tests::anonymous_proc_fd_links_match_direct_owned_object_stat",
+        "--exact",
+        "--test-threads=1",
+        "--nocapture",
+        "-Z",
+        "unstable-options",
+        "--format=json"
+      ],
+      "cpu_seconds": 30,
+      "wall_seconds": 60
+    },
+    {
+      "name": "neighbor-05",
+      "kind": "test",
+      "argv": [
+        "/usr/bin/timeout",
+        "--kill-after=2s",
+        "30s",
+        "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/kvm-capture-pipe-identity-source-v2/qualification-v1/retained-binaries/lib.elf",
+        "executor::tests::proc_fd_statx_preserves_native_masks_and_error_results",
+        "--exact",
+        "--test-threads=1",
+        "--nocapture",
+        "-Z",
+        "unstable-options",
+        "--format=json"
+      ],
+      "cpu_seconds": 30,
+      "wall_seconds": 60
+    },
+    {
+      "name": "neighbor-06",
+      "kind": "test",
+      "argv": [
+        "/usr/bin/timeout",
+        "--kill-after=2s",
+        "30s",
+        "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/kvm-capture-pipe-identity-source-v2/qualification-v1/retained-binaries/lib.elf",
+        "executor::tests::guest_fd_metadata_is_stable_and_isolated_from_supervisor",
+        "--exact",
+        "--test-threads=1",
+        "--nocapture",
+        "-Z",
+        "unstable-options",
+        "--format=json"
+      ],
+      "cpu_seconds": 30,
+      "wall_seconds": 60
+    },
+    {
+      "name": "neighbor-07",
+      "kind": "test",
+      "argv": [
+        "/usr/bin/timeout",
+        "--kill-after=2s",
+        "30s",
+        "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/kvm-capture-pipe-identity-source-v2/qualification-v1/retained-binaries/lib.elf",
+        "executor::tests::captured_output_lseek_is_pipe_for_seekable_standard_stream_alias",
+        "--exact",
+        "--test-threads=1",
+        "--nocapture",
+        "-Z",
+        "unstable-options",
+        "--format=json"
+      ],
+      "cpu_seconds": 30,
+      "wall_seconds": 60
+    },
+    {
+      "name": "neighbor-08",
+      "kind": "test",
+      "argv": [
+        "/usr/bin/timeout",
+        "--kill-after=2s",
+        "30s",
+        "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/kvm-capture-pipe-identity-source-v2/qualification-v1/retained-binaries/lib.elf",
+        "executor::tests::forked_executors_share_captured_output_order",
+        "--exact",
+        "--test-threads=1",
+        "--nocapture",
+        "-Z",
+        "unstable-options",
+        "--format=json"
+      ],
+      "cpu_seconds": 30,
+      "wall_seconds": 60
+    },
+    {
+      "name": "neighbor-09",
+      "kind": "test",
+      "argv": [
+        "/usr/bin/timeout",
+        "--kill-after=2s",
+        "30s",
+        "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/kvm-capture-pipe-identity-source-v2/qualification-v1/retained-binaries/lib.elf",
+        "executor::tests::ordinary_vectored_io_preserves_limits_faults_replacement_and_capture",
+        "--exact",
+        "--test-threads=1",
+        "--nocapture",
+        "-Z",
+        "unstable-options",
+        "--format=json"
+      ],
+      "cpu_seconds": 30,
+      "wall_seconds": 60
+    },
+    {
+      "name": "neighbor-10",
+      "kind": "test",
+      "argv": [
+        "/usr/bin/timeout",
+        "--kill-after=2s",
+        "30s",
+        "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/kvm-capture-pipe-identity-source-v2/qualification-v1/retained-binaries/lib.elf",
+        "executor::tests::standard_descriptor_vectored_io_preserves_owned_and_captured_routing",
+        "--exact",
+        "--test-threads=1",
+        "--nocapture",
+        "-Z",
+        "unstable-options",
+        "--format=json"
+      ],
+      "cpu_seconds": 30,
+      "wall_seconds": 60
+    },
+    {
+      "name": "neighbor-11",
+      "kind": "test",
+      "argv": [
+        "/usr/bin/timeout",
+        "--kill-after=2s",
+        "30s",
+        "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/kvm-capture-pipe-identity-source-v2/qualification-v1/retained-binaries/lib.elf",
+        "executor::tests::positioned_vectored_io_preserves_standard_and_captured_stream_semantics",
+        "--exact",
+        "--test-threads=1",
+        "--nocapture",
+        "-Z",
+        "unstable-options",
+        "--format=json"
+      ],
+      "cpu_seconds": 30,
+      "wall_seconds": 60
+    },
+    {
+      "name": "neighbor-12",
+      "kind": "test",
+      "argv": [
+        "/usr/bin/timeout",
+        "--kill-after=2s",
+        "30s",
+        "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/kvm-capture-pipe-identity-source-v2/qualification-v1/retained-binaries/lib.elf",
+        "executor::tests::captured_write_site_uses_current_table_and_full_callback_identity",
+        "--exact",
+        "--test-threads=1",
+        "--nocapture",
+        "-Z",
+        "unstable-options",
+        "--format=json"
+      ],
+      "cpu_seconds": 30,
+      "wall_seconds": 60
+    },
+    {
+      "name": "neighbor-13",
+      "kind": "test",
+      "argv": [
+        "/usr/bin/timeout",
+        "--kill-after=2s",
+        "30s",
+        "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/kvm-capture-pipe-identity-source-v2/qualification-v1/retained-binaries/lib.elf",
+        "executor::tests::inherited_stdin_epoll_preserves_local_and_authoritative_handles",
+        "--exact",
+        "--test-threads=1",
+        "--nocapture",
+        "-Z",
+        "unstable-options",
+        "--format=json"
+      ],
+      "cpu_seconds": 30,
+      "wall_seconds": 60
+    },
+    {
+      "name": "neighbor-14",
+      "kind": "test",
+      "argv": [
+        "/usr/bin/timeout",
+        "--kill-after=2s",
+        "30s",
+        "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/kvm-capture-pipe-identity-source-v2/qualification-v1/retained-binaries/lib.elf",
+        "executor::tests::inherited_stdin_sibling_replacement_preserves_old_dup",
+        "--exact",
+        "--test-threads=1",
+        "--nocapture",
+        "-Z",
+        "unstable-options",
+        "--format=json"
+      ],
+      "cpu_seconds": 30,
+      "wall_seconds": 60
+    },
+    {
+      "name": "neighbor-15",
+      "kind": "test",
+      "argv": [
+        "/usr/bin/timeout",
+        "--kill-after=2s",
+        "30s",
+        "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/kvm-capture-pipe-identity-source-v2/qualification-v1/retained-binaries/lib.elf",
+        "executor::tests::inherited_stdin_fork_exec_and_exit_preserve_entry_lifetime",
+        "--exact",
+        "--test-threads=1",
+        "--nocapture",
+        "-Z",
+        "unstable-options",
+        "--format=json"
+      ],
+      "cpu_seconds": 30,
+      "wall_seconds": 60
+    },
+    {
+      "name": "neighbor-16",
+      "kind": "test",
+      "argv": [
+        "/usr/bin/timeout",
+        "--kill-after=2s",
+        "30s",
+        "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/kvm-capture-pipe-identity-source-v2/qualification-v1/retained-binaries/lib.elf",
+        "executor::tests::descriptor_retirement_close_and_dup_release_both_guards",
+        "--exact",
+        "--test-threads=1",
+        "--nocapture",
+        "-Z",
+        "unstable-options",
+        "--format=json"
+      ],
+      "cpu_seconds": 30,
+      "wall_seconds": 60
+    },
+    {
+      "name": "neighbor-17",
+      "kind": "test",
+      "argv": [
+        "/usr/bin/timeout",
+        "--kill-after=2s",
+        "30s",
+        "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/kvm-capture-pipe-identity-source-v2/qualification-v1/retained-binaries/lib.elf",
+        "executor::tests::descriptor_retirement_exec_and_exit_release_both_guards",
+        "--exact",
+        "--test-threads=1",
+        "--nocapture",
+        "-Z",
+        "unstable-options",
+        "--format=json"
+      ],
+      "cpu_seconds": 30,
+      "wall_seconds": 60
+    },
+    {
+      "name": "neighbor-18",
+      "kind": "test",
+      "argv": [
+        "/usr/bin/timeout",
+        "--kill-after=2s",
+        "30s",
+        "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/kvm-capture-pipe-identity-source-v2/qualification-v1/retained-binaries/lib.elf",
+        "executor::tests::descriptor_retirement_install_error_releases_both_guards",
+        "--exact",
+        "--test-threads=1",
+        "--nocapture",
+        "-Z",
+        "unstable-options",
+        "--format=json"
+      ],
+      "cpu_seconds": 30,
+      "wall_seconds": 60
+    },
+    {
+      "name": "neighbor-19",
+      "kind": "test",
+      "argv": [
+        "/usr/bin/timeout",
+        "--kill-after=2s",
+        "30s",
+        "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/kvm-capture-pipe-identity-source-v2/qualification-v1/retained-binaries/lib.elf",
+        "executor::tests::descriptor_retirement_accept_cleanup_releases_both_guards",
+        "--exact",
+        "--test-threads=1",
+        "--nocapture",
+        "-Z",
+        "unstable-options",
+        "--format=json"
+      ],
+      "cpu_seconds": 30,
+      "wall_seconds": 60
+    },
+    {
+      "name": "neighbor-20",
+      "kind": "test",
+      "argv": [
+        "/usr/bin/timeout",
+        "--kill-after=2s",
+        "30s",
+        "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/kvm-capture-pipe-identity-source-v2/qualification-v1/retained-binaries/lib.elf",
+        "executor::tests::shared_file_table_install_emfile_preserves_original_descriptions",
+        "--exact",
+        "--test-threads=1",
+        "--nocapture",
+        "-Z",
+        "unstable-options",
+        "--format=json"
+      ],
+      "cpu_seconds": 30,
+      "wall_seconds": 60
+    },
+    {
+      "name": "v6-timestamp-01",
+      "kind": "test",
+      "argv": [
+        "/usr/bin/timeout",
+        "--kill-after=2s",
+        "30s",
+        "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/kvm-capture-pipe-identity-source-v2/qualification-v1/retained-binaries/lib.elf",
+        "timestamp::tests::two_byte_rdtsc_decode_does_not_read_a_third_byte",
+        "--exact",
+        "--test-threads=1",
+        "--nocapture",
+        "-Z",
+        "unstable-options",
+        "--format=json"
+      ],
+      "cpu_seconds": 30,
+      "wall_seconds": 60
+    },
+    {
+      "name": "v6-timestamp-02",
+      "kind": "test",
+      "argv": [
+        "/usr/bin/timeout",
+        "--kill-after=2s",
+        "30s",
+        "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/kvm-capture-pipe-identity-source-v2/qualification-v1/retained-binaries/lib.elf",
+        "timestamp::tests::timestamp_prefixes_and_fifteen_byte_limit_preserve_faults",
+        "--exact",
+        "--test-threads=1",
+        "--nocapture",
+        "-Z",
+        "unstable-options",
+        "--format=json"
+      ],
+      "cpu_seconds": 30,
+      "wall_seconds": 60
+    },
+    {
+      "name": "v6-timestamp-03",
+      "kind": "test",
+      "argv": [
+        "/usr/bin/timeout",
+        "--kill-after=2s",
+        "30s",
+        "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/kvm-capture-pipe-identity-source-v2/qualification-v1/retained-binaries/lib.elf",
+        "timestamp::tests::timestamp_writeback_preserves_other_registers_and_full_flags",
+        "--exact",
+        "--test-threads=1",
+        "--nocapture",
+        "-Z",
+        "unstable-options",
+        "--format=json"
+      ],
+      "cpu_seconds": 30,
+      "wall_seconds": 60
+    },
+    {
+      "name": "v6-timestamp-04",
+      "kind": "test",
+      "argv": [
+        "/usr/bin/timeout",
+        "--kill-after=2s",
+        "30s",
+        "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/kvm-capture-pipe-identity-source-v2/qualification-v1/retained-binaries/lib.elf",
+        "timestamp::tests::timestamp_fetch_checks_each_page_and_does_not_cross_a_completed_instruction",
+        "--exact",
+        "--test-threads=1",
+        "--nocapture",
+        "-Z",
+        "unstable-options",
+        "--format=json"
+      ],
+      "cpu_seconds": 30,
+      "wall_seconds": 60
+    },
+    {
+      "name": "v6-timestamp-05",
+      "kind": "test",
+      "argv": [
+        "/usr/bin/timeout",
+        "--kill-after=2s",
+        "30s",
+        "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/kvm-capture-pipe-identity-source-v2/qualification-v1/retained-binaries/lib.elf",
+        "vm::tests::timestamp_boundary_respects_hardware_instruction_fetch_fault_priority",
+        "--exact",
+        "--test-threads=1",
+        "--nocapture",
+        "-Z",
+        "unstable-options",
+        "--format=json"
+      ],
+      "cpu_seconds": 30,
+      "wall_seconds": 60
+    },
+    {
+      "name": "v6-timestamp-06",
+      "kind": "test",
+      "argv": [
+        "/usr/bin/timeout",
+        "--kill-after=2s",
+        "30s",
+        "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/kvm-capture-pipe-identity-source-v2/qualification-v1/retained-binaries/lib.elf",
+        "cpuid::tests::deterministic_policy_replaces_host_identity_and_features",
+        "--exact",
+        "--test-threads=1",
+        "--nocapture",
+        "-Z",
+        "unstable-options",
+        "--format=json"
+      ],
+      "cpu_seconds": 30,
+      "wall_seconds": 60
+    },
+    {
+      "name": "v6-timestamp-07",
+      "kind": "test",
+      "argv": [
+        "/usr/bin/timeout",
+        "--kill-after=2s",
+        "30s",
+        "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/kvm-capture-pipe-identity-source-v2/qualification-v1/retained-binaries/static.elf",
+        "static_elf_timestamp_reads_dispatch_exact_tool_results_repeatably",
+        "--exact",
+        "--test-threads=1",
+        "--nocapture",
+        "-Z",
+        "unstable-options",
+        "--format=json"
+      ],
+      "cpu_seconds": 30,
+      "wall_seconds": 60
+    },
+    {
+      "name": "v6-timestamp-08",
+      "kind": "test",
+      "argv": [
+        "/usr/bin/timeout",
+        "--kill-after=2s",
+        "30s",
+        "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/kvm-capture-pipe-identity-source-v2/qualification-v1/retained-binaries/static.elf",
+        "timestamp_dispatch_survives_thread_fork_and_exec_vcpu_lifecycles",
+        "--exact",
+        "--test-threads=1",
+        "--nocapture",
+        "-Z",
+        "unstable-options",
+        "--format=json"
+      ],
+      "cpu_seconds": 30,
+      "wall_seconds": 60
+    },
+    {
+      "name": "v6-timestamp-09",
+      "kind": "test",
+      "argv": [
+        "/usr/bin/timeout",
+        "--kill-after=2s",
+        "30s",
+        "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/kvm-capture-pipe-identity-source-v2/qualification-v1/retained-binaries/static.elf",
+        "static_elf_unsubscribed_rdtsc_runs_without_tool_dispatch",
+        "--exact",
+        "--test-threads=1",
+        "--nocapture",
+        "-Z",
+        "unstable-options",
+        "--format=json"
+      ],
+      "cpu_seconds": 30,
+      "wall_seconds": 60
+    },
+    {
+      "name": "v6-timestamp-10",
+      "kind": "test",
+      "argv": [
+        "/usr/bin/timeout",
+        "--kill-after=2s",
+        "30s",
+        "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/kvm-capture-pipe-identity-source-v2/qualification-v1/retained-binaries/static.elf",
+        "subscribed_timestamp_dispatch_refuses_unrelated_exceptions",
+        "--exact",
+        "--test-threads=1",
+        "--nocapture",
+        "-Z",
+        "unstable-options",
+        "--format=json"
+      ],
+      "cpu_seconds": 30,
+      "wall_seconds": 60
+    },
+    {
+      "name": "v6-timestamp-11",
+      "kind": "test",
+      "argv": [
+        "/usr/bin/timeout",
+        "--kill-after=2s",
+        "30s",
+        "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/kvm-capture-pipe-identity-source-v2/qualification-v1/retained-binaries/static.elf",
+        "repeated_timestamp_reads_evolve_once_per_instruction",
+        "--exact",
+        "--test-threads=1",
+        "--nocapture",
+        "-Z",
+        "unstable-options",
+        "--format=json"
+      ],
+      "cpu_seconds": 30,
+      "wall_seconds": 60
+    },
+    {
+      "name": "v6-timestamp-12",
+      "kind": "test",
+      "argv": [
+        "/usr/bin/timeout",
+        "--kill-after=2s",
+        "30s",
+        "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/kvm-capture-pipe-identity-source-v2/qualification-v1/retained-binaries/static.elf",
+        "static_elf_unsubscribed_rdtscp_remains_guest_exception",
+        "--exact",
+        "--test-threads=1",
+        "--nocapture",
+        "-Z",
+        "unstable-options",
+        "--format=json"
+      ],
+      "cpu_seconds": 30,
+      "wall_seconds": 60
+    },
+    {
+      "name": "v6-timestamp-13",
+      "kind": "test",
+      "argv": [
+        "/usr/bin/timeout",
+        "--kill-after=2s",
+        "30s",
+        "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/kvm-capture-pipe-identity-source-v2/qualification-v1/retained-binaries/static.elf",
+        "timestamp_callbacks_observe_retired_branches_without_counting_rpc_work",
+        "--exact",
+        "--test-threads=1",
+        "--nocapture",
+        "-Z",
+        "unstable-options",
+        "--format=json"
+      ],
+      "cpu_seconds": 30,
+      "wall_seconds": 60
+    },
+    {
+      "name": "v6-timestamp-14",
+      "kind": "test",
+      "argv": [
+        "/usr/bin/timeout",
+        "--kill-after=2s",
+        "30s",
+        "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/kvm-capture-pipe-identity-source-v2/qualification-v1/retained-binaries/static.elf",
+        "host_owned_timestamp_worker_keeps_native_execution",
+        "--exact",
+        "--test-threads=1",
+        "--nocapture",
+        "-Z",
+        "unstable-options",
+        "--format=json"
+      ],
+      "cpu_seconds": 30,
+      "wall_seconds": 60
+    },
+    {
+      "name": "v6-timestamp-15",
+      "kind": "test",
+      "argv": [
+        "/usr/bin/timeout",
+        "--kill-after=2s",
+        "30s",
+        "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/kvm-capture-pipe-identity-source-v2/qualification-v1/retained-binaries/static.elf",
+        "prefixed_timestamp_instructions_preserve_registers_flags_and_stack",
+        "--exact",
+        "--test-threads=1",
+        "--nocapture",
+        "-Z",
+        "unstable-options",
+        "--format=json"
+      ],
+      "cpu_seconds": 30,
+      "wall_seconds": 60
+    },
+    {
+      "name": "v6-timestamp-16",
+      "kind": "test",
+      "argv": [
+        "/usr/bin/timeout",
+        "--kill-after=2s",
+        "30s",
+        "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/kvm-capture-pipe-identity-source-v2/qualification-v1/retained-binaries/static.elf",
+        "locked_and_overlength_timestamp_encodings_remain_faults",
+        "--exact",
+        "--test-threads=1",
+        "--nocapture",
+        "-Z",
+        "unstable-options",
+        "--format=json"
+      ],
+      "cpu_seconds": 30,
+      "wall_seconds": 60
+    },
+    {
+      "name": "v6-timestamp-17",
+      "kind": "test",
+      "argv": [
+        "/usr/bin/timeout",
+        "--kill-after=2s",
+        "30s",
+        "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/kvm-capture-pipe-identity-source-v2/qualification-v1/retained-binaries/static.elf",
+        "timestamp_tool_preserves_results_with_host_supported_cpuid",
+        "--exact",
+        "--test-threads=1",
+        "--nocapture",
+        "-Z",
+        "unstable-options",
+        "--format=json"
+      ],
+      "cpu_seconds": 30,
+      "wall_seconds": 60
+    },
+    {
+      "name": "v6-timestamp-18",
+      "kind": "test",
+      "argv": [
+        "/usr/bin/timeout",
+        "--kill-after=2s",
+        "30s",
+        "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/kvm-capture-pipe-identity-source-v2/qualification-v1/retained-binaries/static.elf",
+        "timestamp_single_step_reports_the_retired_instruction_boundary",
+        "--exact",
+        "--test-threads=1",
+        "--nocapture",
+        "-Z",
+        "unstable-options",
+        "--format=json"
+      ],
+      "cpu_seconds": 30,
+      "wall_seconds": 60
+    },
+    {
+      "name": "v6-timestamp-19",
+      "kind": "test",
+      "argv": [
+        "/usr/bin/timeout",
+        "--kill-after=2s",
+        "30s",
+        "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/kvm-capture-pipe-identity-source-v2/qualification-v1/retained-binaries/static.elf",
+        "static_elf_faults_are_reported_by_direct_and_tool_runtimes",
+        "--exact",
+        "--test-threads=1",
+        "--nocapture",
+        "-Z",
+        "unstable-options",
+        "--format=json"
+      ],
+      "cpu_seconds": 30,
+      "wall_seconds": 60
+    },
+    {
+      "name": "v6-timestamp-20",
+      "kind": "test",
+      "argv": [
+        "/usr/bin/timeout",
+        "--kill-after=2s",
+        "30s",
+        "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/kvm-capture-pipe-identity-source-v2/qualification-v1/retained-binaries/static.elf",
+        "static_elf_vmware_probe_reports_non_vmware_in_direct_and_tool_runtimes",
+        "--exact",
+        "--test-threads=1",
+        "--nocapture",
+        "-Z",
+        "unstable-options",
+        "--format=json"
+      ],
+      "cpu_seconds": 30,
+      "wall_seconds": 60
+    },
+    {
+      "name": "v6-timestamp-21",
+      "kind": "test",
+      "argv": [
+        "/usr/bin/timeout",
+        "--kill-after=2s",
+        "30s",
+        "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/kvm-capture-pipe-identity-source-v2/qualification-v1/retained-binaries/static.elf",
+        "static_elf_forks_execs_and_waits_for_child",
+        "--exact",
+        "--test-threads=1",
+        "--nocapture",
+        "-Z",
+        "unstable-options",
+        "--format=json"
+      ],
+      "cpu_seconds": 30,
+      "wall_seconds": 60
+    },
+    {
+      "name": "v6-timestamp-22",
+      "kind": "test",
+      "argv": [
+        "/usr/bin/timeout",
+        "--kill-after=2s",
+        "30s",
+        "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/kvm-capture-pipe-identity-source-v2/qualification-v1/retained-binaries/static.elf",
+        "static_elf_runs_glibc_clone3_thread_and_restores_parent_state",
+        "--exact",
+        "--test-threads=1",
+        "--nocapture",
+        "-Z",
+        "unstable-options",
+        "--format=json"
+      ],
+      "cpu_seconds": 30,
+      "wall_seconds": 60
+    },
+    {
+      "name": "v6-timestamp-23",
+      "kind": "test",
+      "argv": [
+        "/usr/bin/timeout",
+        "--kill-after=2s",
+        "30s",
+        "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/kvm-capture-pipe-identity-source-v2/qualification-v1/retained-binaries/static.elf",
+        "static_elf_caught_signal_returns_through_rt_sigreturn",
+        "--exact",
+        "--test-threads=1",
+        "--nocapture",
+        "-Z",
+        "unstable-options",
+        "--format=json"
+      ],
+      "cpu_seconds": 30,
+      "wall_seconds": 60
+    },
+    {
+      "name": "v6-timestamp-24",
+      "kind": "test",
+      "argv": [
+        "/usr/bin/timeout",
+        "--kill-after=2s",
+        "30s",
+        "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/kvm-capture-pipe-identity-source-v2/qualification-v1/retained-binaries/static.elf",
+        "post_exec_failure_runs_tool_exit_lifecycle",
+        "--exact",
+        "--test-threads=1",
+        "--nocapture",
+        "-Z",
+        "unstable-options",
+        "--format=json"
+      ],
+      "cpu_seconds": 30,
+      "wall_seconds": 60
+    },
+    {
+      "name": "v6-timestamp-25",
+      "kind": "test",
+      "argv": [
+        "/usr/bin/timeout",
+        "--kill-after=2s",
+        "30s",
+        "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/kvm-capture-pipe-identity-source-v2/qualification-v1/retained-binaries/vmcall.elf",
+        "guest_write_syscall_runs_shared_reverie_tool",
+        "--exact",
+        "--test-threads=1",
+        "--nocapture",
+        "-Z",
+        "unstable-options",
+        "--format=json"
+      ],
+      "cpu_seconds": 30,
+      "wall_seconds": 60
+    },
+    {
+      "name": "v6-timestamp-26",
+      "kind": "test",
+      "argv": [
+        "/usr/bin/timeout",
+        "--kill-after=2s",
+        "30s",
+        "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/kvm-capture-pipe-identity-source-v2/qualification-v1/retained-binaries/vmcall.elf",
+        "default_tool_handler_tail_injects_through_executor",
+        "--exact",
+        "--test-threads=1",
+        "--nocapture",
+        "-Z",
+        "unstable-options",
+        "--format=json"
+      ],
+      "cpu_seconds": 30,
+      "wall_seconds": 60
+    },
+    {
+      "name": "v6-timestamp-27",
+      "kind": "test",
+      "argv": [
+        "/usr/bin/timeout",
+        "--kill-after=2s",
+        "30s",
+        "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/kvm-capture-pipe-identity-source-v2/qualification-v1/retained-binaries/read-clock.elf",
+        "read_clock_counts_userspace_and_excludes_callbacks_and_other_vcpus",
+        "--exact",
+        "--test-threads=1",
+        "--nocapture",
+        "-Z",
+        "unstable-options",
+        "--format=json"
+      ],
+      "cpu_seconds": 30,
+      "wall_seconds": 60
+    },
+    {
+      "name": "v6-timestamp-28",
+      "kind": "test",
+      "argv": [
+        "/usr/bin/timeout",
+        "--kill-after=2s",
+        "30s",
+        "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/kvm-capture-pipe-identity-source-v2/qualification-v1/retained-binaries/read-clock.elf",
+        "read_clock_follows_a_guest_between_host_threads",
+        "--exact",
+        "--test-threads=1",
+        "--nocapture",
+        "-Z",
+        "unstable-options",
+        "--format=json"
+      ],
+      "cpu_seconds": 30,
+      "wall_seconds": 60
+    },
+    {
+      "name": "v6-timestamp-29",
+      "kind": "test",
+      "argv": [
+        "/usr/bin/timeout",
+        "--kill-after=2s",
+        "30s",
+        "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/kvm-capture-pipe-identity-source-v2/qualification-v1/retained-binaries/read-clock.elf",
+        "read_clock_starts_fork_vfork_and_thread_children_at_zero",
+        "--exact",
+        "--test-threads=1",
+        "--nocapture",
+        "-Z",
+        "unstable-options",
+        "--format=json"
+      ],
+      "cpu_seconds": 30,
+      "wall_seconds": 60
+    },
+    {
+      "name": "v6-timestamp-30",
+      "kind": "test",
+      "argv": [
+        "/usr/bin/timeout",
+        "--kill-after=2s",
+        "30s",
+        "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/kvm-capture-pipe-identity-source-v2/qualification-v1/retained-binaries/read-clock.elf",
+        "read_clock_survives_successful_and_failed_exec",
+        "--exact",
+        "--test-threads=1",
+        "--nocapture",
+        "-Z",
+        "unstable-options",
+        "--format=json"
+      ],
+      "cpu_seconds": 30,
+      "wall_seconds": 60
+    },
+    {
+      "name": "v6-timestamp-31",
+      "kind": "test",
+      "argv": [
+        "/usr/bin/timeout",
+        "--kill-after=2s",
+        "30s",
+        "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/kvm-capture-pipe-identity-source-v2/qualification-v1/retained-binaries/static.elf",
+        "fault_only_assertion_rejects_actual_tool_exit_cleanup_failure",
+        "--exact",
+        "--test-threads=1",
+        "--nocapture",
+        "-Z",
+        "unstable-options",
+        "--format=json"
+      ],
+      "cpu_seconds": 30,
+      "wall_seconds": 60
+    },
+    {
+      "name": "v6-timestamp-32",
+      "kind": "test",
+      "argv": [
+        "/usr/bin/timeout",
+        "--kill-after=2s",
+        "30s",
+        "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/kvm-capture-pipe-identity-source-v2/qualification-v1/retained-binaries/static.elf",
+        "timestamp_terminal::terminal_exit_preserves_status_and_consuming_cleanup",
+        "--exact",
+        "--test-threads=1",
+        "--nocapture",
+        "-Z",
+        "unstable-options",
+        "--format=json"
+      ],
+      "cpu_seconds": 30,
+      "wall_seconds": 60
+    },
+    {
+      "name": "v6-timestamp-33",
+      "kind": "test",
+      "argv": [
+        "/usr/bin/timeout",
+        "--kill-after=2s",
+        "30s",
+        "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/kvm-capture-pipe-identity-source-v2/qualification-v1/retained-binaries/static.elf",
+        "timestamp_terminal::nonterminal_tails_refuse_before_side_effects",
+        "--exact",
+        "--test-threads=1",
+        "--nocapture",
+        "-Z",
+        "unstable-options",
+        "--format=json"
+      ],
+      "cpu_seconds": 30,
+      "wall_seconds": 60
+    },
+    {
+      "name": "v6-timestamp-34",
+      "kind": "test",
+      "argv": [
+        "/usr/bin/timeout",
+        "--kill-after=2s",
+        "30s",
+        "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/kvm-capture-pipe-identity-source-v2/qualification-v1/retained-binaries/static.elf",
+        "timestamp_terminal::worker_terminal_rpc_precedes_real_sibling_exit_group",
+        "--exact",
+        "--test-threads=1",
+        "--nocapture",
+        "-Z",
+        "unstable-options",
+        "--format=json"
+      ],
+      "cpu_seconds": 30,
+      "wall_seconds": 60
+    },
+    {
+      "name": "v6-timestamp-35",
+      "kind": "test",
+      "argv": [
+        "/usr/bin/timeout",
+        "--kill-after=2s",
+        "30s",
+        "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/kvm-capture-pipe-identity-source-v2/qualification-v1/retained-binaries/lib.elf",
+        "vm::tests::non_elf_tool_loop_disarms_prior_timestamp_interception",
+        "--exact",
+        "--test-threads=1",
+        "--nocapture",
+        "-Z",
+        "unstable-options",
+        "--format=json"
+      ],
+      "cpu_seconds": 30,
+      "wall_seconds": 60
+    },
+    {
+      "name": "v6-timestamp-36",
+      "kind": "test",
+      "argv": [
+        "/usr/bin/timeout",
+        "--kill-after=2s",
+        "30s",
+        "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/kvm-capture-pipe-identity-source-v2/qualification-v1/retained-binaries/lib.elf",
+        "runtime::tests::signal_hook_tail_injection_is_rejected_before_every_executor_side_effect",
+        "--exact",
+        "--test-threads=1",
+        "--nocapture",
+        "-Z",
+        "unstable-options",
+        "--format=json"
+      ],
+      "cpu_seconds": 30,
+      "wall_seconds": 60
+    },
+    {
+      "name": "v6-timestamp-37",
+      "kind": "test",
+      "argv": [
+        "/usr/bin/timeout",
+        "--kill-after=2s",
+        "30s",
+        "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/kvm-capture-pipe-identity-source-v2/qualification-v1/retained-binaries/lib.elf",
+        "runtime::terminal_tests::terminal_cancellation_and_into_guest_forwarding_do_not_inject_or_start_children",
+        "--exact",
+        "--test-threads=1",
+        "--nocapture",
+        "-Z",
+        "unstable-options",
+        "--format=json"
+      ],
+      "cpu_seconds": 30,
+      "wall_seconds": 60
+    },
+    {
+      "name": "core-check",
+      "kind": "check",
+      "argv": [
+        "/home/newton/.rustup/toolchains/nightly-2026-07-29-x86_64-unknown-linux-gnu/bin/cargo",
+        "check",
+        "--offline",
+        "--locked",
+        "-p",
+        "reverie-core",
+        "-p",
+        "reverie-ptrace",
+        "--message-format=json"
+      ],
+      "cpu_seconds": 600,
+      "wall_seconds": 900
+    },
+    {
+      "name": "clippy",
+      "kind": "check",
+      "argv": [
+        "/home/newton/.rustup/toolchains/nightly-2026-07-29-x86_64-unknown-linux-gnu/bin/cargo",
+        "clippy",
+        "--offline",
+        "--locked",
+        "-p",
+        "reverie-kvm",
+        "--lib",
+        "--test",
+        "static_elf",
+        "--test",
+        "vmcall",
+        "--test",
+        "read_clock",
+        "--message-format=json",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "cpu_seconds": 600,
+      "wall_seconds": 900
+    }
+  ],
+  "all_phases": {
+    "memory_bytes": 17179869184,
+    "swap_bytes": 0,
+    "free_floor_bytes": 107374182400,
+    "stderr_bytes": 16777216,
+    "stdout_samples_bytes": 67108864,
+    "phase_complete_read_bytes": 16777216
+  },
+  "test_inner_wall_seconds": 30
+}

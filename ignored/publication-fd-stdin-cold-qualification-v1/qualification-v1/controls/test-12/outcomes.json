@@ -1,0 +1,24 @@
+{
+  "started": [
+    "executor::tests::process_alarm_signal_receiver_lifetime_and_process_actions_refuse_before_mutation"
+  ],
+  "ended": [
+    {
+      "type": "test",
+      "name": "executor::tests::process_alarm_signal_receiver_lifetime_and_process_actions_refuse_before_mutation",
+      "event": "ok"
+    }
+  ],
+  "suites": [
+    {
+      "type": "suite",
+      "event": "ok",
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filtered_out": 504,
+      "exec_time": 0.001964941
+    }
+  ]
+}

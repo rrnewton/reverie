@@ -1,0 +1,9 @@
+{
+  "plan_sha256": "4da5da8ccdba9fd61036b3c7691b6ee697d5ab870cc4c435be53b6570717d071",
+  "result": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/scalar-write-fd-qualification-v1/corrected/controls/format/result.json",
+    "bytes": 2505,
+    "mode": 420,
+    "sha256": "7851b4f090ff83f0c9121944e9728726a6a6b8a688d1cbc343ba15b878e55aae"
+  }
+}

@@ -1,0 +1,24 @@
+{
+  "argv": [
+    "/usr/bin/ldd",
+    "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/target/process-alarm-qualification-v1/debug/deps/reverie_kvm-43ce2f687796397a"
+  ],
+  "cwd": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918",
+  "wall_limit_seconds": 5,
+  "forced": true,
+  "reason": "outer_wall_limit",
+  "returncode": -15,
+  "elapsed_seconds": 14.63416251516901,
+  "stdout": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/timer-integration-20260918/qualification-v4/loader/test-lib-ldd.stdout",
+    "bytes": 0,
+    "mode": 420,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "stderr": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/timer-integration-20260918/qualification-v4/loader/test-lib-ldd.stderr",
+    "bytes": 0,
+    "mode": 420,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  }
+}

@@ -1,0 +1,4 @@
+
+thread 'subscribed_timestamp_dispatch_refuses_unrelated_exceptions' (1777331) panicked at reverie-kvm/tests/static_elf.rs:3677:18:
+expected invalid-opcode exception, got guest exception vector 6 at 0x200000 (CR2=0x0)
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace

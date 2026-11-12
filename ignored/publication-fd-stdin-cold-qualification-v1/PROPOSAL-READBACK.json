@@ -1,0 +1,58 @@
+{
+  "plan": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/publication-fd-stdin-cold-qualification-v1/PLAN.md",
+    "bytes": 1622,
+    "mode": 420,
+    "sha256": "a73171bf875943d3ebabf92a7e241e11afd71a6efa3901b86273fa37976732e9"
+  },
+  "caller_delta": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/publication-fd-stdin-qualification-v1/build-provenance-refusal-v1/cold-target-proposal/prepare.patch",
+    "bytes": 2389,
+    "mode": 420,
+    "sha256": "e5b15ecbe8cd2a0ba38d9899f2901d7c7852be3d5593ba774cc0b6200ea7909e"
+  },
+  "caller": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/publication-fd-stdin-cold-qualification-v1/qualification-v1/prepare.py",
+    "bytes": 10293,
+    "mode": 420,
+    "sha256": "a9ef17489b45e8dd549b83f3a8aa94203c1656e5b25fe2d70c89393f6aff557d"
+  },
+  "deployment": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/publication-fd-stdin-cold-qualification-v1/DEPLOYMENT.json",
+    "bytes": 7830,
+    "mode": 420,
+    "sha256": "7c10501db977325873cf07af8c5f7db61318480c37a4c46cc7323cdf9488addf"
+  },
+  "helper_authentication": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/publication-fd-stdin-cold-qualification-v1/CALLER-AUTHENTICATION.json",
+    "bytes": 6380,
+    "mode": 420,
+    "sha256": "c8a97b559658cb9590a19a9f80e71efd70461c27eae2a96a756943c65d0c1df8"
+  },
+  "empty_target": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/publication-fd-stdin-cold-qualification-v1/EMPTY-TARGET.json",
+    "bytes": 470,
+    "mode": 420,
+    "sha256": "cac9aaaa51e561d383127539cd46d05e8c8e8eff2461ab3ad8197b6ef1c9d2a6"
+  },
+  "paths": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/publication-fd-stdin-cold-qualification-v1/PATHS-AND-CONFIG.json",
+    "bytes": 7560,
+    "mode": 420,
+    "sha256": "bbed2c7146388958733a0eb31f63b76e61a36f98c21f85abd27a1c4175d3f2d2"
+  },
+  "metadata_plan": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/publication-fd-stdin-cold-qualification-v1/qualification-v1/metadata-plan.json",
+    "bytes": 33568,
+    "mode": 420,
+    "sha256": "9129c0063849ca9b8e9f1f2ac0c40edc4e07e69a549e4246c52d61249c0ab28b"
+  },
+  "source_target": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/publication-fd-composition-v3/TARGET.json",
+    "bytes": 4433,
+    "mode": 420,
+    "sha256": "4e64d6366f66bd0acc70c7035fcc9c59071a8f738edd8810d5922acdd99a3aa4"
+  },
+  "source_unchanged": true,
+  "execution_performed": false
+}

@@ -1,0 +1,24 @@
+{
+  "started": [
+    "executor::tests::child_exit_signal_preserves_process_ownership_and_first_complete_siginfo"
+  ],
+  "ended": [
+    {
+      "type": "test",
+      "name": "executor::tests::child_exit_signal_preserves_process_ownership_and_first_complete_siginfo",
+      "event": "ok"
+    }
+  ],
+  "suites": [
+    {
+      "type": "suite",
+      "event": "ok",
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filtered_out": 501,
+      "exec_time": 0.001240302
+    }
+  ]
+}

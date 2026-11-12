@@ -1,0 +1,23 @@
+{
+  "argv": [
+    "/usr/bin/ldd",
+    "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/target/process-alarm-qualification-v1/debug/deps/reverie_kvm-43ce2f687796397a"
+  ],
+  "cwd": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/same-inode-ofd-repair-v2/corrected-source-v3",
+  "wall_limit_seconds": 5,
+  "forced": false,
+  "returncode": 0,
+  "elapsed_seconds": 0.051225058967247605,
+  "stdout": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/same-inode-ofd-repair-v2/qualification-v3/loader/test-lib-ldd.stdout",
+    "bytes": 200,
+    "mode": 420,
+    "sha256": "2aa29f99ef9301b746a11f1af708647b0334bcb79574e39941daebee9d9e85da"
+  },
+  "stderr": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/same-inode-ofd-repair-v2/qualification-v3/loader/test-lib-ldd.stderr",
+    "bytes": 0,
+    "mode": 420,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  }
+}

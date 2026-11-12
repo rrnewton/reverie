@@ -1,0 +1,44 @@
+{
+  "review": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parent-reader-support-20260916/ignored/kvm-same-inode-emfile-control-review-v2-20260918/REPORT.md",
+    "bytes": 4894,
+    "sha256": "4de0d5b986c60a8d9a0d51143fff3deff4f9fb2f7aba9618f8c1c12aef8588fa"
+  },
+  "source_packet": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/reverie-same-inode-ofd-repair-v2/READBACK.json",
+    "bytes": 10045,
+    "sha256": "6392048f20819dc35e48769cee41222222a6f939653f911a20494dac5fd37e72"
+  },
+  "combined_patch": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/reverie-same-inode-ofd-repair-v2/combined.patch",
+    "bytes": 28127,
+    "sha256": "586e8b9fe6898cabb3a3d13f653d09a76688fb0eada6b128609bce1934501e25"
+  },
+  "source_entries": 2620,
+  "source_manifest": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/same-inode-ofd-repair-v2/qualification/source-manifest.json",
+    "bytes": 690375,
+    "sha256": "30d693d666586505c3ce924f04dd080e1ee363f65811af8c07d172c6d36ed1ee"
+  },
+  "snapshot_root": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/same-inode-ofd-repair-v2/corrected-source",
+  "lock": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/same-inode-ofd-repair-v2/corrected-source/Cargo.lock",
+    "bytes": 67056,
+    "sha256": "1c09663e46bf21ad7c07eedd7821cccb72ae21f42485192649ff5473962bc856"
+  },
+  "caller_origins": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/same-inode-ofd-repair-v2/qualification/RUNNER_ORIGINS.json",
+    "bytes": 8404,
+    "sha256": "eee6d25dae5ea80c148e0cf01b042336219ef3dbdab25f110e3f68419ceb42f4"
+  },
+  "publisher_source_remains_live_and_separate": true,
+  "publisher_frozen_target": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/process-publication-implementation-v1/frozen-v1/TARGET.json",
+    "bytes": 1675,
+    "sha256": "8864d3be8d243ff0dfd2019e85f0b17b587409bb53d855d74ea36f44e0cee94b"
+  },
+  "head": "000c15a1161ea2d58749431b5ddaaa97f7aa37d5",
+  "index_sha256": "fc8df6346ffe9eb9243457f4dc50426d759a61ef0f1d7cfd8c00d02847f5951b",
+  "regular_files_copied": 2610,
+  "preparation_refusal": "First readback iteration assumed an array; actual review schema is records member. TypeError occurred before creating any destination or accessing lease; corrected schema then authenticated all records."
+}

@@ -1,0 +1,4 @@
+{ "type": "suite", "event": "started", "test_count": 1 }
+{ "type": "test", "event": "started", "name": "executor::tests::fdinfo_dispatch_retains_partial_records_and_shared_dup_seek_state" }
+{ "type": "test", "name": "executor::tests::fdinfo_dispatch_retains_partial_records_and_shared_dup_seek_state", "event": "ok" }
+{ "type": "suite", "event": "ok", "passed": 1, "failed": 0, "ignored": 0, "measured": 0, "filtered_out": 504, "exec_time": 0.001711381 }

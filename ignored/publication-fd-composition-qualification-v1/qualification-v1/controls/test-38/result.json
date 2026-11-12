@@ -1,0 +1,73 @@
+{
+  "plan_sha256": "8fc6aed5f678debf1963f2bae732e3b73b5df1a28b887299a5ae734b8e7eb162",
+  "accepted": true,
+  "observer_attempted": true,
+  "terminal_authenticated": true,
+  "raw_status": 0,
+  "transport": {
+    "argv": [
+      "/usr/bin/python3",
+      "-B",
+      "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/publication-fd-composition-qualification-v1/qualification-v1/observer/observer.py",
+      "--out",
+      "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/publication-fd-composition-qualification-v1/qualification-v1/observer/test-38",
+      "--cpu-usec",
+      "30000000",
+      "--wall-seconds",
+      "60",
+      "--log-bytes",
+      "16777216",
+      "/usr/bin/python3",
+      "-B",
+      "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/publication-fd-composition-qualification-v1/qualification-v1/phase.py",
+      "payload",
+      "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/publication-fd-composition-qualification-v1/qualification-v1/test-38-plan.json",
+      "8fc6aed5f678debf1963f2bae732e3b73b5df1a28b887299a5ae734b8e7eb162"
+    ],
+    "cwd": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/publication-fd-composition-v2/source",
+    "wall_limit_seconds": 110,
+    "forced": false,
+    "returncode": 0,
+    "elapsed_seconds": 3.1082261928822845,
+    "stdout": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/publication-fd-composition-qualification-v1/qualification-v1/controls/test-38/observer.stdout",
+      "bytes": 160,
+      "mode": 420,
+      "sha256": "3d266546b1424a829261a63a64f8828b4208d361a58ff3585017bee3c0d2e238"
+    },
+    "stderr": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/publication-fd-composition-qualification-v1/qualification-v1/controls/test-38/observer.stderr",
+      "bytes": 0,
+      "mode": 420,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    }
+  },
+  "observer_result": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/publication-fd-composition-qualification-v1/qualification-v1/observer/test-38/result.json",
+    "bytes": 47547,
+    "mode": 384,
+    "sha256": "9147ac0a7004d4a260b6755c84a36e15c1f7736fcb3d7297b0212475fe380e81"
+  },
+  "readback": {
+    "executed": 1,
+    "summary": {
+      "type": "suite",
+      "event": "ok",
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filtered_out": 501,
+      "exec_time": 0.001474644
+    },
+    "names": [
+      "executor::tests::signal_dequeue_full_journal_failure_retains_partial_read_and_every_removal"
+    ]
+  },
+  "payload_exit": {
+    "returncode": 0,
+    "reaped": true,
+    "elapsed_seconds": 0.0038605970330536366
+  },
+  "inputs_unchanged": true
+}

@@ -1,0 +1,4 @@
+{ "type": "suite", "event": "started", "test_count": 1 }
+{ "type": "test", "event": "started", "name": "read_clock_starts_fork_vfork_and_thread_children_at_zero" }
+{ "type": "test", "name": "read_clock_starts_fork_vfork_and_thread_children_at_zero", "event": "ok" }
+{ "type": "suite", "event": "ok", "passed": 1, "failed": 0, "ignored": 0, "measured": 0, "filtered_out": 7, "exec_time": 0.248838296 }

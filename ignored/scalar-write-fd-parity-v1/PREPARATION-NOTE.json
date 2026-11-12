@@ -1,0 +1,5 @@
+{
+  "failed_read": "git show 7b28de2b20b6e7fdcdab92e552d4166908b50cad:Cargo.lock",
+  "raw_status": 128,
+  "cause": "Reverie Cargo.lock is generated/untracked, not an immutable committed source blob. No product or patch mutation occurred. It is not needed for this source-only proposal; later execution must bind the actual lock independently."
+}

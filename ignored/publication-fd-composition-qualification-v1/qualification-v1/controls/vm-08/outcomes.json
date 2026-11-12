@@ -1,0 +1,24 @@
+{
+  "started": [
+    "leader_self_exec_lifetime_thread_0"
+  ],
+  "ended": [
+    {
+      "type": "test",
+      "name": "leader_self_exec_lifetime_thread_0",
+      "event": "ok"
+    }
+  ],
+  "suites": [
+    {
+      "type": "suite",
+      "event": "ok",
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filtered_out": 303,
+      "exec_time": 0.303146194
+    }
+  ]
+}

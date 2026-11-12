@@ -1,0 +1,37 @@
+{
+  "authorization_received": true,
+  "payload": {
+    "binary": "/usr/bin/python3",
+    "binary_sha256": "9cfdf1a01d07dadb394dd2dc9fd8316254c36764076d23dc2c895c8401735576",
+    "arguments": [
+      "-B",
+      "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/timer-integration-review-response-20260918/qualification-v3/phase.py",
+      "payload",
+      "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/timer-integration-review-response-20260918/qualification-v3/clippy-plan.json",
+      "3329aa811227af4ae332bc2394e9cdad7e3aa0e0ded7b78214eb273616741007"
+    ]
+  },
+  "pid": 1598489,
+  "start_ticks": 187542945,
+  "restored_limits": {
+    "cpu": [
+      -1,
+      -1
+    ],
+    "as": [
+      -1,
+      -1
+    ],
+    "core": [
+      -1,
+      -1
+    ]
+  },
+  "protocol_environment_keys": [],
+  "handshake_fds_closed": true,
+  "ignore_sigpipe": true,
+  "python_file_size_signals_restored_to_default": true,
+  "environment_sha256": "7d6dec97f0bf3dfb3dc6025efeaa369e5bf8710dcf47ed126afedd447c438d02",
+  "monotonic_ns": 1875429508457867,
+  "note": "Written before exec; this is not proof that the payload started."
+}

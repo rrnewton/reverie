@@ -1,0 +1,4 @@
+{ "type": "suite", "event": "started", "test_count": 1 }
+{ "type": "test", "event": "started", "name": "prefixed_timestamp_instructions_preserve_registers_flags_and_stack" }
+{ "type": "test", "name": "prefixed_timestamp_instructions_preserve_registers_flags_and_stack", "event": "ok" }
+{ "type": "suite", "event": "ok", "passed": 1, "failed": 0, "ignored": 0, "measured": 0, "filtered_out": 316, "exec_time": 0.548016858 }

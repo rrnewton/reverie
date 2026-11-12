@@ -1,0 +1,81 @@
+{
+  "old_lease": {
+    "binding": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/kvm-capture-pipe-identity-source-v2/qualification-v1/lane.lease",
+      "owner_slot": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918",
+      "identity": [
+        48,
+        837793869,
+        212630
+      ],
+      "state_directory": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/kvm-capture-pipe-identity-source-v2/qualification-v1/lease-state"
+    },
+    "token": "{\"plan_sha256\": \"89798243b48b1e99df2247bcdd0de974c966523e4d20ef9ab61184e4d996ec4a\", \"schema\": 1}\n",
+    "unresolved_completion_absent": true,
+    "no_token_mutation": true
+  },
+  "new_lease": {
+    "binding": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/kvm-capture-pipe-identity-source-v2/qualification-continuation-v2/lane.lease",
+      "owner_slot": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918",
+      "identity": [
+        48,
+        838074118,
+        212630
+      ],
+      "state_directory": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/kvm-capture-pipe-identity-source-v2/qualification-continuation-v2/lease-state"
+    },
+    "token": "{\"plan_sha256\": \"a817f54a165263e8c18cd491f63fd6ae25de63d4f1e20cea10122effad6d3113\", \"schema\": 1}\n",
+    "completion": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/kvm-capture-pipe-identity-source-v2/qualification-continuation-v2/lease-state/a817f54a165263e8c18cd491f63fd6ae25de63d4f1e20cea10122effad6d3113.json",
+      "bytes": 417,
+      "mode": 420,
+      "sha256": "08312f6ec53fad0310c2a2068eab8b47937580eed146129c423e92833864c3e1"
+    }
+  },
+  "exclusive_nonblocking_readback_both": true,
+  "fresh_last_service": {
+    "query": {
+      "argv": [
+        "/usr/bin/systemctl",
+        "--user",
+        "show",
+        "safehermit-20260918T191718Z-428342.service",
+        "--property=Id,LoadState,ActiveState,SubState,MainPID,ControlGroup"
+      ],
+      "cwd": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/kvm-capture-pipe-identity-source-v2/qualification-continuation-v2",
+      "wall_limit_seconds": 5,
+      "forced": false,
+      "returncode": 0,
+      "elapsed_seconds": 0.05165783502161503,
+      "stdout": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/kvm-capture-pipe-identity-source-v2/qualification-continuation-v2/final-v1/terminal-clippy.stdout",
+        "bytes": 125,
+        "mode": 420,
+        "sha256": "bab43f5ac5fde30967c2c6748ad05e5b4de4e3967a42e79b731e379b5239e863"
+      },
+      "stderr": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/kvm-capture-pipe-identity-source-v2/qualification-continuation-v2/final-v1/terminal-clippy.stderr",
+        "bytes": 0,
+        "mode": 420,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      }
+    },
+    "properties": {
+      "Id": "safehermit-20260918T191718Z-428342.service",
+      "LoadState": "not-found",
+      "ActiveState": "inactive",
+      "SubState": "dead",
+      "MainPID": "0",
+      "ControlGroup": ""
+    }
+  },
+  "old_startup_proof": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/kvm-capture-pipe-identity-source-v2/qualification-v1/failure-final-v1/TERMINAL-READBACK.json",
+    "bytes": 753,
+    "mode": 420,
+    "sha256": "4c081c675bd0f8611b74c4b74aaf12cb35cafd716633c1ccdd1f655da96f33b4"
+  },
+  "no_recovery": true,
+  "both_readback_holds_closed": true
+}

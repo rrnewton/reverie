@@ -1,0 +1,57 @@
+commit 96306604d7808389e89f2ce567c43d4402d29cf0
+Author:     Ryan Newton <rrnewton@gmail.com>
+AuthorDate: Fri Aug 7 00:25:07 2026 -0700
+Commit:     Ryan Newton <ryan.newton@alum.mit.edu>
+CommitDate: Mon Aug 10 21:53:23 2026 -0400
+
+    Guard KVM timestamp dispatch by subscription
+    
+    Preserve unsubscribed RDTSCP faults instead of delivering them through Tool::handle_rdtsc_event. Add a regression that fails on the prior unconditional decoder while retaining continuous timestamp and lifecycle coverage.
+
+diff --git a/reverie-kvm/src/vm.rs b/reverie-kvm/src/vm.rs
+index 38c0d803..96fea8d8 100644
+--- a/reverie-kvm/src/vm.rs
++++ b/reverie-kvm/src/vm.rs
+@@ -1355,6 +1355,9 @@ impl KvmBackend {
+     pub(crate) fn timestamp_counter_exception(
+         &self,
+     ) -> Result<Option<(StaticElfException, Rdtsc)>> {
++        if !self.intercept_rdtsc {
++            return Ok(None);
++        }
+         let Some(exception) = self.static_elf_exception()? else {
+             return Ok(None);
+         };
+diff --git a/reverie-kvm/tests/static_elf.rs b/reverie-kvm/tests/static_elf.rs
+index 6dd4ca6a..34d72e34 100644
+--- a/reverie-kvm/tests/static_elf.rs
++++ b/reverie-kvm/tests/static_elf.rs
+@@ -839,6 +839,28 @@ fn static_elf_unsubscribed_rdtsc_runs_without_tool_dispatch() {
+     assert!(log.calls().is_empty());
+ }
+ 
++#[test]
++fn static_elf_unsubscribed_rdtscp_remains_guest_exception() {
++    if !kvm_available("KVM unsubscribed RDTSCP test") {
++        return;
++    }
++
++    let image = static_elf(&[
++        0x0f, 0x01, 0xf9, // rdtscp
++        0xb8, 0x3c, 0x00, 0x00, 0x00, // mov eax, SYS_exit
++        0x31, 0xff, // xor edi, edi
++        0x0f, 0x05, // syscall
++    ]);
++    let mut backend = KvmBackend::new(MEMORY_SIZE).unwrap();
++    backend
++        .install_static_elf(&image, "/bin/unsubscribed-rdtscp")
++        .unwrap();
++    let error =
++        futures::executor::block_on(backend.run_static_elf_with_tool::<TimestampTool>(false, true))
++            .unwrap_err();
++    assert_invalid_opcode(error);
++}
++
+ #[test]
+ fn subscribed_timestamp_dispatch_refuses_unrelated_exceptions() {
+     if !kvm_available("KVM timestamp exception refusal test") {

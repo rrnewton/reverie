@@ -1,0 +1,13 @@
+{
+  "argv": [
+    "/home/newton/.rustup/toolchains/nightly-2026-07-29-x86_64-unknown-linux-gnu/bin/rustfmt",
+    "--edition",
+    "2024",
+    "--config",
+    "skip_children=true",
+    "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/cpuid-transport-probe-v1/source/reverie-kvm/src/cpuid_transport_probe.rs",
+    "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/cpuid-transport-probe-v1/source/reverie-kvm/src/vm.rs"
+  ],
+  "raw_status": 0,
+  "scope": "format only the owned additive source; no Cargo, KVM, tests or guest"
+}

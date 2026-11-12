@@ -1,0 +1,4 @@
+	linux-vdso.so.1 (0x00007f9c40227000)
+	libm.so.6 => /lib64/libm.so.6 (0x00007f9c4005e000)
+	libc.so.6 => /lib64/libc.so.6 (0x00007f9c3fe00000)
+	/lib64/ld-linux-x86-64.so.2 (0x00007f9c40229000)

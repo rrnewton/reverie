@@ -1,0 +1,23 @@
+{
+  "payload": {
+    "binary": "/usr/bin/python3",
+    "binary_sha256": "9cfdf1a01d07dadb394dd2dc9fd8316254c36764076d23dc2c895c8401735576",
+    "arguments": [
+      "-B",
+      "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/publication-fd-composition-qualification-v1/qualification-v1/phase.py",
+      "payload",
+      "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/publication-fd-composition-qualification-v1/qualification-v1/test-30-plan.json",
+      "ee5daeed17210c2995b6c3a930573c9edb6006cd922dda4b00f9a447b7732818"
+    ]
+  },
+  "token": "62300d1e39b4cb528c61641ffcbeb07b9d9641b7e8db48a07d2a888356b3b6f8",
+  "observer_pid": 3908303,
+  "locale_environment": {
+    "LC_CTYPE": null,
+    "LC_ALL": "C",
+    "LANG": "C"
+  },
+  "ignore_sigpipe": true,
+  "observer_start_ticks": 189801275,
+  "deadline_monotonic_ns": 1898037800553377
+}

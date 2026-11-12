@@ -1,0 +1,13 @@
+{
+  "groups": {
+    "host-worker-diagnostic": {
+      "artifact": "static",
+      "names": [
+        "host_owned_timestamp_worker_keeps_native_execution"
+      ],
+      "source": "reverie-kvm/tests/static_elf.rs",
+      "purpose": "Attribute every actual saved timestamp RIP; preserve the original exact two-call assertion even when it fails."
+    }
+  },
+  "exact_declarations": 1
+}

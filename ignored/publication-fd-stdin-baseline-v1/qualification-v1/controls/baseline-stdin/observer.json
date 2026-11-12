@@ -1,0 +1,38 @@
+{
+  "argv": [
+    "/usr/bin/python3",
+    "-B",
+    "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/publication-fd-stdin-baseline-v1/qualification-v1/observer/observer.py",
+    "--out",
+    "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/publication-fd-stdin-baseline-v1/qualification-v1/observer/baseline-stdin",
+    "--cpu-usec",
+    "30000000",
+    "--wall-seconds",
+    "60",
+    "--log-bytes",
+    "16777216",
+    "/usr/bin/python3",
+    "-B",
+    "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/publication-fd-stdin-baseline-v1/qualification-v1/phase.py",
+    "payload",
+    "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/publication-fd-stdin-baseline-v1/qualification-v1/baseline-stdin-plan.json",
+    "bdce31c6fb85dbabfe7650f1c0b7e93d3e8fb0b1a47ce2de1bb14526b767392b"
+  ],
+  "cwd": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/publication-fd-composition-v3/baseline-source",
+  "wall_limit_seconds": 110,
+  "forced": false,
+  "returncode": 1,
+  "elapsed_seconds": 3.3082398721016943,
+  "stdout": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/publication-fd-stdin-baseline-v1/qualification-v1/controls/baseline-stdin/observer.stdout",
+    "bytes": 163,
+    "mode": 420,
+    "sha256": "c2c6e37014636b50a9ec882a6d3d2f9f04eda56e48745cbef77a523265eafdf0"
+  },
+  "stderr": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/publication-fd-stdin-baseline-v1/qualification-v1/controls/baseline-stdin/observer.stderr",
+    "bytes": 0,
+    "mode": 420,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  }
+}

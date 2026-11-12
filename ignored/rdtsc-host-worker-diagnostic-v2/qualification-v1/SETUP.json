@@ -1,0 +1,25 @@
+{
+  "owner_slot": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918",
+  "source_root": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-host-worker-diagnostic-v2/source",
+  "base": "79516661bf82d30ab2967c71834a6d47447b76ee",
+  "base_tree": "7620fe83f486d665d9d09d4f09f0e93636b862e4",
+  "source_files": [
+    {
+      "relative": "reverie-kvm/tests/static_elf.rs",
+      "file": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-host-worker-diagnostic-v2/source/reverie-kvm/tests/static_elf.rs",
+        "bytes": 511689,
+        "mode": 420,
+        "sha256": "6e6fdccfebbe27bc9fabfb9d6d0f650e5f16b42740b69f62c82beec602e702f8"
+      }
+    }
+  ],
+  "lock": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-host-worker-diagnostic-v2/source/Cargo.lock",
+    "bytes": 67056,
+    "mode": 420,
+    "sha256": "1c09663e46bf21ad7c07eedd7821cccb72ae21f42485192649ff5473962bc856"
+  },
+  "target": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/target/rdtsc-host-worker-diagnostic-v2-cold-v1",
+  "purpose": "One exact Host-owned worker diagnostic, no changed test oracle or production source"
+}

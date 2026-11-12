@@ -1,0 +1,1 @@
+pipe-capacity-pin read=8192 write=8192 expected=8192

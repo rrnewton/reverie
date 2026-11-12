@@ -1,0 +1,99 @@
+{
+  "executable": {
+    "path": "/usr/bin/gcc",
+    "bytes": 1093144,
+    "mode": 493,
+    "sha256": "546023eae5ff58287b1d987e059d38e2733dfe49eda827282d6942707c4c25d0"
+  },
+  "inputs": [
+    {
+      "path": "/usr/lib64/libm.so.6",
+      "bytes": 913048,
+      "mode": 493,
+      "sha256": "9a66ed5465040274a85266a9404268b50e69a1fdd7f34aaac3746905003c5135"
+    },
+    {
+      "path": "/usr/lib64/libc.so.6",
+      "bytes": 2549352,
+      "mode": 493,
+      "sha256": "d932cb6bc88da10cc709d5b7ecda57a1387b6571331689dba88023b4c0517776"
+    },
+    {
+      "path": "/usr/lib64/ld-linux-x86-64.so.2",
+      "bytes": 938752,
+      "mode": 493,
+      "sha256": "008e34384d4bc082a053ba086588efa1546086ecb863c9464b7269f8928b7577"
+    }
+  ],
+  "input_symlinks": [
+    {
+      "path": "/lib64",
+      "target": "usr/lib64"
+    }
+  ],
+  "queries": [
+    {
+      "argv": [
+        "/usr/bin/ldd",
+        "/usr/bin/gcc"
+      ],
+      "cwd": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/kvm-capture-pipe-identity-source-v2/qualification-v1/source",
+      "wall_limit_seconds": 5,
+      "forced": false,
+      "returncode": 0,
+      "elapsed_seconds": 0.051395425107330084,
+      "stdout": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/kvm-capture-pipe-identity-source-v2/qualification-v1/loader/tool-8-ldd.stdout",
+        "bytes": 192,
+        "mode": 420,
+        "sha256": "9bdc4814ffa9b93362de8c2d194d23c87c92283648b644d1c0e755aab721eb01"
+      },
+      "stderr": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/kvm-capture-pipe-identity-source-v2/qualification-v1/loader/tool-8-ldd.stderr",
+        "bytes": 0,
+        "mode": 420,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      }
+    },
+    {
+      "argv": [
+        "/usr/bin/readelf",
+        "-W",
+        "-l",
+        "-d",
+        "/usr/bin/gcc"
+      ],
+      "cwd": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/kvm-capture-pipe-identity-source-v2/qualification-v1/source",
+      "wall_limit_seconds": 5,
+      "forced": false,
+      "returncode": 0,
+      "elapsed_seconds": 0.05127647682093084,
+      "stdout": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/kvm-capture-pipe-identity-source-v2/qualification-v1/loader/tool-8-readelf.stdout",
+        "bytes": 3827,
+        "mode": 420,
+        "sha256": "d9582be26d64ace10c75bf12d76e9e9bb27f17e0e40127a38b27bd8c6a269969"
+      },
+      "stderr": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/kvm-capture-pipe-identity-source-v2/qualification-v1/loader/tool-8-readelf.stderr",
+        "bytes": 0,
+        "mode": 420,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      }
+    }
+  ],
+  "query_programs": [
+    {
+      "path": "/usr/bin/ldd",
+      "bytes": 5446,
+      "mode": 493,
+      "sha256": "2e332feed7fe0d65afca81d83d07f997917c07d5c1f1fd5564e98330e78aa0b5"
+    },
+    {
+      "path": "/usr/bin/readelf",
+      "bytes": 683296,
+      "mode": 493,
+      "sha256": "51bc80f3a187e54e0b267fe6e64de09129f7761aafe615177d9d0be2229afcff"
+    }
+  ]
+}

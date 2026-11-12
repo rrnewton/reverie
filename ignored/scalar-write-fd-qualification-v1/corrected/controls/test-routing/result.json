@@ -1,0 +1,73 @@
+{
+  "plan_sha256": "b8b79e966cdf86a436e86cd905e4d72ed032ca8496338c0ad6f3b7b5de6aae4f",
+  "accepted": true,
+  "observer_attempted": true,
+  "terminal_authenticated": true,
+  "raw_status": 0,
+  "transport": {
+    "argv": [
+      "/usr/bin/python3",
+      "-B",
+      "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/scalar-write-fd-qualification-v1/corrected/observer/observer.py",
+      "--out",
+      "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/scalar-write-fd-qualification-v1/corrected/observer/test-routing",
+      "--cpu-usec",
+      "30000000",
+      "--wall-seconds",
+      "60",
+      "--log-bytes",
+      "16777216",
+      "/usr/bin/python3",
+      "-B",
+      "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/scalar-write-fd-qualification-v1/corrected/phase.py",
+      "payload",
+      "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/scalar-write-fd-qualification-v1/corrected/test-routing-plan.json",
+      "b8b79e966cdf86a436e86cd905e4d72ed032ca8496338c0ad6f3b7b5de6aae4f"
+    ],
+    "cwd": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918",
+    "wall_limit_seconds": 110,
+    "forced": false,
+    "returncode": 0,
+    "elapsed_seconds": 3.5088323389645666,
+    "stdout": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/scalar-write-fd-qualification-v1/corrected/controls/test-routing/observer.stdout",
+      "bytes": 160,
+      "mode": 420,
+      "sha256": "d69effe0f22efce1fcbc2c311435c48ecdcd51995d53e25e0d69dc5892530642"
+    },
+    "stderr": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/scalar-write-fd-qualification-v1/corrected/controls/test-routing/observer.stderr",
+      "bytes": 0,
+      "mode": 420,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    }
+  },
+  "observer_result": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/scalar-write-fd-qualification-v1/corrected/observer/test-routing/result.json",
+    "bytes": 45655,
+    "mode": 384,
+    "sha256": "887021bf031e0121c7a0ee264698ef9f75878246eda0e47e9588caf9f8b20752"
+  },
+  "readback": {
+    "executed": 1,
+    "summary": {
+      "type": "suite",
+      "event": "ok",
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filtered_out": 303,
+      "exec_time": 0.626975301
+    },
+    "names": [
+      "captured_write_signals::captured_write_signal_capability_routes_and_refusals"
+    ]
+  },
+  "payload_exit": {
+    "returncode": 0,
+    "reaped": true,
+    "elapsed_seconds": 0.6292606720235199
+  },
+  "inputs_unchanged": true
+}

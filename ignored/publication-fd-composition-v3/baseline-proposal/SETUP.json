@@ -1,0 +1,35 @@
+{
+  "owner_slot": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918",
+  "source_root": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/publication-fd-composition-v3/baseline-source",
+  "base": "000c15a1161ea2d58749431b5ddaaa97f7aa37d5",
+  "source_files": [
+    {
+      "relative": "reverie-kvm/src/elf.rs",
+      "file": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/publication-fd-composition-v3/baseline-proposal/after/reverie-kvm/src/elf.rs",
+        "bytes": 74384,
+        "mode": 420,
+        "sha256": "529929a6f8e575e86a3296e99834c06a845c8846bf0b86e95bcca2dbf0c29070"
+      }
+    },
+    {
+      "relative": "reverie-kvm/src/executor.rs",
+      "file": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/publication-fd-composition-v3/baseline-proposal/after/reverie-kvm/src/executor.rs",
+        "bytes": 1487421,
+        "mode": 420,
+        "sha256": "5d13b1d0a48d75a4b8447af6ecdb3c7d678f5720035413791baddea81cf25e43"
+      }
+    },
+    {
+      "relative": "reverie-kvm/src/process_signal_publication.rs",
+      "file": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/publication-fd-composition-v3/baseline-proposal/after/reverie-kvm/src/process_signal_publication.rs",
+        "bytes": 34525,
+        "mode": 420,
+        "sha256": "a27c5f6a92ef90a516a2ea3f73dc736cfaa946055ba2413630551374bc0d6b49"
+      }
+    }
+  ],
+  "purpose": "Unexecuted inherited stdin identity before/after proposal; no activation"
+}

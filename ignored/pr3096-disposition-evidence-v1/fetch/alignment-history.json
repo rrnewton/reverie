@@ -1,0 +1,24 @@
+{
+  "task": {
+    "local_id": "restore-the-dettid-alignment-without-spawning-a-host-thread",
+    "task_number": null,
+    "fbid": null,
+    "title": "Restore the DetTid alignment without spawning a host thread",
+    "description": "- **FILED BEFORE THE REVERT THAT CREATES IT, SO THE OBLIGATION EXISTS RATHER THAN BEING PROMISED. Three lines in hermit-cli/src/bin/hermit/tracing.rs from https://github.com/rrnewton/hermit/pull/2945, commit 1d9c9094dea0e7a4a85bb641165088bded1386bd, are being reverted as the immediate unblock for c-programs/setitimer-determinism under kvm.**\n- **WHAT THE REVERT GIVES BACK: the identity mismatch 2945 set out to fix. equalize_tracing_thread_number aligns the initial DetTid baseline for synchronous verification logging so it matches init_file_tracing. THAT MISMATCH IS ITSELF DETERMINISM-RELEVANT, so this is a real cost rather than bookkeeping.**\n- \u26a0\ufe0f **THE DEFECT IS THE MECHANISM, NOT THE GOAL. Burning a DetTid by spawning and joining a host thread has a side effect on signal and timer delivery in the KVM sandbox \u2014 the sandbox is killed by SIGALRM, signal 14, with no comparison returned. ptrace is unaffected throughout. A fix achieving the same alignment WITHOUT spawning a thread satisfies both sides.**\n- \u26a0\ufe0f **THERE IS NO TEST COVERAGE IN EITHER DIRECTION: equalize_tracing_thread_number has THREE CALL SITES AND ZERO TESTS. So the revert goes green with nothing guarding 2945's intent, and a future reapplication would have nothing to catch this recurrence either. ADD COVERAGE AS PART OF THIS, or the same three lines come back and break the same cell again.**\n- **THIS IS ON THE DETERMINISM PATH IN TRACING INIT, so it should be made deliberately rather than as a drive-by. Not urgent; the cell is unblocked either way.**\n- **Verify:** the DetTid baseline matches init_file_tracing without a host thread being spawned, c-programs/setitimer-determinism passes under both kvm and ptrace, and a test exists that would fail if the alignment regressed.",
+    "status": "OPEN",
+    "priority": "P2",
+    "impact": 50,
+    "effort_days": 1,
+    "tags": "[]",
+    "project": null,
+    "creator": null,
+    "owner": null,
+    "sync_state": "{\"type\":\"local\"}",
+    "local_modified_at": "2026-09-18T11:59:24.159532647+00:00",
+    "server_modified_at": null,
+    "last_synced_at": null,
+    "created_at": "2026-09-18T11:59:24.159529262+00:00",
+    "last_modified_source": "local"
+  },
+  "notes": []
+}

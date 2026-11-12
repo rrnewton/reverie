@@ -1,0 +1,14 @@
+Id=safehermit-20260918T185643Z-2072765.service
+LoadState=not-found
+ActiveState=inactive
+SubState=dead
+MainPID=0
+Result=success
+ExecMainStartTimestampMonotonic=0
+ExecMainExitTimestampMonotonic=0
+ExecMainPID=0
+ExecMainCode=0
+ExecMainStatus=0
+ControlGroup=
+CPUUsageNSec=[not set]
+TasksCurrent=[not set]

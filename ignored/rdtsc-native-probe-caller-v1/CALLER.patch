@@ -1,0 +1,853 @@
+--- previous-component/phase.py
++++ native-caller/native_phase.py
+@@ -1,176 +1,201 @@
+ #!/usr/bin/python3
+-"""Bounded Reverie component phases using the unchanged reviewed observer."""
+-import argparse
++"""Observe one compiler-discovery/compile/native case. No action on import."""
+ import hashlib
+-import json
+ import os
+ from pathlib import Path
+ import re
++import shlex
+ import stat
+ import subprocess
+ import sys
+ import time
+-
+ import cache_lease
+-from common import bounded_process, check_file, digest, file_record, json_read, read, require, terminal, write_new
++from common import bounded_process, check_file, file_record, json_read, read, require, terminal, write_new
+ 
+ HERE = Path(__file__).resolve().parent
+-OWNER = HERE.parents[2]
+-REPO = Path(json_read(HERE/'SETUP.json')['source_root'])
+-require(REPO == OWNER or REPO.is_relative_to(OWNER/'ignored'), 'source root outside owned slot')
+-
+-
+-def check(plan):
+-    check_file(plan['source_manifest'])
+-    for row in json_read(plan['source_manifest']['path']):
+-        p = REPO / row['path']
+-        if row['mode'] == '160000':
+-            continue  # Unused gitlink pin, not a claim of expanded source.
+-        if row['mode'] == '120000':
+-            require(p.is_symlink() and hashlib.sha256(os.fsencode(os.readlink(p))).hexdigest() == row['sha256'], 'source symlink changed')
+-        else:
+-            require(p.is_file() and not p.is_symlink(), 'source type changed')
+-            require(bool(p.stat().st_mode & 0o111) == (row['mode'] == '100755'), 'source mode changed')
+-            require(digest(p) == row['sha256'], 'source changed: ' + str(p))
+-    for row in plan['inputs']:
+-        check_file(row)
+-    for link in plan.get('input_symlinks', []):
+-        p = Path(link['path'])
+-        require(p.is_symlink() and os.readlink(p) == link['target'], 'loader alias changed: ' + str(p))
++OWNER = HERE.parent
++
++
++def dependencies(raw):
++    text = raw.decode('utf-8')
++    require(text.startswith('probe:'), 'dependency target differs')
++    names = shlex.split(text[len('probe:'):].replace('\\\n', ' '))
++    require(names and all(Path(x).is_absolute() for x in names), 'nonabsolute compiler dependency')
++    require(len(names) == len(set(names)), 'duplicate compiler dependency')
++    source = OWNER / 'source/probe.c'
++    require(str(source) in names, 'dependency list omits actual probe source')
++    allowed = (Path('/usr/include'), Path('/usr/lib/gcc/x86_64-redhat-linux/11/include'),
++               Path('/usr/lib/gcc/x86_64-redhat-linux/11/include-fixed'))
++    for name in names:
++        p = Path(name)
++        require(p == source or any(p.is_relative_to(root) for root in allowed),
++                'dependency outside actual declared source/system include roots: ' + name)
++    return sorted(names)
++
++
++def check(plan, before=False):
++    require(plan['owner'] == str(OWNER) and plan['cwd'] == str(OWNER), 'wrong private owner/cwd')
++    for r in plan['inputs']:
++        check_file(r)
++    for r in plan['input_symlinks']:
++        p = Path(r['path'])
++        require(p.is_symlink() and os.readlink(p) == r['target']
++                and stat.S_IMODE(p.lstat().st_mode) == r['mode'], 'input symlink changed')
+     for name in plan['absent_inputs']:
+-        require(not Path(name).exists() and not Path(name).is_symlink(), 'new Cargo configuration: ' + name)
+-    p = Path(plan['target']['path'])
+-    s = p.stat()
+-    require([s.st_dev,s.st_ino,s.st_uid] == plan['target']['identity'] and not p.is_symlink(), 'owned target changed')
+-    if plan.get('dependencies'):
+-        check_file(plan['dependencies'])
+-        for item in json_read(plan['dependencies']['path']):
+-            check_file(item)
+-
+-
+-def scm(plan, prefix):
+-    state = {}
+-    for name, args in [('head',['rev-parse','HEAD']),('branch',['branch','--show-current']),('index',['ls-files','--stage'])]:
+-        p = subprocess.run(['/usr/bin/git','-C',str(OWNER),*args],env=plan['environment'],capture_output=True,timeout=30,check=True)
+-        state[name] = hashlib.sha256(p.stdout).hexdigest() if name == 'index' else p.stdout.decode().strip()
+-    write_new(prefix,state)
+-    require(state == plan['scm'],'SCM state changed')
++        p = Path(name)
++        require(not p.exists() and not p.is_symlink(), 'unbound compiler specs appeared')
++    target = Path(plan['target']['path'])
++    require(target == HERE / 'target' and not target.is_symlink(), 'wrong private target')
++    st = target.stat()
++    require(stat.S_ISDIR(st.st_mode) and stat.S_IMODE(st.st_mode) == 0o700
++            and [st.st_dev, st.st_ino, st.st_uid] == plan['target']['identity'], 'private target identity changed')
++    if before:
++        for name in plan['must_be_absent_before']:
++            p = Path(name)
++            require(not p.exists() and not p.is_symlink(), 'compile would overwrite an earlier output')
++
++
++def inspect(plan, raw, stderr, code):
++    if plan['kind'] == 'dependencies':
++        require(code == 0 and not stderr, 'dependency query failed or emitted diagnostics')
++        return dict(dependencies=dependencies(raw))
++    if plan['kind'] == 'compile':
++        require(code == 0 and not stderr, 'native compiler failed or emitted diagnostics')
++        actual = dependencies(read(plan['dependency_output']))
++        require(actual == plan['expected_dependencies'], 'actual compile header membership changed')
++        # Linker -t names every selected input, including generated temporary .o.
++        lines = raw.decode('utf-8').splitlines()
++        require(lines, 'linker input trace missing')
++        known = set(plan['allowed_link_inputs'])
++        generated = []
++        for line in lines:
++            # GNU ld may suffix an archive input with '(member)'. The archive is bound.
++            spelling = line.split('(', 1)[0]
++            p = Path(spelling)
++            require(p.is_absolute(), 'unexpected compiler/linker stdout: ' + line)
++            if p.is_relative_to(HERE / 'tmp') and p.suffix == '.o':
++                generated.append(line)
++            else:
++                require(str(p.resolve()) in known, 'unbound linker input: ' + line)
++        require(generated, 'linker trace omits generated probe object')
++        binary = Path(plan['binary_output'])
++        record = file_record(binary)
++        require(os.access(binary, os.X_OK), 'compiled probe is not executable')
++        header = read(binary, 16 * 1024**2)[:20]
++        require(header[:6] == b'\x7fELF\x02\x01' and int.from_bytes(header[18:20], 'little') == 62,
++                'compiled probe is not x86-64 ELF')
++        return dict(binary=record, actual_dependencies=actual, linker_inputs=lines,
++                    generated_objects=generated, compiler_diagnostics=0)
++    require(plan['kind'] == 'probe', 'unknown native phase')
++    mode, instruction, prefix = plan['probe_args']
++    if code == 77:
++        require(instruction == 'rdtscp' and raw == b''
++                and stderr == b'UNEXECUTED: native hardware does not advertise RDTSCP\n',
++                'exit 77 does not have exact unavailable-RDTSCP evidence')
++        return dict(outcome='unexecuted', native_success=False, availability='RDTSCP unavailable')
++    require(code == 0 and not stderr, 'native probe failed or emitted stderr')
++    lines = raw.decode('ascii').splitlines()
++    require(len(lines) == 3 and lines[2] == 'PASS: native architectural properties', 'native completion marker/line count differs')
++    pattern = (r'mode=' + re.escape(mode) + r' instruction=' + re.escape(instruction)
++               + r' prefix=' + re.escape(prefix) + r' signal=(-?\d+) code=(-?\d+) trap=(-?\d+) '
++               r'rip_delta=(-?\d+) fault_delta=(-?\d+) rf_stage=(-?\d+)')
++    match = re.fullmatch(pattern, lines[0])
++    require(match is not None, 'native result does not identify exact selected case')
++    require(re.fullmatch(r'registers rax=[0-9a-f]{16} rdx=[0-9a-f]{16} rcx=[0-9a-f]{16} '
++                         r'flags=[0-9a-f]{16} rsp_before=[0-9a-f]{16} rsp_after=[0-9a-f]{16}', lines[1]),
++            'native architectural register diagnostics missing')
++    return dict(outcome='passed', native_success=True, selector=plan['name'],
++                diagnostic_lines=lines[:2], predicate_authority='unchanged exact probe source predicates plus raw exit zero')
+ 
+ 
+ def payload(plan, sha):
+     fd = cache_lease.join(plan['lease'], sha)
+     try:
++        check(plan, before=True)
++        for key, value in plan['environment'].items():
++            require(os.environ.get(key) == value, 'payload environment differs: ' + key)
++        dangerous = ('LD_', 'GCC_', 'C_INCLUDE_PATH', 'CPLUS_INCLUDE_PATH', 'OBJC_INCLUDE_PATH',
++                     'COMPILER_PATH', 'LIBRARY_PATH', 'CPATH', 'CFLAGS', 'CPPFLAGS', 'LDFLAGS')
++        require(not [k for k in os.environ if k not in plan['environment'] and k.startswith(dangerous)],
++                'undeclared compiler/loader override')
++        group = read('/proc/self/cgroup', 4096).decode()
++        require('/safehermit-' in group and group.strip().endswith('.service'), 'payload outside observed service')
++        out = Path(plan['output'])
++        write_new(out / 'payload.json', dict(argv=plan['argv'], cwd=plan['cwd'], environment=dict(os.environ),
++                                             cgroup=group, pid=os.getpid(), plan_sha256=sha))
++        started = time.monotonic()
++        child = subprocess.Popen(plan['argv'], cwd=plan['cwd'], stdin=subprocess.DEVNULL)
++        code = child.wait()  # Unchanged observer owns aggregate CPU/memory/descendants.
++        write_new(out / 'payload-exit.json', dict(returncode=code, reaped=True,
++                                                  elapsed_seconds=time.monotonic() - started))
+         check(plan)
+-        for k,v in plan['environment'].items():
+-            require(os.environ.get(k) == v, 'payload environment changed: '+k)
+-        extras = [k for k in os.environ if k not in plan['environment'] and (k.startswith(('CARGO_','RUST','LD_','NEXTEST_','REVERIE_','THIRD_PARTY_')) or k in ('CC','CXX','CFLAGS','CPPFLAGS','CXXFLAGS','LDFLAGS'))]
+-        require(not extras, 'undeclared overrides: '+str(extras))
+-        group = read('/proc/self/cgroup',4096).decode()
+-        require('/safehermit-' in group and group.strip().endswith('.service'),'payload is not in observed service')
+-        out = Path(plan['output'])
+-        write_new(out/'payload.json',dict(argv=plan['argv'],cwd=str(REPO),environment=dict(os.environ),cgroup=group,pid=os.getpid(),plan_sha256=sha))
+-        started = time.monotonic()
+-        child = subprocess.Popen(plan['argv'],cwd=REPO,stdin=subprocess.DEVNULL)
+-        code = child.wait()  # Actual observer owns complete aggregate lifetime.
+-        write_new(out/'payload-exit.json',dict(returncode=code,reaped=True,elapsed_seconds=time.monotonic()-started))
+-        check(plan)
+-        cache_lease.check_held(fd,plan['lease'],sha)
+-        return code if code >= 0 else 128-code
++        cache_lease.check_held(fd, plan['lease'], sha)
++        return code if code >= 0 else 128 - code
+     finally:
+         os.close(fd)
+ 
+ 
+-def inspect(plan, raw):
+-    kind = plan['kind']
+-    if kind == 'format':
+-        require(not raw.strip(),'rustfmt produced differences')
+-        return dict(format_check=True,changed_rust_paths=len(plan['argv'])-6)
+-    if kind == 'metadata':
+-        value = json.loads(raw)
+-        require(value['workspace_root'] == str(REPO),'metadata workspace changed')
+-        return dict(package_count=len(value['packages']),workspace_root=value['workspace_root'])
+-    if kind in ('compile','check'):
+-        rows = [json.loads(x) for x in raw.splitlines()]
+-        require([r['success'] for r in rows if r.get('reason')=='build-finished'] == [True], 'missing successful Cargo completion')
+-        diagnostics = [r for r in rows if r.get('reason') == 'compiler-message']
+-        write_new(Path(plan['control'])/'compiler-diagnostics.json',diagnostics)
+-        require(not diagnostics,'structured compiler diagnostics require disposition')
+-        if kind == 'check':
+-            return dict(cargo_complete=True,compiler_diagnostics=0)
+-        artifacts = {}
+-        for selector in plan['artifact_selectors']:
+-            matches = [r for r in rows if r.get('reason')=='compiler-artifact'
+-                       and r.get('manifest_path')==str(REPO/'reverie-kvm/Cargo.toml')
+-                       and r.get('target',{}).get('name')==selector['target']
+-                       and r.get('target',{}).get('kind')==selector['kind']
+-                       and r.get('profile',{}).get('test') is True and r.get('executable')]
+-            require(len(matches)==1,'Cargo must emit exactly one selected artifact: '+selector['id'])
+-            path=Path(matches[0]['executable'])
+-            require(path.resolve()==path and path.is_relative_to(Path(plan['target']['path']))
+-                    and not path.is_symlink() and os.access(path,os.X_OK),'test artifact escaped owned target')
+-            with path.open('rb') as elf: require(elf.read(4)==b'\x7fELF','artifact is not ELF')
+-            artifacts[selector['id']]=dict(cargo_artifact=matches[0],file=file_record(path))
+-        write_new(Path(plan['control'])/'artifacts.json',artifacts)
+-        return dict(artifacts=artifacts,compiler_diagnostics=0)
+-    rows = [json.loads(x) for x in raw.splitlines()]
+-    if kind == 'list':
+-        names = [r['name'] for r in rows if r.get('type')=='test']
+-        require(len(names)==len(set(names)),'duplicate test names')
+-        require(all(names.count(x)==1 for x in plan['selected']),'missing selected test')
+-        return dict(names=names,count=len(names),selected=plan['selected'])
+-    require(kind=='test','unknown result type')
+-    started = [r['name'] for r in rows if r.get('type')=='test' and r.get('event')=='started']
+-    ended = [r for r in rows if r.get('type')=='test' and r.get('event') in ('ok','failed','ignored')]
+-    suites = [r for r in rows if r.get('type')=='suite' and r.get('event') in ('ok','failed')]
+-    write_new(Path(plan['control'])/'outcomes.json',dict(started=started,ended=ended,suites=suites))
+-    require(started == plan['selected'] and len(ended)==len(plan['selected']) and [r['name'] for r in ended]==plan['selected'] and all(r['event']=='ok' for r in ended),'actual selected outcomes differ')
+-    require(len(suites)==1 and suites[0]['event']=='ok' and suites[0]['passed']==len(plan['selected']) and suites[0]['failed']==suites[0]['ignored']==suites[0]['measured']==0,'test count/failure/skip mismatch')
+-    return dict(executed=len(ended),summary=suites[0],names=started)
+-
+-
+ def launch(plan, sha):
+-    fd = cache_lease.claim(plan['lease'],sha)
+-    control = Path(plan['control']);control.mkdir(mode=0o700)
+-    result = dict(plan_sha256=sha,accepted=False,observer_attempted=False,terminal_authenticated=False,raw_status=None)
++    fd = cache_lease.claim(plan['lease'], sha)
++    control = Path(plan['control'])
++    control.mkdir(mode=0o700)
++    result = dict(plan_sha256=sha, accepted=False, observer_attempted=False,
++                  terminal_authenticated=False, raw_status=None, outcome='failed')
+     try:
+-        check(plan);scm(plan,control/'scm-before.json')
+-        phase=plan['limits']
+-        argv=['/usr/bin/python3','-B',str(HERE/'observer/observer.py'),'--out',plan['output'],'--cpu-usec',str(phase['aggregate_cpu_usec']),'--wall-seconds',str(phase['wall_seconds']),'--log-bytes',str(phase['lethal_stderr_bytes']),'/usr/bin/python3','-B',str(HERE/'phase.py'),'payload',plan['path'],sha]
+-        write_new(control/'dispatch.json',dict(argv=argv,environment=plan['environment'],cwd=str(REPO)))
+-        result['observer_attempted']=True
+-        outer=bounded_process(argv,REPO,plan['environment'],control/'observer',phase['wall_seconds']+50,1024**2,observer=True)
+-        result['transport']=outer
+-        observed=json_read(Path(plan['output'])/'result.json')
+-        result['observer_result']=file_record(Path(plan['output'])/'result.json')
+-        result['raw_status']=observed.get('wrapper_exit_code')
+-        raw=read(Path(plan['output'])/'stdout',16*1024**2)
+-        read(Path(plan['output'])/'stderr',16*1024**2)
+-        # Preserve raw compiler/test failures before requiring successful exit.
+-        try: result['readback']=inspect(plan,raw)
+-        except Exception as e: result['readback_error']=repr(e)
+-        code=terminal(observed,phase,outer,control/'service-post',plan['environment'],result)
+-        receipt=json_read(Path(plan['output'])/'payload-exit.json')
+-        result['payload_exit']=receipt
+-        require(receipt['reaped'] and code==(receipt['returncode'] if receipt['returncode']>=0 else 128-receipt['returncode']),'payload status differs')
+-        require(code==0 and outer['returncode']==0,'actual payload failed')
+-        require('readback_error' not in result,'structured readback failed')
+-        result['accepted']=True
+-    except BaseException as e:
+-        result['error']=repr(e)
++        check(plan, before=True)
++        limits = plan['limits']
++        argv = ['/usr/bin/python3', '-B', str(HERE / 'observer/observer.py'), '--out', plan['output'],
++                '--cpu-usec', str(limits['aggregate_cpu_usec']), '--wall-seconds', str(limits['wall_seconds']),
++                '--log-bytes', str(limits['lethal_stderr_bytes']), '/usr/bin/python3', '-B',
++                str(HERE / 'native_phase.py'), 'payload', plan['path'], sha]
++        write_new(control / 'dispatch.json', dict(argv=argv, environment=plan['environment'], cwd=plan['cwd']))
++        result['observer_attempted'] = True
++        outer = bounded_process(argv, OWNER, plan['environment'], control / 'observer',
++                                limits['wall_seconds'] + 50, 1024**2, observer=True)
++        result['transport'] = outer
++        observed = json_read(Path(plan['output']) / 'result.json')
++        result['observer_result'] = file_record(Path(plan['output']) / 'result.json')
++        result['raw_status'] = observed.get('wrapper_exit_code')
++        stdout = read(Path(plan['output']) / 'stdout', 16 * 1024**2)
++        stderr = read(Path(plan['output']) / 'stderr', 16 * 1024**2)
++        result['stdout'] = file_record(Path(plan['output']) / 'stdout')
++        result['stderr'] = file_record(Path(plan['output']) / 'stderr')
++        try:
++            result['readback'] = inspect(plan, stdout, stderr, result['raw_status'])
++        except Exception as error:
++            result['readback_error'] = repr(error)
++        code = terminal(observed, limits, outer, control / 'service-post', plan['environment'], result)
++        receipt = json_read(Path(plan['output']) / 'payload-exit.json')
++        result['payload_exit'] = receipt
++        require(receipt['reaped'] and code == (receipt['returncode'] if receipt['returncode'] >= 0 else 128 - receipt['returncode']),
++                'payload status differs')
++        require('readback_error' not in result, 'native readback failed')
++        if code == 77:
++            require(plan['kind'] == 'probe' and result['readback']['outcome'] == 'unexecuted', 'unqualified unavailable outcome')
++            result['outcome'] = 'unexecuted'  # accepted deliberately remains false.
++        else:
++            require(code == 0 and outer['returncode'] == 0, 'actual payload failed')
++            result.update(accepted=True, outcome='passed')
++    except BaseException as error:
++        result['error'] = repr(error)
+     finally:
+         try:
+-            check(plan);scm(plan,control/'scm-after.json');cache_lease.check_held(fd,plan['lease'],sha)
+-            result['inputs_unchanged']=True
+-        except BaseException as e:
+-            result['inputs_unchanged']=False;result['input_error']=repr(e);result['accepted']=False
+-        write_new(control/'result.json',result)
+-        cache_lease.complete(fd,plan['lease'],sha,control/'result.json');os.close(fd)
+-    print(json.dumps(result),flush=True)
+-    return 0 if result['accepted'] else 1
+-
+-
+-if __name__=='__main__':
+-    mode,path,sha=sys.argv[1:]
+-    require(digest(path)==sha,'phase plan changed')
+-    plan=json_read(path);require(plan['path']==path,'wrong plan path')
+-    raise SystemExit(payload(plan,sha) if mode=='payload' else launch(plan,sha))
++            check(plan)
++            cache_lease.check_held(fd, plan['lease'], sha)
++            result['inputs_unchanged'] = True
++        except BaseException as error:
++            result.update(inputs_unchanged=False, input_error=repr(error), accepted=False, outcome='failed')
++        write_new(control / 'result.json', result)
++        cache_lease.complete(fd, plan['lease'], sha, control / 'result.json')
++        os.close(fd)
++    print(__import__('json').dumps(result), flush=True)
++    return 0 if result['accepted'] else 77 if result['outcome'] == 'unexecuted' else 1
++
++
++if __name__ == '__main__':
++    require(len(sys.argv) == 4 and sys.argv[1] in ('payload', 'launch'), 'expected launch|payload PLAN SHA')
++    mode, path, sha = sys.argv[1:]
++    require(hashlib.sha256(read(path)).hexdigest() == sha, 'plan changed')
++    plan = json_read(path)
++    require(plan['path'] == path, 'plan path differs')
++    raise SystemExit(payload(plan, sha) if mode == 'payload' else launch(plan, sha))
+--- previous-component/prepare.py
++++ native-caller/prepare.py
+@@ -1,125 +1,121 @@
+ #!/usr/bin/python3
+-"""Prepare a source-bound phase; this program never runs Cargo or tests."""
+-import hashlib,json,os,re,subprocess,sys
++"""Prepare one exact native plan; loader queries are bounded, never run the probe."""
++import os
+ from pathlib import Path
+-from common import bounded_process,check_file,file_record,json_read,read,require,write_new
+-HERE=Path(__file__).resolve().parent
+-OWNER = HERE.parents[2]
+-REPO = Path(json_read(HERE/'SETUP.json')['source_root'])
+-require(REPO == OWNER or REPO.is_relative_to(OWNER/'ignored'), 'source root outside owned slot')
+-TOOL=Path('/home/newton/.rustup/toolchains/nightly-2026-07-29-x86_64-unknown-linux-gnu/bin')
++import re
++import sys
++from common import bounded_process, check_file, file_record, json_read, read, require, write_new
+ 
+-def scm():
+-    value={}
+-    for name,args in [('head',['rev-parse','HEAD']),('branch',['branch','--show-current']),('index',['ls-files','--stage'])]:
+-        raw=subprocess.check_output(['/usr/bin/git','-C',str(OWNER),*args],timeout=30)
+-        value[name]=hashlib.sha256(raw).hexdigest()if name=='index'else raw.decode().strip()
+-    return value
++HERE = Path(__file__).resolve().parent
++OWNER = HERE.parent
+ 
+-def loader(label,executable,env):
+-    bound=HERE/'loader'/(label+'.json')
++
++def loader(label, executable, env):
++    bound = HERE / 'loader' / (label + '.json')
+     if not bound.exists():
+-        q=bounded_process(['/usr/bin/ldd',executable['path']],REPO,env,HERE/'loader'/(label+'-ldd'),5,65536)
+-        r=bounded_process(['/usr/bin/readelf','-W','-l','-d',executable['path']],REPO,env,HERE/'loader'/(label+'-readelf'),5,65536)
+-        require(q['returncode']==r['returncode']==0 and not(q['forced']or r['forced']),'loader/ELF query failed')
+-        files={};links={}
+-        for line in read(q['stdout']['path']).decode().splitlines():
+-            require('not found'not in line,'missing loader input')
++        check_file(executable)
++        q = bounded_process(['/usr/bin/ldd', executable['path']], OWNER, env,
++                            HERE/'loader'/(label+'-ldd'), 5, 65536)
++        r = bounded_process(['/usr/bin/readelf','-W','-l','-d',executable['path']], OWNER, env,
++                            HERE/'loader'/(label+'-readelf'), 5, 65536)
++        for query in [q,r]:
++            require(query['returncode']==0 and not query['forced'], 'loader query failed')
++            require(query['stdout']['bytes']<=65536 and query['stderr']['bytes']<=65536,
++                    'loader query output exceeds exact bound, including fast exits')
++        files, links = {}, {}
++        for line in read(q['stdout']['path'],65536).decode().splitlines():
++            require('not found' not in line, 'missing loader input')
+             for spelling in re.findall(r'(/[^\s()]+)',line):
+                 p=Path(spelling)
+-                for ancestor in [p,*p.parents]:
+-                    if ancestor.is_symlink():links[str(ancestor)]=dict(path=str(ancestor),target=os.readlink(ancestor))
++                for a in [p,*p.parents]:
++                    if a.is_symlink():links[str(a)]=dict(path=str(a),target=os.readlink(a),mode=a.lstat().st_mode&0o7777)
+                 resolved=p.resolve(strict=True);files[str(resolved)]=file_record(resolved)
+         require(files,'empty loader closure')
+-        write_new(bound,dict(executable=executable,inputs=list(files.values()),input_symlinks=list(links.values()),queries=[q,r],query_programs=[file_record(Path(x))for x in ['/usr/bin/ldd','/usr/bin/readelf']]))
+-    value=json_read(bound);require(value['executable']==executable,'loader executable changed')
+-    return [file_record(bound),*value['inputs'],*value['query_programs'],*[q[k]for q in value['queries']for k in ['stdout','stderr']]],value['input_symlinks']
++        check_file(executable)
++        write_new(bound,dict(executable=executable,inputs=list(files.values()),input_symlinks=list(links.values()),queries=[q,r],
++                             query_programs=[file_record(Path(x)) for x in ['/usr/bin/ldd','/usr/bin/readelf']]))
++    value=json_read(bound)
++    require(value['executable']==executable,'loader executable changed')
++    return [file_record(bound),*value['inputs'],*value['query_programs'],*[x[k] for x in value['queries'] for k in ['stdout','stderr']]], value['input_symlinks']
++
+ 
+ def main():
+-    name=sys.argv[1];kind='metadata'if name=='metadata'else'check'if name in ('clippy','core-check')else'format'if name=='format'else'compile'if name=='compile'else'list'if name.startswith('list-')else'test'
+-    require(name in ('metadata','compile','list-lib','list-static','list-vmcall','list-read-clock','format','clippy','core-check') or name in json_read(HERE/'SELECTORS.json')['groups'],'unplanned phase')
+-    env={'HOME':'/home/newton','PATH':str(TOOL)+':/usr/local/bin:/usr/bin:/bin','CARGO_HOME':'/home/newton/.cargo','RUSTUP_HOME':'/home/newton/.rustup',
+-         'CARGO_TARGET_DIR':str(OWNER/'target/rdtsc-recovery-v2-cold-v1'),'CARGO_BUILD_JOBS':'2','THIRD_PARTY_BUILD_JOBS':'2',
+-         'CARGO_NET_OFFLINE':'true','CARGO_NET_GIT_FETCH_WITH_CLI':'true','RUSTFLAGS':'','LC_ALL':'C','LANG':'C','TZ':'UTC',
+-         'CARGO_TERM_COLOR':'never','TMPDIR':str(HERE/'tmp'),'XDG_CACHE_HOME':str(HERE/'cache'),'GIT_OPTIONAL_LOCKS':'0','GIT_NO_LAZY_FETCH':'1',
+-         'USER':'newton','LOGNAME':'newton','XDG_RUNTIME_DIR':'/run/user/212630','DBUS_SESSION_BUS_ADDRESS':'unix:path=/run/user/212630/bus',
+-         'RUSTC':str(TOOL/'rustc'),'RUSTDOC':str(TOOL/'rustdoc'),'REVERIE_REQUIRE_KVM':'1'}
+-    selected=[];dependencies=[];artifact_selectors=[];links=[];inputs=[];absent=[]
+-    for parent in [REPO,*REPO.parents,Path('/home/newton')]:
+-        for rel in ['.cargo/config','.cargo/config.toml']:
+-            p=parent/rel
+-            if p.is_file():inputs.append(file_record(p.resolve()))
+-            else:absent.append(str(p))
+-    for p in [REPO/'Cargo.lock',HERE/'RUNNER_ORIGINS.json',HERE/'SETUP.json',HERE/'SELECTORS.json',HERE/'PREDECESSOR-ELFS.json',*sorted(HERE.glob('*.py')),*sorted((HERE/'observer').glob('*.py')),HERE/'observer/source-inputs.json']:
+-        inputs.append(file_record(p))
+-    executables=[TOOL/'cargo',TOOL/'rustc',TOOL/'rustdoc',TOOL/'cargo-clippy',TOOL/'clippy-driver',TOOL/'rustfmt',Path('/usr/bin/python3').resolve(),Path('/usr/bin/git'),Path('/usr/bin/gcc').resolve(),Path('/usr/bin/ld').resolve(),Path('/usr/bin/timeout')]
+-    for i,p in enumerate(executables):
+-        record=file_record(p);inputs.append(record);extra,symlinks=loader('tool-'+str(i),record,env);inputs+=extra;links+=symlinks
+-    check_file(json_read(HERE/'SETUP.json')['lock'])
+-    inputs.append(file_record(HERE/'toolchain-standard-inputs.json'))
+-    for row in json_read(HERE/'toolchain-standard-inputs.json')['files']:
++    require(len(sys.argv)==2,'expected one planned phase name')
++    require(not (OWNER/'final-v1').exists(),'completed packet is frozen; no further phase')
++    name=sys.argv[1]
++    setup=json_read(HERE/'SETUP.json')
++    selectors=json_read(OWNER/'SELECTORS.json')['cases']
++    require(len(selectors)==42 and len({c['name'] for c in selectors})==42,'selector inventory differs')
++    case=next((c for c in selectors if c['name']==name),None)
++    require(name in ['dependencies','compile'] or case is not None,'unknown native phase')
++    admission=json_read(HERE/'ADMISSION.json')
++    check_file(admission['caller_manifest'])
++    check_file(admission['setup'])
++    require(admission['initially_empty'] and admission['shared_lane_lease_used'] is False,'fresh private admission missing')
++    require(admission['target']['path']==setup['private_target'] and admission['lease']['path']==setup['private_lease'],'private identity differs')
++    env={'HOME':'/home/newton','PATH':'/usr/bin:/bin','LC_ALL':'C','LANG':'C','TZ':'UTC',
++         'TMPDIR':str(HERE/'tmp'),'USER':'newton','LOGNAME':'newton',
++         'XDG_RUNTIME_DIR':'/run/user/'+str(os.getuid()),'DBUS_SESSION_BUS_ADDRESS':'unix:path=/run/user/'+str(os.getuid())+'/bus'}
++    manifest=file_record(HERE/'CALLER-INPUTS.json')
++    inputs=[manifest,file_record(HERE/'ADMISSION.json')]
++    for row in json_read(manifest['path'])['records']:
+         check_file(row);inputs.append(row)
+-    admission=json_read(HERE/'TARGET-ADMISSION.json')
+-    inputs.append(file_record(HERE/'TARGET-ADMISSION.json'))
+-    require(admission['initially_empty'] is True and admission['mode']==0o700, 'fresh target admission missing')
+-    require(admission['path']==env['CARGO_TARGET_DIR'], 'wrong admitted target')
+-    cargo=str(TOOL/'cargo')
+-    if kind not in ('metadata','compile'):
+-        inputs += [file_record(HERE/'retained-binaries/BINDING.json'),file_record(HERE/'controls/compile/artifacts.json')]
+-    if kind in ('check','format'):
+-        qualified=json_read(HERE/'controls/compile/result.json');require(qualified['accepted']and qualified['terminal_authenticated'],'successor compile did not qualify')
+-        inputs += [file_record(HERE/'controls/compile/result.json'),file_record(HERE/'retained-binaries/ARTIFACTS.json')]
+-        for artifact_id,record in json_read(HERE/'retained-binaries/ARTIFACTS.json').items():
+-            artifact=record['file'];check_file(artifact,executable=True);inputs.append(artifact)
+-            extra,symlinks=loader('test-'+artifact_id,artifact,env);inputs+=extra;links+=symlinks
+-    if name=='core-check':
+-        argv=[cargo,'check','--offline','--locked','-p','reverie-core','-p','reverie-ptrace','--message-format=json']
+-    elif kind=='check':
+-        argv=[cargo,'clippy','--offline','--locked','-p','reverie-kvm','--lib','--test','static_elf','--test','vmcall','--test','read_clock','--message-format=json','--','-D','warnings']
+-    elif kind=='format':
+-        paths=['reverie-kvm/src/bootstrap.rs', 'reverie-kvm/src/cpuid.rs', 'reverie-kvm/src/lib.rs', 'reverie-kvm/src/runtime.rs', 'reverie-kvm/src/timestamp.rs', 'reverie-kvm/src/vm.rs', 'reverie-kvm/tests/static_elf.rs']
+-        require(REPO != OWNER, 'corrected source must be an owned snapshot')
+-        expected=json_read(HERE/'SETUP.json')['source_files']
+-        require([row['relative']for row in expected]==paths, 'reviewed Rust path set differs')
+-        for row in expected:
+-            check_file(row['file']);inputs.append(row['file'])
+-            require(read(REPO/row['relative'])==read(row['file']['path']), 'snapshot differs from reviewed after source')
+-        argv=[str(TOOL/'rustfmt'),'--check','--edition','2024','--config','skip_children=true',*paths]
+-    elif kind=='metadata':argv=[cargo,'metadata','--offline','--locked','--format-version','1']
+-    elif kind=='compile':
+-        metadata=json_read(HERE/'controls/metadata/result.json');require(metadata['accepted']and metadata['terminal_authenticated'],'metadata did not qualify')
+-        require((HERE/'dependency-inputs.json').is_file(),'dependency sources not bound')
+-        inputs.append(file_record(HERE/'controls/metadata/result.json'))
+-        argv=[cargo,'test','--offline','--locked','-p','reverie-kvm','--lib','--test','static_elf','--test','vmcall','--test','read_clock','--no-run','--message-format=json']
+-        artifact_selectors=[dict(id='lib',target='reverie_kvm',kind=['lib']),dict(id='static',target='static_elf',kind=['test']),dict(id='vmcall',target='vmcall',kind=['test']),dict(id='read-clock',target='read_clock',kind=['test'])]
++    inputs+=setup['static_inputs']
++    for row in setup['static_inputs']:
++        check_file(row)
++    links=list(setup['input_symlinks'])
++    for row in links:
++        alias=Path(row['path'])
++        require(alias.is_symlink() and os.readlink(alias)==row['target']
++                and (alias.lstat().st_mode & 0o7777)==row['mode'], 'tool/supervision alias changed before query')
++    for index,spelling in enumerate(setup['tool_executables']):
++        p=Path(spelling).resolve(strict=True);record=file_record(p)
++        require(record in setup['static_inputs'],'tool is not in frozen compiler closure')
++        extra,aliases=loader('tool-'+str(index),record,env);inputs+=extra;links+=aliases
++    absent=list(setup['absent_inputs'])
++    for name_absent in absent:
++        p=Path(name_absent)
++        require(not p.exists() and not p.is_symlink(),'unbound compiler specs appeared')
++    kind='probe' if case else name
++    source=setup['source']['path'];compiler=setup['compiler'];flags=setup['flags']
++    kwargs={};missing=[]
++    if name=='dependencies':
++        argv=[compiler,*flags,'-M','-MT','probe',source]
++    elif name=='compile':
++        depresult=HERE/'controls/dependencies/result.json';prior=json_read(depresult)
++        require(prior['accepted'] and prior['terminal_authenticated'] and prior['inputs_unchanged'],'dependency discovery did not qualify')
++        deps=HERE/'HEADER-INPUTS.json';check_file(file_record(deps));bound=json_read(deps)
++        require(bound['compiler_discovery_result']==file_record(depresult),'header binding has wrong discovery receipt')
++        require(bound['source']==setup['source'],'header binding has wrong source')
++        inputs += [file_record(depresult),file_record(deps),*bound['files']]
++        links += bound['input_symlinks']
++        output=HERE/'target/probe';depout=HERE/'target/probe.d'
++        missing=[str(output),str(depout)]
++        argv=[compiler,*flags,'-MD','-MF',str(depout),'-MT','probe','-Wl,-t',source,'-o',str(output)]
++        kwargs=dict(expected_dependencies=bound['spelling_names'],dependency_output=str(depout),binary_output=str(output),
++                    allowed_link_inputs=sorted({str(Path(p).resolve(strict=True)) for p in setup['link_inputs']}))
+     else:
+-        qualified=json_read(HERE/'controls/compile/result.json');require(qualified['accepted']and qualified['terminal_authenticated'],'compile did not qualify')
+-        selection=json_read(HERE/'SELECTORS.json')
+-        artifact_id=name.removeprefix('list-')if kind=='list'else selection['groups'][name]['artifact']
+-        artifact=json_read(HERE/'retained-binaries/ARTIFACTS.json')[artifact_id]['file'];check_file(artifact,executable=True)
+-        inputs += [file_record(HERE/'controls/compile/result.json'),file_record(HERE/'retained-binaries/ARTIFACTS.json'),artifact]
+-        extra,symlinks=loader('test-'+artifact_id,artifact,env);inputs+=extra;links+=symlinks
+-        if kind=='list':
+-            selected=sorted({test for group in selection['groups'].values()if group['artifact']==artifact_id for test in group['names']})
+-            argv=[artifact['path'],'--list','-Z','unstable-options','--format=json']
+-        else:
+-            inventory_path=HERE/'controls'/('list-'+artifact_id)/'result.json';inventory=json_read(inventory_path)
+-            require(inventory['accepted']and inventory['terminal_authenticated'],'inventory did not qualify')
+-            inputs.append(file_record(inventory_path));selected=selection['groups'][name]['names']
+-            require(selected and all(inventory['readback']['names'].count(n)==1 for n in selected),'exact selected name missing or duplicated')
+-            argv=[artifact['path'],*selected,'--exact','--test-threads=1','--nocapture','-Z','unstable-options','--format=json']
+-    if(HERE/'dependency-symlinks.json').exists():
+-        inputs.append(file_record(HERE/'dependency-symlinks.json'));links+=json_read(HERE/'dependency-symlinks.json')
+-    target=OWNER/'target/rdtsc-recovery-v2-cold-v1';t=target.stat();lease=OWNER/'ignored/timer-integration-20260918/lane.lease';l=lease.stat();large=kind in('metadata','compile','check')
+-    require([t.st_dev,t.st_ino,t.st_uid]==admission['identity'], 'fresh target identity changed')
+-    plan=dict(path=str(HERE/(name+'-plan.json')),name=name,kind=kind,argv=argv,selected=selected,artifact_selectors=artifact_selectors,
+-              environment=env,scm=scm(),source_manifest=file_record(HERE/'source-manifest.json'),inputs=list({r['path']:r for r in inputs}.values()),
+-              input_symlinks=list({r['path']:r for r in links}.values()),absent_inputs=sorted(set(absent)),
+-              target=dict(path=str(target),identity=[t.st_dev,t.st_ino,t.st_uid]),
+-              lease=dict(path=str(lease),owner_slot=str(OWNER),identity=[l.st_dev,l.st_ino,l.st_uid],state_directory=str(OWNER/'ignored/timer-integration-20260918/lease-state')),
+-              output=str(HERE/'observer'/name),control=str(HERE/'controls'/name),
+-              limits=dict(aggregate_cpu_usec=600000000 if large else 30000000,wall_seconds=900 if large else 60,lethal_stderr_bytes=16777216,live_stdout_samples_bytes=67108864,phase_read_bytes=16777216,memory_bytes=17179869184,swap_bytes=0,free_floor_bytes=107374182400),
+-              scope='CPL3 timestamp recovery: exact 30 declarations and existing public vmcall/clock neighbors; no public real-mode interception, timer completion or 75-cell parity claim from component phases')
+-    if(HERE/'dependency-inputs.json').exists():plan['dependencies']=file_record(HERE/'dependency-inputs.json')
+-    write_new(Path(plan['path']),plan);print(plan['path'],hashlib.sha256(Path(plan['path']).read_bytes()).hexdigest())
+-if __name__=='__main__':main()
++        prior_path=HERE/'controls/compile/result.json';prior=json_read(prior_path)
++        require(prior['accepted'] and prior['terminal_authenticated'] and prior['inputs_unchanged'],'compile did not qualify')
++        artifact_path=HERE/'retained-binaries/BINDING.json';binding=json_read(artifact_path)
++        require(binding['compile_result']==file_record(prior_path),'retained binary belongs to another compile')
++        artifact=binding['retained'];check_file(artifact,executable=True)
++        inputs += [file_record(prior_path),file_record(artifact_path),artifact]
++        extra,aliases=loader('native-probe',artifact,env);inputs+=extra;links+=aliases
++        require(case['expected_exit']==0 and len(case['args'])==3,'selector altered')
++        argv=[artifact['path'],*case['args']];kwargs=dict(probe_args=case['args'])
++    for row in inputs:check_file(row)
++    large=kind=='probe'
++    limits=dict(aggregate_cpu_usec=setup['limits']['probe_cpu_usec'] if large else setup['limits']['compiler_cpu_usec'],
++                wall_seconds=setup['limits']['probe_wall_seconds'] if large else setup['limits']['compiler_wall_seconds'],
++                **{k:v for k,v in setup['limits'].items() if k not in ['probe_cpu_usec','compiler_cpu_usec','probe_wall_seconds','compiler_wall_seconds']})
++    path=HERE/'plans'/(name+'.json')
++    plan=dict(path=str(path),name=name,kind=kind,owner=str(OWNER),cwd=str(OWNER),argv=argv,environment=env,
++              inputs=list({r['path']:r for r in inputs}.values()),input_symlinks=list({r['path']:r for r in links}.values()),
++              absent_inputs=absent,target=admission['target'],lease=admission['lease'],must_be_absent_before=missing,
++              output=str(HERE/'observer'/name),control=str(HERE/'controls'/name),limits=limits,**kwargs)
++    write_new(path,plan)
++    print(str(path),file_record(path)['sha256'])
++
++if __name__=='__main__':
++    main()
+--- /dev/null
++++ native-caller/admit.py
+@@ -0,0 +1,36 @@
++#!/usr/bin/python3
++"""Root authorization required: admit only this caller's fresh private state."""
++import os
++from pathlib import Path
++import sys
++from common import check_file, file_record, json_read, require, write_new
++
++HERE = Path(__file__).resolve().parent
++
++def main():
++    require(len(sys.argv)==2 and file_record(HERE/'CALLER-INPUTS.json')['sha256']==sys.argv[1],
++            'admission requires exact root-inspected caller input digest')
++    setup = json_read(HERE / 'SETUP.json')
++    for row in json_read(HERE / 'CALLER-INPUTS.json')['records']:
++        check_file(row)
++    for name in ['target', 'tmp', 'loader', 'plans', 'controls', 'driver', 'retained-binaries', 'lease-state', 'private.lease', 'ADMISSION.json']:
++        p = HERE / name
++        require(not p.exists() and not p.is_symlink(), 'private state already exists: ' + name)
++    for name in ['target', 'tmp', 'loader', 'plans', 'controls', 'driver', 'retained-binaries', 'lease-state']:
++        (HERE / name).mkdir(mode=0o700)
++    fd = os.open(HERE / 'private.lease', os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_CLOEXEC, 0o600)
++    os.fsync(fd)
++    os.close(fd)
++    target = HERE / 'target'
++    require(not list(target.iterdir()), 'new target not empty')
++    t = target.stat()
++    lease = HERE / 'private.lease'
++    l = lease.stat()
++    require(str(target) == setup['private_target'] and str(lease) == setup['private_lease'], 'wrong admitted paths')
++    write_new(HERE / 'ADMISSION.json', dict(initially_empty=True, target=dict(path=str(target), identity=[t.st_dev,t.st_ino,t.st_uid]),
++        lease=dict(path=str(lease), owner_slot=str(HERE.parent), identity=[l.st_dev,l.st_ino,l.st_uid], state_directory=str(HERE/'lease-state')),
++        shared_lane_lease_used=False, source=file_record(HERE.parent/'source/probe.c'), setup=file_record(HERE/'SETUP.json'),
++        caller_manifest=file_record(HERE/'CALLER-INPUTS.json')))
++
++if __name__ == '__main__':
++    main()
+--- /dev/null
++++ native-caller/bind.py
+@@ -0,0 +1,56 @@
++#!/usr/bin/python3
++"""Bind observed header membership or retain an already qualified native ELF."""
++import os
++from pathlib import Path
++import shutil
++import sys
++import cache_lease
++from common import check_file, file_record, json_read, require, write_new
++from native_phase import check
++
++HERE=Path(__file__).resolve().parent
++
++def main():
++    require(sys.argv[1:] in [['headers'],['elf']],'expected headers|elf')
++    stage='dependencies' if sys.argv[1]=='headers' else 'compile'
++    plan_path=HERE/'plans'/(stage+'.json');plan_record=file_record(plan_path);plan=json_read(plan_path)
++    result_path=HERE/'controls'/stage/'result.json';result=json_read(result_path)
++    require(result['accepted'] and result['terminal_authenticated'] and result['inputs_unchanged'],'phase did not qualify')
++    require(result['plan_sha256']==plan_record['sha256'],'wrong phase plan')
++    fd=cache_lease.join(plan['lease'],plan_record['sha256'])
++    try:
++        check(plan)
++        if stage=='dependencies':
++            files,links={},{}
++            names=result['readback']['dependencies']
++            for name in names:
++                p=Path(name)
++                for part in [p,*p.parents]:
++                    if part.is_symlink():links[str(part)]=dict(path=str(part),target=os.readlink(part),mode=part.lstat().st_mode&0o7777)
++                resolved=p.resolve(strict=True);files[str(resolved)]=file_record(resolved)
++            for r in files.values():check_file(r)
++            write_new(HERE/'HEADER-INPUTS.json',dict(compiler_discovery_result=file_record(result_path),
++                discovery_stdout=result['stdout'],source=json_read(HERE/'SETUP.json')['source'],spelling_names=names,
++                files=list(files.values()),input_symlinks=list(links.values()),
++                scope='Compiler dependency discovery only; these exact bytes/modes/aliases are bound before actual compile and actual compile membership must match.'))
++        else:
++            original=result['readback']['binary'];check_file(original,executable=True)
++            source=Path(original['path']);require(source==HERE/'target/probe' and not source.is_symlink(),'wrong compiled path')
++            destination=HERE/'retained-binaries/probe'
++            with source.open('rb') as inp, destination.open('xb') as out:
++                shutil.copyfileobj(inp,out,1024**2);out.flush();os.fsync(out.fileno())
++            destination.chmod(0o555)
++            retained=file_record(destination);check_file(original,executable=True)
++            a=source.stat();b=destination.stat()
++            require(retained['sha256']==original['sha256'] and retained['bytes']==original['bytes']
++                    and (a.st_dev,a.st_ino)!=(b.st_dev,b.st_ino),'retained ELF is not an identical independent copy')
++            write_new(HERE/'retained-binaries/BINDING.json',dict(compile_result=file_record(result_path),compile_plan=plan_record,
++                original=original,retained=retained,original_identity=[a.st_dev,a.st_ino,a.st_uid],retained_identity=[b.st_dev,b.st_ino,b.st_uid],
++                source=json_read(HERE/'SETUP.json')['source'],header_inputs=file_record(HERE/'HEADER-INPUTS.json'),
++                diagnostics=0,distinct_inode=True,not_a_rust_or_hermit_artifact=True))
++        check(plan);cache_lease.check_held(fd,plan['lease'],plan_record['sha256'])
++    finally:
++        os.close(fd)
++
++if __name__=='__main__':
++    main()
+--- /dev/null
++++ native-caller/execute.py
+@@ -0,0 +1,62 @@
++#!/usr/bin/python3
++"""One authorized finite sequence. Never execute during caller preparation."""
++import os
++from pathlib import Path
++import sys
++from common import bounded_process, file_record, json_read, read, require, write_new
++
++HERE=Path(__file__).resolve().parent
++OWNER=HERE.parent
++
++def run_helper(arguments,label,seconds):
++    env={'HOME':'/home/newton','PATH':'/usr/bin:/bin','LC_ALL':'C','LANG':'C','TZ':'UTC',
++         'USER':'newton','LOGNAME':'newton','XDG_RUNTIME_DIR':'/run/user/'+str(os.getuid()),
++         'DBUS_SESSION_BUS_ADDRESS':'unix:path=/run/user/'+str(os.getuid())+'/bus'}
++    q=bounded_process(['/usr/bin/python3','-B',*arguments],OWNER,env,HERE/'driver'/label,seconds,1024**2)
++    require(q['stdout']['bytes']<=1024**2 and q['stderr']['bytes']<=1024**2,
++            'helper output bound exceeded including fast exit')
++    require(not q['forced'] and q.get('reap_incomplete') is not True,'helper transport did not finish')
++    return q
++
++def phase(name):
++    prepared=run_helper([str(HERE/'prepare.py'),name],name+'-prepare',180)
++    require(prepared['returncode']==0,'phase preparation failed; preserve raw preparation outputs')
++    plan_path=HERE/'plans'/(name+'.json');record=file_record(plan_path);plan=json_read(plan_path)
++    require(read(prepared['stdout']['path']).decode().strip()==str(plan_path)+' '+record['sha256'],
++            'prepared plan output differs')
++    invoked=run_helper([str(HERE/'native_phase.py'),'launch',str(plan_path),record['sha256']],
++                       name+'-launch',plan['limits']['wall_seconds']+120)
++    result_path=HERE/'controls'/name/'result.json';result=json_read(result_path)
++    expected=0 if result['accepted'] else 77 if result.get('outcome')=='unexecuted' else 1
++    require(invoked['returncode']==expected,'phase process status differs from retained result')
++    require(result['inputs_unchanged'] and result['terminal_authenticated'],'source/terminal authentication incomplete')
++    require(result['accepted'] or result.get('outcome')=='unexecuted','genuine native/compiler failure stops sequence')
++    return file_record(result_path)
++
++def main():
++    require(sys.argv[1:]==['all'],'expected all; no implicit admission or selector override')
++    require((HERE/'ADMISSION.json').is_file(),'root-authorized private admission required first')
++    setup=json_read(HERE/'SETUP.json')
++    records=[]
++    records.append(phase('dependencies'))
++    q=run_helper([str(HERE/'bind.py'),'headers'],'bind-headers',30)
++    require(q['returncode']==0,'header binding failed')
++    records.append(phase('compile'))
++    q=run_helper([str(HERE/'bind.py'),'elf'],'bind-elf',30)
++    require(q['returncode']==0,'ELF retention failed')
++    cases=json_read(OWNER/'SELECTORS.json')['cases']
++    for case in cases:
++        records.append(phase(case['name']))
++    results=[json_read(r['path']) for r in records[2:]]
++    passed=sum(r['accepted'] is True for r in results)
++    unexecuted=sum(r['outcome']=='unexecuted' for r in results)
++    require(len(results)==42 and passed+unexecuted==42,'native denominator differs')
++    write_new(HERE/'COMPLETED-SEQUENCE.json',dict(planned_native_cases=42,attempted_native_cases=42,
++        passed=passed,unexecuted=unexecuted,failed=0,all_native_cases_passed=passed==42,
++        source=setup['source'],phase_records=records,observer_phases=44,rust_tests=0,vm_controls=0,
++        hermit_parity_claim=False,all_prior_failures_preserved=True,
++        lease_release='Every phase closes the private lease after append-only terminal completion; no shared lane lease used.'))
++    print('Native sequence complete: '+str(passed)+' passed, '+str(unexecuted)+' unexecuted; no Rust/VM/parity count.')
++
++if __name__=='__main__':
++    main()
+--- /dev/null
++++ native-caller/freeze_results.py
+@@ -0,0 +1,98 @@
++#!/usr/bin/python3
++"""Retain finite actual outcomes only after all started phases are terminal."""
++import fcntl
++import json
++import os
++from pathlib import Path
++import stat
++import cache_lease
++from common import check_file, file_record, json_read, require, write_new
++
++HERE=Path(__file__).resolve().parent
++OWNER=HERE.parent
++
++def main():
++    require(not (OWNER/'final-v1').exists(),'refuse old final packet mutation')
++    admission=json_read(HERE/'ADMISSION.json')
++    check_file(admission['caller_manifest']);check_file(admission['setup'])
++    binding=admission['lease']
++    fd=cache_lease.open_bound(binding)
++    try:
++        fcntl.flock(fd,fcntl.LOCK_EX|fcntl.LOCK_NB)
++        raw=os.pread(fd,4096,0);token=json.loads(raw)
++        require(raw==cache_lease.token(token['plan_sha256']),'malformed final lease token')
++        completion=json_read(Path(binding['state_directory'])/(token['plan_sha256']+'.json'))
++        check_file(completion['result'])
++        last=json_read(completion['result']['path'])
++        require(last['terminal_authenticated'] or last['observer_attempted'] is False,'last phase unresolved')
++        names=['dependencies','compile',*[x['name'] for x in json_read(OWNER/'SELECTORS.json')['cases']]]
++        phases=[];inputs={};cpu=0;wall=0;payload=0
++        def add(p):
++            r=file_record(p);prior=inputs.get(r['path']);require(prior is None or prior==r,'input changed during freeze');inputs[r['path']]=r
++        links={}
++        for name in names:
++            result_path=HERE/'controls'/name/'result.json'
++            control=HERE/'controls'/name
++            require(not control.exists() or result_path.is_file(),'started phase has no final result')
++            if not result_path.exists():continue
++            result=json_read(result_path);plan_path=HERE/'plans'/(name+'.json');plan=json_read(plan_path)
++            require(file_record(plan_path)['sha256']==result['plan_sha256'],'result plan hash differs')
++            require(result['terminal_authenticated'] or result['observer_attempted'] is False,'phase unresolved')
++            for row in plan['inputs']:check_file(row);add(row['path'])
++            for row in plan['input_symlinks']:
++                p=Path(row['path']);require(p.is_symlink() and os.readlink(p)==row['target']
++                    and stat.S_IMODE(p.lstat().st_mode)==row['mode'],'input alias changed')
++                old=links.get(row['path']);require(old is None or old==row,'alias changed');links[row['path']]=row
++            if result['observer_attempted']:
++                check_file(result['observer_result']);observed=json_read(result['observer_result']['path'])
++                final=observed.get('final_accounting') or observed.get('refusal_final_accounting')
++                require(final and final['cgroup_empty'] and final['properties']['MainPID']==0
++                    and final['properties']['ControlGroup']=='','retained terminal accounting incomplete')
++                cpu+=final['cpu_usage_nsec']/1e9;wall+=observed['elapsed_seconds']
++                payload+=result.get('payload_exit',{}).get('elapsed_seconds',0)
++            phases.append(dict(name=name,kind=plan['kind'],plan=file_record(plan_path),result=file_record(result_path),
++                accepted=result['accepted'],outcome=result.get('outcome','failed'),raw_status=result['raw_status'],
++                terminal_authenticated=result['terminal_authenticated'],inputs_unchanged=result.get('inputs_unchanged',False)))
++        # Only the owned evidence tree is enumerated. The mutable compiler output
++        # directory is metadata; the separately retained ELF is the review input.
++        for root,dirs,files in os.walk(OWNER,followlinks=False):
++            root=Path(root)
++            dirs[:]=[d for d in dirs if root/d not in [HERE/'target',OWNER/'final-v1']]
++            for name in files:
++                p=root/name
++                if stat.S_ISREG(p.lstat().st_mode):add(p)
++        final_dir=OWNER/'final-v1';final_dir.mkdir(mode=0o700)
++        probes=[p for p in phases if p['kind']=='probe']
++        counts={k:sum(p['outcome']==k for p in probes) for k in ['passed','unexecuted','failed']}
++        require(sum(counts.values())==len(probes),'outcome denominator mismatch')
++        results=dict(scope='Native architectural probes only',planned_cases=42,attempted_cases=len(probes),
++            unattempted_cases=42-len(probes),**counts,phases=phases,total_observed_phases=len(phases),
++            aggregate_cpu_seconds=cpu,summed_observer_wall_seconds=wall,summed_payload_seconds=payload,
++            all_native_cases_passed=len(probes)==42 and counts['passed']==42,
++            source=file_record(OWNER/'source/probe.c'),rust_test_count=0,vm_control_count=0,hermit_parity=False,
++            source_predicates_unchanged=True,prior_failure_or_unexecuted_outcomes_not_relabelled=True)
++        write_new(final_dir/'RESULTS.json',results)
++        write_new(final_dir/'INPUTS.json',dict(records=sorted(inputs.values(),key=lambda r:r['path']),
++            symlinks=sorted(links.values(),key=lambda r:r['path']),mutable_compiler_target_not_a_review_input=True,
++            retained_binary_binding=str(HERE/'retained-binaries/BINDING.json')))
++        report=(f"# Native timestamp probe evidence\n\n{len(probes)}/42 native cases attempted: {counts['passed']} passed, "
++                f"{counts['unexecuted']} unexecuted, {counts['failed']} failed; {42-len(probes)} unattempted. "
++                f"{len(phases)} observed phases. Aggregate CPU {cpu:.6f}s; summed observer wall {wall:.6f}s; "
++                f"summed payload {payload:.6f}s.\n\nAll original raw results, source, plans and completed accounting remain bound. "
++                "Compiler output paths are metadata; the independent retained ELF is the probe input. "
++                "Exit 77 is unexecuted and never a pass. No Rust test, VM, deterministic-repeat or Hermit parity credit is supplied. "
++                "RF was requested via signal return; final flags do not independently observe its input restoration.\n")
++        (final_dir/'REPORT.md').write_text(report)
++        for row in inputs.values():check_file(row)
++        held=dict(private_lease=binding,exclusive_final_check=True,last_completion=file_record(Path(binding['state_directory'])/(token['plan_sha256']+'.json')),
++                  no_shared_lane_lease=True,no_unresolved_started_phase=True)
++    finally:
++        os.close(fd)
++    write_new(final_dir/'LEASE-RELEASE.json',{**held,'exclusive_fd_closed':True})
++    write_new(final_dir/'READBACK.json',dict(inputs_unchanged=True,records=len(inputs),symlinks=len(links),
++        artifacts=[file_record(final_dir/n) for n in ['RESULTS.json','INPUTS.json','REPORT.md','LEASE-RELEASE.json']],
++        no_execution_by_freezer=True,original_bounds_preserved=True))
++    print(str(final_dir))
++
++if __name__=='__main__':
++    main()

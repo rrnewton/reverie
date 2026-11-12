@@ -1,0 +1,28 @@
+{
+  "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v7/qualification-v2/core-check-plan.json",
+  "sha256": "7fea1a42b692d89d3fee219827782bc084a3a11f3fe943d2a1a77067ac7a55a9",
+  "requested_name": "core-check",
+  "actual_name": "core-check",
+  "kind": "check",
+  "argv": [
+    "/home/newton/.rustup/toolchains/nightly-2026-07-29-x86_64-unknown-linux-gnu/bin/cargo",
+    "check",
+    "--offline",
+    "--locked",
+    "-p",
+    "reverie-core",
+    "-p",
+    "reverie-ptrace",
+    "--message-format=json"
+  ],
+  "limits": {
+    "aggregate_cpu_usec": 600000000,
+    "wall_seconds": 900,
+    "lethal_stderr_bytes": 16777216,
+    "live_stdout_samples_bytes": 67108864,
+    "phase_read_bytes": 16777216,
+    "memory_bytes": 17179869184,
+    "swap_bytes": 0,
+    "free_floor_bytes": 107374182400
+  }
+}

@@ -1,0 +1,12 @@
+EV ephemeral_port=32768
+EV accepted idx=0
+EV accepted idx=1
+EV accepted idx=2
+EV epoll_ready_count=3
+EV winner_idx=0
+EV branch=A_winner_first_ascending
+EV served idx=0 ch=A
+EV served idx=1 ch=B
+EV served idx=2 ch=C
+EV checksum=64578
+EV done

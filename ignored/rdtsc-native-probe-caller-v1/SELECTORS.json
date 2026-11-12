@@ -1,0 +1,384 @@
+{
+  "cases": [
+    {
+      "name": "positive-rdtsc-00",
+      "args": [
+        "positive",
+        "rdtsc",
+        "0"
+      ],
+      "expected_exit": 0
+    },
+    {
+      "name": "positive-rdtsc-01",
+      "args": [
+        "positive",
+        "rdtsc",
+        "1"
+      ],
+      "expected_exit": 0
+    },
+    {
+      "name": "positive-rdtsc-02",
+      "args": [
+        "positive",
+        "rdtsc",
+        "2"
+      ],
+      "expected_exit": 0
+    },
+    {
+      "name": "positive-rdtsc-03",
+      "args": [
+        "positive",
+        "rdtsc",
+        "3"
+      ],
+      "expected_exit": 0
+    },
+    {
+      "name": "positive-rdtsc-04",
+      "args": [
+        "positive",
+        "rdtsc",
+        "4"
+      ],
+      "expected_exit": 0
+    },
+    {
+      "name": "positive-rdtsc-05",
+      "args": [
+        "positive",
+        "rdtsc",
+        "5"
+      ],
+      "expected_exit": 0
+    },
+    {
+      "name": "positive-rdtsc-06",
+      "args": [
+        "positive",
+        "rdtsc",
+        "6"
+      ],
+      "expected_exit": 0
+    },
+    {
+      "name": "positive-rdtsc-07",
+      "args": [
+        "positive",
+        "rdtsc",
+        "7"
+      ],
+      "expected_exit": 0
+    },
+    {
+      "name": "positive-rdtsc-08",
+      "args": [
+        "positive",
+        "rdtsc",
+        "8"
+      ],
+      "expected_exit": 0
+    },
+    {
+      "name": "positive-rdtsc-09",
+      "args": [
+        "positive",
+        "rdtsc",
+        "9"
+      ],
+      "expected_exit": 0
+    },
+    {
+      "name": "positive-rdtsc-10",
+      "args": [
+        "positive",
+        "rdtsc",
+        "10"
+      ],
+      "expected_exit": 0
+    },
+    {
+      "name": "positive-rdtsc-11",
+      "args": [
+        "positive",
+        "rdtsc",
+        "11"
+      ],
+      "expected_exit": 0
+    },
+    {
+      "name": "positive-rdtsc-12",
+      "args": [
+        "positive",
+        "rdtsc",
+        "12"
+      ],
+      "expected_exit": 0
+    },
+    {
+      "name": "positive-rdtsc-13",
+      "args": [
+        "positive",
+        "rdtsc",
+        "13"
+      ],
+      "expected_exit": 0
+    },
+    {
+      "name": "positive-rdtsc-14",
+      "args": [
+        "positive",
+        "rdtsc",
+        "14"
+      ],
+      "expected_exit": 0
+    },
+    {
+      "name": "positive-rdtsc-15",
+      "args": [
+        "positive",
+        "rdtsc",
+        "15"
+      ],
+      "expected_exit": 0
+    },
+    {
+      "name": "lock-rdtsc",
+      "args": [
+        "lock",
+        "rdtsc",
+        "0"
+      ],
+      "expected_exit": 0
+    },
+    {
+      "name": "overlength-rdtsc",
+      "args": [
+        "overlength",
+        "rdtsc",
+        "0"
+      ],
+      "expected_exit": 0
+    },
+    {
+      "name": "step-rdtsc",
+      "args": [
+        "step",
+        "rdtsc",
+        "0"
+      ],
+      "expected_exit": 0
+    },
+    {
+      "name": "edge-rdtsc",
+      "args": [
+        "edge",
+        "rdtsc",
+        "0"
+      ],
+      "expected_exit": 0
+    },
+    {
+      "name": "rf-rdtsc",
+      "args": [
+        "rf",
+        "rdtsc",
+        "0"
+      ],
+      "expected_exit": 0
+    },
+    {
+      "name": "positive-rdtscp-00",
+      "args": [
+        "positive",
+        "rdtscp",
+        "0"
+      ],
+      "expected_exit": 0
+    },
+    {
+      "name": "positive-rdtscp-01",
+      "args": [
+        "positive",
+        "rdtscp",
+        "1"
+      ],
+      "expected_exit": 0
+    },
+    {
+      "name": "positive-rdtscp-02",
+      "args": [
+        "positive",
+        "rdtscp",
+        "2"
+      ],
+      "expected_exit": 0
+    },
+    {
+      "name": "positive-rdtscp-03",
+      "args": [
+        "positive",
+        "rdtscp",
+        "3"
+      ],
+      "expected_exit": 0
+    },
+    {
+      "name": "positive-rdtscp-04",
+      "args": [
+        "positive",
+        "rdtscp",
+        "4"
+      ],
+      "expected_exit": 0
+    },
+    {
+      "name": "positive-rdtscp-05",
+      "args": [
+        "positive",
+        "rdtscp",
+        "5"
+      ],
+      "expected_exit": 0
+    },
+    {
+      "name": "positive-rdtscp-06",
+      "args": [
+        "positive",
+        "rdtscp",
+        "6"
+      ],
+      "expected_exit": 0
+    },
+    {
+      "name": "positive-rdtscp-07",
+      "args": [
+        "positive",
+        "rdtscp",
+        "7"
+      ],
+      "expected_exit": 0
+    },
+    {
+      "name": "positive-rdtscp-08",
+      "args": [
+        "positive",
+        "rdtscp",
+        "8"
+      ],
+      "expected_exit": 0
+    },
+    {
+      "name": "positive-rdtscp-09",
+      "args": [
+        "positive",
+        "rdtscp",
+        "9"
+      ],
+      "expected_exit": 0
+    },
+    {
+      "name": "positive-rdtscp-10",
+      "args": [
+        "positive",
+        "rdtscp",
+        "10"
+      ],
+      "expected_exit": 0
+    },
+    {
+      "name": "positive-rdtscp-11",
+      "args": [
+        "positive",
+        "rdtscp",
+        "11"
+      ],
+      "expected_exit": 0
+    },
+    {
+      "name": "positive-rdtscp-12",
+      "args": [
+        "positive",
+        "rdtscp",
+        "12"
+      ],
+      "expected_exit": 0
+    },
+    {
+      "name": "positive-rdtscp-13",
+      "args": [
+        "positive",
+        "rdtscp",
+        "13"
+      ],
+      "expected_exit": 0
+    },
+    {
+      "name": "positive-rdtscp-14",
+      "args": [
+        "positive",
+        "rdtscp",
+        "14"
+      ],
+      "expected_exit": 0
+    },
+    {
+      "name": "positive-rdtscp-15",
+      "args": [
+        "positive",
+        "rdtscp",
+        "15"
+      ],
+      "expected_exit": 0
+    },
+    {
+      "name": "lock-rdtscp",
+      "args": [
+        "lock",
+        "rdtscp",
+        "0"
+      ],
+      "expected_exit": 0
+    },
+    {
+      "name": "overlength-rdtscp",
+      "args": [
+        "overlength",
+        "rdtscp",
+        "0"
+      ],
+      "expected_exit": 0
+    },
+    {
+      "name": "step-rdtscp",
+      "args": [
+        "step",
+        "rdtscp",
+        "0"
+      ],
+      "expected_exit": 0
+    },
+    {
+      "name": "edge-rdtscp",
+      "args": [
+        "edge",
+        "rdtscp",
+        "0"
+      ],
+      "expected_exit": 0
+    },
+    {
+      "name": "rf-rdtscp",
+      "args": [
+        "rf",
+        "rdtscp",
+        "0"
+      ],
+      "expected_exit": 0
+    }
+  ],
+  "raw_exit_77": "Unexecuted hardware capability; never a pass",
+  "kind": "42 independent native processes, not libtest declarations or VM modes"
+}

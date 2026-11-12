@@ -1,0 +1,5 @@
+{
+  "event": "Fresh standard-library data assembly initially iterated the containing object as though it were the files list, causing TypeError before any compile plan/launch. Dependency binder completed raw 0; its untouched output is resolved-package-inputs.json. No caller or bound source was changed; corrected assembly below reads the existing files field. This is a preparation error, not a test/compiler result.",
+  "exception": "TypeError: string indices must be integers, not 'str'",
+  "compile_plan_existed": false
+}

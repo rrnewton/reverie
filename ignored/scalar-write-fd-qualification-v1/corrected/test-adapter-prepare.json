@@ -1,0 +1,9 @@
+{
+  "argv": [
+    "/usr/bin/python3",
+    "-B",
+    "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/scalar-write-fd-qualification-v1/corrected/prepare.py",
+    "test-adapter"
+  ],
+  "returncode": 0
+}

@@ -1,0 +1,61 @@
+{
+  "plan_sha256": "bb0ed2d249c0b2d9089257a54f13a4c16198adc0b553cc4807d5d8a7ac3fb073",
+  "accepted": true,
+  "observer_attempted": true,
+  "terminal_authenticated": true,
+  "raw_status": 0,
+  "transport": {
+    "argv": [
+      "/usr/bin/python3",
+      "-B",
+      "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/cpuid-recovery-source-v1/qualification-preparation-v1/observer/observer.py",
+      "--out",
+      "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/cpuid-recovery-source-v1/qualification-preparation-v1/observer/clippy",
+      "--cpu-usec",
+      "600000000",
+      "--wall-seconds",
+      "900",
+      "--log-bytes",
+      "16777216",
+      "/usr/bin/python3",
+      "-B",
+      "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/cpuid-recovery-source-v1/qualification-preparation-v1/phase.py",
+      "payload",
+      "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/cpuid-recovery-source-v1/qualification-preparation-v1/clippy-plan.json",
+      "bb0ed2d249c0b2d9089257a54f13a4c16198adc0b553cc4807d5d8a7ac3fb073"
+    ],
+    "cwd": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/cpuid-recovery-source-v1/source",
+    "wall_limit_seconds": 950,
+    "forced": false,
+    "returncode": 0,
+    "elapsed_seconds": 16.20692130108364,
+    "stdout": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/cpuid-recovery-source-v1/qualification-preparation-v1/controls/clippy/observer.stdout",
+      "bytes": 161,
+      "mode": 420,
+      "sha256": "5f3d0a1d32f34902103c3b13eea4336044b90b20fb93be16bba72d99d7a50398"
+    },
+    "stderr": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/cpuid-recovery-source-v1/qualification-preparation-v1/controls/clippy/observer.stderr",
+      "bytes": 0,
+      "mode": 420,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    }
+  },
+  "observer_result": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/cpuid-recovery-source-v1/qualification-preparation-v1/observer/clippy/result.json",
+    "bytes": 50863,
+    "mode": 384,
+    "sha256": "213dd33e734529ecf1890bcd63ae242c7a44386a778175b1fa4b26b07f418173"
+  },
+  "readback": {
+    "cargo_complete": true,
+    "compiler_diagnostics": 0
+  },
+  "payload_exit": {
+    "returncode": 0,
+    "reaped": true,
+    "elapsed_seconds": 11.754450814099982
+  },
+  "inputs_unchanged": true
+}

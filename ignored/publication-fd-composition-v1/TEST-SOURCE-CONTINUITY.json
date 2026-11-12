@@ -1,0 +1,25 @@
+{
+  "executor_tests_module": {
+    "identical_to_fd_final_v3": true,
+    "bytes": 888739,
+    "sha256": "e7d914670aa36245d96953fd8e1d7a31e00c973cd53c5b2538a58240d2d16ba2"
+  },
+  "publisher_module": {
+    "unchanged": true,
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/publication-fd-composition-v1/source/reverie-kvm/src/process_signal_publication.rs",
+    "bytes": 32377,
+    "sha256": "64f23aded851a3ba6635f29a60c0a42b6b9784eb57ff1f44309b82b81f2db9cb"
+  },
+  "static_harness": {
+    "unchanged": true,
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/publication-fd-composition-v1/source/reverie-kvm/tests/static_elf.rs",
+    "bytes": 478617,
+    "sha256": "c4dc2bd1172f206a00db50cd4206cff76badab8b8b11846910fd812b052ce479"
+  },
+  "all_other_source_entries": {
+    "unchanged_from_publisher_except_two_composed_files": true,
+    "manifest_count": 2621
+  },
+  "unique_proposed_selected_declarations": 73,
+  "execution_performed": false
+}

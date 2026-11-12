@@ -1,0 +1,12 @@
+{
+  "argv": [
+    "/usr/bin/python3",
+    "-B",
+    "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/cpuid-transport-probe-v1/qualification-v1/phase.py",
+    "launch",
+    "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/cpuid-transport-probe-v1/qualification-v1/compile-plan.json",
+    "4e308f8b02246cbf72156d74ececd2879c88bf7edbff03ebcbb3f7aaed7addf7"
+  ],
+  "raw_status": 0,
+  "wall_seconds": 56.21863139397465
+}

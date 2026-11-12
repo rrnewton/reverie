@@ -1,0 +1,9 @@
+{
+  "source": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/publication-fd-stdin-cold-qualification-v1/qualification-v1/retained-binaries/BINDING.json",
+  "sha256": "bae5c46911e573fd3aced851010d96cec442ea60cba1baddb94a237e51ac2f98",
+  "hashes": {
+    "lib": "6c5d4720d559f23929ad4a994ca9a4c5df1bc7e42bf86b7a26bf7c6848666b12",
+    "static": "240829575558f9368f3b06452ada2cfb0709b2c2918bb6e9072b9a8500977512"
+  },
+  "purpose": "refuse the old lib/static binaries as new candidate output, not predecessor test credit"
+}

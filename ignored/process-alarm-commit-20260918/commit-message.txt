@@ -1,0 +1,13 @@
+Add process-pending alarm publication for KVM
+
+[hermit2, degraded-unresolved, gpt-6-astra, devbig014, role=impl]
+
+Publish canonical SIGALRM/SI_KERNEL events through a narrowly scoped Guest
+operation with typed refusal, pending and post-publication failure outcomes.
+Preserve first siginfo and the actual pending domain through Tool replacement.
+The API has no Hermit caller or timer scheduler integration.
+
+Validation: 24 focused library tests and two initialized-VM tests passed;
+focused rustfmt and Clippy with -D warnings passed. Preserve the earlier
+fixture failure and fix its getpid marker ambiguity by saving the expected
+PID before the marked syscall; all assertions remain intact.

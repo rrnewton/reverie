@@ -1,0 +1,80 @@
++                Instruction { length: 2 },
++                result
++            )
++            .is_none()
++        );
++    }
++
++    #[test]
++    fn actual_partial_msr_transfers_are_refused_with_exact_counts() {
++        let backend = crate::KvmBackend::new(16 * 1024 * 1024).expect("actual KVM is mandatory");
++        let mut entries =
++            Msrs::from_entries(&[entry(PLATFORM_INFO, 0), entry(u32::MAX, 0)]).unwrap();
++        let actual = backend.vcpu.get_msrs(&mut entries).unwrap();
++        assert_eq!(
++            actual, 1,
++            "the real second unsupported MSR must stop this read"
++        );
++        let error = exact_count("read", 2, actual).unwrap_err();
++        assert!(
++            matches!(error,Error::UnexpectedVcpuExit(ref message) if message=="CPUID interception read: transferred 1 of 2 MSRs")
++        );
++        let error = write_one(&backend.vcpu, u32::MAX, 0).unwrap_err();
++        assert!(
++            matches!(error,Error::UnexpectedVcpuExit(ref message) if message=="CPUID interception write 0xffffffff: transferred 0 of 1 MSRs")
++        );
++        eprintln!("actual rejected MSR transfers: read 1/2; write 0/1");
++    }
++
++    #[test]
++    fn actual_cpuid_interception_is_owned_and_restores_original_msr_state() {
++        let backend = crate::KvmBackend::new(16 * 1024 * 1024).expect("actual KVM is mandatory");
++        let before = read_state(&backend.vcpu).unwrap();
++        let mut owner = Interception::default();
++        owner.configure(&backend.vcpu, true).unwrap();
++        assert!(owner.enabled());
++        owner.verify(&backend.vcpu).unwrap();
++        let mut stranger = Interception::default();
++        let error = stranger.configure(&backend.vcpu, true).unwrap_err();
++        assert!(matches!(error, Error::UnexpectedVcpuExit(ref message)
++            if message == "CPUID interception was armed without an owning Tool consumer"));
++        assert!(!stranger.enabled());
++        assert!(stranger.original.is_none());
++        owner.verify(&backend.vcpu).unwrap();
++        let independent = crate::KvmBackend::new(16 * 1024 * 1024).unwrap();
++        assert_eq!(read_state(&independent.vcpu).unwrap().features & ENABLE, 0);
++        owner.verify(&backend.vcpu).unwrap();
++        // Change the real vCPU behind its owner: a stale admission must fail,
++        // retain its original state, and still support explicit restoration.
++        write_one(&backend.vcpu, MISC_FEATURES_ENABLES, before.features).unwrap();
++        let error = owner.configure(&backend.vcpu, true).unwrap_err();
++        assert!(matches!(error, Error::UnexpectedVcpuExit(ref message)
++            if message == "CPUID interception state changed after admission"));
++        assert!(owner.original.is_some());
++        owner.configure(&backend.vcpu, false).unwrap();
++        assert!(!owner.enabled());
++        assert!(owner.original.is_none());
++        let after = read_state(&backend.vcpu).unwrap();
++        assert_eq!(
++            (after.platform, after.features),
++            (before.platform, before.features)
++        );
++        owner.configure(&backend.vcpu, false).unwrap();
++    }
++}
+diff --git a/reverie-kvm/src/cpuid_runtime_tests.rs b/reverie-kvm/src/cpuid_runtime_tests.rs
+new file mode 100644
+--- /dev/null
++++ b/reverie-kvm/src/cpuid_runtime_tests.rs
+@@ -0,0 +1,146 @@
++mod cpuid_runtime_controls {
++    use reverie::syscalls::SyscallInfo;
++
++    use super::*;
++
++    #[test]
++    fn cpuid_boundary_respects_actual_fetch_permissions_and_completed_length() {
++        const BOUNDARY: u64 = 0x40_0000;
++        for crosses_page in [false, true] {
++            let mut backend = KvmBackend::new(16 * 1024 * 1024).expect("actual KVM is mandatory");
++            let opcode = if crosses_page {

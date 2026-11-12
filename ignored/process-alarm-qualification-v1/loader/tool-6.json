@@ -1,0 +1,119 @@
+{
+  "executable": {
+    "path": "/usr/bin/ld.bfd",
+    "bytes": 1791600,
+    "mode": 493,
+    "sha256": "ac6bbc7393b95278ffa294cbdf18c65b5003d4e15dc805ce24a8146a8a154c42"
+  },
+  "inputs": [
+    {
+      "path": "/usr/lib64/libbfd-2.35.2-72.el9.so",
+      "bytes": 1343512,
+      "mode": 493,
+      "sha256": "fa99d0491b5200bf47bb7b6e4340c572bc8e1681c44ea9e7b59106af8e6da7b5"
+    },
+    {
+      "path": "/usr/lib64/libctf.so.0.0.0",
+      "bytes": 120088,
+      "mode": 493,
+      "sha256": "42fff8b2b495fc7826e87b29459b583b61ccea79fdbf0d5f44c16d1c4d201be8"
+    },
+    {
+      "path": "/usr/lib64/libc.so.6",
+      "bytes": 2549352,
+      "mode": 493,
+      "sha256": "d932cb6bc88da10cc709d5b7ecda57a1387b6571331689dba88023b4c0517776"
+    },
+    {
+      "path": "/usr/lib64/libz.so.1.2.11",
+      "bytes": 102672,
+      "mode": 493,
+      "sha256": "ae0b0485bffccd7b374451b52938f67e109c237a4a98679792d5dc1a31270289"
+    },
+    {
+      "path": "/usr/lib64/ld-linux-x86-64.so.2",
+      "bytes": 938752,
+      "mode": 493,
+      "sha256": "008e34384d4bc082a053ba086588efa1546086ecb863c9464b7269f8928b7577"
+    }
+  ],
+  "input_symlinks": [
+    {
+      "path": "/lib64",
+      "target": "usr/lib64"
+    },
+    {
+      "path": "/lib64/libctf.so.0",
+      "target": "libctf.so.0.0.0"
+    },
+    {
+      "path": "/lib64/libz.so.1",
+      "target": "libz.so.1.2.11"
+    }
+  ],
+  "queries": [
+    {
+      "argv": [
+        "/usr/bin/ldd",
+        "/usr/bin/ld.bfd"
+      ],
+      "cwd": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918",
+      "wall_limit_seconds": 5,
+      "forced": false,
+      "returncode": 0,
+      "elapsed_seconds": 0.05059913801960647,
+      "stdout": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/process-alarm-qualification-v1/loader/tool-6-ldd.stdout",
+        "bytes": 328,
+        "mode": 420,
+        "sha256": "09995776aa741c7e994e5ac135675d45bffaf2ad18bb45a4a841274d9f0b6098"
+      },
+      "stderr": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/process-alarm-qualification-v1/loader/tool-6-ldd.stderr",
+        "bytes": 0,
+        "mode": 420,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      }
+    },
+    {
+      "argv": [
+        "/usr/bin/readelf",
+        "-W",
+        "-l",
+        "-d",
+        "/usr/bin/ld.bfd"
+      ],
+      "cwd": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918",
+      "wall_limit_seconds": 5,
+      "forced": false,
+      "returncode": 0,
+      "elapsed_seconds": 0.05063675413839519,
+      "stdout": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/process-alarm-qualification-v1/loader/tool-6-readelf.stdout",
+        "bytes": 3690,
+        "mode": 420,
+        "sha256": "3a61bac58847e6a75e19f6de37e5df0a06208bae4da47a8490e34417fa63567b"
+      },
+      "stderr": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/process-alarm-qualification-v1/loader/tool-6-readelf.stderr",
+        "bytes": 0,
+        "mode": 420,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      }
+    }
+  ],
+  "query_programs": [
+    {
+      "path": "/usr/bin/ldd",
+      "bytes": 5446,
+      "mode": 493,
+      "sha256": "2e332feed7fe0d65afca81d83d07f997917c07d5c1f1fd5564e98330e78aa0b5"
+    },
+    {
+      "path": "/usr/bin/readelf",
+      "bytes": 683296,
+      "mode": 493,
+      "sha256": "51bc80f3a187e54e0b267fe6e64de09129f7761aafe615177d9d0be2229afcff"
+    }
+  ]
+}

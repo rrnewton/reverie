@@ -1,0 +1,100 @@
+{
+  "executable": {
+    "path": "/usr/libexec/gcc/x86_64-redhat-linux/11/collect2",
+    "bytes": 349536,
+    "mode": 493,
+    "sha256": "9520e6fb1ad7d606c35241a6b4032247a492675fb355687830756a6644912f8e"
+  },
+  "inputs": [
+    {
+      "path": "/usr/lib64/libm.so.6",
+      "bytes": 913048,
+      "mode": 493,
+      "sha256": "9a66ed5465040274a85266a9404268b50e69a1fdd7f34aaac3746905003c5135"
+    },
+    {
+      "path": "/usr/lib64/libc.so.6",
+      "bytes": 2549352,
+      "mode": 493,
+      "sha256": "d932cb6bc88da10cc709d5b7ecda57a1387b6571331689dba88023b4c0517776"
+    },
+    {
+      "path": "/usr/lib64/ld-linux-x86-64.so.2",
+      "bytes": 938752,
+      "mode": 493,
+      "sha256": "008e34384d4bc082a053ba086588efa1546086ecb863c9464b7269f8928b7577"
+    }
+  ],
+  "input_symlinks": [
+    {
+      "path": "/lib64",
+      "target": "usr/lib64",
+      "mode": 511
+    }
+  ],
+  "queries": [
+    {
+      "argv": [
+        "/usr/bin/ldd",
+        "/usr/libexec/gcc/x86_64-redhat-linux/11/collect2"
+      ],
+      "cwd": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-native-probe-caller-v1",
+      "wall_limit_seconds": 5,
+      "forced": false,
+      "returncode": 0,
+      "elapsed_seconds": 0.05128627200610936,
+      "stdout": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-native-probe-caller-v1/qualification-v1/loader/tool-2-ldd.stdout",
+        "bytes": 192,
+        "mode": 420,
+        "sha256": "d9117d6b2a54ef7b9c1df52d1b6a4956dcf7e36b21e2cd2cb7a2c56f679e3e78"
+      },
+      "stderr": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-native-probe-caller-v1/qualification-v1/loader/tool-2-ldd.stderr",
+        "bytes": 0,
+        "mode": 420,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      }
+    },
+    {
+      "argv": [
+        "/usr/bin/readelf",
+        "-W",
+        "-l",
+        "-d",
+        "/usr/libexec/gcc/x86_64-redhat-linux/11/collect2"
+      ],
+      "cwd": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-native-probe-caller-v1",
+      "wall_limit_seconds": 5,
+      "forced": false,
+      "returncode": 0,
+      "elapsed_seconds": 0.05126588209532201,
+      "stdout": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-native-probe-caller-v1/qualification-v1/loader/tool-2-readelf.stdout",
+        "bytes": 3820,
+        "mode": 420,
+        "sha256": "0261ea4d434ae309ed89aeabd1b6cd2748b8423338a430053d858280c9854d62"
+      },
+      "stderr": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-native-probe-caller-v1/qualification-v1/loader/tool-2-readelf.stderr",
+        "bytes": 0,
+        "mode": 420,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      }
+    }
+  ],
+  "query_programs": [
+    {
+      "path": "/usr/bin/ldd",
+      "bytes": 5446,
+      "mode": 493,
+      "sha256": "2e332feed7fe0d65afca81d83d07f997917c07d5c1f1fd5564e98330e78aa0b5"
+    },
+    {
+      "path": "/usr/bin/readelf",
+      "bytes": 683296,
+      "mode": 493,
+      "sha256": "51bc80f3a187e54e0b267fe6e64de09129f7761aafe615177d9d0be2229afcff"
+    }
+  ]
+}

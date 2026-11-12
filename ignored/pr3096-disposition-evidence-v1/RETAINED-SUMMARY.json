@@ -1,0 +1,205 @@
+[
+  {
+    "row_index": 127,
+    "run_id": "local-1789732881-1821604",
+    "head": "8255986391593432a8f96a38b7b2a6fc02bfc674",
+    "dirty": false,
+    "backend": "kvm",
+    "attempt": 1,
+    "status": 125,
+    "timed_out": false,
+    "outcome": "FAIL",
+    "stdout": "",
+    "row_wall_ms": 980,
+    "row_cpu_usec": 77257,
+    "inner_wall_ms": 81,
+    "inner_cpu_usec": 32584,
+    "recorded_hermit_sha256": "19135daf5f3edf4cb0ae48a0d11c5fa0483b42941c3eb7e0ace7ef696dee9adc",
+    "recorded_build_sha": "825598639159",
+    "fixture_sha256": "45247e05080c2b79cbdefcb9f052b8e8eaf376995e014fe588bd9e4317dd7514",
+    "compared": null,
+    "runtime": null,
+    "compare_outputs": null
+  },
+  {
+    "row_index": 128,
+    "run_id": "local-1789732881-1821604",
+    "head": "8255986391593432a8f96a38b7b2a6fc02bfc674",
+    "dirty": false,
+    "backend": "kvm",
+    "attempt": 2,
+    "status": 125,
+    "timed_out": false,
+    "outcome": "FAIL",
+    "stdout": "",
+    "row_wall_ms": 976,
+    "row_cpu_usec": 76041,
+    "inner_wall_ms": 82,
+    "inner_cpu_usec": 32460,
+    "recorded_hermit_sha256": "19135daf5f3edf4cb0ae48a0d11c5fa0483b42941c3eb7e0ace7ef696dee9adc",
+    "recorded_build_sha": "825598639159",
+    "fixture_sha256": "45247e05080c2b79cbdefcb9f052b8e8eaf376995e014fe588bd9e4317dd7514",
+    "compared": null,
+    "runtime": null,
+    "compare_outputs": null
+  },
+  {
+    "row_index": 129,
+    "run_id": "local-1789732881-1821604",
+    "head": "8255986391593432a8f96a38b7b2a6fc02bfc674",
+    "dirty": false,
+    "backend": "ptrace",
+    "attempt": 1,
+    "status": 0,
+    "timed_out": false,
+    "outcome": "PASS",
+    "stdout": "timer armed (getitimer remaining>0 or interval set): 1\nSIGALRM deliveries: 20\n",
+    "row_wall_ms": 1102,
+    "row_cpu_usec": 152720,
+    "inner_wall_ms": 222,
+    "inner_cpu_usec": 110591,
+    "recorded_hermit_sha256": "19135daf5f3edf4cb0ae48a0d11c5fa0483b42941c3eb7e0ace7ef696dee9adc",
+    "recorded_build_sha": "825598639159",
+    "fixture_sha256": "45247e05080c2b79cbdefcb9f052b8e8eaf376995e014fe588bd9e4317dd7514",
+    "compared": {
+      "left": 342,
+      "right": 342
+    },
+    "runtime": {
+      "run1": {
+        "scheduler_turns": 66,
+        "virtual_nanoseconds": 204509045,
+        "syscalls": 62
+      },
+      "run2": {
+        "scheduler_turns": 66,
+        "virtual_nanoseconds": 204509045,
+        "syscalls": 62
+      }
+    },
+    "compare_outputs": {
+      "left": {
+        "exit_code": 0,
+        "signal": null,
+        "stdout_sha256": "aa8afff1d4a0e29340065da47212a4ac237980d07744f94ed540f13789097ba5",
+        "stdout_bytes": 78,
+        "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "stderr_bytes": 0
+      },
+      "right": {
+        "exit_code": 0,
+        "signal": null,
+        "stdout_sha256": "aa8afff1d4a0e29340065da47212a4ac237980d07744f94ed540f13789097ba5",
+        "stdout_bytes": 78,
+        "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "stderr_bytes": 0
+      }
+    }
+  },
+  {
+    "row_index": 130,
+    "run_id": "local-1789732899-1846252",
+    "head": "8255986391593432a8f96a38b7b2a6fc02bfc674",
+    "dirty": true,
+    "backend": "kvm",
+    "attempt": 1,
+    "status": 0,
+    "timed_out": false,
+    "outcome": "PASS",
+    "stdout": "timer armed (getitimer remaining>0 or interval set): 1\nSIGALRM deliveries: 0\n",
+    "row_wall_ms": 1131,
+    "row_cpu_usec": 143343,
+    "inner_wall_ms": 223,
+    "inner_cpu_usec": 99175,
+    "recorded_hermit_sha256": "f3ddf80adb3009f7c29e0f85a98992e4be89f6f5b23a9f81a7aa5f6e17935ff4",
+    "recorded_build_sha": "825598639159-dirty",
+    "fixture_sha256": "45247e05080c2b79cbdefcb9f052b8e8eaf376995e014fe588bd9e4317dd7514",
+    "compared": {
+      "left": 272,
+      "right": 272
+    },
+    "runtime": {
+      "run1": {
+        "scheduler_turns": 46,
+        "virtual_nanoseconds": 204143660,
+        "syscalls": 62
+      },
+      "run2": {
+        "scheduler_turns": 46,
+        "virtual_nanoseconds": 204143660,
+        "syscalls": 62
+      }
+    },
+    "compare_outputs": {
+      "left": {
+        "exit_code": 0,
+        "signal": null,
+        "stdout_sha256": "ba4e438ab1bc40691bfdeeb74ff8121121c727fbded788f341c1140a24bed5c0",
+        "stdout_bytes": 77,
+        "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "stderr_bytes": 0
+      },
+      "right": {
+        "exit_code": 0,
+        "signal": null,
+        "stdout_sha256": "ba4e438ab1bc40691bfdeeb74ff8121121c727fbded788f341c1140a24bed5c0",
+        "stdout_bytes": 77,
+        "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "stderr_bytes": 0
+      }
+    }
+  },
+  {
+    "row_index": 131,
+    "run_id": "local-1789732899-1846252",
+    "head": "8255986391593432a8f96a38b7b2a6fc02bfc674",
+    "dirty": true,
+    "backend": "ptrace",
+    "attempt": 1,
+    "status": 0,
+    "timed_out": false,
+    "outcome": "PASS",
+    "stdout": "timer armed (getitimer remaining>0 or interval set): 1\nSIGALRM deliveries: 20\n",
+    "row_wall_ms": 1108,
+    "row_cpu_usec": 154870,
+    "inner_wall_ms": 224,
+    "inner_cpu_usec": 112272,
+    "recorded_hermit_sha256": "f3ddf80adb3009f7c29e0f85a98992e4be89f6f5b23a9f81a7aa5f6e17935ff4",
+    "recorded_build_sha": "825598639159-dirty",
+    "fixture_sha256": "45247e05080c2b79cbdefcb9f052b8e8eaf376995e014fe588bd9e4317dd7514",
+    "compared": {
+      "left": 342,
+      "right": 342
+    },
+    "runtime": {
+      "run1": {
+        "scheduler_turns": 66,
+        "virtual_nanoseconds": 204509045,
+        "syscalls": 62
+      },
+      "run2": {
+        "scheduler_turns": 66,
+        "virtual_nanoseconds": 204509045,
+        "syscalls": 62
+      }
+    },
+    "compare_outputs": {
+      "left": {
+        "exit_code": 0,
+        "signal": null,
+        "stdout_sha256": "aa8afff1d4a0e29340065da47212a4ac237980d07744f94ed540f13789097ba5",
+        "stdout_bytes": 78,
+        "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "stderr_bytes": 0
+      },
+      "right": {
+        "exit_code": 0,
+        "signal": null,
+        "stdout_sha256": "aa8afff1d4a0e29340065da47212a4ac237980d07744f94ed540f13789097ba5",
+        "stdout_bytes": 78,
+        "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "stderr_bytes": 0
+      }
+    }
+  }
+]

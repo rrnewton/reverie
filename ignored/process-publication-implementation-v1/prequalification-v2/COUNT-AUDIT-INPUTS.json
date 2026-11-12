@@ -1,0 +1,32 @@
+[
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/validate.sh",
+    "bytes": 30973,
+    "sha256": "c379519a12ab7e7d5aa74db4dfcf48a1c702d1c9e3028087afe08b74777cde82"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/scripts/libtest-counts.rs",
+    "bytes": 37370,
+    "sha256": "f0ed6599f779ee89b80cc0698b8064eccd0aad20f8fdbb37cac4095e60542b13"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/.github/workflows/ci.yml",
+    "bytes": 8259,
+    "sha256": "6f14bd2d54357b1465e02c06b554f9fb9dc490014b19ffa082b906e8291f13c4"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/.github/workflows/merge-gate.yml",
+    "bytes": 15894,
+    "sha256": "9556b03a97738e3f5283666aa202e943ee0fbdef2242cda0fb44925d53ee8d9e"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/ci-hub/validate/reverie_node.py",
+    "bytes": 20143,
+    "sha256": "1083d4f27ca6559535dbbe44010b4402d230c62e6424d644dce5924f83ff19c4"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/scripts/anchored-test-selection.rs",
+    "bytes": 88420,
+    "sha256": "7238cc7f68f27cea99f07047718eb01a637a2d4af60314d7af2488924bd7d86a"
+  }
+]

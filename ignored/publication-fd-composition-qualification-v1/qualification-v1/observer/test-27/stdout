@@ -1,0 +1,4 @@
+{ "type": "suite", "event": "started", "test_count": 1 }
+{ "type": "test", "event": "started", "name": "executor::tests::signal_dequeue_sequence_exhaustion_refuses_before_removal" }
+{ "type": "test", "name": "executor::tests::signal_dequeue_sequence_exhaustion_refuses_before_removal", "event": "ok" }
+{ "type": "suite", "event": "ok", "passed": 1, "failed": 0, "ignored": 0, "measured": 0, "filtered_out": 501, "exec_time": 0.001135335 }

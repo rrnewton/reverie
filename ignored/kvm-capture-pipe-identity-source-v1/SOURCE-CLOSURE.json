@@ -1,0 +1,592 @@
+{
+  "status": "Source inventory; author trace, not execution/independent approval",
+  "records": [
+    {
+      "relative": "reverie-kvm/src/executor.rs",
+      "sha256": "788ebdce22ee2b4a2b211bede79de4c8c73145a405710e15f07aa189077b43b6",
+      "symbols": [
+        {
+          "line": 1650,
+          "text": "    fn try_from_elf(state: &LoadedStaticElf) -> std::io::Result<Self> {"
+        },
+        {
+          "line": 1715,
+          "text": "    fn install(&self, state: &mut LoadedStaticElf) -> std::io::Result<()> {"
+        },
+        {
+          "line": 2272,
+          "text": "    pub(crate) fn fork_child("
+        },
+        {
+          "line": 2355,
+          "text": "            output: self.output.clone(),"
+        },
+        {
+          "line": 2375,
+          "text": "    pub(crate) fn thread_child(&self, child_tid: i32) -> crate::Result<Self> {"
+        },
+        {
+          "line": 2450,
+          "text": "            output: self.output.clone(),"
+        },
+        {
+          "line": 2939,
+          "text": "    pub(crate) fn replace_after_exec(&mut self, state: LoadedStaticElf) {"
+        },
+        {
+          "line": 4314,
+          "text": "    pub(crate) fn take_output(&mut self) -> (Vec<u8>, Vec<u8>) {"
+        },
+        {
+          "line": 4326,
+          "text": "impl Drop for ElfExecutor {"
+        },
+        {
+          "line": 6497,
+          "text": "fn guest_fd_link_target("
+        },
+        {
+          "line": 6766,
+          "text": "fn output_alias(state: &LoadedStaticElf, fd: libc::c_int) -> Option<OutputAlias> {"
+        },
+        {
+          "line": 10351,
+          "text": "fn guest_object_stat("
+        },
+        {
+          "line": 10374,
+          "text": "fn synthetic_captured_output_stat(identity: CaptureObjectIdentity) -> libc::stat {"
+        },
+        {
+          "line": 10391,
+          "text": "fn synthetic_captured_output_statx(identity: CaptureObjectIdentity) -> libc::statx {"
+        },
+        {
+          "line": 10445,
+          "text": "fn fstatat_impl("
+        },
+        {
+          "line": 10590,
+          "text": "fn statx("
+        },
+        {
+          "line": 12194,
+          "text": "fn sanitize_guest_fd_stat(state: &LoadedStaticElf, guest_fd: libc::c_int, stat: &mut libc::stat) {"
+        },
+        {
+          "line": 12304,
+          "text": "fn host_fd(state: &LoadedStaticElf, guest_fd: libc::c_int) -> Option<RawFd> {"
+        },
+        {
+          "line": 13940,
+          "text": "fn readlink_at_impl("
+        },
+        {
+          "line": 16574,
+          "text": "        let mut output = CapturedOutput::default();"
+        },
+        {
+          "line": 16615,
+          "text": "        let mut output = CapturedOutput::default();"
+        },
+        {
+          "line": 19290,
+          "text": "        let mut output = CapturedOutput::default();"
+        },
+        {
+          "line": 19606,
+          "text": "                        let mut output = CapturedOutput::default();"
+        },
+        {
+          "line": 19663,
+          "text": "                        let mut output = CapturedOutput::default();"
+        },
+        {
+          "line": 19761,
+          "text": "        let mut executor = ElfExecutor::new(test_state(&root.0), true);"
+        },
+        {
+          "line": 19806,
+          "text": "        let mut uncaptured = ElfExecutor::new(test_state(&root.0), false);"
+        },
+        {
+          "line": 20032,
+          "text": "                    let mut output = CapturedOutput::default();"
+        },
+        {
+          "line": 20081,
+          "text": "                    let mut output = CapturedOutput::default();"
+        },
+        {
+          "line": 20119,
+          "text": "        let mut output = CapturedOutput::default();"
+        },
+        {
+          "line": 22013,
+          "text": "        let mut executor = ElfExecutor::new(test_state(&root.0), false);"
+        },
+        {
+          "line": 22264,
+          "text": "        let mut executor = ElfExecutor::new(test_state(&root.0), false);"
+        },
+        {
+          "line": 22412,
+          "text": "        let mut executor = ElfExecutor::new(test_state(&root.0), false);"
+        },
+        {
+          "line": 22471,
+          "text": "        let mut executor = ElfExecutor::new(test_state(&root.0), false);"
+        },
+        {
+          "line": 25225,
+          "text": "                executor: ElfExecutor::new(test_state(&root.0), capture),"
+        },
+        {
+          "line": 25301,
+          "text": "                executor: ElfExecutor::new(state, capture),"
+        },
+        {
+          "line": 27357,
+          "text": "        let mut output = CapturedOutput::default();"
+        },
+        {
+          "line": 27414,
+          "text": "        let mut output = CapturedOutput::default();"
+        },
+        {
+          "line": 29512,
+          "text": "        let mut executor = ElfExecutor::new(test_state(&root.0), false);"
+        },
+        {
+          "line": 29645,
+          "text": "        let mut leader = ElfExecutor::new(test_state(&root.0), false);"
+        },
+        {
+          "line": 29762,
+          "text": "        let mut reverse_leader = ElfExecutor::new(test_state(&root.0), false);"
+        },
+        {
+          "line": 29806,
+          "text": "        let mut executor = ElfExecutor::new(test_state(&root.0), false);"
+        },
+        {
+          "line": 31516,
+          "text": "        let mut leader = ElfExecutor::new(test_state(&root.0), false);"
+        },
+        {
+          "line": 31637,
+          "text": "        let mut leader = ElfExecutor::new(test_state(&root.0), false);"
+        },
+        {
+          "line": 31721,
+          "text": "        assert!(ElfExecutor::new(state, false).has_eligible_pending_signal());"
+        },
+        {
+          "line": 32470,
+          "text": "        let mut executor = ElfExecutor::new(state, false);"
+        },
+        {
+          "line": 32499,
+          "text": "        let mut parent = ElfExecutor::new(state, false);"
+        },
+        {
+          "line": 32532,
+          "text": "        let mut parent = ElfExecutor::new(state, false);"
+        },
+        {
+          "line": 34464,
+          "text": "        let mut executor = ElfExecutor::new(state, false);"
+        },
+        {
+          "line": 34556,
+          "text": "        let mut executor = ElfExecutor::new(state, false);"
+        },
+        {
+          "line": 34994,
+          "text": "        let executor = ElfExecutor::new(state, false);"
+        },
+        {
+          "line": 35013,
+          "text": "        let executor = ElfExecutor::new(test_state(&root.0), false);"
+        },
+        {
+          "line": 35054,
+          "text": "        let mut executor = ElfExecutor::new(test_state(&root.0), false);"
+        },
+        {
+          "line": 35142,
+          "text": "        let mut executor = ElfExecutor::new(test_state(&root.0), false);"
+        },
+        {
+          "line": 35225,
+          "text": "        let mut leader = ElfExecutor::new(test_state(&root.0), false);"
+        },
+        {
+          "line": 35287,
+          "text": "        let mut executor = ElfExecutor::new(test_state(&root.0), false);"
+        },
+        {
+          "line": 35318,
+          "text": "        let mut executor = ElfExecutor::new(test_state(&root.0), false);"
+        },
+        {
+          "line": 35344,
+          "text": "        let mut executor = ElfExecutor::new(test_state(&root.0), false);"
+        },
+        {
+          "line": 35384,
+          "text": "        let mut executor = ElfExecutor::new(test_state(&root.0), false);"
+        },
+        {
+          "line": 35432,
+          "text": "        let mut executor = ElfExecutor::new(test_state(&root.0), false);"
+        },
+        {
+          "line": 35463,
+          "text": "        let mut executor = ElfExecutor::new(test_state(&root.0), false);"
+        },
+        {
+          "line": 35524,
+          "text": "        let mut executor = ElfExecutor::new(test_state(&root.0), false);"
+        },
+        {
+          "line": 35581,
+          "text": "        let mut executor = ElfExecutor::new(test_state(&root.0), false);"
+        },
+        {
+          "line": 35608,
+          "text": "            let mut executor = ElfExecutor::new(test_state(&root.0), false);"
+        },
+        {
+          "line": 36258,
+          "text": "        let mut executor = ElfExecutor::new(state, false);"
+        },
+        {
+          "line": 36337,
+          "text": "        let mut executor = ElfExecutor::new(state, false);"
+        },
+        {
+          "line": 36431,
+          "text": "            let mut executor = ElfExecutor::new(test_state(&root.0), false);"
+        },
+        {
+          "line": 36475,
+          "text": "        let mut wait4_executor = ElfExecutor::new(test_state(&root.0), false);"
+        },
+        {
+          "line": 36502,
+          "text": "        let mut waitid_executor = ElfExecutor::new(test_state(&root.0), false);"
+        },
+        {
+          "line": 36539,
+          "text": "        let mut wait4_auto_only = ElfExecutor::new(test_state(&root.0), false);"
+        },
+        {
+          "line": 36557,
+          "text": "        let mut waitid_auto_only = ElfExecutor::new(test_state(&root.0), false);"
+        },
+        {
+          "line": 36592,
+          "text": "        let mut parent = ElfExecutor::new(test_state(&root.0), false);"
+        },
+        {
+          "line": 36687,
+          "text": "        let parent = ElfExecutor::new(test_state(&root.0), false);"
+        },
+        {
+          "line": 36775,
+          "text": "        let mut parent = ElfExecutor::new(test_state(&root.0), false);"
+        },
+        {
+          "line": 36915,
+          "text": "        let executor = ElfExecutor::new(state, false);"
+        },
+        {
+          "line": 36937,
+          "text": "        let mut parent = ElfExecutor::new(state, true);"
+        },
+        {
+          "line": 36965,
+          "text": "        let mut executor = ElfExecutor::new(state, false);"
+        },
+        {
+          "line": 36991,
+          "text": "        let mut owner = ElfExecutor::new(test_state(&directory.0), false);"
+        },
+        {
+          "line": 37066,
+          "text": "        let mut executor = ElfExecutor::new(test_state(&root.0), false);"
+        },
+        {
+          "line": 37194,
+          "text": "        let mut executor = ElfExecutor::new(test_state(&root.0), false);"
+        },
+        {
+          "line": 37330,
+          "text": "        let mut executor = ElfExecutor::new(test_state(&root.0), false);"
+        },
+        {
+          "line": 37394,
+          "text": "        let mut executor = ElfExecutor::new(test_state(&root.0), false);"
+        },
+        {
+          "line": 37464,
+          "text": "        let mut executor = ElfExecutor::new(test_state(&root.0), false);"
+        },
+        {
+          "line": 37497,
+          "text": "        let mut leader = ElfExecutor::new(test_state(&root.0), false);"
+        },
+        {
+          "line": 37552,
+          "text": "        let mut executor = ElfExecutor::new(test_state(&root.0), false);"
+        },
+        {
+          "line": 37659,
+          "text": "        let mut leader = ElfExecutor::new(test_state(&root.0), false);"
+        },
+        {
+          "line": 37692,
+          "text": "        let leader = ElfExecutor::new(test_state(&root.0), false);"
+        },
+        {
+          "line": 37727,
+          "text": "        let mut leader = ElfExecutor::new(test_state(&root.0), false);"
+        },
+        {
+          "line": 37743,
+          "text": "        let mut leader = ElfExecutor::new(test_state(&root.0), false);"
+        },
+        {
+          "line": 37754,
+          "text": "        let mut failed_leader = ElfExecutor::new(test_state(&root.0), false);"
+        },
+        {
+          "line": 37790,
+          "text": "        let mut executor = ElfExecutor::new(test_state(&dir.0), false);"
+        },
+        {
+          "line": 37811,
+          "text": "        let mut executor = ElfExecutor::new(test_state(&dir.0), false);"
+        },
+        {
+          "line": 37864,
+          "text": "        let mut leader = ElfExecutor::new(test_state(&dir.0), false);"
+        },
+        {
+          "line": 37914,
+          "text": "        let mut deferred = ElfExecutor::new(test_state(&dir.0), false);"
+        },
+        {
+          "line": 37990,
+          "text": "        let mut single = ElfExecutor::new(state_for_pid_2(), false);"
+        },
+        {
+          "line": 38021,
+          "text": "        let parent = ElfExecutor::new(state_for_pid_2(), false);"
+        },
+        {
+          "line": 38079,
+          "text": "        let init = ElfExecutor::new(test_state(&dir.0), false);"
+        },
+        {
+          "line": 38300,
+          "text": "        let mut parent = ElfExecutor::new(test_state(&dir.0), false);"
+        },
+        {
+          "line": 38336,
+          "text": "            let leader = ElfExecutor::new(test_state(&dir.0), false);"
+        },
+        {
+          "line": 38387,
+          "text": "        let mut executor = ElfExecutor::new(test_state(&dir.0), false);"
+        },
+        {
+          "line": 38459,
+          "text": "        let leader = ElfExecutor::new(test_state(&dir.0), false);"
+        },
+        {
+          "line": 38493,
+          "text": "        let mut leader = ElfExecutor::new(test_state(&dir.0), false);"
+        },
+        {
+          "line": 38546,
+          "text": "            let mut executor = ElfExecutor::new(test_state(&dir.0), false);"
+        },
+        {
+          "line": 38577,
+          "text": "            let mut executor = ElfExecutor::new(test_state(&dir.0), false);"
+        },
+        {
+          "line": 38617,
+          "text": "            let mut executor = ElfExecutor::new(test_state(&dir.0), false);"
+        },
+        {
+          "line": 38627,
+          "text": "        let mut executor = ElfExecutor::new(test_state(&dir.0), false);"
+        },
+        {
+          "line": 38647,
+          "text": "        let mut executor = ElfExecutor::new(test_state(&dir.0), false);"
+        },
+        {
+          "line": 38714,
+          "text": "        let mut executor = ElfExecutor::new(test_state(&dir.0), false);"
+        },
+        {
+          "line": 39012,
+          "text": "        let mut leader = ElfExecutor::new(test_state(&root.0), false);"
+        },
+        {
+          "line": 39064,
+          "text": "        let mut leader = ElfExecutor::new(test_state(&root.0), false);"
+        },
+        {
+          "line": 39127,
+          "text": "        let mut leader = ElfExecutor::new(test_state(&root.0), false);"
+        },
+        {
+          "line": 39195,
+          "text": "                let mut leader = ElfExecutor::new(test_state(&root.0), false);"
+        },
+        {
+          "line": 39253,
+          "text": "        let mut leader = ElfExecutor::new(test_state(&root.0), false);"
+        },
+        {
+          "line": 39336,
+          "text": "        let mut leader = ElfExecutor::new(test_state(&root.0), false);"
+        },
+        {
+          "line": 39990,
+          "text": "        let mut leader = ElfExecutor::new(state, false);"
+        },
+        {
+          "line": 40170,
+          "text": "        let mut leader = ElfExecutor::new(state, false);"
+        }
+      ]
+    },
+    {
+      "relative": "reverie-kvm/src/runtime.rs",
+      "sha256": "abc86f6dc71a96dd658c824699065a553c51b13fd99140609acb0222b83cee57",
+      "symbols": [
+        {
+          "line": 2605,
+          "text": "        let capture_owner = self.prepare_captured_output(capture_output)?;"
+        },
+        {
+          "line": 2621,
+          "text": "        let mut executor = ElfExecutor::with_output(loaded, capture_owner.clone());"
+        }
+      ]
+    },
+    {
+      "relative": "reverie-kvm/src/vm.rs",
+      "sha256": "f887c7517847351a6319a8212855b45b189f8fe0a26e5546cc3a3f83b5cbc3aa",
+      "symbols": [
+        {
+          "line": 3183,
+          "text": "        let mut executor = ElfExecutor::with_output(loaded, None);"
+        },
+        {
+          "line": 3192,
+          "text": "        let capture_owner = self.prepare_captured_output(true)?;"
+        },
+        {
+          "line": 3194,
+          "text": "        let mut executor = ElfExecutor::with_output(loaded, capture_owner.clone());"
+        },
+        {
+          "line": 3199,
+          "text": "    pub(crate) fn prepare_captured_output("
+        },
+        {
+          "line": 5102,
+          "text": "        ElfExecutor::new("
+        },
+        {
+          "line": 5138,
+          "text": "        let executor = ElfExecutor::new(parent.static_elf.take().unwrap(), false);"
+        },
+        {
+          "line": 5280,
+          "text": "        let mut executor = ElfExecutor::new(parent.static_elf.take().unwrap(), true);"
+        },
+        {
+          "line": 5402,
+          "text": "                let mut executor = ElfExecutor::new(backend.static_elf.take().unwrap(), false);"
+        },
+        {
+          "line": 5518,
+          "text": "        let mut executor = ElfExecutor::new(parent.static_elf.take().unwrap(), true);"
+        },
+        {
+          "line": 6549,
+          "text": "        let mut executor = ElfExecutor::new(backend.static_elf.take().unwrap(), false);"
+        },
+        {
+          "line": 7344,
+          "text": "        let leader = ElfExecutor::new(parent.static_elf.take().unwrap(), false);"
+        },
+        {
+          "line": 7563,
+          "text": "        let mut executor = ElfExecutor::new(loaded, false);"
+        }
+      ]
+    },
+    {
+      "relative": "reverie-kvm/src/elf.rs",
+      "sha256": "1192168a0c011bbfa45a7cff498a118b176cc28ec8e5cba7f4ee0e3cfb3ab9a2",
+      "symbols": []
+    },
+    {
+      "relative": "reverie-kvm/src/capture_identity.rs",
+      "sha256": "7dde0222986ce6e86bb8edd9699af622dfc29fbefb60f0e6e8d6fa702a244fbd",
+      "symbols": []
+    },
+    {
+      "relative": "reverie-kvm/src/capture_identity_tests.rs",
+      "sha256": "222d60364d5c49fbda783dc57233e9bb25369e91999b98f46b1ae4bd478e35c3",
+      "symbols": [
+        {
+          "line": 13,
+          "text": "    let mut output = CapturedOutput::try_new().unwrap();"
+        },
+        {
+          "line": 127,
+          "text": "    let owner = CapturedOutput::try_new().unwrap();"
+        },
+        {
+          "line": 133,
+          "text": "    let mut parent = ElfExecutor::with_output(state, Some(owner.clone()));"
+        },
+        {
+          "line": 271,
+          "text": "    let prepared = CapturedOutput::try_new();"
+        },
+        {
+          "line": 300,
+          "text": "        let owner = CapturedOutput::try_new().unwrap();"
+        },
+        {
+          "line": 304,
+          "text": "        let mut parent = ElfExecutor::with_output(test_state(&root.0), Some(owner.clone()));"
+        },
+        {
+          "line": 471,
+          "text": "        let owner = backend.prepare_captured_output(true).unwrap().unwrap();"
+        },
+        {
+          "line": 525,
+          "text": "    let owner = backend.prepare_captured_output(true).unwrap().unwrap();"
+        }
+      ]
+    },
+    {
+      "relative": "reverie-kvm/tests/support/capture_identity.rs",
+      "sha256": "9d2cb0854facfc887f17029ccfb7a5edfaaf6305d3a84fc2e2956b7ec1011f48",
+      "symbols": []
+    }
+  ]
+}

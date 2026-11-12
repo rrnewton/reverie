@@ -1,0 +1,60 @@
++        }
++        let pid = guest.pid().as_raw() as i64;
++        assert_eq!(
++            guest
++                .inject(Syscall::from_raw(
++                    Sysno::getpid,
++                    SyscallArgs::new(0, 0, 0, 0, 0, 0),
++                ))
++                .await?,
++            pid,
++        );
++        assert_eq!(guest.inject(Fork::new()).await, Err(Errno::ENOSYS));
++        assert_eq!(
++            guest.inject(ExitGroup::new().with_status(77)).await,
++            Err(Errno::ENOSYS),
++        );
++        guest.send_rpc(request).await;
++        assert_eq!(
++            guest.read_clock().unwrap(),
++            before,
++            "RPC and returning/refused host injections are not guest branch time"
++        );
++        *guest.thread_state_mut() = (Some(before), ordinal + 1);
++        Ok(RdtscResult {
++            tsc: RDTSC_SENTINEL + ordinal,
++            aux: (request == Rdtsc::Tscp).then_some(RDTSCP_AUX_SENTINEL + ordinal as u32),
++        })
++    }
++}
++
++#[test]
++fn timestamp_callbacks_observe_retired_branches_without_counting_rpc_work() {
++    if !kvm_available("KVM timestamp callback clock test") {
++        return;
++    }
++    for _ in 0..2 {
++        let mut backend = KvmBackend::new(MEMORY_SIZE).unwrap();
++        backend
++            .install_static_elf(
++                &static_elf(&evolving_timestamp_assertion_program()),
++                "/bin/timestamp-clock",
++            )
++            .unwrap();
++        let (log, status, stdout, stderr) = futures::executor::block_on(
++            backend.run_static_elf_with_tool::<ClockTimestampTool>(true, true),
++        )
++        .unwrap();
++        assert_eq!(status, 0);
++        assert!(stdout.is_empty());
++        assert!(stderr.is_empty());
++        assert_eq!(
++            log.calls(),
++            vec![
++                (Pid::from_raw(1), Rdtsc::Tsc),
++                (Pid::from_raw(1), Rdtsc::Tsc),
++                (Pid::from_raw(1), Rdtsc::Tscp)
++            ]
++        );
++    }
++}

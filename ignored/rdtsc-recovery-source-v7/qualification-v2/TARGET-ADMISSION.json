@@ -1,0 +1,12 @@
+{
+  "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/target/rdtsc-recovery-v7-cold-v2",
+  "identity": [
+    48,
+    838114393,
+    212630
+  ],
+  "mode": 448,
+  "initially_empty": true,
+  "imports": [],
+  "created_by": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v7/qualification-v2/admit_target.py"
+}

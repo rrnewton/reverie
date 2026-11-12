@@ -1,0 +1,13 @@
+{
+  "argv": [
+    "with-proxy",
+    "gh",
+    "pr",
+    "checks",
+    "3096",
+    "--repo",
+    "rrnewton/hermit"
+  ],
+  "raw_status": 1,
+  "seconds": 0.8674517180770636
+}

@@ -1,0 +1,37 @@
+{
+  "authorization_received": true,
+  "payload": {
+    "binary": "/usr/bin/python3",
+    "binary_sha256": "9cfdf1a01d07dadb394dd2dc9fd8316254c36764076d23dc2c895c8401735576",
+    "arguments": [
+      "-B",
+      "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/timer-observation-claude-response-v3/negative-before-v2/phase.py",
+      "payload",
+      "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/timer-observation-claude-response-v3/negative-before-v2/test-terminal-race-negative-plan.json",
+      "b3db6c75ad8eb4c9011ab83f5da0a2775949f079d280da57720b13b7e22ecb79"
+    ]
+  },
+  "pid": 2384729,
+  "start_ticks": 187915185,
+  "restored_limits": {
+    "cpu": [
+      -1,
+      -1
+    ],
+    "as": [
+      -1,
+      -1
+    ],
+    "core": [
+      -1,
+      -1
+    ]
+  },
+  "protocol_environment_keys": [],
+  "handshake_fds_closed": true,
+  "ignore_sigpipe": true,
+  "python_file_size_signals_restored_to_default": true,
+  "environment_sha256": "81a3937080e6cb5aea3ad419ab1ac9234de35bae76fab38c686fd34a66c5c8a7",
+  "monotonic_ns": 1879151902023105,
+  "note": "Written before exec; this is not proof that the payload started."
+}

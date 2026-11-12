@@ -1,0 +1,65 @@
+{
+  "scope": "Append-only execution of preserved prepared-restart ELF; no new compile or attribution to current capability source",
+  "predecessor": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/timer-prepared-restart-20260918/positive-v1",
+  "copied_compile_and_list_receipts": "Byte-identical original accepted receipts; no new compile/list execution claimed",
+  "retained_artifact_binding": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/timer-prepared-restart-20260918/positive-v1/retained/ELFS.json",
+  "redirected_source_paths": [
+    {
+      "original_path": "reverie-kvm/src/executor.rs",
+      "historical_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/timer-captured-write-capability-20260918/before/reverie-kvm/src/executor.rs",
+      "sha256": "689a3c9341d88ed2a9ef629e70d17994a8f643c1a0f497446d45c309e200c1c1"
+    },
+    {
+      "original_path": "reverie-kvm/src/parked_signal_runtime.rs",
+      "historical_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/timer-captured-write-capability-20260918/before/reverie-kvm/src/parked_signal_runtime.rs",
+      "sha256": "5512f71c59dec74f7ed6446dce60fc7311b91135382eca6d007be7c9284da824"
+    },
+    {
+      "original_path": "reverie-kvm/src/runtime.rs",
+      "historical_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/timer-captured-write-capability-20260918/before/reverie-kvm/src/runtime.rs",
+      "sha256": "6f67fe78b3e6f64ba7aa8cc0f407d3a5bfaeabdff1d28b90911a61949c8926f0"
+    },
+    {
+      "original_path": "reverie-kvm/tests/static_elf.rs",
+      "historical_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/timer-captured-write-capability-20260918/before/reverie-kvm/tests/static_elf.rs",
+      "sha256": "d987e823bdfb8578ae8df28111d21e2883e3f6a32504b638ace51370e53cde73"
+    },
+    {
+      "original_path": "reverie/src/guest.rs",
+      "historical_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/timer-captured-write-capability-20260918/before/reverie/src/guest.rs",
+      "sha256": "206a31ecb2ed85f4f260c7a265a5f718aaab3e1600b4eb1bf95befd75b9112a2"
+    }
+  ],
+  "source_content": "Exact original accepted prepared-restart source manifest hashes; only path spelling for preserved differing source changes",
+  "unchanged_observer_and_caller": true,
+  "files": [
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/timer-prepared-restart-20260918/retained-mode15-v1/cache_lease.py",
+      "sha256": "957ce8530e0f5bba7e447a03c06b5d4452430ca1bd0b8187eebb162b55ce19a0"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/timer-prepared-restart-20260918/retained-mode15-v1/common.py",
+      "sha256": "96cf2b7b60df32c63a1c0231609f124874d4808fe1814f0fab8bce9088bd8656"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/timer-prepared-restart-20260918/retained-mode15-v1/observer/before_exec.py",
+      "sha256": "184d1b1dcdb8c8a75626d2c0fe403d1527e160f51e0cc98338f405bf8a0319bd"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/timer-prepared-restart-20260918/retained-mode15-v1/observer/observer.py",
+      "sha256": "137c9b42c3f9e081db59954e0ef692ed861f488be7c2bb8a15ef595c271b2179"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/timer-prepared-restart-20260918/retained-mode15-v1/observer/unit_reference.py",
+      "sha256": "e00b79d292060b7a467d6a99ed88082719682d205efbdc56ecbe5fb7256fe0d0"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/timer-prepared-restart-20260918/retained-mode15-v1/phase.py",
+      "sha256": "072683ffa6340dd86fec96e2424b8e3dcbe904ffb380cd049527ad6f9f60b623"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/timer-prepared-restart-20260918/retained-mode15-v1/prepare.py",
+      "sha256": "a5b1a67f8ef5816e5a8c0dc0e85890fa424e7ef08a4e4c6e964a56f88df59161"
+    }
+  ]
+}

@@ -1,0 +1,60 @@
++        Ok(())
++    }
++
+     pub(crate) fn capture_page_zero_fault(
+         &self,
+         executor: &ElfExecutor,
+@@ -3058,6 +3196,8 @@
+         &mut self,
+         executor: &mut ElfExecutor,
+     ) -> Result<(ExitStatus, Vec<u8>, Vec<u8>)> {
++        // This loop never dispatches Tool events, including Host-owned workers.
++        self.set_rdtsc_interception(false)?;
+         let _registration = self.register_guest_thread()?;
+         if self.is_guest_thread {
+             let entry_registers = self.vcpu.get_regs()?;
+@@ -3421,6 +3561,7 @@
+     where
+         F: FnMut(Syscall, &GuestMemory) -> i64,
+     {
++        self.set_rdtsc_interception(false)?;
+         loop {
+             let vcpu_exit = self.vcpu.run()?;
+             Self::record_exit(self.exit_collector.as_deref(), &vcpu_exit);
+@@ -6237,6 +6378,65 @@
+         image
+     }
+ 
++    #[test]
++    fn timestamp_boundary_respects_hardware_instruction_fetch_fault_priority() {
++        const BOUNDARY: u64 = 0x40_0000;
++        for rdtscp in [false, true] {
++            let mut backend = match KvmBackend::new(16 * 1024 * 1024) {
++                Ok(backend) => backend,
++                Err(Error::Kvm(error))
++                    if matches!(error.errno(), libc::ENOENT | libc::EACCES | libc::EPERM) =>
++                {
++                    assert!(
++                        std::env::var_os("REVERIE_REQUIRE_KVM").is_none(),
++                        "timestamp boundary requires KVM: {error}"
++                    );
++                    eprintln!("skipping timestamp boundary: KVM unavailable: {error}");
++                    return;
++                }
++                Err(error) => panic!("timestamp boundary setup failed: {error}"),
++            };
++            let opcode = if rdtscp {
++                &[0x0f, 0x01, 0xf9][..]
++            } else {
++                &[0x0f, 0x31][..]
++            };
++            let mut code = vec![0x90; 0x20_0000 - 2];
++            code.extend_from_slice(opcode);
++            let mut image = minimal_test_elf(&code);
++            image[24..32].copy_from_slice(&(BOUNDARY - 2).to_le_bytes());
++            image[104..112].copy_from_slice(&(code.len() as u64).to_le_bytes());
++            backend
++                .install_static_elf(&image, "/bin/timestamp-fetch-boundary")
++                .unwrap();
++            // The next 2 MiB page is present/user but NX in the actual guest
++            // page tables, not merely denied by a host-side test fetch closure.

@@ -1,0 +1,47 @@
+{
+  "results": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/kvm-capture-pipe-identity-source-v2/qualification-v1/failure-final-v1/RESULTS.json",
+    "bytes": 47230,
+    "mode": 420,
+    "sha256": "1ba7bd670cd2dbc00486ca6ea98362f978eb4d469c00faab1ebb125cddeadd63"
+  },
+  "report": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/kvm-capture-pipe-identity-source-v2/qualification-v1/failure-final-v1/REPORT.md",
+    "bytes": 4107,
+    "mode": 420,
+    "sha256": "ec8ce9f06ecd77d9e0dea94a9b7bd151c012141ce4e38baa65e66354630ae734"
+  },
+  "inputs": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/kvm-capture-pipe-identity-source-v2/qualification-v1/failure-final-v1/INPUTS.json",
+    "bytes": 8839167,
+    "mode": 420,
+    "sha256": "9d18455c4d427320d27b4b8653847e329168848c84f41ebf33b8d5a028cf9b62"
+  },
+  "terminal": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/kvm-capture-pipe-identity-source-v2/qualification-v1/failure-final-v1/TERMINAL-READBACK.json",
+    "bytes": 753,
+    "mode": 420,
+    "sha256": "4c081c675bd0f8611b74c4b74aaf12cb35cafd716633c1ccdd1f655da96f33b4"
+  },
+  "artifacts": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/kvm-capture-pipe-identity-source-v2/qualification-v1/failure-final-v1/ARTIFACT-READBACK.json",
+    "bytes": 1633,
+    "mode": 420,
+    "sha256": "9a48ea287e0de9f4a8ba01f27ce6db69071555a372b2dceb0a131c53e2483016"
+  },
+  "child_controls": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/kvm-capture-pipe-identity-source-v2/qualification-v1/failure-final-v1/CHILD-CONTROLS.json",
+    "bytes": 1833,
+    "mode": 420,
+    "sha256": "25776eca713be8a74b8091d018e11b811b10e9ca3d86eb5234e4be8a8cd22ccf"
+  },
+  "regular_files": 28762,
+  "symlinks": 44,
+  "completed_socket_metadata": 18,
+  "all_indexed_bytes_modes_unchanged": true,
+  "whole_qualification": false,
+  "passed_exact_tests": 10,
+  "remaining_exact_tests": 53,
+  "old_lease_unresolved": true,
+  "source_product_mutations": false
+}

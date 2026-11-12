@@ -1,0 +1,60 @@
++}
++
++/// Fetch only bytes belonging to the instruction, including its legal ignored
++/// legacy/REX prefixes. LOCK is invalid for both instructions; a sixteenth byte
++/// is never fetched. The caller supplies executable guest instruction bytes,
++/// not an unchecked read of the supervisor's RAM mapping.
++pub(crate) fn decode(mut fetch: impl FnMut(u8) -> Option<u8>) -> Option<TimestampInstruction> {
++    let mut length = 0;
++    let mut next = || {
++        if length == 15 {
++            return None;
++        }
++        let byte = fetch(length)?;
++        length += 1;
++        Some(byte)
++    };
++    let opcode = loop {
++        match next()? {
++            // Operand/address size, repeat, segment override and REX do not
++            // change these operandless instructions. In particular a prefix
++            // following REX cannot create a different register operand.
++            0x66 | 0x67 | 0xf2 | 0xf3 | 0x26 | 0x2e | 0x36 | 0x3e | 0x64 | 0x65 | 0x40..=0x4f => {
++                continue;
++            }
++            0x0f => break next()?,
++            _ => return None,
++        }
++    };
++    let request = match opcode {
++        0x31 => Rdtsc::Tsc,
++        0x01 if next()? == 0xf9 => Rdtsc::Tscp,
++        _ => return None,
++    };
++    Some(TimestampInstruction { request, length })
++}
++
++pub(crate) fn result_registers(
++    mut original: kvm_regs,
++    instruction: TimestampInstruction,
++    result: RdtscResult,
++) -> Option<kvm_regs> {
++    original.rip = original.rip.checked_add(u64::from(instruction.length))?;
++    // A fault sets RF in its saved frame. Successful retirement clears RF;
++    // carrying that fault artifact to the next instruction suppresses its
++    // instruction breakpoint. All other flags retain the saved user value.
++    original.rflags &= !(1 << 16);
++    original.rax = u64::from(result.tsc as u32);
++    original.rdx = result.tsc >> 32;
++    if instruction.request == Rdtsc::Tscp {
++        original.rcx = u64::from(result.aux.unwrap_or(0));
++    }
++    Some(original)
++}
++
++/// Resolve one executable CPL3 byte through the active four-level guest page
++/// tables. KVM_TRANSLATE reports data translation, not instruction-fetch NX
++/// permission. Check U/S and NX at every level instead; never infer executable
++/// access from the supervisor's physically mapped RAM. The caller has already
++/// checked long mode, paging, NXE and absence of LA57.
++pub(crate) fn fetch_user_byte(memory: &GuestMemory, cr3: u64, address: u64) -> Option<u8> {

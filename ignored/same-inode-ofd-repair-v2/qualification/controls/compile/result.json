@@ -1,0 +1,104 @@
+{
+  "plan_sha256": "1e08855aa67fe24810562d060deea8a81e0aa821d36d7b42ba23c42647ff828a",
+  "accepted": true,
+  "observer_attempted": true,
+  "terminal_authenticated": true,
+  "raw_status": 0,
+  "transport": {
+    "argv": [
+      "/usr/bin/python3",
+      "-B",
+      "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/same-inode-ofd-repair-v2/qualification/observer/observer.py",
+      "--out",
+      "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/same-inode-ofd-repair-v2/qualification/observer/compile",
+      "--cpu-usec",
+      "600000000",
+      "--wall-seconds",
+      "900",
+      "--log-bytes",
+      "16777216",
+      "/usr/bin/python3",
+      "-B",
+      "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/same-inode-ofd-repair-v2/qualification/phase.py",
+      "payload",
+      "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/same-inode-ofd-repair-v2/qualification/compile-plan.json",
+      "1e08855aa67fe24810562d060deea8a81e0aa821d36d7b42ba23c42647ff828a"
+    ],
+    "cwd": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/same-inode-ofd-repair-v2/corrected-source",
+    "wall_limit_seconds": 950,
+    "forced": false,
+    "returncode": 0,
+    "elapsed_seconds": 22.007064700126648,
+    "stdout": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/same-inode-ofd-repair-v2/qualification/controls/compile/observer.stdout",
+      "bytes": 161,
+      "mode": 420,
+      "sha256": "ca4fb98cd70d541c825975a4551e85ec9a46922455f6e4493c1a4a4910b66019"
+    },
+    "stderr": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/same-inode-ofd-repair-v2/qualification/controls/compile/observer.stderr",
+      "bytes": 0,
+      "mode": 420,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    }
+  },
+  "observer_result": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/same-inode-ofd-repair-v2/qualification/observer/compile/result.json",
+    "bytes": 46161,
+    "mode": 384,
+    "sha256": "3bdbcf822b6bc9eebba6857146a83807cb1279ac5e912c5a1665cb22f82d8a5c"
+  },
+  "readback": {
+    "artifacts": {
+      "lib": {
+        "cargo_artifact": {
+          "reason": "compiler-artifact",
+          "package_id": "path+file:///home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/same-inode-ofd-repair-v2/corrected-source/reverie-kvm#0.2.0",
+          "manifest_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/same-inode-ofd-repair-v2/corrected-source/reverie-kvm/Cargo.toml",
+          "target": {
+            "kind": [
+              "lib"
+            ],
+            "crate_types": [
+              "lib"
+            ],
+            "name": "reverie_kvm",
+            "src_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/same-inode-ofd-repair-v2/corrected-source/reverie-kvm/src/lib.rs",
+            "edition": "2024",
+            "doc": true,
+            "doctest": true,
+            "test": true
+          },
+          "profile": {
+            "opt_level": "0",
+            "debuginfo": 2,
+            "debug_assertions": true,
+            "overflow_checks": true,
+            "test": true
+          },
+          "features": [
+            "default"
+          ],
+          "filenames": [
+            "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/target/process-alarm-qualification-v1/debug/deps/reverie_kvm-43ce2f687796397a"
+          ],
+          "executable": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/target/process-alarm-qualification-v1/debug/deps/reverie_kvm-43ce2f687796397a",
+          "fresh": false
+        },
+        "file": {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/target/process-alarm-qualification-v1/debug/deps/reverie_kvm-43ce2f687796397a",
+          "bytes": 121974168,
+          "mode": 493,
+          "sha256": "05b922d819efad424fa58779df52b6ef4924e9cb7fcb1190111001fbc2847cd7"
+        }
+      }
+    },
+    "compiler_diagnostics": 0
+  },
+  "payload_exit": {
+    "returncode": 0,
+    "reaped": true,
+    "elapsed_seconds": 19.4015703080222
+  },
+  "inputs_unchanged": true
+}

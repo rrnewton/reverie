@@ -1,0 +1,8 @@
+{
+  "base_target": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v6/TARGET.json",
+  "base_target_sha256": "efa8f9355bfcf27dad6395942903d32731056bb04dba935933a290b46db2ed98",
+  "qualified_base": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v6/final-v1/TARGET.json",
+  "transport_evidence": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/cpuid-transport-probe-v1/final-v1/TARGET.json",
+  "production_source_only": true,
+  "no_build_or_test_execution": true
+}

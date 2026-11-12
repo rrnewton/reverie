@@ -1,0 +1,40 @@
+{
+  "initially_empty": true,
+  "target": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-native-probe-caller-v1/qualification-v1/target",
+    "identity": [
+      48,
+      833464016,
+      212630
+    ]
+  },
+  "lease": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-native-probe-caller-v1/qualification-v1/private.lease",
+    "owner_slot": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-native-probe-caller-v1",
+    "identity": [
+      48,
+      833464024,
+      212630
+    ],
+    "state_directory": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-native-probe-caller-v1/qualification-v1/lease-state"
+  },
+  "shared_lane_lease_used": false,
+  "source": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-native-probe-caller-v1/source/probe.c",
+    "bytes": 9369,
+    "mode": 420,
+    "sha256": "da386bbcd3b921dfd15a355260d13ef994ef0c9b5e45fff0f9e287b1ec4c3a1e"
+  },
+  "setup": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-native-probe-caller-v1/qualification-v1/SETUP.json",
+    "bytes": 14301,
+    "mode": 420,
+    "sha256": "adba326afe5b85a4c3a6e5c5c4886453576b6a073806f39fe8726df988c903d6"
+  },
+  "caller_manifest": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-native-probe-caller-v1/qualification-v1/CALLER-INPUTS.json",
+    "bytes": 5747,
+    "mode": 420,
+    "sha256": "371b8bbb1bb9532c665cd6aa886cf820d224bbad5d3628d3cea21c71c4fd86c8"
+  }
+}

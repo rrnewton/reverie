@@ -1,0 +1,186 @@
+{
+  "status": "STOPPED AT FIRST COMPILE FAILURE",
+  "caller": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/kvm-capture-pipe-identity-source-v1/qualification-v1/CALLER-TARGET.json",
+    "bytes": 4228,
+    "mode": 420,
+    "sha256": "69207e62337c16d9747472a9baba1e8c505078f7ef02d25ad507b7000870a6eb"
+  },
+  "source_target": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/kvm-capture-pipe-identity-source-v1/TARGET.json",
+    "bytes": 4686,
+    "mode": 420,
+    "sha256": "efbeacd61899a2a1c5e2d177971f44069d335036c481b03fbb3fcad545663a29"
+  },
+  "source_patch": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/kvm-capture-pipe-identity-source-v1/SOURCE.patch",
+    "bytes": 56836,
+    "mode": 420,
+    "sha256": "bc24847018d3e2a24ee9a1c310d930be6299d79249cc4d77f96bd99a6c2574a0"
+  },
+  "planned_phases": 72,
+  "attempted_phases": 2,
+  "accepted_phases": 1,
+  "failed_phases": 1,
+  "unrun_phases": 70,
+  "planned_exact_tests": 63,
+  "executed_exact_tests": 0,
+  "passed_exact_tests": 0,
+  "unrun_exact_tests": 63,
+  "retries": 0,
+  "qualified_test_elf": false,
+  "raw_child_markers": "UNRUN: compile failed before all child/EMFILE controls",
+  "cpu_seconds": 87.69964,
+  "observer_wall_seconds": 47.584011501999996,
+  "payload_wall_seconds": 41.553311144933105,
+  "phases": [
+    {
+      "name": "metadata",
+      "accepted": true,
+      "raw_status": 0,
+      "plan": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/kvm-capture-pipe-identity-source-v1/qualification-v1/metadata-plan.json",
+        "bytes": 56236,
+        "mode": 420,
+        "sha256": "9b9dfb335e33e33a088d9ff60dbfa8c0e579f7669fd36ef6237bee17effc3160"
+      },
+      "receipt": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/kvm-capture-pipe-identity-source-v1/qualification-v1/controls/metadata/result.json",
+        "bytes": 2798,
+        "mode": 420,
+        "sha256": "58530e300a802ae9b51c992dd41eaeb8524e4cee9de0b70d5dc8494e96f5266e"
+      },
+      "observer": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/kvm-capture-pipe-identity-source-v1/qualification-v1/observer/metadata/result.json",
+        "bytes": 58455,
+        "mode": 384,
+        "sha256": "babf5480b99ce6f3d0bd23925f34fe50daec267ae3488abce5c19c4d9e538438"
+      },
+      "stdout": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/kvm-capture-pipe-identity-source-v1/qualification-v1/observer/metadata/stdout",
+        "bytes": 1289152,
+        "mode": 384,
+        "sha256": "437dbe37d7b58807d2252a0036bd210751ef9ce4de6919fc67fc050bf1019db5"
+      },
+      "stderr": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/kvm-capture-pipe-identity-source-v1/qualification-v1/observer/metadata/stderr",
+        "bytes": 0,
+        "mode": 384,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "cpu_seconds": 1.613541,
+      "observer_wall_seconds": 2.677324776,
+      "payload_wall_seconds": 0.15573779097758234
+    },
+    {
+      "name": "compile",
+      "accepted": false,
+      "raw_status": 101,
+      "plan": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/kvm-capture-pipe-identity-source-v1/qualification-v1/compile-plan.json",
+        "bytes": 57740,
+        "mode": 420,
+        "sha256": "18c7f91832134ab0416d24946d245f826301687cbea58dc5b6d95e1a5f63804d"
+      },
+      "receipt": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/kvm-capture-pipe-identity-source-v1/qualification-v1/controls/compile/result.json",
+        "bytes": 2707,
+        "mode": 420,
+        "sha256": "1e6e82f7d1e0a3dbfd54e07b4289b477cd63364fbba4f67a1126cdb67520dd76"
+      },
+      "observer": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/kvm-capture-pipe-identity-source-v1/qualification-v1/observer/compile/result.json",
+        "bytes": 47510,
+        "mode": 384,
+        "sha256": "7d0d5c422294fb5db174c56ab562bccfceb65fa0272a47df1ee4a81aae4c69ff"
+      },
+      "stdout": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/kvm-capture-pipe-identity-source-v1/qualification-v1/observer/compile/stdout",
+        "bytes": 147184,
+        "mode": 384,
+        "sha256": "1a1cbe361950b52641e094551bd29e0df722b9fa2141d07627fd60f8c221f1ca"
+      },
+      "stderr": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/kvm-capture-pipe-identity-source-v1/qualification-v1/observer/compile/stderr",
+        "bytes": 4338,
+        "mode": 384,
+        "sha256": "5de2fe4eec8e817b6bd251c5d6c73d5074e523ed9eebe5c27c139e7bc3ce2c2e"
+      },
+      "cpu_seconds": 86.086099,
+      "observer_wall_seconds": 44.906686726,
+      "payload_wall_seconds": 41.39757335395552
+    }
+  ],
+  "remaining_sequence": [
+    "format",
+    "list-lib",
+    "list-static",
+    "list-vmcall",
+    "list-read-clock",
+    "capture-01",
+    "capture-02",
+    "capture-03",
+    "capture-04",
+    "capture-05",
+    "capture-06",
+    "neighbor-01",
+    "neighbor-02",
+    "neighbor-03",
+    "neighbor-04",
+    "neighbor-05",
+    "neighbor-06",
+    "neighbor-07",
+    "neighbor-08",
+    "neighbor-09",
+    "neighbor-10",
+    "neighbor-11",
+    "neighbor-12",
+    "neighbor-13",
+    "neighbor-14",
+    "neighbor-15",
+    "neighbor-16",
+    "neighbor-17",
+    "neighbor-18",
+    "neighbor-19",
+    "neighbor-20",
+    "v6-timestamp-01",
+    "v6-timestamp-02",
+    "v6-timestamp-03",
+    "v6-timestamp-04",
+    "v6-timestamp-05",
+    "v6-timestamp-06",
+    "v6-timestamp-07",
+    "v6-timestamp-08",
+    "v6-timestamp-09",
+    "v6-timestamp-10",
+    "v6-timestamp-11",
+    "v6-timestamp-12",
+    "v6-timestamp-13",
+    "v6-timestamp-14",
+    "v6-timestamp-15",
+    "v6-timestamp-16",
+    "v6-timestamp-17",
+    "v6-timestamp-18",
+    "v6-timestamp-19",
+    "v6-timestamp-20",
+    "v6-timestamp-21",
+    "v6-timestamp-22",
+    "v6-timestamp-23",
+    "v6-timestamp-24",
+    "v6-timestamp-25",
+    "v6-timestamp-26",
+    "v6-timestamp-27",
+    "v6-timestamp-28",
+    "v6-timestamp-29",
+    "v6-timestamp-30",
+    "v6-timestamp-31",
+    "v6-timestamp-32",
+    "v6-timestamp-33",
+    "v6-timestamp-34",
+    "v6-timestamp-35",
+    "v6-timestamp-36",
+    "v6-timestamp-37",
+    "core-check",
+    "clippy"
+  ]
+}

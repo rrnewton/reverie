@@ -1,0 +1,10 @@
+{
+  "argv": [
+    "/usr/bin/python3",
+    "-B",
+    "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-host-worker-diagnostic-v1/qualification-v2/prepare.py",
+    "metadata"
+  ],
+  "raw_status": 0,
+  "wall_seconds": 2.9681322160176933
+}

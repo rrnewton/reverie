@@ -1,0 +1,1 @@
+epoll ok=6 fds_created=1 armed=1 registered=1 ready=1 ready_is_armed_fd=1 deregistered=1 empty=0

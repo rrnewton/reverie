@@ -1,0 +1,4 @@
+{ "type": "suite", "event": "started", "test_count": 1 }
+{ "type": "test", "event": "started", "name": "captured_write_signals::captured_write_signal_capability_preserves_fault_and_partial_result" }
+{ "type": "test", "name": "captured_write_signals::captured_write_signal_capability_preserves_fault_and_partial_result", "event": "ok" }
+{ "type": "suite", "event": "ok", "passed": 1, "failed": 0, "ignored": 0, "measured": 0, "filtered_out": 303, "exec_time": 0.192471714 }

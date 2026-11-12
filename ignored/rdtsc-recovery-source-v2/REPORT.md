@@ -1,0 +1,9 @@
+# Timestamp source V2: one compile-warning correction
+
+V1 cold compile produced raw 0 in 62.031 seconds, but its zero-diagnostic qualification correctly refused the new `timestamp.rs:239` unused_mut warning. Terminal accounting was complete and source remained unchanged. No tests, format, core/ptrace check or Clippy ran. The full original receipt and four unqualified ELF copies remain under V1 `qualification-refusal-v1`; they are not V2 qualification.
+
+V2 removes only `mut` from that unit-control local binding. The complete 2,622-entry source copy is otherwise identical, including every assertion, historical control, fixture, production byte, mode and symlink. `DELTA.patch` is the exact V1-to-V2 change; `SOURCE.patch` is the full seven-path candidate against the same 79516661 / landed-equivalent 44fcb195 base. The correction changes no production mechanism or accepted behavior.
+
+The prepare-only caller uses a new empty target name. Its complete material delta is two target-path locations in prepare.py and one in admit_target.py. SETUP binds the new snapshot and exact new test-file hash; its phase manifest differs in that one hash. All 30 selectors, 39 phases, observer137c, phase/common/lease/dependency/artifact-retention logic and bounds are unchanged. No source timestamp manipulation, cache import, warning exemption or retry of a failed test is used. No target admission, lease claim, compilation/test or reviewer launch has occurred for V2.
+
+Original Claude setup remains preserved and unlaunched. A successor attachment must bind this exact delta and the V1 raw-0 warning refusal, followed by actual V2 qualification. Current Hermit39ac callback context is the separate retained source context already supplied; no same-run Hermit outcome is claimed. Root is separately preparing native architecture probes. The complete 75-cell same-run comparison and its unchanged full comparator remain required for a future parity claim.

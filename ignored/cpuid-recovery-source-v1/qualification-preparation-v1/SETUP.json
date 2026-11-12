@@ -1,0 +1,139 @@
+{
+  "owner_slot": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918",
+  "source_root": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/cpuid-recovery-source-v1/source",
+  "base": "79516661bf82d30ab2967c71834a6d47447b76ee",
+  "base_tree": "7620fe83f486d665d9d09d4f09f0e93636b862e4",
+  "source_files": [
+    {
+      "relative": "reverie-kvm/src/bootstrap.rs",
+      "file": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/cpuid-recovery-source-v1/source/reverie-kvm/src/bootstrap.rs",
+        "bytes": 42817,
+        "sha256": "7c008be09ef0e1bcefff4f8651742276cffaf6fac82526e9dad37e348299e81a",
+        "mode": 420
+      }
+    },
+    {
+      "relative": "reverie-kvm/src/cpuid.rs",
+      "file": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/cpuid-recovery-source-v1/source/reverie-kvm/src/cpuid.rs",
+        "bytes": 16731,
+        "sha256": "56f7b5a167a7fda07db2fdb44b4801f44564b5450bd6628ca876d2b967f2b73f",
+        "mode": 420
+      }
+    },
+    {
+      "relative": "reverie-kvm/src/lib.rs",
+      "file": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/cpuid-recovery-source-v1/source/reverie-kvm/src/lib.rs",
+        "bytes": 1759,
+        "sha256": "f6004c9725e8085056b1ca99dc91fd7c2a5fcdd912f84d32a082a4ed3a3a6262",
+        "mode": 420
+      }
+    },
+    {
+      "relative": "reverie-kvm/src/runtime.rs",
+      "file": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/cpuid-recovery-source-v1/source/reverie-kvm/src/runtime.rs",
+        "bytes": 192972,
+        "sha256": "d8ae42ecc0b62d60214f35d680fb1544031af3ebd70b530d84903dc5ed8a2cf7",
+        "mode": 420
+      }
+    },
+    {
+      "relative": "reverie-kvm/src/timestamp.rs",
+      "file": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/cpuid-recovery-source-v1/source/reverie-kvm/src/timestamp.rs",
+        "bytes": 9696,
+        "sha256": "0c1337632277a9a4dd67d679c33125193d3bbabdb4e4947d6f50b109fec3d700",
+        "mode": 420
+      }
+    },
+    {
+      "relative": "reverie-kvm/src/vm.rs",
+      "file": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/cpuid-recovery-source-v1/source/reverie-kvm/src/vm.rs",
+        "bytes": 329103,
+        "sha256": "40a4ea1355fa3d64df99acc5354c197db79aca5de73cb814beb149900300e342",
+        "mode": 420
+      }
+    },
+    {
+      "relative": "reverie-kvm/tests/static_elf.rs",
+      "file": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/cpuid-recovery-source-v1/source/reverie-kvm/tests/static_elf.rs",
+        "bytes": 512252,
+        "sha256": "60f4ce3001fc19a727c752c69ac63deab9d0f3aa70c5031718bc7c1ddfeabdb2",
+        "mode": 420
+      }
+    },
+    {
+      "relative": "reverie-kvm/tests/support/timestamp_terminal.rs",
+      "file": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/cpuid-recovery-source-v1/source/reverie-kvm/tests/support/timestamp_terminal.rs",
+        "bytes": 12927,
+        "sha256": "af115c32a075ec9d308a3bc0129f3c278723d62b5a2b9e4270c6e18eabadb326",
+        "mode": 420
+      }
+    },
+    {
+      "relative": "reverie-kvm/src/terminal_runtime_tests.rs",
+      "file": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/cpuid-recovery-source-v1/source/reverie-kvm/src/terminal_runtime_tests.rs",
+        "bytes": 5673,
+        "sha256": "af916ce5c0f4a30adcbf9d87b52dd33b555e5b9e2fe463e7d5310d7b34b6a7c5",
+        "mode": 420
+      }
+    },
+    {
+      "relative": "reverie-kvm/src/cpuid_instruction.rs",
+      "file": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/cpuid-recovery-source-v1/source/reverie-kvm/src/cpuid_instruction.rs",
+        "bytes": 13263,
+        "sha256": "576c890af84158183937b8f86bebdbe0464099816c341edab94b13e30478a111",
+        "mode": 420
+      }
+    },
+    {
+      "relative": "reverie-kvm/src/cpuid_runtime_tests.rs",
+      "file": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/cpuid-recovery-source-v1/source/reverie-kvm/src/cpuid_runtime_tests.rs",
+        "bytes": 5778,
+        "sha256": "2652698da8546a5d5b76616b673bef99b6db7981fc57c37d7eb1246ad8a0e696",
+        "mode": 420
+      }
+    },
+    {
+      "relative": "reverie-kvm/tests/support/cpuid_dispatch.rs",
+      "file": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/cpuid-recovery-source-v1/source/reverie-kvm/tests/support/cpuid_dispatch.rs",
+        "bytes": 21009,
+        "sha256": "09b70feee10f8a6a67694890c88ce98b87d0687269e6163ff0b504d6901daaee",
+        "mode": 420
+      }
+    },
+    {
+      "relative": "reverie-kvm/tests/support/cpuid_terminal.rs",
+      "file": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/cpuid-recovery-source-v1/source/reverie-kvm/tests/support/cpuid_terminal.rs",
+        "bytes": 12635,
+        "sha256": "6dd0d85806952559e0c75244a7e354f14e5e1d0e3c36e2c943aaf9c4a77d5ba2",
+        "mode": 420
+      }
+    }
+  ],
+  "lock": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/cpuid-recovery-source-v1/source/Cargo.lock",
+    "bytes": 67056,
+    "sha256": "1c09663e46bf21ad7c07eedd7821cccb72ae21f42485192649ff5473962bc856",
+    "mode": 420
+  },
+  "target": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/target/cpuid-recovery-v1-cold-v1",
+  "purpose": "CPUID source V1 only, based on frozen V6; no V7 test composition, qualification or parity claim from preparation",
+  "source_target": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/cpuid-recovery-source-v1/TARGET.json",
+    "bytes": 4357,
+    "sha256": "5ff12f1d6800aaa5944efcbb431fd23d79740b16430ed1b960a9ced13619d3b8",
+    "mode": 420
+  }
+}

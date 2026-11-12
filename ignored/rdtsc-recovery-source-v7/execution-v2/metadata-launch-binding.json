@@ -1,0 +1,25 @@
+{
+  "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v7/qualification-v2/metadata-plan.json",
+  "sha256": "886032127ce6dec997869caeaf5f3df4aacc32f50ba1185a33c474a8b1e24dbe",
+  "requested_name": "metadata",
+  "actual_name": "metadata",
+  "kind": "metadata",
+  "argv": [
+    "/home/newton/.rustup/toolchains/nightly-2026-07-29-x86_64-unknown-linux-gnu/bin/cargo",
+    "metadata",
+    "--offline",
+    "--locked",
+    "--format-version",
+    "1"
+  ],
+  "limits": {
+    "aggregate_cpu_usec": 600000000,
+    "wall_seconds": 900,
+    "lethal_stderr_bytes": 16777216,
+    "live_stdout_samples_bytes": 67108864,
+    "phase_read_bytes": 16777216,
+    "memory_bytes": 17179869184,
+    "swap_bytes": 0,
+    "free_floor_bytes": 107374182400
+  }
+}

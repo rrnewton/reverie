@@ -1,0 +1,178 @@
+2026-09-18T10:07:30.375324Z  INFO hermit::kvm: launching guest through reverie-kvm program=/results/runs/validate-cleanup-3-80ce2ee94689-1789724738166435665-509588-1a3c3ec7/backend-parity-c-readdir-entries-verify-kvm/fixtures/program argv=["/results/runs/validate-cleanup-3-80ce2ee94689-1789724738166435665-509588-1a3c3ec7/backend-parity-c-readdir-entries-verify-kvm/fixtures/program"] cwd=/test env_count=11
+2026-09-18T10:07:30.383060Z  INFO detcore::scheduler::runqueue: DETLOG SCHEDRAND: seeding scheduler runqueue with seed 0 DETLOG_RECORD={"schema":1,"event":{"kind":"other"}}
+2026-09-18T10:07:30.383208Z  INFO detcore::tool_global: [scheduler] daemon task starting up, waiting for guest thread start..
+2026-09-18T10:07:30.384844Z  INFO detcore::tool_local: DETLOG USER RAND: seeding PRNG for root thread with seed 0 DETLOG_RECORD={"schema":1,"event":{"kind":"other"}}
+2026-09-18T10:07:30.384888Z  INFO detcore::tool_local: DETLOG CHAOSRAND: seeding chaos scheduler with seed 0 DETLOG_RECORD={"schema":1,"event":{"kind":"other"}}
+2026-09-18T10:07:30.385670Z  INFO detcore::scheduler: [scheduler] guest in queue, scheduler proceeding..
+2026-09-18T10:07:30.385914Z  INFO detcore::scheduler: [sched-step5] >>>>>>>
+
+ COMMIT turn 0, dettid 3 using resources {ParentContinue { parent: DetPid(3), child: DetPid(3) }: W}, on previously committed 1_767_225_600.000_000_000s DETLOG_RECORD={"schema":1,"event":{"kind":"scheduler_commit","scheduler_turn":0,"virtual_nanoseconds":1767225600000000000,"internal_io_poll":false,"runtime_maps_read":false}}
+2026-09-18T10:07:30.386221Z  INFO detcore::scheduler: [sched-step5] >>>>>>>
+
+ COMMIT turn 1, dettid 3 using resources {MemAddrSpace(DetPid(3)): RW}, on previously committed 1_767_225_600.000_500_000s DETLOG_RECORD={"schema":1,"event":{"kind":"scheduler_commit","scheduler_turn":1,"virtual_nanoseconds":1767225600000500000,"internal_io_poll":false,"runtime_maps_read":false}}
+2026-09-18T10:07:30.386305Z  INFO detcore::tool_global: [detcore, dtid 3] New thread given go-ahead to proceed via <ivar Go(None)>
+2026-09-18T10:07:30.386977Z  INFO detcore::random: DETLOG [post_exec, dtid 3] init auxv AT_RANDOM value to [162, 205, 24, 211, 0, 83, 122, 92, 176, 131, 220, 72, 219, 250, 14, 242] DETLOG_RECORD={"schema":1,"event":{"kind":"other"}}
+2026-09-18T10:07:30.387426Z  INFO detcore: DETLOG [syscall][detcore, dtid 3] inbound syscall: brk(NULL) = ? DETLOG_RECORD={"schema":1,"event":{"kind":"syscall"}}
+2026-09-18T10:07:30.387566Z  INFO detcore: DETLOG [syscall][detcore, dtid 3] finish syscall #2: brk(NULL) = Ok(2117632) DETLOG_RECORD={"schema":1,"event":{"kind":"syscall_result","finished_syscall_number":2}}
+2026-09-18T10:07:30.387986Z  INFO detcore: DETLOG [syscall][detcore, dtid 3] inbound syscall: mmap(NULL, 8192, ProtFlags(PROT_READ | PROT_WRITE), MapFlags(MAP_PRIVATE | MAP_ANON), -1, 0) = ? DETLOG_RECORD={"schema":1,"event":{"kind":"syscall"}}
+2026-09-18T10:07:30.388132Z  INFO detcore: DETLOG [syscall][detcore, dtid 3] finish syscall #3: mmap(NULL, 8192, ProtFlags(PROT_READ | PROT_WRITE), MapFlags(MAP_PRIVATE | MAP_ANON), -1, 0) = Ok(18067456) DETLOG_RECORD={"schema":1,"event":{"kind":"syscall_result","finished_syscall_number":3}}
+2026-09-18T10:07:30.388389Z  INFO detcore: DETLOG [syscall][detcore, dtid 3] inbound syscall: access(0x102f580 -> "/etc/ld-nix.so.preload", Mode(S_IROTH)) = ? DETLOG_RECORD={"schema":1,"event":{"kind":"syscall"}}
+2026-09-18T10:07:30.388529Z  INFO detcore: DETLOG [syscall][detcore, dtid 3] finish syscall #4: access(0x102f580 -> "/etc/ld-nix.so.preload", Mode(S_IROTH)) = Err(Errno(ENOENT)) DETLOG_RECORD={"schema":1,"event":{"kind":"syscall_result","finished_syscall_number":4}}
+2026-09-18T10:07:30.388798Z  INFO detcore: DETLOG [syscall][detcore, dtid 3] inbound syscall: openat(-100, 0x3fffdb30 -> "/nix/store/0d8g8n0a11v6f5m2h416ajyxmnkwc3md-glibc-2.42-67/lib/glibc-hwcaps/x86-64-v2/libc.so.6", OFlag(O_CLOEXEC)) = ? DETLOG_RECORD={"schema":1,"event":{"kind":"syscall"}}
+2026-09-18T10:07:30.389019Z  INFO detcore::scheduler: [sched-step5] >>>>>>>
+
+ COMMIT turn 2, dettid 3 using resources {Path("/nix/store/0d8g8n0a11v6f5m2h416ajyxmnkwc3md-glibc-2.42-67/lib/glibc-hwcaps/x86-64-v2/libc.so.6"): R}, on previously committed 1_767_225_600.001_332_290s DETLOG_RECORD={"schema":1,"event":{"kind":"scheduler_commit","scheduler_turn":2,"virtual_nanoseconds":1767225600001332290,"internal_io_poll":false,"runtime_maps_read":false}}
+2026-09-18T10:07:30.389370Z  INFO detcore: DETLOG [syscall][detcore, dtid 3] finish syscall #5: openat(-100, 0x3fffdb30 -> "/nix/store/0d8g8n0a11v6f5m2h416ajyxmnkwc3md-glibc-2.42-67/lib/glibc-hwcaps/x86-64-v2/libc.so.6", OFlag(O_CLOEXEC)) = Err(Errno(ENOENT)) DETLOG_RECORD={"schema":1,"event":{"kind":"syscall_result","finished_syscall_number":5}}
+2026-09-18T10:07:30.389683Z  INFO detcore: DETLOG [syscall][detcore, dtid 3] inbound syscall: newfstatat(-100, 0x3fffdb30 -> "/nix/store/0d8g8n0a11v6f5m2h416ajyxmnkwc3md-glibc-2.42-67/lib/glibc-hwcaps/x86-64-v2/", 0x3fffdc00, AtFlags(0x0)) = ? DETLOG_RECORD={"schema":1,"event":{"kind":"syscall"}}
+2026-09-18T10:07:30.389880Z  INFO detcore: DETLOG [syscall][detcore, dtid 3] finish syscall #6: newfstatat(-100, 0x3fffdb30 -> "/nix/store/0d8g8n0a11v6f5m2h416ajyxmnkwc3md-glibc-2.42-67/lib/glibc-hwcaps/x86-64-v2/", 0x3fffdc00 -> {st_mode=SFlag(0x0) | 00, st_size=0, ...}, AtFlags(0x0)) = Err(Errno(ENOENT)) DETLOG_RECORD={"schema":1,"event":{"kind":"syscall_result","finished_syscall_number":6}}
+2026-09-18T10:07:30.390153Z  INFO detcore: DETLOG [syscall][detcore, dtid 3] inbound syscall: openat(-100, 0x3fffdb30 -> "/nix/store/0d8g8n0a11v6f5m2h416ajyxmnkwc3md-glibc-2.42-67/lib/libc.so.6", OFlag(O_CLOEXEC)) = ? DETLOG_RECORD={"schema":1,"event":{"kind":"syscall"}}
+2026-09-18T10:07:30.390314Z  INFO detcore::scheduler: [sched-step5] >>>>>>>
+
+ COMMIT turn 3, dettid 3 using resources {Path("/nix/store/0d8g8n0a11v6f5m2h416ajyxmnkwc3md-glibc-2.42-67/lib/libc.so.6"): R}, on previously committed 1_767_225_600.001_860_490s DETLOG_RECORD={"schema":1,"event":{"kind":"scheduler_commit","scheduler_turn":3,"virtual_nanoseconds":1767225600001860490,"internal_io_poll":false,"runtime_maps_read":false}}
+2026-09-18T10:07:30.391067Z  INFO detcore::syscalls::files: Injecting additional fstat to retrieve file metadata on fd 3.
+2026-09-18T10:07:30.391328Z  INFO detcore: DETLOG [syscall][detcore, dtid 3] finish syscall #7: openat(-100, 0x3fffdb30 -> "/nix/store/0d8g8n0a11v6f5m2h416ajyxmnkwc3md-glibc-2.42-67/lib/libc.so.6", OFlag(O_CLOEXEC)) = Ok(3) DETLOG_RECORD={"schema":1,"event":{"kind":"syscall_result","finished_syscall_number":7}}
+2026-09-18T10:07:30.391611Z  INFO detcore: DETLOG [syscall][detcore, dtid 3] inbound syscall: read(3, 0x3fffdd78, 832) = ? DETLOG_RECORD={"schema":1,"event":{"kind":"syscall"}}
+2026-09-18T10:07:30.391790Z  INFO detcore: DETLOG [syscall][detcore, dtid 3] finish syscall #8: read(3, 0x3fffdd78, 832) = Ok(832) DETLOG_RECORD={"schema":1,"event":{"kind":"syscall_result","finished_syscall_number":8}}
+2026-09-18T10:07:30.391931Z  INFO detcore::io_buffers: DETLOG [iobuf][dtid 3] read in fd=3 0x3fffdd78+832->545459ab1b0a30bd9baaf513bd46730b489da2703877f2d183da7d230f196d39 chunks=256:fe5ad1af,8d22b587,1a563b70,2998cf69 DETLOG_RECORD={"schema":1,"event":{"kind":"other"}}
+2026-09-18T10:07:30.392176Z  INFO detcore: DETLOG [syscall][detcore, dtid 3] inbound syscall: pread64(3, 0x3fffd770, 840, 64) = ? DETLOG_RECORD={"schema":1,"event":{"kind":"syscall"}}
+2026-09-18T10:07:30.392336Z  INFO detcore: DETLOG [syscall][detcore, dtid 3] finish syscall #9: pread64(3, 0x3fffd770, 840, 64) = Ok(840) DETLOG_RECORD={"schema":1,"event":{"kind":"syscall_result","finished_syscall_number":9}}
+2026-09-18T10:07:30.392438Z  INFO detcore::io_buffers: DETLOG [iobuf][dtid 3] pread64 in fd=3 0x3fffd770+840->c4a16edd551bb7125d598d7a7a98197fd0a07db5c72ebb88028edc3404b9ef3f chunks=256:f544ae23,d76bee20,17cf148c,3ad8cbf9 DETLOG_RECORD={"schema":1,"event":{"kind":"other"}}
+2026-09-18T10:07:30.392671Z  INFO detcore: DETLOG [syscall][detcore, dtid 3] inbound syscall: fstat(3, 0x3fffdc00) = ? DETLOG_RECORD={"schema":1,"event":{"kind":"syscall"}}
+2026-09-18T10:07:30.392859Z  INFO detcore: DETLOG [syscall][detcore, dtid 3] finish syscall #10: fstat(3, 0x3fffdc00) = Ok(0) DETLOG_RECORD={"schema":1,"event":{"kind":"syscall_result","finished_syscall_number":10}}
+2026-09-18T10:07:30.393097Z  INFO detcore: DETLOG [syscall][detcore, dtid 3] inbound syscall: pread64(3, 0x3fffd800, 840, 64) = ? DETLOG_RECORD={"schema":1,"event":{"kind":"syscall"}}
+2026-09-18T10:07:30.393227Z  INFO detcore: DETLOG [syscall][detcore, dtid 3] finish syscall #11: pread64(3, 0x3fffd800, 840, 64) = Ok(840) DETLOG_RECORD={"schema":1,"event":{"kind":"syscall_result","finished_syscall_number":11}}
+2026-09-18T10:07:30.393326Z  INFO detcore::io_buffers: DETLOG [iobuf][dtid 3] pread64 in fd=3 0x3fffd800+840->c4a16edd551bb7125d598d7a7a98197fd0a07db5c72ebb88028edc3404b9ef3f chunks=256:f544ae23,d76bee20,17cf148c,3ad8cbf9 DETLOG_RECORD={"schema":1,"event":{"kind":"other"}}
+2026-09-18T10:07:30.393555Z  INFO detcore: DETLOG [syscall][detcore, dtid 3] inbound syscall: mmap(NULL, 2133584, ProtFlags(PROT_READ), MapFlags(MAP_PRIVATE | MAP_DENYWRITE), 3, 0) = ? DETLOG_RECORD={"schema":1,"event":{"kind":"syscall"}}
+2026-09-18T10:07:30.395487Z  INFO detcore: DETLOG [syscall][detcore, dtid 3] finish syscall #12: mmap(NULL, 2133584, ProtFlags(PROT_READ), MapFlags(MAP_PRIVATE | MAP_DENYWRITE), 3, 0) = Ok(18075648) DETLOG_RECORD={"schema":1,"event":{"kind":"syscall_result","finished_syscall_number":12}}
+2026-09-18T10:07:30.395796Z  INFO detcore: DETLOG [syscall][detcore, dtid 3] inbound syscall: mmap(0x1165000, 1568768, ProtFlags(PROT_READ | PROT_EXEC), MapFlags(MAP_PRIVATE | MAP_FIXED | MAP_DENYWRITE), 3, 163840) = ? DETLOG_RECORD={"schema":1,"event":{"kind":"syscall"}}
+2026-09-18T10:07:30.396728Z  INFO detcore: DETLOG [syscall][detcore, dtid 3] finish syscall #13: mmap(0x1165000, 1568768, ProtFlags(PROT_READ | PROT_EXEC), MapFlags(MAP_PRIVATE | MAP_FIXED | MAP_DENYWRITE), 3, 163840) = Ok(18239488) DETLOG_RECORD={"schema":1,"event":{"kind":"syscall_result","finished_syscall_number":13}}
+2026-09-18T10:07:30.397005Z  INFO detcore: DETLOG [syscall][detcore, dtid 3] inbound syscall: mmap(0x12e4000, 323584, ProtFlags(PROT_READ), MapFlags(MAP_PRIVATE | MAP_FIXED | MAP_DENYWRITE), 3, 1732608) = ? DETLOG_RECORD={"schema":1,"event":{"kind":"syscall"}}
+2026-09-18T10:07:30.397209Z  INFO detcore: DETLOG [syscall][detcore, dtid 3] finish syscall #14: mmap(0x12e4000, 323584, ProtFlags(PROT_READ), MapFlags(MAP_PRIVATE | MAP_FIXED | MAP_DENYWRITE), 3, 1732608) = Ok(19808256) DETLOG_RECORD={"schema":1,"event":{"kind":"syscall_result","finished_syscall_number":14}}
+2026-09-18T10:07:30.397422Z  INFO detcore: DETLOG [syscall][detcore, dtid 3] inbound syscall: mmap(0x1333000, 24576, ProtFlags(PROT_READ | PROT_WRITE), MapFlags(MAP_PRIVATE | MAP_FIXED | MAP_DENYWRITE), 3, 2052096) = ? DETLOG_RECORD={"schema":1,"event":{"kind":"syscall"}}
+2026-09-18T10:07:30.397500Z  INFO detcore: DETLOG [syscall][detcore, dtid 3] finish syscall #15: mmap(0x1333000, 24576, ProtFlags(PROT_READ | PROT_WRITE), MapFlags(MAP_PRIVATE | MAP_FIXED | MAP_DENYWRITE), 3, 2052096) = Ok(20131840) DETLOG_RECORD={"schema":1,"event":{"kind":"syscall_result","finished_syscall_number":15}}
+2026-09-18T10:07:30.397700Z  INFO detcore: DETLOG [syscall][detcore, dtid 3] inbound syscall: mmap(0x1339000, 52816, ProtFlags(PROT_READ | PROT_WRITE), MapFlags(MAP_PRIVATE | MAP_FIXED | MAP_ANON), -1, 0) = ? DETLOG_RECORD={"schema":1,"event":{"kind":"syscall"}}
+2026-09-18T10:07:30.397763Z  INFO detcore: DETLOG [syscall][detcore, dtid 3] finish syscall #16: mmap(0x1339000, 52816, ProtFlags(PROT_READ | PROT_WRITE), MapFlags(MAP_PRIVATE | MAP_FIXED | MAP_ANON), -1, 0) = Ok(20156416) DETLOG_RECORD={"schema":1,"event":{"kind":"syscall_result","finished_syscall_number":16}}
+2026-09-18T10:07:30.397960Z  INFO detcore: DETLOG [syscall][detcore, dtid 3] inbound syscall: close(3) = ? DETLOG_RECORD={"schema":1,"event":{"kind":"syscall"}}
+2026-09-18T10:07:30.398124Z  INFO detcore: DETLOG [syscall][detcore, dtid 3] finish syscall #17: close(3) = Ok(0) DETLOG_RECORD={"schema":1,"event":{"kind":"syscall_result","finished_syscall_number":17}}
+2026-09-18T10:07:30.398326Z  INFO detcore: DETLOG [syscall][detcore, dtid 3] inbound syscall: mmap(NULL, 12288, ProtFlags(PROT_READ | PROT_WRITE), MapFlags(MAP_PRIVATE | MAP_ANON), -1, 0) = ? DETLOG_RECORD={"schema":1,"event":{"kind":"syscall"}}
+2026-09-18T10:07:30.398450Z  INFO detcore: DETLOG [syscall][detcore, dtid 3] finish syscall #18: mmap(NULL, 12288, ProtFlags(PROT_READ | PROT_WRITE), MapFlags(MAP_PRIVATE | MAP_ANON), -1, 0) = Ok(20209664) DETLOG_RECORD={"schema":1,"event":{"kind":"syscall_result","finished_syscall_number":18}}
+2026-09-18T10:07:30.398661Z  INFO detcore: DETLOG [syscall][detcore, dtid 3] inbound syscall: arch_prctl(ARCH_SET_FS, 20211520) = ? DETLOG_RECORD={"schema":1,"event":{"kind":"syscall"}}
+2026-09-18T10:07:30.398726Z  INFO detcore: DETLOG [syscall][detcore, dtid 3] finish syscall #19: arch_prctl(ARCH_SET_FS, 20211520) = Ok(0) DETLOG_RECORD={"schema":1,"event":{"kind":"syscall_result","finished_syscall_number":19}}
+2026-09-18T10:07:30.398933Z  INFO detcore: DETLOG [syscall][detcore, dtid 3] inbound syscall: set_tid_address(0x1346a10) = ? DETLOG_RECORD={"schema":1,"event":{"kind":"syscall"}}
+2026-09-18T10:07:30.399022Z  INFO detcore: DETLOG [syscall][detcore, dtid 3] finish syscall #20: set_tid_address(0x1346a10) = Ok(3) DETLOG_RECORD={"schema":1,"event":{"kind":"syscall_result","finished_syscall_number":20}}
+2026-09-18T10:07:30.399216Z  INFO detcore: DETLOG [syscall][detcore, dtid 3] inbound syscall: set_robust_list(0x1346a20, 24) = ? DETLOG_RECORD={"schema":1,"event":{"kind":"syscall"}}
+2026-09-18T10:07:30.399280Z  INFO detcore: DETLOG [syscall][detcore, dtid 3] finish syscall #21: set_robust_list(0x1346a20, 24) = Ok(0) DETLOG_RECORD={"schema":1,"event":{"kind":"syscall_result","finished_syscall_number":21}}
+2026-09-18T10:07:30.399473Z  INFO detcore: DETLOG [syscall][detcore, dtid 3] inbound syscall: rseq(20211328, 32, 0, 1392848979, 18446744073709551424, 0) = ? DETLOG_RECORD={"schema":1,"event":{"kind":"syscall"}}
+2026-09-18T10:07:30.399503Z  INFO detcore: DETLOG [syscall][detcore, dtid 3] finish syscall #22: rseq(20211328, 32, 0, 1392848979, 18446744073709551424, 0) = Err(Errno(ENOSYS)) DETLOG_RECORD={"schema":1,"event":{"kind":"syscall_result","finished_syscall_number":22}}
+2026-09-18T10:07:30.399718Z  INFO detcore: DETLOG [syscall][detcore, dtid 3] inbound syscall: mprotect(0x1333000, 16384, ProtFlags(PROT_READ)) = ? DETLOG_RECORD={"schema":1,"event":{"kind":"syscall"}}
+2026-09-18T10:07:30.399789Z  INFO detcore: DETLOG [syscall][detcore, dtid 3] finish syscall #23: mprotect(0x1333000, 16384, ProtFlags(PROT_READ)) = Ok(0) DETLOG_RECORD={"schema":1,"event":{"kind":"syscall_result","finished_syscall_number":23}}
+2026-09-18T10:07:30.399962Z  INFO detcore: DETLOG [syscall][detcore, dtid 3] inbound syscall: mprotect(0x203000, 4096, ProtFlags(PROT_READ)) = ? DETLOG_RECORD={"schema":1,"event":{"kind":"syscall"}}
+2026-09-18T10:07:30.400003Z  INFO detcore: DETLOG [syscall][detcore, dtid 3] finish syscall #24: mprotect(0x203000, 4096, ProtFlags(PROT_READ)) = Ok(0) DETLOG_RECORD={"schema":1,"event":{"kind":"syscall_result","finished_syscall_number":24}}
+2026-09-18T10:07:30.400172Z  INFO detcore: DETLOG [syscall][detcore, dtid 3] inbound syscall: mprotect(0x1037000, 8192, ProtFlags(PROT_READ)) = ? DETLOG_RECORD={"schema":1,"event":{"kind":"syscall"}}
+2026-09-18T10:07:30.400211Z  INFO detcore: DETLOG [syscall][detcore, dtid 3] finish syscall #25: mprotect(0x1037000, 8192, ProtFlags(PROT_READ)) = Ok(0) DETLOG_RECORD={"schema":1,"event":{"kind":"syscall_result","finished_syscall_number":25}}
+2026-09-18T10:07:30.400391Z  INFO detcore: DETLOG [syscall][detcore, dtid 3] inbound syscall: prlimit64(0, 3, NULL, 0x3fffe770) = ? DETLOG_RECORD={"schema":1,"event":{"kind":"syscall"}}
+2026-09-18T10:07:30.400461Z  INFO detcore::syscalls::sysinfo: DETLOG prlimit64: pid=0, resource=3, mutation=false, old=8388608:18446744073709551615 DETLOG_RECORD={"schema":1,"event":{"kind":"other"}}
+2026-09-18T10:07:30.400484Z  INFO detcore: DETLOG [syscall][detcore, dtid 3] finish syscall #26: prlimit64(0, 3, NULL, 0x3fffe770) = Ok(0) DETLOG_RECORD={"schema":1,"event":{"kind":"syscall_result","finished_syscall_number":26}}
+2026-09-18T10:07:30.400670Z  INFO detcore: DETLOG [syscall][detcore, dtid 3] inbound syscall: getrandom(0x133e200, 8, 1) = ? DETLOG_RECORD={"schema":1,"event":{"kind":"syscall"}}
+2026-09-18T10:07:30.400727Z  INFO detcore::random: DETLOG [dtid 3] USER RAND [getrandom] Filled guest memory with 8 random bytes, hash of bytes: 9401673912765844831 DETLOG_RECORD={"schema":1,"event":{"kind":"other"}}
+2026-09-18T10:07:30.400751Z  INFO detcore: DETLOG [syscall][detcore, dtid 3] finish syscall #27: getrandom(0x133e200, 8, 1) = Ok(8) DETLOG_RECORD={"schema":1,"event":{"kind":"syscall_result","finished_syscall_number":27}}
+2026-09-18T10:07:30.400808Z  INFO detcore::io_buffers: DETLOG [iobuf][dtid 3] getrandom in fd=- 0x133e200+8->b5617a3bc2e8ddf4b82d23c5f8cd87e27bfa2adffc3c9c36490176e88908d30c DETLOG_RECORD={"schema":1,"event":{"kind":"other"}}
+2026-09-18T10:07:30.401006Z  INFO detcore: DETLOG [syscall][detcore, dtid 3] inbound syscall: getrandom(0x3fffe738, 8, 1) = ? DETLOG_RECORD={"schema":1,"event":{"kind":"syscall"}}
+2026-09-18T10:07:30.401037Z  INFO detcore::random: DETLOG [dtid 3] USER RAND [getrandom] Filled guest memory with 8 random bytes, hash of bytes: 4379507441104331474 DETLOG_RECORD={"schema":1,"event":{"kind":"other"}}
+2026-09-18T10:07:30.401060Z  INFO detcore: DETLOG [syscall][detcore, dtid 3] finish syscall #28: getrandom(0x3fffe738, 8, 1) = Ok(8) DETLOG_RECORD={"schema":1,"event":{"kind":"syscall_result","finished_syscall_number":28}}
+2026-09-18T10:07:30.401092Z  INFO detcore::io_buffers: DETLOG [iobuf][dtid 3] getrandom in fd=- 0x3fffe738+8->ba284f6e1576a63465aee4059d18ba5b2b1409e604ba8c4f701a93c2ecfc8b67 DETLOG_RECORD={"schema":1,"event":{"kind":"other"}}
+2026-09-18T10:07:30.401263Z  INFO detcore: DETLOG [syscall][detcore, dtid 3] inbound syscall: mkdir(0x3fffe7f0 -> "/tmp/rddirMEW9Zn", Mode(S_IRWXU)) = ? DETLOG_RECORD={"schema":1,"event":{"kind":"syscall"}}
+2026-09-18T10:07:30.401485Z  INFO detcore: DETLOG [syscall][detcore, dtid 3] finish syscall #29: mkdir(0x3fffe7f0 -> "/tmp/rddirMEW9Zn", Mode(S_IRWXU)) = Ok(0) DETLOG_RECORD={"schema":1,"event":{"kind":"syscall_result","finished_syscall_number":29}}
+2026-09-18T10:07:30.401710Z  INFO detcore: DETLOG [syscall][detcore, dtid 3] inbound syscall: openat(-100, 0x3fffe970 -> "/tmp/rddirMEW9Zn/gamma", OFlag(O_CREAT | O_TRUNC | O_WRONLY), Mode(S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH)) = ? DETLOG_RECORD={"schema":1,"event":{"kind":"syscall"}}
+2026-09-18T10:07:30.401956Z  INFO detcore::scheduler: [sched-step5] >>>>>>>
+
+ COMMIT turn 4, dettid 3 using resources {Path("/tmp/rddirMEW9Zn/gamma"): R}, on previously committed 1_767_225_600.002_709_360s DETLOG_RECORD={"schema":1,"event":{"kind":"scheduler_commit","scheduler_turn":4,"virtual_nanoseconds":1767225600002709360,"internal_io_poll":false,"runtime_maps_read":false}}
+2026-09-18T10:07:30.402473Z  INFO detcore::syscalls::files: Injecting additional fstat to retrieve file metadata on fd 3.
+2026-09-18T10:07:30.402637Z  INFO detcore: DETLOG [syscall][detcore, dtid 3] finish syscall #30: openat(-100, 0x3fffe970 -> "/tmp/rddirMEW9Zn/gamma", OFlag(O_CREAT | O_TRUNC | O_WRONLY), Mode(S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH)) = Ok(3) DETLOG_RECORD={"schema":1,"event":{"kind":"syscall_result","finished_syscall_number":30}}
+2026-09-18T10:07:30.402902Z  INFO detcore: DETLOG [syscall][detcore, dtid 3] inbound syscall: write(3, 0x202033, 1) = ? DETLOG_RECORD={"schema":1,"event":{"kind":"syscall"}}
+2026-09-18T10:07:30.403059Z  INFO detcore: DETLOG [syscall][detcore, dtid 3] finish syscall #31: write(3, 0x202033, 1) = Ok(1) DETLOG_RECORD={"schema":1,"event":{"kind":"syscall_result","finished_syscall_number":31}}
+2026-09-18T10:07:30.403104Z  INFO detcore::io_buffers: DETLOG [iobuf][dtid 3] write out fd=3 0x202033+1->2d711642b726b04401627ca9fbac32f5c8530fb1903cc4db02258717921a4881 DETLOG_RECORD={"schema":1,"event":{"kind":"other"}}
+2026-09-18T10:07:30.403299Z  INFO detcore: DETLOG [syscall][detcore, dtid 3] inbound syscall: close(3) = ? DETLOG_RECORD={"schema":1,"event":{"kind":"syscall"}}
+2026-09-18T10:07:30.403406Z  INFO detcore: DETLOG [syscall][detcore, dtid 3] finish syscall #32: close(3) = Ok(0) DETLOG_RECORD={"schema":1,"event":{"kind":"syscall_result","finished_syscall_number":32}}
+2026-09-18T10:07:30.403602Z  INFO detcore: DETLOG [syscall][detcore, dtid 3] inbound syscall: openat(-100, 0x3fffe970 -> "/tmp/rddirMEW9Zn/alpha", OFlag(O_CREAT | O_TRUNC | O_WRONLY), Mode(S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH)) = ? DETLOG_RECORD={"schema":1,"event":{"kind":"syscall"}}
+2026-09-18T10:07:30.403748Z  INFO detcore::scheduler: [sched-step5] >>>>>>>
+
+ COMMIT turn 5, dettid 3 using resources {Path("/tmp/rddirMEW9Zn/alpha"): R}, on previously committed 1_767_225_600.003_271_570s DETLOG_RECORD={"schema":1,"event":{"kind":"scheduler_commit","scheduler_turn":5,"virtual_nanoseconds":1767225600003271570,"internal_io_poll":false,"runtime_maps_read":false}}
+2026-09-18T10:07:30.404103Z  INFO detcore::syscalls::files: Injecting additional fstat to retrieve file metadata on fd 3.
+2026-09-18T10:07:30.404230Z  INFO detcore: DETLOG [syscall][detcore, dtid 3] finish syscall #33: openat(-100, 0x3fffe970 -> "/tmp/rddirMEW9Zn/alpha", OFlag(O_CREAT | O_TRUNC | O_WRONLY), Mode(S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH)) = Ok(3) DETLOG_RECORD={"schema":1,"event":{"kind":"syscall_result","finished_syscall_number":33}}
+2026-09-18T10:07:30.404464Z  INFO detcore: DETLOG [syscall][detcore, dtid 3] inbound syscall: write(3, 0x202033, 1) = ? DETLOG_RECORD={"schema":1,"event":{"kind":"syscall"}}
+2026-09-18T10:07:30.404575Z  INFO detcore: DETLOG [syscall][detcore, dtid 3] finish syscall #34: write(3, 0x202033, 1) = Ok(1) DETLOG_RECORD={"schema":1,"event":{"kind":"syscall_result","finished_syscall_number":34}}
+2026-09-18T10:07:30.404615Z  INFO detcore::io_buffers: DETLOG [iobuf][dtid 3] write out fd=3 0x202033+1->2d711642b726b04401627ca9fbac32f5c8530fb1903cc4db02258717921a4881 DETLOG_RECORD={"schema":1,"event":{"kind":"other"}}
+2026-09-18T10:07:30.404805Z  INFO detcore: DETLOG [syscall][detcore, dtid 3] inbound syscall: close(3) = ? DETLOG_RECORD={"schema":1,"event":{"kind":"syscall"}}
+2026-09-18T10:07:30.404897Z  INFO detcore: DETLOG [syscall][detcore, dtid 3] finish syscall #35: close(3) = Ok(0) DETLOG_RECORD={"schema":1,"event":{"kind":"syscall_result","finished_syscall_number":35}}
+2026-09-18T10:07:30.405091Z  INFO detcore: DETLOG [syscall][detcore, dtid 3] inbound syscall: openat(-100, 0x3fffe970 -> "/tmp/rddirMEW9Zn/beta", OFlag(O_CREAT | O_TRUNC | O_WRONLY), Mode(S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH)) = ? DETLOG_RECORD={"schema":1,"event":{"kind":"syscall"}}
+2026-09-18T10:07:30.405223Z  INFO detcore::scheduler: [sched-step5] >>>>>>>
+
+ COMMIT turn 6, dettid 3 using resources {Path("/tmp/rddirMEW9Zn/beta"): R}, on previously committed 1_767_225_600.003_832_380s DETLOG_RECORD={"schema":1,"event":{"kind":"scheduler_commit","scheduler_turn":6,"virtual_nanoseconds":1767225600003832380,"internal_io_poll":false,"runtime_maps_read":false}}
+2026-09-18T10:07:30.405540Z  INFO detcore::syscalls::files: Injecting additional fstat to retrieve file metadata on fd 3.
+2026-09-18T10:07:30.405663Z  INFO detcore: DETLOG [syscall][detcore, dtid 3] finish syscall #36: openat(-100, 0x3fffe970 -> "/tmp/rddirMEW9Zn/beta", OFlag(O_CREAT | O_TRUNC | O_WRONLY), Mode(S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH)) = Ok(3) DETLOG_RECORD={"schema":1,"event":{"kind":"syscall_result","finished_syscall_number":36}}
+2026-09-18T10:07:30.405918Z  INFO detcore: DETLOG [syscall][detcore, dtid 3] inbound syscall: write(3, 0x202033, 1) = ? DETLOG_RECORD={"schema":1,"event":{"kind":"syscall"}}
+2026-09-18T10:07:30.406036Z  INFO detcore: DETLOG [syscall][detcore, dtid 3] finish syscall #37: write(3, 0x202033, 1) = Ok(1) DETLOG_RECORD={"schema":1,"event":{"kind":"syscall_result","finished_syscall_number":37}}
+2026-09-18T10:07:30.406076Z  INFO detcore::io_buffers: DETLOG [iobuf][dtid 3] write out fd=3 0x202033+1->2d711642b726b04401627ca9fbac32f5c8530fb1903cc4db02258717921a4881 DETLOG_RECORD={"schema":1,"event":{"kind":"other"}}
+2026-09-18T10:07:30.406254Z  INFO detcore: DETLOG [syscall][detcore, dtid 3] inbound syscall: close(3) = ? DETLOG_RECORD={"schema":1,"event":{"kind":"syscall"}}
+2026-09-18T10:07:30.406348Z  INFO detcore: DETLOG [syscall][detcore, dtid 3] finish syscall #38: close(3) = Ok(0) DETLOG_RECORD={"schema":1,"event":{"kind":"syscall_result","finished_syscall_number":38}}
+2026-09-18T10:07:30.406541Z  INFO detcore: DETLOG [syscall][detcore, dtid 3] inbound syscall: openat(-100, 0x3fffe7f0 -> "/tmp/rddirMEW9Zn", OFlag(O_CLOEXEC | O_DIRECTORY | O_NDELAY), Mode(0x0)) = ? DETLOG_RECORD={"schema":1,"event":{"kind":"syscall"}}
+2026-09-18T10:07:30.406682Z  INFO detcore::scheduler: [sched-step5] >>>>>>>
+
+ COMMIT turn 7, dettid 3 using resources {Path("/tmp/rddirMEW9Zn"): R}, on previously committed 1_767_225_600.004_393_230s DETLOG_RECORD={"schema":1,"event":{"kind":"scheduler_commit","scheduler_turn":7,"virtual_nanoseconds":1767225600004393230,"internal_io_poll":false,"runtime_maps_read":false}}
+2026-09-18T10:07:30.406937Z  INFO detcore::syscalls::files: Injecting additional fstat to retrieve file metadata on fd 3.
+2026-09-18T10:07:30.407067Z  INFO detcore: DETLOG [syscall][detcore, dtid 3] finish syscall #39: openat(-100, 0x3fffe7f0 -> "/tmp/rddirMEW9Zn", OFlag(O_CLOEXEC | O_DIRECTORY | O_NDELAY), Mode(0x0)) = Ok(3) DETLOG_RECORD={"schema":1,"event":{"kind":"syscall_result","finished_syscall_number":39}}
+2026-09-18T10:07:30.407315Z  INFO detcore: DETLOG [syscall][detcore, dtid 3] inbound syscall: fstat(3, 0x3fffe700) = ? DETLOG_RECORD={"schema":1,"event":{"kind":"syscall"}}
+2026-09-18T10:07:30.407446Z  INFO detcore: DETLOG [syscall][detcore, dtid 3] finish syscall #40: fstat(3, 0x3fffe700) = Ok(0) DETLOG_RECORD={"schema":1,"event":{"kind":"syscall_result","finished_syscall_number":40}}
+2026-09-18T10:07:30.407642Z  INFO detcore: DETLOG [syscall][detcore, dtid 3] inbound syscall: brk(NULL) = ? DETLOG_RECORD={"schema":1,"event":{"kind":"syscall"}}
+2026-09-18T10:07:30.407708Z  INFO detcore: DETLOG [syscall][detcore, dtid 3] finish syscall #41: brk(NULL) = Ok(2117632) DETLOG_RECORD={"schema":1,"event":{"kind":"syscall_result","finished_syscall_number":41}}
+2026-09-18T10:07:30.407910Z  INFO detcore: DETLOG [syscall][detcore, dtid 3] inbound syscall: brk(0x22e000) = ? DETLOG_RECORD={"schema":1,"event":{"kind":"syscall"}}
+2026-09-18T10:07:30.408011Z  INFO detcore: DETLOG [syscall][detcore, dtid 3] finish syscall #42: brk(0x22e000) = Ok(2285568) DETLOG_RECORD={"schema":1,"event":{"kind":"syscall_result","finished_syscall_number":42}}
+2026-09-18T10:07:30.408218Z  INFO detcore: DETLOG [syscall][detcore, dtid 3] inbound syscall: getdents64(3, 0x205040, 32768) = ? DETLOG_RECORD={"schema":1,"event":{"kind":"syscall"}}
+2026-09-18T10:07:30.408397Z  INFO detcore: DETLOG [syscall][detcore, dtid 3] finish syscall #43: getdents64(3, 0x205040, 32768) = Ok(136) DETLOG_RECORD={"schema":1,"event":{"kind":"syscall_result","finished_syscall_number":43}}
+2026-09-18T10:07:30.408449Z  INFO detcore::io_buffers: DETLOG [iobuf][dtid 3] getdents64 in fd=- 0x205040+136->5637c817dc25f572acd7e5989f4535e3db6e5b63c34c9d01f45e617ffe5ce8e4 DETLOG_RECORD={"schema":1,"event":{"kind":"other"}}
+2026-09-18T10:07:30.408681Z  INFO detcore: DETLOG [syscall][detcore, dtid 3] inbound syscall: getdents64(3, 0x205040, 32768) = ? DETLOG_RECORD={"schema":1,"event":{"kind":"syscall"}}
+2026-09-18T10:07:30.408768Z  INFO detcore: DETLOG [syscall][detcore, dtid 3] finish syscall #44: getdents64(3, 0x205040, 32768) = Ok(0) DETLOG_RECORD={"schema":1,"event":{"kind":"syscall_result","finished_syscall_number":44}}
+2026-09-18T10:07:30.408983Z  INFO detcore: DETLOG [syscall][detcore, dtid 3] inbound syscall: close(3) = ? DETLOG_RECORD={"schema":1,"event":{"kind":"syscall"}}
+2026-09-18T10:07:30.409108Z  INFO detcore: DETLOG [syscall][detcore, dtid 3] finish syscall #45: close(3) = Ok(0) DETLOG_RECORD={"schema":1,"event":{"kind":"syscall_result","finished_syscall_number":45}}
+2026-09-18T10:07:30.409342Z  INFO detcore: DETLOG [syscall][detcore, dtid 3] inbound syscall: newfstatat(-100, 0x3fffe8f0 -> "/tmp/rddirMEW9Zn/alpha", 0x3fffe970, AtFlags(0x0)) = ? DETLOG_RECORD={"schema":1,"event":{"kind":"syscall"}}
+2026-09-18T10:07:30.409528Z  INFO detcore: DETLOG [syscall][detcore, dtid 3] finish syscall #46: newfstatat(-100, 0x3fffe8f0 -> "/tmp/rddirMEW9Zn/alpha", 0x3fffe970 -> {st_mode=SFlag(S_IFREG) | 0644, st_size=1, ...}, AtFlags(0x0)) = Ok(0) DETLOG_RECORD={"schema":1,"event":{"kind":"syscall_result","finished_syscall_number":46}}
+2026-09-18T10:07:30.409807Z  INFO detcore: DETLOG [syscall][detcore, dtid 3] inbound syscall: newfstatat(-100, 0x3fffe8f0 -> "/tmp/rddirMEW9Zn/beta", 0x3fffe970, AtFlags(0x0)) = ? DETLOG_RECORD={"schema":1,"event":{"kind":"syscall"}}
+2026-09-18T10:07:30.409974Z  INFO detcore: DETLOG [syscall][detcore, dtid 3] finish syscall #47: newfstatat(-100, 0x3fffe8f0 -> "/tmp/rddirMEW9Zn/beta", 0x3fffe970 -> {st_mode=SFlag(S_IFREG) | 0644, st_size=1, ...}, AtFlags(0x0)) = Ok(0) DETLOG_RECORD={"schema":1,"event":{"kind":"syscall_result","finished_syscall_number":47}}
+2026-09-18T10:07:30.410237Z  INFO detcore: DETLOG [syscall][detcore, dtid 3] inbound syscall: newfstatat(-100, 0x3fffe8f0 -> "/tmp/rddirMEW9Zn/gamma", 0x3fffe970, AtFlags(0x0)) = ? DETLOG_RECORD={"schema":1,"event":{"kind":"syscall"}}
+2026-09-18T10:07:30.410387Z  INFO detcore: DETLOG [syscall][detcore, dtid 3] finish syscall #48: newfstatat(-100, 0x3fffe8f0 -> "/tmp/rddirMEW9Zn/gamma", 0x3fffe970 -> {st_mode=SFlag(S_IFREG) | 0644, st_size=1, ...}, AtFlags(0x0)) = Ok(0) DETLOG_RECORD={"schema":1,"event":{"kind":"syscall_result","finished_syscall_number":48}}
+2026-09-18T10:07:30.410633Z  INFO detcore: DETLOG [syscall][detcore, dtid 3] inbound syscall: unlink(0x3fffe970 -> "/tmp/rddirMEW9Zn/alpha") = ? DETLOG_RECORD={"schema":1,"event":{"kind":"syscall"}}
+2026-09-18T10:07:30.410857Z  INFO detcore: DETLOG [syscall][detcore, dtid 3] finish syscall #49: unlink(0x3fffe970 -> "/tmp/rddirMEW9Zn/alpha") = Ok(0) DETLOG_RECORD={"schema":1,"event":{"kind":"syscall_result","finished_syscall_number":49}}
+2026-09-18T10:07:30.411095Z  INFO detcore: DETLOG [syscall][detcore, dtid 3] inbound syscall: unlink(0x3fffe970 -> "/tmp/rddirMEW9Zn/beta") = ? DETLOG_RECORD={"schema":1,"event":{"kind":"syscall"}}
+2026-09-18T10:07:30.411246Z  INFO detcore: DETLOG [syscall][detcore, dtid 3] finish syscall #50: unlink(0x3fffe970 -> "/tmp/rddirMEW9Zn/beta") = Ok(0) DETLOG_RECORD={"schema":1,"event":{"kind":"syscall_result","finished_syscall_number":50}}
+2026-09-18T10:07:30.411464Z  INFO detcore: DETLOG [syscall][detcore, dtid 3] inbound syscall: unlink(0x3fffe970 -> "/tmp/rddirMEW9Zn/gamma") = ? DETLOG_RECORD={"schema":1,"event":{"kind":"syscall"}}
+2026-09-18T10:07:30.411620Z  INFO detcore: DETLOG [syscall][detcore, dtid 3] finish syscall #51: unlink(0x3fffe970 -> "/tmp/rddirMEW9Zn/gamma") = Ok(0) DETLOG_RECORD={"schema":1,"event":{"kind":"syscall_result","finished_syscall_number":51}}
+2026-09-18T10:07:30.411840Z  INFO detcore: DETLOG [syscall][detcore, dtid 3] inbound syscall: rmdir(0x3fffe7f0 -> "/tmp/rddirMEW9Zn") = ? DETLOG_RECORD={"schema":1,"event":{"kind":"syscall"}}
+2026-09-18T10:07:30.411979Z  INFO detcore: DETLOG [syscall][detcore, dtid 3] finish syscall #52: rmdir(0x3fffe7f0 -> "/tmp/rddirMEW9Zn") = Ok(0) DETLOG_RECORD={"schema":1,"event":{"kind":"syscall_result","finished_syscall_number":52}}
+2026-09-18T10:07:30.412177Z  INFO detcore: DETLOG [syscall][detcore, dtid 3] inbound syscall: fstat(1, 0x3fffe400) = ? DETLOG_RECORD={"schema":1,"event":{"kind":"syscall"}}
+2026-09-18T10:07:30.412282Z  INFO detcore: DETLOG [syscall][detcore, dtid 3] finish syscall #53: fstat(1, 0x3fffe400) = Ok(0) DETLOG_RECORD={"schema":1,"event":{"kind":"syscall_result","finished_syscall_number":53}}
+2026-09-18T10:07:30.412458Z  INFO detcore: DETLOG [syscall][detcore, dtid 3] inbound syscall: write(1, 0x205010, 36) = ? DETLOG_RECORD={"schema":1,"event":{"kind":"syscall"}}
+2026-09-18T10:07:30.412596Z  INFO detcore::scheduler: [sched-step5] >>>>>>>
+
+ COMMIT turn 8, dettid 3 using resources {Device(ContainerStdout): W}, on previously committed 1_767_225_600.005_005_200s DETLOG_RECORD={"schema":1,"event":{"kind":"scheduler_commit","scheduler_turn":8,"virtual_nanoseconds":1767225600005005200,"internal_io_poll":false,"runtime_maps_read":false}}
+2026-09-18T10:07:30.412765Z  INFO detcore: DETLOG [syscall][detcore, dtid 3] finish syscall #54: write(1, 0x205010, 36) = Ok(36) DETLOG_RECORD={"schema":1,"event":{"kind":"syscall_result","finished_syscall_number":54}}
+2026-09-18T10:07:30.412830Z  INFO detcore::io_buffers: DETLOG [iobuf][dtid 3] write out fd=1 0x205010+36->a9a2623e7f2c6483e3ab0b934be1306903bf1d8ccc46dd1bee9fa0679eb87dcb DETLOG_RECORD={"schema":1,"event":{"kind":"other"}}
+2026-09-18T10:07:30.413064Z  INFO detcore: DETLOG [syscall][detcore, dtid 3] inbound syscall: exit_group(0) = ? DETLOG_RECORD={"schema":1,"event":{"kind":"syscall"}}
+2026-09-18T10:07:30.413180Z  INFO detcore::scheduler: [sched-step5] >>>>>>>
+
+ COMMIT turn 9, dettid 3 using resources {Exit { group: true, process: DetPid(3), mm: MmId { creator: DetPid(3), generation: 1 } }: RW}, on previously committed 1_767_225_600.005_756_030s DETLOG_RECORD={"schema":1,"event":{"kind":"scheduler_commit","scheduler_turn":9,"virtual_nanoseconds":1767225600005756030,"internal_io_poll":false,"runtime_maps_read":false}}
+2026-09-18T10:07:30.413275Z  INFO detcore::tool_global: Scheduler authorized an exit-group scenario, from dettid 3 / detpid 3
+2026-09-18T10:07:30.413544Z  INFO detcore::scheduler: logically_kill: Scheduler removing all knowledge of [det]tid 3 in pid 3..
+2026-09-18T10:07:30.413857Z  INFO detcore::scheduler: scheduler (step2_process_blocked): zero threads left anywhere, fizzling. DETLOG_RECORD={"schema":1,"event":{"kind":"scheduler_empty_queue_kick"}}
+2026-09-18T10:07:30.413914Z  INFO detcore::scheduler: [scheduler] run queue empty, exiting sched_loop.
+2026-09-18T10:07:30.414009Z  INFO detcore::tool_global: detcore shut down, destroying global state
+2026-09-18T10:07:30.414346Z  INFO detcore::tool_global: 
+  ------------------------------ hermit run report ------------------------------
+Final thread-tree was: [3]
+There were 1 group leaders of 1 thread(s) total.
+Guest threads completed 55 syscalls.
+Internally, the hermit scheduler ran 10 turns, recorded 0 events (0 desynced)
+Final virtual global (cpu) time: 1_767_225_600.006_256_030s
+Elapsed virtual global (cpu) time: 6_256_030ns
+Timeslice stats: min=1256030ns max=1256030ns mean=1256030ns count=1
+

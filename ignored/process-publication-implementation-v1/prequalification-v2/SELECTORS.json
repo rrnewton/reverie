@@ -1,0 +1,361 @@
+{
+  "new_declarations": 7,
+  "unchanged_neighbors": 43,
+  "groups": {
+    "test-01": {
+      "artifact": "lib",
+      "names": [
+        "executor::process_signal_publication::tests::inactive_publication_alarm_preserves_masks_dispositions_and_coalesces"
+      ]
+    },
+    "test-02": {
+      "artifact": "lib",
+      "names": [
+        "executor::process_signal_publication::tests::inactive_publication_rejects_bad_event_reused_process_and_closed_run"
+      ]
+    },
+    "test-03": {
+      "artifact": "lib",
+      "names": [
+        "executor::process_signal_publication::tests::inactive_publication_resolves_current_exec_image_and_surviving_thread"
+      ]
+    },
+    "test-04": {
+      "artifact": "lib",
+      "names": [
+        "executor::process_signal_publication::tests::inactive_publication_aliases_all_consumers_and_ignore_update_readiness"
+      ]
+    },
+    "test-05": {
+      "artifact": "lib",
+      "names": [
+        "executor::process_signal_publication::tests::inactive_publication_preflight_and_postcommit_failure_are_distinct"
+      ]
+    },
+    "test-06": {
+      "artifact": "lib",
+      "names": [
+        "executor::process_signal_publication::tests::inactive_publication_concurrent_dequeue_keeps_readiness_equal_to_pending"
+      ]
+    },
+    "test-07": {
+      "artifact": "lib",
+      "names": [
+        "executor::process_signal_publication::tests::inactive_publication_child_requires_committed_generation_and_parent"
+      ]
+    },
+    "test-08": {
+      "artifact": "lib",
+      "names": [
+        "executor::tests::process_alarm_signal_complete_state_for_each_mask_and_disposition"
+      ]
+    },
+    "test-09": {
+      "artifact": "lib",
+      "names": [
+        "executor::tests::process_alarm_signal_rejects_all_noncanonical_bytes_without_state_changes"
+      ]
+    },
+    "test-10": {
+      "artifact": "lib",
+      "names": [
+        "executor::tests::process_alarm_signal_coalesces_with_first_shared_info_without_changing_private_defers"
+      ]
+    },
+    "test-11": {
+      "artifact": "lib",
+      "names": [
+        "executor::tests::process_alarm_signal_blocked_ignored_generation_differs_from_later_sigign"
+      ]
+    },
+    "test-12": {
+      "artifact": "lib",
+      "names": [
+        "executor::tests::process_alarm_signal_receiver_lifetime_and_process_actions_refuse_before_mutation"
+      ]
+    },
+    "test-13": {
+      "artifact": "lib",
+      "names": [
+        "executor::tests::process_alarm_signal_readiness_failure_distinguishes_pre_and_post_publication"
+      ]
+    },
+    "test-14": {
+      "artifact": "lib",
+      "names": [
+        "executor::tests::process_alarm_signal_tool_reblocking_keeps_actual_pending_domain_and_first_info"
+      ]
+    },
+    "test-15": {
+      "artifact": "lib",
+      "names": [
+        "executor::tests::process_alarm_signal_tool_sigchld_replacement_preserves_thread_fault_and_process_domains"
+      ]
+    },
+    "test-16": {
+      "artifact": "lib",
+      "names": [
+        "executor::tests::process_alarm_signal_fork_and_exec_keep_process_pending_lifetime"
+      ]
+    },
+    "test-17": {
+      "artifact": "lib",
+      "names": [
+        "executor::tests::child_exit_signal_preserves_process_ownership_and_first_complete_siginfo"
+      ]
+    },
+    "test-18": {
+      "artifact": "lib",
+      "names": [
+        "executor::tests::child_exit_signal_distinguishes_explicit_ignore_blocking_and_tool_eligibility"
+      ]
+    },
+    "test-19": {
+      "artifact": "lib",
+      "names": [
+        "executor::tests::child_exit_signal_invalid_metadata_and_unsupported_classes_do_not_publish"
+      ]
+    },
+    "test-20": {
+      "artifact": "lib",
+      "names": [
+        "executor::tests::child_exit_signal_signalfd_preserves_child_fields_and_complete_output_buffer"
+      ]
+    },
+    "test-21": {
+      "artifact": "lib",
+      "names": [
+        "executor::tests::child_exit_signal_distinguishes_failure_before_and_after_pending_publication"
+      ]
+    },
+    "test-22": {
+      "artifact": "lib",
+      "names": [
+        "executor::tests::child_exit_signal_disposition_generation_discards_old_info_without_replacing_new_info"
+      ]
+    },
+    "test-23": {
+      "artifact": "lib",
+      "names": [
+        "executor::tests::child_exit_signal_lifecycle_keeps_pending_process_state_private_across_fork_and_exec"
+      ]
+    },
+    "test-24": {
+      "artifact": "lib",
+      "names": [
+        "executor::tests::child_exit_signal_tool_return_keeps_process_domain_and_validates_replacements"
+      ]
+    },
+    "test-25": {
+      "artifact": "lib",
+      "names": [
+        "executor::tests::signal_dequeue_all_consumers_preserve_domain_and_post_copyout_effects"
+      ]
+    },
+    "test-26": {
+      "artifact": "lib",
+      "names": [
+        "executor::tests::signal_dequeue_readiness_error_retains_complete_removal"
+      ]
+    },
+    "test-27": {
+      "artifact": "lib",
+      "names": [
+        "executor::tests::signal_dequeue_sequence_exhaustion_refuses_before_removal"
+      ]
+    },
+    "test-28": {
+      "artifact": "lib",
+      "names": [
+        "executor::tests::signal_dequeue_fork_resets_and_exec_retains_process_sequence"
+      ]
+    },
+    "test-29": {
+      "artifact": "lib",
+      "names": [
+        "executor::tests::signal_dequeue_reused_task_refuses_before_all_three_removals"
+      ]
+    },
+    "test-30": {
+      "artifact": "lib",
+      "names": [
+        "executor::tests::signal_dequeue_first_private_nonalarm_is_bound_before_any_parked_call"
+      ]
+    },
+    "test-31": {
+      "artifact": "lib",
+      "names": [
+        "executor::tests::parked_handles_reject_equal_ordinals_across_fork_and_stale_callbacks"
+      ]
+    },
+    "test-32": {
+      "artifact": "lib",
+      "names": [
+        "executor::tests::parked_observation_lease_replay_preserves_pending_sequence_ack_and_ledger"
+      ]
+    },
+    "test-33": {
+      "artifact": "lib",
+      "names": [
+        "executor::tests::signal_dequeue_sibling_cannot_flush_or_ack_another_owner"
+      ]
+    },
+    "test-34": {
+      "artifact": "lib",
+      "names": [
+        "executor::tests::signal_dequeue_owner_waits_for_contiguous_ack_and_keeps_sibling_failure_effects"
+      ]
+    },
+    "test-35": {
+      "artifact": "lib",
+      "names": [
+        "executor::tests::parked_ledger_creation_rejects_each_foreign_site_before_allocation"
+      ]
+    },
+    "test-36": {
+      "artifact": "lib",
+      "names": [
+        "executor::tests::signal_dequeue_raw_consumers_keep_bookkeeping_failure_terminal"
+      ]
+    },
+    "test-37": {
+      "artifact": "lib",
+      "names": [
+        "executor::tests::signal_dequeue_no_effect_error_preserves_live_sibling_stream"
+      ]
+    },
+    "test-38": {
+      "artifact": "lib",
+      "names": [
+        "executor::tests::signal_dequeue_full_journal_failure_retains_partial_read_and_every_removal"
+      ]
+    },
+    "test-39": {
+      "artifact": "lib",
+      "names": [
+        "executor::tests::consuming_signal_refreshes_distinct_and_duplicated_signalfd_readiness"
+      ]
+    },
+    "test-40": {
+      "artifact": "lib",
+      "names": [
+        "executor::tests::delivery_selection_refreshes_every_signalfd_alias_before_filtering"
+      ]
+    },
+    "test-41": {
+      "artifact": "lib",
+      "names": [
+        "executor::tests::single_thread_signalfd_supports_private_pending_and_refuses_sibling_lifetimes"
+      ]
+    },
+    "test-42": {
+      "artifact": "lib",
+      "names": [
+        "executor::tests::process_fork_with_inherited_signalfd_is_explicitly_unsupported"
+      ]
+    },
+    "test-43": {
+      "artifact": "lib",
+      "names": [
+        "executor::tests::blocking_signalfd_forms_refuse_before_mutation_and_aliases_stay_nonblocking"
+      ]
+    },
+    "test-44": {
+      "artifact": "lib",
+      "names": [
+        "executor::tests::exec_closes_cloexec_descriptors_and_resets_caught_signals"
+      ]
+    },
+    "test-45": {
+      "artifact": "lib",
+      "names": [
+        "executor::tests::rt_sigreturn_ignores_invalid_altstack_restore_but_restores_the_mask"
+      ]
+    },
+    "test-46": {
+      "artifact": "lib",
+      "names": [
+        "executor::tests::rt_sigreturn_ignores_ss_onstack_altstack_input"
+      ]
+    },
+    "test-47": {
+      "artifact": "lib",
+      "names": [
+        "executor::tests::process_directed_signal_with_live_sibling_is_schedule_independent_refusal"
+      ]
+    },
+    "test-48": {
+      "artifact": "lib",
+      "names": [
+        "executor::tests::process_pending_signal_prevents_a_new_host_timed_thread_consumer"
+      ]
+    },
+    "test-49": {
+      "artifact": "lib",
+      "names": [
+        "executor::tests::sibling_signal_retirement_and_tid_reuse_preserve_exact_registration"
+      ]
+    },
+    "test-50": {
+      "artifact": "lib",
+      "names": [
+        "executor::tests::accepted_sibling_signal_survives_exec_and_endpoint_replacement"
+      ]
+    },
+    "vm-01": {
+      "artifact": "static",
+      "names": [
+        "parked_signals::parked_signal_actual_callback_frame_and_dequeue_contract"
+      ]
+    },
+    "vm-02": {
+      "artifact": "static",
+      "names": [
+        "parked_signals::parked_signal_caught_posthook_mask_and_altstack_reach_real_frame"
+      ]
+    },
+    "vm-03": {
+      "artifact": "static",
+      "names": [
+        "parked_signals::parked_signal_prepared_read_returns_eintr_without_restart"
+      ]
+    },
+    "vm-04": {
+      "artifact": "static",
+      "names": [
+        "parked_signals::parked_signal_prepared_read_restarts_only_after_handler"
+      ]
+    },
+    "vm-05": {
+      "artifact": "static",
+      "names": [
+        "parked_signals::parked_signal_prepared_partial_read_is_not_replayed"
+      ]
+    },
+    "vm-06": {
+      "artifact": "static",
+      "names": [
+        "sibling_signal_delivery_native_plain_and_tool"
+      ]
+    },
+    "vm-07": {
+      "artifact": "static",
+      "names": [
+        "leader_self_exec_lifetime_fork_0"
+      ]
+    },
+    "vm-08": {
+      "artifact": "static",
+      "names": [
+        "leader_self_exec_lifetime_thread_0"
+      ]
+    },
+    "vm-09": {
+      "artifact": "static",
+      "names": [
+        "signalfd_positioned_vector_flags_match_native_linux"
+      ]
+    }
+  },
+  "unchanged_vm_declarations": 9
+}

@@ -1,0 +1,42 @@
+{
+  "started": [
+    "parked_signals::parked_signal_admission_resolves_actual_thread_owner_before_global_or_guest",
+    "parked_signals::parked_signal_caught_posthook_mask_and_altstack_reach_real_frame",
+    "parked_signals::parked_signal_independent_delayed_worker_ack_wakes_sibling",
+    "parked_signals::parked_signal_worker_panic_retains_both_dequeue_owners"
+  ],
+  "ended": [
+    {
+      "type": "test",
+      "name": "parked_signals::parked_signal_admission_resolves_actual_thread_owner_before_global_or_guest",
+      "event": "ok"
+    },
+    {
+      "type": "test",
+      "name": "parked_signals::parked_signal_caught_posthook_mask_and_altstack_reach_real_frame",
+      "event": "ok"
+    },
+    {
+      "type": "test",
+      "name": "parked_signals::parked_signal_independent_delayed_worker_ack_wakes_sibling",
+      "event": "ok"
+    },
+    {
+      "type": "test",
+      "name": "parked_signals::parked_signal_worker_panic_retains_both_dequeue_owners",
+      "event": "ok"
+    }
+  ],
+  "suites": [
+    {
+      "type": "suite",
+      "event": "ok",
+      "passed": 4,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filtered_out": 294,
+      "exec_time": 0.991747645
+    }
+  ]
+}

@@ -1,0 +1,166 @@
+{
+  "helpers": [
+    {
+      "source": "/home/newton/work/dev-hermit/worktrees/slots/kvm-bootstrap-log-20260918/ignored/bootstrap-log-qualification-20260918/common.py",
+      "destination": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/process-alarm-qualification-v1/common.py",
+      "sha256": "f6e91aefd053016800b3446efdcfece1a8fc30d6fc19d8d117b39f8b90f668e4",
+      "bytes": 10759,
+      "copy": "byte-identical"
+    },
+    {
+      "source": "/home/newton/work/dev-hermit/worktrees/slots/kvm-bootstrap-log-20260918/ignored/bootstrap-log-qualification-20260918/cache_lease.py",
+      "destination": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/process-alarm-qualification-v1/cache_lease.py",
+      "sha256": "957ce8530e0f5bba7e447a03c06b5d4452430ca1bd0b8187eebb162b55ce19a0",
+      "bytes": 4603,
+      "copy": "byte-identical"
+    },
+    {
+      "source": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/prerequisite-observer-proposal-v4/observer-proposal.py",
+      "destination": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/process-alarm-qualification-v1/observer/observer.py",
+      "sha256": "b161c17f850113d5155974d9547ddc842b44c4e37445c44a5d2f06aef500b56e",
+      "bytes": 39569,
+      "copy": "byte-identical"
+    },
+    {
+      "source": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/prerequisite-analyze-v3/observer/before_exec.py",
+      "destination": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/process-alarm-qualification-v1/observer/before_exec.py",
+      "sha256": "184d1b1dcdb8c8a75626d2c0fe403d1527e160f51e0cc98338f405bf8a0319bd",
+      "bytes": 8260,
+      "copy": "byte-identical"
+    },
+    {
+      "source": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/prerequisite-analyze-v3/observer/unit_reference.py",
+      "destination": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/process-alarm-qualification-v1/observer/unit_reference.py",
+      "sha256": "e00b79d292060b7a467d6a99ed88082719682d205efbdc56ecbe5fb7256fe0d0",
+      "bytes": 8569,
+      "copy": "byte-identical"
+    },
+    {
+      "source": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/prerequisite-analyze-v3/observer/source-inputs.json",
+      "destination": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/process-alarm-qualification-v1/observer/source-inputs.json",
+      "sha256": "af15f634235359032b1ea544207713c32318906d51447ff6de171ada09c8b5b7",
+      "bytes": 1812,
+      "copy": "byte-identical"
+    }
+  ],
+  "lock_seed": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-bootstrap-log-20260918/Cargo.lock",
+    "sha256": "1c09663e46bf21ad7c07eedd7821cccb72ae21f42485192649ff5473962bc856",
+    "bytes": 67056,
+    "manifests": [
+      {
+        "path": "Cargo.toml",
+        "sha256": "199ae06c2ef8632dc11c94b7c9ccbf45e399538b40537c358beda98abb6b079c"
+      },
+      {
+        "path": "experimental/nostd-print/Cargo.toml",
+        "sha256": "bea476357628ac0314b5415b63ad7fb53f81ae01496b5f1623fc659c2e93dcaa"
+      },
+      {
+        "path": "experimental/reverie-host/Cargo.toml",
+        "sha256": "10bde64cf2e839e5f4dd4b9ac62dedf4fcc0d97989376d566ebb260e28dff65e"
+      },
+      {
+        "path": "experimental/reverie-rpc-macros/Cargo.toml",
+        "sha256": "a122618f313b31c8dc41fb4d96ff094eb3c4d299cd6f33066315e181d4b2e4f6"
+      },
+      {
+        "path": "experimental/reverie-rpc/Cargo.toml",
+        "sha256": "710d48ce5693c4ecd8dc1d3b4cf79086ebcc04ce43c99da792a5c477ffe479f4"
+      },
+      {
+        "path": "experimental/reverie-sabre-macros/Cargo.toml",
+        "sha256": "e665105a9b16ddc5edb6530283d324f6c5473302b29ba90657556fd26b1dec16"
+      },
+      {
+        "path": "experimental/reverie-sabre-stats/Cargo.toml",
+        "sha256": "43d3c962d2bed1226aa8613ec1fc182b88170652f0ad4c9b24b15b5cc1e80b2c"
+      },
+      {
+        "path": "experimental/reverie-sabre-strace/Cargo.toml",
+        "sha256": "447df2ded0cf8fa999989c332a057bf058a14648e915be38512875ce43c8d226"
+      },
+      {
+        "path": "experimental/reverie-sabre/Cargo.toml",
+        "sha256": "397c9fe8fc761ec66d603c9a3725ea478a44e53c3a7c98e31448df247161f623"
+      },
+      {
+        "path": "experimental/riptrace/Cargo.toml",
+        "sha256": "7fc5f9fe139ccd20b036fa80a849d615e0665816171fde880060d4fa5c67b857"
+      },
+      {
+        "path": "experimental/riptrace/rpc/Cargo.toml",
+        "sha256": "74204c0f8e4e7e4bbd84c3483476cdac4d6a88b55cf3b5956ef16f86affbb27f"
+      },
+      {
+        "path": "experimental/riptrace/tool/Cargo.toml",
+        "sha256": "e4badb9587b1a88b712d8d3cd36717d4122866611825b4fb3cf4803892648c03"
+      },
+      {
+        "path": "public_autocargo/experimental/Cargo.toml",
+        "sha256": "b2b37e378af2a73150b5f5e1e645a8056488b0e388a145db5e470c4c613e2599"
+      },
+      {
+        "path": "reverie-dbt/Cargo.toml",
+        "sha256": "76ba8d27a3bb4b6312663096f824ac3b5f5bd1f09157cc9412bc9dbaa7f29162"
+      },
+      {
+        "path": "reverie-e9patch/Cargo.toml",
+        "sha256": "8cf91ab18d344788c889514e69f195e7babb33642dc5e5a1650cee12c6ae1263"
+      },
+      {
+        "path": "reverie-examples/Cargo.toml",
+        "sha256": "1fa035e24020356e58a79d769005d63e6a9fef89c578d4abf3622ca02f3100e1"
+      },
+      {
+        "path": "reverie-kvm/Cargo.toml",
+        "sha256": "1d80c68b123c52bd8ebf28e42a8f7c6d3f893aa083a7eb9086537f5921bc9340"
+      },
+      {
+        "path": "reverie-liteinst/Cargo.toml",
+        "sha256": "5dd2346a2963feacfb2c81c3c553564bd1f228df40ae3b895d4d30b6f4f3e815"
+      },
+      {
+        "path": "reverie-memory/Cargo.toml",
+        "sha256": "58b9dd933d1fda27236981261d27c2e29a52997c9c258f971e218ef85b0c6c47"
+      },
+      {
+        "path": "reverie-preload/Cargo.toml",
+        "sha256": "46382517e4af355c658c5a790948779bc200e512aed9069dbb78f64970f35de8"
+      },
+      {
+        "path": "reverie-process/Cargo.toml",
+        "sha256": "38faa74a46e31ddf02f2bebb72a6c5201147d6c9a2aa44d3509f6a6ad9ee25c6"
+      },
+      {
+        "path": "reverie-ptrace/Cargo.toml",
+        "sha256": "f428c008150829799649506bb242580d6870a431f335a5bf7f4b3354c17515a8"
+      },
+      {
+        "path": "reverie-rpc-transport/Cargo.toml",
+        "sha256": "39f7452487152c113aa69a2b9591c9fbd78b55d467b3da4663935cb3758387ee"
+      },
+      {
+        "path": "reverie-syscalls/Cargo.toml",
+        "sha256": "a02c4568a488958d40ca0b735220ba06a4c883519e95fd0eef72c89166d05413"
+      },
+      {
+        "path": "reverie-util/Cargo.toml",
+        "sha256": "80943b0faa77b2a802954873a3c6502ddedd373ff260b47808f6ca15004a631d"
+      },
+      {
+        "path": "reverie/Cargo.toml",
+        "sha256": "0b33ffe97d3b3bc8bf40438a1e724f2d6eea8c3521e5d5edebd1f7e80eb8fc1b"
+      },
+      {
+        "path": "safeptrace/Cargo.toml",
+        "sha256": "093f34300581ba77ceb61e7c0b2f34a8862dfaa8d3cf9f58876e3720ba13a1ea"
+      }
+    ]
+  },
+  "target": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/target/process-alarm-qualification-v1",
+    "cold": true,
+    "foreign_cache_copy": false
+  }
+}

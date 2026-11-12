@@ -1,0 +1,4 @@
+{ "type": "suite", "event": "started", "test_count": 1 }
+{ "type": "test", "event": "started", "name": "executor::process_signal_publication::tests::inactive_publication_resolves_current_exec_image_and_surviving_thread" }
+{ "type": "test", "name": "executor::process_signal_publication::tests::inactive_publication_resolves_current_exec_image_and_surviving_thread", "event": "ok" }
+{ "type": "suite", "event": "ok", "passed": 1, "failed": 0, "ignored": 0, "measured": 0, "filtered_out": 494, "exec_time": 0.00145293 }

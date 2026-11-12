@@ -1,0 +1,27 @@
+--- v2/reverie-kvm/src/executor.rs
++++ v3/reverie-kvm/src/executor.rs
+@@ -3904,11 +3904,6 @@
+ 
+     /// Recomputes every signalfd alias after another consumer removes or
+     /// requeues pending state.
+-    pub(crate) fn refresh_signalfd_readiness(&self) -> Result<(), reverie::syscalls::Errno> {
+-        refresh_all_signalfd_readiness(&self.state)
+-            .map_err(|raw| reverie::syscalls::Errno::new(i32::try_from(-raw).unwrap_or(libc::EIO)))
+-    }
+-
+     pub(crate) fn has_eligible_pending_signal(&self) -> bool {
+         let process_signals = self
+             .state
+@@ -7869,12 +7864,6 @@
+         );
+     }
+     bytes
+-}
+-
+-fn refresh_all_signalfd_readiness(state: &LoadedStaticElf) -> Result<(), i64> {
+-    let transaction = state.signal_transaction.clone();
+-    let _transaction = transaction.lock().unwrap_or_else(|p| p.into_inner());
+-    refresh_all_signalfd_readiness_locked(state)
+ }
+ 
+ fn refresh_all_signalfd_readiness_locked(state: &LoadedStaticElf) -> Result<(), i64> {

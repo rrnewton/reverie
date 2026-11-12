@@ -1,0 +1,17 @@
+{
+  "source_root": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/publication-fd-composition-v3/source",
+  "same_byte_committed_base_reported_by_root": "79516661bf82d30ab2967c71834a6d47447b76ee",
+  "tree_reported_by_root": "7620fe83f486d665d9d09d4f09f0e93636b862e4",
+  "original_manifest_sha256": "918ab0d19c8c5c1256a33087a1828caad35e7200cc517203560c47fc6408ba82",
+  "entries": 2621,
+  "all_source_bytes_modes_symlinks_empty_gitlinks_authenticated": true,
+  "distinct_regular_inodes": true,
+  "lock": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/publication-fd-composition-v3/source/Cargo.lock",
+    "bytes": 67056,
+    "mode": 420,
+    "sha256": "1c09663e46bf21ad7c07eedd7821cccb72ae21f42485192649ff5473962bc856"
+  },
+  "no_build_test_guest_or_scm": true,
+  "local_AGENTS_absent_at_both_frozen_and_live_reverie_root": true
+}

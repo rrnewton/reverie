@@ -1,0 +1,45 @@
+{
+  "tests": [
+    {
+      "name": "probe-01",
+      "selector": "vm::tests::cpuid_fault_transport_probe::actual_cpuid_faulting_preserves_instruction_and_is_owned_by_one_vcpu",
+      "artifact": "lib",
+      "streams": [
+        {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/cpuid-transport-probe-v1/qualification-v1/observer/probe-01/stdout",
+          "bytes": 507,
+          "sha256": "b76e2cecea0baab74011eeeec124dd89b99bbe9e05806cdeb7a7bf8100ebd9c4",
+          "mode": 384
+        },
+        {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/cpuid-transport-probe-v1/qualification-v1/observer/probe-01/stderr",
+          "bytes": 1860,
+          "sha256": "ed6fcc9930898f4d425572be0510e98dee5fa363b79485751c282b27300ebfdd",
+          "mode": 384
+        }
+      ],
+      "raw_suite": {
+        "type": "suite",
+        "event": "ok",
+        "passed": 1,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered_out": 511,
+        "exec_time": 0.358927273
+      },
+      "outcomes": [
+        {
+          "type": "test",
+          "name": "vm::tests::cpuid_fault_transport_probe::actual_cpuid_faulting_preserves_instruction_and_is_owned_by_one_vcpu",
+          "event": "ok"
+        }
+      ],
+      "skip_or_unexecuted_messages": []
+    }
+  ],
+  "attempted": 1,
+  "unattempted": [],
+  "skips_or_unexecuted": [],
+  "claim": "Raw streams inspected separately from libtest and inventory counts; no unattempted test credit"
+}

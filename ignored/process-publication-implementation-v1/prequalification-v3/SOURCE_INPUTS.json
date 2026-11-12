@@ -1,0 +1,40 @@
+{
+  "base": "000c15a1161ea2d58749431b5ddaaa97f7aa37d5",
+  "changed": [
+    {
+      "path": "reverie-kvm/src/elf.rs",
+      "bytes": 66430,
+      "sha256": "2b1de049c1d144c702717593b4c9d39b23e319b9844b884258ad9c0ad4908465"
+    },
+    {
+      "path": "reverie-kvm/src/executor.rs",
+      "bytes": 1438129,
+      "sha256": "00769708fa38dc8dd9bbe430a0d5753d22f49538fc71ce98c10edca21ef63408"
+    },
+    {
+      "path": "reverie-kvm/src/process_signal_publication.rs",
+      "bytes": 32377,
+      "sha256": "64f23aded851a3ba6635f29a60c0a42b6b9784eb57ff1f44309b82b81f2db9cb"
+    }
+  ],
+  "previous_packet": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/process-publication-implementation-v1/prequalification-v2/READBACK.json",
+    "bytes": 6828,
+    "sha256": "76e52dbbf82694c3f1f55a5e1b7fb52cb64b7f4e6b9decf4ee0f90d5fc8fa1ed"
+  },
+  "first_compile": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/process-publication-implementation-v1/qualification-v1/controls/compile/result.json",
+    "bytes": 2670,
+    "sha256": "f786f9c8bde64fc9d92dbe2ccf8c30dcf095bf1126e6551a3b241ad9785db20e"
+  },
+  "diagnostics": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/process-publication-implementation-v1/qualification-v1/controls/compile/compiler-diagnostics.json",
+    "bytes": 9547,
+    "sha256": "234eba45ebf3a64ea9d454f79946bd0fad7fd430c94fab391f5f1f7087dad8be"
+  },
+  "retained_unqualified_elfs": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/process-publication-implementation-v1/qualification-v1/retained-unqualified-binaries/BINDING.json",
+    "bytes": 4538,
+    "sha256": "a60692e4b13ad0b6cc8dbd6b2d458384d92ea9af77444243a3dd7d637fb2937c"
+  }
+}

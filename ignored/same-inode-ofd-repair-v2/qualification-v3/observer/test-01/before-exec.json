@@ -1,0 +1,23 @@
+{
+  "payload": {
+    "binary": "/usr/bin/python3",
+    "binary_sha256": "9cfdf1a01d07dadb394dd2dc9fd8316254c36764076d23dc2c895c8401735576",
+    "arguments": [
+      "-B",
+      "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/same-inode-ofd-repair-v2/qualification-v3/phase.py",
+      "payload",
+      "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/same-inode-ofd-repair-v2/qualification-v3/test-01-plan.json",
+      "54015a7c7a4eed5230b041f6f87cd0c06c529f1b625e14468c45868018b7ea71"
+    ]
+  },
+  "token": "8ac8cd49f90f166dff1c3d33ba1460875bb79bdb67a33729f0636886ccd31b55",
+  "observer_pid": 672920,
+  "locale_environment": {
+    "LC_CTYPE": null,
+    "LC_ALL": "C",
+    "LANG": "C"
+  },
+  "ignore_sigpipe": true,
+  "observer_start_ticks": 189459539,
+  "deadline_monotonic_ns": 1894620441425952
+}

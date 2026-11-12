@@ -1,0 +1,40 @@
+{
+  "base": "1a28260f548267fcd8bd2da46f7a697573455166",
+  "source_root": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/scalar-write-fd-qualification-v1/baseline-source",
+  "source_manifest": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/scalar-write-fd-qualification-v1/baseline/source-manifest.json",
+    "bytes": 676829,
+    "mode": 420,
+    "sha256": "731bd8082231341cd2c0c510ef3e1a5bceb228dfd4aaeeff1566e571d9adbdcc"
+  },
+  "same_production_prefix": true,
+  "production_runtime_unchanged": true,
+  "proposed_test_files": [
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/scalar-write-fd-qualification-v1/baseline-source/reverie-kvm/src/executor.rs",
+      "bytes": 1431590,
+      "mode": 420,
+      "sha256": "c59a4796e1218bcd36f6b0561924525ec3219efda91a4899c0bbf67476bd43ac"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/scalar-write-fd-qualification-v1/baseline-source/reverie-kvm/tests/fixtures/captured_write_signal.c",
+      "bytes": 2726,
+      "mode": 420,
+      "sha256": "396007188d9bc8411158b1ede2061791292a9fd2b096519e9c00670a6f0ce8f5"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/scalar-write-fd-qualification-v1/baseline-source/reverie-kvm/tests/support/captured_write_signals.rs",
+      "bytes": 10607,
+      "mode": 420,
+      "sha256": "5e0fec096ca6ea743e220602dc0d98e742265a14f2fb0f62686b01f9a089942e"
+    }
+  ],
+  "extra_selector": "\n// Qualification-only selector: same proposed mode19 assertions, unchanged production.\n#[test]\nfn scalar_write_high_fd_uncaptured_baseline_oracle() {\n    if leader_self_exec_bounded(\n        \"captured_write_signals::scalar_write_high_fd_uncaptured_baseline_oracle\",\n    ) {\n        run_modes([19]);\n    }\n}\n",
+  "lock": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/scalar-write-fd-qualification-v1/baseline-source/Cargo.lock",
+    "bytes": 67056,
+    "mode": 420,
+    "sha256": "1c09663e46bf21ad7c07eedd7821cccb72ae21f42485192649ff5473962bc856"
+  },
+  "product_unchanged": true
+}

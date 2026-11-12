@@ -1,0 +1,67 @@
+
+Elf file type is DYN (Shared object file)
+Entry point 0xd2b40
+There are 11 program headers, starting at offset 64
+
+Program Headers:
+  Type           Offset   VirtAddr           PhysAddr           FileSiz  MemSiz   Flg Align
+  PHDR           0x000040 0x0000000000000040 0x0000000000000040 0x000268 0x000268 R   0x8
+  INTERP         0x0002a8 0x00000000000002a8 0x00000000000002a8 0x00001c 0x00001c R   0x1
+      [Requesting program interpreter: /lib64/ld-linux-x86-64.so.2]
+  LOAD           0x000000 0x0000000000000000 0x0000000000000000 0x0d1b34 0x0d1b34 R   0x1000
+  LOAD           0x0d1b40 0x00000000000d2b40 0x00000000000d2b40 0x01f650 0x01f650 R E 0x1000
+  LOAD           0x0f1190 0x00000000000f3190 0x00000000000f3190 0x023af0 0x023e70 RW  0x1000
+  LOAD           0x114c80 0x0000000000117c80 0x0000000000117c80 0x000010 0x000020 RW  0x1000
+  DYNAMIC        0x1146a0 0x00000000001166a0 0x00000000001166a0 0x0001f0 0x0001f0 RW  0x8
+  GNU_RELRO      0x0f1190 0x00000000000f3190 0x00000000000f3190 0x023af0 0x023e70 R   0x1
+  GNU_EH_FRAME   0x0cf104 0x00000000000cf104 0x00000000000cf104 0x000574 0x000574 R   0x4
+  GNU_STACK      0x000000 0x0000000000000000 0x0000000000000000 0x000000 0x000000 RW  0
+  NOTE           0x0002c4 0x00000000000002c4 0x00000000000002c4 0x000020 0x000020 R   0x4
+
+ Section to Segment mapping:
+  Segment Sections...
+   00     
+   01     .interp 
+   02     .interp .note.ABI-tag .dynsym .gnu.version .gnu.version_r .gnu.hash .dynstr .rela.dyn .rela.plt .rodata .gcc_except_table .eh_frame_hdr .eh_frame 
+   03     .text .init .fini .plt 
+   04     .fini_array .init_array .data.rel.ro .dynamic .got .got.plt .relro_padding 
+   05     .tm_clone_table .data .bss 
+   06     .dynamic 
+   07     .fini_array .init_array .data.rel.ro .dynamic .got .got.plt .relro_padding 
+   08     .eh_frame_hdr 
+   09     
+   10     .note.ABI-tag 
+
+Dynamic section at offset 0x1146a0 contains 31 entries:
+  Tag        Type                         Name/Value
+ 0x000000000000001d (RUNPATH)            Library runpath: [$ORIGIN/../lib]
+ 0x0000000000000001 (NEEDED)             Shared library: [librustc_driver-dac3ae0f1ba99007.so]
+ 0x0000000000000001 (NEEDED)             Shared library: [libgcc_s.so.1]
+ 0x0000000000000001 (NEEDED)             Shared library: [libpthread.so.0]
+ 0x0000000000000001 (NEEDED)             Shared library: [libc.so.6]
+ 0x000000000000001e (FLAGS)              ORIGIN BIND_NOW
+ 0x000000006ffffffb (FLAGS_1)            Flags: NOW ORIGIN PIE
+ 0x0000000000000015 (DEBUG)              0x0
+ 0x0000000000000007 (RELA)               0x22c8
+ 0x0000000000000008 (RELASZ)             150432 (bytes)
+ 0x0000000000000009 (RELAENT)            24 (bytes)
+ 0x000000006ffffff9 (RELACOUNT)          6179
+ 0x0000000000000017 (JMPREL)             0x26e68
+ 0x0000000000000002 (PLTRELSZ)           96 (bytes)
+ 0x0000000000000003 (PLTGOT)             0x116c48
+ 0x0000000000000014 (PLTREL)             RELA
+ 0x0000000000000006 (SYMTAB)             0x2e8
+ 0x000000000000000b (SYMENT)             24 (bytes)
+ 0x0000000000000005 (STRTAB)             0xd0c
+ 0x000000000000000a (STRSZ)              5560 (bytes)
+ 0x000000006ffffef5 (GNU_HASH)           0xce8
+ 0x0000000000000019 (INIT_ARRAY)         0xf3198
+ 0x000000000000001b (INIT_ARRAYSZ)       8 (bytes)
+ 0x000000000000001a (FINI_ARRAY)         0xf3190
+ 0x000000000000001c (FINI_ARRAYSZ)       8 (bytes)
+ 0x000000000000000c (INIT)               0xf2114
+ 0x000000000000000d (FINI)               0xf2130
+ 0x000000006ffffff0 (VERSYM)             0xbb8
+ 0x000000006ffffffe (VERNEED)            0xc74
+ 0x000000006fffffff (VERNEEDNUM)         3
+ 0x0000000000000000 (NULL)               0x0

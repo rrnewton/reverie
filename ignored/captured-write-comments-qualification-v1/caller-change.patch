@@ -1,0 +1,34 @@
+--- before/prepare.py
++++ after/prepare.py
+@@ -66,9 +66,10 @@
+         argv=[cargo,'clippy','--offline','--locked','-p','reverie-kvm','--lib','--test','static_elf','--message-format=json','--','-D','warnings']
+     elif kind=='format':
+         paths=['reverie-kvm/src/captured_write_runtime_tests.rs', 'reverie-kvm/src/executor.rs', 'reverie-kvm/src/parked_signal_runtime.rs', 'reverie-kvm/src/runtime.rs', 'reverie-kvm/tests/static_elf.rs', 'reverie-kvm/tests/support/captured_write_signals.rs', 'reverie/src/guest.rs']
+-        actual=subprocess.check_output(['/usr/bin/git','-C',str(REPO),'diff','HEAD','--name-only'],timeout=30).decode().splitlines()
+-        actual+=subprocess.check_output(['/usr/bin/git','-C',str(REPO),'ls-files','--others','--exclude-standard','--','reverie/src','reverie-kvm/src','reverie-kvm/tests'],timeout=30).decode().splitlines()
+-        require(sorted(p for p in actual if p.endswith('.rs'))==paths,'changed Rust path set differs')
++        require(scm()['head']=='7b28de2b20b6e7fdcdab92e552d4166908b50cad','applied comments head changed')
++        actual=subprocess.check_output(['/usr/bin/git','-C',str(REPO),'diff','e0282f6558a7f7d84c12b82b76082d2c45304b02','HEAD','--name-only'],timeout=30).decode().splitlines()
++        require(sorted(p for p in actual if p.endswith('.rs'))==paths,'committed component Rust path set differs')
++        require(not subprocess.check_output(['/usr/bin/git','-C',str(REPO),'diff','HEAD','--'],timeout=30),'tracked source differs from committed head')
+         argv=[str(TOOL/'rustfmt'),'--check','--edition','2024','--config','skip_children=true',*paths]
+     elif kind=='metadata':argv=[cargo,'metadata','--offline','--locked','--format-version','1']
+     elif kind=='compile':
+@@ -95,7 +96,7 @@
+             argv=[artifact['path'],*selected,'--exact','--test-threads=1','--nocapture','-Z','unstable-options','--format=json']
+     if(HERE/'dependency-symlinks.json').exists():
+         inputs.append(file_record(HERE/'dependency-symlinks.json'));links+=json_read(HERE/'dependency-symlinks.json')
+-    target=REPO/'target/process-alarm-qualification-v1';t=target.stat();lease=REPO/'ignored/timer-integration-20260918/lane.lease';l=lease.stat();large=kind in('metadata','compile','check')
++    target=REPO/'target/process-alarm-qualification-v1';t=target.stat();lease=REPO/'ignored/timer-integration-20260918/lane.lease';l=lease.stat();large=kind in('metadata','compile','check','format')
+     plan=dict(path=str(HERE/(name+'-plan.json')),name=name,kind=kind,argv=argv,selected=selected,artifact_selectors=artifact_selectors,
+               environment=env,scm=scm(),source_manifest=file_record(HERE/'source-manifest.json'),inputs=list({r['path']:r for r in inputs}.values()),
+               input_symlinks=list({r['path']:r for r in links}.values()),absent_inputs=sorted(set(absent)),
+@@ -103,7 +104,7 @@
+               lease=dict(path=str(lease),owner_slot=str(REPO),identity=[l.st_dev,l.st_ino,l.st_uid],state_directory=str(REPO/'ignored/timer-integration-20260918/lease-state')),
+               output=str(HERE/'observer'/name),control=str(HERE/'controls'/name),
+               limits=dict(aggregate_cpu_usec=600000000 if large else 30000000,wall_seconds=900 if large else 60,lethal_stderr_bytes=16777216,live_stdout_samples_bytes=67108864,phase_read_bytes=16777216,memory_bytes=17179869184,swap_bytes=0,free_floor_bytes=107374182400),
+-              scope='Reverie parked signal component only; no Hermit timer integration or parity claim')
++              scope='Applied comments head: format/core+ptrace check/Clippy only; no new runtime test or parity claim')
+     if(HERE/'dependency-inputs.json').exists():plan['dependencies']=file_record(HERE/'dependency-inputs.json')
+     write_new(Path(plan['path']),plan);print(plan['path'],hashlib.sha256(Path(plan['path']).read_bytes()).hexdigest())
+ if __name__=='__main__':main()

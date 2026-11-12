@@ -1,0 +1,4 @@
+{ "type": "suite", "event": "started", "test_count": 1 }
+{ "type": "test", "event": "started", "name": "dynamic_c_guest_observes_indexed_xstate_cpuid_and_lazy_binding" }
+{ "type": "test", "name": "dynamic_c_guest_observes_indexed_xstate_cpuid_and_lazy_binding", "event": "ok" }
+{ "type": "suite", "event": "ok", "passed": 1, "failed": 0, "ignored": 0, "measured": 0, "filtered_out": 328, "exec_time": 0.125979209 }

@@ -1,0 +1,21 @@
+
+thread 'captured_write_signals::captured_write_signal_capability_blocks_nested_and_malformed_admission' (554876) panicked at reverie-kvm/tests/static_elf.rs:1590:5:
+captured_write_signals::captured_write_signal_capability_blocks_nested_and_malformed_admission: status=Some(101) stdout=
+running 1 test
+test captured_write_signals::captured_write_signal_capability_blocks_nested_and_malformed_admission ... FAILED
+
+failures:
+
+failures:
+    captured_write_signals::captured_write_signal_capability_blocks_nested_and_malformed_admission
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 304 filtered out; finished in 0.18s
+
+ stderr=
+thread 'captured_write_signals::captured_write_signal_capability_blocks_nested_and_malformed_admission' (554889) panicked at reverie-kvm/tests/support/captured_write_signals.rs:99:9:
+assertion `left == right` failed: mode 17
+  left: false
+ right: true
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace

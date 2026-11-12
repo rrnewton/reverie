@@ -1,0 +1,23 @@
+{
+  "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/kvm-capture-pipe-identity-source-v2/qualification-v1/target",
+  "identity": [
+    48,
+    837793862,
+    212630
+  ],
+  "mode": 448,
+  "continued_target": true,
+  "initially_empty": false,
+  "private_lease": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/kvm-capture-pipe-identity-source-v2/qualification-continuation-v2/lane.lease",
+    "identity": [
+      48,
+      838074118,
+      212630
+    ],
+    "mode": 384,
+    "initially_empty": true
+  },
+  "old_lease_unchanged": true,
+  "parent_holds_old_lease_exclusively": true
+}

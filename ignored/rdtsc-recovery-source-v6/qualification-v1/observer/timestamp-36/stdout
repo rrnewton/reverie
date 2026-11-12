@@ -1,0 +1,4 @@
+{ "type": "suite", "event": "started", "test_count": 1 }
+{ "type": "test", "event": "started", "name": "runtime::tests::signal_hook_tail_injection_is_rejected_before_every_executor_side_effect" }
+{ "type": "test", "name": "runtime::tests::signal_hook_tail_injection_is_rejected_before_every_executor_side_effect", "event": "ok" }
+{ "type": "suite", "event": "ok", "passed": 1, "failed": 0, "ignored": 0, "measured": 0, "filtered_out": 510, "exec_time": 0.000627372 }

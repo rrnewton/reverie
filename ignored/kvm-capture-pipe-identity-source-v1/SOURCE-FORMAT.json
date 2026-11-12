@@ -1,0 +1,30 @@
+{
+  "scope": "Authoring format only; no build, test or qualification credit",
+  "argv": [
+    "/home/newton/.rustup/toolchains/nightly-2026-07-29-x86_64-unknown-linux-gnu/bin/rustfmt",
+    "--edition",
+    "2024",
+    "--config",
+    "skip_children=true",
+    "reverie-kvm/src/capture_identity.rs",
+    "reverie-kvm/src/capture_identity_tests.rs",
+    "reverie-kvm/src/executor.rs",
+    "reverie-kvm/src/runtime.rs",
+    "reverie-kvm/src/vm.rs",
+    "reverie-kvm/tests/static_elf.rs",
+    "reverie-kvm/tests/support/capture_identity.rs"
+  ],
+  "cwd": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/kvm-capture-pipe-identity-source-v1/source",
+  "returncode": 0,
+  "elapsed_seconds": 0.5653172919992357,
+  "tool_sha256": "774703f5ead5e4a869556d414a48ecc1b272548c64fa3bd3776fb28e2af48e05",
+  "files": [
+    "reverie-kvm/src/capture_identity.rs",
+    "reverie-kvm/src/capture_identity_tests.rs",
+    "reverie-kvm/src/executor.rs",
+    "reverie-kvm/src/runtime.rs",
+    "reverie-kvm/src/vm.rs",
+    "reverie-kvm/tests/static_elf.rs",
+    "reverie-kvm/tests/support/capture_identity.rs"
+  ]
+}

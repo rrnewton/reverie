@@ -1,0 +1,17 @@
+{
+  "groups": {
+    "test-terminal-race-negative": {
+      "artifact": "lib",
+      "names": [
+        "runtime::signal_cleanup_tests::signal_cleanup_terminal_race_keeps_error_already_transferred_by_callback"
+      ]
+    },
+    "test-admission-negative": {
+      "artifact": "static",
+      "names": [
+        "parked_signals::parked_signal_admission_resolves_actual_thread_owner_before_global_or_guest"
+      ]
+    }
+  },
+  "declaration_scope": "Candidate exact names only. Actual ELF inventory and successful named libtest outcomes are required; these are not pass counts."
+}

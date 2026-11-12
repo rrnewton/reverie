@@ -1,0 +1,46 @@
+{
+  "groups": {
+    "test-eintr": {
+      "artifact": "static",
+      "names": [
+        "parked_signals::parked_signal_prepared_read_returns_eintr_without_restart"
+      ]
+    },
+    "test-restart": {
+      "artifact": "static",
+      "names": [
+        "parked_signals::parked_signal_prepared_read_restarts_only_after_handler"
+      ]
+    },
+    "test-partial": {
+      "artifact": "static",
+      "names": [
+        "parked_signals::parked_signal_prepared_partial_read_is_not_replayed"
+      ]
+    },
+    "test-pending-policy": {
+      "artifact": "static",
+      "names": [
+        "pending_signal_applies_linux_erestartsys_policy_after_the_tool_hook"
+      ]
+    },
+    "test-frame-contract": {
+      "artifact": "static",
+      "names": [
+        "parked_signals::parked_signal_actual_callback_frame_and_dequeue_contract"
+      ]
+    },
+    "test-posthook-frame": {
+      "artifact": "static",
+      "names": [
+        "parked_signals::parked_signal_caught_posthook_mask_and_altstack_reach_real_frame"
+      ]
+    },
+    "test-restart-classification": {
+      "artifact": "lib",
+      "names": [
+        "runtime::tests::erestartsys_requests_a_restart_and_every_other_result_is_returned"
+      ]
+    }
+  }
+}

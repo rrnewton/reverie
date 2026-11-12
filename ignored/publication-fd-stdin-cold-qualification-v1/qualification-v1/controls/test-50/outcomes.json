@@ -1,0 +1,24 @@
+{
+  "started": [
+    "executor::tests::accepted_sibling_signal_survives_exec_and_endpoint_replacement"
+  ],
+  "ended": [
+    {
+      "type": "test",
+      "name": "executor::tests::accepted_sibling_signal_survives_exec_and_endpoint_replacement",
+      "event": "ok"
+    }
+  ],
+  "suites": [
+    {
+      "type": "suite",
+      "event": "ok",
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filtered_out": 504,
+      "exec_time": 0.010071539
+    }
+  ]
+}

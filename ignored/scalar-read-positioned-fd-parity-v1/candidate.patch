@@ -1,0 +1,826 @@
+diff --git a/reverie-kvm/src/executor.rs b/reverie-kvm/src/executor.rs
+--- a/reverie-kvm/src/executor.rs
++++ b/reverie-kvm/src/executor.rs
+@@ -4696,9 +4696,8 @@
+ }
+ 
+ fn read(memory: &mut GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6]) -> i64 {
+-    let Ok(fd) = i32::try_from(args[0]) else {
+-        return negative_errno(libc::EBADF);
+-    };
++    // Linux descriptor lookup consumes the low 32 bits of the raw register.
++    let fd = args[0] as libc::c_int;
+     if let Some(description) = state.fdinfo_files.get(&fd).cloned() {
+         return description.read(memory, args, false);
+     }
+@@ -4744,9 +4743,8 @@
+ }
+ 
+ fn pread64(memory: &mut GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) -> i64 {
+-    let Ok(fd) = i32::try_from(args[0]) else {
+-        return negative_errno(libc::EBADF);
+-    };
++    // Linux descriptor lookup consumes the low 32 bits of the raw register.
++    let fd = args[0] as libc::c_int;
+     if let Some(description) = state.fdinfo_files.get(&fd).cloned() {
+         return description.read(memory, args, true);
+     }
+@@ -4783,9 +4781,8 @@
+ }
+ 
+ fn pwrite64(memory: &GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) -> i64 {
+-    let Ok(fd) = i32::try_from(args[0]) else {
+-        return negative_errno(libc::EBADF);
+-    };
++    // Linux descriptor lookup consumes the low 32 bits of the raw register.
++    let fd = args[0] as libc::c_int;
+     let Ok(requested_length) = usize::try_from(args[2]) else {
+         return negative_errno(libc::EINVAL);
+     };
+@@ -6760,8 +6757,8 @@
+         }
+         _ => return None,
+     };
+-    let fd = if number == libc::SYS_write as u64 {
+-        // Match scalar write before it can reach the private eventfd carrier.
++    let fd = if number == libc::SYS_write as u64 || number == libc::SYS_pwrite64 as u64 {
++        // Match scalar descriptor lookup before it reaches the private carrier.
+         args[0] as libc::c_int
+     } else {
+         libc::c_int::try_from(args[0]).ok()?
+@@ -14978,6 +14975,7 @@
+     include!("child_exit_signal_tests.rs");
+     include!("process_alarm_signal_tests.rs");
+     include!("signal_dequeue_tests.rs");
++    include!("scalar_fd_width_tests.rs");
+ 
+     #[test]
+     fn proc_root_identity_requires_qualified_mount_and_directory() {
+diff --git a/reverie-kvm/src/scalar_fd_width_tests.rs b/reverie-kvm/src/scalar_fd_width_tests.rs
+new file mode 100644
+--- /dev/null
++++ b/reverie-kvm/src/scalar_fd_width_tests.rs
+@@ -0,0 +1,535 @@
++/*
++ * Copyright (c) Meta Platforms, Inc. and affiliates.
++ * All rights reserved.
++ *
++ * This source code is licensed under the BSD-style license found in the
++ * LICENSE file in the root directory of this source tree.
++ */
++
++// Included in executor::tests so the controls use the actual dispatch and its
++// existing owned descriptor/memory fixtures, without exporting test-only APIs.
++
++/// Invoke the x86-64 ABI without a C `int` parameter truncating the fd first.
++///
++/// # Safety
++/// Callers own every accessible buffer/descriptor, and use only the explicit
++/// bounded read/write cases below. Deliberately invalid pointers are submitted
++/// to the kernel, never dereferenced by Rust.
++unsafe fn scalar_fd_native_call(number: libc::c_long, args: [u64; 6]) -> i64 {
++    let result: i64;
++    // SAFETY: the caller supplies the syscall's complete argument/lifetime
++    // contract. The default asm memory clobber includes kernel buffer writes.
++    unsafe {
++        std::arch::asm!(
++            "syscall",
++            inlateout("rax") number => result,
++            in("rdi") args[0], in("rsi") args[1], in("rdx") args[2],
++            in("r10") args[3], in("r8") args[4], in("r9") args[5],
++            lateout("rcx") _, lateout("r11") _,
++            options(nostack),
++        );
++    }
++    eprintln!("native number={number} args={args:016x?} result={result}");
++    result
++}
++
++#[derive(Debug, Eq, PartialEq)]
++struct ScalarFdObservation {
++    result: i64,
++    buffer: [u8; 8],
++    contents: [u8; 8],
++    position: u64,
++    alias_position: u64,
++}
++
++fn scalar_fd_initial_buffer(number: libc::c_long) -> [u8; 8] {
++    if number == libc::SYS_pwrite64 {
++        *b"xyzUUUUU"
++    } else {
++        *b"UUUUUUUU"
++    }
++}
++
++fn scalar_fd_expected(number: libc::c_long, case: &str) -> ScalarFdObservation {
++    let mut expected = ScalarFdObservation {
++        result: 0,
++        buffer: scalar_fd_initial_buffer(number),
++        contents: *b"ABCDEFGH",
++        position: 1,
++        alias_position: 1,
++    };
++    match case {
++        "zero" => return expected,
++        "fault" => expected.result = negative_errno(libc::EFAULT),
++        "invalid" | "closed" => expected.result = negative_errno(libc::EBADF),
++        "negative-offset" if number != libc::SYS_read => {
++            expected.result = negative_errno(libc::EINVAL);
++        }
++        "data" | "negative-offset" => {
++            expected.result = 3;
++            if number == libc::SYS_read {
++                expected.buffer = *b"BCDUUUUU";
++                expected.position = 4;
++                expected.alias_position = 4;
++            } else if number == libc::SYS_pread64 {
++                expected.buffer = *b"EFGUUUUU";
++            } else {
++                assert_eq!(number, libc::SYS_pwrite64);
++                expected.contents = *b"ABCDxyzH";
++            }
++        }
++        _ => panic!("unknown scalar fd case: {case}"),
++    }
++    expected
++}
++
++fn scalar_fd_arguments(fd: u64, address: u64, case: &str) -> [u64; 6] {
++    [
++        fd,
++        if case == "fault" { u64::MAX } else { address },
++        if case == "zero" { 0 } else { 3 },
++        if case == "negative-offset" {
++            u64::MAX
++        } else {
++            4
++        },
++        0x7654_3210_fedc_ba98,
++        0x89ab_cdef_0123_4567,
++    ]
++}
++
++fn scalar_fd_regular_case(number: libc::c_long, prefix: u64, case: &str, native: bool) {
++    let root = TestDir::new();
++    let path = root.0.join("scalar-fd");
++    std::fs::write(&path, b"ABCDEFGH").unwrap();
++    let mut file = std::fs::OpenOptions::new()
++        .read(true)
++        .write(true)
++        .open(&path)
++        .unwrap();
++    file.seek(SeekFrom::Start(1)).unwrap();
++    let initial = scalar_fd_initial_buffer(number);
++    let observed = if native {
++        assert_ne!(case, "closed", "no racy native close/reuse probe");
++        let mut alias = file.try_clone().unwrap();
++        let low_fd = if case == "invalid" {
++            u32::MAX as u64
++        } else {
++            alias.as_raw_fd() as u64
++        };
++        let mut buffer = initial;
++        let args = scalar_fd_arguments(prefix | low_fd, buffer.as_mut_ptr() as u64, case);
++        // SAFETY: these calls use a live owned regular file and an eight-byte
++        // buffer for at most three bytes, or deliberate kernel-checked faults.
++        let result = unsafe { scalar_fd_native_call(number, args) };
++        let mut contents = [0; 8];
++        assert_eq!(file.read_at(&mut contents, 0).unwrap(), 8);
++        ScalarFdObservation {
++            result,
++            buffer,
++            contents,
++            position: file.stream_position().unwrap(),
++            alias_position: alias.stream_position().unwrap(),
++        }
++    } else {
++        let mut state = test_state(&root.0);
++        state.files.insert(3, file);
++        let mut memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
++        const DATA: u64 = 0x100;
++        memory.write(DATA, &initial).unwrap();
++        assert_eq!(
++            syscall_result(&mut memory, &mut state, libc::SYS_dup, [3, 0, 0, 0, 0, 0]),
++            4
++        );
++        if case == "closed" {
++            assert_eq!(
++                syscall_result(&mut memory, &mut state, libc::SYS_close, [4, 0, 0, 0, 0, 0]),
++                0
++            );
++        }
++        let low_fd = if case == "invalid" {
++            u32::MAX as u64
++        } else {
++            4
++        };
++        let args = scalar_fd_arguments(prefix | low_fd, DATA, case);
++        let result = syscall_result(&mut memory, &mut state, number, args);
++        eprintln!("executor number={number} args={args:016x?} result={result}");
++        let mut buffer = [0; 8];
++        memory.read(DATA, &mut buffer).unwrap();
++        let mut contents = [0; 8];
++        assert_eq!(state.files[&3].read_at(&mut contents, 0).unwrap(), 8);
++        let position = state.files.get_mut(&3).unwrap().stream_position().unwrap();
++        let alias_position = if case == "closed" {
++            assert!(!state.files.contains_key(&4));
++            position
++        } else {
++            state.files.get_mut(&4).unwrap().stream_position().unwrap()
++        };
++        ScalarFdObservation {
++            result,
++            buffer,
++            contents,
++            position,
++            alias_position,
++        }
++    };
++    assert_eq!(
++        observed,
++        scalar_fd_expected(number, case),
++        "number={number} prefix={prefix:#x} case={case} native={native}"
++    );
++}
++
++fn scalar_fd_regular_matrix(number: libc::c_long) {
++    for prefix in [0, 1_u64 << 32, 0xffff_ffff_0000_0000] {
++        for case in ["data", "zero", "fault", "negative-offset", "invalid"] {
++            scalar_fd_regular_case(number, prefix, case, true);
++            scalar_fd_regular_case(number, prefix, case, false);
++        }
++        // A guest-owned closed low descriptor is stable under parallel libtest
++        // workers. A just-closed native fd could be reused by another worker.
++        scalar_fd_regular_case(number, prefix, "closed", false);
++    }
++}
++
++#[test]
++fn scalar_read_descriptor_width_preserves_bytes_and_shared_position() {
++    scalar_fd_regular_matrix(libc::SYS_read);
++}
++
++#[test]
++fn scalar_pread_descriptor_width_preserves_bytes_and_shared_position() {
++    scalar_fd_regular_matrix(libc::SYS_pread64);
++}
++
++#[test]
++fn scalar_pwrite_descriptor_width_preserves_bytes_and_shared_position() {
++    scalar_fd_regular_matrix(libc::SYS_pwrite64);
++}
++
++#[test]
++fn scalar_read_descriptor_width_routes_stdin_and_fdinfo() {
++    let root = TestDir::new();
++    let path = root.0.join("stdin");
++    std::fs::write(&path, b"ABCD").unwrap();
++    let mut state = test_state(&root.0);
++    state.stdin = Some(File::open(path).unwrap());
++    let mut memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
++    let alias = syscall_result(&mut memory, &mut state, libc::SYS_dup, [0, 0, 0, 0, 0, 0]);
++    assert_eq!(alias, 3);
++    for (fd, expected, position) in [(0, *b"AB", 2), (alias, *b"CD", 4)] {
++        assert_eq!(
++            syscall_result(
++                &mut memory,
++                &mut state,
++                libc::SYS_read,
++                [(1_u64 << 32) | fd as u64, 0x100, 2, 0, 0, 0]
++            ),
++            2
++        );
++        let mut bytes = [0; 2];
++        memory.read(0x100, &mut bytes).unwrap();
++        assert_eq!(bytes, expected);
++        assert_eq!(
++            state.stdin.as_mut().unwrap().stream_position().unwrap(),
++            position
++        );
++        assert_eq!(
++            state
++                .files
++                .get_mut(&(alias as i32))
++                .unwrap()
++                .stream_position()
++                .unwrap(),
++            position
++        );
++    }
++    for fd in [libc::STDOUT_FILENO, libc::STDERR_FILENO] {
++        assert_eq!(
++            syscall_result(
++                &mut memory,
++                &mut state,
++                libc::SYS_read,
++                [(1_u64 << 32) | fd as u64, 0x100, 0, 0, 0, 0]
++            ),
++            negative_errno(libc::EBADF)
++        );
++    }
++
++    let mut f = FdinfoFixture::new(false);
++    let target = f.open("a", libc::O_RDWR);
++    assert!(target >= 0);
++    assert_eq!(f.seek(target, 17, libc::SEEK_SET), 17);
++    let info = f.info(target);
++    let expected = f.read(info, 512);
++    assert!(expected.len() > 10);
++    f.check_object(&expected, target, 17);
++    assert_eq!(f.seek(info, 0, libc::SEEK_SET), 0);
++    assert_eq!(
++        f.call(
++            libc::SYS_pread64,
++            [(1_u64 << 32) | info as u64, PAGE_SIZE, 7, 3, 0, 0]
++        ),
++        7
++    );
++    let mut bytes = [0; 7];
++    f.memory.read(PAGE_SIZE, &mut bytes).unwrap();
++    assert_eq!(bytes.as_slice(), &expected[3..10]);
++    assert_eq!(f.seek(info, 0, libc::SEEK_CUR), 0);
++    assert_eq!(f.seek(info, 0, libc::SEEK_SET), 0);
++    assert_eq!(
++        f.call(
++            libc::SYS_read,
++            [(1_u64 << 32) | info as u64, PAGE_SIZE, 7, 0, 0, 0]
++        ),
++        7
++    );
++    f.memory.read(PAGE_SIZE, &mut bytes).unwrap();
++    assert_eq!(bytes.as_slice(), &expected[..7]);
++    let alias = f.call(libc::SYS_dup, [info as u64, 0, 0, 0, 0, 0]);
++    assert!(alias >= 0);
++    assert_eq!(
++        f.call(
++            libc::SYS_read,
++            [(1_u64 << 32) | alias as u64, PAGE_SIZE, 512, 0, 0, 0]
++        ),
++        (expected.len() - 7) as i64
++    );
++    let mut tail = vec![0; expected.len() - 7];
++    f.memory.read(PAGE_SIZE, &mut tail).unwrap();
++    assert_eq!(tail, expected[7..]);
++    assert_eq!(f.seek(info, 0, libc::SEEK_CUR), expected.len() as i64);
++    assert_eq!(f.seek(target, 0, libc::SEEK_CUR), 17);
++}
++
++fn scalar_fd_signalfd_fixture() -> (TestDir, LoadedStaticElf, GuestMemory, i64, i64) {
++    let root = TestDir::new();
++    let mut state = test_state(&root.0);
++    let mut memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
++    let mut mask = KernelSigset::default();
++    mask.insert(libc::SIGUSR1);
++    memory.write(0x100, &mask.to_bytes()).unwrap();
++    test_block_signal(&mut state, libc::SIGUSR1);
++    let fd = syscall_result(
++        &mut memory,
++        &mut state,
++        libc::SYS_signalfd4,
++        [
++            u64::MAX,
++            0x100,
++            KERNEL_SIGSET_SIZE as u64,
++            libc::SFD_NONBLOCK as u64,
++            0,
++            0,
++        ],
++    );
++    assert_eq!(fd, 3);
++    let alias = syscall_result(
++        &mut memory,
++        &mut state,
++        libc::SYS_dup,
++        [fd as u64, 0, 0, 0, 0, 0],
++    );
++    assert_eq!(alias, 4);
++    (root, state, memory, fd, alias)
++}
++
++#[test]
++fn scalar_read_descriptor_width_keeps_virtual_signalfd_records() {
++    let (_root, mut state, mut memory, fd, alias) = scalar_fd_signalfd_fixture();
++    for descriptor in [fd, alias] {
++        memory.write(0x200, &[0x55; 128]).unwrap();
++        let args = [(1_u64 << 32) | descriptor as u64, 0x200, 128, 0, 0, 0];
++        assert_eq!(
++            syscall_result(&mut memory, &mut state, libc::SYS_read, args),
++            negative_errno(libc::EAGAIN)
++        );
++        let mut bytes = [0; 128];
++        memory.read(0x200, &mut bytes).unwrap();
++        assert_eq!(bytes, [0x55; 128]);
++        let event = event_for_process(libc::SIGUSR1, state.pid).unwrap();
++        queue_signal_event(&mut state, event, true).unwrap();
++        assert_eq!(
++            syscall_result(&mut memory, &mut state, libc::SYS_read, args),
++            128
++        );
++        memory.read(0x200, &mut bytes).unwrap();
++        assert_eq!(bytes, encode_signalfd_siginfo(event));
++        assert_eq!(
++            syscall_result(&mut memory, &mut state, libc::SYS_read, args),
++            negative_errno(libc::EAGAIN)
++        );
++    }
++}
++
++fn scalar_fd_carrier_readiness(state: &LoadedStaticElf, fd: i64) -> libc::c_short {
++    let mut descriptor = libc::pollfd {
++        fd: state.files[&(fd as i32)].as_raw_fd(),
++        events: libc::POLLIN | libc::POLLOUT,
++        revents: 0,
++    };
++    // SAFETY: descriptor is live and the one-element poll buffer is initialized.
++    assert_eq!(unsafe { libc::poll(&mut descriptor, 1, 0) }, 1);
++    descriptor.revents
++}
++
++fn scalar_fd_native_signalfd() -> File {
++    let mut native_mask: libc::sigset_t = unsafe { std::mem::zeroed() };
++    // No host signal is generated or host mask changed by this empty-stream control.
++    assert_eq!(unsafe { libc::sigemptyset(&mut native_mask) }, 0);
++    assert_eq!(
++        unsafe { libc::sigaddset(&mut native_mask, libc::SIGUSR1) },
++        0
++    );
++    let raw_native =
++        unsafe { libc::signalfd(-1, &native_mask, libc::SFD_NONBLOCK | libc::SFD_CLOEXEC) };
++    assert!(raw_native >= 0);
++    // SAFETY: the successful signalfd call returned a new uniquely owned descriptor.
++    unsafe { File::from_raw_fd(raw_native) }
++}
++
++#[test]
++fn scalar_pwrite_descriptor_width_preserves_signalfd_order_and_carrier() {
++    let (_root, mut state, mut memory, fd, alias) = scalar_fd_signalfd_fixture();
++    let native = scalar_fd_native_signalfd();
++    let native_alias = native.try_clone().unwrap();
++    let value = 1_u64;
++    memory.write(0x200, &value.to_ne_bytes()).unwrap();
++    let before = scalar_fd_carrier_readiness(&state, fd);
++    assert_eq!(before, libc::POLLOUT);
++    for (descriptor, host) in [(fd, &native), (alias, &native_alias)] {
++        for offset in [0, u64::MAX] {
++            for (guest_pointer, host_pointer, count) in [
++                (0x200, &value as *const u64 as u64, 8),
++                (u64::MAX, u64::MAX, 8),
++                (u64::MAX, u64::MAX, 0),
++            ] {
++                let expected = negative_errno(if offset == u64::MAX {
++                    libc::EINVAL
++                } else {
++                    libc::ESPIPE
++                });
++                let args = [
++                    (1_u64 << 32) | host.as_raw_fd() as u64,
++                    host_pointer,
++                    count,
++                    offset,
++                    0,
++                    0,
++                ];
++                // SAFETY: at most eight readable bytes or a deliberate invalid
++                // pointer. Linux must reject the target/offset before payload access.
++                assert_eq!(
++                    unsafe { scalar_fd_native_call(libc::SYS_pwrite64, args) },
++                    expected
++                );
++                let args = [
++                    (1_u64 << 32) | descriptor as u64,
++                    guest_pointer,
++                    count,
++                    offset,
++                    0,
++                    0,
++                ];
++                let result = syscall_result(&mut memory, &mut state, libc::SYS_pwrite64, args);
++                eprintln!("executor pwrite64 args={args:016x?} result={result}");
++                assert_eq!(result, expected);
++                assert_eq!(scalar_fd_carrier_readiness(&state, fd), before);
++                assert_eq!(scalar_fd_carrier_readiness(&state, alias), before);
++                let mut bytes = [0; 8];
++                memory.read(0x200, &mut bytes).unwrap();
++                assert_eq!(bytes, value.to_ne_bytes());
++                assert_eq!(
++                    syscall_result(
++                        &mut memory,
++                        &mut state,
++                        libc::SYS_read,
++                        [fd as u64, 0x300, 128, 0, 0, 0]
++                    ),
++                    negative_errno(libc::EAGAIN)
++                );
++            }
++        }
++    }
++    // The refusal is specific to virtual signalfd, not all eventfd-backed I/O.
++    let eventfd = syscall_result(
++        &mut memory,
++        &mut state,
++        libc::SYS_eventfd2,
++        [0, libc::EFD_NONBLOCK as u64, 0, 0, 0, 0],
++    );
++    assert!(eventfd >= 0);
++    assert_eq!(
++        syscall_result(
++            &mut memory,
++            &mut state,
++            libc::SYS_write,
++            [(1_u64 << 32) | eventfd as u64, 0x200, 8, 0, 0, 0]
++        ),
++        8
++    );
++    assert_ne!(
++        scalar_fd_carrier_readiness(&state, eventfd) & libc::POLLIN,
++        0
++    );
++}
++
++#[test]
++fn vectored_high_descriptor_signalfd_guard_is_already_effective() {
++    let (_root, mut state, mut memory, fd, alias) = scalar_fd_signalfd_fixture();
++    memory.write(0x200, &1_u64.to_ne_bytes()).unwrap();
++    write_guest_iovecs(&mut memory, 0x300, &[(0x200, 8)]);
++    let before = scalar_fd_carrier_readiness(&state, fd);
++    assert_eq!(before, libc::POLLOUT);
++    let native = scalar_fd_native_signalfd();
++    let native_alias = native.try_clone().unwrap();
++    let value = 1_u64;
++    let vector = libc::iovec {
++        iov_base: (&value as *const u64).cast_mut().cast(),
++        iov_len: 8,
++    };
++    for (descriptor, host) in [(fd, &native), (alias, &native_alias)] {
++        let wide = (1_u64 << 32) | descriptor as u64;
++        for (number, args, expected) in [
++            (libc::SYS_writev, [wide, 0x300, 1, 0, 0, 0], libc::EINVAL),
++            (libc::SYS_writev, [wide, u64::MAX, 1, 0, 0, 0], libc::EINVAL),
++            (
++                libc::SYS_pwritev2,
++                [wide, 0x300, 1, u64::MAX, 0, 0],
++                libc::EINVAL,
++            ),
++            (
++                libc::SYS_pwritev,
++                [wide, u64::MAX, 1, 0, 0, 0],
++                libc::ESPIPE,
++            ),
++        ] {
++            let mut native_args = args;
++            native_args[0] = (1_u64 << 32) | host.as_raw_fd() as u64;
++            if native_args[1] == 0x300 {
++                native_args[1] = &vector as *const libc::iovec as u64;
++            }
++            // SAFETY: the iovec points to eight owned readable bytes, or its
++            // pointer is deliberately invalid and submitted only to the kernel.
++            assert_eq!(
++                unsafe { scalar_fd_native_call(number, native_args) },
++                negative_errno(expected)
++            );
++            let result = syscall_result(&mut memory, &mut state, number, args);
++            eprintln!("executor vector number={number} args={args:016x?} result={result}");
++            assert_eq!(result, negative_errno(expected));
++            assert_eq!(scalar_fd_carrier_readiness(&state, fd), before);
++            assert_eq!(scalar_fd_carrier_readiness(&state, alias), before);
++            assert_eq!(
++                syscall_result(
++                    &mut memory,
++                    &mut state,
++                    libc::SYS_read,
++                    [fd as u64, 0x400, 128, 0, 0, 0]
++                ),
++                negative_errno(libc::EAGAIN)
++            );
++        }
++    }
++}
+diff --git a/reverie-kvm/tests/static_elf.rs b/reverie-kvm/tests/static_elf.rs
+--- a/reverie-kvm/tests/static_elf.rs
++++ b/reverie-kvm/tests/static_elf.rs
+@@ -13922,3 +13922,134 @@
+ 
+ #[path = "support/captured_write_signals.rs"]
+ mod captured_write_signals;
++
++#[test]
++fn scalar_read_full_width_descriptor_transport() {
++    scalar_fd_width_transport(
++        "scalar_read_full_width_descriptor_transport",
++        "read",
++        libc::SYS_read,
++    );
++}
++
++#[test]
++fn scalar_pread_full_width_descriptor_transport() {
++    scalar_fd_width_transport(
++        "scalar_pread_full_width_descriptor_transport",
++        "pread",
++        libc::SYS_pread64,
++    );
++}
++
++#[test]
++fn scalar_pwrite_full_width_descriptor_transport() {
++    scalar_fd_width_transport(
++        "scalar_pwrite_full_width_descriptor_transport",
++        "pwrite",
++        libc::SYS_pwrite64,
++    );
++}
++
++fn scalar_fd_width_transport(test: &str, operation: &str, number: libc::c_long) {
++    if !leader_self_exec_bounded(test) {
++        return;
++    }
++    let directory = TestDirectory::new();
++    let program = compile_c_program(
++        &directory.0,
++        "scalar-fd-width",
++        include_str!("fixtures/scalar_fd_width.c"),
++    );
++    // Qualification supplies a fresh owned directory per phase, preserving the
++    // actual native/KVM fixture before TestDirectory removes its working copy.
++    if let Some(root) = std::env::var_os("REVERIE_SCALAR_FD_ARTIFACT_DIR") {
++        use std::io::Write;
++        let path = PathBuf::from(root).join(format!("{test}.elf"));
++        let mut retained = std::fs::OpenOptions::new()
++            .write(true)
++            .create_new(true)
++            .open(path)
++            .unwrap();
++        retained
++            .write_all(&std::fs::read(&program).unwrap())
++            .unwrap();
++    }
++    for native in [true, false] {
++        let cwd = directory.0.join(if native { "native" } else { "kvm" });
++        std::fs::create_dir(&cwd).unwrap();
++        let (code, stdout, stderr) = if native {
++            let output = std::process::Command::new(&program)
++                .arg(operation)
++                .current_dir(&cwd)
++                .output()
++                .unwrap();
++            (output.status.code(), output.stdout, output.stderr)
++        } else {
++            let mut backend = KvmBackend::new(256 * 1024 * 1024).unwrap();
++            backend
++                .install_static_elf_file_with_context(
++                    std::fs::File::open(&program).unwrap(),
++                    &[program.to_str().unwrap(), operation],
++                    &[],
++                    &cwd,
++                )
++                .unwrap();
++            let (code, stdout, stderr) = backend.run_static_elf_captured().unwrap();
++            (Some(code), stdout, stderr)
++        };
++        // These raw records include actual addresses. Retain them unchanged;
++        // native and guest addresses need not equal each other. Each execution
++        // independently meets the same exact result/byte/position oracle.
++        eprintln!(
++            "operation={operation} native={native} code={code:?} stdout={stdout:02x?} stderr={stderr:02x?}"
++        );
++        assert_eq!(code, Some(0));
++        assert!(stderr.is_empty());
++        assert_eq!(stdout.len(), 5 * 112);
++        for (index, record) in stdout.chunks_exact(112).enumerate() {
++            let word = |field: usize| {
++                u64::from_ne_bytes(record[field * 8..field * 8 + 8].try_into().unwrap())
++            };
++            assert_eq!(word(0), index as u64);
++            assert_eq!(word(1), number as u64);
++            assert!(word(2) <= i32::MAX as u64);
++            let prefix = match index {
++                0 => 0,
++                2 => 0xffff_ffff_0000_0000,
++                _ => 1_u64 << 32,
++            };
++            let low = if index == 3 { u32::MAX as u64 } else { word(2) };
++            assert_eq!(word(3), prefix | low);
++            assert_ne!(word(4), 0);
++            assert_eq!(word(5), 3);
++            assert_eq!(word(6), 4);
++            assert_eq!(word(7), 0x7654_3210_fedc_ba98);
++            assert_eq!(word(8), 0x89ab_cdef_0123_4567);
++            let valid = index < 3;
++            assert_eq!(
++                word(9) as i64,
++                if valid { 3 } else { -i64::from(libc::EBADF) }
++            );
++            assert_eq!(word(10), 1);
++            assert_eq!(word(11), if valid && operation == "read" { 4 } else { 1 });
++            let buffer = if operation == "pwrite" {
++                b"xyzUUUUU"
++            } else if valid {
++                if operation == "read" {
++                    b"BCDUUUUU"
++                } else {
++                    b"EFGUUUUU"
++                }
++            } else {
++                b"UUUUUUUU"
++            };
++            let contents = if valid && operation == "pwrite" {
++                b"ABCDxyzH"
++            } else {
++                b"ABCDEFGH"
++            };
++            assert_eq!(&record[96..104], buffer);
++            assert_eq!(&record[104..112], contents);
++        }
++    }
++}
+diff --git a/reverie-kvm/tests/fixtures/scalar_fd_width.c b/reverie-kvm/tests/fixtures/scalar_fd_width.c
+new file mode 100644
+--- /dev/null
++++ b/reverie-kvm/tests/fixtures/scalar_fd_width.c
+@@ -0,0 +1,85 @@
++/*
++ * Copyright (c) Meta Platforms, Inc. and affiliates.
++ * All rights reserved.
++ *
++ * This source code is licensed under the BSD-style license found in the
++ * LICENSE file in the root directory of this source tree.
++ */
++#define _GNU_SOURCE
++#include <errno.h>
++#include <fcntl.h>
++#include <stdint.h>
++#include <string.h>
++#include <sys/syscall.h>
++#include <unistd.h>
++
++struct observation {
++  uint64_t case_id, number, source_fd, args[6];
++  int64_t result, before, after;
++  unsigned char buffer[8], contents[8];
++};
++_Static_assert(sizeof(struct observation) == 112, "complete raw record layout");
++
++/* In particular, do not pass fd through a C int-typed read/pread/pwrite API. */
++static long raw_call(uint64_t number, const uint64_t args[6]) {
++  register uint64_t r10 __asm__("r10") = args[3];
++  register uint64_t r8 __asm__("r8") = args[4];
++  register uint64_t r9 __asm__("r9") = args[5];
++  long result;
++  __asm__ volatile("syscall"
++                   : "=a"(result)
++                   : "0"(number), "D"(args[0]), "S"(args[1]), "d"(args[2]),
++                     "r"(r10), "r"(r8), "r"(r9)
++                   : "rcx", "r11", "memory");
++  return result;
++}
++
++int main(int argc, char **argv) {
++  if (argc != 2) return 10;
++  uint64_t number;
++  if (strcmp(argv[1], "read") == 0) number = SYS_read;
++  else if (strcmp(argv[1], "pread") == 0) number = SYS_pread64;
++  else if (strcmp(argv[1], "pwrite") == 0) number = SYS_pwrite64;
++  else return 11;
++
++  for (unsigned int index = 0; index < 5; ++index) {
++    int fd = open("scalar-fd-data", O_CREAT | O_TRUNC | O_RDWR, 0600);
++    if (fd < 0 || write(fd, "ABCDEFGH", 8) != 8 || lseek(fd, 1, SEEK_SET) != 1) return 12;
++    int alias = dup(fd);
++    if (alias < 0) return 13;
++    struct observation out = {0};
++    out.case_id = index;
++    out.number = number;
++    out.source_fd = (uint32_t)alias;
++    memset(out.buffer, 'U', sizeof(out.buffer));
++    if (number == SYS_pwrite64) memcpy(out.buffer, "xyz", 3);
++    uint64_t prefix = index == 0 ? 0 : index == 2 ? UINT64_C(0xffffffff00000000) : UINT64_C(0x100000000);
++    out.args[0] = prefix | (index == 3 ? UINT32_MAX : (uint32_t)alias);
++    out.args[1] = (uintptr_t)out.buffer;
++    out.args[2] = 3;
++    out.args[3] = 4;
++    out.args[4] = UINT64_C(0x76543210fedcba98);
++    out.args[5] = UINT64_C(0x89abcdef01234567);
++    if (index == 4 && close(alias) != 0) return 14;
++    /* This fixture is single-threaded; no operation can reuse the closed alias
++       between close and the raw syscall. Libtest runs it in a separate process. */
++    out.before = lseek(fd, 0, SEEK_CUR);
++    out.result = raw_call(number, out.args);
++    out.after = lseek(fd, 0, SEEK_CUR);
++    if (pread(fd, out.contents, sizeof(out.contents), 0) != sizeof(out.contents)) return 15;
++    /* Retain every raw argument/result before an oracle failure exits. */
++    if (write(STDOUT_FILENO, &out, sizeof(out)) != sizeof(out)) return 16;
++
++    int valid = index < 3;
++    if (out.result != (valid ? 3 : -EBADF)) return 20 + index;
++    if (out.before != 1 || out.after != (valid && number == SYS_read ? 4 : 1)) return 30 + index;
++    if (index != 4 && lseek(alias, 0, SEEK_CUR) != out.after) return 40 + index;
++    const char *buffer = number == SYS_pwrite64 ? "xyzUUUUU" :
++      valid ? (number == SYS_read ? "BCDUUUUU" : "EFGUUUUU") : "UUUUUUUU";
++    const char *contents = valid && number == SYS_pwrite64 ? "ABCDxyzH" : "ABCDEFGH";
++    if (memcmp(out.buffer, buffer, 8) != 0 || memcmp(out.contents, contents, 8) != 0) return 50 + index;
++    if (index != 4 && close(alias) != 0) return 60;
++    if (close(fd) != 0) return 61;
++  }
++  return 0;
++}

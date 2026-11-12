@@ -1,0 +1,24 @@
+{
+  "started": [
+    "executor::tests::process_alarm_signal_coalesces_with_first_shared_info_without_changing_private_defers"
+  ],
+  "ended": [
+    {
+      "type": "test",
+      "name": "executor::tests::process_alarm_signal_coalesces_with_first_shared_info_without_changing_private_defers",
+      "event": "ok"
+    }
+  ],
+  "suites": [
+    {
+      "type": "suite",
+      "event": "ok",
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filtered_out": 504,
+      "exec_time": 0.000915025
+    }
+  ]
+}

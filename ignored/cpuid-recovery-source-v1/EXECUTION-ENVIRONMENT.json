@@ -1,0 +1,15 @@
+{
+  "utc": "2026-09-18T19:20:52.813307+00:00",
+  "interpreter": "/usr/bin/python3",
+  "optimize": 0,
+  "debug": true,
+  "input_records_verified": 5481,
+  "symlinks": 14,
+  "empty_unexpanded_gitlinks": 3,
+  "target_absent": true,
+  "authorization": "root message: exact64-phase once, shared lease released by V7; stop first unaccepted",
+  "prelaunch_read_mistakes": [
+    "Looked for INPUTS.json instead of CALLER-INPUTS.json; corrected path, no inputs changed",
+    "Treated descriptive gitlinks string as records; corrected to actual SOURCE-MANIFEST unexpanded_gitlink records; no admission executed in failed read"
+  ]
+}

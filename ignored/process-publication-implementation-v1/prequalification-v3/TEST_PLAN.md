@@ -1,0 +1,1 @@
+Execute the exact approved prequalification-v2/TEST_PLAN.md with fresh sibling qualification-v2 and this source snapshot; all 59 selectors and per-phase limits are unchanged. The initial qualification-v1 metadata passed; initial compile is unqualified due to diagnostics and is not relabelled. All plans are new.

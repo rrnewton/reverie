@@ -1,0 +1,29 @@
+{
+  "status": "Actual V3 first-failure packet; no complete qualification",
+  "source_target": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v3/TARGET.json",
+    "bytes": 4450,
+    "mode": 420,
+    "sha256": "71e2d8644e74aaa5cdbc7a034513947d91c3068c421b6c96626209d220d26d91"
+  },
+  "results": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v3/qualification-stop-v1/RESULTS.json",
+    "bytes": 26953,
+    "mode": 420,
+    "sha256": "2f2e3442e273c1bc42a7154c6781f8db2f81bf57dc398aba325c01b452155949"
+  },
+  "inputs": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v3/qualification-stop-v1/INPUTS.json",
+    "bytes": 207173,
+    "mode": 420,
+    "sha256": "49f2cc7a42097939deef4384fce44b188843997b281e7f05a0a4e48e560e9ae4"
+  },
+  "records": 640,
+  "no_skip": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v3/qualification-stop-v1/NO-SKIP-READBACK.json",
+    "bytes": 12447,
+    "mode": 420,
+    "sha256": "e76adbd71ae1e1c136081f33bf6f8bc172cc626dfac6bf687b80437ecfc78788"
+  },
+  "source_unmodified": true
+}

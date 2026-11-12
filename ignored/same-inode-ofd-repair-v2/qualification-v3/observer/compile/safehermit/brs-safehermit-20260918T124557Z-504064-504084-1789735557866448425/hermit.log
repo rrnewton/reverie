@@ -1,0 +1,6 @@
+   Compiling reverie-memory v0.2.0 (/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/same-inode-ofd-repair-v2/corrected-source-v3/reverie-memory)
+   Compiling reverie-process v0.2.0 (/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/same-inode-ofd-repair-v2/corrected-source-v3/reverie-process)
+   Compiling reverie-syscalls v0.2.0 (/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/same-inode-ofd-repair-v2/corrected-source-v3/reverie-syscalls)
+   Compiling reverie-core v0.2.0 (/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/same-inode-ofd-repair-v2/corrected-source-v3/reverie)
+   Compiling reverie-kvm v0.2.0 (/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/same-inode-ofd-repair-v2/corrected-source-v3/reverie-kvm)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 20.61s

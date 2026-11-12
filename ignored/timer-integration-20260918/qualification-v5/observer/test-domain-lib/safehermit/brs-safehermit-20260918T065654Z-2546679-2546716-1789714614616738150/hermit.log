@@ -1,0 +1,6 @@
+
+thread 'executor::tests::signal_dequeue_readiness_error_retains_complete_removal' (2549153) panicked at reverie-kvm/src/signal_dequeue_tests.rs:108:5:
+assertion `left == right` failed
+  left: Ok(Some(PendingSignal { event: SignalEvent { signal: 14, siginfo: [14, 0, 0, 0, 0, 0, 0, 0, 128, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], target: Process { pid: Pid(1) } }, domain: Process }))
+ right: Err(EBADF)
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace

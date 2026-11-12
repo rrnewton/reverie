@@ -1,0 +1,54 @@
+{
+  "patches": {
+    "SOURCE.patch": {
+      "patch": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/publication-fd-composition-v2/SOURCE.patch",
+        "bytes": 123989,
+        "sha256": "41dd4f6af0ee2b4364b36254f67d5988113dd2b04ccfff10d50012280a64ce1a"
+      },
+      "after": {
+        "reverie-kvm/src/elf.rs": "529929a6f8e575e86a3296e99834c06a845c8846bf0b86e95bcca2dbf0c29070",
+        "reverie-kvm/src/executor.rs": "1ac0df57e5b1cb07fde161cbb2f2322bbb4a766e1133b177574350beab4f118b",
+        "reverie-kvm/src/process_signal_publication.rs": "a27c5f6a92ef90a516a2ea3f73dc736cfaa946055ba2413630551374bc0d6b49"
+      }
+    },
+    "PUBLISHER-TO-COMPOSED.patch": {
+      "patch": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/publication-fd-composition-v2/PUBLISHER-TO-COMPOSED.patch",
+        "bytes": 72733,
+        "sha256": "405bbd9c94c70149e968e8a9ec826b7dc4ce430cbaa0c05ed7aabf94dfeb0ab3"
+      },
+      "after": {
+        "reverie-kvm/src/elf.rs": "529929a6f8e575e86a3296e99834c06a845c8846bf0b86e95bcca2dbf0c29070",
+        "reverie-kvm/src/executor.rs": "1ac0df57e5b1cb07fde161cbb2f2322bbb4a766e1133b177574350beab4f118b",
+        "reverie-kvm/src/process_signal_publication.rs": "a27c5f6a92ef90a516a2ea3f73dc736cfaa946055ba2413630551374bc0d6b49"
+      }
+    },
+    "FD-TO-COMPOSED.patch": {
+      "patch": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/publication-fd-composition-v2/FD-TO-COMPOSED.patch",
+        "bytes": 102951,
+        "sha256": "ee4a4553daad3940ddbc6f2f38f2d1275ab2d3a8c8ee6d6fa54eeb2a12097f70"
+      },
+      "after": {
+        "reverie-kvm/src/elf.rs": "529929a6f8e575e86a3296e99834c06a845c8846bf0b86e95bcca2dbf0c29070",
+        "reverie-kvm/src/executor.rs": "1ac0df57e5b1cb07fde161cbb2f2322bbb4a766e1133b177574350beab4f118b",
+        "reverie-kvm/src/process_signal_publication.rs": "a27c5f6a92ef90a516a2ea3f73dc736cfaa946055ba2413630551374bc0d6b49"
+      }
+    },
+    "V1-TO-V2.patch": {
+      "patch": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/publication-fd-composition-v2/V1-TO-V2.patch",
+        "bytes": 50122,
+        "sha256": "6eec8035ee119eef093812bd94decfe5e882b43c5adcbffef46e3963714d5093"
+      },
+      "after": {
+        "reverie-kvm/src/elf.rs": "529929a6f8e575e86a3296e99834c06a845c8846bf0b86e95bcca2dbf0c29070",
+        "reverie-kvm/src/executor.rs": "1ac0df57e5b1cb07fde161cbb2f2322bbb4a766e1133b177574350beab4f118b",
+        "reverie-kvm/src/process_signal_publication.rs": "a27c5f6a92ef90a516a2ea3f73dc736cfaa946055ba2413630551374bc0d6b49"
+      }
+    }
+  },
+  "exact_after_bytes": true,
+  "no_git_apply_or_index_mutation": true
+}

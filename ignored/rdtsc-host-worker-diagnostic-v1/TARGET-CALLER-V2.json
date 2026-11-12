@@ -1,0 +1,46 @@
+{
+  "source_target": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-host-worker-diagnostic-v1/TARGET.json",
+    "bytes": 3230,
+    "mode": 420,
+    "sha256": "d4c2f97bb568b5b43f389de96fdd188fd2e3d5772d83087367288a5fbd734a1c"
+  },
+  "source_readback": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-host-worker-diagnostic-v1/READBACK.json",
+    "bytes": 752,
+    "mode": 420,
+    "sha256": "2452b8ea8b90f577b3ab6e6680a19e162c293a8d785aed546f050073c3d16b8c"
+  },
+  "actual_caller_delta": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-host-worker-diagnostic-v1/CALLER-DELTA.patch",
+    "bytes": 8245,
+    "mode": 420,
+    "sha256": "7d2b76a478a94d6c3389b180fbf9b4032d794034b5d5dd5616c69617c121c743"
+  },
+  "scope_correction": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-host-worker-diagnostic-v1/CALLER-SCOPE-V2.patch",
+    "bytes": 1617,
+    "mode": 420,
+    "sha256": "d33fd36a71e3f518f1ab7f4435665f2471af9bb22fb3da7f3d921867e9d674a4"
+  },
+  "note": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-host-worker-diagnostic-v1/CALLER-V2-NOTE.md",
+    "bytes": 649,
+    "mode": 420,
+    "sha256": "2508c644e6a50b02a78095324adf3ef8367619da45283fdf5a9f0938a071a355"
+  },
+  "inputs": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-host-worker-diagnostic-v1/CALLER-V2-INPUTS.json",
+    "bytes": 6931,
+    "mode": 420,
+    "sha256": "ab6c8e1f7a365608a63a58d52c39170e4dca91827b305dcd99d8f837355d5351"
+  },
+  "execute": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-host-worker-diagnostic-v1/execute_qualification_v2.py",
+    "bytes": 1314,
+    "mode": 420,
+    "sha256": "c737fb6bc0ee86273ad162d353c68b857751cb5f674530747474d71817015245"
+  },
+  "qualification": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-host-worker-diagnostic-v1/qualification-v2",
+  "execution": false
+}

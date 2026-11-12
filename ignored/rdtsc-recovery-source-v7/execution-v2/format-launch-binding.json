@@ -1,0 +1,34 @@
+{
+  "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v7/qualification-v2/format-plan.json",
+  "sha256": "00f460a7c501d0b556d114663e7fd5f2d9f4993e46fa811edfeff6307f8e1f6b",
+  "requested_name": "format",
+  "actual_name": "format",
+  "kind": "format",
+  "argv": [
+    "/home/newton/.rustup/toolchains/nightly-2026-07-29-x86_64-unknown-linux-gnu/bin/rustfmt",
+    "--check",
+    "--edition",
+    "2024",
+    "--config",
+    "skip_children=true",
+    "reverie-kvm/src/bootstrap.rs",
+    "reverie-kvm/src/cpuid.rs",
+    "reverie-kvm/src/lib.rs",
+    "reverie-kvm/src/runtime.rs",
+    "reverie-kvm/src/timestamp.rs",
+    "reverie-kvm/src/vm.rs",
+    "reverie-kvm/tests/static_elf.rs",
+    "reverie-kvm/tests/support/timestamp_terminal.rs",
+    "reverie-kvm/src/terminal_runtime_tests.rs"
+  ],
+  "limits": {
+    "aggregate_cpu_usec": 30000000,
+    "wall_seconds": 60,
+    "lethal_stderr_bytes": 16777216,
+    "live_stdout_samples_bytes": 67108864,
+    "phase_read_bytes": 16777216,
+    "memory_bytes": 17179869184,
+    "swap_bytes": 0,
+    "free_floor_bytes": 107374182400
+  }
+}

@@ -1,0 +1,27 @@
+{
+  "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v7/qualification-v2/timestamp-34-plan.json",
+  "sha256": "8d2b11900beb460f8513b69253fb548b3d3e88d249252042291300a54253c877",
+  "requested_name": "timestamp-34",
+  "actual_name": "timestamp-34",
+  "kind": "test",
+  "argv": [
+    "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v7/qualification-v2/retained-binaries/static.elf",
+    "timestamp_terminal::worker_terminal_rpc_precedes_real_sibling_exit_group",
+    "--exact",
+    "--test-threads=1",
+    "--nocapture",
+    "-Z",
+    "unstable-options",
+    "--format=json"
+  ],
+  "limits": {
+    "aggregate_cpu_usec": 30000000,
+    "wall_seconds": 60,
+    "lethal_stderr_bytes": 16777216,
+    "live_stdout_samples_bytes": 67108864,
+    "phase_read_bytes": 16777216,
+    "memory_bytes": 17179869184,
+    "swap_bytes": 0,
+    "free_floor_bytes": 107374182400
+  }
+}

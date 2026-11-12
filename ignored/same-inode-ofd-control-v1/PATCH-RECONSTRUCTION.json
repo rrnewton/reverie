@@ -1,0 +1,15 @@
+{
+  "base": "000c15a1161ea2d58749431b5ddaaa97f7aa37d5",
+  "path": "reverie-kvm/src/executor.rs",
+  "insertion_byte_offset": 926293,
+  "fragment_bytes": 5060,
+  "separator_bytes": 1,
+  "reconstruction": "Deleting the exact inserted fragment plus one separator newline reproduces the complete before bytes.",
+  "before_sha256": "1f20e4259eb6b90ffdc6363c218a847eede94c1510477dcca49f70c5e5704242",
+  "after_sha256": "da17a89d603c53b0d95b63aaec2aa3de3f5e8406b474ee16437a8db4a7b20f70",
+  "patch_sha256": "057f7702ff26f2c57de10e98d88a2e987a63736c76a43c613ac05460795d0ee9",
+  "added_test_declarations": 1,
+  "removed_lines": 0,
+  "changed_production_bytes": 0,
+  "cargo_rustfmt_tests_executed": false
+}

@@ -1,0 +1,15 @@
+{
+  "argv": [
+    "with-proxy",
+    "gh",
+    "pr",
+    "view",
+    "2945",
+    "--repo",
+    "rrnewton/hermit",
+    "--json",
+    "url,title,body,state,headRefOid,mergeCommit,reviews,comments,statusCheckRollup,files"
+  ],
+  "returncode": 0,
+  "seconds": 1.3400576990097761
+}

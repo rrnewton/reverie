@@ -1,0 +1,122 @@
+{
+  "reverie-kvm/src/elf.rs": [
+    {
+      "line": 597,
+      "text": "pub stdin_entry_id: std::sync::Arc<()>,"
+    },
+    {
+      "line": 726,
+      "text": "pub(crate) fn insert_file(&mut self, fd: i32, file: std::fs::File) -> Vec<std::fs::File> {"
+    },
+    {
+      "line": 735,
+      "text": "pub(crate) fn take_stdin(&mut self) -> Option<std::fs::File> {"
+    },
+    {
+      "line": 757,
+      "text": "pub(crate) fn try_clone_for_fork_locked(&self, child_pid: i32) -> Result<Self> {"
+    },
+    {
+      "line": 873,
+      "text": "pub(crate) fn inherit_process_state_locked(&mut self, previous: Self) -> Vec<std::fs::File> {"
+    }
+  ],
+  "reverie-kvm/src/executor.rs": [
+    {
+      "line": 1249,
+      "text": "pub(crate) struct FileTableState {"
+    },
+    {
+      "line": 1625,
+      "text": "fn same_stdin_entry(&self, state: &LoadedStaticElf) -> bool {"
+    },
+    {
+      "line": 1630,
+      "text": "fn update_from_elf(&mut self, state: &LoadedStaticElf) -> std::io::Result<()> {"
+    },
+    {
+      "line": 1643,
+      "text": "fn prepare_from_elf(state: &LoadedStaticElf, preserve_stdin: bool) -> std::io::Result<Self> {"
+    },
+    {
+      "line": 1686,
+      "text": "fn install(&self, state: &mut LoadedStaticElf) -> std::io::Result<()> {"
+    },
+    {
+      "line": 1904,
+      "text": "fn execute_accept(&mut self, request: &SyscallRequest, memory: &GuestMemory) -> Option<i64> {"
+    },
+    {
+      "line": 2237,
+      "text": "pub(crate) fn fork_child("
+    },
+    {
+      "line": 2345,
+      "text": "pub(crate) fn thread_child_with_signal_observation("
+    },
+    {
+      "line": 2595,
+      "text": "pub(crate) fn release_files_on_exit(&mut self) {"
+    },
+    {
+      "line": 2904,
+      "text": "pub(crate) fn replace_after_exec(&mut self, state: LoadedStaticElf) {"
+    },
+    {
+      "line": 4308,
+      "text": "fn execute(&mut self, request: &SyscallRequest, memory: &GuestMemory) -> i64 {"
+    },
+    {
+      "line": 12462,
+      "text": "fn close(state: &mut LoadedStaticElf, raw_fd: u64) -> i64 {"
+    },
+    {
+      "line": 15118,
+      "text": "pub(crate) fn native_loaded_state(cwd: &std::path::Path) -> LoadedStaticElf {"
+    },
+    {
+      "line": 25268,
+      "text": "fn inherited_stdin_epoll_preserves_local_and_authoritative_handles() {"
+    },
+    {
+      "line": 25375,
+      "text": "fn inherited_stdin_sibling_replacement_preserves_old_dup() {"
+    },
+    {
+      "line": 25450,
+      "text": "fn inherited_stdin_fork_exec_and_exit_preserve_entry_lifetime() {"
+    },
+    {
+      "line": 25560,
+      "text": "fn observe_unlocked_retirement_then("
+    },
+    {
+      "line": 25765,
+      "text": "fn descriptor_retirement_install_error_releases_both_guards() {"
+    },
+    {
+      "line": 25831,
+      "text": "fn descriptor_retirement_accept_cleanup_releases_both_guards() {"
+    },
+    {
+      "line": 26138,
+      "text": "fn shared_file_table_install_emfile_preserves_original_descriptions() {"
+    }
+  ],
+  "reverie-kvm/src/vm.rs": [
+    {
+      "line": 1356,
+      "text": "loaded.stdin = self.stdin.as_ref().map(File::try_clone).transpose()?;"
+    },
+    {
+      "line": 1528,
+      "text": "loaded.stdin = self.stdin.as_ref().map(File::try_clone).transpose()?;"
+    }
+  ],
+  "reverie-kvm/src/runtime.rs": [
+    {
+      "line": 2582,
+      "text": "loaded.stdin = Some(std::fs::File::open(\"/dev/null\")?);"
+    }
+  ]
+}

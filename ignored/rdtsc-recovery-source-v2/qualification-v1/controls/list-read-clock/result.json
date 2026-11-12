@@ -1,0 +1,76 @@
+{
+  "plan_sha256": "1e8f6764217c7ecae3a2bfc0011915003547b5be3e2dc457864d54be7661b4e8",
+  "accepted": true,
+  "observer_attempted": true,
+  "terminal_authenticated": true,
+  "raw_status": 0,
+  "transport": {
+    "argv": [
+      "/usr/bin/python3",
+      "-B",
+      "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v2/qualification-v1/observer/observer.py",
+      "--out",
+      "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v2/qualification-v1/observer/list-read-clock",
+      "--cpu-usec",
+      "30000000",
+      "--wall-seconds",
+      "60",
+      "--log-bytes",
+      "16777216",
+      "/usr/bin/python3",
+      "-B",
+      "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v2/qualification-v1/phase.py",
+      "payload",
+      "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v2/qualification-v1/list-read-clock-plan.json",
+      "1e8f6764217c7ecae3a2bfc0011915003547b5be3e2dc457864d54be7661b4e8"
+    ],
+    "cwd": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v2/source",
+    "wall_limit_seconds": 110,
+    "forced": false,
+    "returncode": 0,
+    "elapsed_seconds": 3.1078864680603147,
+    "stdout": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v2/qualification-v1/controls/list-read-clock/observer.stdout",
+      "bytes": 160,
+      "mode": 420,
+      "sha256": "281c6525d1c0a4a26d1d671e3587ee7b8a02fcef3d55450017d1c0ae874cca57"
+    },
+    "stderr": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v2/qualification-v1/controls/list-read-clock/observer.stderr",
+      "bytes": 0,
+      "mode": 420,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    }
+  },
+  "observer_result": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v2/qualification-v1/observer/list-read-clock/result.json",
+    "bytes": 47431,
+    "mode": 384,
+    "sha256": "28e735cbe13ceff275716627528ac7c5bd36f05f2d11ab760e3616a6548d507b"
+  },
+  "readback": {
+    "names": [
+      "initial_elf_reinstallation_is_refused_before_modifying_the_image",
+      "read_clock_counts_userspace_and_excludes_callbacks_and_other_vcpus",
+      "read_clock_excludes_actual_guest_kernel_branches",
+      "read_clock_follows_a_guest_between_host_threads",
+      "read_clock_preserves_values_above_u32",
+      "read_clock_refuses_activation_after_untracked_execution",
+      "read_clock_starts_fork_vfork_and_thread_children_at_zero",
+      "read_clock_survives_successful_and_failed_exec"
+    ],
+    "count": 8,
+    "selected": [
+      "read_clock_counts_userspace_and_excludes_callbacks_and_other_vcpus",
+      "read_clock_follows_a_guest_between_host_threads",
+      "read_clock_starts_fork_vfork_and_thread_children_at_zero",
+      "read_clock_survives_successful_and_failed_exec"
+    ]
+  },
+  "payload_exit": {
+    "returncode": 0,
+    "reaped": true,
+    "elapsed_seconds": 0.0021187521051615477
+  },
+  "inputs_unchanged": true
+}

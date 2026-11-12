@@ -1,0 +1,31 @@
+{
+  "exact_after_reconstruction": true,
+  "files": [
+    {
+      "path": "reverie-kvm/src/executor.rs",
+      "reconstructed_after_sha256": "1f20e4259eb6b90ffdc6363c218a847eede94c1510477dcca49f70c5e5704242",
+      "test_declarations_unchanged": true
+    },
+    {
+      "path": "reverie-kvm/src/runtime.rs",
+      "reconstructed_after_sha256": "1cee59050cb86814e76e54776635afd4f6c93a361da7a70b52828386aa124fdb",
+      "test_declarations_unchanged": true
+    },
+    {
+      "path": "reverie-kvm/tests/fixtures/captured_write_signal.c",
+      "reconstructed_after_sha256": "396007188d9bc8411158b1ede2061791292a9fd2b096519e9c00670a6f0ce8f5",
+      "test_declarations_unchanged": true
+    },
+    {
+      "path": "reverie-kvm/tests/support/captured_write_signals.rs",
+      "reconstructed_after_sha256": "4330dbf7a954223fa601452f0f4aa4431854ffecd5a78e563e0ba7056e3df228",
+      "test_declarations_unchanged": true
+    }
+  ],
+  "new_test_declarations": 0,
+  "planned_new_guest_modes": [
+    18,
+    19
+  ],
+  "executed_new_tests": 0
+}

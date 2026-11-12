@@ -1,0 +1,80 @@
++        let mut registers = halted;
++        registers.rip = exception.instruction_pointer;
++        registers.rsp = exception.stack_pointer;
++        registers.rflags = exception.rflags;
++        Ok(Some(CpuidBoundary {
++            registers,
++            instruction,
++            special_registers: special,
++            code_segment: cs as u16,
++            stack_segment: ss as u16,
++        }))
++    }
++
+     pub(crate) fn timestamp_counter_exception(&self) -> Result<Option<TimestampBoundary>> {
+         // This guard precedes even reading the fault frame: an unsubscribed
+         // RDTSCP #UD is a genuine guest fault, not an unsolicited callback.
+@@ -2718,6 +2822,39 @@
+         let registers =
+             crate::timestamp::result_registers(boundary.registers, boundary.instruction, result)
+                 .ok_or_else(|| Error::UnexpectedVcpuExit("timestamp RIP overflow".to_owned()))?;
++        self.resume_instruction_registers(boundary, registers)
++    }
++
++    pub(crate) fn resume_tool_instruction(
++        &mut self,
++        boundary: ToolInstructionBoundary,
++        result: ToolInstructionResult,
++    ) -> Result<()> {
++        match (boundary, result) {
++            (
++                ToolInstructionBoundary::Timestamp(boundary),
++                ToolInstructionResult::Timestamp(result),
++            ) => self.resume_timestamp_counter(boundary, result),
++            (ToolInstructionBoundary::Cpuid(boundary), ToolInstructionResult::Cpuid(result)) => {
++                let registers = crate::cpuid_instruction::result_registers(
++                    boundary.registers,
++                    boundary.instruction,
++                    result,
++                )
++                .ok_or_else(|| Error::UnexpectedVcpuExit("CPUID RIP overflow".to_owned()))?;
++                self.resume_instruction_registers(boundary, registers)
++            }
++            _ => Err(Error::UnexpectedVcpuExit(
++                "instruction callback result kind changed".to_owned(),
++            )),
++        }
++    }
++
++    fn resume_instruction_registers<I>(
++        &mut self,
++        boundary: InstructionBoundary<I>,
++        registers: kvm_regs,
++    ) -> Result<()> {
+         // Exception stubs preserve every GPR. Returning host-side injections
+         // cannot supply a replacement user register file. Preserve the saved
+         // instruction state, and any intentional injected FS/GS-base effect.
+@@ -2733,7 +2870,7 @@
+         self.vcpu.set_sregs(&special)?;
+         self.vcpu.set_regs(&registers)?;
+         if registers.rflags & (1 << 8) != 0 {
+-            // The timestamp has now retired. Preserve this backend's existing
++            // The instruction has now retired. Preserve this backend's existing
+             // typed #DB boundary here, before another guest instruction can
+             // run; resuming with TF would report the following instruction.
+             return Err(Error::GuestException {
+@@ -3198,6 +3335,7 @@
+     ) -> Result<(ExitStatus, Vec<u8>, Vec<u8>)> {
+         // This loop never dispatches Tool events, including Host-owned workers.
+         self.set_rdtsc_interception(false)?;
++        self.set_cpuid_interception(false)?;
+         let _registration = self.register_guest_thread()?;
+         if self.is_guest_thread {
+             let entry_registers = self.vcpu.get_regs()?;
+@@ -3562,6 +3700,7 @@
+         F: FnMut(Syscall, &GuestMemory) -> i64,
+     {
+         self.set_rdtsc_interception(false)?;
++        self.set_cpuid_interception(false)?;
+         loop {
+             let vcpu_exit = self.vcpu.run()?;

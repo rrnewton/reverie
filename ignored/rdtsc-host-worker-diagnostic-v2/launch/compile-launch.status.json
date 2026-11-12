@@ -1,0 +1,12 @@
+{
+  "argv": [
+    "/usr/bin/python3",
+    "-B",
+    "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-host-worker-diagnostic-v2/qualification-v1/phase.py",
+    "launch",
+    "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-host-worker-diagnostic-v2/qualification-v1/compile-plan.json",
+    "91b10147a157e3c1ad894b55497c233e1a8b9b90cf04965e35371b4c019ab55d"
+  ],
+  "raw_status": 0,
+  "wall_seconds": 66.26559985079803
+}

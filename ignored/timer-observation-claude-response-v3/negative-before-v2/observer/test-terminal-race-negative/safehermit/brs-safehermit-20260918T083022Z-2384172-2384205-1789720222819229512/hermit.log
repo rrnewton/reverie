@@ -1,0 +1,4 @@
+
+thread 'runtime::signal_cleanup_tests::signal_cleanup_terminal_race_keeps_error_already_transferred_by_callback' (2386642) panicked at reverie-kvm/src/parked_signal_runtime.rs:627:18:
+terminal notification discarded already-transferred effects
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace

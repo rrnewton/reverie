@@ -1,0 +1,27 @@
+{
+  "at_utc": "2026-09-18T15:12:28.195702+00:00",
+  "records": [
+    {
+      "commit": "841107ac",
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-history-v1/841107ac.patch",
+      "bytes": 25636,
+      "sha256": "2a9831da98b35727cd00d19661a0e1da3e5321d234e79c4a85d713c342474312",
+      "lines": 692
+    },
+    {
+      "commit": "d65ab382",
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-history-v1/d65ab382.patch",
+      "bytes": 5687,
+      "sha256": "0c905d34000a1a38990673fc6da949f7d6360c2109bce530f21ba9aaa4788bd5",
+      "lines": 154
+    },
+    {
+      "commit": "96306604",
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-history-v1/96306604.patch",
+      "bytes": 2166,
+      "sha256": "735305dd2a450711ea67452fa7040b694c90ac7c4af94cfe7241fba84f8942ab",
+      "lines": 57
+    }
+  ],
+  "scope": "Retained historical timestamp commits only; not applied, reviewed against current source or qualified. Excludes folded heap-arena and endpoint-identity tail."
+}

@@ -1,0 +1,26 @@
+{
+  "owner_slot": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918",
+  "source_root": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/same-inode-ofd-repair-v2/corrected-source",
+  "base": "000c15a1161ea2d58749431b5ddaaa97f7aa37d5",
+  "source_files": [
+    {
+      "relative": "reverie-kvm/src/elf.rs",
+      "file": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/reverie-same-inode-ofd-repair-v2/after/reverie-kvm/src/elf.rs",
+        "bytes": 65737,
+        "mode": 420,
+        "sha256": "137707197119b1fe9d75b3145f5c769fed4bcacbe34c27982041fe33ae61c5e9"
+      }
+    },
+    {
+      "relative": "reverie-kvm/src/executor.rs",
+      "file": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/reverie-same-inode-ofd-repair-v2/after/reverie-kvm/src/executor.rs",
+        "bytes": 1450566,
+        "mode": 420,
+        "sha256": "c8afc6192005fa0ab49f204f6bbd599fbf9f75423fa8d8641bef173802a3e215"
+      }
+    }
+  ],
+  "purpose": "FD repair and actual isolated EMFILE qualification; execution awaits explicit root admission"
+}

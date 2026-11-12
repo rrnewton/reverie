@@ -1,0 +1,278 @@
+{
+  "role": "source and measured transport prerequisites; no candidate execution or inherited review approval",
+  "records": [
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v6/TARGET.json",
+      "kind": "file",
+      "bytes": 2979,
+      "sha256": "efa8f9355bfcf27dad6395942903d32731056bb04dba935933a290b46db2ed98",
+      "mode": 420
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v6/SOURCE-MANIFEST.json",
+      "kind": "file",
+      "bytes": 1399836,
+      "sha256": "3bfb93dbed203bb66916ec78a411037781dbea075a7ce609a1cd912263d0b986",
+      "mode": 420
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v6/final-v1/TARGET.json",
+      "kind": "file",
+      "bytes": 3798,
+      "sha256": "9730077c7572bc0fc0d8488de1fc974f1166cab353e9915a0d80a0cc531339b1",
+      "mode": 420
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v6/final-v1/REPORT.md",
+      "kind": "file",
+      "bytes": 3146,
+      "sha256": "a10d907d1cd9508a5206ee2925b0153bca76f5ed2eb81964636384785b25594d",
+      "mode": 420
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v6/qualification-v1/SELECTORS.json",
+      "kind": "file",
+      "bytes": 15057,
+      "sha256": "502270699e6464dbdc402dea63df1ea0cb15bbe82d8f0e6e782bac15d76bbc0f",
+      "mode": 420
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v6/qualification-v1/SETUP.json",
+      "kind": "file",
+      "bytes": 4351,
+      "sha256": "fd78355677912dcc0b86146de9ec77dc8e5d64b0cd436301006a0f7d7d601fcc",
+      "mode": 420
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v6/qualification-v1/metadata-plan.json",
+      "kind": "file",
+      "bytes": 53331,
+      "sha256": "240ea2a0218f170b47982077f9f32a7e051d9019d286c113dfeb69dd3554d1aa",
+      "mode": 420
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v6/qualification-v1/compile-plan.json",
+      "kind": "file",
+      "bytes": 54802,
+      "sha256": "660938334d260ed3299907c67c917bf0b9bd91170b0fa0e8f4bf4d223fca474d",
+      "mode": 420
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/cpuid-transport-probe-v1/final-v1/TARGET.json",
+      "kind": "file",
+      "bytes": 3783,
+      "sha256": "ec74be70657c064951f52b9d233b9b018444e41850bf41f1b28f0962082ebfcf",
+      "mode": 420
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/cpuid-transport-probe-v1/final-v1/REPORT.md",
+      "kind": "file",
+      "bytes": 2746,
+      "sha256": "c6f6a3bf2baa644f40e352ab494670f88c3a92f3fcb69b33939aed0e93cbc2a1",
+      "mode": 420
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/cpuid-transport-probe-v1/final-v1/HARDWARE-OBSERVATIONS.json",
+      "kind": "file",
+      "bytes": 5438,
+      "sha256": "c5dca6d34e9ad19aed3a3358c7d9011e12056eff12814179f7cc9579cf4215db",
+      "mode": 420
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/cpuid-transport-probe-v1/final-v1/INPUTS.json",
+      "kind": "file",
+      "bytes": 2820439,
+      "sha256": "976120fa8d8d372f719465bdf7c9d865f3aa713d094bf6c4377a60937ea42e87",
+      "mode": 420
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/cpuid-transport-probe-v1/final-v1/READBACK.json",
+      "kind": "file",
+      "bytes": 1648,
+      "sha256": "27fa151f0b76d46dc0e7bc3d2447a65c56e65ad0c442c18bdb0c5a2e3f3861f0",
+      "mode": 420
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/cpuid-transport-probe-v1/qualification-result-v1/RESULTS.json",
+      "kind": "file",
+      "bytes": 57364,
+      "sha256": "cbe2cf29cadb3cf3e13e0523215fcbbfd53899b9b1a94309c7fd6009e372abec",
+      "mode": 420
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/cpuid-transport-probe-v1/qualification-result-v1/RAW-EXECUTION-AUDIT.json",
+      "kind": "file",
+      "bytes": 1569,
+      "sha256": "c0f2d185ba2d8080ec214813ab6d8387a876bf85b55567e8b43c915eb9466f88",
+      "mode": 420
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/cpuid-transport-probe-v1/qualification-v1/observer/probe-01/stdout",
+      "kind": "file",
+      "bytes": 507,
+      "sha256": "b76e2cecea0baab74011eeeec124dd89b99bbe9e05806cdeb7a7bf8100ebd9c4",
+      "mode": 384
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/cpuid-transport-probe-v1/qualification-v1/observer/probe-01/stderr",
+      "kind": "file",
+      "bytes": 1860,
+      "sha256": "ed6fcc9930898f4d425572be0510e98dee5fa363b79485751c282b27300ebfdd",
+      "mode": 384
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/cpuid-transport-probe-v1/qualification-v1/observer/probe-01/result.json",
+      "kind": "file",
+      "bytes": 46352,
+      "sha256": "1c09711fea202ac92946c3d57aea262199a5272f3e706a1cd5b5770689508b26",
+      "mode": 384
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/cpuid-transport-probe-v1/qualification-v1/controls/probe-01/result.json",
+      "kind": "file",
+      "bytes": 2859,
+      "sha256": "06ff1423aa2e1cd286c0cf2ce93300b3be15ce5199e50b215a6994db00b16760",
+      "mode": 420
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/cpuid-transport-probe-v1/qualification-v1/probe-01-plan.json",
+      "kind": "file",
+      "bytes": 57605,
+      "sha256": "4124ce886b1f8ff45990704c68865240868cc6b7fa91406e9c7f761d2afd7e2c",
+      "mode": 420
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/cpuid-transport-probe-v1/qualification-v1/retained-binaries/BINDING.json",
+      "kind": "file",
+      "bytes": 2523,
+      "sha256": "d168ea0821e333b05431e612a70589d8f5e39a4413a67293ea07b4d116f6640a",
+      "mode": 420
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parent-reader-support-20260916/ignored/kvm-cpuid-transport-research-v1/Documentation__virt__kvm__api.rst",
+      "kind": "file",
+      "bytes": 342403,
+      "sha256": "553f0720999e53afe9f4d2f70778a3271017c3be70faf25ac499f8750c17645d",
+      "mode": 420
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parent-reader-support-20260916/ignored/kvm-cpuid-transport-research-v1/FETCH-FOLLOWUP.json",
+      "kind": "file",
+      "bytes": 4379,
+      "sha256": "e2a33d35a459cabfc07b898ee9dac303fc099c7b9b276a6ed6b771ab7166fdb3",
+      "mode": 420
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parent-reader-support-20260916/ignored/kvm-cpuid-transport-research-v1/FETCH.json",
+      "kind": "file",
+      "bytes": 4348,
+      "sha256": "ae6599ad9a0bc0433db241391b30bda0d457072580bf18d4db795864e13da266",
+      "mode": 420
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parent-reader-support-20260916/ignored/kvm-cpuid-transport-research-v1/READBACK.json",
+      "kind": "file",
+      "bytes": 3388,
+      "sha256": "d2c63b612a3380803d6c84cb24ebdd13d9cb4895fc235f74122722c24269903e",
+      "mode": 420
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parent-reader-support-20260916/ignored/kvm-cpuid-transport-research-v1/REPORT.md",
+      "kind": "file",
+      "bytes": 4172,
+      "sha256": "c0a84bcad78faabcdbea7c9c4e4f87bd66125a00af04bcc33a2ecac89481e8d7",
+      "mode": 420
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parent-reader-support-20260916/ignored/kvm-cpuid-transport-research-v1/arch__x86__include__asm__msr-index.h",
+      "kind": "file",
+      "bytes": 51334,
+      "sha256": "7f35d96e2544f86cd7cbcd5699c39f6930b65741b0719f15078104a1ff2915a3",
+      "mode": 420
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parent-reader-support-20260916/ignored/kvm-cpuid-transport-research-v1/arch__x86__kvm__cpuid.c",
+      "kind": "file",
+      "bytes": 58116,
+      "sha256": "1e3dd6d0cdcdea3b07cc1591e0c1658b5655d2ddc307cb10756d80ad5b2d0cb8",
+      "mode": 420
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parent-reader-support-20260916/ignored/kvm-cpuid-transport-research-v1/arch__x86__kvm__cpuid.h",
+      "kind": "file",
+      "bytes": 8991,
+      "sha256": "17a847d448ab62984512afe05e2cc6a99ea6afd2899d396260bf4c8c3a06fa51",
+      "mode": 420
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parent-reader-support-20260916/ignored/kvm-cpuid-transport-research-v1/arch__x86__kvm__svm__svm.c",
+      "kind": "file",
+      "bytes": 166557,
+      "sha256": "4473e6d73696e0ef34b92f720f7002314228d84158b970719f801b78f62a8d29",
+      "mode": 420
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parent-reader-support-20260916/ignored/kvm-cpuid-transport-research-v1/arch__x86__kvm__vmx__vmx.c",
+      "kind": "file",
+      "bytes": 261756,
+      "sha256": "733c2232341abd26d81e94956694e0c8cd84253d073a048cfa0cf05df1f7e2cc",
+      "mode": 420
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parent-reader-support-20260916/ignored/kvm-cpuid-transport-research-v1/arch__x86__kvm__x86.c",
+      "kind": "file",
+      "bytes": 404171,
+      "sha256": "c793b882532b19da67711b6d3d64e78db75601bb7132f054561d86865563b2bd",
+      "mode": 420
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parent-reader-support-20260916/ignored/kvm-cpuid-transport-research-v1/arch__x86__kvm__x86.h",
+      "kind": "file",
+      "bytes": 24606,
+      "sha256": "1f9836c5aa18d51a19f7b10e724baaa34cdbb3591afe9afd1e78661bc070882c",
+      "mode": 420
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parent-reader-support-20260916/ignored/kvm-cpuid-feature-query-v1/READBACK.json",
+      "kind": "file",
+      "bytes": 1833,
+      "sha256": "681f59471aebaff0e183e24906d0cbdc0c2a2c99aaaef017ad834a4037ea4c6a",
+      "mode": 420
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parent-reader-support-20260916/ignored/kvm-cpuid-feature-query-v1/RESULT.json",
+      "kind": "file",
+      "bytes": 988,
+      "sha256": "3bd09686b3cfe565077e69d2b0eee2db15d705f654cf5ffdda36dba7387a4bbd",
+      "mode": 420
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parent-reader-support-20260916/ignored/kvm-cpuid-feature-query-v1/query.py",
+      "kind": "file",
+      "bytes": 1883,
+      "sha256": "0f679cb92c01f3f58506b9bc100061b92f5f799292416b128cd80036fd6dbc6b",
+      "mode": 420
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parent-reader-support-20260916/ignored/kvm-cpuid-feature-query-v1/query.status",
+      "kind": "file",
+      "bytes": 2,
+      "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+      "mode": 420
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parent-reader-support-20260916/ignored/kvm-cpuid-feature-query-v1/query.stderr",
+      "kind": "file",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "mode": 420
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parent-reader-support-20260916/ignored/kvm-cpuid-feature-query-v1/query.stdout",
+      "kind": "file",
+      "bytes": 868,
+      "sha256": "68cf3b2a3c9df5ac0d5b89cc5b72d24d93b7fc5dad046cb33f03ce1fb9a83ec2",
+      "mode": 420
+    }
+  ]
+}

@@ -1,0 +1,24 @@
+{
+  "started": [
+    "executor::tests::process_pending_signal_prevents_a_new_host_timed_thread_consumer"
+  ],
+  "ended": [
+    {
+      "type": "test",
+      "name": "executor::tests::process_pending_signal_prevents_a_new_host_timed_thread_consumer",
+      "event": "ok"
+    }
+  ],
+  "suites": [
+    {
+      "type": "suite",
+      "event": "ok",
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filtered_out": 504,
+      "exec_time": 0.001079001
+    }
+  ]
+}

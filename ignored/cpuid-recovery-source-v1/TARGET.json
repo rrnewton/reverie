@@ -1,0 +1,103 @@
+{
+  "status": "FROZEN ISOLATED CPUID SOURCE V1; UNCOMPILED AND UNEXECUTED",
+  "base": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v6/TARGET.json",
+    "kind": "file",
+    "bytes": 2979,
+    "sha256": "efa8f9355bfcf27dad6395942903d32731056bb04dba935933a290b46db2ed98",
+    "mode": 420
+  },
+  "qualified_base": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v6/final-v1/TARGET.json",
+    "kind": "file",
+    "bytes": 3798,
+    "sha256": "9730077c7572bc0fc0d8488de1fc974f1166cab353e9915a0d80a0cc531339b1",
+    "mode": 420
+  },
+  "source": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/cpuid-recovery-source-v1/source",
+  "source_manifest": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/cpuid-recovery-source-v1/SOURCE-MANIFEST.json",
+    "kind": "file",
+    "bytes": 1359543,
+    "sha256": "a4d3417d241dd415e1c0c64aa02fa632b04a3c5e23b7c6973a8d74a27907db99",
+    "mode": 420
+  },
+  "source_patch": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/cpuid-recovery-source-v1/SOURCE.patch",
+    "kind": "file",
+    "bytes": 75065,
+    "sha256": "fad7ca6619d6a65bdf767339d40308c693683d31150ba120c1a2373e2aa74b2b",
+    "mode": 420
+  },
+  "continuity": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/cpuid-recovery-source-v1/SOURCE-CONTINUITY.json",
+    "kind": "file",
+    "bytes": 2412,
+    "sha256": "7835c23f9ad1b12c135f60ded6e10ab17143d4675efe28c62daf2630f2a7b270",
+    "mode": 420
+  },
+  "actual_lock": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/cpuid-recovery-source-v1/source/Cargo.lock",
+    "kind": "file",
+    "bytes": 67056,
+    "sha256": "1c09663e46bf21ad7c07eedd7821cccb72ae21f42485192649ff5473962bc856",
+    "mode": 420
+  },
+  "report": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/cpuid-recovery-source-v1/REPORT.md",
+    "kind": "file",
+    "bytes": 10573,
+    "sha256": "85de640f6c8a448a7c9305b915b00223d8ef028edc5cbbffae428de5d533e894",
+    "mode": 420
+  },
+  "plan": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/cpuid-recovery-source-v1/PLAN.md",
+    "kind": "file",
+    "bytes": 4742,
+    "sha256": "3346748ab2a1292f4a4879304b9fca215fd1e1bccf82db38f456df451c9d141a",
+    "mode": 420
+  },
+  "selectors": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/cpuid-recovery-source-v1/SELECTORS.json",
+    "kind": "file",
+    "bytes": 24062,
+    "sha256": "273c791e8e35a7467203bc9aa93685fad7e1a1f7171f63f61f40fdab12d28929",
+    "mode": 420
+  },
+  "controls": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/cpuid-recovery-source-v1/CONTROLS.json",
+    "kind": "file",
+    "bytes": 45625,
+    "sha256": "df7f3de0157ef867f403ed2b15d7a7628b6ed6e6ca5c9ef6c6684547becb3f37",
+    "mode": 420
+  },
+  "prerequisites": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/cpuid-recovery-source-v1/PREREQUISITES.json",
+    "kind": "file",
+    "bytes": 12408,
+    "sha256": "9abe8444efc51813b143f5882760d546df0b25c917b9f79245c3d38fde6381e5",
+    "mode": 420
+  },
+  "input_index": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/cpuid-recovery-source-v1/INPUTS.json",
+    "kind": "file",
+    "bytes": 1840082,
+    "sha256": "3f0006fa3b62529fede264cf795ef2abd0147f359cc7dd2ce1474453d484366b",
+    "mode": 420
+  },
+  "complete_reads": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/cpuid-recovery-source-v1/COMPLETE_READS.json",
+    "kind": "file",
+    "bytes": 29138,
+    "sha256": "8e4da30c647efc5c458cd9c886a7745e1503d992282eb98a0d3de0e8bb4ca301",
+    "mode": 420
+  },
+  "new_declarations": 15,
+  "planned_declarations": 55,
+  "planned_phases": 64,
+  "compiler_run": false,
+  "tests_run": false,
+  "source_approved": false,
+  "live_source_scm_or_cache_changed": false,
+  "review_launch_authorized": false
+}

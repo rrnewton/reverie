@@ -1,0 +1,22 @@
+--- qualification-v1/prepare.py
++++ qualification-v2/prepare.py
+@@ -120,7 +120,7 @@
+               lease=dict(path=str(lease),owner_slot=str(OWNER),identity=[l.st_dev,l.st_ino,l.st_uid],state_directory=str(OWNER/'ignored/timer-integration-20260918/lease-state')),
+               output=str(HERE/'observer'/name),control=str(HERE/'controls'/name),
+               limits=dict(aggregate_cpu_usec=600000000 if large else 30000000,wall_seconds=900 if large else 60,lethal_stderr_bytes=16777216,live_stdout_samples_bytes=67108864,phase_read_bytes=16777216,memory_bytes=17179869184,swap_bytes=0,free_floor_bytes=107374182400),
+-              scope='CPL3 timestamp recovery: exact 31 declarations and existing public vmcall/clock neighbors; no public real-mode interception, timer completion or 75-cell parity claim from component phases')
++              scope='One exact Host-owned worker RIP diagnostic; original count assertion retained; no component qualification claim')
+     if(HERE/'dependency-inputs.json').exists():plan['dependencies']=file_record(HERE/'dependency-inputs.json')
+     write_new(Path(plan['path']),plan);print(plan['path'],hashlib.sha256(Path(plan['path']).read_bytes()).hexdigest())
+ if __name__=='__main__':main()
+--- execute_phases.py
++++ execute_qualification_v2.py
+@@ -2,7 +2,7 @@
+ import hashlib,json,subprocess,sys,time
+ from pathlib import Path
+ N=Path(__file__).resolve().parent
+-Q=N/'qualification-v1'
++Q=N/'qualification-v2'
+ planned=json.loads((N/'RUN-ORDER.json').read_text())['phases']
+ for name in sys.argv[1:]:
+     assert name in planned and not(Q/(name+'-plan.json')).exists(), name

@@ -1,0 +1,23 @@
+{
+  "payload": {
+    "binary": "/usr/bin/python3",
+    "binary_sha256": "9cfdf1a01d07dadb394dd2dc9fd8316254c36764076d23dc2c895c8401735576",
+    "arguments": [
+      "-B",
+      "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-native-probe-caller-v1/qualification-v1/native_phase.py",
+      "payload",
+      "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-native-probe-caller-v1/qualification-v1/plans/overlength-rdtsc.json",
+      "ab2366f427144b772dc8d32d48bc76de0319389f7063d8e1f1b091fe17d30246"
+    ]
+  },
+  "token": "4a727a960656b2c55212c09d12a17a7af1bf859dc09f8c2f9120669bd1bdebbe",
+  "observer_pid": 3423645,
+  "locale_environment": {
+    "LC_CTYPE": null,
+    "LC_ALL": "C",
+    "LANG": "C"
+  },
+  "ignore_sigpipe": true,
+  "observer_start_ticks": 190802641,
+  "deadline_monotonic_ns": 1908051500469722
+}

@@ -1,0 +1,1204 @@
+{
+  "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-native-probe-caller-v1/qualification-v1/plans/edge-rdtsc.json",
+  "name": "edge-rdtsc",
+  "kind": "probe",
+  "owner": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-native-probe-caller-v1",
+  "cwd": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-native-probe-caller-v1",
+  "argv": [
+    "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-native-probe-caller-v1/qualification-v1/retained-binaries/probe",
+    "edge",
+    "rdtsc",
+    "0"
+  ],
+  "environment": {
+    "HOME": "/home/newton",
+    "PATH": "/usr/bin:/bin",
+    "LC_ALL": "C",
+    "LANG": "C",
+    "TZ": "UTC",
+    "TMPDIR": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-native-probe-caller-v1/qualification-v1/tmp",
+    "USER": "newton",
+    "LOGNAME": "newton",
+    "XDG_RUNTIME_DIR": "/run/user/212630",
+    "DBUS_SESSION_BUS_ADDRESS": "unix:path=/run/user/212630/bus"
+  },
+  "inputs": [
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-native-probe-caller-v1/qualification-v1/CALLER-INPUTS.json",
+      "bytes": 5747,
+      "mode": 420,
+      "sha256": "371b8bbb1bb9532c665cd6aa886cf820d224bbad5d3628d3cea21c71c4fd86c8"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-native-probe-caller-v1/qualification-v1/ADMISSION.json",
+      "bytes": 1723,
+      "mode": 420,
+      "sha256": "1d6480c72ac05d4443582b20c816be2577b0de48f09ea76e1dac5ec27e7f51e3"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-native-probe-caller-v1/source/probe.c",
+      "bytes": 9369,
+      "mode": 420,
+      "sha256": "da386bbcd3b921dfd15a355260d13ef994ef0c9b5e45fff0f9e287b1ec4c3a1e"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-native-probe-caller-v1/source/README.md",
+      "bytes": 1650,
+      "mode": 420,
+      "sha256": "b472cbbf657bb1e52dd768a988672ad872fe139166f5a548eab66703b2bd52f3"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-native-probe-caller-v1/SELECTORS.json",
+      "bytes": 6302,
+      "mode": 420,
+      "sha256": "83c367b409e8d15e593f0899037655a91aa8466966e1534b97535bef2d842295"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-native-probe-caller-v1/SOURCE-ORIGIN.json",
+      "bytes": 1261,
+      "mode": 420,
+      "sha256": "90f9ec1b10336cce39d12b6ff01961668f6d7d53342ee82e2ee0e4cfe7c99d2f"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-native-probe-caller-v1/qualification-v1/RUNNER-ORIGINS.json",
+      "bytes": 3953,
+      "mode": 420,
+      "sha256": "a75d704d2422b6c0c8657a8292167832713ee3cbfdb17165a65bbc876bb575b5"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-native-probe-caller-v1/qualification-v1/SETUP.json",
+      "bytes": 14301,
+      "mode": 420,
+      "sha256": "adba326afe5b85a4c3a6e5c5c4886453576b6a073806f39fe8726df988c903d6"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-native-probe-caller-v1/qualification-v1/SYNTAX.json",
+      "bytes": 4955,
+      "mode": 420,
+      "sha256": "f3e1a45069fdf11aa633f149028ad60fedb0ad64e9881b28e76241c337dbfa3c"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-native-probe-caller-v1/qualification-v1/admit.py",
+      "bytes": 1931,
+      "mode": 420,
+      "sha256": "c2fc171c969c673f6d7183246cf8769576a46b2d97da3029a363e6d676cee713"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-native-probe-caller-v1/qualification-v1/bind.py",
+      "bytes": 3390,
+      "mode": 420,
+      "sha256": "48dc9a4720838568f6e5026277fcde37917f1114fa8369c65f0e0c159003417d"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-native-probe-caller-v1/qualification-v1/cache_lease.py",
+      "bytes": 4603,
+      "mode": 420,
+      "sha256": "957ce8530e0f5bba7e447a03c06b5d4452430ca1bd0b8187eebb162b55ce19a0"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-native-probe-caller-v1/qualification-v1/common.py",
+      "bytes": 10759,
+      "mode": 420,
+      "sha256": "96cf2b7b60df32c63a1c0231609f124874d4808fe1814f0fab8bce9088bd8656"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-native-probe-caller-v1/qualification-v1/execute.py",
+      "bytes": 3710,
+      "mode": 420,
+      "sha256": "21222595794afaa7aaa7e84ce9d98c382f0e14b90b3c70706f4254d4685827a0"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-native-probe-caller-v1/qualification-v1/freeze_results.py",
+      "bytes": 6830,
+      "mode": 420,
+      "sha256": "fa3810c069fa9791317a4bc6ca8577604481a49b58a723df09b716f71727b110"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-native-probe-caller-v1/qualification-v1/native_phase.py",
+      "bytes": 11124,
+      "mode": 420,
+      "sha256": "3e4c8d30c34c266124b6ea900108716e43de0dd3dc9dcd1d61a7ea048cf642ea"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-native-probe-caller-v1/qualification-v1/observer/before_exec.py",
+      "bytes": 8260,
+      "mode": 420,
+      "sha256": "184d1b1dcdb8c8a75626d2c0fe403d1527e160f51e0cc98338f405bf8a0319bd"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-native-probe-caller-v1/qualification-v1/observer/observer.py",
+      "bytes": 44851,
+      "mode": 420,
+      "sha256": "137c9b42c3f9e081db59954e0ef692ed861f488be7c2bb8a15ef595c271b2179"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-native-probe-caller-v1/qualification-v1/observer/source-inputs.json",
+      "bytes": 1812,
+      "mode": 420,
+      "sha256": "af15f634235359032b1ea544207713c32318906d51447ff6de171ada09c8b5b7"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-native-probe-caller-v1/qualification-v1/observer/unit_reference.py",
+      "bytes": 8569,
+      "mode": 420,
+      "sha256": "e00b79d292060b7a467d6a99ed88082719682d205efbdc56ecbe5fb7256fe0d0"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-native-probe-caller-v1/qualification-v1/prepare.py",
+      "bytes": 7741,
+      "mode": 420,
+      "sha256": "c20ab92292dbbd1ddb2e3496129488914bf3c520067e81b806591fe381fcf27b"
+    },
+    {
+      "path": "/usr/bin/gcc",
+      "bytes": 1093144,
+      "mode": 493,
+      "sha256": "546023eae5ff58287b1d987e059d38e2733dfe49eda827282d6942707c4c25d0"
+    },
+    {
+      "path": "/usr/libexec/gcc/x86_64-redhat-linux/11/cc1",
+      "bytes": 28991152,
+      "mode": 493,
+      "sha256": "43d76c430f9bac83a34f06094bd7a8d9d66c1a155cfd978489024afbdaf1faf5"
+    },
+    {
+      "path": "/usr/libexec/gcc/x86_64-redhat-linux/11/collect2",
+      "bytes": 349536,
+      "mode": 493,
+      "sha256": "9520e6fb1ad7d606c35241a6b4032247a492675fb355687830756a6644912f8e"
+    },
+    {
+      "path": "/usr/bin/as",
+      "bytes": 727360,
+      "mode": 493,
+      "sha256": "2870525fb59869f6f4c51cae67ffc6124f6635129db00a7d0818b84f7d069c56"
+    },
+    {
+      "path": "/usr/bin/ld.bfd",
+      "bytes": 1791600,
+      "mode": 493,
+      "sha256": "ac6bbc7393b95278ffa294cbdf18c65b5003d4e15dc805ce24a8146a8a154c42"
+    },
+    {
+      "path": "/usr/libexec/gcc/x86_64-redhat-linux/11/liblto_plugin.so",
+      "bytes": 99496,
+      "mode": 493,
+      "sha256": "41cfbfd1c97419ae2f8a9ff6b1a6eacc0b2253c8dfa26ab3db27b61a1a723be9"
+    },
+    {
+      "path": "/usr/libexec/gcc/x86_64-redhat-linux/11/lto-wrapper",
+      "bytes": 919968,
+      "mode": 493,
+      "sha256": "b7d19a0a3a987a58fa277a47ad8819e2adb46e7f08db03555ea1657bcaef2922"
+    },
+    {
+      "path": "/usr/bin/python3.9",
+      "bytes": 15448,
+      "mode": 493,
+      "sha256": "9cfdf1a01d07dadb394dd2dc9fd8316254c36764076d23dc2c895c8401735576"
+    },
+    {
+      "path": "/usr/bin/ldd",
+      "bytes": 5446,
+      "mode": 493,
+      "sha256": "2e332feed7fe0d65afca81d83d07f997917c07d5c1f1fd5564e98330e78aa0b5"
+    },
+    {
+      "path": "/usr/bin/readelf",
+      "bytes": 683296,
+      "mode": 493,
+      "sha256": "51bc80f3a187e54e0b267fe6e64de09129f7761aafe615177d9d0be2229afcff"
+    },
+    {
+      "path": "/usr/bin/systemctl",
+      "bytes": 330440,
+      "mode": 493,
+      "sha256": "56f571f124b0564f8f971c878ffbc705a24f4c4db5876cf4dccdedade88f3155"
+    },
+    {
+      "path": "/usr/lib/gcc/x86_64-redhat-linux/11/crtbegin.o",
+      "bytes": 2952,
+      "mode": 420,
+      "sha256": "250bfab9298f3ef5c3b9027fd8e674cd30903cf3f91349a56c6bc3b598629d99"
+    },
+    {
+      "path": "/usr/lib/gcc/x86_64-redhat-linux/11/crtend.o",
+      "bytes": 1632,
+      "mode": 420,
+      "sha256": "50a9a7f09866b19579485f1bab9a3d94592b7eb954009936fc9ba47c599208a1"
+    },
+    {
+      "path": "/usr/lib/gcc/x86_64-redhat-linux/11/libgcc.a",
+      "bytes": 3133246,
+      "mode": 420,
+      "sha256": "f5118081c7501f5d16d3ea52038c3445e5d7d971bc53a092b5e37b4cf10d9fbb"
+    },
+    {
+      "path": "/usr/lib/gcc/x86_64-redhat-linux/11/libgcc_eh.a",
+      "bytes": 70272,
+      "mode": 420,
+      "sha256": "73876246041a101c12692c09872669bc6a8f55a338f58bf78538003fc8ab57bf"
+    },
+    {
+      "path": "/usr/lib/gcc/x86_64-redhat-linux/11/libgcc_s.so",
+      "bytes": 195,
+      "mode": 420,
+      "sha256": "1f0e19cc3d3eea1bdcf0a8469f651cd57190ce969e4c6b75c5ad523acdefb459"
+    },
+    {
+      "path": "/usr/lib64/crt1.o",
+      "bytes": 3096,
+      "mode": 420,
+      "sha256": "33df84be5c733e1b00a4cdf2f0820d99ff5cd17c59f0c0935f2c67a4d60fa427"
+    },
+    {
+      "path": "/usr/lib64/crti.o",
+      "bytes": 1800,
+      "mode": 420,
+      "sha256": "d0f6f64378800c817f9ba3a5a6f47e4c9ebef89dcdbc77394e661ca8030c9be8"
+    },
+    {
+      "path": "/usr/lib64/crtn.o",
+      "bytes": 1536,
+      "mode": 420,
+      "sha256": "d468c4d1438bb6c14ff3087a0ec364d4ca0b7cdfe71ab493d04c56bbb3c07a5e"
+    },
+    {
+      "path": "/usr/lib64/libc.so",
+      "bytes": 253,
+      "mode": 420,
+      "sha256": "bc8e2fd8ffcf12e2156395df0a2ea6a0a139937ac835cdc1395b525ded29d7bb"
+    },
+    {
+      "path": "/usr/lib64/libc.so.6",
+      "bytes": 2549352,
+      "mode": 493,
+      "sha256": "d932cb6bc88da10cc709d5b7ecda57a1387b6571331689dba88023b4c0517776"
+    },
+    {
+      "path": "/usr/lib64/libc_nonshared.a",
+      "bytes": 17606,
+      "mode": 420,
+      "sha256": "6bf329c85ea56c6020040c22efc612e417753b33fade52313e8fd5183126ede8"
+    },
+    {
+      "path": "/usr/lib64/libgcc_s-11-20240719.so.1",
+      "bytes": 116408,
+      "mode": 493,
+      "sha256": "3d144b557008c93e4e67567d5dc98cb81cf55187a698d1b4872ce84ba8a26bed"
+    },
+    {
+      "path": "/usr/lib64/ld-linux-x86-64.so.2",
+      "bytes": 938752,
+      "mode": 493,
+      "sha256": "008e34384d4bc082a053ba086588efa1546086ecb863c9464b7269f8928b7577"
+    },
+    {
+      "path": "/usr/bin/bash",
+      "bytes": 1389072,
+      "mode": 493,
+      "sha256": "97995faa249e5706dd0b0373c9da547709bf7349755d5fc8e52f97a4bd04feaf"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/bin/safehermit",
+      "bytes": 29416,
+      "mode": 493,
+      "sha256": "dae61b1819d424ea9928143d728fba6897f45cb619c8164ad87030922130f760"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/scripts/hermit-box-run",
+      "bytes": 42932,
+      "mode": 493,
+      "sha256": "6d924ce3e12c34cdf5d8ca446f0952a9137da786161cac1feef83867bda90639"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/scripts/bounded-run-space",
+      "bytes": 15385,
+      "mode": 493,
+      "sha256": "b17e28257163f7603c7b1462b0e0a9f06ffe5d3d449620488cd95ae0fb45c489"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/.skills/code-review/SKILL.md",
+      "bytes": 3617,
+      "mode": 420,
+      "sha256": "2cd879e25391da1fa13de6d20334a3f387f3171d05b40c075ba5f1f1c10c6b8f"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/ignored/kvm-parity-20260914-codex/next-work/remeasurement-plan.md",
+      "bytes": 23892,
+      "mode": 420,
+      "sha256": "3a73d3873a87f0e4fd23137ba702a69da62c08f1812b14a37753fcbe2197c5f6"
+    },
+    {
+      "path": "/usr/bin/busctl",
+      "bytes": 106664,
+      "mode": 493,
+      "sha256": "9f0bba9343ed701884c7ff46767ffeffffe048de31fda4d8c23c2c6ea2211b6d"
+    },
+    {
+      "path": "/usr/lib64/libsystemd.so.0.43.0",
+      "bytes": 1251104,
+      "mode": 493,
+      "sha256": "ce568412d003dd7e271896e57211d464bcb1a74e76fa4dad706ea418a5847d37"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-native-probe-caller-v1/qualification-v1/loader/tool-0.json",
+      "bytes": 3263,
+      "mode": 420,
+      "sha256": "c45fc3e7a8472c1454087ecc853c6877e4f1f68dbe9dafcfd2ce7b4093949b83"
+    },
+    {
+      "path": "/usr/lib64/libm.so.6",
+      "bytes": 913048,
+      "mode": 493,
+      "sha256": "9a66ed5465040274a85266a9404268b50e69a1fdd7f34aaac3746905003c5135"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-native-probe-caller-v1/qualification-v1/loader/tool-0-ldd.stdout",
+      "bytes": 192,
+      "mode": 420,
+      "sha256": "aca2ef65e555f8e941c9486f2fce469ad2b9149cedf0b3f8ad718ddf8a931652"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-native-probe-caller-v1/qualification-v1/loader/tool-0-ldd.stderr",
+      "bytes": 0,
+      "mode": 420,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-native-probe-caller-v1/qualification-v1/loader/tool-0-readelf.stdout",
+      "bytes": 3827,
+      "mode": 420,
+      "sha256": "d9582be26d64ace10c75bf12d76e9e9bb27f17e0e40127a38b27bd8c6a269969"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-native-probe-caller-v1/qualification-v1/loader/tool-0-readelf.stderr",
+      "bytes": 0,
+      "mode": 420,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-native-probe-caller-v1/qualification-v1/loader/tool-1.json",
+      "bytes": 4783,
+      "mode": 420,
+      "sha256": "6d3ab240c37fd428e6e07d40327a4df00acec14c9aa468923c0b9179a608365d"
+    },
+    {
+      "path": "/usr/lib64/libmpc.so.3.2.1",
+      "bytes": 118904,
+      "mode": 493,
+      "sha256": "dff128b03df28b63414e9961d1d8ff175ce822323b1db084b0b225c25e5c8a9c"
+    },
+    {
+      "path": "/usr/lib64/libmpfr.so.6.1.0",
+      "bytes": 725480,
+      "mode": 493,
+      "sha256": "9a984581ddb139aa4f00331af6732965adf32c1d52b4094d463a1b377812a625"
+    },
+    {
+      "path": "/usr/lib64/libgmp.so.10.4.0",
+      "bytes": 677824,
+      "mode": 493,
+      "sha256": "b9d1265de01c92a6565272aa3ffa30034fe3656c73c348fc988a2e65389d6782"
+    },
+    {
+      "path": "/usr/lib64/libz.so.1.2.11",
+      "bytes": 102672,
+      "mode": 493,
+      "sha256": "ae0b0485bffccd7b374451b52938f67e109c237a4a98679792d5dc1a31270289"
+    },
+    {
+      "path": "/usr/lib64/libzstd.so.1.5.5",
+      "bytes": 754200,
+      "mode": 493,
+      "sha256": "dc1ccdc94eea889670d6258a70ae51be922be6a4740eb44eee4f1baf012136b7"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-native-probe-caller-v1/qualification-v1/loader/tool-1-ldd.stdout",
+      "bytes": 474,
+      "mode": 420,
+      "sha256": "d717bf1441f496f9e1162939db100fda6df229fadf3ea2484ff186b2349d4ecd"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-native-probe-caller-v1/qualification-v1/loader/tool-1-ldd.stderr",
+      "bytes": 0,
+      "mode": 420,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-native-probe-caller-v1/qualification-v1/loader/tool-1-readelf.stdout",
+      "bytes": 4214,
+      "mode": 420,
+      "sha256": "dc907fb748f9b6bd5e6064af0ac7853afd82fd6033ae69c83f216e16e0a2225e"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-native-probe-caller-v1/qualification-v1/loader/tool-1-readelf.stderr",
+      "bytes": 0,
+      "mode": 420,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-native-probe-caller-v1/qualification-v1/loader/tool-2.json",
+      "bytes": 3371,
+      "mode": 420,
+      "sha256": "e684cccc43286065d0e1fbddafbbd38f21df06a09b9104b7382f388cc5d0026b"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-native-probe-caller-v1/qualification-v1/loader/tool-2-ldd.stdout",
+      "bytes": 192,
+      "mode": 420,
+      "sha256": "d9117d6b2a54ef7b9c1df52d1b6a4956dcf7e36b21e2cd2cb7a2c56f679e3e78"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-native-probe-caller-v1/qualification-v1/loader/tool-2-ldd.stderr",
+      "bytes": 0,
+      "mode": 420,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-native-probe-caller-v1/qualification-v1/loader/tool-2-readelf.stdout",
+      "bytes": 3820,
+      "mode": 420,
+      "sha256": "0261ea4d434ae309ed89aeabd1b6cd2748b8423338a430053d858280c9854d62"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-native-probe-caller-v1/qualification-v1/loader/tool-2-readelf.stderr",
+      "bytes": 0,
+      "mode": 420,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-native-probe-caller-v1/qualification-v1/loader/tool-3.json",
+      "bytes": 3750,
+      "mode": 420,
+      "sha256": "6faf4741ae3b3997eb7c838affe479bde54c8bba85379cfee68767e480ca31b1"
+    },
+    {
+      "path": "/usr/lib64/libopcodes-2.35.2-72.el9.so",
+      "bytes": 1586296,
+      "mode": 493,
+      "sha256": "c2c4e79148dd95299f3b3656a7f397e898498d51e5f1c488270b3eec17eec3d9"
+    },
+    {
+      "path": "/usr/lib64/libbfd-2.35.2-72.el9.so",
+      "bytes": 1343512,
+      "mode": 493,
+      "sha256": "fa99d0491b5200bf47bb7b6e4340c572bc8e1681c44ea9e7b59106af8e6da7b5"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-native-probe-caller-v1/qualification-v1/loader/tool-3-ldd.stdout",
+      "bytes": 360,
+      "mode": 420,
+      "sha256": "2d4f06ed6fcd2f12dcec3c9af281ef588e44dec861e7a50e5d39cda1d64b9f3d"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-native-probe-caller-v1/qualification-v1/loader/tool-3-ldd.stderr",
+      "bytes": 0,
+      "mode": 420,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-native-probe-caller-v1/qualification-v1/loader/tool-3-readelf.stdout",
+      "bytes": 3769,
+      "mode": 420,
+      "sha256": "a1ddab4bfd1e64f770403ac0c0a2779e8aa0b96c8628aec3b2ce3fd79ad383ad"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-native-probe-caller-v1/qualification-v1/loader/tool-3-readelf.stderr",
+      "bytes": 0,
+      "mode": 420,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-native-probe-caller-v1/qualification-v1/loader/tool-4.json",
+      "bytes": 3853,
+      "mode": 420,
+      "sha256": "c0aae9bddeb9fca5365a02e5680ee63423e1bda060c2dbed71aa6a0196cae56a"
+    },
+    {
+      "path": "/usr/lib64/libctf.so.0.0.0",
+      "bytes": 120088,
+      "mode": 493,
+      "sha256": "42fff8b2b495fc7826e87b29459b583b61ccea79fdbf0d5f44c16d1c4d201be8"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-native-probe-caller-v1/qualification-v1/loader/tool-4-ldd.stdout",
+      "bytes": 328,
+      "mode": 420,
+      "sha256": "6addfb98119cb4f66fc4cb99a023f1780df1da8cc272a598ed98c898318093c9"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-native-probe-caller-v1/qualification-v1/loader/tool-4-ldd.stderr",
+      "bytes": 0,
+      "mode": 420,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-native-probe-caller-v1/qualification-v1/loader/tool-4-readelf.stdout",
+      "bytes": 3690,
+      "mode": 420,
+      "sha256": "3a61bac58847e6a75e19f6de37e5df0a06208bae4da47a8490e34417fa63567b"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-native-probe-caller-v1/qualification-v1/loader/tool-4-readelf.stderr",
+      "bytes": 0,
+      "mode": 420,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-native-probe-caller-v1/qualification-v1/loader/tool-5.json",
+      "bytes": 3218,
+      "mode": 420,
+      "sha256": "2a6545e4e46ef057f9eb4aeac1deb085e8d7fee226fee407d6eea7e3098c96c9"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-native-probe-caller-v1/qualification-v1/loader/tool-5-ldd.stdout",
+      "bytes": 140,
+      "mode": 420,
+      "sha256": "f12c1a674e367c4939dc618e6927bc2763fbd499cedc5135b0e2b5a626e031ee"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-native-probe-caller-v1/qualification-v1/loader/tool-5-ldd.stderr",
+      "bytes": 0,
+      "mode": 420,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-native-probe-caller-v1/qualification-v1/loader/tool-5-readelf.stdout",
+      "bytes": 3241,
+      "mode": 420,
+      "sha256": "cb0a48ac57bfa89ccc54878e5e97dd62c3b628b5888ecbb52a48ab5991954bc8"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-native-probe-caller-v1/qualification-v1/loader/tool-5-readelf.stderr",
+      "bytes": 0,
+      "mode": 420,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-native-probe-caller-v1/qualification-v1/loader/tool-6.json",
+      "bytes": 3379,
+      "mode": 420,
+      "sha256": "0b7faee47a8b151dabe2481090c12e4e2676a8fbf1d80a11262e36e82f940f9f"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-native-probe-caller-v1/qualification-v1/loader/tool-6-ldd.stdout",
+      "bytes": 192,
+      "mode": 420,
+      "sha256": "fff7d0bfc3f3c2a6d32922745cc1f56956c7b613591ff999eac70b4a21d34140"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-native-probe-caller-v1/qualification-v1/loader/tool-6-ldd.stderr",
+      "bytes": 0,
+      "mode": 420,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-native-probe-caller-v1/qualification-v1/loader/tool-6-readelf.stdout",
+      "bytes": 3825,
+      "mode": 420,
+      "sha256": "6bc0be4b848a88a99159bf78c867dcb76036d98bb8891a9b972e762f01637299"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-native-probe-caller-v1/qualification-v1/loader/tool-6-readelf.stderr",
+      "bytes": 0,
+      "mode": 420,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-native-probe-caller-v1/qualification-v1/loader/tool-7.json",
+      "bytes": 3468,
+      "mode": 420,
+      "sha256": "425e06172a548605363f3e14c2bfbba0b77799599719dcc65fb02eee950aaed9"
+    },
+    {
+      "path": "/usr/lib64/libpython3.9.so.1.0",
+      "bytes": 3851200,
+      "mode": 493,
+      "sha256": "63e27f1171161897be095b5c5b82692489768c7db0fec9cc84f7c076a97bc9ee"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-native-probe-caller-v1/qualification-v1/loader/tool-7-ldd.stdout",
+      "bytes": 264,
+      "mode": 420,
+      "sha256": "cfdec75d6e35cf198b818dc3eb949a33eb057595bd02fa1c394090caba923b47"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-native-probe-caller-v1/qualification-v1/loader/tool-7-ldd.stderr",
+      "bytes": 0,
+      "mode": 420,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-native-probe-caller-v1/qualification-v1/loader/tool-7-readelf.stdout",
+      "bytes": 3592,
+      "mode": 420,
+      "sha256": "7f31130a9a0e6d01683d10a1245915550d19fb709b1826c1faeb4dc59c8f3f46"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-native-probe-caller-v1/qualification-v1/loader/tool-7-readelf.stderr",
+      "bytes": 0,
+      "mode": 420,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-native-probe-caller-v1/qualification-v1/loader/tool-8.json",
+      "bytes": 11684,
+      "mode": 420,
+      "sha256": "9ad33486e30601e646fbb7a4eaeb267e76b8baa90f072ad6f0f5f1c91f4f6a88"
+    },
+    {
+      "path": "/usr/lib64/libctf-nobfd.so.0.0.0",
+      "bytes": 115912,
+      "mode": 493,
+      "sha256": "0d4e4bbed74766b9ccceb3f7b7e82a71dc1c996bda55cdf4d7da9206fe04542f"
+    },
+    {
+      "path": "/usr/lib64/libdebuginfod-0.195.so",
+      "bytes": 52608,
+      "mode": 493,
+      "sha256": "1df875e2eb8aca3cd2a4ced29b1c362c9157a9407f28e77113637f1e5f7eb387"
+    },
+    {
+      "path": "/usr/lib64/libcurl.so.4.7.0",
+      "bytes": 666384,
+      "mode": 493,
+      "sha256": "644251954e0709a4e403587d3ff85286b038fcdb1db3042f044fb129aed9cd24"
+    },
+    {
+      "path": "/usr/lib64/libelf-0.195.so",
+      "bytes": 111624,
+      "mode": 493,
+      "sha256": "fdf92630174e71757632cb728d655aea8e942030cc9a775e895dd2eab636131b"
+    },
+    {
+      "path": "/usr/lib64/libcrypto.so.3.5.7",
+      "bytes": 6164424,
+      "mode": 493,
+      "sha256": "0599684a6f76b425c95832bd00b2faf5719b32e6319afd6ce8846360d0529d31"
+    },
+    {
+      "path": "/usr/lib64/libjson-c.so.5.0.0",
+      "bytes": 75928,
+      "mode": 493,
+      "sha256": "8aa6483f266303dd0116a85882806382c9e254bceeb17be1c1f8933a1ea9f33e"
+    },
+    {
+      "path": "/usr/lib64/libnghttp2.so.14.20.1",
+      "bytes": 168536,
+      "mode": 493,
+      "sha256": "d6954507f906809babd898c3b07d1140ea7545596702e88416f3e6f1b8d271fc"
+    },
+    {
+      "path": "/usr/lib64/libidn2.so.0.3.7",
+      "bytes": 130952,
+      "mode": 493,
+      "sha256": "dc245bad13edbcd52b6f654a3de2ddcb017c92590e0b7b473b8a69a3db3a2b9c"
+    },
+    {
+      "path": "/usr/lib64/libssh.so.4.9.4",
+      "bytes": 487808,
+      "mode": 493,
+      "sha256": "30e94bf8c006b2de68708f0b6a8f4d8c530c7ca2525821a9dd1964e781ad6152"
+    },
+    {
+      "path": "/usr/lib64/libpsl.so.5.3.3",
+      "bytes": 77488,
+      "mode": 493,
+      "sha256": "fe74845c864b47a6b5a2cadbdeab940f828d1a45cc6381e68bd5f2d96bd836c9"
+    },
+    {
+      "path": "/usr/lib64/libssl.so.3.5.7",
+      "bytes": 1043976,
+      "mode": 493,
+      "sha256": "f587ccb16f966d96e6062c10e9e2f9c0dec3358281f6569eb65988d4a9741725"
+    },
+    {
+      "path": "/usr/lib64/libgssapi_krb5.so.2.2",
+      "bytes": 358456,
+      "mode": 493,
+      "sha256": "7fe81e015e7647977eb0ce9f6c0fcd91ae3a2ddae8342ff3b47dee6f017571c1"
+    },
+    {
+      "path": "/usr/lib64/libkrb5.so.3.3",
+      "bytes": 906320,
+      "mode": 493,
+      "sha256": "9ce9f8baa6dfe3a76aaded2aa55464f859b1c0691cd784e2e98bf9cac62edcfe"
+    },
+    {
+      "path": "/usr/lib64/libk5crypto.so.3.1",
+      "bytes": 99016,
+      "mode": 493,
+      "sha256": "11798eda493ff0b9d99b7f061768a98ab81cadb10112db07ee229c1a4777c8c7"
+    },
+    {
+      "path": "/usr/lib64/libcom_err.so.2.1",
+      "bytes": 23768,
+      "mode": 493,
+      "sha256": "3958645734110eb76dcf59b64bd5bc3b2b4d5cd6eee46bf73b024ca83931dc2b"
+    },
+    {
+      "path": "/usr/lib64/libldap_r.so.2.0.200",
+      "bytes": 417144,
+      "mode": 493,
+      "sha256": "035aa103efcc5cfdac264b18ccdd5566699bfebf114b0feb56b116f7e36c58f2"
+    },
+    {
+      "path": "/usr/lib64/liblber.so.2.0.200",
+      "bytes": 74504,
+      "mode": 493,
+      "sha256": "fc59a9429baf572a000665da512861ce97e85b4bb72acc2ae9d6aad195570b91"
+    },
+    {
+      "path": "/usr/lib64/libbrotlidec.so.1.0.9",
+      "bytes": 52416,
+      "mode": 493,
+      "sha256": "258b72615be8b96b9c87e25482d49694fdee535b060e0cdd147af71135d42b8c"
+    },
+    {
+      "path": "/usr/lib64/libunistring.so.2.1.0",
+      "bytes": 1591920,
+      "mode": 493,
+      "sha256": "70b4c4050c4319fb109a3cf5745f9a6ab2e5862c6bc809aea0e4cb94c87978ef"
+    },
+    {
+      "path": "/usr/lib64/libkrb5support.so.0.1",
+      "bytes": 66200,
+      "mode": 493,
+      "sha256": "d07b246960403bcc9d2532b4954a761ee8607548bb3f0dedc3feb359a6dafc21"
+    },
+    {
+      "path": "/usr/lib64/libkeyutils.so.1.10",
+      "bytes": 23992,
+      "mode": 493,
+      "sha256": "b0aaec55115d2ab97e1a70cb4c9a1b036d839d7922e67d3e610cd3ccd58521e3"
+    },
+    {
+      "path": "/usr/lib64/libresolv.so.2",
+      "bytes": 70512,
+      "mode": 493,
+      "sha256": "b39beb8c599307ca3c3958ab358a734815addcefc7e595a02c91745ef2756d8b"
+    },
+    {
+      "path": "/usr/lib64/libevent-2.1.so.7.0.1",
+      "bytes": 365352,
+      "mode": 493,
+      "sha256": "b39790e3ac8043f9a84ced739efcd03adc9446f837f90e37221515b28bca7383"
+    },
+    {
+      "path": "/usr/lib64/libsasl2.so.3.0.0",
+      "bytes": 128416,
+      "mode": 493,
+      "sha256": "0eb67aea149186cd182854c46d66a7e53b6c451aaaa5a6e2ab4e84db63fd5585"
+    },
+    {
+      "path": "/usr/lib64/libbrotlicommon.so.1.0.9",
+      "bytes": 138080,
+      "mode": 493,
+      "sha256": "61035507604289edc6ed61a672b3d4b00f752e2360fffbd19d2b06d52de94e50"
+    },
+    {
+      "path": "/usr/lib64/libselinux.so.1",
+      "bytes": 175624,
+      "mode": 493,
+      "sha256": "c265777e75d52d549e52ec3b24df4f760d26fb439cc468b260d34175d1bac0e5"
+    },
+    {
+      "path": "/usr/lib64/libcrypt.so.2.0.0",
+      "bytes": 201808,
+      "mode": 493,
+      "sha256": "67847e804cdd224fc438207e6919a69ce03cdede0fa3f3467fbd09b554640667"
+    },
+    {
+      "path": "/usr/lib64/libpcre2-8.so.0.11.0",
+      "bytes": 636848,
+      "mode": 493,
+      "sha256": "9a7c5324aa19b789ec6451fac312238ba8b266886e37f2dcad51b612deaae96c"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-native-probe-caller-v1/qualification-v1/loader/tool-8-ldd.stdout",
+      "bytes": 2020,
+      "mode": 420,
+      "sha256": "27383167d2ec5581700a5d176779f66bbf3942cfe7c8141baf0b91a8f1118200"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-native-probe-caller-v1/qualification-v1/loader/tool-8-ldd.stderr",
+      "bytes": 0,
+      "mode": 420,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-native-probe-caller-v1/qualification-v1/loader/tool-8-readelf.stdout",
+      "bytes": 3754,
+      "mode": 420,
+      "sha256": "9d5b3528caf6f9f0dfb121faf4560afe2caa914b0d88191950329895053ea931"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-native-probe-caller-v1/qualification-v1/loader/tool-8-readelf.stderr",
+      "bytes": 0,
+      "mode": 420,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-native-probe-caller-v1/qualification-v1/loader/tool-9.json",
+      "bytes": 4379,
+      "mode": 420,
+      "sha256": "2748c4508442dbd752eabd5a4cdeabfc9c0a910a7c39b4f9814bc2fe43013200"
+    },
+    {
+      "path": "/usr/lib64/systemd/libsystemd-shared-260.4-1.1.hs+fb.el9_z.so",
+      "bytes": 5816344,
+      "mode": 493,
+      "sha256": "520b6c8fd19933e31c683a6a457b9166eaad6a83a85f24f1f9694010d2788ffe"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-native-probe-caller-v1/qualification-v1/loader/tool-9-ldd.stdout",
+      "bytes": 496,
+      "mode": 420,
+      "sha256": "6ff12ade77a5ca19eae5420b8b7ab9b1d79885c6bda891b5e7fe9dbc1e10ed28"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-native-probe-caller-v1/qualification-v1/loader/tool-9-ldd.stderr",
+      "bytes": 0,
+      "mode": 420,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-native-probe-caller-v1/qualification-v1/loader/tool-9-readelf.stdout",
+      "bytes": 3825,
+      "mode": 420,
+      "sha256": "f2baabde584121d048be33366b4ee61ec1d0b98d7bd370a983ab1b4d3ec70473"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-native-probe-caller-v1/qualification-v1/loader/tool-9-readelf.stderr",
+      "bytes": 0,
+      "mode": 420,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-native-probe-caller-v1/qualification-v1/loader/tool-10.json",
+      "bytes": 3381,
+      "mode": 420,
+      "sha256": "f5346b93252428860343080527c7d1cc4c94505095a4ad42cfb0dbe252029b69"
+    },
+    {
+      "path": "/usr/lib64/libtinfo.so.6.2",
+      "bytes": 195088,
+      "mode": 493,
+      "sha256": "7f6e6b4b437315880fb459256f663fe1cf96ffd437f9bdcdddc5c5104b89c3ff"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-native-probe-caller-v1/qualification-v1/loader/tool-10-ldd.stdout",
+      "bytes": 200,
+      "mode": 420,
+      "sha256": "b0336e71376856bd26c4995767949a9c7077769fe8e1fa86f4c652e55cd93900"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-native-probe-caller-v1/qualification-v1/loader/tool-10-ldd.stderr",
+      "bytes": 0,
+      "mode": 420,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-native-probe-caller-v1/qualification-v1/loader/tool-10-readelf.stdout",
+      "bytes": 3618,
+      "mode": 420,
+      "sha256": "08c3d78bfe362f77d8ec912a6740dcacb447fd3239afa6535a6a4e795612c4e5"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-native-probe-caller-v1/qualification-v1/loader/tool-10-readelf.stderr",
+      "bytes": 0,
+      "mode": 420,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-native-probe-caller-v1/qualification-v1/controls/compile/result.json",
+      "bytes": 9631,
+      "mode": 420,
+      "sha256": "3e03afcbdf1f530fcc10f187b5bbbf354620731b7a3d25e2844a2e81aefcee6d"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-native-probe-caller-v1/qualification-v1/retained-binaries/BINDING.json",
+      "bytes": 2035,
+      "mode": 420,
+      "sha256": "91fdf7c19c3242e9293a1920835da2e8e4b0ae0cef8e4f6d0a9ff9861133c89b"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-native-probe-caller-v1/qualification-v1/retained-binaries/probe",
+      "bytes": 45720,
+      "mode": 365,
+      "sha256": "386aa8e39ea4906e58c266035b5329a0c724b6012837e01aafb555b00f53a2fe"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-native-probe-caller-v1/qualification-v1/loader/native-probe.json",
+      "bytes": 3533,
+      "mode": 420,
+      "sha256": "fb2c2963c478d8fb44310347e52491420059d2608221be4072dc8d8c091d6f55"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-native-probe-caller-v1/qualification-v1/loader/native-probe-ldd.stdout",
+      "bytes": 140,
+      "mode": 420,
+      "sha256": "9617457189585f158a9c0edaab390e0ec182c732c4569f236ec53a65ffcdb1b2"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-native-probe-caller-v1/qualification-v1/loader/native-probe-ldd.stderr",
+      "bytes": 0,
+      "mode": 420,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-native-probe-caller-v1/qualification-v1/loader/native-probe-readelf.stdout",
+      "bytes": 3378,
+      "mode": 420,
+      "sha256": "281efd5bd1e9a0644e8d49831fe6e13b4de883559e24a05f57e0d7c2969d2cf6"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-native-probe-caller-v1/qualification-v1/loader/native-probe-readelf.stderr",
+      "bytes": 0,
+      "mode": 420,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    }
+  ],
+  "input_symlinks": [
+    {
+      "path": "/usr/bin/ld",
+      "target": "/etc/alternatives/ld",
+      "mode": 511
+    },
+    {
+      "path": "/usr/bin/python3",
+      "target": "python3.9",
+      "mode": 511
+    },
+    {
+      "path": "/usr/lib64/libgcc_s.so.1",
+      "target": "libgcc_s-11-20240719.so.1",
+      "mode": 511
+    },
+    {
+      "path": "/lib64",
+      "target": "usr/lib64",
+      "mode": 511
+    },
+    {
+      "path": "/bin",
+      "target": "usr/bin",
+      "mode": 511
+    },
+    {
+      "path": "/etc/alternatives/ld",
+      "target": "/usr/bin/ld.bfd",
+      "mode": 511
+    },
+    {
+      "path": "/lib64/libmpc.so.3",
+      "target": "libmpc.so.3.2.1",
+      "mode": 511
+    },
+    {
+      "path": "/lib64/libmpfr.so.6",
+      "target": "libmpfr.so.6.1.0",
+      "mode": 511
+    },
+    {
+      "path": "/lib64/libgmp.so.10",
+      "target": "libgmp.so.10.4.0",
+      "mode": 511
+    },
+    {
+      "path": "/lib64/libz.so.1",
+      "target": "libz.so.1.2.11",
+      "mode": 511
+    },
+    {
+      "path": "/lib64/libzstd.so.1",
+      "target": "libzstd.so.1.5.5",
+      "mode": 511
+    },
+    {
+      "path": "/lib64/libctf.so.0",
+      "target": "libctf.so.0.0.0",
+      "mode": 511
+    },
+    {
+      "path": "/lib64/libctf-nobfd.so.0",
+      "target": "libctf-nobfd.so.0.0.0",
+      "mode": 511
+    },
+    {
+      "path": "/lib64/libdebuginfod.so.1",
+      "target": "libdebuginfod-0.195.so",
+      "mode": 511
+    },
+    {
+      "path": "/lib64/libcurl.so.4",
+      "target": "libcurl.so.4.7.0",
+      "mode": 511
+    },
+    {
+      "path": "/lib64/libelf.so.1",
+      "target": "libelf-0.195.so",
+      "mode": 511
+    },
+    {
+      "path": "/lib64/libcrypto.so.3",
+      "target": "libcrypto.so.3.5.7",
+      "mode": 511
+    },
+    {
+      "path": "/lib64/libjson-c.so.5",
+      "target": "libjson-c.so.5.0.0",
+      "mode": 511
+    },
+    {
+      "path": "/lib64/libnghttp2.so.14",
+      "target": "libnghttp2.so.14.20.1",
+      "mode": 511
+    },
+    {
+      "path": "/lib64/libidn2.so.0",
+      "target": "libidn2.so.0.3.7",
+      "mode": 511
+    },
+    {
+      "path": "/lib64/libssh.so.4",
+      "target": "libssh.so.4.9.4",
+      "mode": 511
+    },
+    {
+      "path": "/lib64/libpsl.so.5",
+      "target": "libpsl.so.5.3.3",
+      "mode": 511
+    },
+    {
+      "path": "/lib64/libssl.so.3",
+      "target": "libssl.so.3.5.7",
+      "mode": 511
+    },
+    {
+      "path": "/lib64/libgssapi_krb5.so.2",
+      "target": "libgssapi_krb5.so.2.2",
+      "mode": 511
+    },
+    {
+      "path": "/lib64/libkrb5.so.3",
+      "target": "libkrb5.so.3.3",
+      "mode": 511
+    },
+    {
+      "path": "/lib64/libk5crypto.so.3",
+      "target": "libk5crypto.so.3.1",
+      "mode": 511
+    },
+    {
+      "path": "/lib64/libcom_err.so.2",
+      "target": "libcom_err.so.2.1",
+      "mode": 511
+    },
+    {
+      "path": "/lib64/libldap.so.2",
+      "target": "libldap_r.so.2.0.200",
+      "mode": 511
+    },
+    {
+      "path": "/lib64/liblber.so.2",
+      "target": "liblber.so.2.0.200",
+      "mode": 511
+    },
+    {
+      "path": "/lib64/libbrotlidec.so.1",
+      "target": "libbrotlidec.so.1.0.9",
+      "mode": 511
+    },
+    {
+      "path": "/lib64/libunistring.so.2",
+      "target": "libunistring.so.2.1.0",
+      "mode": 511
+    },
+    {
+      "path": "/lib64/libkrb5support.so.0",
+      "target": "libkrb5support.so.0.1",
+      "mode": 511
+    },
+    {
+      "path": "/lib64/libkeyutils.so.1",
+      "target": "libkeyutils.so.1.10",
+      "mode": 511
+    },
+    {
+      "path": "/lib64/libevent-2.1.so.7",
+      "target": "libevent-2.1.so.7.0.1",
+      "mode": 511
+    },
+    {
+      "path": "/lib64/libsasl2.so.3",
+      "target": "libsasl2.so.3.0.0",
+      "mode": 511
+    },
+    {
+      "path": "/lib64/libbrotlicommon.so.1",
+      "target": "libbrotlicommon.so.1.0.9",
+      "mode": 511
+    },
+    {
+      "path": "/lib64/libcrypt.so.2",
+      "target": "libcrypt.so.2.0.0",
+      "mode": 511
+    },
+    {
+      "path": "/lib64/libpcre2-8.so.0",
+      "target": "libpcre2-8.so.0.11.0",
+      "mode": 511
+    },
+    {
+      "path": "/lib64/libgcc_s.so.1",
+      "target": "libgcc_s-11-20240719.so.1",
+      "mode": 511
+    },
+    {
+      "path": "/lib64/libtinfo.so.6",
+      "target": "libtinfo.so.6.2",
+      "mode": 511
+    }
+  ],
+  "absent_inputs": [
+    "/usr/lib/gcc/x86_64-redhat-linux/11/specs"
+  ],
+  "target": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-native-probe-caller-v1/qualification-v1/target",
+    "identity": [
+      48,
+      833464016,
+      212630
+    ]
+  },
+  "lease": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-native-probe-caller-v1/qualification-v1/private.lease",
+    "owner_slot": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-native-probe-caller-v1",
+    "identity": [
+      48,
+      833464024,
+      212630
+    ],
+    "state_directory": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-native-probe-caller-v1/qualification-v1/lease-state"
+  },
+  "must_be_absent_before": [],
+  "output": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-native-probe-caller-v1/qualification-v1/observer/edge-rdtsc",
+  "control": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-native-probe-caller-v1/qualification-v1/controls/edge-rdtsc",
+  "limits": {
+    "aggregate_cpu_usec": 30000000,
+    "wall_seconds": 60,
+    "memory_bytes": 17179869184,
+    "swap_bytes": 0,
+    "lethal_stderr_bytes": 16777216,
+    "live_stdout_samples_bytes": 67108864,
+    "phase_read_bytes": 16777216,
+    "free_floor_bytes": 107374182400
+  },
+  "probe_args": [
+    "edge",
+    "rdtsc",
+    "0"
+  ]
+}

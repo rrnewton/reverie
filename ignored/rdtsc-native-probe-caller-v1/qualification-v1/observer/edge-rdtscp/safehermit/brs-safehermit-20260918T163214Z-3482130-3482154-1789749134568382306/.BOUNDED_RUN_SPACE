@@ -1,0 +1,5 @@
+bounded-run-space/v1
+directory=/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-native-probe-caller-v1/qualification-v1/observer/edge-rdtscp/safehermit/brs-safehermit-20260918T163214Z-3482130-3482154-1789749134568382306
+device_inode=9437253:256
+subvolume_id=2591
+limit_bytes=8000000000

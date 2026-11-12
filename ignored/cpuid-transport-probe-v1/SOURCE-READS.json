@@ -1,0 +1,105 @@
+{
+  "scope": "Source excerpts read, not a full-kernel or independent review of authored integration",
+  "complete_documents": [
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/cpuid-transport-probe-v1/origin/probe.rs",
+      "bytes": 7043,
+      "sha256": "492dc946c68955d2c94c6d7d560aa9a2cfd5252db96d7f5d3be5428d35c6bfae",
+      "mode": 420
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/cpuid-transport-probe-v1/origin/PLAN.md",
+      "bytes": 1916,
+      "sha256": "71f8b6ed9bf4b372b873427ec68d2792287cb3ad57c42f357905a730256e1989",
+      "mode": 420
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/cpuid-transport-probe-v1/source/reverie-kvm/src/cpuid_transport_probe.rs",
+      "bytes": 7688,
+      "sha256": "02b0026f8b18786eb538ad0e050539e7400b54425fd0bcd6daf72601547296e1",
+      "mode": 420
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/cpuid-transport-probe-v1/SOURCE.patch",
+      "bytes": 8220,
+      "sha256": "c0b8aa8e4a1e61fa1cfe4a96720cbb35662ec1329acc08965a416c2befdb5034",
+      "mode": 420
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/cpuid-transport-probe-v1/CALLER-DELTA.patch",
+      "bytes": 9382,
+      "sha256": "eceba4f85713a8423377adf960582d209d3f075c5e4f2cf89682440f746d6426",
+      "mode": 420
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parent-reader-support-20260916/ignored/kvm-cpuid-transport-research-v1/REPORT.md",
+      "bytes": 4172,
+      "sha256": "c0a84bcad78faabcdbea7c9c4e4f87bd66125a00af04bcc33a2ecac89481e8d7",
+      "mode": 420
+    }
+  ],
+  "current_sources": [
+    {
+      "file": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/cpuid-transport-probe-v1/source/reverie-kvm/src/vm.rs",
+        "bytes": 324038,
+        "sha256": "7414030401e9ab5cea1e79f173db5f79fb556a08a8b37e50496e1d4b85fca9b7",
+        "mode": 420
+      },
+      "sections": [
+        "KvmBackend construction 1035-1100",
+        "static ELF installation 1327-1404",
+        "exception frame 2615-2638",
+        "test include 3671-3675",
+        "minimal_test_elf 6345-6383"
+      ]
+    },
+    {
+      "file": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/cpuid-transport-probe-v1/source/reverie-kvm/src/bootstrap.rs",
+        "bytes": 42817,
+        "sha256": "7c008be09ef0e1bcefff4f8651742276cffaf6fac82526e9dad37e348299e81a",
+        "mode": 420
+      },
+      "sections": [
+        "exception tables, gate, stub and frame shape 515-565"
+      ]
+    },
+    {
+      "file": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/cpuid-transport-probe-v1/source/reverie-kvm/src/clock.rs",
+        "bytes": 32323,
+        "sha256": "1180a9b15a06ce4cc19a579cbfa19543f4a6230e2e4b77d5e00ef16d73270f3f",
+        "mode": 420
+      },
+      "sections": [
+        "CountedVcpu Deref and lifecycle initialization 35-67"
+      ]
+    }
+  ],
+  "resolved_ioctl_sources": [
+    {
+      "file": {
+        "path": "/home/newton/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/kvm-ioctls-0.25.0/src/ioctls/vcpu.rs",
+        "bytes": 138982,
+        "sha256": "9bb13d98315a4c1c820ac0c9bbab176263f904e462d93fe341ddbe637908cd2c",
+        "mode": 420
+      },
+      "sections": [
+        "actual get_msrs/set_msrs methods and their count docs, 668-780"
+      ]
+    },
+    {
+      "file": {
+        "path": "/home/newton/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/kvm-ioctls-0.25.0/src/ioctls/system.rs",
+        "bytes": 34279,
+        "sha256": "d6759a87328a35759bd7bc69fb9a1b6cab67ee7eaeea7c6d617ac02e8d989718",
+        "mode": 420
+      },
+      "sections": [
+        "feature index and system get_msrs methods, 440-542"
+      ]
+    }
+  ],
+  "no_hardware_or_vm_execution": true
+}

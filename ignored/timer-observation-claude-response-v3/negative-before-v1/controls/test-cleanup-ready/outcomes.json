@@ -1,0 +1,24 @@
+{
+  "started": [
+    "runtime::signal_cleanup_tests::signal_cleanup_ready_result_precedes_terminal_cancellation"
+  ],
+  "ended": [
+    {
+      "type": "test",
+      "name": "runtime::signal_cleanup_tests::signal_cleanup_ready_result_precedes_terminal_cancellation",
+      "event": "ok"
+    }
+  ],
+  "suites": [
+    {
+      "type": "suite",
+      "event": "ok",
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filtered_out": 481,
+      "exec_time": 0.000290136
+    }
+  ]
+}

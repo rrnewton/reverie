@@ -1,0 +1,5 @@
+# V2 qualification stopped on an actual unchanged control failure
+
+The cold build is accepted with zero diagnostics and newly emitted four harnesses plus linked library. Format and all four inventories pass. Nine exact declarations pass; the tenth, `subscribed_timestamp_dispatch_refuses_unrelated_exceptions`, fails raw101 at the UD2 Tool result's old top-level fault helper. It emits vector6/RIP0x200000/CR2zero but does not match the helper's Error::GuestException arm. The later GP branch was not reached. The typed SharedFailure source path is being investigated separately; this failed result remains unchanged.
+
+All17 attempted phases have terminal accounting and unchanged inputs;16 are accepted and1 rejected. Actual inventories are {'list-lib': 510, 'list-static': 316, 'list-vmcall': 6, 'list-read-clock': 8}, separate from9 passed tests. The remaining22 phases were not run. All original bounds, selectors, assertions, diagnostic and no-skip gates were kept. The original V1 raw0 warning refusal remains explicit. This packet grants no complete component, native architectural, cross-backend parity or source approval.

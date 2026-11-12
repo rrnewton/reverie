@@ -1,0 +1,4 @@
+{ "type": "suite", "event": "started", "test_count": 1 }
+{ "type": "test", "event": "started", "name": "executor::tests::sibling_signal_retirement_and_tid_reuse_preserve_exact_registration" }
+{ "type": "test", "name": "executor::tests::sibling_signal_retirement_and_tid_reuse_preserve_exact_registration", "event": "ok" }
+{ "type": "suite", "event": "ok", "passed": 1, "failed": 0, "ignored": 0, "measured": 0, "filtered_out": 494, "exec_time": 0.001282004 }

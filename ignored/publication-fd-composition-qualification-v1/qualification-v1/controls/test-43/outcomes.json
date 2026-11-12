@@ -1,0 +1,24 @@
+{
+  "started": [
+    "executor::tests::blocking_signalfd_forms_refuse_before_mutation_and_aliases_stay_nonblocking"
+  ],
+  "ended": [
+    {
+      "type": "test",
+      "name": "executor::tests::blocking_signalfd_forms_refuse_before_mutation_and_aliases_stay_nonblocking",
+      "event": "ok"
+    }
+  ],
+  "suites": [
+    {
+      "type": "suite",
+      "event": "ok",
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filtered_out": 501,
+      "exec_time": 0.001181254
+    }
+  ]
+}

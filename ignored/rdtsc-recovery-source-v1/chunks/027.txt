@@ -1,0 +1,60 @@
++    for (opcode, tsc, expected_rcx) in [
++        (&[0x0f, 0x31][..], RDTSC_SENTINEL, 0xdead_beef_fedc_ba98_u64),
++        (
++            &[0x0f, 0x01, 0xf9][..],
++            RDTSCP_SENTINEL,
++            u64::from(RDTSCP_AUX_SENTINEL),
++        ),
++    ] {
++        code.extend_from_slice(&[0x49, 0x89, 0xe4]); // mov r12, rsp
++        code.extend_from_slice(&[0x48, 0xb9]); // movabs rcx, preserved sentinel
++        code.extend_from_slice(&0xdead_beef_fedc_ba98_u64.to_le_bytes());
++        code.extend_from_slice(&[0x48, 0xb8]);
++        code.extend_from_slice(&u64::MAX.to_le_bytes());
++        code.extend_from_slice(&[0x48, 0xba]);
++        code.extend_from_slice(&u64::MAX.to_le_bytes());
++        code.extend_from_slice(&[0x68, 0xd7, 0x0e, 0x00, 0x00, 0x9d]); // push flags; popfq
++        code.extend_from_slice(if opcode.len() == 2 {
++            tsc_prefix
++        } else {
++            tscp_prefix
++        });
++        code.extend_from_slice(opcode);
++        code.extend_from_slice(&[0x9c, 0x41, 0x5b, 0xfc]); // pushfq; pop r11; cld
++        code.extend_from_slice(&[0x4c, 0x39, 0xe4]); // cmp rsp, r12
++        append_jne_failure(&mut code, &mut failure_patches);
++        code.extend_from_slice(&[0x41, 0x81, 0xfb, 0xd7, 0x0e, 0x00, 0x00]); // cmp r11d, flags
++        append_jne_failure(&mut code, &mut failure_patches);
++        for (value, compare) in [
++            (u64::from(tsc as u32), [0x4c, 0x39, 0xc0]), // cmp rax, r8
++            (tsc >> 32, [0x4c, 0x39, 0xc2]),             // cmp rdx, r8
++            (expected_rcx, [0x4c, 0x39, 0xc1]),          // cmp rcx, r8
++        ] {
++            code.extend_from_slice(&[0x49, 0xb8]); // movabs r8, expected full register
++            code.extend_from_slice(&value.to_le_bytes());
++            code.extend_from_slice(&compare);
++            append_jne_failure(&mut code, &mut failure_patches);
++        }
++    }
++    code.extend_from_slice(&[0xb8, 0x3c, 0, 0, 0, 0x31, 0xff, 0x0f, 0x05]);
++    let failure = code.len();
++    code.extend_from_slice(&[0xb8, 0x3c, 0, 0, 0, 0xbf, 1, 0, 0, 0, 0x0f, 0x05]);
++    for patch in failure_patches {
++        let displacement = i32::try_from(failure).unwrap() - i32::try_from(patch + 4).unwrap();
++        code[patch..patch + 4].copy_from_slice(&displacement.to_le_bytes());
++    }
++    code
++}
++
++#[test]
++fn prefixed_timestamp_instructions_preserve_registers_flags_and_stack() {
++    if !kvm_available("KVM prefixed timestamp register test") {
++        return;
++    }
++    let mut prefixes = vec![vec![], vec![0x4f, 0x66, 0x67, 0xf3], vec![0x66; 12]];
++    prefixes.extend(
++        [
++            0x66, 0x67, 0xf2, 0xf3, 0x26, 0x2e, 0x36, 0x3e, 0x64, 0x65, 0x40, 0x4f,
++        ]
++        .into_iter()
++        .map(|prefix| vec![prefix]),

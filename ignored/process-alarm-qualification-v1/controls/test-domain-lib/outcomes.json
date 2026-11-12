@@ -1,0 +1,36 @@
+{
+  "started": [
+    "executor::tests::blocked_tool_replacement_requeues_without_consuming_another_event",
+    "executor::tests::delivery_selection_refreshes_every_signalfd_alias_before_filtering",
+    "executor::tests::structured_replacement_uses_replacement_disposition_and_mask"
+  ],
+  "ended": [
+    {
+      "type": "test",
+      "name": "executor::tests::blocked_tool_replacement_requeues_without_consuming_another_event",
+      "event": "ok"
+    },
+    {
+      "type": "test",
+      "name": "executor::tests::delivery_selection_refreshes_every_signalfd_alias_before_filtering",
+      "event": "ok"
+    },
+    {
+      "type": "test",
+      "name": "executor::tests::structured_replacement_uses_replacement_disposition_and_mask",
+      "event": "ok"
+    }
+  ],
+  "suites": [
+    {
+      "type": "suite",
+      "event": "ok",
+      "passed": 3,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filtered_out": 461,
+      "exec_time": 0.002414868
+    }
+  ]
+}

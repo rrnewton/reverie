@@ -1,0 +1,45 @@
+{
+  "binary": "/usr/bin/python3",
+  "binary_sha256": "9cfdf1a01d07dadb394dd2dc9fd8316254c36764076d23dc2c895c8401735576",
+  "arguments": [
+    "-B",
+    "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/timer-observation-claude-response-v3/positive-v2/observer/before_exec.py",
+    "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/timer-observation-claude-response-v3/positive-v2/observer/test-alarm-vm/before-exec.json",
+    "8a7a0a6a428732c40c942586fa81cbf54cbc95dfe8b30fb6404cef68f54de1fe"
+  ],
+  "payload": {
+    "binary": "/usr/bin/python3",
+    "binary_sha256": "9cfdf1a01d07dadb394dd2dc9fd8316254c36764076d23dc2c895c8401735576",
+    "arguments": [
+      "-B",
+      "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/timer-observation-claude-response-v3/positive-v2/phase.py",
+      "payload",
+      "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/timer-observation-claude-response-v3/positive-v2/test-alarm-vm-plan.json",
+      "3613e2e75146c57c1fc78593d5e8291b611cfd218ec69f9c5da20f9f8471f4ab"
+    ]
+  },
+  "before_exec_spec_sha256": "8a7a0a6a428732c40c942586fa81cbf54cbc95dfe8b30fb6404cef68f54de1fe",
+  "cpu_allowance_usec": 30000000,
+  "wall_seconds": 60,
+  "log_bytes": 16777216,
+  "payload_memory_bytes": 17179869184,
+  "safehermit_log_root": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/timer-observation-claude-response-v3/positive-v2/observer/test-alarm-vm/safehermit",
+  "wrapper_sha256": "dae61b1819d424ea9928143d728fba6897f45cb619c8164ad87030922130f760",
+  "observer_sources": {
+    "observer.py": "137c9b42c3f9e081db59954e0ef692ed861f488be7c2bb8a15ef595c271b2179",
+    "unit_reference.py": "e00b79d292060b7a467d6a99ed88082719682d205efbdc56ecbe5fb7256fe0d0",
+    "before_exec.py": "184d1b1dcdb8c8a75626d2c0fe403d1527e160f51e0cc98338f405bf8a0319bd",
+    "source-inputs.json": "af15f634235359032b1ea544207713c32318906d51447ff6de171ada09c8b5b7"
+  },
+  "cwd": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918",
+  "epoch": 1789720409.2715533,
+  "monotonic_ns": 1879338029782749,
+  "pid": 2714503,
+  "wrapper_identity": {
+    "pid": 2714503,
+    "start_ticks": 187933803,
+    "parent_pid": 2714452,
+    "state": "R",
+    "cgroup": "/user.slice/user-212630.slice/user@212630.service/3pai_sandbox.slice/run-p1210520-i1360322665.scope"
+  }
+}

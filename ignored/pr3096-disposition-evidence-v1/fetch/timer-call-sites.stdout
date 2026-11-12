@@ -1,0 +1,5 @@
+d9d8d32f9511911ef9becac0220bc5d748a414c2:detcore/src/scheduler.rs:2591:                        self.fire_alarm(parent, dtid, sig);
+d9d8d32f9511911ef9becac0220bc5d748a414c2:detcore/src/scheduler.rs:2594:                TimedEvent::SignalEvt(id, dtid, sig) => self.fire_alarm(id.process(), dtid, sig),
+d9d8d32f9511911ef9becac0220bc5d748a414c2:detcore/src/scheduler.rs:2601:    fn fire_alarm(&mut self, dpid: DetPid, dtid: DetTid, sig: Signal) {
+d9d8d32f9511911ef9becac0220bc5d748a414c2:detcore/src/scheduler.rs:3637:                        self.fire_alarm(id.process(), dtid, sig)
+d9d8d32f9511911ef9becac0220bc5d748a414c2:hermit-cli/src/bin/hermit/run.rs:5041:        let _guard = init_sync_file_tracing(Some(level), BoundedWriter::new(log_file, limit));

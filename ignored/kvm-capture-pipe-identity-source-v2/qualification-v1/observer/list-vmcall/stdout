@@ -1,0 +1,8 @@
+{ "type": "suite", "event": "discovery" }
+{ "type": "test", "event": "discovered", "name": "default_tool_handler_tail_injects_through_executor", "ignore": false, "ignore_message": "", "source_path": "reverie-kvm/tests/vmcall.rs", "start_line": 382, "start_col": 4, "end_line": 382, "end_col": 54 }
+{ "type": "test", "event": "discovered", "name": "deterministic_cpuid_policy_is_visible_inside_vm", "ignore": false, "ignore_message": "", "source_path": "reverie-kvm/tests/vmcall.rs", "start_line": 133, "start_col": 4, "end_line": 133, "end_col": 51 }
+{ "type": "test", "event": "discovered", "name": "guest_program_routes_required_syscalls_via_vmcall", "ignore": false, "ignore_message": "", "source_path": "reverie-kvm/tests/vmcall.rs", "start_line": 99, "start_col": 4, "end_line": 99, "end_col": 53 }
+{ "type": "test", "event": "discovered", "name": "guest_write_syscall_is_intercepted_via_vmcall", "ignore": false, "ignore_message": "", "source_path": "reverie-kvm/tests/vmcall.rs", "start_line": 66, "start_col": 4, "end_line": 66, "end_col": 49 }
+{ "type": "test", "event": "discovered", "name": "guest_write_syscall_runs_shared_reverie_tool", "ignore": false, "ignore_message": "", "source_path": "reverie-kvm/tests/vmcall.rs", "start_line": 353, "start_col": 4, "end_line": 353, "end_col": 48 }
+{ "type": "test", "event": "discovered", "name": "identifies_unavailable_kvm_errors", "ignore": false, "ignore_message": "", "source_path": "reverie-kvm/tests/vmcall.rs", "start_line": 55, "start_col": 4, "end_line": 55, "end_col": 37 }
+{ "type": "suite", "event": "completed", "tests": 6, "benchmarks": 0, "total": 6, "ignored": 0 }

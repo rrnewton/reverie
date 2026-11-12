@@ -1,0 +1,16 @@
+{
+  "resolved_graph_equal_after_explicit_source_root_mapping": true,
+  "packages_equal": true,
+  "actual_source_root": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/scalar-write-fd-qualification-v1/baseline-source",
+  "old_source_root": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918",
+  "old_metadata": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/process-alarm-qualification-v1/observer/metadata/stdout",
+    "bytes": 1261212,
+    "mode": 384,
+    "sha256": "1dbbd4fbf21106a79a25bf242074439c5b75051e14cee2650bc05fba8a4ea005"
+  },
+  "new_metadata": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/scalar-write-fd-qualification-v1/baseline/observer/metadata/stdout",
+    "sha256": "4046e460166d55fc76056541f57fe5781147200fd4990af7e1dea78a1b1f298c"
+  }
+}

@@ -1,0 +1,4 @@
+{ "type": "suite", "event": "started", "test_count": 1 }
+{ "type": "test", "event": "started", "name": "executor::tests::rt_sigreturn_ignores_invalid_altstack_restore_but_restores_the_mask" }
+{ "type": "test", "name": "executor::tests::rt_sigreturn_ignores_invalid_altstack_restore_but_restores_the_mask", "event": "ok" }
+{ "type": "suite", "event": "ok", "passed": 1, "failed": 0, "ignored": 0, "measured": 0, "filtered_out": 494, "exec_time": 0.001041092 }

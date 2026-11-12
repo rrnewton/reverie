@@ -1,0 +1,24 @@
+{
+  "started": [
+    "executor::tests::rt_sigreturn_ignores_ss_onstack_altstack_input"
+  ],
+  "ended": [
+    {
+      "type": "test",
+      "name": "executor::tests::rt_sigreturn_ignores_ss_onstack_altstack_input",
+      "event": "ok"
+    }
+  ],
+  "suites": [
+    {
+      "type": "suite",
+      "event": "ok",
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filtered_out": 501,
+      "exec_time": 0.000986201
+    }
+  ]
+}

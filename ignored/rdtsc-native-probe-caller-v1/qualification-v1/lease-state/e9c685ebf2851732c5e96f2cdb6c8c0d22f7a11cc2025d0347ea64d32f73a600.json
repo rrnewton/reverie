@@ -1,0 +1,9 @@
+{
+  "plan_sha256": "e9c685ebf2851732c5e96f2cdb6c8c0d22f7a11cc2025d0347ea64d32f73a600",
+  "result": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-native-probe-caller-v1/qualification-v1/controls/positive-rdtscp-01/result.json",
+    "bytes": 3714,
+    "mode": 420,
+    "sha256": "8d64612199436ef3ba21fe3ee682beb1b601da9370a20d07274366467fb32b82"
+  }
+}

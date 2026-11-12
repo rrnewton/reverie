@@ -1,0 +1,60 @@
++    }
++}
++
++#[reverie::global_tool]
++impl GlobalTool for TimestampLog {
++    type Request = Rdtsc;
++    type Response = ();
++    type Config = bool;
++
++    async fn receive_rpc(&self, from: Pid, request: Rdtsc) {
++        self.calls
++            .lock()
++            .expect("timestamp log lock poisoned")
++            .push((from, request));
++    }
++}
++
++#[derive(Clone, Copy, Debug, Default)]
++struct TimestampTool;
++
++#[reverie::tool]
++impl Tool for TimestampTool {
++    type GlobalState = TimestampLog;
++    type ThreadState = ();
++
++    fn subscriptions(enabled: &bool) -> Subscription {
++        let mut subscriptions = Subscription::none();
++        if *enabled {
++            subscriptions.rdtsc();
++        }
++        subscriptions
++    }
++
++    async fn handle_rdtsc_event<G: Guest<Self>>(
++        &self,
++        guest: &mut G,
++        request: Rdtsc,
++    ) -> Result<RdtscResult, Errno> {
++        guest.send_rpc(request).await;
++        Ok(match request {
++            Rdtsc::Tsc => RdtscResult {
++                tsc: RDTSC_SENTINEL,
++                aux: None,
++            },
++            Rdtsc::Tscp => RdtscResult {
++                tsc: RDTSCP_SENTINEL,
++                aux: Some(RDTSCP_AUX_SENTINEL),
++            },
++        })
++    }
++}
++
++fn append_jne_failure(code: &mut Vec<u8>, patches: &mut Vec<usize>) {
++    code.extend_from_slice(&[0x0f, 0x85]);
++    patches.push(code.len());
++    code.extend_from_slice(&0_i32.to_le_bytes());
++}
++
++fn timestamp_assertion_program() -> Vec<u8> {
++    let mut code = Vec::new();

@@ -1,0 +1,34 @@
+{
+  "owner_slot": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918",
+  "source_root": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/cpuid-transport-probe-v1/source",
+  "base": "79516661bf82d30ab2967c71834a6d47447b76ee",
+  "base_tree": "7620fe83f486d665d9d09d4f09f0e93636b862e4",
+  "source_files": [
+    {
+      "relative": "reverie-kvm/src/vm.rs",
+      "file": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/cpuid-transport-probe-v1/source/reverie-kvm/src/vm.rs",
+        "bytes": 324038,
+        "sha256": "7414030401e9ab5cea1e79f173db5f79fb556a08a8b37e50496e1d4b85fca9b7",
+        "mode": 420
+      }
+    },
+    {
+      "relative": "reverie-kvm/src/cpuid_transport_probe.rs",
+      "file": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/cpuid-transport-probe-v1/source/reverie-kvm/src/cpuid_transport_probe.rs",
+        "bytes": 7688,
+        "sha256": "02b0026f8b18786eb538ad0e050539e7400b54425fd0bcd6daf72601547296e1",
+        "mode": 420
+      }
+    }
+  ],
+  "lock": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/cpuid-transport-probe-v1/source/Cargo.lock",
+    "bytes": 67056,
+    "sha256": "1c09663e46bf21ad7c07eedd7821cccb72ae21f42485192649ff5473962bc856",
+    "mode": 420
+  },
+  "target": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/target/cpuid-transport-probe-v1-cold-v1",
+  "purpose": "Isolated real CPUID-fault transport feasibility probe only; no active implementation"
+}

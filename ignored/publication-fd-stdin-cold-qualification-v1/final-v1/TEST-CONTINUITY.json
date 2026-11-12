@@ -1,0 +1,29 @@
+{
+  "original_declarations": 78,
+  "added_declarations": [
+    "inherited_stdin_epoll_preserves_local_and_authoritative_handles",
+    "inherited_stdin_sibling_replacement_preserves_old_dup",
+    "inherited_stdin_fork_exec_and_exit_preserve_entry_lifetime"
+  ],
+  "changed_old_test_token_bodies": [
+    "executor::tests::descriptor_retirement_install_error_releases_both_guards",
+    "executor::tests::descriptor_retirement_accept_cleanup_releases_both_guards"
+  ],
+  "assertions": {
+    "executor::tests::descriptor_retirement_install_error_releases_both_guards": {
+      "old_assertions": 6,
+      "new_assertions": 6,
+      "old_assertions_retained_in_order": true
+    },
+    "executor::tests::descriptor_retirement_accept_cleanup_releases_both_guards": {
+      "old_assertions": 14,
+      "new_assertions": 24,
+      "old_assertions_retained_in_order": true
+    }
+  },
+  "all_other_selected_test_token_bodies_unchanged": true,
+  "real_emfile_body_identical_except_comment": true,
+  "static_and_publisher_sources_identical": true,
+  "original_selector_groups_identical": true,
+  "not_execution": true
+}

@@ -1,0 +1,639 @@
+{
+  "status": "static source-name check only; no harness enumeration or execution",
+  "unique_declarations": 63,
+  "retained_v6_declarations": 37,
+  "new_declarations": 6,
+  "existing_neighbors": 20,
+  "records": [
+    {
+      "group": "capture-01",
+      "artifact": "lib",
+      "name": "executor::tests::captured_output_identity_matches_pipefs_and_preserves_proc_symlinks",
+      "relative": "reverie-kvm/src/capture_identity_tests.rs",
+      "line": 9,
+      "retained_v6_selector": false,
+      "new_file": true,
+      "source_file_unchanged": false
+    },
+    {
+      "group": "capture-02",
+      "artifact": "lib",
+      "name": "executor::tests::captured_output_alias_identity_survives_thread_fork_exec_and_replacement",
+      "relative": "reverie-kvm/src/capture_identity_tests.rs",
+      "line": 125,
+      "retained_v6_selector": false,
+      "new_file": true,
+      "source_file_unchanged": false
+    },
+    {
+      "group": "capture-03",
+      "artifact": "lib",
+      "name": "executor::tests::capture_identity_keeps_closed_standard_descriptors_closed",
+      "relative": "reverie-kvm/src/capture_identity_tests.rs",
+      "line": 255,
+      "retained_v6_selector": false,
+      "new_file": true,
+      "source_file_unchanged": false
+    },
+    {
+      "group": "capture-04",
+      "artifact": "lib",
+      "name": "executor::tests::captured_pipe_root_owner_releases_after_executor_cleanup_and_unwind",
+      "relative": "reverie-kvm/src/capture_identity_tests.rs",
+      "line": 291,
+      "retained_v6_selector": false,
+      "new_file": true,
+      "source_file_unchanged": false
+    },
+    {
+      "group": "capture-05",
+      "artifact": "lib",
+      "name": "executor::tests::capture_setup_emfile_preserves_image_and_closes_partial_streams",
+      "relative": "reverie-kvm/src/capture_identity_tests.rs",
+      "line": 381,
+      "retained_v6_selector": false,
+      "new_file": true,
+      "source_file_unchanged": false
+    },
+    {
+      "group": "capture-06",
+      "artifact": "static",
+      "name": "capture_identity::direct_and_tool_capture_share_device_with_anonymous_pipe",
+      "relative": "reverie-kvm/tests/support/capture_identity.rs",
+      "line": 77,
+      "retained_v6_selector": false,
+      "new_file": true,
+      "source_file_unchanged": false
+    },
+    {
+      "group": "neighbor-01",
+      "artifact": "lib",
+      "name": "executor::tests::captured_output_fstat_is_synthetic_and_stable",
+      "relative": "reverie-kvm/src/executor.rs",
+      "line": 16570,
+      "retained_v6_selector": false,
+      "new_file": false,
+      "source_file_unchanged": false
+    },
+    {
+      "group": "neighbor-02",
+      "artifact": "lib",
+      "name": "executor::tests::captured_output_stat_and_link_routes_preserve_the_capture_sink",
+      "relative": "reverie-kvm/src/executor.rs",
+      "line": 27356,
+      "retained_v6_selector": false,
+      "new_file": false,
+      "source_file_unchanged": false
+    },
+    {
+      "group": "neighbor-03",
+      "artifact": "lib",
+      "name": "executor::tests::ordinary_proc_fd_stat_routes_preserve_objects_across_aliases_and_replacement",
+      "relative": "reverie-kvm/src/executor.rs",
+      "line": 27234,
+      "retained_v6_selector": false,
+      "new_file": false,
+      "source_file_unchanged": false
+    },
+    {
+      "group": "neighbor-04",
+      "artifact": "lib",
+      "name": "executor::tests::anonymous_proc_fd_links_match_direct_owned_object_stat",
+      "relative": "reverie-kvm/src/executor.rs",
+      "line": 27312,
+      "retained_v6_selector": false,
+      "new_file": false,
+      "source_file_unchanged": false
+    },
+    {
+      "group": "neighbor-05",
+      "artifact": "lib",
+      "name": "executor::tests::proc_fd_statx_preserves_native_masks_and_error_results",
+      "relative": "reverie-kvm/src/executor.rs",
+      "line": 27413,
+      "retained_v6_selector": false,
+      "new_file": false,
+      "source_file_unchanged": false
+    },
+    {
+      "group": "neighbor-06",
+      "artifact": "lib",
+      "name": "executor::tests::guest_fd_metadata_is_stable_and_isolated_from_supervisor",
+      "relative": "reverie-kvm/src/executor.rs",
+      "line": 27499,
+      "retained_v6_selector": false,
+      "new_file": false,
+      "source_file_unchanged": false
+    },
+    {
+      "group": "neighbor-07",
+      "artifact": "lib",
+      "name": "executor::tests::captured_output_lseek_is_pipe_for_seekable_standard_stream_alias",
+      "relative": "reverie-kvm/src/executor.rs",
+      "line": 16611,
+      "retained_v6_selector": false,
+      "new_file": false,
+      "source_file_unchanged": false
+    },
+    {
+      "group": "neighbor-08",
+      "artifact": "lib",
+      "name": "executor::tests::forked_executors_share_captured_output_order",
+      "relative": "reverie-kvm/src/executor.rs",
+      "line": 36931,
+      "retained_v6_selector": false,
+      "new_file": false,
+      "source_file_unchanged": false
+    },
+    {
+      "group": "neighbor-09",
+      "artifact": "lib",
+      "name": "executor::tests::ordinary_vectored_io_preserves_limits_faults_replacement_and_capture",
+      "relative": "reverie-kvm/src/executor.rs",
+      "line": 18973,
+      "retained_v6_selector": false,
+      "new_file": false,
+      "source_file_unchanged": false
+    },
+    {
+      "group": "neighbor-10",
+      "artifact": "lib",
+      "name": "executor::tests::standard_descriptor_vectored_io_preserves_owned_and_captured_routing",
+      "relative": "reverie-kvm/src/executor.rs",
+      "line": 19813,
+      "retained_v6_selector": false,
+      "new_file": false,
+      "source_file_unchanged": false
+    },
+    {
+      "group": "neighbor-11",
+      "artifact": "lib",
+      "name": "executor::tests::positioned_vectored_io_preserves_standard_and_captured_stream_semantics",
+      "relative": "reverie-kvm/src/executor.rs",
+      "line": 20107,
+      "retained_v6_selector": false,
+      "new_file": false,
+      "source_file_unchanged": false
+    },
+    {
+      "group": "neighbor-12",
+      "artifact": "lib",
+      "name": "executor::tests::captured_write_site_uses_current_table_and_full_callback_identity",
+      "relative": "reverie-kvm/src/executor.rs",
+      "line": 19758,
+      "retained_v6_selector": false,
+      "new_file": false,
+      "source_file_unchanged": false
+    },
+    {
+      "group": "neighbor-13",
+      "artifact": "lib",
+      "name": "executor::tests::inherited_stdin_epoll_preserves_local_and_authoritative_handles",
+      "relative": "reverie-kvm/src/executor.rs",
+      "line": 25310,
+      "retained_v6_selector": false,
+      "new_file": false,
+      "source_file_unchanged": false
+    },
+    {
+      "group": "neighbor-14",
+      "artifact": "lib",
+      "name": "executor::tests::inherited_stdin_sibling_replacement_preserves_old_dup",
+      "relative": "reverie-kvm/src/executor.rs",
+      "line": 25417,
+      "retained_v6_selector": false,
+      "new_file": false,
+      "source_file_unchanged": false
+    },
+    {
+      "group": "neighbor-15",
+      "artifact": "lib",
+      "name": "executor::tests::inherited_stdin_fork_exec_and_exit_preserve_entry_lifetime",
+      "relative": "reverie-kvm/src/executor.rs",
+      "line": 25492,
+      "retained_v6_selector": false,
+      "new_file": false,
+      "source_file_unchanged": false
+    },
+    {
+      "group": "neighbor-16",
+      "artifact": "lib",
+      "name": "executor::tests::descriptor_retirement_close_and_dup_release_both_guards",
+      "relative": "reverie-kvm/src/executor.rs",
+      "line": 25654,
+      "retained_v6_selector": false,
+      "new_file": false,
+      "source_file_unchanged": false
+    },
+    {
+      "group": "neighbor-17",
+      "artifact": "lib",
+      "name": "executor::tests::descriptor_retirement_exec_and_exit_release_both_guards",
+      "relative": "reverie-kvm/src/executor.rs",
+      "line": 25721,
+      "retained_v6_selector": false,
+      "new_file": false,
+      "source_file_unchanged": false
+    },
+    {
+      "group": "neighbor-18",
+      "artifact": "lib",
+      "name": "executor::tests::descriptor_retirement_install_error_releases_both_guards",
+      "relative": "reverie-kvm/src/executor.rs",
+      "line": 25807,
+      "retained_v6_selector": false,
+      "new_file": false,
+      "source_file_unchanged": false
+    },
+    {
+      "group": "neighbor-19",
+      "artifact": "lib",
+      "name": "executor::tests::descriptor_retirement_accept_cleanup_releases_both_guards",
+      "relative": "reverie-kvm/src/executor.rs",
+      "line": 25873,
+      "retained_v6_selector": false,
+      "new_file": false,
+      "source_file_unchanged": false
+    },
+    {
+      "group": "neighbor-20",
+      "artifact": "lib",
+      "name": "executor::tests::shared_file_table_install_emfile_preserves_original_descriptions",
+      "relative": "reverie-kvm/src/executor.rs",
+      "line": 26180,
+      "retained_v6_selector": false,
+      "new_file": false,
+      "source_file_unchanged": false
+    },
+    {
+      "group": "v6-timestamp-01",
+      "artifact": "lib",
+      "name": "timestamp::tests::two_byte_rdtsc_decode_does_not_read_a_third_byte",
+      "relative": "reverie-kvm/src/timestamp.rs",
+      "line": 127,
+      "retained_v6_selector": true,
+      "new_file": false,
+      "source_file_unchanged": true
+    },
+    {
+      "group": "v6-timestamp-02",
+      "artifact": "lib",
+      "name": "timestamp::tests::timestamp_prefixes_and_fifteen_byte_limit_preserve_faults",
+      "relative": "reverie-kvm/src/timestamp.rs",
+      "line": 148,
+      "retained_v6_selector": true,
+      "new_file": false,
+      "source_file_unchanged": true
+    },
+    {
+      "group": "v6-timestamp-03",
+      "artifact": "lib",
+      "name": "timestamp::tests::timestamp_writeback_preserves_other_registers_and_full_flags",
+      "relative": "reverie-kvm/src/timestamp.rs",
+      "line": 180,
+      "retained_v6_selector": true,
+      "new_file": false,
+      "source_file_unchanged": true
+    },
+    {
+      "group": "v6-timestamp-04",
+      "artifact": "lib",
+      "name": "timestamp::tests::timestamp_fetch_checks_each_page_and_does_not_cross_a_completed_instruction",
+      "relative": "reverie-kvm/src/timestamp.rs",
+      "line": 238,
+      "retained_v6_selector": true,
+      "new_file": false,
+      "source_file_unchanged": true
+    },
+    {
+      "group": "v6-timestamp-05",
+      "artifact": "lib",
+      "name": "vm::tests::timestamp_boundary_respects_hardware_instruction_fetch_fault_priority",
+      "relative": "reverie-kvm/src/vm.rs",
+      "line": 6399,
+      "retained_v6_selector": true,
+      "new_file": false,
+      "source_file_unchanged": false
+    },
+    {
+      "group": "v6-timestamp-06",
+      "artifact": "lib",
+      "name": "cpuid::tests::deterministic_policy_replaces_host_identity_and_features",
+      "relative": "reverie-kvm/src/cpuid.rs",
+      "line": 340,
+      "retained_v6_selector": true,
+      "new_file": false,
+      "source_file_unchanged": true
+    },
+    {
+      "group": "v6-timestamp-07",
+      "artifact": "static",
+      "name": "static_elf_timestamp_reads_dispatch_exact_tool_results_repeatably",
+      "relative": "reverie-kvm/tests/static_elf.rs",
+      "line": 14153,
+      "retained_v6_selector": true,
+      "new_file": false,
+      "source_file_unchanged": false
+    },
+    {
+      "group": "v6-timestamp-08",
+      "artifact": "static",
+      "name": "timestamp_dispatch_survives_thread_fork_and_exec_vcpu_lifecycles",
+      "relative": "reverie-kvm/tests/static_elf.rs",
+      "line": 14173,
+      "retained_v6_selector": true,
+      "new_file": false,
+      "source_file_unchanged": false
+    },
+    {
+      "group": "v6-timestamp-09",
+      "artifact": "static",
+      "name": "static_elf_unsubscribed_rdtsc_runs_without_tool_dispatch",
+      "relative": "reverie-kvm/tests/static_elf.rs",
+      "line": 14261,
+      "retained_v6_selector": true,
+      "new_file": false,
+      "source_file_unchanged": false
+    },
+    {
+      "group": "v6-timestamp-10",
+      "artifact": "static",
+      "name": "subscribed_timestamp_dispatch_refuses_unrelated_exceptions",
+      "relative": "reverie-kvm/tests/static_elf.rs",
+      "line": 14278,
+      "retained_v6_selector": true,
+      "new_file": false,
+      "source_file_unchanged": false
+    },
+    {
+      "group": "v6-timestamp-11",
+      "artifact": "static",
+      "name": "repeated_timestamp_reads_evolve_once_per_instruction",
+      "relative": "reverie-kvm/tests/static_elf.rs",
+      "line": 14381,
+      "retained_v6_selector": true,
+      "new_file": false,
+      "source_file_unchanged": false
+    },
+    {
+      "group": "v6-timestamp-12",
+      "artifact": "static",
+      "name": "static_elf_unsubscribed_rdtscp_remains_guest_exception",
+      "relative": "reverie-kvm/tests/static_elf.rs",
+      "line": 14411,
+      "retained_v6_selector": true,
+      "new_file": false,
+      "source_file_unchanged": false
+    },
+    {
+      "group": "v6-timestamp-13",
+      "artifact": "static",
+      "name": "timestamp_callbacks_observe_retired_branches_without_counting_rpc_work",
+      "relative": "reverie-kvm/tests/static_elf.rs",
+      "line": 14494,
+      "retained_v6_selector": true,
+      "new_file": false,
+      "source_file_unchanged": false
+    },
+    {
+      "group": "v6-timestamp-14",
+      "artifact": "static",
+      "name": "host_owned_timestamp_worker_keeps_native_execution",
+      "relative": "reverie-kvm/tests/static_elf.rs",
+      "line": 14656,
+      "retained_v6_selector": true,
+      "new_file": false,
+      "source_file_unchanged": false
+    },
+    {
+      "group": "v6-timestamp-15",
+      "artifact": "static",
+      "name": "prefixed_timestamp_instructions_preserve_registers_flags_and_stack",
+      "relative": "reverie-kvm/tests/static_elf.rs",
+      "line": 14738,
+      "retained_v6_selector": true,
+      "new_file": false,
+      "source_file_unchanged": false
+    },
+    {
+      "group": "v6-timestamp-16",
+      "artifact": "static",
+      "name": "locked_and_overlength_timestamp_encodings_remain_faults",
+      "relative": "reverie-kvm/tests/static_elf.rs",
+      "line": 14782,
+      "retained_v6_selector": true,
+      "new_file": false,
+      "source_file_unchanged": false
+    },
+    {
+      "group": "v6-timestamp-17",
+      "artifact": "static",
+      "name": "timestamp_tool_preserves_results_with_host_supported_cpuid",
+      "relative": "reverie-kvm/tests/static_elf.rs",
+      "line": 14813,
+      "retained_v6_selector": true,
+      "new_file": false,
+      "source_file_unchanged": false
+    },
+    {
+      "group": "v6-timestamp-18",
+      "artifact": "static",
+      "name": "timestamp_single_step_reports_the_retired_instruction_boundary",
+      "relative": "reverie-kvm/tests/static_elf.rs",
+      "line": 14842,
+      "retained_v6_selector": true,
+      "new_file": false,
+      "source_file_unchanged": false
+    },
+    {
+      "group": "v6-timestamp-19",
+      "artifact": "static",
+      "name": "static_elf_faults_are_reported_by_direct_and_tool_runtimes",
+      "relative": "reverie-kvm/tests/static_elf.rs",
+      "line": 3800,
+      "retained_v6_selector": true,
+      "new_file": false,
+      "source_file_unchanged": false
+    },
+    {
+      "group": "v6-timestamp-20",
+      "artifact": "static",
+      "name": "static_elf_vmware_probe_reports_non_vmware_in_direct_and_tool_runtimes",
+      "relative": "reverie-kvm/tests/static_elf.rs",
+      "line": 3847,
+      "retained_v6_selector": true,
+      "new_file": false,
+      "source_file_unchanged": false
+    },
+    {
+      "group": "v6-timestamp-21",
+      "artifact": "static",
+      "name": "static_elf_forks_execs_and_waits_for_child",
+      "relative": "reverie-kvm/tests/static_elf.rs",
+      "line": 3939,
+      "retained_v6_selector": true,
+      "new_file": false,
+      "source_file_unchanged": false
+    },
+    {
+      "group": "v6-timestamp-22",
+      "artifact": "static",
+      "name": "static_elf_runs_glibc_clone3_thread_and_restores_parent_state",
+      "relative": "reverie-kvm/tests/static_elf.rs",
+      "line": 4682,
+      "retained_v6_selector": true,
+      "new_file": false,
+      "source_file_unchanged": false
+    },
+    {
+      "group": "v6-timestamp-23",
+      "artifact": "static",
+      "name": "static_elf_caught_signal_returns_through_rt_sigreturn",
+      "relative": "reverie-kvm/tests/static_elf.rs",
+      "line": 4112,
+      "retained_v6_selector": true,
+      "new_file": false,
+      "source_file_unchanged": false
+    },
+    {
+      "group": "v6-timestamp-24",
+      "artifact": "static",
+      "name": "post_exec_failure_runs_tool_exit_lifecycle",
+      "relative": "reverie-kvm/tests/static_elf.rs",
+      "line": 6879,
+      "retained_v6_selector": true,
+      "new_file": false,
+      "source_file_unchanged": false
+    },
+    {
+      "group": "v6-timestamp-25",
+      "artifact": "vmcall",
+      "name": "guest_write_syscall_runs_shared_reverie_tool",
+      "relative": "reverie-kvm/tests/vmcall.rs",
+      "line": 353,
+      "retained_v6_selector": true,
+      "new_file": false,
+      "source_file_unchanged": true
+    },
+    {
+      "group": "v6-timestamp-26",
+      "artifact": "vmcall",
+      "name": "default_tool_handler_tail_injects_through_executor",
+      "relative": "reverie-kvm/tests/vmcall.rs",
+      "line": 382,
+      "retained_v6_selector": true,
+      "new_file": false,
+      "source_file_unchanged": true
+    },
+    {
+      "group": "v6-timestamp-27",
+      "artifact": "read-clock",
+      "name": "read_clock_counts_userspace_and_excludes_callbacks_and_other_vcpus",
+      "relative": "reverie-kvm/tests/read_clock.rs",
+      "line": 233,
+      "retained_v6_selector": true,
+      "new_file": false,
+      "source_file_unchanged": true
+    },
+    {
+      "group": "v6-timestamp-28",
+      "artifact": "read-clock",
+      "name": "read_clock_follows_a_guest_between_host_threads",
+      "relative": "reverie-kvm/tests/read_clock.rs",
+      "line": 284,
+      "retained_v6_selector": true,
+      "new_file": false,
+      "source_file_unchanged": true
+    },
+    {
+      "group": "v6-timestamp-29",
+      "artifact": "read-clock",
+      "name": "read_clock_starts_fork_vfork_and_thread_children_at_zero",
+      "relative": "reverie-kvm/tests/read_clock.rs",
+      "line": 319,
+      "retained_v6_selector": true,
+      "new_file": false,
+      "source_file_unchanged": true
+    },
+    {
+      "group": "v6-timestamp-30",
+      "artifact": "read-clock",
+      "name": "read_clock_survives_successful_and_failed_exec",
+      "relative": "reverie-kvm/tests/read_clock.rs",
+      "line": 378,
+      "retained_v6_selector": true,
+      "new_file": false,
+      "source_file_unchanged": true
+    },
+    {
+      "group": "v6-timestamp-31",
+      "artifact": "static",
+      "name": "fault_only_assertion_rejects_actual_tool_exit_cleanup_failure",
+      "relative": "reverie-kvm/tests/static_elf.rs",
+      "line": 3751,
+      "retained_v6_selector": true,
+      "new_file": false,
+      "source_file_unchanged": false
+    },
+    {
+      "group": "v6-timestamp-32",
+      "artifact": "static",
+      "name": "timestamp_terminal::terminal_exit_preserves_status_and_consuming_cleanup",
+      "relative": "reverie-kvm/tests/support/timestamp_terminal.rs",
+      "line": 221,
+      "retained_v6_selector": true,
+      "new_file": false,
+      "source_file_unchanged": true
+    },
+    {
+      "group": "v6-timestamp-33",
+      "artifact": "static",
+      "name": "timestamp_terminal::nonterminal_tails_refuse_before_side_effects",
+      "relative": "reverie-kvm/tests/support/timestamp_terminal.rs",
+      "line": 259,
+      "retained_v6_selector": true,
+      "new_file": false,
+      "source_file_unchanged": true
+    },
+    {
+      "group": "v6-timestamp-34",
+      "artifact": "static",
+      "name": "timestamp_terminal::worker_terminal_rpc_precedes_real_sibling_exit_group",
+      "relative": "reverie-kvm/tests/support/timestamp_terminal.rs",
+      "line": 292,
+      "retained_v6_selector": true,
+      "new_file": false,
+      "source_file_unchanged": true
+    },
+    {
+      "group": "v6-timestamp-35",
+      "artifact": "lib",
+      "name": "vm::tests::non_elf_tool_loop_disarms_prior_timestamp_interception",
+      "relative": "reverie-kvm/src/vm.rs",
+      "line": 6481,
+      "retained_v6_selector": true,
+      "new_file": false,
+      "source_file_unchanged": false
+    },
+    {
+      "group": "v6-timestamp-36",
+      "artifact": "lib",
+      "name": "runtime::tests::signal_hook_tail_injection_is_rejected_before_every_executor_side_effect",
+      "relative": "reverie-kvm/src/runtime.rs",
+      "line": 4457,
+      "retained_v6_selector": true,
+      "new_file": false,
+      "source_file_unchanged": false
+    },
+    {
+      "group": "v6-timestamp-37",
+      "artifact": "lib",
+      "name": "runtime::terminal_tests::terminal_cancellation_and_into_guest_forwarding_do_not_inject_or_start_children",
+      "relative": "reverie-kvm/src/terminal_runtime_tests.rs",
+      "line": 48,
+      "retained_v6_selector": true,
+      "new_file": false,
+      "source_file_unchanged": true
+    }
+  ]
+}

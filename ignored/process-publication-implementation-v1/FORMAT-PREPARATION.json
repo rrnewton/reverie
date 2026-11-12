@@ -1,0 +1,33 @@
+{
+  "argv": [
+    "rustfmt",
+    "--edition",
+    "2024",
+    "--config",
+    "skip_children=true",
+    "reverie-kvm/src/elf.rs",
+    "reverie-kvm/src/executor.rs",
+    "reverie-kvm/src/process_signal_publication.rs"
+  ],
+  "raw_status": 0,
+  "elapsed": 0.3155290379654616,
+  "scope": "source formatting edit only; not observed format-check qualification",
+  "cpu_seconds": 30,
+  "wall_seconds": 60,
+  "address_space_bytes": 17179869184,
+  "per_output_file_bytes": 16777216,
+  "after": [
+    {
+      "path": "reverie-kvm/src/elf.rs",
+      "sha256": "6470d87527770cff3da452ee1a4b126746407f44350155165318f93e34142842"
+    },
+    {
+      "path": "reverie-kvm/src/executor.rs",
+      "sha256": "8523b1d95e6639085664e2fb35efeb609aadbf4b279cc3b6be9a7ed920bff1f4"
+    },
+    {
+      "path": "reverie-kvm/src/process_signal_publication.rs",
+      "sha256": "64f23aded851a3ba6635f29a60c0a42b6b9784eb57ff1f44309b82b81f2db9cb"
+    }
+  ]
+}

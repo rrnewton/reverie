@@ -1,0 +1,944 @@
+--- a/reverie-kvm/src/elf.rs
++++ b/reverie-kvm/src/elf.rs
+@@ -358,7 +358,9 @@
+     }
+ 
+     pub(crate) fn contains_process(&self, tgid: i32, generation: u64) -> bool {
+-        self.tasks.values().any(|task| task.tgid == tgid && task.process_generation == generation)
++        self.tasks
++            .values()
++            .any(|task| task.tgid == tgid && task.process_generation == generation)
+     }
+ 
+     pub(crate) fn has_live_sibling(&self, tid: i32, tgid: i32) -> bool {
+@@ -632,18 +634,28 @@
+     pub(crate) fn inherit_process_state(&mut self, previous: Self) {
+         let transaction = previous.signal_transaction.clone();
+         let _transaction = transaction.lock().unwrap_or_else(|p| p.into_inner());
+-        self.inherit_process_state_locked(previous)
+-    }
+-
+-    pub(crate) fn inherit_process_state_locked(&mut self, previous: Self) {
++        let retired = self.inherit_process_state_locked(previous);
++        drop(_transaction);
++        drop(retired);
++    }
++
++    pub(crate) fn inherit_process_state_locked(&mut self, previous: Self) -> Vec<std::fs::File> {
+         let thp_disabled =
+             std::sync::Arc::new(AtomicU8::new(previous.thp_disabled.load(Ordering::SeqCst)));
+         let cloexec_fds = previous.cloexec_fds;
++        let mut retired = Vec::new();
+         let mut stdin = previous.stdin;
+         let files: std::collections::BTreeMap<_, _> = previous
+             .files
+             .into_iter()
+-            .filter(|(fd, _)| !cloexec_fds.contains(fd))
++            .filter_map(|(fd, file)| {
++                if cloexec_fds.contains(&fd) {
++                    retired.push(file);
++                    None
++                } else {
++                    Some((fd, file))
++                }
++            })
+             .collect();
+         let random_device_fds = previous
+             .random_device_fds
+@@ -685,7 +697,7 @@
+         }
+         let mut closed_standard_fds = previous.closed_standard_fds;
+         if cloexec_fds.contains(&libc::STDIN_FILENO) {
+-            stdin = None;
++            retired.extend(stdin.take());
+             closed_standard_fds.insert(libc::STDIN_FILENO);
+         }
+         for fd in [libc::STDOUT_FILENO, libc::STDERR_FILENO] {
+@@ -767,6 +779,8 @@
+         self.fdinfo_table = previous.fdinfo_table;
+         self.fd_object_inodes = fd_object_inodes;
+         self.file_identity_table = file_identity_table;
++        // The caller releases the transaction before final host close.
++        retired
+     }
+ }
+ 
+--- a/reverie-kvm/src/executor.rs
++++ b/reverie-kvm/src/executor.rs
+@@ -1797,7 +1797,8 @@
+         ));
+         state.fdinfo_table = Arc::downgrade(&file_table);
+         let signal_registry = Arc::new(ProcessSignalRegistry::default());
+-        let signal_binding = signal_registry.register(&state, &file_table, process_generation, None);
++        let signal_binding =
++            signal_registry.register(&state, &file_table, process_generation, None);
+         let (child_completion_sender, child_completion_receiver) = std::sync::mpsc::channel();
+         Self {
+             state,
+@@ -2214,8 +2215,15 @@
+             .expect("registered KVM task exists")
+             .process_generation;
+         let sigchld_auto_reap = sigchld_auto_reaps(&state);
+-        let signal_binding = self.signal_registry.register(&state, &file_table, process_generation,
+-            Some(reverie::SignalProcessId { tgid: reverie::Pid::from_raw(self.state.pid), generation: self.process_generation }));
++        let signal_binding = self.signal_registry.register(
++            &state,
++            &file_table,
++            process_generation,
++            Some(reverie::SignalProcessId {
++                tgid: reverie::Pid::from_raw(self.state.pid),
++                generation: self.process_generation,
++            }),
++        );
+         let (child_completion_sender, child_completion_receiver) = std::sync::mpsc::channel();
+         let child = Self {
+             state,
+@@ -2504,10 +2512,13 @@
+         let _files = files.lock().unwrap_or_else(|p| p.into_inner());
+         let transaction = self.state.signal_transaction.clone();
+         let _transaction = transaction.lock().unwrap_or_else(|p| p.into_inner());
+-        self.state.stdin = None;
+-        self.state.files.clear();
++        let stdin = self.state.stdin.take();
++        let retired = std::mem::take(&mut self.state.files);
+         self.file_table = Arc::new(Mutex::new(FileTableState::default()));
+         self.process_action = None;
++        drop(_transaction);
++        drop(retired);
++        drop(stdin);
+     }
+ 
+     /// A worker cannot wait for a fork that needs the leader's exit hooks.
+@@ -2801,7 +2812,7 @@
+         let transaction = self.state.signal_transaction.clone();
+         let _transaction = transaction.lock().unwrap_or_else(|p| p.into_inner());
+         let previous = std::mem::replace(&mut self.state, state);
+-        self.state.inherit_process_state_locked(previous);
++        let retired = self.state.inherit_process_state_locked(previous);
+         let identity = self
+             .state
+             .task_lifecycle
+@@ -2815,7 +2826,10 @@
+             .address_space
+             .lock()
+             .expect("KVM address-space lock poisoned") = AddressSpaceState::from_elf(&self.state);
+-        *files = FileTableState::try_from_elf(&self.state).expect("clone post-exec KVM file table");
++        let retired_table = std::mem::replace(
++            &mut *files,
++            FileTableState::try_from_elf(&self.state).expect("clone post-exec KVM file table"),
++        );
+         self.signal_binding.rebind(&self.state, &file_table);
+         self.sigchld_auto_reap
+             .store(sigchld_auto_reaps(&self.state), Ordering::SeqCst);
+@@ -2823,6 +2837,9 @@
+         self.exit_status = None;
+         self.exit_group = false;
+         self.clear_child_tid = None;
++        drop(_transaction);
++        drop(retired);
++        drop(retired_table);
+     }
+ 
+     pub(crate) fn append_output(&mut self, stdout: Vec<u8>, stderr: Vec<u8>) {
+@@ -3879,8 +3896,9 @@
+         let _transaction = transaction.lock().unwrap_or_else(|p| p.into_inner());
+         self.reserve_signal_effects(1)?;
+         let pending = take_signal_event_locked(&mut self.state, SignalSelection::Delivery)?;
+-        refresh_all_signalfd_readiness_locked(&self.state)
+-            .map_err(|raw| reverie::syscalls::Errno::new(i32::try_from(-raw).unwrap_or(libc::EIO)))?;
++        refresh_all_signalfd_readiness_locked(&self.state).map_err(|raw| {
++            reverie::syscalls::Errno::new(i32::try_from(-raw).unwrap_or(libc::EIO))
++        })?;
+         Ok(pending)
+     }
+ 
+@@ -6959,7 +6977,7 @@
+     // SAFETY: fcntl returned a new owned descriptor.
+     let file = unsafe { std::fs::File::from_raw_fd(duplicated) };
+     if let Some(new_fd) = new_fd {
+-        state.files.insert(new_fd, file);
++        let retired = state.files.insert(new_fd, file);
+         state.fd_object_inodes.insert(new_fd, source_object_inode);
+         if source_is_random {
+             state.random_device_fds.insert(new_fd);
+@@ -6989,6 +7007,8 @@
+         } else {
+             state.proc_files.remove(&new_fd);
+         }
++        drop(_transaction);
++        drop(retired);
+         i64::from(new_fd)
+     } else {
+         let new_fd = insert_file_with_flags(state, file, close_on_exec, source_alias);
+@@ -12335,7 +12355,7 @@
+     let Ok(fd) = i32::try_from(raw_fd) else {
+         return negative_errno(libc::EBADF);
+     };
+-    if state.files.remove(&fd).is_some() {
++    if let Some(retired) = state.files.remove(&fd) {
+         state.cloexec_fds.remove(&fd);
+         state.random_device_fds.remove(&fd);
+         replace_signalfd_mask(state, fd, None);
+@@ -12344,12 +12364,16 @@
+         state.fd_object_inodes.remove(&fd);
+         cleanup_fd_object_inodes(state);
+         set_output_alias(state, fd, None);
++        drop(_transaction);
++        drop(retired);
+         return 0;
+     }
+     if is_open_standard(state, fd) {
+-        if fd == libc::STDIN_FILENO {
+-            state.stdin.take();
+-        }
++        let retired = if fd == libc::STDIN_FILENO {
++            state.stdin.take()
++        } else {
++            None
++        };
+         state.closed_standard_fds.insert(fd);
+         state.cloexec_fds.remove(&fd);
+         state.random_device_fds.remove(&fd);
+@@ -12357,6 +12381,8 @@
+         state.fd_object_inodes.remove(&fd);
+         cleanup_fd_object_inodes(state);
+         set_output_alias(state, fd, None);
++        drop(_transaction);
++        drop(retired);
+         return 0;
+     }
+     negative_errno(libc::EBADF)
+--- a/reverie-kvm/src/process_signal_publication.rs
++++ b/reverie-kvm/src/process_signal_publication.rs
+@@ -110,7 +110,13 @@
+             .upgrade()
+     }
+ 
+-    #[cfg_attr(not(test), expect(dead_code, reason = "private inactive capability; no production Tool installation yet"))]
++    #[cfg_attr(
++        not(test),
++        expect(
++            dead_code,
++            reason = "private inactive capability; no production Tool installation yet"
++        )
++    )]
+     pub(super) fn control(self: &Arc<Self>) -> ProcessSignalControl {
+         ProcessSignalControl(Arc::downgrade(self))
+     }
+@@ -181,8 +187,18 @@
+ }
+ 
+ impl ProcessSignalControl {
+-    #[cfg_attr(not(test), expect(dead_code, reason = "inactive private entry point; scheduler activation is separate"))]
+-    pub(super) fn publish_alarm(&self, target: SignalProcessId, event: SignalEvent) -> ProcessPublication {
++    #[cfg_attr(
++        not(test),
++        expect(
++            dead_code,
++            reason = "inactive private entry point; scheduler activation is separate"
++        )
++    )]
++    pub(super) fn publish_alarm(
++        &self,
++        target: SignalProcessId,
++        event: SignalEvent,
++    ) -> ProcessPublication {
+         let mut expected = [0; reverie::SIGNAL_INFO_SIZE];
+         expected[..4].copy_from_slice(&libc::SIGALRM.to_ne_bytes());
+         expected[8..12].copy_from_slice(&libc::SI_KERNEL.to_ne_bytes());
+@@ -195,7 +211,13 @@
+         self.publish(target, event, None)
+     }
+ 
+-    #[cfg_attr(not(test), expect(dead_code, reason = "inactive private entry point; child completion rendezvous is separate"))]
++    #[cfg_attr(
++        not(test),
++        expect(
++            dead_code,
++            reason = "inactive private entry point; child completion rendezvous is separate"
++        )
++    )]
+     pub(super) fn publish_child_exit(&self, completion: CommittedChildExit) -> ProcessPublication {
+         if completion.user_time < 0 || completion.system_time < 0 {
+             return ProcessPublication::Rejected(PublicationRejection::InvalidCompletion);
+@@ -208,8 +230,13 @@
+         info[24..28].copy_from_slice(&i32::from(completion.status).to_ne_bytes());
+         info[32..40].copy_from_slice(&completion.user_time.to_ne_bytes());
+         info[40..48].copy_from_slice(&completion.system_time.to_ne_bytes());
+-        let event = SignalEvent::new(libc::SIGCHLD, info,
+-            reverie::SignalTarget::Process { pid: completion.parent.tgid });
++        let event = SignalEvent::new(
++            libc::SIGCHLD,
++            info,
++            reverie::SignalTarget::Process {
++                pid: completion.parent.tgid,
++            },
++        );
+         let Ok(event) = event else {
+             return ProcessPublication::Rejected(PublicationRejection::InvalidCompletion);
+         };
+@@ -224,18 +251,36 @@
+     ) -> ProcessPublication {
+         use ProcessPublication::Rejected;
+         use PublicationRejection::*;
+-        let Some(registry) = self.0.upgrade() else { return Rejected(Closed); };
+-        let Some(binding) = registry.lookup(target) else { return Rejected(StaleProcess); };
+-        let image = binding.image.lock().unwrap_or_else(|p| p.into_inner()).clone();
++        let Some(registry) = self.0.upgrade() else {
++            return Rejected(Closed);
++        };
++        let Some(binding) = registry.lookup(target) else {
++            return Rejected(StaleProcess);
++        };
++        let image = binding
++            .image
++            .lock()
++            .unwrap_or_else(|p| p.into_inner())
++            .clone();
+         let (Some(files), Some(transaction), Some(lifecycle), Some(signals)) = (
+-            image.files.upgrade(), binding.transaction.upgrade(),
+-            binding.lifecycle.upgrade(), image.signals.upgrade(),
+-        ) else { return Rejected(StaleProcess); };
++            image.files.upgrade(),
++            binding.transaction.upgrade(),
++            binding.lifecycle.upgrade(),
++            image.signals.upgrade(),
++        ) else {
++            return Rejected(StaleProcess);
++        };
+         // No registry/image mutex is held while taking the file table.
+         // Ordinary operations use this same file-table -> transaction order.
+         let files = files.lock().unwrap_or_else(|p| p.into_inner());
+         let _transaction = transaction.lock().unwrap_or_else(|p| p.into_inner());
+-        if binding.image.lock().unwrap_or_else(|p| p.into_inner()).revision != image.revision {
++        if binding
++            .image
++            .lock()
++            .unwrap_or_else(|p| p.into_inner())
++            .revision
++            != image.revision
++        {
+             return Rejected(ChangedImage);
+         }
+         let lifecycle = lifecycle.lock().unwrap_or_else(|p| p.into_inner());
+@@ -245,10 +290,14 @@
+             return Rejected(StaleProcess);
+         }
+         if let Some(completion) = completion {
+-            let Some(child) = registry.lookup(completion.child) else { return Rejected(InvalidCompletion); };
++            let Some(child) = registry.lookup(completion.child) else {
++                return Rejected(InvalidCompletion);
++            };
+             if child.parent != Some(target)
+-                || lifecycle.process_exit_status(completion.child.tgid.as_raw(), completion.child.generation)
+-                    != Some(reverie::ExitStatus::Exited(i32::from(completion.status)))
++                || lifecycle.process_exit_status(
++                    completion.child.tgid.as_raw(),
++                    completion.child.generation,
++                ) != Some(reverie::ExitStatus::Exited(i32::from(completion.status)))
+             {
+                 return Rejected(InvalidCompletion);
+             }
+@@ -257,28 +306,46 @@
+         // This also prevents a different process from publishing after the
+         // first failed readiness transaction. No Tool call can occur here.
+         let mut failure = registry.failure.lock().unwrap_or_else(|p| p.into_inner());
+-        if failure.is_some() { return Rejected(Terminal); }
++        if failure.is_some() {
++            return Rejected(Terminal);
++        }
+         let mut process = signals.lock().unwrap_or_else(|p| p.into_inner());
+         let signal = event.signal();
+-        let action = process.dispositions.get(&signal).copied().unwrap_or_default();
+-        let disposition = if action.is_ignored() { PublicationDisposition::Ignored }
+-            else if action.handler == libc::SIG_DFL as u64 { PublicationDisposition::Default }
+-            else { PublicationDisposition::Caught };
++        let action = process
++            .dispositions
++            .get(&signal)
++            .copied()
++            .unwrap_or_default();
++        let disposition = if action.is_ignored() {
++            PublicationDisposition::Ignored
++        } else if action.handler == libc::SIG_DFL as u64 {
++            PublicationDisposition::Default
++        } else {
++            PublicationDisposition::Caught
++        };
+         let mut receipt = PublicationReceipt {
+-            process: target, image: image.revision, signal,
++            process: target,
++            image: image.revision,
++            signal,
+             pending_generation: process.pending_generation(signal),
+-            change: PendingChange::Suppressed, disposition,
++            change: PendingChange::Suppressed,
++            disposition,
+         };
+         if signal == libc::SIGCHLD && action.is_ignored() {
+             return ProcessPublication::Committed(receipt);
+         }
+-        let matching = process.signalfd_masks.iter()
++        let matching = process
++            .signalfd_masks
++            .iter()
+             .filter_map(|(&fd, mask)| mask.contains(signal).then_some(fd))
+             .collect::<Vec<_>>();
+         if matching.iter().any(|fd| !files.files.contains_key(fd)) {
+             return Rejected(Backend(Errno::EBADF));
+         }
+-        receipt.change = match process.shared_pending.enqueue(event, receipt.pending_generation) {
++        receipt.change = match process
++            .shared_pending
++            .enqueue(event, receipt.pending_generation)
++        {
+             Ok(true) => PendingChange::Queued,
+             Ok(false) => PendingChange::Coalesced,
+             Err(errno) => return Rejected(Backend(errno)),
+@@ -303,15 +370,16 @@
+ 
+ #[cfg(test)]
+ mod tests {
+-    use super::*;
++    use std::os::fd::AsRawFd;
++
+     use super::super::ElfExecutor;
+     use super::super::native_loaded_state;
++    use super::*;
+     use crate::GuestMemory;
+     use crate::SyscallRequest;
+     use crate::runtime::SyscallExecutor;
+     use crate::signal::KernelSigaction;
+     use crate::signal::KernelSigset;
+-    use std::os::fd::AsRawFd;
+ 
+     fn executor() -> ElfExecutor {
+         ElfExecutor::new(native_loaded_state(std::path::Path::new("/tmp")), false)
+@@ -325,8 +393,12 @@
+         let mut info = [0; reverie::SIGNAL_INFO_SIZE];
+         info[..4].copy_from_slice(&libc::SIGALRM.to_ne_bytes());
+         info[8..12].copy_from_slice(&libc::SI_KERNEL.to_ne_bytes());
+-        SignalEvent::new(libc::SIGALRM, info,
+-            reverie::SignalTarget::Process { pid: target.tgid }).unwrap()
++        SignalEvent::new(
++            libc::SIGALRM,
++            info,
++            reverie::SignalTarget::Process { pid: target.tgid },
++        )
++        .unwrap()
+     }
+ 
+     fn call(executor: &mut ElfExecutor, memory: &GuestMemory, number: i64, args: [u64; 6]) -> i64 {
+@@ -337,15 +409,23 @@
+         let mut mask = KernelSigset::default();
+         mask.insert(libc::SIGALRM);
+         memory.write(0x80, &mask.to_bytes()).unwrap();
+-        let fd = call(executor, memory, libc::SYS_signalfd4,
+-            [u64::MAX, 0x80, 8, libc::SFD_NONBLOCK as u64, 0, 0]);
++        let fd = call(
++            executor,
++            memory,
++            libc::SYS_signalfd4,
++            [u64::MAX, 0x80, 8, libc::SFD_NONBLOCK as u64, 0, 0],
++        );
+         assert!(fd >= 3, "signalfd setup: {fd}");
+         fd as i32
+     }
+ 
+     fn ready(executor: &ElfExecutor, fd: i32) -> bool {
+         let files = executor.file_table.lock().unwrap();
+-        let mut poll = libc::pollfd { fd: files.files[&fd].as_raw_fd(), events: libc::POLLIN, revents: 0 };
++        let mut poll = libc::pollfd {
++            fd: files.files[&fd].as_raw_fd(),
++            events: libc::POLLIN,
++            revents: 0,
++        };
+         assert!(unsafe { libc::poll(&mut poll, 1, 0) } >= 0);
+         poll.revents & libc::POLLIN != 0
+     }
+@@ -364,9 +444,27 @@
+                 let executor = executor();
+                 let id = identity(&executor);
+                 let control = executor.signal_registry.control();
+-                executor.state.process_signals.lock().unwrap().dispositions.insert(
+-                    libc::SIGALRM, KernelSigaction { handler, ..Default::default() });
+-                if blocked { executor.state.thread_signals.lock().blocked.insert(libc::SIGALRM); }
++                executor
++                    .state
++                    .process_signals
++                    .lock()
++                    .unwrap()
++                    .dispositions
++                    .insert(
++                        libc::SIGALRM,
++                        KernelSigaction {
++                            handler,
++                            ..Default::default()
++                        },
++                    );
++                if blocked {
++                    executor
++                        .state
++                        .thread_signals
++                        .lock()
++                        .blocked
++                        .insert(libc::SIGALRM);
++                }
+                 let before_thread = executor.state.thread_signals.lock().clone();
+                 let first = receipt(control.publish_alarm(id, alarm(id)));
+                 assert_eq!(first.change, PendingChange::Queued);
+@@ -374,15 +472,33 @@
+                 assert_eq!(second.change, PendingChange::Coalesced);
+                 assert_eq!(first.image, second.image);
+                 assert_eq!(first.pending_generation, 0);
+-                assert_eq!(first.disposition, match handler {
+-                    0 => PublicationDisposition::Default,
+-                    1 => PublicationDisposition::Ignored,
+-                    _ => PublicationDisposition::Caught,
+-                });
++                assert_eq!(
++                    first.disposition,
++                    match handler {
++                        0 => PublicationDisposition::Default,
++                        1 => PublicationDisposition::Ignored,
++                        _ => PublicationDisposition::Caught,
++                    }
++                );
+                 assert_eq!(*executor.state.thread_signals.lock(), before_thread);
+                 assert_eq!(executor.state.logical_clock_ns, 0);
+-                assert_eq!(executor.state.process_signals.lock().unwrap().shared_pending
+-                    .take_matching({ let mut mask = KernelSigset::default(); mask.insert(libc::SIGALRM); mask }, &[0; 65]), Some(alarm(id)));
++                assert_eq!(
++                    executor
++                        .state
++                        .process_signals
++                        .lock()
++                        .unwrap()
++                        .shared_pending
++                        .take_matching(
++                            {
++                                let mut mask = KernelSigset::default();
++                                mask.insert(libc::SIGALRM);
++                                mask
++                            },
++                            &[0; 65]
++                        ),
++                    Some(alarm(id))
++                );
+             }
+         }
+     }
+@@ -394,20 +510,46 @@
+         let control = executor.signal_registry.control();
+         let mut info = alarm(id).siginfo();
+         info[127] = 1;
+-        let invalid = SignalEvent::new(libc::SIGALRM, info,
+-            reverie::SignalTarget::Process { pid: id.tgid }).unwrap();
+-        assert_eq!(control.publish_alarm(id, invalid), ProcessPublication::Rejected(PublicationRejection::InvalidEvent));
+-        assert!(executor.state.process_signals.lock().unwrap().shared_pending.is_empty());
++        let invalid = SignalEvent::new(
++            libc::SIGALRM,
++            info,
++            reverie::SignalTarget::Process { pid: id.tgid },
++        )
++        .unwrap();
++        assert_eq!(
++            control.publish_alarm(id, invalid),
++            ProcessPublication::Rejected(PublicationRejection::InvalidEvent)
++        );
++        assert!(
++            executor
++                .state
++                .process_signals
++                .lock()
++                .unwrap()
++                .shared_pending
++                .is_empty()
++        );
+         executor.retire_current_thread(reverie::ExitStatus::SUCCESS, false);
+         // Numeric reuse in the same lifecycle cannot revive the old generation.
+-        executor.state.task_lifecycle.lock().unwrap().register(1, 1, 1, true);
+-        assert_eq!(control.publish_alarm(id, alarm(id)), ProcessPublication::Rejected(PublicationRejection::StaleProcess));
++        executor
++            .state
++            .task_lifecycle
++            .lock()
++            .unwrap()
++            .register(1, 1, 1, true);
++        assert_eq!(
++            control.publish_alarm(id, alarm(id)),
++            ProcessPublication::Rejected(PublicationRejection::StaleProcess)
++        );
+         let signals = Arc::downgrade(&executor.state.process_signals);
+         let files = Arc::downgrade(&executor.file_table);
+         drop(executor);
+         assert!(signals.upgrade().is_none());
+         assert!(files.upgrade().is_none());
+-        assert_eq!(control.publish_alarm(id, alarm(id)), ProcessPublication::Rejected(PublicationRejection::Closed));
++        assert_eq!(
++            control.publish_alarm(id, alarm(id)),
++            ProcessPublication::Rejected(PublicationRejection::Closed)
++        );
+     }
+ 
+     #[test]
+@@ -420,9 +562,19 @@
+         leader.release_files_on_exit();
+         drop(leader);
+         receipt(control.publish_alarm(id, alarm(id)));
+-        assert_eq!(worker.take_pending_signal_for_delivery().unwrap().unwrap().event, alarm(id));
++        assert_eq!(
++            worker
++                .take_pending_signal_for_delivery()
++                .unwrap()
++                .unwrap()
++                .event,
++            alarm(id)
++        );
+         worker.retire_current_thread(reverie::ExitStatus::SUCCESS, false);
+-        assert_eq!(control.publish_alarm(id, alarm(id)), ProcessPublication::Rejected(PublicationRejection::StaleProcess));
++        assert_eq!(
++            control.publish_alarm(id, alarm(id)),
++            ProcessPublication::Rejected(PublicationRejection::StaleProcess)
++        );
+         drop(worker);
+ 
+         let mut executor = executor();
+@@ -437,10 +589,24 @@
+         assert_eq!(second.change, PendingChange::Coalesced);
+         assert_eq!(identity(&executor), id);
+         assert!(!Arc::ptr_eq(&old, &executor.state.process_signals));
+-        assert_eq!(executor.take_pending_signal_for_delivery().unwrap().unwrap().event, alarm(id));
++        assert_eq!(
++            executor
++                .take_pending_signal_for_delivery()
++                .unwrap()
++                .unwrap()
++                .event,
++            alarm(id)
++        );
+         receipt(control.publish_alarm(id, alarm(id)));
+         assert!(old.lock().unwrap().shared_pending.contains(libc::SIGALRM));
+-        assert_eq!(executor.take_pending_signal_for_delivery().unwrap().unwrap().event, alarm(id));
++        assert_eq!(
++            executor
++                .take_pending_signal_for_delivery()
++                .unwrap()
++                .unwrap()
++                .event,
++            alarm(id)
++        );
+     }
+ 
+     #[test]
+@@ -450,35 +616,99 @@
+         let control = executor.signal_registry.control();
+         let mut memory = GuestMemory::new(0, 4096).unwrap();
+         let original = signalfd(&mut executor, &mut memory);
+-        let duplicate = call(&mut executor, &memory, libc::SYS_dup, [original as u64, 0, 0, 0, 0, 0]) as i32;
++        let duplicate = call(
++            &mut executor,
++            &memory,
++            libc::SYS_dup,
++            [original as u64, 0, 0, 0, 0, 0],
++        ) as i32;
+         assert!(duplicate > original);
+-        assert_eq!(call(&mut executor, &memory, libc::SYS_close, [original as u64, 0, 0, 0, 0, 0]), 0);
++        assert_eq!(
++            call(
++                &mut executor,
++                &memory,
++                libc::SYS_close,
++                [original as u64, 0, 0, 0, 0, 0]
++            ),
++            0
++        );
+         for consumer in 0..3 {
+             receipt(control.publish_alarm(id, alarm(id)));
+             assert!(ready(&executor, duplicate));
+             match consumer {
+-                0 => assert_eq!(executor.take_pending_signal_for_delivery().unwrap().unwrap().event, alarm(id)),
++                0 => assert_eq!(
++                    executor
++                        .take_pending_signal_for_delivery()
++                        .unwrap()
++                        .unwrap()
++                        .event,
++                    alarm(id)
++                ),
+                 1 => {
+-                    assert_eq!(call(&mut executor, &memory, libc::SYS_read, [duplicate as u64, 0x100, 128, 0, 0, 0]), 128);
+-                    let mut signo = [0; 4]; memory.read(0x100, &mut signo).unwrap();
++                    assert_eq!(
++                        call(
++                            &mut executor,
++                            &memory,
++                            libc::SYS_read,
++                            [duplicate as u64, 0x100, 128, 0, 0, 0]
++                        ),
++                        128
++                    );
++                    let mut signo = [0; 4];
++                    memory.read(0x100, &mut signo).unwrap();
+                     assert_eq!(i32::from_ne_bytes(signo), libc::SIGALRM);
+                 }
+-                _ => assert_eq!(call(&mut executor, &memory, libc::SYS_rt_sigtimedwait, [0x80, 0x100, 0, 8, 0, 0]), i64::from(libc::SIGALRM)),
++                _ => assert_eq!(
++                    call(
++                        &mut executor,
++                        &memory,
++                        libc::SYS_rt_sigtimedwait,
++                        [0x80, 0x100, 0, 8, 0, 0]
++                    ),
++                    i64::from(libc::SIGALRM)
++                ),
+             }
+             assert!(!ready(&executor, duplicate));
+         }
+         receipt(control.publish_alarm(id, alarm(id)));
+-        let ignored = KernelSigaction { handler: libc::SIG_IGN as u64, ..Default::default() };
++        let ignored = KernelSigaction {
++            handler: libc::SIG_IGN as u64,
++            ..Default::default()
++        };
+         memory.write(0x200, &ignored.encode()).unwrap();
+-        assert_eq!(call(&mut executor, &memory, libc::SYS_rt_sigaction, [libc::SIGALRM as u64, 0x200, 0, 8, 0, 0]), 0);
++        assert_eq!(
++            call(
++                &mut executor,
++                &memory,
++                libc::SYS_rt_sigaction,
++                [libc::SIGALRM as u64, 0x200, 0, 8, 0, 0]
++            ),
++            0
++        );
+         assert!(!ready(&executor, duplicate));
+-        assert!(executor.state.process_signals.lock().unwrap().shared_pending.is_empty());
++        assert!(
++            executor
++                .state
++                .process_signals
++                .lock()
++                .unwrap()
++                .shared_pending
++                .is_empty()
++        );
+         let later = receipt(control.publish_alarm(id, alarm(id)));
+         assert_eq!(later.pending_generation, 1);
+         assert!(ready(&executor, duplicate));
+         // Closing an alias must not cause the private publisher to use its old
+         // local descriptor snapshot or to write into a subsequently reused fd.
+-        assert_eq!(call(&mut executor, &memory, libc::SYS_close, [duplicate as u64, 0, 0, 0, 0, 0]), 0);
++        assert_eq!(
++            call(
++                &mut executor,
++                &memory,
++                libc::SYS_close,
++                [duplicate as u64, 0, 0, 0, 0, 0]
++            ),
++            0
++        );
+         receipt(control.publish_alarm(id, alarm(id)));
+         assert!(executor.file_table.lock().unwrap().files.is_empty());
+     }
+@@ -490,19 +720,63 @@
+         let control = executor.signal_registry.control();
+         let mut memory = GuestMemory::new(0, 4096).unwrap();
+         let fd = signalfd(&mut executor, &mut memory);
+-        let carrier = executor.file_table.lock().unwrap().files.remove(&fd).unwrap();
+-        assert_eq!(control.publish_alarm(id, alarm(id)), ProcessPublication::Rejected(PublicationRejection::Backend(Errno::EBADF)));
+-        assert!(executor.state.process_signals.lock().unwrap().shared_pending.is_empty());
++        let carrier = executor
++            .file_table
++            .lock()
++            .unwrap()
++            .files
++            .remove(&fd)
++            .unwrap();
++        assert_eq!(
++            control.publish_alarm(id, alarm(id)),
++            ProcessPublication::Rejected(PublicationRejection::Backend(Errno::EBADF))
++        );
++        assert!(
++            executor
++                .state
++                .process_signals
++                .lock()
++                .unwrap()
++                .shared_pending
++                .is_empty()
++        );
+         // Deliberate backing-carrier corruption: real readiness write fails
+         // EBADF after queue insertion. No production mutator installs this.
+-        executor.file_table.lock().unwrap().files.insert(fd, std::fs::File::open("/dev/null").unwrap());
+-        let ProcessPublication::FailedAfterCommit(failure) = control.publish_alarm(id, alarm(id)) else { panic!("missing postcommit failure") };
++        executor
++            .file_table
++            .lock()
++            .unwrap()
++            .files
++            .insert(fd, std::fs::File::open("/dev/null").unwrap());
++        let ProcessPublication::FailedAfterCommit(failure) = control.publish_alarm(id, alarm(id))
++        else {
++            panic!("missing postcommit failure")
++        };
+         assert_eq!(failure.errno, Errno::EBADF);
+         assert_eq!(failure.receipt.change, PendingChange::Queued);
+-        assert!(executor.state.process_signals.lock().unwrap().shared_pending.contains(libc::SIGALRM));
+-        assert_eq!(*executor.signal_registry.failure.lock().unwrap(), Some(failure));
+-        executor.file_table.lock().unwrap().files.insert(fd, carrier);
+-        assert_eq!(control.publish_alarm(id, alarm(id)), ProcessPublication::Rejected(PublicationRejection::Terminal));
++        assert!(
++            executor
++                .state
++                .process_signals
++                .lock()
++                .unwrap()
++                .shared_pending
++                .contains(libc::SIGALRM)
++        );
++        assert_eq!(
++            *executor.signal_registry.failure.lock().unwrap(),
++            Some(failure)
++        );
++        executor
++            .file_table
++            .lock()
++            .unwrap()
++            .files
++            .insert(fd, carrier);
++        assert_eq!(
++            control.publish_alarm(id, alarm(id)),
++            ProcessPublication::Rejected(PublicationRejection::Terminal)
++        );
+     }
+ 
+     #[test]
+@@ -522,16 +796,35 @@
+                 });
+                 let consumer = scope.spawn(|| {
+                     start.wait();
+-                    executor.take_pending_signal_for_delivery().unwrap().unwrap()
++                    executor
++                        .take_pending_signal_for_delivery()
++                        .unwrap()
++                        .unwrap()
+                 });
+                 (publisher.join().unwrap(), consumer.join().unwrap())
+             });
+             assert_eq!(removed.event, alarm(id));
+             let queued_after_remove = published.change == PendingChange::Queued;
+-            assert_eq!(executor.state.process_signals.lock().unwrap().shared_pending.contains(libc::SIGALRM), queued_after_remove);
++            assert_eq!(
++                executor
++                    .state
++                    .process_signals
++                    .lock()
++                    .unwrap()
++                    .shared_pending
++                    .contains(libc::SIGALRM),
++                queued_after_remove
++            );
+             assert_eq!(ready(&executor, fd), queued_after_remove);
+             if queued_after_remove {
+-                assert_eq!(executor.take_pending_signal_for_delivery().unwrap().unwrap().event, alarm(id));
++                assert_eq!(
++                    executor
++                        .take_pending_signal_for_delivery()
++                        .unwrap()
++                        .unwrap()
++                        .event,
++                    alarm(id)
++                );
+             }
+             assert!(!ready(&executor, fd));
+         }
+@@ -544,28 +837,74 @@
+         let mut child = parent.fork_child(2, false, false).unwrap();
+         let child_id = identity(&child);
+         let control = parent.signal_registry.control();
+-        let completion = || CommittedChildExit { parent: id, child: child_id, status: 23, uid: 0, user_time: 11, system_time: 13 };
+-        assert_eq!(control.publish_child_exit(completion()), ProcessPublication::Rejected(PublicationRejection::InvalidCompletion));
++        let completion = || CommittedChildExit {
++            parent: id,
++            child: child_id,
++            status: 23,
++            uid: 0,
++            user_time: 11,
++            system_time: 13,
++        };
++        assert_eq!(
++            control.publish_child_exit(completion()),
++            ProcessPublication::Rejected(PublicationRejection::InvalidCompletion)
++        );
+         child.retire_current_thread(reverie::ExitStatus::Exited(23), false);
+         let first = receipt(control.publish_child_exit(completion()));
+         assert_eq!(first.change, PendingChange::Queued);
+         let pending = parent.take_pending_signal_for_delivery().unwrap().unwrap();
+         let info = pending.event.siginfo();
+         assert_eq!(pending.event.signal(), libc::SIGCHLD);
+-        assert_eq!(i32::from_ne_bytes(info[8..12].try_into().unwrap()), libc::CLD_EXITED);
++        assert_eq!(
++            i32::from_ne_bytes(info[8..12].try_into().unwrap()),
++            libc::CLD_EXITED
++        );
+         assert_eq!(i32::from_ne_bytes(info[16..20].try_into().unwrap()), 2);
+         assert_eq!(i32::from_ne_bytes(info[24..28].try_into().unwrap()), 23);
+         assert_eq!(i64::from_ne_bytes(info[32..40].try_into().unwrap()), 11);
+         assert_eq!(i64::from_ne_bytes(info[40..48].try_into().unwrap()), 13);
+-        let mut wrong = completion(); wrong.child.generation += 1;
+-        assert_eq!(control.publish_child_exit(wrong), ProcessPublication::Rejected(PublicationRejection::InvalidCompletion));
++        let mut wrong = completion();
++        wrong.child.generation += 1;
++        assert_eq!(
++            control.publish_child_exit(wrong),
++            ProcessPublication::Rejected(PublicationRejection::InvalidCompletion)
++        );
+         let other = parent.fork_child(3, false, false).unwrap();
+-        let mut wrong = completion(); wrong.parent = identity(&other);
+-        assert_eq!(control.publish_child_exit(wrong), ProcessPublication::Rejected(PublicationRejection::InvalidCompletion));
+-        parent.state.process_signals.lock().unwrap().dispositions.insert(libc::SIGCHLD,
+-            KernelSigaction { handler: libc::SIG_IGN as u64, ..Default::default() });
+-        assert_eq!(receipt(control.publish_child_exit(completion())).change, PendingChange::Suppressed);
+-        assert!(parent.state.process_signals.lock().unwrap().shared_pending.is_empty());
+-        assert!(parent.state.children.is_empty(), "publication must not manufacture waitability");
+-    }
+-}
++        let mut wrong = completion();
++        wrong.parent = identity(&other);
++        assert_eq!(
++            control.publish_child_exit(wrong),
++            ProcessPublication::Rejected(PublicationRejection::InvalidCompletion)
++        );
++        parent
++            .state
++            .process_signals
++            .lock()
++            .unwrap()
++            .dispositions
++            .insert(
++                libc::SIGCHLD,
++                KernelSigaction {
++                    handler: libc::SIG_IGN as u64,
++                    ..Default::default()
++                },
++            );
++        assert_eq!(
++            receipt(control.publish_child_exit(completion())).change,
++            PendingChange::Suppressed
++        );
++        assert!(
++            parent
++                .state
++                .process_signals
++                .lock()
++                .unwrap()
++                .shared_pending
++                .is_empty()
++        );
++        assert!(
++            parent.state.children.is_empty(),
++            "publication must not manufacture waitability"
++        );
++    }
++}

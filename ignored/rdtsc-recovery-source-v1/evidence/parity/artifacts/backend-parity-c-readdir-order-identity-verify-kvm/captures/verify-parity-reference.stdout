@@ -1,0 +1,2 @@
+small n=24 order_identical=1 first_diff=-1 seams_fwd=0 seams_rev=0 words_equal=1
+large n=2000 order_identical=0 first_diff=0 seams_fwd=0 seams_rev=1 words_equal=0

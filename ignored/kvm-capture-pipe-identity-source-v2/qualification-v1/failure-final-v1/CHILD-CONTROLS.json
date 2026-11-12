@@ -1,0 +1,41 @@
+{
+  "markers": {
+    "capture-03": {
+      "stderr": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/kvm-capture-pipe-identity-source-v2/qualification-v1/observer/capture-03/stderr",
+        "bytes": 301,
+        "mode": 384,
+        "sha256": "b5b7f86978778d4b8683b9b408a97aa204e85d3927ec4a28b916997098c2c366"
+      },
+      "marker": "capture closed standard descriptors completed",
+      "exact_marker_count": 1,
+      "child_status": 0,
+      "intentional_caught_unwind": false
+    },
+    "capture-04": {
+      "stderr": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/kvm-capture-pipe-identity-source-v2/qualification-v1/observer/capture-04/stderr",
+        "bytes": 583,
+        "mode": 384,
+        "sha256": "d25426fa106285cd71eee078c07eece284d52116842a7998dda01484ef6b8052"
+      },
+      "marker": "capture final owner cleanup completed",
+      "exact_marker_count": 1,
+      "child_status": 0,
+      "intentional_caught_unwind": true
+    },
+    "capture-05": {
+      "stderr": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/kvm-capture-pipe-identity-source-v2/qualification-v1/observer/capture-05/stderr",
+        "bytes": 300,
+        "mode": 384,
+        "sha256": "1b11ddaa889c1e500102a036a95f859e7fc7ed08a48cee408f98548e774a3740"
+      },
+      "marker": "capture setup EMFILE control completed",
+      "exact_marker_count": 1,
+      "child_status": 0,
+      "intentional_caught_unwind": false
+    }
+  },
+  "scope": "All three isolated child bodies reached their existing final markers under actual successful child status, including closed standard fds, root-owner normal/unwind and real EMFILE. Unchanged install EMFILE neighbor-20 remains unrun."
+}

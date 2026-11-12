@@ -1,0 +1,80 @@
+        0xc7, 0x06, 0xff, 0xff, 0xff, 0xff, // status sentinel, overwritten by wait4
+    ]);
+    code.extend_from_slice(&[
+        0x31, 0xd2, 0x45, 0x31, 0xd2, 0xb8, 61, 0, 0, 0, 0x0f, 0x05, 0x4c, 0x39, 0xe8,
+    ]);
+    append_jne_failure(&mut code, &mut failures);
+    code.extend_from_slice(&[0x83, 0x3e, 0]);
+    append_jne_failure(&mut code, &mut failures);
+    append_stats_exit(&mut code, true);
+    let child = code.len();
+    patch_stats_jump(&mut code, child_jump, child);
+    append_cpuid(&mut code, &[], 0, &mut failures);
+    code.extend_from_slice(&[0x48, 0xbf]);
+    let path_operand = code.len();
+    code.extend_from_slice(&0_u64.to_le_bytes());
+    code.extend_from_slice(&[0x48, 0xbe]);
+    let argv_operand = code.len();
+    code.extend_from_slice(&0_u64.to_le_bytes());
+    code.extend_from_slice(&[0x31, 0xd2, 0xb8, 59, 0, 0, 0, 0x0f, 0x05]); // a returned exec is failure
+    let failure = code.len();
+    code.extend_from_slice(&[
+        0xb8, 0xe7, 0, 0, 0, 0xbf, 21, 0, 0, 0, 0x0f, 0x05, 0x0f, 0x0b,
+    ]);
+    for operand in failures {
+        patch_stats_jump(&mut code, operand, failure);
+    }
+    while !code.len().is_multiple_of(8) {
+        code.push(0);
+    }
+    let path = LOAD_ADDRESS + code.len() as u64;
+    code.extend_from_slice(executable.to_str().unwrap().as_bytes());
+    code.push(0);
+    while !code.len().is_multiple_of(8) {
+        code.push(0);
+    }
+    let argv = LOAD_ADDRESS + code.len() as u64;
+    code.extend_from_slice(&path.to_le_bytes());
+    code.extend_from_slice(&0_u64.to_le_bytes());
+    for (operand, value) in [(path_operand, path), (argv_operand, argv)] {
+        code[operand..operand + 8].copy_from_slice(&value.to_le_bytes());
+    }
+    let (log, status) = run_cpuid(&code, (true, 0), ThreadOwnership::Tool);
+    assert_eq!(status, 0);
+    assert_eq!(
+        log.calls
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|call| (call.0.as_raw(), call.1, call.2))
+            .collect::<Vec<_>>(),
+        vec![(1, 7, 2), (2, 7, 2), (2, 7, 2)]
+    );
+}
+
+#[test]
+fn cpuid_and_both_timestamp_forms_share_one_real_dispatcher_without_cross_charges() {
+    let mut code = Vec::new();
+    let mut failures = Vec::new();
+    append_cpuid(&mut code, &[], 0, &mut failures);
+    // Retain the existing complete RDTSC/RDTSCP guest result and AUX checks.
+    // Its relative jumps remain local when placed after the CPUID assertion.
+    code.extend_from_slice(&timestamp_assertion_program());
+    let failure = code.len();
+    code.extend_from_slice(&[
+        0xb8, 0xe7, 0, 0, 0, 0xbf, 22, 0, 0, 0, 0x0f, 0x05, 0x0f, 0x0b,
+    ]);
+    for operand in failures {
+        patch_stats_jump(&mut code, operand, failure);
+    }
+    let (log, status) = run_cpuid(&code, (true, 3), ThreadOwnership::Tool);
+    assert_eq!(status, 0);
+    let calls = log.calls.lock().unwrap();
+    assert_eq!(
+        calls
+            .iter()
+            .map(|call| (call.0.as_raw(), call.1, call.2))
+            .collect::<Vec<_>>(),
+        vec![(1, 7, 2), (1, u32::MAX, 0), (1, u32::MAX, 1)]
+    );
+    assert!(calls.windows(2).all(|pair| pair[1].3 > pair[0].3));

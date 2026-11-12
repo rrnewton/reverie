@@ -1,0 +1,64 @@
+{
+  "base": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v6/TARGET.json",
+    "kind": "file",
+    "bytes": 2979,
+    "sha256": "efa8f9355bfcf27dad6395942903d32731056bb04dba935933a290b46db2ed98",
+    "mode": 420
+  },
+  "qualified_base": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v6/final-v1/TARGET.json",
+    "kind": "file",
+    "bytes": 3798,
+    "sha256": "9730077c7572bc0fc0d8488de1fc974f1166cab353e9915a0d80a0cc531339b1",
+    "mode": 420
+  },
+  "entries": 2627,
+  "kinds": {
+    "file": 2617,
+    "symlink": 7,
+    "unexpanded_gitlink": 3
+  },
+  "changed_existing": [
+    "reverie-kvm/src/lib.rs",
+    "reverie-kvm/src/runtime.rs",
+    "reverie-kvm/src/vm.rs",
+    "reverie-kvm/tests/static_elf.rs"
+  ],
+  "new_paths": [
+    "reverie-kvm/src/cpuid_instruction.rs",
+    "reverie-kvm/src/cpuid_runtime_tests.rs",
+    "reverie-kvm/tests/support/cpuid_dispatch.rs",
+    "reverie-kvm/tests/support/cpuid_terminal.rs"
+  ],
+  "unchanged_existing_test_bodies": {
+    "static_elf_remove_two_module_declarations_recovers_complete_file": true,
+    "vm_remove_one_test_include_recovers_complete_test_module": true,
+    "runtime_complete_test_suffix_identical": true
+  },
+  "fixed_cpuid_policy_unchanged": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/cpuid-recovery-source-v1/source/reverie-kvm/src/cpuid.rs",
+    "kind": "file",
+    "bytes": 16731,
+    "sha256": "56f7b5a167a7fda07db2fdb44b4801f44564b5450bd6628ca876d2b967f2b73f",
+    "mode": 420
+  },
+  "public_reverie_api_unchanged": true,
+  "cargo_manifest_and_dependencies_unchanged": true,
+  "actual_lock": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/cpuid-recovery-source-v1/source/Cargo.lock",
+    "kind": "file",
+    "bytes": 67056,
+    "sha256": "1c09663e46bf21ad7c07eedd7821cccb72ae21f42485192649ff5473962bc856",
+    "mode": 420
+  },
+  "base_lock": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v6/source/Cargo.lock",
+    "kind": "file",
+    "bytes": 67056,
+    "sha256": "1c09663e46bf21ad7c07eedd7821cccb72ae21f42485192649ff5473962bc856",
+    "mode": 420
+  },
+  "experimental_probe_absent": true,
+  "source_only": true
+}

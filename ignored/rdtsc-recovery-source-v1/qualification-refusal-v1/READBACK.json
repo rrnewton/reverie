@@ -1,0 +1,66 @@
+{
+  "files": [
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v1/qualification-refusal-v1/RESULTS.json",
+      "bytes": 15789,
+      "mode": 420,
+      "sha256": "2013e1af18a4a3f4862a4ecc10b210dc635ddc9efbe2a2151a15d853f2e7be11",
+      "identity": [
+        48,
+        833144909
+      ]
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v1/qualification-refusal-v1/REPORT.md",
+      "bytes": 565,
+      "mode": 420,
+      "sha256": "8abe04ae84b46a1a03b1cd67a0ba8565c3e3829daddc6f09ccc5f2b21e0b3328",
+      "identity": [
+        48,
+        833144910
+      ]
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v1/qualification-refusal-v1/retained-binaries/vmcall",
+      "bytes": 87854040,
+      "mode": 365,
+      "sha256": "a7e753586e6b500bf79d28a4ff34c9724850a97d7049f9dc235da3d5651aa245",
+      "identity": [
+        48,
+        833144901
+      ]
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v1/qualification-refusal-v1/retained-binaries/reverie_kvm",
+      "bytes": 126192168,
+      "mode": 365,
+      "sha256": "9a672f27b036d5a38290a74dae11daf2f217fdfb1b8dff4ef49fd1ed39e6df9b",
+      "identity": [
+        48,
+        833144902
+      ]
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v1/qualification-refusal-v1/retained-binaries/read_clock",
+      "bytes": 97605968,
+      "mode": 365,
+      "sha256": "954b2c925386d4059d74f8c3366450cb81ab3f3450b9c4efc3d5a4a69d9778eb",
+      "identity": [
+        48,
+        833144903
+      ]
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v1/qualification-refusal-v1/retained-binaries/static_elf",
+      "bytes": 177657472,
+      "mode": 365,
+      "sha256": "4a0541840795d6507a0ef74675e511fc513666db7528e506b7dafc3a1acc3ceb",
+      "identity": [
+        48,
+        833144907
+      ]
+    }
+  ],
+  "all_hashes_rechecked": true,
+  "source_result_qualified": false
+}

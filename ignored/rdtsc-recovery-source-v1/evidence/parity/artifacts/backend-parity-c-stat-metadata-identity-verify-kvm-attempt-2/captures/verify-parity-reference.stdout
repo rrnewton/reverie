@@ -1,0 +1,20 @@
+EV stat_reg ino=2 dev=2 nlink=1 blocks=8 mode=644 size=5
+EV stat_reg atime=1767225600 mtime=1767225600 ctime=1767225600
+EV fstat_matches_stat=1
+EV mtime_nondecreasing=1 mtime_delta_sec=0
+EV mtime_nsec_advanced=1
+EV size_grew=1
+EV stat_dir ino=3 dev=2 nlink=2 blocks=0 mode=755 size=40
+EV stat_dir atime=1767225600 mtime=1767225600 ctime=1767225600
+EV dir_same_dev_as_file=1
+EV lstat_link ino=4 dev=2 nlink=1 blocks=0 mode=777 size=23
+EV lstat_link atime=1767225600 mtime=1767225600 ctime=1767225600
+EV lstat_is_symlink=1
+EV branch=A_link_and_target_distinct
+EV branch_A_target_ino_matches_file=1
+EV pipe ino=5 dev=3 isfifo=1
+EV pipe_dev_differs_from_file=1
+EV proc ino_nonzero=1 dev_nonzero=1 mode=444
+EV statx ino=2 nlink=1 blocks=8 mask_btime=1
+EV statx mtime=1767225600 btime=1767225600 statx_ino_matches_stat=1
+EV done

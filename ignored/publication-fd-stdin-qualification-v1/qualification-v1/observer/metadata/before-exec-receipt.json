@@ -1,0 +1,37 @@
+{
+  "authorization_received": true,
+  "payload": {
+    "binary": "/usr/bin/python3",
+    "binary_sha256": "9cfdf1a01d07dadb394dd2dc9fd8316254c36764076d23dc2c895c8401735576",
+    "arguments": [
+      "-B",
+      "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/publication-fd-stdin-qualification-v1/qualification-v1/phase.py",
+      "payload",
+      "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/publication-fd-stdin-qualification-v1/qualification-v1/metadata-plan.json",
+      "0db94b74c5570075cf7a3d45644e501a9122745dc8c7c0df6f0bfe75c4ef1ce9"
+    ]
+  },
+  "pid": 4147233,
+  "start_ticks": 190128001,
+  "restored_limits": {
+    "cpu": [
+      -1,
+      -1
+    ],
+    "as": [
+      -1,
+      -1
+    ],
+    "core": [
+      -1,
+      -1
+    ]
+  },
+  "protocol_environment_keys": [],
+  "handshake_fds_closed": true,
+  "ignore_sigpipe": true,
+  "python_file_size_signals_restored_to_default": true,
+  "environment_sha256": "f2b2a00407a70bc84ecb0bfa76f19d278bac79a3970783be3116b01f226aebf1",
+  "monotonic_ns": 1901280048071147,
+  "note": "Written before exec; this is not proof that the payload started."
+}

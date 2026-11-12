@@ -1,0 +1,7 @@
+{
+  "stage": "unfrozen author packaging",
+  "raw_status": 1,
+  "error": "Compared filesystem permission integer with Git-mode string while checking source copy",
+  "compile_or_test_executed": false,
+  "correction": "Compare actual copied filesystem mode with actual predecessor filesystem mode; preserve manifest Git mode separately"
+}

@@ -1,0 +1,1 @@
+The first report-assembly script stopped before writing diagnostics because it required one compiler-message record. Actual Cargo output has one error E0050 plus one failure-note referring to rustc --explain E0050. Both records are preserved below; no compilation, phase or evidence was rerun or modified. The empty output directory was retained.

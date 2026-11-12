@@ -1,0 +1,27 @@
+{
+  "actual_cargo_artifact": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/target/process-alarm-qualification-v1/debug/deps/reverie_kvm-43ce2f687796397a",
+    "bytes": 120149904,
+    "mode": 493,
+    "sha256": "f1dd13829f04d940392e97704746b5544f04cf96974dfa7c69063e6635ca5a25"
+  },
+  "retained": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/same-inode-ofd-control-v1/qualification/retained/reverie-kvm-lib",
+    "bytes": 120149904,
+    "mode": 493,
+    "sha256": "f1dd13829f04d940392e97704746b5544f04cf96974dfa7c69063e6635ca5a25"
+  },
+  "source_inode": [
+    48,
+    822674071
+  ],
+  "copy_inode": [
+    48,
+    822675967
+  ],
+  "distinct_inode": true,
+  "copy_nlink": 1,
+  "source_manifest_sha256": "083a6be0ad5cc028d8cc08ff0c1f856ea0abb4a4693a54796e20cf13a2f6ab40",
+  "compile_result_sha256": "45721cc5a79e297df33a78aefcc17dc6ad8bb9118450bfd75b9c9678c6741b97",
+  "no_historical_elf_reattribution": true
+}

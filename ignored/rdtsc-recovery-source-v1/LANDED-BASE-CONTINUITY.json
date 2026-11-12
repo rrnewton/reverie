@@ -1,0 +1,9 @@
+{
+  "authorship_base_preserved": "79516661bf82d30ab2967c71834a6d47447b76ee",
+  "landed_revision_reported_by_root": "44fcb1955f44547f50d724fe8f7d718215fed446",
+  "tree": "7620fe83f486d665d9d09d4f09f0e93636b862e4",
+  "actual_frozen_base_tree_independently_reconstructed": "BASE-TREE-READBACK.json",
+  "landed_commit_to_tree_relation_provenance": "root content-verified landing report; no Git/SCM or network query by this worker",
+  "no_source_rewrite_or_rebase": true,
+  "url": "https://github.com/rrnewton/reverie/pull/585"
+}

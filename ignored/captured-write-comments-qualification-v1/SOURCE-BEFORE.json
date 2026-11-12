@@ -1,0 +1,18 @@
+{
+  "head": "7b28de2b20b6e7fdcdab92e552d4166908b50cad",
+  "tree": "33fced78b132b845698bdbc79ff3b6ebac72ca6e",
+  "branch": "codex/kvm-setitimer-20260918",
+  "index_sha256": "98b691b99a586400ac793b7885a873ffe82c700e8086ddfcea18c9e23bd40173",
+  "tracked_diff_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "manifest": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/captured-write-comments-qualification-v1/qualification/source-manifest.json",
+    "bytes": 676828,
+    "sha256": "33cc0743f20ecf3bf742699970bf18e4e3705aeecdad890c31918dc174015870"
+  },
+  "entries": 2620,
+  "runner_origins": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/captured-write-comments-qualification-v1/qualification/RUNNER_ORIGINS.json",
+    "bytes": 9301,
+    "sha256": "ea0ecc8a089b5b9f105d5dd9cd4936e04c8830680a0e79efed85aef85177d612"
+  }
+}

@@ -1,0 +1,36 @@
+--- publisher-qualification-v2/prepare.py
++++ qualification-proposal/prepare.py
+@@ -52,7 +52,7 @@
+             else:absent.append(str(p))
+     for p in [REPO/'Cargo.lock',HERE/'RUNNER_ORIGINS.json',HERE/'SETUP.json',HERE/'SELECTORS.json',*sorted(HERE.glob('*.py')),*sorted((HERE/'observer').glob('*.py')),HERE/'observer/source-inputs.json']:
+         inputs.append(file_record(p))
+-    executables=[TOOL/'cargo',TOOL/'rustc',TOOL/'rustdoc',TOOL/'cargo-clippy',TOOL/'clippy-driver',TOOL/'rustfmt',Path('/usr/bin/python3').resolve(),Path('/usr/bin/git'),Path('/usr/bin/gcc').resolve(),Path('/usr/bin/ld').resolve()]
++    executables=[TOOL/'cargo',TOOL/'rustc',TOOL/'rustdoc',TOOL/'cargo-clippy',TOOL/'clippy-driver',TOOL/'rustfmt',Path('/usr/bin/python3').resolve(),Path('/usr/bin/git'),Path('/usr/bin/gcc').resolve(),Path('/usr/bin/ld').resolve(),Path('/usr/bin/timeout')]
+     for i,p in enumerate(executables):
+         record=file_record(p);inputs.append(record);extra,symlinks=loader('tool-'+str(i),record,env);inputs+=extra;links+=symlinks
+     cargo=str(TOOL/'cargo')
+@@ -68,9 +68,12 @@
+         argv=[cargo,'clippy','--offline','--locked','-p','reverie-kvm','--lib','--test','static_elf','--message-format=json','--','-D','warnings']
+     elif kind=='format':
+         paths=['reverie-kvm/src/elf.rs', 'reverie-kvm/src/executor.rs', 'reverie-kvm/src/process_signal_publication.rs']
+-        actual=subprocess.check_output(['/usr/bin/git','-C',str(OWNER),'diff','HEAD','--name-only'],timeout=30).decode().splitlines()
+-        actual+=subprocess.check_output(['/usr/bin/git','-C',str(OWNER),'ls-files','--others','--exclude-standard','--','reverie/src','reverie-kvm/src','reverie-kvm/tests'],timeout=30).decode().splitlines()
+-        require(sorted(p for p in actual if p.endswith('.rs'))==paths,'changed Rust path set differs')
++        require(REPO != OWNER, 'corrected source must be an owned snapshot')
++        expected=json_read(HERE/'SETUP.json')['source_files']
++        require([row['relative']for row in expected]==paths, 'reviewed Rust path set differs')
++        for row in expected:
++            check_file(row['file']);inputs.append(row['file'])
++            require(read(REPO/row['relative'])==read(row['file']['path']), 'snapshot differs from reviewed after source')
+         argv=[str(TOOL/'rustfmt'),'--check','--edition','2024','--config','skip_children=true',*paths]
+     elif kind=='metadata':argv=[cargo,'metadata','--offline','--locked','--format-version','1']
+     elif kind=='compile':
+@@ -105,7 +108,7 @@
+               lease=dict(path=str(lease),owner_slot=str(OWNER),identity=[l.st_dev,l.st_ino,l.st_uid],state_directory=str(OWNER/'ignored/timer-integration-20260918/lease-state')),
+               output=str(HERE/'observer'/name),control=str(HERE/'controls'/name),
+               limits=dict(aggregate_cpu_usec=600000000 if large else 30000000,wall_seconds=900 if large else 60,lethal_stderr_bytes=16777216,live_stdout_samples_bytes=67108864,phase_read_bytes=16777216,memory_bytes=17179869184,swap_bytes=0,free_floor_bytes=107374182400),
+-              scope='Inactive process publication prerequisite; new private unit controls and unchanged existing VM consumers. No scheduler activation or Hermit timer repair claim')
++              scope='Inactive publisher and descriptor-entry composition; unchanged unit and VM controls. No activation, FIFO or timer completion claim')
+     if(HERE/'dependency-inputs.json').exists():plan['dependencies']=file_record(HERE/'dependency-inputs.json')
+     write_new(Path(plan['path']),plan);print(plan['path'],hashlib.sha256(Path(plan['path']).read_bytes()).hexdigest())
+ if __name__=='__main__':main()

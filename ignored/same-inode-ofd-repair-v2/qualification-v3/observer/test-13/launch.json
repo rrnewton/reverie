@@ -1,0 +1,45 @@
+{
+  "binary": "/usr/bin/python3",
+  "binary_sha256": "9cfdf1a01d07dadb394dd2dc9fd8316254c36764076d23dc2c895c8401735576",
+  "arguments": [
+    "-B",
+    "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/same-inode-ofd-repair-v2/qualification-v3/observer/before_exec.py",
+    "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/same-inode-ofd-repair-v2/qualification-v3/observer/test-13/before-exec.json",
+    "ce79ffc9d82e8d41887ce7492f569aae967229e8099d54b5e7afcd648a528e2f"
+  ],
+  "payload": {
+    "binary": "/usr/bin/python3",
+    "binary_sha256": "9cfdf1a01d07dadb394dd2dc9fd8316254c36764076d23dc2c895c8401735576",
+    "arguments": [
+      "-B",
+      "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/same-inode-ofd-repair-v2/qualification-v3/phase.py",
+      "payload",
+      "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/same-inode-ofd-repair-v2/qualification-v3/test-13-plan.json",
+      "eeb04199497dba588f65840dd161b727b4abaaffd4053a28feadcedee87e8610"
+    ]
+  },
+  "before_exec_spec_sha256": "ce79ffc9d82e8d41887ce7492f569aae967229e8099d54b5e7afcd648a528e2f",
+  "cpu_allowance_usec": 30000000,
+  "wall_seconds": 60,
+  "log_bytes": 16777216,
+  "payload_memory_bytes": 17179869184,
+  "safehermit_log_root": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/same-inode-ofd-repair-v2/qualification-v3/observer/test-13/safehermit",
+  "wrapper_sha256": "dae61b1819d424ea9928143d728fba6897f45cb619c8164ad87030922130f760",
+  "observer_sources": {
+    "observer.py": "137c9b42c3f9e081db59954e0ef692ed861f488be7c2bb8a15ef595c271b2179",
+    "unit_reference.py": "e00b79d292060b7a467d6a99ed88082719682d205efbdc56ecbe5fb7256fe0d0",
+    "before_exec.py": "184d1b1dcdb8c8a75626d2c0fe403d1527e160f51e0cc98338f405bf8a0319bd",
+    "source-inputs.json": "af15f634235359032b1ea544207713c32318906d51447ff6de171ada09c8b5b7"
+  },
+  "cwd": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/same-inode-ofd-repair-v2/corrected-source-v3",
+  "epoch": 1789735749.3557155,
+  "monotonic_ns": 1894678113945151,
+  "pid": 785582,
+  "wrapper_identity": {
+    "pid": 785582,
+    "start_ticks": 189467811,
+    "parent_pid": 785573,
+    "state": "R",
+    "cgroup": "/user.slice/user-212630.slice/user@212630.service/3pai_sandbox.slice/run-p1210520-i1360322665.scope"
+  }
+}

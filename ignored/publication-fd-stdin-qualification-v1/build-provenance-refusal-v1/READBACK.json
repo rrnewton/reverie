@@ -1,0 +1,38 @@
+{
+  "report": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/publication-fd-stdin-qualification-v1/build-provenance-refusal-v1/REPORT.md",
+    "bytes": 1605,
+    "mode": 420,
+    "sha256": "8702bb79cf00dc6c490891b24d74487a447e732acb6389c06d28c34826fa976f"
+  },
+  "evidence": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/publication-fd-stdin-qualification-v1/build-provenance-refusal-v1/EVIDENCE.json",
+    "bytes": 11277,
+    "mode": 420,
+    "sha256": "7fe719b5eaf225fbfc5153f530df167cc524cc9ecaa2103cc4bee41e9bada3ad"
+  },
+  "inputs": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/publication-fd-stdin-qualification-v1/build-provenance-refusal-v1/INPUTS.json",
+    "bytes": 61202,
+    "mode": 420,
+    "sha256": "879c8de40cdd174d243df5c5bfc68b8eba09edbdb25b6bebfbc0e38033931a0e"
+  },
+  "release": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/publication-fd-stdin-qualification-v1/build-provenance-refusal-v1/LEASE-RELEASE.json",
+    "bytes": 1453,
+    "mode": 420,
+    "sha256": "3f38b0c6e26b7fdab50766142678b70c5691791d72dab989f199e784c7842524"
+  },
+  "proposed_caller": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/publication-fd-stdin-qualification-v1/build-provenance-refusal-v1/cold-target-proposal/prepare.py",
+    "bytes": 10293,
+    "mode": 420,
+    "sha256": "a9ef17489b45e8dd549b83f3a8aa94203c1656e5b25fe2d70c89393f6aff557d"
+  },
+  "proposed_delta": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/publication-fd-stdin-qualification-v1/build-provenance-refusal-v1/cold-target-proposal/prepare.patch",
+    "bytes": 2389,
+    "mode": 420,
+    "sha256": "e5b15ecbe8cd2a0ba38d9899f2901d7c7852be3d5593ba774cc0b6200ea7909e"
+  }
+}

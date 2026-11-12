@@ -1,0 +1,6 @@
+{
+  "owner_slot": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918",
+  "source_root": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/scalar-write-fd-qualification-v1/baseline-source",
+  "base": "1a28260f548267fcd8bd2da46f7a697573455166",
+  "purpose": "Proposed test assertions over unchanged production; extra snapshot-only mode19 selector calls the same run_modes oracle"
+}

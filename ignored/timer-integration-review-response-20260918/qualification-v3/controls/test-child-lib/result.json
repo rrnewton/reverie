@@ -1,0 +1,81 @@
+{
+  "plan_sha256": "9f9fae40a864f72260063f43791784b3160e0eeef39438e5ce81e0d5155cc3ab",
+  "accepted": true,
+  "observer_attempted": true,
+  "terminal_authenticated": true,
+  "raw_status": 0,
+  "transport": {
+    "argv": [
+      "/usr/bin/python3",
+      "-B",
+      "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/timer-integration-review-response-20260918/qualification-v3/observer/observer.py",
+      "--out",
+      "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/timer-integration-review-response-20260918/qualification-v3/observer/test-child-lib",
+      "--cpu-usec",
+      "30000000",
+      "--wall-seconds",
+      "60",
+      "--log-bytes",
+      "16777216",
+      "/usr/bin/python3",
+      "-B",
+      "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/timer-integration-review-response-20260918/qualification-v3/phase.py",
+      "payload",
+      "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/timer-integration-review-response-20260918/qualification-v3/test-child-lib-plan.json",
+      "9f9fae40a864f72260063f43791784b3160e0eeef39438e5ce81e0d5155cc3ab"
+    ],
+    "cwd": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918",
+    "wall_limit_seconds": 110,
+    "forced": false,
+    "returncode": 0,
+    "elapsed_seconds": 2.656997179845348,
+    "stdout": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/timer-integration-review-response-20260918/qualification-v3/controls/test-child-lib/observer.stdout",
+      "bytes": 160,
+      "mode": 420,
+      "sha256": "11361f964630c0dd332b6eb913d0ad35e55ea6c2b0040a747d4dadb29b423bee"
+    },
+    "stderr": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/timer-integration-review-response-20260918/qualification-v3/controls/test-child-lib/observer.stderr",
+      "bytes": 0,
+      "mode": 420,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    }
+  },
+  "observer_result": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/timer-integration-review-response-20260918/qualification-v3/observer/test-child-lib/result.json",
+    "bytes": 47922,
+    "mode": 384,
+    "sha256": "e03a784356e90ef1818e2d896722506bd19734e422bbb84000e2e4c3861b8c4a"
+  },
+  "readback": {
+    "executed": 9,
+    "summary": {
+      "type": "suite",
+      "event": "ok",
+      "passed": 9,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filtered_out": 466,
+      "exec_time": 0.008534686
+    },
+    "names": [
+      "executor::tests::child_exit_signal_disposition_generation_discards_old_info_without_replacing_new_info",
+      "executor::tests::child_exit_signal_distinguishes_explicit_ignore_blocking_and_tool_eligibility",
+      "executor::tests::child_exit_signal_distinguishes_failure_before_and_after_pending_publication",
+      "executor::tests::child_exit_signal_invalid_metadata_and_unsupported_classes_do_not_publish",
+      "executor::tests::child_exit_signal_lifecycle_keeps_pending_process_state_private_across_fork_and_exec",
+      "executor::tests::child_exit_signal_preserves_process_ownership_and_first_complete_siginfo",
+      "executor::tests::child_exit_signal_signalfd_preserves_child_fields_and_complete_output_buffer",
+      "executor::tests::child_exit_signal_tool_return_keeps_process_domain_and_validates_replacements",
+      "runtime::child_exit_tests::child_exit_signal_into_guest_forwards_complete_outcomes_without_guest_effects"
+    ]
+  },
+  "payload_exit": {
+    "returncode": 0,
+    "reaped": true,
+    "elapsed_seconds": 0.01077940408140421
+  },
+  "inputs_unchanged": true
+}

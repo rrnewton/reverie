@@ -1,0 +1,24 @@
+{
+  "started": [
+    "runtime::tests::erestartsys_requests_a_restart_and_every_other_result_is_returned"
+  ],
+  "ended": [
+    {
+      "type": "test",
+      "name": "runtime::tests::erestartsys_requests_a_restart_and_every_other_result_is_returned",
+      "event": "ok"
+    }
+  ],
+  "suites": [
+    {
+      "type": "suite",
+      "event": "ok",
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filtered_out": 485,
+      "exec_time": 0.000307722
+    }
+  ]
+}

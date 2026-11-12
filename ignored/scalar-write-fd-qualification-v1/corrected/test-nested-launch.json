@@ -1,0 +1,11 @@
+{
+  "argv": [
+    "/usr/bin/python3",
+    "-B",
+    "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/scalar-write-fd-qualification-v1/corrected/phase.py",
+    "launch",
+    "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/scalar-write-fd-qualification-v1/corrected/test-nested-plan.json",
+    "ca2c5033afb9f6a4c7fc5762182e1533bac146982c5bea8b9cbdd9907211b68a"
+  ],
+  "returncode": 0
+}

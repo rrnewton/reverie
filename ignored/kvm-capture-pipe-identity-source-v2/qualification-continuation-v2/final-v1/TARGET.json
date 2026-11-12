@@ -1,0 +1,57 @@
+{
+  "scope": "Completed finite capture pipe identity source qualification, not independent approval",
+  "source": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/kvm-capture-pipe-identity-source-v2/TARGET.json",
+    "bytes": 3153,
+    "mode": 420,
+    "sha256": "e9c5ad9dbc92c79da82be5961ba4b645204d9f016111ec9ed6bc53b9df52d503"
+  },
+  "full_patch": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/kvm-capture-pipe-identity-source-v2/SOURCE.patch",
+    "bytes": 57211,
+    "mode": 420,
+    "sha256": "3e8d5d764f28aa072a42cf1f2b876cc22f085c2929ef229459bad4b632481959"
+  },
+  "delta": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/kvm-capture-pipe-identity-source-v2/V1-TO-V2.patch",
+    "bytes": 880,
+    "mode": 420,
+    "sha256": "fafafa18a87e27382786facb28ee51f51286b7d120283bf81bb97ef309fd0dca"
+  },
+  "report": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/kvm-capture-pipe-identity-source-v2/qualification-continuation-v2/final-v1/REPORT.md",
+    "bytes": 3418,
+    "mode": 420,
+    "sha256": "f8d86e8b5567625de09663f893a549c334d1e95d3657818f838d16a4d202e614"
+  },
+  "results": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/kvm-capture-pipe-identity-source-v2/qualification-continuation-v2/final-v1/RESULTS.json",
+    "bytes": 176048,
+    "mode": 420,
+    "sha256": "2ed3415eb33d123e635e0108511819ac43672f14be53a16f0146176453efdddc"
+  },
+  "inputs": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/kvm-capture-pipe-identity-source-v2/qualification-continuation-v2/final-v1/INPUTS.json",
+    "bytes": 9662400,
+    "mode": 420,
+    "sha256": "0c65b5d70bc9c7ddf2da7bbe66c62b01a7bfdd3cfb8d5f047959fb95c1422761"
+  },
+  "lease_release": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/kvm-capture-pipe-identity-source-v2/qualification-continuation-v2/final-v1/LEASE-RELEASE.json",
+    "bytes": 3800,
+    "mode": 420,
+    "sha256": "53abc965396b7e8a8f198fe9c18887d148b20d6cc3434a25c6b4b67699e883e6"
+  },
+  "artifact_readback": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/kvm-capture-pipe-identity-source-v2/qualification-continuation-v2/final-v1/ARTIFACT-READBACK.json",
+    "bytes": 1232,
+    "mode": 420,
+    "sha256": "ed9a7049d6341c8439ad617c361d5819538188d6b26f2fe659982a6ca4030021"
+  },
+  "child_controls": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/kvm-capture-pipe-identity-source-v2/qualification-continuation-v2/final-v1/CHILD-CONTROLS.json",
+    "bytes": 934,
+    "mode": 420,
+    "sha256": "02e5b3199b31321fcb4262e91b41cd98ae5a7e3c540c744fdc79dc96b5be2035"
+  }
+}

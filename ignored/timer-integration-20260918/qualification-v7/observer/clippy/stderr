@@ -1,0 +1,2 @@
+    Checking reverie-kvm v0.2.0 (/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/reverie-kvm)
+error: could not compile `reverie-kvm` (test "static_elf") due to 1 previous error

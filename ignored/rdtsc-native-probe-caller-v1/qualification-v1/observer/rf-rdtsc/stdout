@@ -1,0 +1,3 @@
+mode=rf instruction=rdtsc prefix=0 signal=5 code=2 trap=1 rip_delta=2 fault_delta=2 rf_stage=1
+registers rax=000000003add3072 rdx=00000000000a7dfd rcx=fedcba9876543210 flags=0000000000000fd7 rsp_before=00007fffee37c2e8 rsp_after=0000000000000000
+PASS: native architectural properties

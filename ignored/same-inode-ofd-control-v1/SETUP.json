@@ -1,0 +1,12 @@
+{
+  "owner_slot": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918",
+  "source_root": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/same-inode-ofd-control-v1/baseline-source",
+  "base": "000c15a1161ea2d58749431b5ddaaa97f7aa37d5",
+  "purpose": "One additive unit control over unchanged production; no live source writes",
+  "test_source": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/same-inode-ofd-control-v1/after/reverie-kvm/src/executor.rs",
+    "bytes": 1436811,
+    "mode": 420,
+    "sha256": "da17a89d603c53b0d95b63aaec2aa3de3f5e8406b474ee16437a8db4a7b20f70"
+  }
+}

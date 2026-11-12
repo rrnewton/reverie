@@ -1,0 +1,26 @@
+[
+  {
+    "patch": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/timer-observation-claude-response-v3/frozen-v3/SOURCE.patch",
+      "bytes": 199468,
+      "sha256": "e418322f4861a5148d3d52285d1b41028506113d17bd7f2e627e338a3a5029a4"
+    },
+    "before": "before",
+    "check_returncode": 0,
+    "apply_returncode": 0,
+    "after_paths_verified": 17,
+    "destination": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/timer-observation-claude-response-v3/reconstruct-v3-source"
+  },
+  {
+    "patch": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/timer-observation-claude-response-v3/frozen-v3/DELTA.patch",
+      "bytes": 56331,
+      "sha256": "4d21c7165dccf889f160216d35432c0e48793d12fb69e6e8ae3b98a13be29e18"
+    },
+    "before": "v2",
+    "check_returncode": 0,
+    "apply_returncode": 0,
+    "after_paths_verified": 17,
+    "destination": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/timer-observation-claude-response-v3/reconstruct-v3-delta"
+  }
+]

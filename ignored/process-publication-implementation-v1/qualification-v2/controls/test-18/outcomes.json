@@ -1,0 +1,24 @@
+{
+  "started": [
+    "executor::tests::child_exit_signal_distinguishes_explicit_ignore_blocking_and_tool_eligibility"
+  ],
+  "ended": [
+    {
+      "type": "test",
+      "name": "executor::tests::child_exit_signal_distinguishes_explicit_ignore_blocking_and_tool_eligibility",
+      "event": "ok"
+    }
+  ],
+  "suites": [
+    {
+      "type": "suite",
+      "event": "ok",
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filtered_out": 494,
+      "exec_time": 0.003587452
+    }
+  ]
+}

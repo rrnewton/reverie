@@ -1,0 +1,84 @@
+{
+  "plan_sha256": "34cbe88566ce753c12049e725dfbca00c493a7e6134f7d646c99d396ca7b48e6",
+  "accepted": true,
+  "observer_attempted": true,
+  "terminal_authenticated": true,
+  "raw_status": 0,
+  "transport": {
+    "argv": [
+      "/usr/bin/python3",
+      "-B",
+      "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/timer-integration-20260918/qualification-v6/observer/observer.py",
+      "--out",
+      "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/timer-integration-20260918/qualification-v6/observer/test-alarm-lib",
+      "--cpu-usec",
+      "30000000",
+      "--wall-seconds",
+      "60",
+      "--log-bytes",
+      "16777216",
+      "/usr/bin/python3",
+      "-B",
+      "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/timer-integration-20260918/qualification-v6/phase.py",
+      "payload",
+      "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/timer-integration-20260918/qualification-v6/test-alarm-lib-plan.json",
+      "34cbe88566ce753c12049e725dfbca00c493a7e6134f7d646c99d396ca7b48e6"
+    ],
+    "cwd": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918",
+    "wall_limit_seconds": 110,
+    "forced": false,
+    "returncode": 0,
+    "elapsed_seconds": 2.757581419078633,
+    "stdout": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/timer-integration-20260918/qualification-v6/controls/test-alarm-lib/observer.stdout",
+      "bytes": 160,
+      "mode": 420,
+      "sha256": "5c40a49271291ca8741aacf90d1a85eb80a96461f957bb5dc0d8e5fcecadd83b"
+    },
+    "stderr": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/timer-integration-20260918/qualification-v6/controls/test-alarm-lib/observer.stderr",
+      "bytes": 0,
+      "mode": 420,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    }
+  },
+  "observer_result": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/timer-integration-20260918/qualification-v6/observer/test-alarm-lib/result.json",
+    "bytes": 46479,
+    "mode": 384,
+    "sha256": "acb292c21d81664a24f8b1acc0ce563805a3d3c77e0c685e4eda6994369d4f19"
+  },
+  "readback": {
+    "executed": 12,
+    "summary": {
+      "type": "suite",
+      "event": "ok",
+      "passed": 12,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filtered_out": 461,
+      "exec_time": 0.010336913
+    },
+    "names": [
+      "executor::tests::process_alarm_signal_blocked_ignored_generation_differs_from_later_sigign",
+      "executor::tests::process_alarm_signal_coalesces_with_first_shared_info_without_changing_private_defers",
+      "executor::tests::process_alarm_signal_complete_state_for_each_mask_and_disposition",
+      "executor::tests::process_alarm_signal_fork_and_exec_keep_process_pending_lifetime",
+      "executor::tests::process_alarm_signal_readiness_failure_distinguishes_pre_and_post_publication",
+      "executor::tests::process_alarm_signal_receiver_lifetime_and_process_actions_refuse_before_mutation",
+      "executor::tests::process_alarm_signal_rejects_all_noncanonical_bytes_without_state_changes",
+      "executor::tests::process_alarm_signal_tool_reblocking_keeps_actual_pending_domain_and_first_info",
+      "executor::tests::process_alarm_signal_tool_sigchld_replacement_preserves_thread_fault_and_process_domains",
+      "runtime::process_alarm_tests::process_alarm_signal_guest_executor_default_refuses_explicitly",
+      "runtime::process_alarm_tests::process_alarm_signal_into_guest_forwards_complete_outcomes_without_guest_effects",
+      "runtime::process_alarm_tests::process_alarm_signal_transport_contexts_match_resumable_boundaries"
+    ]
+  },
+  "payload_exit": {
+    "returncode": 0,
+    "reaped": true,
+    "elapsed_seconds": 0.012779887998476624
+  },
+  "inputs_unchanged": true
+}

@@ -1,0 +1,68 @@
+
+Elf file type is DYN (Shared object file)
+Entry point 0x1a3aaa
+There are 11 program headers, starting at offset 64
+
+Program Headers:
+  Type           Offset   VirtAddr           PhysAddr           FileSiz  MemSiz   Flg Align
+  PHDR           0x000040 0x0000000000000040 0x0000000000000040 0x000268 0x000268 R E 0x8
+  INTERP         0x0002a8 0x00000000000002a8 0x00000000000002a8 0x00001c 0x00001c R   0x1
+      [Requesting program interpreter: /lib64/ld-linux-x86-64.so.2]
+  LOAD           0x000000 0x0000000000000000 0x0000000000000000 0x10ab01c 0x10ab01c R E 0x200000
+  LOAD           0x10ab8d0 0x00000000012ab8d0 0x00000000012ab8d0 0x10abe0 0x110260 RW  0x200000
+  DYNAMIC        0x11aab48 0x00000000013aab48 0x00000000013aab48 0x000240 0x000240 RW  0x8
+  NOTE           0x0002c4 0x00000000000002c4 0x00000000000002c4 0x000020 0x000020 R   0x4
+  NOTE           0x0002e8 0x00000000000002e8 0x00000000000002e8 0x0004c0 0x0004c0 R   0x8
+  TLS            0x10ab8d0 0x00000000012ab8d0 0x00000000012ab8d0 0x0000b8 0x000240 R   0x8
+  GNU_EH_FRAME   0xf2ac70 0x0000000000f2ac70 0x0000000000f2ac70 0x02b154 0x02b154 R   0x4
+  GNU_STACK      0x000000 0x0000000000000000 0x0000000000000000 0x000000 0x000000 RW  0x10
+  GNU_RELRO      0x10ab8d0 0x00000000012ab8d0 0x00000000012ab8d0 0x100730 0x100730 R   0x1
+
+ Section to Segment mapping:
+  Segment Sections...
+   00     
+   01     .interp 
+   02     .interp .note.ABI-tag .note.gnu.property .gnu.hash .dynsym .dynstr .gnu.version .gnu.version_r .rela.dyn .rela.plt .init .plt .text .fini .rodata .eh_frame_hdr .eh_frame .gcc_except_table 
+   03     .tdata .init_array .fini_array .data.rel.ro .dynamic .got .data .bss 
+   04     .dynamic 
+   05     .note.ABI-tag 
+   06     .note.gnu.property 
+   07     .tdata .tbss 
+   08     .eh_frame_hdr 
+   09     
+   10     .tdata .init_array .fini_array .data.rel.ro .dynamic .got 
+
+Dynamic section at offset 0x11aab48 contains 32 entries:
+  Tag        Type                         Name/Value
+ 0x0000000000000001 (NEEDED)             Shared library: [libgcc_s.so.1]
+ 0x0000000000000001 (NEEDED)             Shared library: [librt.so.1]
+ 0x0000000000000001 (NEEDED)             Shared library: [libpthread.so.0]
+ 0x0000000000000001 (NEEDED)             Shared library: [libm.so.6]
+ 0x0000000000000001 (NEEDED)             Shared library: [libdl.so.2]
+ 0x0000000000000001 (NEEDED)             Shared library: [libc.so.6]
+ 0x000000000000000c (INIT)               0x15ca98
+ 0x000000000000000d (FINI)               0xd2eaf8
+ 0x0000000000000019 (INIT_ARRAY)         0x12ab988
+ 0x000000000000001b (INIT_ARRAYSZ)       32 (bytes)
+ 0x000000000000001a (FINI_ARRAY)         0x12ab9a8
+ 0x000000000000001c (FINI_ARRAYSZ)       24 (bytes)
+ 0x000000006ffffef5 (GNU_HASH)           0x7a8
+ 0x0000000000000005 (STRTAB)             0x4058
+ 0x0000000000000006 (SYMTAB)             0x1280
+ 0x000000000000000a (STRSZ)              9031 (bytes)
+ 0x000000000000000b (SYMENT)             24 (bytes)
+ 0x0000000000000015 (DEBUG)              0x0
+ 0x0000000000000003 (PLTGOT)             0x13aad88
+ 0x0000000000000002 (PLTRELSZ)           3888 (bytes)
+ 0x0000000000000014 (PLTREL)             RELA
+ 0x0000000000000017 (JMPREL)             0x15bb68
+ 0x0000000000000007 (RELA)               0x6918
+ 0x0000000000000008 (RELASZ)             1397328 (bytes)
+ 0x0000000000000009 (RELAENT)            24 (bytes)
+ 0x0000000000000018 (BIND_NOW)           
+ 0x000000006ffffffb (FLAGS_1)            Flags: NOW PIE
+ 0x000000006ffffffe (VERNEED)            0x6778
+ 0x000000006fffffff (VERNEEDNUM)         6
+ 0x000000006ffffff0 (VERSYM)             0x63a0
+ 0x000000006ffffff9 (RELACOUNT)          58041
+ 0x0000000000000000 (NULL)               0x0

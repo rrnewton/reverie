@@ -1,0 +1,62 @@
+{
+  "base": "99d1e4827cce2404442d7c27ab447886a5839326",
+  "branch": "codex/kvm-setitimer-20260918",
+  "patch_sha256": "4e56817a6e754e31e69626c184ff2703dc3632d6c23618efb4e1cbc72734a90d",
+  "source_files": {
+    "reverie-kvm/src/child_exit_signal_tests.rs": {
+      "sha256": "fe2823c253a31b627187a632fdcebf17e8ae1628f662748e223b7d0c322fd22d",
+      "bytes": 21653
+    },
+    "reverie-kvm/src/executor.rs": {
+      "sha256": "4cf835a97ab15f62a723f29cb9e02033e4a7f6c119a8d330761a42564d16ce6c",
+      "bytes": 1405478
+    },
+    "reverie-kvm/src/process_alarm_runtime_tests.rs": {
+      "sha256": "5e14ae3366c6e9111ae79c50923203345e6fbda44fc3c5e6f6aca326206ed2eb",
+      "bytes": 7495
+    },
+    "reverie-kvm/src/process_alarm_signal_tests.rs": {
+      "sha256": "961f4c4f37df4d49d9086f022334c63cd85b9db1686d2e9426e2eb21495eb30f",
+      "bytes": 22259
+    },
+    "reverie-kvm/src/runtime.rs": {
+      "sha256": "b01292a0d7b08dfcf3d57ae41ee038c9614a9d9e26b71f9b78aa8e67499dab27",
+      "bytes": 161825
+    },
+    "reverie-kvm/src/signal.rs": {
+      "sha256": "0e7f4289e587c5a039669d55c4a442845e53d1e4ea79c03c6ce270214765bf4c",
+      "bytes": 59890
+    },
+    "reverie-kvm/tests/fixtures/process_alarm_signal.c": {
+      "sha256": "721cbd75d5fb736f93b621fdc01ad3b22a2e0f91b7fb3e5f18392d572f8aeec4",
+      "bytes": 3198
+    },
+    "reverie-kvm/tests/static_elf.rs": {
+      "sha256": "63b2a97a16cb9fb8e14bdb57ff6b8c88366c4e0e5a2f112bd29069a0d30e46ab",
+      "bytes": 478483
+    },
+    "reverie-kvm/tests/support/process_alarm_signals.rs": {
+      "sha256": "03a80cfc5eba6a1c6d2989b41ea27d854be13ae62a523e0724ac30a300bba735",
+      "bytes": 9096
+    },
+    "reverie/src/guest.rs": {
+      "sha256": "0dc52517e3a45605b4ff28c12051409c938a7135ebdd1e2c22aac5e2fb8c4c34",
+      "bytes": 21683
+    },
+    "reverie/src/signal.rs": {
+      "sha256": "538080c582f8b57849ab462a8d3c3764c4b04168a831b937659b0575bf838634",
+      "bytes": 9390
+    }
+  },
+  "executed": [
+    "rustfmt --edition 2024 --config skip_children=true on the changed Rust files",
+    "git diff --cached --check"
+  ],
+  "not_executed": [
+    "cargo build",
+    "cargo test",
+    "C fixture compilation",
+    "initialized VM fixture",
+    "independent review"
+  ]
+}

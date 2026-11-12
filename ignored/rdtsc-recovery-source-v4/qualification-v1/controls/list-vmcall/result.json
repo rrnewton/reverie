@@ -1,0 +1,72 @@
+{
+  "plan_sha256": "fd93d83671572a2c2c30d8b473811f58a827f030c00f94fe20328fdb71496500",
+  "accepted": true,
+  "observer_attempted": true,
+  "terminal_authenticated": true,
+  "raw_status": 0,
+  "transport": {
+    "argv": [
+      "/usr/bin/python3",
+      "-B",
+      "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v4/qualification-v1/observer/observer.py",
+      "--out",
+      "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v4/qualification-v1/observer/list-vmcall",
+      "--cpu-usec",
+      "30000000",
+      "--wall-seconds",
+      "60",
+      "--log-bytes",
+      "16777216",
+      "/usr/bin/python3",
+      "-B",
+      "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v4/qualification-v1/phase.py",
+      "payload",
+      "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v4/qualification-v1/list-vmcall-plan.json",
+      "fd93d83671572a2c2c30d8b473811f58a827f030c00f94fe20328fdb71496500"
+    ],
+    "cwd": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v4/source",
+    "wall_limit_seconds": 110,
+    "forced": false,
+    "returncode": 0,
+    "elapsed_seconds": 3.0091954842209816,
+    "stdout": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v4/qualification-v1/controls/list-vmcall/observer.stdout",
+      "bytes": 160,
+      "mode": 420,
+      "sha256": "b7e02eb409282103aad8f90fb1283b4e79e53a130589a70c121b843cb66b4d0e"
+    },
+    "stderr": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v4/qualification-v1/controls/list-vmcall/observer.stderr",
+      "bytes": 0,
+      "mode": 420,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    }
+  },
+  "observer_result": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v4/qualification-v1/observer/list-vmcall/result.json",
+    "bytes": 45638,
+    "mode": 384,
+    "sha256": "599f75feaf46358f77db70e2a0c36d80185abf13aacd37df663700e18981eff5"
+  },
+  "readback": {
+    "names": [
+      "default_tool_handler_tail_injects_through_executor",
+      "deterministic_cpuid_policy_is_visible_inside_vm",
+      "guest_program_routes_required_syscalls_via_vmcall",
+      "guest_write_syscall_is_intercepted_via_vmcall",
+      "guest_write_syscall_runs_shared_reverie_tool",
+      "identifies_unavailable_kvm_errors"
+    ],
+    "count": 6,
+    "selected": [
+      "default_tool_handler_tail_injects_through_executor",
+      "guest_write_syscall_runs_shared_reverie_tool"
+    ]
+  },
+  "payload_exit": {
+    "returncode": 0,
+    "reaped": true,
+    "elapsed_seconds": 0.0018055120017379522
+  },
+  "inputs_unchanged": true
+}

@@ -1,0 +1,815 @@
+diff --git a/reverie-kvm/src/executor.rs b/reverie-kvm/src/executor.rs
+index 197d7d38..a6cb4517 100644
+--- a/reverie-kvm/src/executor.rs
++++ b/reverie-kvm/src/executor.rs
+@@ -3446,6 +3446,33 @@ impl ElfExecutor {
+         self.parked_signals.as_ref().map(|state| *state.context)
+     }
+ 
++    pub(crate) fn captured_write_site(
++        &self,
++        site: reverie::CallbackSignalSite,
++        fd: libc::c_int,
++    ) -> Option<reverie::CallbackSignalSite> {
++        if self.output.is_none() || !self.signal_site_is_current(site) {
++            return None;
++        }
++        // execute() installs this authoritative table before dispatch. A
++        // sibling that has since exited may have changed it while this
++        // executor's local snapshot still names an older output alias.
++        let table = self.file_table.lock().ok()?;
++        let standard = (fd == libc::STDOUT_FILENO || fd == libc::STDERR_FILENO)
++            && !table.closed_standard_fds.contains(&fd)
++            && !table.files.contains_key(&fd);
++        if !standard && !table.files.contains_key(&fd) {
++            return None;
++        }
++        output_alias_from_sets(
++            fd,
++            &table.stdout_alias_fds,
++            &table.stderr_alias_fds,
++            standard,
++        )
++        .map(|_| site)
++    }
++
+     fn signal_site_is_current(&self, site: reverie::CallbackSignalSite) -> bool {
+         site.callback_nonce == self.signal_callback_nonce
+             && site.boundary_nonce == site.callback_nonce
+@@ -6541,13 +6568,23 @@ enum OutputAlias {
+ }
+ 
+ fn output_alias(state: &LoadedStaticElf, fd: libc::c_int) -> Option<OutputAlias> {
+-    if state.stdout_alias_fds.contains(&fd)
+-        || (fd == libc::STDOUT_FILENO && is_open_standard(state, fd))
+-    {
++    output_alias_from_sets(
++        fd,
++        &state.stdout_alias_fds,
++        &state.stderr_alias_fds,
++        is_open_standard(state, fd),
++    )
++}
++
++fn output_alias_from_sets(
++    fd: libc::c_int,
++    stdout: &std::collections::BTreeSet<i32>,
++    stderr: &std::collections::BTreeSet<i32>,
++    standard: bool,
++) -> Option<OutputAlias> {
++    if stdout.contains(&fd) || (fd == libc::STDOUT_FILENO && standard) {
+         Some(OutputAlias::Stdout)
+-    } else if state.stderr_alias_fds.contains(&fd)
+-        || (fd == libc::STDERR_FILENO && is_open_standard(state, fd))
+-    {
++    } else if stderr.contains(&fd) || (fd == libc::STDERR_FILENO && standard) {
+         Some(OutputAlias::Stderr)
+     } else {
+         None
+@@ -19432,6 +19469,61 @@ mod tests {
+         }
+     }
+ 
++    #[test]
++    fn captured_write_site_uses_current_table_and_full_callback_identity() {
++        let root = TestDir::new();
++        let memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
++        let mut executor = ElfExecutor::new(test_state(&root.0), true);
++        executor.enable_signal_dequeues();
++        let site = executor.begin_signal_callback().unwrap();
++        for fd in [1, 2] {
++            assert_eq!(executor.captured_write_site(site, fd), Some(site));
++        }
++        for fd in [-1, 0, 1234] {
++            assert_eq!(executor.captured_write_site(site, fd), None);
++        }
++        let mut foreign = [site; 6];
++        foreign[0].process.tgid = reverie::Pid::from_raw(site.process.tgid.as_raw() + 1);
++        foreign[1].process.generation += 1;
++        foreign[2].tid = reverie::Pid::from_raw(site.tid.as_raw() + 1);
++        foreign[3].task_generation += 1;
++        foreign[4].callback_nonce += 1;
++        foreign[5].boundary_nonce += 1;
++        for wrong in foreign {
++            assert_eq!(executor.captured_write_site(wrong, 1), None);
++        }
++        assert_eq!(executor.signal_callback_nonce, site.callback_nonce);
++        assert_eq!(executor.take_output(), (Vec::new(), Vec::new()));
++        assert!(!executor.has_shared_pending_signal());
++        let fresh = executor.begin_signal_callback().unwrap();
++        assert_eq!(executor.captured_write_site(site, 1), None);
++        assert_eq!(executor.captured_write_site(fresh, 1), Some(fresh));
++
++        // A real executor sibling changes the authoritative table, then exits.
++        // The leader's cached snapshot still identifies stdout at fd 1.
++        let mut child = executor.thread_child(executor.state.tid + 1).unwrap();
++        assert_eq!(
++            child.execute(
++                &SyscallRequest::new(libc::SYS_close as u64, [1, 0, 0, 0, 0, 0]),
++                &memory
++            ),
++            0
++        );
++        child.cancel_current_thread();
++        drop(child);
++        assert!(executor.sole_signal_receiver());
++        assert!(output_alias(&executor.state, 1).is_some());
++        assert_eq!(executor.captured_write_site(fresh, 1), None);
++        assert_eq!(executor.captured_write_site(fresh, 2), Some(fresh));
++        assert_eq!(executor.take_output(), (Vec::new(), Vec::new()));
++        assert!(!executor.has_shared_pending_signal());
++
++        let mut uncaptured = ElfExecutor::new(test_state(&root.0), false);
++        let uncaptured_site = uncaptured.begin_signal_callback().unwrap();
++        assert_eq!(uncaptured.captured_write_site(uncaptured_site, 1), None);
++        assert_eq!(uncaptured.captured_write_site(uncaptured_site, 2), None);
++    }
++
+     #[test]
+     fn standard_descriptor_vectored_io_preserves_owned_and_captured_routing() {
+         if run_standard_descriptor_test_child(
+diff --git a/reverie-kvm/src/parked_signal_runtime.rs b/reverie-kvm/src/parked_signal_runtime.rs
+index 1a10e045..ca67543d 100644
+--- a/reverie-kvm/src/parked_signal_runtime.rs
++++ b/reverie-kvm/src/parked_signal_runtime.rs
+@@ -283,6 +283,7 @@ where
+             last_result: raw,
+             process_completed: &mut process_completed,
+             callback_site: None,
++            original_syscall: None,
+             signal_guard: SignalGuard::Ordinary,
+         };
+         let mut guest = KvmGuest::new(
+@@ -443,6 +444,7 @@ mod signal_cleanup_tests {
+                         last_result: None,
+                         process_completed: &mut completed,
+                         callback_site: None,
++                        original_syscall: None,
+                         signal_guard: SignalGuard::Ordinary,
+                     };
+                     let mut guest = KvmGuest::new(
+diff --git a/reverie-kvm/src/runtime.rs b/reverie-kvm/src/runtime.rs
+index 99b7e039..41769d10 100644
+--- a/reverie-kvm/src/runtime.rs
++++ b/reverie-kvm/src/runtime.rs
+@@ -296,6 +296,12 @@ trait GuestSyscallExecutor<T: Tool>: Send + Sync {
+     fn parked_signal_site(&self) -> Option<reverie::CallbackSignalSite> {
+         None
+     }
++    fn captured_write_signal_site(
++        &self,
++        _call: reverie::syscalls::Write,
++    ) -> Option<reverie::CallbackSignalSite> {
++        None
++    }
+     fn set_signal_guard(&mut self, _guard: SignalGuard) -> SignalGuard {
+         SignalGuard::Ordinary
+     }
+@@ -535,6 +541,7 @@ struct StaticElfSyscallExecutor<'a> {
+     last_result: Option<i64>,
+     process_completed: &'a mut bool,
+     callback_site: Option<reverie::CallbackSignalSite>,
++    original_syscall: Option<SyscallRequest>,
+     signal_guard: SignalGuard,
+ }
+ 
+@@ -682,6 +689,23 @@ where
+     fn parked_signal_site(&self) -> Option<reverie::CallbackSignalSite> {
+         self.current_parked_site()
+     }
++    fn captured_write_signal_site(
++        &self,
++        call: reverie::syscalls::Write,
++    ) -> Option<reverie::CallbackSignalSite> {
++        let request = SyscallRequest::from_syscall(call);
++        if self.signal_guard != SignalGuard::Ordinary
++            || self.last_result.is_some()
++            || self.original_syscall != Some(request)
++        {
++            return None;
++        }
++        let site = self.current_parked_site()?;
++        // Match scalar write's checked descriptor conversion, not the typed
++        // accessor's truncation of a malformed raw ABI value.
++        let fd = i32::try_from(request.args()[0]).ok()?;
++        self.executor.captured_write_site(site, fd)
++    }
+     fn set_signal_guard(&mut self, guard: SignalGuard) -> SignalGuard {
+         std::mem::replace(&mut self.signal_guard, guard)
+     }
+@@ -1110,6 +1134,19 @@ impl<T: Tool> Guest<T> for KvmGuest<'_, T> {
+             self.executor.parked_signal_site()
+         }
+     }
++    fn captured_write_signal_site(
++        &self,
++        call: reverie::syscalls::Write,
++    ) -> Option<reverie::CallbackSignalSite> {
++        if self.notifying_dequeue
++            || self.observation_lease.is_some()
++            || self.stack_checked_out.load(Ordering::Acquire)
++        {
++            None
++        } else {
++            self.executor.captured_write_signal_site(call)
++        }
++    }
+     fn signal_observation_lease(&self) -> Option<reverie::ParkedObservationLease> {
+         self.observation_lease
+     }
+@@ -1629,6 +1666,7 @@ where
+                 memory: memory.clone(),
+                 process_context: ProcessExecutionContext::Lifecycle,
+                 callback_site: None,
++                original_syscall: None,
+                 signal_guard: SignalGuard::Ordinary,
+                 last_result: None,
+                 process_completed: &mut _process_completed,
+@@ -1766,6 +1804,7 @@ where
+             memory: memory.clone(),
+             process_context: ProcessExecutionContext::InitialExec(request),
+             callback_site: None,
++            original_syscall: None,
+             signal_guard: SignalGuard::Ordinary,
+             last_result: None,
+             process_completed: &mut _process_completed,
+@@ -2732,6 +2771,7 @@ impl KvmBackend {
+                 memory: memory.clone(),
+                 process_context,
+                 callback_site: None,
++                original_syscall: None,
+                 signal_guard: SignalGuard::Ordinary,
+                 last_result: None,
+                 process_completed: &mut process_completed,
+@@ -2889,6 +2929,7 @@ impl KvmBackend {
+                     memory: memory.clone(),
+                     process_context: ProcessExecutionContext::Lifecycle,
+                     callback_site: None,
++                    original_syscall: None,
+                     signal_guard: SignalGuard::Ordinary,
+                     last_result: None,
+                     process_completed: &mut _process_completed,
+@@ -3283,6 +3324,7 @@ impl KvmBackend {
+                                 memory: memory.clone(),
+                                 process_context: ProcessExecutionContext::SyscallBoundary(boundary),
+                                 callback_site: None,
++                                original_syscall: Some(request),
+                                 signal_guard: SignalGuard::Ordinary,
+                                 last_result: None,
+                                 process_completed: &mut handler_process_completed,
+@@ -4500,3 +4542,7 @@ mod failure_tests;
+ #[cfg(test)]
+ #[path = "process_alarm_runtime_tests.rs"]
+ mod process_alarm_tests;
++
++#[cfg(test)]
++#[path = "captured_write_runtime_tests.rs"]
++mod captured_write_tests;
+diff --git a/reverie-kvm/tests/static_elf.rs b/reverie-kvm/tests/static_elf.rs
+index 722a6e26..ebdcfd9e 100644
+--- a/reverie-kvm/tests/static_elf.rs
++++ b/reverie-kvm/tests/static_elf.rs
+@@ -13919,3 +13919,6 @@ mod process_alarm_signals;
+ 
+ #[path = "support/parked_signals.rs"]
+ mod parked_signals;
++
++#[path = "support/captured_write_signals.rs"]
++mod captured_write_signals;
+diff --git a/reverie/src/guest.rs b/reverie/src/guest.rs
+index 2cdfad13..bf3471ac 100644
+--- a/reverie/src/guest.rs
++++ b/reverie/src/guest.rs
+@@ -305,6 +305,27 @@ pub trait Guest<T: Tool>: Send + GlobalRPC<T::GlobalState> {
+         None
+     }
+ 
++    /// Authenticates the current original scalar write to backend-captured output.
++    ///
++    /// This read-only query returns the full callback identity only when `call`
++    /// is the exact unconsumed original syscall (including all raw arguments)
++    /// and its current descriptor aliases an enabled captured stdout/stderr
++    /// stream. It does not execute the write, publish or consume a signal,
++    /// validate the buffer, or promise a successful byte count.
++    ///
++    /// The caller must query again with the identical call immediately before
++    /// publication and require the same identity, without an intervening guest
++    /// operation or injection. KVM additionally requires its existing sole-live-
++    /// leader boundary, no prior injected execution, and no active observation
++    /// or checked-out stack. Ordinary files, pipes, sockets and uncaptured host
++    /// streams are not admitted. Unsupported backends return `None`.
++    fn captured_write_signal_site(
++        &self,
++        _call: crate::syscalls::Write,
++    ) -> Option<crate::CallbackSignalSite> {
++        None
++    }
++
+     /// Active nested observation, available to the Tool's real signal-hook RPCs.
+     fn signal_observation_lease(&self) -> Option<crate::ParkedObservationLease> {
+         None
+@@ -610,6 +631,12 @@ where
+     fn parked_signal_site(&self) -> Option<crate::CallbackSignalSite> {
+         self.inner.parked_signal_site()
+     }
++    fn captured_write_signal_site(
++        &self,
++        call: crate::syscalls::Write,
++    ) -> Option<crate::CallbackSignalSite> {
++        self.inner.captured_write_signal_site(call)
++    }
+     fn signal_observation_lease(&self) -> Option<crate::ParkedObservationLease> {
+         self.inner.signal_observation_lease()
+     }
+diff --git a/reverie-kvm/src/captured_write_runtime_tests.rs b/reverie-kvm/src/captured_write_runtime_tests.rs
+new file mode 100644
+index 00000000..f77a6d9c
+--- /dev/null
++++ b/reverie-kvm/src/captured_write_runtime_tests.rs
+@@ -0,0 +1,123 @@
++use std::sync::atomic::AtomicU64;
++
++use reverie::CallbackSignalSite;
++use reverie::SignalProcessId;
++use reverie::syscalls::Write;
++
++use super::*;
++
++#[derive(Default)]
++struct Lower;
++#[reverie::tool]
++impl Tool for Lower {
++    type GlobalState = ();
++    type ThreadState = ();
++}
++#[derive(Default)]
++struct Upper(Lower);
++impl AsMut<Lower> for Upper {
++    fn as_mut(&mut self) -> &mut Lower {
++        &mut self.0
++    }
++}
++#[reverie::tool]
++impl Tool for Upper {
++    type GlobalState = ();
++    type ThreadState = Box<()>;
++}
++
++struct Unsupported;
++impl GuestSyscallExecutor<Upper> for Unsupported {
++    fn read_clock(&self) -> Result<u64> {
++        panic!("capability query read a clock")
++    }
++    fn execute(&mut self, _: &SyscallRequest, _: &GuestMemory) -> i64 {
++        panic!("capability query executed a syscall")
++    }
++}
++struct Capable {
++    call: Write,
++    site: CallbackSignalSite,
++    queries: AtomicU64,
++}
++impl GuestSyscallExecutor<Upper> for Capable {
++    fn read_clock(&self) -> Result<u64> {
++        panic!("capability query read a clock")
++    }
++    fn execute(&mut self, _: &SyscallRequest, _: &GuestMemory) -> i64 {
++        panic!("capability query executed a syscall")
++    }
++    fn captured_write_signal_site(&self, call: Write) -> Option<CallbackSignalSite> {
++        assert_eq!(call, self.call);
++        self.queries.fetch_add(1, Ordering::SeqCst);
++        Some(self.site)
++    }
++}
++
++#[test]
++fn captured_write_query_default_adapter_and_nested_guards_have_no_effects() {
++    let call = Write::from(reverie::syscalls::SyscallArgs::new(2, 0x1234, 9, 4, 5, 6));
++    let site = CallbackSignalSite {
++        process: SignalProcessId {
++            tgid: Pid::from_raw(1),
++            generation: 7,
++        },
++        tid: Pid::from_raw(1),
++        task_generation: 8,
++        callback_nonce: 9,
++        boundary_nonce: 9,
++    };
++    assert_eq!(Unsupported.captured_write_signal_site(call), None);
++    let mut executor = Capable {
++        call,
++        site,
++        queries: AtomicU64::new(0),
++    };
++    let memory = GuestMemory::new(0, STACK_CAPACITY).unwrap();
++    let mut state = Box::new(());
++    let subscriptions = Subscription::none();
++    let signal = Arc::new(Mutex::new(None));
++    let starts = Arc::new(Mutex::new(Vec::new()));
++    let stack = Arc::new(AtomicBool::new(false));
++    {
++        let mut guest = KvmGuest::<Upper>::new(
++            Pid::from_raw(1),
++            Pid::from_raw(1),
++            Arc::new(Upper::default()),
++            memory.clone(),
++            &[],
++            unsafe { std::mem::zeroed() },
++            &mut state,
++            &mut executor,
++            &(),
++            None,
++            &(),
++            &subscriptions,
++            signal.clone(),
++            starts.clone(),
++            crate::bootstrap::TOOL_STACK_TOP,
++            stack.clone(),
++        );
++        assert_eq!(guest.captured_write_signal_site(call), Some(site));
++        assert_eq!(
++            <_ as Guest<Lower>>::captured_write_signal_site(&guest.into_guest(), call),
++            Some(site)
++        );
++        guest.notifying_dequeue = true;
++        assert_eq!(guest.captured_write_signal_site(call), None);
++        guest.notifying_dequeue = false;
++        guest.observation_lease = Some(reverie::ParkedObservationLease { nonce: 1 });
++        assert_eq!(guest.captured_write_signal_site(call), None);
++        guest.observation_lease = None;
++        stack.store(true, Ordering::Release);
++        assert_eq!(guest.captured_write_signal_site(call), None);
++        stack.store(false, Ordering::Release);
++        assert_eq!(guest.captured_write_signal_site(call), Some(site));
++    }
++    assert_eq!(executor.queries.load(Ordering::SeqCst), 3);
++    assert!(signal.lock().unwrap().is_none());
++    assert!(starts.lock().unwrap().is_empty());
++    let mut bytes = [0; 64];
++    memory.read(0, &mut bytes).unwrap();
++    assert_eq!(bytes, [0; 64]);
++}
+diff --git a/reverie-kvm/tests/fixtures/captured_write_signal.c b/reverie-kvm/tests/fixtures/captured_write_signal.c
+new file mode 100644
+index 00000000..9bb56cd9
+--- /dev/null
++++ b/reverie-kvm/tests/fixtures/captured_write_signal.c
+@@ -0,0 +1,78 @@
++#define _GNU_SOURCE
++#include <errno.h>
++#include <fcntl.h>
++#include <signal.h>
++#include <stdint.h>
++#include <stdlib.h>
++#include <string.h>
++#include <sys/mman.h>
++#include <sys/syscall.h>
++#include <unistd.h>
++
++static volatile sig_atomic_t handled, bad;
++static void handler(int signal, siginfo_t *info, void *context) {
++  (void)context;
++  if (signal != SIGALRM || info->si_code != SI_KERNEL) bad = 1;
++  handled++;
++  if (write(1, "!", 1) != 1) bad = 2;
++}
++
++int main(int argc, char **argv) {
++  if (argc != 2) return 1;
++  int mode = atoi(argv[1]), fd = 1;
++  struct sigaction action = {.sa_sigaction = handler, .sa_flags = SA_SIGINFO};
++  sigemptyset(&action.sa_mask);
++  if (sigaction(SIGALRM, &action, NULL)) return 2;
++  if (mode == 1) fd = 2;
++  if (mode == 2 || mode == 6 || mode == 7) fd = dup(1);
++  if (mode == 3) fd = dup(2);
++  if (fd < 0) return 3;
++  if (mode == 5) {
++    int file = open("backing", O_CREAT | O_RDWR | O_TRUNC, 0600);
++    if (file < 0 || dup2(file, 1) != 1) return 4;
++  }
++  if (mode == 6 || mode == 7 || mode == 8) {
++    if (close(fd)) return 5;
++    if (mode != 6) {
++      int file = open("backing", O_CREAT | O_RDWR | O_TRUNC, 0600);
++      if (file != fd) return 6;
++    }
++  }
++  sigset_t blocked;
++  sigemptyset(&blocked);
++  sigaddset(&blocked, SIGALRM);
++  if (mode == 15 && sigprocmask(SIG_BLOCK, &blocked, NULL)) return 7;
++  const char *data = "abc";
++  size_t length = 3;
++  if (mode == 13) data = (void *)(uintptr_t)-1;
++  if (mode == 14) {
++    length = 16 * 1024 * 1024 + 1;
++    char *large = mmap(NULL, length, PROT_READ | PROT_WRITE,
++                       MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
++    if (large == MAP_FAILED) return 8;
++    memset(large, 'a', length);
++    data = large;
++  }
++  unsigned long raw_fd = (unsigned long)fd;
++  if (mode == 17) raw_fd += 1UL << 32;
++  errno = 0;
++  long result = syscall(mode == 9 ? SYS_getpid : SYS_write,
++                        raw_fd, data, length, 0x63617077UL, mode, 0x9876UL);
++  if (mode == 6 || mode == 17) {
++    if (result != -1 || errno != EBADF) return 9;
++  } else if (mode == 13) {
++    if (result != -1 || errno != EFAULT) return 10;
++  } else if (mode == 14) {
++    if (result != 16 * 1024 * 1024) return 11;
++  } else if (mode == 9) {
++    if (result != getpid()) return 12;
++  } else if (result != 3) return 13;
++  int published = mode <= 3 || (mode >= 11 && mode <= 16);
++  if (mode == 15) {
++    if (handled || sigprocmask(SIG_UNBLOCK, &blocked, NULL)) return 14;
++  }
++  if (handled != published || bad) return 15;
++  sigset_t pending;
++  if (sigpending(&pending) || sigismember(&pending, SIGALRM)) return 16;
++  return 0;
++}
+diff --git a/reverie-kvm/tests/support/captured_write_signals.rs b/reverie-kvm/tests/support/captured_write_signals.rs
+new file mode 100644
+index 00000000..8c385178
+--- /dev/null
++++ b/reverie-kvm/tests/support/captured_write_signals.rs
+@@ -0,0 +1,273 @@
++// Real original callbacks and captured bytes; no Hermit timer/scheduler model.
++use reverie::CallbackSignalSite;
++use reverie::ParkedObservationLease;
++use reverie::ProcessAlarmSignalOutcome;
++use reverie::SignalDequeue;
++use reverie::SignalObservationStop;
++use reverie::syscalls::Write;
++
++use super::*;
++
++fn saved_write(args: [usize; 6]) -> Write {
++    Write::from(SyscallArgs::new(
++        args[0], args[1], args[2], args[3], args[4], args[5],
++    ))
++}
++
++#[derive(Clone, Debug, PartialEq)]
++enum Event {
++    Query(Option<CallbackSignalSite>),
++    Published,
++    WriteResult(Result<i64, Errno>),
++    Dequeue,
++    Hook,
++}
++static EVENTS: Mutex<Vec<Event>> = Mutex::new(Vec::new());
++fn record(event: Event) {
++    EVENTS.lock().unwrap().push(event);
++}
++
++#[derive(Default, Debug)]
++struct Global;
++#[reverie::global_tool]
++impl GlobalTool for Global {
++    type Request = ();
++    type Response = ();
++    type Config = u8;
++    async fn receive_rpc(&self, _: Pid, _: ()) {}
++}
++#[derive(Default)]
++struct CaptureTool {
++    mode: u8,
++}
++#[reverie::tool]
++impl Tool for CaptureTool {
++    type GlobalState = Global;
++    type ThreadState = Option<[usize; 6]>;
++    fn new(_: Pid, mode: &u8) -> Self {
++        Self { mode: *mode }
++    }
++    fn observe_signal_dequeues(_: &u8) -> bool {
++        true
++    }
++    fn subscriptions(_: &u8) -> Subscription {
++        Subscription::all()
++    }
++    async fn handle_signal_dequeue<G: Guest<Self>>(
++        &self,
++        guest: &mut G,
++        _: SignalDequeue,
++    ) -> Result<(), Errno> {
++        let call = saved_write(guest.thread_state().expect("original write recorded"));
++        assert!(guest.captured_write_signal_site(call).is_none());
++        record(Event::Dequeue);
++        Ok(())
++    }
++    async fn handle_structured_signal_event<G: Guest<Self>>(
++        &self,
++        guest: &mut G,
++        event: SignalEvent,
++    ) -> Result<Option<SignalEvent>, Errno> {
++        let call = saved_write(guest.thread_state().expect("original write recorded"));
++        assert!(guest.captured_write_signal_site(call).is_none());
++        assert_eq!(guest.signal_observation_lease().is_some(), self.mode == 16);
++        record(Event::Hook);
++        Ok(Some(event))
++    }
++    async fn handle_syscall_event<G: Guest<Self>>(
++        &self,
++        guest: &mut G,
++        syscall: Syscall,
++    ) -> Result<i64, reverie::Error> {
++        let (_, args) = syscall.into_parts();
++        if !matches!(syscall.number(), Sysno::write | Sysno::getpid) || args.arg3 != 0x63617077 {
++            guest.tail_inject(syscall).await;
++        }
++        assert_eq!(args.arg4, usize::from(self.mode));
++        let call = Write::from(args);
++        *guest.thread_state_mut() = Some([
++            args.arg0, args.arg1, args.arg2, args.arg3, args.arg4, args.arg5,
++        ]);
++        if self.mode == 10 {
++            assert_eq!(
++                guest.inject(reverie::syscalls::Getpid::new()).await?,
++                i64::from(guest.pid().as_raw())
++            );
++        }
++        let expected = self.mode <= 3 || (11..=16).contains(&self.mode);
++        let site = guest.captured_write_signal_site(call);
++        assert_eq!(site.is_some(), expected, "mode {}", self.mode);
++        record(Event::Query(site));
++        if let Some(site) = site {
++            assert_eq!(guest.parked_signal_site(), Some(site));
++            // Every raw argument belongs to the original call, including the
++            // three unused ABI words retained by the typed syscall wrapper.
++            let raw = [
++                args.arg0, args.arg1, args.arg2, args.arg3, args.arg4, args.arg5,
++            ];
++            for index in 0..6 {
++                let mut wrong = raw;
++                wrong[index] = wrong[index].wrapping_add(1);
++                assert!(
++                    guest
++                        .captured_write_signal_site(Write::from(SyscallArgs::new(
++                            wrong[0], wrong[1], wrong[2], wrong[3], wrong[4], wrong[5],
++                        )))
++                        .is_none()
++                );
++            }
++            if self.mode == 12 {
++                let stack = guest.stack().await;
++                assert!(guest.captured_write_signal_site(call).is_none());
++                drop(stack);
++            }
++            // Refused queries and an ordinary metadata RPC have no effects and
++            // cannot consume the original callback or change its identity.
++            guest.send_rpc(()).await;
++            assert_eq!(guest.captured_write_signal_site(call), Some(site));
++            assert_eq!(EVENTS.lock().unwrap().len(), 1);
++            let mut info = [0; reverie::SIGNAL_INFO_SIZE];
++            info[..4].copy_from_slice(&libc::SIGALRM.to_ne_bytes());
++            info[8..12].copy_from_slice(&libc::SI_KERNEL.to_ne_bytes());
++            let event = SignalEvent::new(
++                libc::SIGALRM,
++                info,
++                SignalTarget::Process { pid: guest.pid() },
++            )
++            .unwrap();
++            assert!(matches!(guest.queue_process_alarm_signal(event).await,
++                ProcessAlarmSignalOutcome::Accepted(receipt) if receipt.blocked == (self.mode == 15)));
++            record(Event::Published);
++            if self.mode == 16 {
++                let observation = guest
++                    .observe_parked_signal(site, ParkedObservationLease { nonce: 1 })
++                    .await
++                    .unwrap();
++                assert!(matches!(observation.stop, SignalObservationStop::Caught(_)));
++                assert!(guest.captured_write_signal_site(call).is_none());
++            }
++        }
++        let result = guest.inject(syscall).await;
++        record(Event::WriteResult(result));
++        assert!(
++            guest.captured_write_signal_site(call).is_none(),
++            "executed callback was reused"
++        );
++        result.map_err(Into::into)
++    }
++}
++
++fn run_modes(modes: impl IntoIterator<Item = u8>) {
++    let directory = TestDirectory::new();
++    let executable = compile_c_program(
++        &directory.0,
++        "captured-write-signal",
++        include_str!("../fixtures/captured_write_signal.c"),
++    );
++    for mode in modes {
++        EVENTS.lock().unwrap().clear();
++        let mut backend = KvmBackend::new(256 * 1024 * 1024).unwrap();
++        backend
++            .install_static_elf_file_with_context(
++                std::fs::File::open(&executable).unwrap(),
++                &[executable.to_str().unwrap(), &mode.to_string()],
++                &[],
++                &directory.0,
++            )
++            .unwrap();
++        let (_, status, stdout, stderr) = futures::executor::block_on(
++            backend.run_static_elf_with_tool::<CaptureTool>(mode, mode != 4),
++        )
++        .unwrap();
++        let events = EVENTS.lock().unwrap().clone();
++        assert_eq!(status, 0, "mode={mode} events={events:?}");
++        assert_eq!(
++            events
++                .iter()
++                .filter(|e| matches!(e, Event::Query(_)))
++                .count(),
++            1
++        );
++        assert_eq!(
++            events
++                .iter()
++                .filter(|e| matches!(e, Event::WriteResult(_)))
++                .count(),
++            1
++        );
++        let published = mode <= 3 || (11..=16).contains(&mode);
++        for kind in [Event::Published, Event::Dequeue, Event::Hook] {
++            assert_eq!(
++                events.iter().filter(|e| **e == kind).count(),
++                usize::from(published),
++                "mode={mode} {kind:?}"
++            );
++        }
++        if published && mode != 16 {
++            let write = events
++                .iter()
++                .position(|e| matches!(e, Event::WriteResult(_)))
++                .unwrap();
++            let hook = events.iter().position(|e| *e == Event::Hook).unwrap();
++            assert!(write < hook, "signal hook ran before actual write result");
++        }
++        let standard_output = matches!(mode, 0 | 2 | 10 | 11 | 12 | 15 | 16);
++        if mode == 14 {
++            assert_eq!(stdout.len(), 16 * 1024 * 1024 + 1);
++            assert!(stdout[..stdout.len() - 1].iter().all(|byte| *byte == b'a'));
++            assert_eq!(stdout.last(), Some(&b'!'));
++        } else {
++            let expected = if standard_output {
++                if published {
++                    b"abc!".as_slice()
++                } else {
++                    b"abc".as_slice()
++                }
++            } else if published {
++                b"!".as_slice()
++            } else {
++                b"".as_slice()
++            };
++            assert_eq!(stdout, expected, "mode={mode}");
++        }
++        assert_eq!(
++            stderr,
++            if matches!(mode, 1 | 3) {
++                b"abc".as_slice()
++            } else {
++                b"".as_slice()
++            },
++            "mode={mode}"
++        );
++        if matches!(mode, 5 | 7 | 8) {
++            assert_eq!(std::fs::read(directory.0.join("backing")).unwrap(), b"abc");
++        }
++    }
++}
++
++#[test]
++fn captured_write_signal_capability_routes_and_refusals() {
++    if leader_self_exec_bounded(
++        "captured_write_signals::captured_write_signal_capability_routes_and_refusals",
++    ) {
++        run_modes(0..=12);
++    }
++}
++
++#[test]
++fn captured_write_signal_capability_preserves_fault_and_partial_result() {
++    if leader_self_exec_bounded(
++        "captured_write_signals::captured_write_signal_capability_preserves_fault_and_partial_result",
++    ) {
++        run_modes([13, 14]);
++    }
++}
++
++#[test]
++fn captured_write_signal_capability_blocks_nested_and_malformed_admission() {
++    if leader_self_exec_bounded(
++        "captured_write_signals::captured_write_signal_capability_blocks_nested_and_malformed_admission",
++    ) {
++        run_modes([15, 16, 17]);
++    }
++}

@@ -1,0 +1,67 @@
+{
+  "source": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/publication-fd-stdin-cold-qualification-v1/final-v1/RESULTS.json",
+  "source_sha256": "17f58963f685e36324015fbbbfc9c850f1182c6d12e858b2da81279ee5e94eb0",
+  "limits_by_kind": {
+    "metadata": {
+      "aggregate_cpu_usec": 600000000,
+      "wall_seconds": 900,
+      "lethal_stderr_bytes": 16777216,
+      "live_stdout_samples_bytes": 67108864,
+      "phase_read_bytes": 16777216,
+      "memory_bytes": 17179869184,
+      "swap_bytes": 0,
+      "free_floor_bytes": 107374182400
+    },
+    "compile": {
+      "aggregate_cpu_usec": 600000000,
+      "wall_seconds": 900,
+      "lethal_stderr_bytes": 16777216,
+      "live_stdout_samples_bytes": 67108864,
+      "phase_read_bytes": 16777216,
+      "memory_bytes": 17179869184,
+      "swap_bytes": 0,
+      "free_floor_bytes": 107374182400
+    },
+    "format": {
+      "aggregate_cpu_usec": 30000000,
+      "wall_seconds": 60,
+      "lethal_stderr_bytes": 16777216,
+      "live_stdout_samples_bytes": 67108864,
+      "phase_read_bytes": 16777216,
+      "memory_bytes": 17179869184,
+      "swap_bytes": 0,
+      "free_floor_bytes": 107374182400
+    },
+    "list": {
+      "aggregate_cpu_usec": 30000000,
+      "wall_seconds": 60,
+      "lethal_stderr_bytes": 16777216,
+      "live_stdout_samples_bytes": 67108864,
+      "phase_read_bytes": 16777216,
+      "memory_bytes": 17179869184,
+      "swap_bytes": 0,
+      "free_floor_bytes": 107374182400
+    },
+    "test": {
+      "aggregate_cpu_usec": 30000000,
+      "wall_seconds": 60,
+      "lethal_stderr_bytes": 16777216,
+      "live_stdout_samples_bytes": 67108864,
+      "phase_read_bytes": 16777216,
+      "memory_bytes": 17179869184,
+      "swap_bytes": 0,
+      "free_floor_bytes": 107374182400
+    },
+    "check": {
+      "aggregate_cpu_usec": 600000000,
+      "wall_seconds": 900,
+      "lethal_stderr_bytes": 16777216,
+      "live_stdout_samples_bytes": 67108864,
+      "phase_read_bytes": 16777216,
+      "memory_bytes": 17179869184,
+      "swap_bytes": 0,
+      "free_floor_bytes": 107374182400
+    }
+  },
+  "scope": "numeric bounds template, no prior result transferred"
+}

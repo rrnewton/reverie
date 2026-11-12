@@ -1,0 +1,9 @@
+{
+  "base": "f97b7be1de4e2ef10ecc24cee5d8cc47f2fd254f",
+  "index_raw_sha256": "0acae2175c4a50f34e85917443c195a9d53f38d204bb1ac0b5de17de942b3f95",
+  "index_entries_sha256": "184a8b6303e4525842d1f15ace1880cb312f74989a014f1bf2d0b8d0f226dca8",
+  "cached_diff_empty": true,
+  "frozen_v1_patch_sha256": "2376c4f9405d551cb5ffd4edf0314ef8e2dcefde1d2c327c22d34da831a1e804",
+  "frozen_sources_match": true,
+  "raw_index_note": "Preserved current metadata; no restore to older raw hash."
+}

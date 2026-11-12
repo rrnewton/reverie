@@ -1,0 +1,20 @@
+[
+  {
+    "path": "reverie-kvm/src/runtime.rs",
+    "before": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/timer-prepared-restart-20260918/before/reverie-kvm/src/runtime.rs",
+    "bytes": 180600,
+    "sha256": "94684b243a92f461eb17483c3820b8716f37ac13c4360d24691e01cda7039f6b"
+  },
+  {
+    "path": "reverie-kvm/tests/support/parked_signals.rs",
+    "before": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/timer-prepared-restart-20260918/before/reverie-kvm/tests/support/parked_signals.rs",
+    "bytes": 37888,
+    "sha256": "c50a5cdfa56d2ab9bc78e2fc91fd0bc175f32fc1dcb949e09ff8538a15973045"
+  },
+  {
+    "path": "reverie-kvm/tests/fixtures/parked_signal.c",
+    "before": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/timer-prepared-restart-20260918/before/reverie-kvm/tests/fixtures/parked_signal.c",
+    "bytes": 3063,
+    "sha256": "e078a1426b362a873926927302390a6a7984dea2f3f759f327cba0d710b1c619"
+  }
+]

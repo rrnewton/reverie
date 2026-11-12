@@ -1,0 +1,26 @@
+{
+  "owner_slot": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918",
+  "source_root": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/same-inode-ofd-repair-v2/corrected-source-v3",
+  "base": "000c15a1161ea2d58749431b5ddaaa97f7aa37d5",
+  "source_files": [
+    {
+      "relative": "reverie-kvm/src/elf.rs",
+      "file": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/same-inode-ofd-repair-v2/successor-v3/after/reverie-kvm/src/elf.rs",
+        "bytes": 65737,
+        "mode": 420,
+        "sha256": "137707197119b1fe9d75b3145f5c769fed4bcacbe34c27982041fe33ae61c5e9"
+      }
+    },
+    {
+      "relative": "reverie-kvm/src/executor.rs",
+      "file": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/same-inode-ofd-repair-v2/successor-v3/after/reverie-kvm/src/executor.rs",
+        "bytes": 1450586,
+        "mode": 420,
+        "sha256": "baad92189a56cfb749fbcc6e9efec66d929e71d14c60f3f840f6632e46966414"
+      }
+    }
+  ],
+  "purpose": "Formatting-only successor of independently reviewed FD v2, same assertions, selectors and limits."
+}

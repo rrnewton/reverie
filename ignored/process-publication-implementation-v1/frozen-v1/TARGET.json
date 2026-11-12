@@ -1,0 +1,31 @@
+{
+  "base": "000c15a1161ea2d58749431b5ddaaa97f7aa37d5",
+  "scope": "Inactive backend-private process publication prerequisite; actual implementation review, not activation approval",
+  "report": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/process-publication-implementation-v1/frozen-v1/REPORT.md",
+    "bytes": 4828,
+    "sha256": "6ac906317dbb60ba3297c13f7c6b4158b4f674e36ecfae04e458aa96dcd7ad76"
+  },
+  "qualification": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/process-publication-implementation-v1/frozen-v1/QUALIFICATION.md",
+    "bytes": 3526,
+    "sha256": "ebedb73bf2d98ff6e4eb60711fc173a90c990f5468646c237910716e643126b0"
+  },
+  "source": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/process-publication-implementation-v1/frozen-v1/SOURCE.patch",
+    "bytes": 63642,
+    "sha256": "a1667b036591d34ef5b657f10f611b0b716491522c247f2b6a2273d754c3a41f"
+  },
+  "input_manifest": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/process-publication-implementation-v1/frozen-v1/INPUTS.json",
+    "bytes": 1513395,
+    "sha256": "eda29e634677d3b6e784c1c2fb9a75bc7741f738c1fc7bd0652f2c15c60f7dd7"
+  },
+  "readback": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/process-publication-implementation-v1/frozen-v1/READBACK.json",
+    "bytes": 3281,
+    "sha256": "afeabd1bdff952e498b898ca1c590b1d5207877c2836906c8c6c69da5ab06a27"
+  },
+  "input_count": 4894,
+  "no_product_or_SCM_mutation_after_freeze": true
+}

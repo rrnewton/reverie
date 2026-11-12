@@ -1,0 +1,24 @@
+{
+  "started": [
+    "executor::tests::signal_dequeue_raw_consumers_keep_bookkeeping_failure_terminal"
+  ],
+  "ended": [
+    {
+      "type": "test",
+      "name": "executor::tests::signal_dequeue_raw_consumers_keep_bookkeeping_failure_terminal",
+      "event": "ok"
+    }
+  ],
+  "suites": [
+    {
+      "type": "suite",
+      "event": "ok",
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filtered_out": 501,
+      "exec_time": 0.002166633
+    }
+  ]
+}

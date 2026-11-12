@@ -1,0 +1,24 @@
+{
+  "started": [
+    "executor::tests::process_fork_with_inherited_signalfd_is_explicitly_unsupported"
+  ],
+  "ended": [
+    {
+      "type": "test",
+      "name": "executor::tests::process_fork_with_inherited_signalfd_is_explicitly_unsupported",
+      "event": "ok"
+    }
+  ],
+  "suites": [
+    {
+      "type": "suite",
+      "event": "ok",
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filtered_out": 494,
+      "exec_time": 0.001013461
+    }
+  ]
+}

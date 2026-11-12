@@ -1,0 +1,1 @@
+rlimit-identity nofile_hard=1048576 soft1_readback=64 prlimit_query=64 prlimit_old=64 soft2_readback=32 restore_readback=1048576 soft_gt_hard_errno=22 raise_hard_errno=1

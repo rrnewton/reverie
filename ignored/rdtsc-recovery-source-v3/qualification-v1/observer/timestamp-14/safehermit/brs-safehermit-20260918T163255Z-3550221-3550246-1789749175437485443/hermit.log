@@ -1,0 +1,6 @@
+
+thread 'host_owned_timestamp_worker_keeps_native_execution' (3554229) panicked at reverie-kvm/tests/static_elf.rs:14560:5:
+assertion `left == right` failed
+  left: [(Pid(1), Tsc), (Pid(1), Tsc), (Pid(1), Tsc), (Pid(1), Tsc), (Pid(1), Tsc), (Pid(1), Tsc), (Pid(1), Tsc), (Pid(1), Tsc), (Pid(1), Tsc), (Pid(1), Tsc), (Pid(1), Tsc), (Pid(1), Tsc)]
+ right: [(Pid(1), Tsc), (Pid(1), Tsc)]
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace

@@ -1,0 +1,31 @@
+{
+  "libc": {
+    "path": "/usr/lib64/libc.so.6",
+    "sha256": "d932cb6bc88da10cc709d5b7ecda57a1387b6571331689dba88023b4c0517776"
+  },
+  "queries": [
+    {
+      "argv": [
+        "/usr/bin/objdump",
+        "-d",
+        "--disassemble=__getpid",
+        "/usr/lib64/libc.so.6"
+      ],
+      "raw_status": 0,
+      "stdout_sha256": "f90bdb5255aadbb59299cab0209c837f1b31f7ff6a4dddf76eeac7f8379a183d",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "argv": [
+        "/usr/bin/objdump",
+        "-d",
+        "--disassemble=syscall",
+        "/usr/lib64/libc.so.6"
+      ],
+      "raw_status": 0,
+      "stdout_sha256": "151a692e9c97b7ee65fa7e5b8b8af7ce6f61c112d9428fbd5c83e46de09d7e99",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    }
+  ],
+  "interpretation": "Source/ABI diagnosis, not a register trace from the failed guest"
+}

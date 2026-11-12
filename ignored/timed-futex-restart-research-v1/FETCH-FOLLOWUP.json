@@ -1,0 +1,102 @@
+{
+  "revision": "199c9959d3a9b53f346c221757fc7ac507fbac50",
+  "requests": [
+    {
+      "url": "https://api.github.com/repos/gregkh/linux/contents/include/linux/thread_info.h?ref=199c9959d3a9b53f346c221757fc7ac507fbac50",
+      "argv": [
+        "curl",
+        "--silent",
+        "--show-error",
+        "--fail",
+        "--max-time",
+        "40",
+        "https://api.github.com/repos/gregkh/linux/contents/include/linux/thread_info.h?ref=199c9959d3a9b53f346c221757fc7ac507fbac50"
+      ],
+      "rc": 0,
+      "raw": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/timed-futex-restart-research-v1/linux-include--linux--thread_info.h.api.json",
+      "stderr": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/timed-futex-restart-research-v1/linux-include--linux--thread_info.h.stderr",
+      "raw_sha256": "73864d7f25ba643f9109d695d0028e1a8da854b5bfde08070b9305264f951065",
+      "raw_bytes": 10589,
+      "git_blob": "051e42902690491236b9fd911b4a027bd75978c2",
+      "revision": "199c9959d3a9b53f346c221757fc7ac507fbac50",
+      "decoded": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/timed-futex-restart-research-v1/linux-include--linux--thread_info.h",
+      "bytes": 6893,
+      "sha256": "2922be3ff24fb9a4038ce60d6045fbcdb5b1f1b3e1085e2c3662312aa01f79c7"
+    },
+    {
+      "url": "https://man7.org/linux/man-pages/man2const/FUTEX_WAIT.2const.html",
+      "argv": [
+        "curl",
+        "--silent",
+        "--show-error",
+        "--fail",
+        "--max-time",
+        "40",
+        "https://man7.org/linux/man-pages/man2const/FUTEX_WAIT.2const.html"
+      ],
+      "rc": 22,
+      "raw": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/timed-futex-restart-research-v1/man-v2-FUTEX_WAIT.2const.html",
+      "stderr": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/timed-futex-restart-research-v1/man-v2-FUTEX_WAIT.2const.stderr",
+      "raw_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "raw_bytes": 0
+    },
+    {
+      "url": "https://man7.org/linux/man-pages/man2const/FUTEX_WAIT_BITSET.2const.html",
+      "argv": [
+        "curl",
+        "--silent",
+        "--show-error",
+        "--fail",
+        "--max-time",
+        "40",
+        "https://man7.org/linux/man-pages/man2const/FUTEX_WAIT_BITSET.2const.html"
+      ],
+      "rc": 22,
+      "raw": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/timed-futex-restart-research-v1/man-v2-FUTEX_WAIT_BITSET.2const.html",
+      "stderr": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/timed-futex-restart-research-v1/man-v2-FUTEX_WAIT_BITSET.2const.stderr",
+      "raw_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "raw_bytes": 0
+    },
+    {
+      "url": "https://man7.org/linux/man-pages/man2/restart_syscall.2.html",
+      "argv": [
+        "curl",
+        "--silent",
+        "--show-error",
+        "--fail",
+        "--max-time",
+        "40",
+        "https://man7.org/linux/man-pages/man2/restart_syscall.2.html"
+      ],
+      "rc": 0,
+      "raw": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/timed-futex-restart-research-v1/man-v2-restart_syscall.2.html",
+      "stderr": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/timed-futex-restart-research-v1/man-v2-restart_syscall.2.stderr",
+      "raw_sha256": "793b06ef6421310ea615e395f0e3c1e19697b921f5fc44adf991c2a9532e3065",
+      "raw_bytes": 11529,
+      "decoded": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/timed-futex-restart-research-v1/man-v2-restart_syscall.2.txt",
+      "bytes": 6046,
+      "sha256": "fca62b0da0f8fb5df0438f3e59715b837b068586ac664a6580eb16fbd7eceaec"
+    },
+    {
+      "url": "https://man7.org/linux/man-pages/man2/futex.2.html",
+      "argv": [
+        "curl",
+        "--silent",
+        "--show-error",
+        "--fail",
+        "--max-time",
+        "40",
+        "https://man7.org/linux/man-pages/man2/futex.2.html"
+      ],
+      "rc": 0,
+      "raw": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/timed-futex-restart-research-v1/man-v2-futex.2.html",
+      "stderr": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/timed-futex-restart-research-v1/man-v2-futex.2.stderr",
+      "raw_sha256": "a5ac86c050657667bb2371866a4cdb4c11cab128ecdfeb3e1401321fd9ad9f91",
+      "raw_bytes": 34072,
+      "decoded": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/timed-futex-restart-research-v1/man-v2-futex.2.txt",
+      "bytes": 24764,
+      "sha256": "e84a3ab929c38d46b6a34c4499b12028a141324968869b45d445e3f9eb4c882d"
+    }
+  ],
+  "earlier_404s_preserved": true
+}

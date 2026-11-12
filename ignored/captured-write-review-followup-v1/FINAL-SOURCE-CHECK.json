@@ -1,0 +1,79 @@
+{
+  "queries": [
+    {
+      "label": "head",
+      "argv": [
+        "git",
+        "-C",
+        "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918",
+        "rev-parse",
+        "HEAD"
+      ],
+      "returncode": 0,
+      "stdout": "cf6bd896f4e5e033276afd5f6524cd123342ada2\n",
+      "stderr": ""
+    },
+    {
+      "label": "branch",
+      "argv": [
+        "git",
+        "-C",
+        "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918",
+        "branch",
+        "--show-current"
+      ],
+      "returncode": 0,
+      "stdout": "codex/kvm-setitimer-20260918\n",
+      "stderr": ""
+    },
+    {
+      "label": "status",
+      "argv": [
+        "git",
+        "-C",
+        "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918",
+        "status",
+        "--porcelain=v1",
+        "--untracked-files=no"
+      ],
+      "returncode": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "label": "index",
+      "argv": [
+        "git",
+        "-C",
+        "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918",
+        "rev-parse",
+        "--path-format=absolute",
+        "--git-path",
+        "index"
+      ],
+      "returncode": 0,
+      "stdout": "/home/newton/work/dev-hermit/.git/modules/reverie/worktrees/kvm-setitimer-reverie-20260918/index\n",
+      "stderr": ""
+    }
+  ],
+  "index_unchanged": {
+    "path": "/home/newton/work/dev-hermit/.git/modules/reverie/worktrees/kvm-setitimer-reverie-20260918/index",
+    "bytes": 318921,
+    "sha256": "da1253b877047649aeb31941562f972832fe96d2d2f9099464b001278431b769"
+  },
+  "review_inputs_unchanged": true,
+  "live_two_paths_equal_frozen_before": true,
+  "patch_dry_check": {
+    "argv": [
+      "git",
+      "-C",
+      "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918",
+      "apply",
+      "--check",
+      "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/captured-write-review-followup-v1/proposed-comments.patch"
+    ],
+    "raw_status": 0,
+    "stdout": "",
+    "stderr": ""
+  }
+}

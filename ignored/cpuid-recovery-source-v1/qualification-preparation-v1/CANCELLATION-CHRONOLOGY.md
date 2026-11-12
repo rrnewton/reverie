@@ -1,0 +1,9 @@
+# Later cancellation chronology — V1 source remains unchanged
+
+The frozen CPUID V1 REPORT described the earlier actual H39ac/V6 witness timeout. Preserve it as that historical observation. Root subsequently supplied a separate immutable result under H/ignored/kvm-rpc-cancellation-h39ac-v1/measured-final-v1, READBACK SHA f5a4a5ffd183ebc2824af46a27f93123c98964eb6419452d909a071c3bd4de29.
+
+That later composition adds the separate Hermit cancel_killed_thread_rpcs configuration correction (patch beginning 2360a8bc) and uses a fresh executable a8408c776c850ed61ff984c7d61d09b4c0027fa6fd9cf9d492ad6983c75be8c3. Its timestamp-cancel-v1 case completes status 17 with 409 fully matched INFO records. Callback 372 at RIP 0x401095 sees 518015 ns in the prehook, charges the timestamp and updates the shared component to 518040 ns, then suspends in the posthook SleepUntil(0) resource request; the leader's group exit cancels that request before callback return. Both retained traces show the same boundary.
+
+For this addendum I authenticated the supplied READBACK and its RESULT/INPUT/REPORT bytes, read the complete report, authenticated both complete timestamp trace files, and compared every one of the 12 ordered boundary rows and nine cleanup rows per trace against the actual indicated lines. I did not rerun the reader/guest, inspect every line of all six traces, or independently review the Hermit configuration source. CHRONOLOGY-INPUTS.json records this precise evidence scope.
+
+This measures after-charge/posthook cancellation in that later timestamp composition. It does not establish cancellation before charging, during the clock RPC, or in the unexecuted CPUID candidate. Root's 6001 ns alternative was source-refuted without execution. The old hangs and first reader/compiler refusals remain failures; no result is relabelled. Independent source review of the Hermit configuration is separate.

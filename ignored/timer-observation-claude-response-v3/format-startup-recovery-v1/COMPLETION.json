@@ -1,0 +1,16 @@
+{
+  "completion": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/timer-integration-20260918/lease-state/bef6ca891e07f277a85926cf736648a6f041731f9514c00c367af14f7222e0ff.json",
+    "bytes": 398,
+    "mode": 420,
+    "sha256": "3e274051f8a13292d211eb1b5687926946acbe344b78063c5eeed81ea9eb461f"
+  },
+  "proof": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/timer-observation-claude-response-v3/format-startup-recovery-v1/PROOF.json",
+    "bytes": 7911,
+    "mode": 420,
+    "sha256": "d240c378035634468803f123d816b5da9937837892709efbb57a35d4c95b84f9"
+  },
+  "source_unchanged": true,
+  "scope": "Lifecycle-only completion; original observer attempt and raw137 preserved. No formatting pass or retrospective CPU accounting."
+}

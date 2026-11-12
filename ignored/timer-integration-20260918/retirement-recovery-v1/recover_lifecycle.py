@@ -1,0 +1,20 @@
+from pathlib import Path
+import fcntl,hashlib,importlib.util,json,os,sys
+D=Path(__file__).resolve().parent;T=D.parent/'qualification-v3';sys.path.insert(0,str(T));from common import file_record,json_read,read,require,write_new,check_file,bounded_process
+import cache_lease
+from phase import check as check_source
+plan_path=T/'compile-plan.json';expected='ed118d44d3ac2723333b85b4f4a83f7f6d4bc85c284a717583bae62dc80e5b5d';require(hashlib.sha256(plan_path.read_bytes()).hexdigest()==expected,'wrong phase');plan=json_read(plan_path);C=plan;check_source(C);binding=C['lease'];fd=cache_lease.open_bound(binding)
+try:
+ fcntl.flock(fd,fcntl.LOCK_EX|fcntl.LOCK_NB);cache_lease.check_held(fd,binding,expected);completion=Path(binding['state_directory'])/(expected+'.json');require(not completion.exists(),'completion already exists');original=file_record(T/'controls/compile/result.json');r=json_read(original['path']);require(r['accepted']is False and r['observer_attempted']is True and r['terminal_authenticated']is False,'wrong original refusal');check_file(r['observer_result']);o=json_read(r['observer_result']['path']);require(o['observer_error']=='OSError: [Errno 19] No such device'and o['accounting_complete']is False and o['comparison_eligible']is False,'different observer refusal');final=o['refusal_final_accounting'];initial=o['authenticated_service']['initial_properties'];unit=o['authenticated_service']['unit'];sys.path.insert(0,str(T/'observer'));import observer as O
+ group=O.CGROUP_ROOT/initial['ControlGroup'].lstrip('/');proof=O.final_accounting(final['properties'],initial,unit,group,o['maximum_sampled_usage_usec']);require(proof==final,'retained terminal proof differs');require(o['wrapper_exit_code']==0 and r['raw_status']==0,'unexpected original raw status');payload=file_record(T/'observer/compile/payload-exit.json');p=json_read(payload['path']);require(p==dict(returncode=0,elapsed_seconds=p['elapsed_seconds'],reaped=True),'original payload not reaped')
+ checks=[];environment=plan['environment']
+ for i in range(2):
+  require(not group.exists(),'old cgroup still exists');processes=[]
+  for ident in [o['launch']['wrapper_identity'],o['authenticated_service']['main_process']]:
+   try:current=O.proc_identity(ident['pid'])
+   except (FileNotFoundError,ProcessLookupError):current=None
+   require(current is None or current['start_ticks']!=ident['start_ticks'],'original process generation remains alive');processes.append(dict(original=ident,current=current))
+  q=bounded_process(['/usr/bin/systemctl','--user','show',unit,'--property=Id,LoadState,ActiveState,SubState,ControlGroup,MainPID,ExecMainPID,ExecMainStartTimestampMonotonic,CPUUsageNSec'],T.parents[2],environment,D/('recovery-service-'+str(i)),5,65536);require(not q['forced'],'fresh terminal query forced');v=dict(line.split('=',1)for line in read(q['stdout']['path']).decode().splitlines());require(q['returncode']in [0,1]and v['Id']==unit and v['LoadState']=='not-found'and v['ActiveState']=='inactive'and v['SubState']=='dead'and v.get('ControlGroup','')==''and v.get('MainPID','0')=='0','fresh service is not collected/inactive');checks.append(dict(query=q,properties=v,processes=processes,cgroup_absent=True))
+ check_source(C);cache_lease.check_held(fd,binding,expected);result=dict(schema=1,phase='compile-lifecycle-only-recovery',accepted=False,terminal_authenticated=True,observer_attempted=True,observer_result=r['observer_result'],original_unqualified_result=original,original_plan=file_record(plan_path),raw_status=r['raw_status'],payload_exit=payload,retained_terminal_accounting=final,fresh_quiescence_checks=checks,final_source_inputs_unchanged=True,scope='Lifecycle recovery only. Cargo returned raw 0; original attempt remains unqualified due to observer accounting failure. No test result is retroactively accepted; no source, limits, cache token, or completion file changed by this proof.')
+ write_new(D/'LIFECYCLE-RECOVERY.json',result);print(file_record(D/'LIFECYCLE-RECOVERY.json'))
+finally:os.close(fd)

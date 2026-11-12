@@ -1,0 +1,72 @@
+{
+  "base": "000c15a1161ea2d58749431b5ddaaa97f7aa37d5",
+  "status": "SOURCE-ONLY CORRECTED COMPOSITION; review and qualification pending",
+  "product_paths": [
+    "reverie-kvm/src/elf.rs",
+    "reverie-kvm/src/executor.rs",
+    "reverie-kvm/src/process_signal_publication.rs"
+  ],
+  "source_patch": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/publication-fd-composition-v2/SOURCE.patch",
+    "bytes": 123989,
+    "sha256": "41dd4f6af0ee2b4364b36254f67d5988113dd2b04ccfff10d50012280a64ce1a"
+  },
+  "publisher_delta": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/publication-fd-composition-v2/PUBLISHER-TO-COMPOSED.patch",
+    "bytes": 72733,
+    "sha256": "405bbd9c94c70149e968e8a9ec826b7dc4ce430cbaa0c05ed7aabf94dfeb0ab3"
+  },
+  "fd_delta": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/publication-fd-composition-v2/FD-TO-COMPOSED.patch",
+    "bytes": 102951,
+    "sha256": "ee4a4553daad3940ddbc6f2f38f2d1275ab2d3a8c8ee6d6fa54eeb2a12097f70"
+  },
+  "predecessor_delta": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/publication-fd-composition-v2/V1-TO-V2.patch",
+    "bytes": 50122,
+    "sha256": "6eec8035ee119eef093812bd94decfe5e882b43c5adcbffef46e3963714d5093"
+  },
+  "report": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/publication-fd-composition-v2/REPORT.md",
+    "bytes": 4707,
+    "sha256": "882b144d8ceb53868955d24c4df129656ec20445ad938ee696f42fbe03f1ede8"
+  },
+  "ownership": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/publication-fd-composition-v2/OWNERSHIP.md",
+    "bytes": 7712,
+    "sha256": "bd57fe964cf80d3da90e73e8050c0f9d7327bc48bc1e0ae5d79771472cfaa9a7"
+  },
+  "plan": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/publication-fd-composition-v2/PLAN.md",
+    "bytes": 4144,
+    "sha256": "943e31b7f53284ff26abd3a18be413653ef7b25a90b27071edf506c0a5db2d45"
+  },
+  "source_inputs": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/publication-fd-composition-v2/SOURCE_INPUTS.json",
+    "bytes": 2908,
+    "sha256": "fb09aefeccbc74e1366d044e493c013af0d008300b823286710829ae7b1eb724"
+  },
+  "caller_inputs": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/publication-fd-composition-v2/CALLER_INPUTS.json",
+    "bytes": 7161,
+    "sha256": "5144b7580bdd544d34ea91693a16c9eadd3a537c58fec008e8bdf144154e1399"
+  },
+  "caller_delta": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/publication-fd-composition-v2/CALLER-V1-TO-V2.patch",
+    "bytes": 1347,
+    "sha256": "d5a5e98117da67aa896ee47c4120fec8e14a7ea42d724c010b38da50b27a424d"
+  },
+  "readback": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/publication-fd-composition-v2/READBACK.json",
+    "bytes": 821790,
+    "sha256": "d1e23442a1ba6f562aae386afbf0631cf9ca47be2fc2b5890364d0148eda6f45"
+  },
+  "original_selectors": 73,
+  "additive_selectors": 5,
+  "proposed_unique_selectors": 78,
+  "lib_selectors": 69,
+  "static_selectors": 9,
+  "actual_inventory": null,
+  "product_execution_performed": false,
+  "protocol": "Retain both old trigger classifications; root applies conservative triggers 2+3 workflow. No new-syscall tags."
+}

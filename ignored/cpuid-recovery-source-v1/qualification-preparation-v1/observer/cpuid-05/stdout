@@ -1,0 +1,4 @@
+{ "type": "suite", "event": "started", "test_count": 1 }
+{ "type": "test", "event": "started", "name": "vm::tests::cpuid_runtime_controls::cpuid_boundary_respects_actual_fetch_permissions_and_completed_length" }
+{ "type": "test", "name": "vm::tests::cpuid_runtime_controls::cpuid_boundary_respects_actual_fetch_permissions_and_completed_length", "event": "ok" }
+{ "type": "suite", "event": "ok", "passed": 1, "failed": 0, "ignored": 0, "measured": 0, "filtered_out": 516, "exec_time": 0.074350575 }

@@ -1,0 +1,19 @@
+:: Run1...
+:: Run2...
+:: Comparing captured verification logs...
+Logs contain 111 | 111 messages total
+Logs contain 110 | 110 detcore-specific messages
+Logs contain 111 | 111 INFO messages
+Logs contain 100 | 100 DETLOG & scheduler COMMIT messages
+Canonicalizing host addresses (ordinal by first appearance); comparing everything else exactly...
+  Comparing INFO messages...
+
+Done processing logs, no substantive differences found (111 | 111 INFO messages compared).
+Logs contain 1 | 1 scheduler empty-run-queue kick messages
+Logs contain 0 | 0 scheduler COMMIT records reading /proc/self/maps
+:: Verification logs retained:
+::   run 1: /results/runs/validate-cleanup-3-80ce2ee94689-1789724738166435665-509588-1a3c3ec7/backend-parity-c-rlimit-identity-verify-kvm/verify-logs/verify-1/run1_log_wpdW4
+::   run 2: /results/runs/validate-cleanup-3-80ce2ee94689-1789724738166435665-509588-1a3c3ec7/backend-parity-c-rlimit-identity-verify-kvm/verify-logs/verify-1/run2_log_J88e8
+:: comparison=BitwiseInfoV1 relaxations=none
+:: Success: deterministic. Determinism verified.
+:: Backend: KVM (reverie-kvm KvmGuest<Detcore>)

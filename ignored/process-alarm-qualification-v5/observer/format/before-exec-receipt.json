@@ -1,0 +1,37 @@
+{
+  "authorization_received": true,
+  "payload": {
+    "binary": "/usr/bin/python3",
+    "binary_sha256": "9cfdf1a01d07dadb394dd2dc9fd8316254c36764076d23dc2c895c8401735576",
+    "arguments": [
+      "-B",
+      "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/process-alarm-qualification-v5/phase.py",
+      "payload",
+      "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/process-alarm-qualification-v5/format-plan.json",
+      "d46bb4048d4af84765a49bd22ae6c5b0a78b41b9c48d47400d4ea5c2a4998a4b"
+    ]
+  },
+  "pid": 1555814,
+  "start_ticks": 186838941,
+  "restored_limits": {
+    "cpu": [
+      -1,
+      -1
+    ],
+    "as": [
+      -1,
+      -1
+    ],
+    "core": [
+      -1,
+      -1
+    ]
+  },
+  "protocol_environment_keys": [],
+  "handshake_fds_closed": true,
+  "ignore_sigpipe": true,
+  "python_file_size_signals_restored_to_default": true,
+  "environment_sha256": "511762ee3b26be8c21fcd9d5477119a1103cfe7e6632fe710dba975d81eddd4e",
+  "monotonic_ns": 1868389478122994,
+  "note": "Written before exec; this is not proof that the payload started."
+}

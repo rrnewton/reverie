@@ -1,0 +1,198 @@
+{
+  "hermit_base": "0bb3a94d85e9cd5949df34ce9f0199a99698f45b",
+  "hermit_source": "frozen v20, measured9e612366; unchanged path bytes proved against full source manifest",
+  "reverie_base": "f97b7be1de4e2ef10ecc24cee5d8cc47f2fd254f",
+  "reverie_source_patch": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/timer-integration-review-response-20260918/frozen-v2/SOURCE.patch",
+    "bytes": 159872,
+    "sha256": "09efb96b9fda442f36cb22f772b94db50cf42ecbee125738063752cd57917979"
+  },
+  "records": [
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-20260918/ignored/kvm-named-fifo-analysis-20260918/base/AGENTS.md",
+      "bytes": 34047,
+      "sha256": "be97a2a0e93b8c2ce3a37bf88c9d98e60722bb9b0e5ed47a7e8cdd7332f324cc",
+      "role": "Immutable0bb source; exact v20 consumed hash"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-20260918/ignored/kvm-named-fifo-analysis-20260918/base/detcore/src/fd.rs",
+      "bytes": 31241,
+      "sha256": "7245edcdcdb79aac86a26a1d408600b8265fb51605c9262d2740b8fbbd5c8870",
+      "role": "Immutable0bb source; exact v20 consumed hash"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-20260918/ignored/kvm-named-fifo-analysis-20260918/base/detcore/src/syscalls/files.rs",
+      "bytes": 196186,
+      "sha256": "b4f56303af3eab51be782582d95b8e368a3be7007157c1d6dcaca50ad6a4729a",
+      "role": "Immutable0bb source; exact v20 consumed hash"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-20260918/ignored/kvm-named-fifo-analysis-20260918/base/detcore/src/syscalls/helpers.rs",
+      "bytes": 69890,
+      "sha256": "7a038b7668d90818695b04510fd5c7e5007bc09d2091af512200ffd3be85de63",
+      "role": "Immutable0bb source; exact v20 consumed hash"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-20260918/ignored/kvm-named-fifo-analysis-20260918/base/detcore/src/syscalls/io.rs",
+      "bytes": 84949,
+      "sha256": "99b2f22f5e558bde3cfc5b42e31ca04fe3fb8749aa1a4df17390f341e246c302",
+      "role": "Immutable0bb source; exact v20 consumed hash"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-20260918/ignored/kvm-named-fifo-analysis-20260918/base/detcore/src/syscalls/threads.rs",
+      "bytes": 138063,
+      "sha256": "8a7adc4492141e6c6a62952ee0ecd989586ec1e638f9c5178f309b11c0d33381",
+      "role": "Immutable0bb source; exact v20 consumed hash"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/timer-source-v20/source/detcore/src/tool_local.rs",
+      "bytes": 152136,
+      "sha256": "9b55aec429a97e4081049d818d8346c8b87216343f03a2c960c0085adcbed7a7",
+      "role": "Frozen v20 source"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/timer-source-v20/source/detcore/src/lib.rs",
+      "bytes": 163257,
+      "sha256": "24afad331fa5c938758a45e55c77cacba09fe708c27f4a90f942198eb3aef77e",
+      "role": "Frozen v20 source"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/timer-source-v20/source/detcore-model/src/config.rs",
+      "bytes": 74189,
+      "sha256": "40d122e425d13615bcc962d725d488ca394153351d7bd3ff25e842f7d5b13217",
+      "role": "Frozen v20 source"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/timer-source-v20/FROZEN.json",
+      "bytes": 13431,
+      "sha256": "6210900d8c2b0d23babb02015a80cf60f6996277b770f65a45c72550bc46a6d7",
+      "role": "Hermit v20 identity"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/timer-source-v20/SOURCE.patch",
+      "bytes": 195857,
+      "sha256": "eb648deafeb9ed2bd918d23aaff337cb666e8cd42e3d37a9d50d5673cb9df4a1",
+      "role": "Hermit v20 identity"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/timer-validation-v20/source-manifest.json",
+      "bytes": 287812,
+      "sha256": "9e61236680fd8b50e633fb473a20aa5cea95996a5660bbd973b61eac8cb78ea6",
+      "role": "Measured Hermit source manifest"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/timer-integration-review-response-20260918/frozen-v2/source/after/reverie-kvm/src/executor.rs",
+      "bytes": 1425793,
+      "sha256": "d92078046a26824696c2017ed9bed1aea1108ccd941cf59276205e77b473dd53",
+      "role": "Frozen measured Reverie v2 source"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/timer-integration-review-response-20260918/frozen-v2/source/after/reverie-kvm/src/runtime.rs",
+      "bytes": 179722,
+      "sha256": "3f9cb37c391db3a0744f0494131aa9dbfdaa68dde07e8d4b30ef2dd2be78f811",
+      "role": "Frozen measured Reverie v2 source"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/timer-integration-review-response-20260918/frozen-v2/SOURCE_INPUTS.json",
+      "bytes": 33026,
+      "sha256": "0fcb52b6f2b331d5a328de88053d32b36af3f0d86050457addec54941328b84c",
+      "role": "Reverie v2 identity"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/timer-integration-review-response-20260918/frozen-v2/source-manifest.json",
+      "bytes": 676059,
+      "sha256": "02d70d4c1e03bc9c60f0b5ab97cc05a22a69f73c4e9bdc541fe45224d2fd4013",
+      "role": "Reverie v2 identity"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/timer-integration-review-response-20260918/frozen-v2/SOURCE.patch",
+      "bytes": 159872,
+      "sha256": "09efb96b9fda442f36cb22f772b94db50cf42ecbee125738063752cd57917979",
+      "role": "Reverie v2 identity"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/timer-named-fifo-v1/controls-run-1/fifo-kvm/result.json",
+      "bytes": 3416,
+      "sha256": "144a6fb4dfb91697bfa8dcf62159ff60cb4e4c984ae5e165c45a8dca000ed553",
+      "role": "Original failed FIFO attempt"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/timer-named-fifo-v1/FIRST-ATTEMPT-READBACK.json",
+      "bytes": 4069,
+      "sha256": "3473f2b18dcd069dfd71baa831460020c984e9b04280120f36e7f293ffff2a68",
+      "role": "Original failed FIFO attempt"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/timer-named-fifo-v1/fifo-kvm-plan.json",
+      "bytes": 5483,
+      "sha256": "1564da09986a0a9924b1da7a528d5b0d67a29a3c5123e6b1adccebb01d593da1",
+      "role": "Original failed FIFO attempt"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/timer-named-fifo-v1/observer/fifo-kvm/result.json",
+      "bytes": 33044,
+      "sha256": "7d4b94bb3e6a9921f27817bf15c8380978cad37c284ea65b693a65693c9dbc4d",
+      "role": "Original failed FIFO attempt"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/timer-named-fifo-v1/observer/fifo-kvm/verification.json",
+      "bytes": 435,
+      "sha256": "876c24913c0c767e88ed056c6408c5f8d1e16040544633f9032c198d40909039",
+      "role": "Original failed FIFO attempt"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/timer-named-fifo-v1/observer/fifo-kvm/verify-logs/run1_log_Ndh8J",
+      "bytes": 22037,
+      "sha256": "2d3a13850dc6538ecef1d84b2743ffe11469d1a76cd4f3f3eaa2453ecd0aca4b",
+      "role": "Original failed FIFO attempt"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/timer-named-fifo-v1/timer_lifecycle.c",
+      "bytes": 1138,
+      "sha256": "43d98e49b7f753679098bfef5bdb7f9ed60a658ab6313bd9ff3ecf010622008e",
+      "role": "Original failed FIFO attempt"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/timer-named-fifo-v1/ARTIFACT-BINDING.json",
+      "bytes": 15355,
+      "sha256": "e8cbf58448196f758b69a9883578793bfefc498307beef1417f8d4b63e4a5484",
+      "role": "Original failed FIFO attempt"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/timer-posix-and-pipe-v2/observer/pipe-kvm/verify-logs/run1_log_Zq7oB",
+      "bytes": 25814,
+      "sha256": "84fa93128b2ea1fe41cdee269604c89f44d88b8d8fe42a7632b903982b10df6d",
+      "role": "Distinct anonymous-pipe trace"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parent-reader-support-20260916/ignored/kvm-setitimer-signal-research-20260918/primary-references-v1/doc-signal.txt",
+      "bytes": 37612,
+      "sha256": "407168393cee65885f5743f999125e43c6090d8c8e47bfbdcecb347eac8680ed",
+      "role": "Existing retained primary Linux signal/restart reference"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parent-reader-support-20260916/ignored/kvm-setitimer-signal-research-20260918/primary-references-v1/FETCH_DOCUMENTS.json",
+      "bytes": 4315,
+      "sha256": "a204d0876ca591e1789cc38fb083ba38debd26c217a5ba9a7beb0e55f3f21881",
+      "role": "Existing retained primary Linux signal/restart reference"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parent-reader-support-20260916/ignored/kvm-setitimer-signal-research-20260918/primary-references-v1/TEXT_EXTRACTION.json",
+      "bytes": 1862,
+      "sha256": "fc383718fad2d5652d30c40cf77c37846055b150a1d32f79a17d05a011d7db09",
+      "role": "Existing retained primary Linux signal/restart reference"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/.skills/code-review/SKILL.md",
+      "bytes": 3617,
+      "sha256": "2cd879e25391da1fa13de6d20334a3f387f3171d05b40c075ba5f1f1c10c6b8f",
+      "role": "Review method; no independent scheduler approval claimed"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/.skills/deterministic-scheduling-review/SKILL.md",
+      "bytes": 11050,
+      "sha256": "b0f8bec8c6a278b34142c9a8e67a6795706c1ba3d296c037555b666f71c2812e",
+      "role": "Review method; no independent scheduler approval claimed"
+    }
+  ]
+}

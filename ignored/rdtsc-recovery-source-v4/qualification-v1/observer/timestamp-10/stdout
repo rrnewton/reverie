@@ -1,0 +1,4 @@
+{ "type": "suite", "event": "started", "test_count": 1 }
+{ "type": "test", "event": "started", "name": "subscribed_timestamp_dispatch_refuses_unrelated_exceptions" }
+{ "type": "test", "name": "subscribed_timestamp_dispatch_refuses_unrelated_exceptions", "event": "ok" }
+{ "type": "suite", "event": "ok", "passed": 1, "failed": 0, "ignored": 0, "measured": 0, "filtered_out": 316, "exec_time": 0.057522838 }

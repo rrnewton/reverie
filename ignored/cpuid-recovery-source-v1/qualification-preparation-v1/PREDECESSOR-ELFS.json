@@ -1,0 +1,11 @@
+{
+  "source": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v6/qualification-v1/retained-binaries/BINDING.json",
+  "sha256": "10c7c898fdb6d1b8496a03defd5a3fd0ef6ad2d073072a2ab17d33a54e029685",
+  "hashes": {
+    "lib": "85f9e1c558c533359b97faad7d845d5e7ce778f4cb013bd34618e0b439b870a7",
+    "static": "39fdd2e646d4c6a605ec15411635e581b04559064488b7add725856a96cc1118",
+    "vmcall": "7c63cde08d01c22660237e59f330d535735019fa77f5b07c4e4fc5e4dc8d5f93",
+    "read-clock": "62b1632b97e7f3a87a3d0240240aaa6d6e91263977cf194e8bab9829354f0703"
+  },
+  "purpose": "Refuse all four actual V6 harness bytes as newly built CPUID candidate evidence; no historical execution credit"
+}

@@ -1,0 +1,3 @@
+mode=positive instruction=rdtsc prefix=1 signal=0 code=0 trap=0 rip_delta=0 fault_delta=0 rf_stage=0
+registers rax=00000000ff892139 rdx=00000000000a7df1 rcx=fedcba9876543210 flags=0000000000000ed7 rsp_before=00007ffd8ef98798 rsp_after=00007ffd8ef98798
+PASS: native architectural properties

@@ -1,0 +1,29 @@
+{
+  "status": "source identity only; no execution",
+  "executor_entire_existing_test_module_equal": true,
+  "all_three_other_overlay_files_equal": true,
+  "baseline_production_is_exact_base": true,
+  "baseline_overlay_is_not_a_complete_checkout": true,
+  "files": [
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/scalar-read-positioned-fd-parity-v1/baseline-test-overlay/reverie-kvm/src/executor.rs",
+      "bytes": 1431792,
+      "sha256": "a3c6e24192244ec90f9e52a8638e31d36bdfdf72749aa9364816376dc1abcb8d"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/scalar-read-positioned-fd-parity-v1/baseline-test-overlay/reverie-kvm/src/scalar_fd_width_tests.rs",
+      "bytes": 19237,
+      "sha256": "e1ee373de389c01e8682cdb66283954813fbc733c3815b3ddde3a74f0a0267c4"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/scalar-read-positioned-fd-parity-v1/baseline-test-overlay/reverie-kvm/tests/static_elf.rs",
+      "bytes": 483344,
+      "sha256": "dc34373ac5c80cf991638cb27f5514a404510522e90b28884562a8401b9324c0"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/scalar-read-positioned-fd-parity-v1/baseline-test-overlay/reverie-kvm/tests/fixtures/scalar_fd_width.c",
+      "bytes": 3583,
+      "sha256": "8384a3acca2cdf9d2654db871cd08a1073d9fbc463b963cb33bd164f8ffe1ca0"
+    }
+  ]
+}

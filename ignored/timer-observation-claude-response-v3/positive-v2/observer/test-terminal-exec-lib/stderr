@@ -1,0 +1,2 @@
+park=true result=Err(GuestThreadExecUnsupported) cancelled=true exit_status=Some(Exited(127)) registers_unchanged=true memory_unchanged=true
+park=false result=Err(GuestThreadExecUnsupported) cancelled=true exit_status=Some(Exited(127)) registers_unchanged=true memory_unchanged=true

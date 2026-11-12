@@ -1,0 +1,40 @@
+--- a/prepare.py
++++ b/prepare.py
+@@ -65,20 +65,21 @@
+     if name=='core-check':
+         argv=[cargo,'check','--offline','--locked','-p','reverie-core','-p','reverie-ptrace','--message-format=json']
+     elif kind=='check':
+-        argv=[cargo,'clippy','--offline','--locked','-p','reverie-kvm','--lib','--test','static_elf','--message-format=json','--','-D','warnings']
++        argv=[cargo,'clippy','--offline','--locked','-p','reverie-kvm','--lib','--message-format=json','--','-D','warnings']
+     elif kind=='format':
+-        paths=['reverie-kvm/src/executor.rs', 'reverie-kvm/src/runtime.rs', 'reverie-kvm/tests/support/captured_write_signals.rs']
+-        actual=subprocess.check_output(['/usr/bin/git','-C',str(OWNER),'diff','HEAD','--name-only'],timeout=30).decode().splitlines()
+-        actual+=subprocess.check_output(['/usr/bin/git','-C',str(OWNER),'ls-files','--others','--exclude-standard','--','reverie/src','reverie-kvm/src','reverie-kvm/tests'],timeout=30).decode().splitlines()
+-        require(sorted(p for p in actual if p.endswith('.rs'))==paths,'changed Rust path set differs')
++        paths=['reverie-kvm/src/executor.rs']
++        require(REPO != OWNER, 'negative-before source must be an owned snapshot')
++        expected=json_read(HERE/'SETUP.json')['test_source'];check_file(expected)
++        inputs.append(expected)
++        require(read(REPO/paths[0])==read(expected['path']), 'snapshot test differs from reviewed after source')
+         argv=[str(TOOL/'rustfmt'),'--check','--edition','2024','--config','skip_children=true',*paths]
+     elif kind=='metadata':argv=[cargo,'metadata','--offline','--locked','--format-version','1']
+     elif kind=='compile':
+         metadata=json_read(HERE/'controls/metadata/result.json');require(metadata['accepted']and metadata['terminal_authenticated'],'metadata did not qualify')
+         require((HERE/'dependency-inputs.json').is_file(),'dependency sources not bound')
+         inputs.append(file_record(HERE/'controls/metadata/result.json'))
+-        argv=[cargo,'test','--offline','--locked','-p','reverie-kvm','--lib','--test','static_elf','--no-run','--message-format=json']
+-        artifact_selectors=[dict(id='lib',target='reverie_kvm',kind=['lib']),dict(id='static',target='static_elf',kind=['test'])]
++        argv=[cargo,'test','--offline','--locked','-p','reverie-kvm','--lib','--no-run','--message-format=json']
++        artifact_selectors=[dict(id='lib',target='reverie_kvm',kind=['lib'])]
+     else:
+         qualified=json_read(HERE/'controls/compile/result.json');require(qualified['accepted']and qualified['terminal_authenticated'],'compile did not qualify')
+         selection=json_read(HERE/'SELECTORS.json')
+@@ -105,7 +106,7 @@
+               lease=dict(path=str(lease),owner_slot=str(OWNER),identity=[l.st_dev,l.st_ino,l.st_uid],state_directory=str(OWNER/'ignored/timer-integration-20260918/lease-state')),
+               output=str(HERE/'observer'/name),control=str(HERE/'controls'/name),
+               limits=dict(aggregate_cpu_usec=600000000 if large else 30000000,wall_seconds=900 if large else 60,lethal_stderr_bytes=16777216,live_stdout_samples_bytes=67108864,phase_read_bytes=16777216,memory_bytes=17179869184,swap_bytes=0,free_floor_bytes=107374182400),
+-              scope='Scalar write low32 descriptor component; separate baseline/corrected source. No Hermit timer fix or parity claim')
++              scope='Same-inode OFD replacement negative-before unit control over unchanged production; no FIFO or runtime correction claim')
+     if(HERE/'dependency-inputs.json').exists():plan['dependencies']=file_record(HERE/'dependency-inputs.json')
+     write_new(Path(plan['path']),plan);print(plan['path'],hashlib.sha256(Path(plan['path']).read_bytes()).hexdigest())
+ if __name__=='__main__':main()

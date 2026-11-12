@@ -1,0 +1,3 @@
+code=Some(0)
+success=true
+display=exit status: 0

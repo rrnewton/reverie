@@ -1,0 +1,32 @@
+{
+  "owner_slot": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918",
+  "source_root": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/publication-fd-composition-v1/source",
+  "base": "000c15a1161ea2d58749431b5ddaaa97f7aa37d5",
+  "source_files": [
+    {
+      "relative": "reverie-kvm/src/elf.rs",
+      "file": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/publication-fd-composition-v1/after/reverie-kvm/src/elf.rs",
+        "bytes": 67616,
+        "sha256": "617b6e2d539fab8b753e032b60037ac195d4b983b77e6996dae4d29af849cd95"
+      }
+    },
+    {
+      "relative": "reverie-kvm/src/executor.rs",
+      "file": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/publication-fd-composition-v1/after/reverie-kvm/src/executor.rs",
+        "bytes": 1457169,
+        "sha256": "72e7e3dd0d840dd3068c6216ce23c142dba5cf7fecd55f5a133c68c319755151"
+      }
+    },
+    {
+      "relative": "reverie-kvm/src/process_signal_publication.rs",
+      "file": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/publication-fd-composition-v1/after/reverie-kvm/src/process_signal_publication.rs",
+        "bytes": 32377,
+        "sha256": "64f23aded851a3ba6635f29a60c0a42b6b9784eb57ff1f44309b82b81f2db9cb"
+      }
+    }
+  ],
+  "purpose": "Proposed isolated inactive publisher plus descriptor-entry repair composition; unexecuted"
+}

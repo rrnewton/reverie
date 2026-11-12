@@ -1,0 +1,13 @@
+{
+  "exact_declarations": 1,
+  "groups": {
+    "probe-01": {
+      "artifact": "lib",
+      "names": [
+        "vm::tests::cpuid_fault_transport_probe::actual_cpuid_faulting_preserves_instruction_and_is_owned_by_one_vcpu"
+      ],
+      "source": "reverie-kvm/src/cpuid_transport_probe.rs",
+      "purpose": "Actual disabled, armed, independent, disarmed and unrelated-fault CPUID hardware path; no capability skip"
+    }
+  }
+}

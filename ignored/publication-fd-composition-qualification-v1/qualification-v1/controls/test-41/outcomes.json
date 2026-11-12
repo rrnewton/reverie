@@ -1,0 +1,24 @@
+{
+  "started": [
+    "executor::tests::single_thread_signalfd_supports_private_pending_and_refuses_sibling_lifetimes"
+  ],
+  "ended": [
+    {
+      "type": "test",
+      "name": "executor::tests::single_thread_signalfd_supports_private_pending_and_refuses_sibling_lifetimes",
+      "event": "ok"
+    }
+  ],
+  "suites": [
+    {
+      "type": "suite",
+      "event": "ok",
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filtered_out": 501,
+      "exec_time": 0.001802526
+    }
+  ]
+}

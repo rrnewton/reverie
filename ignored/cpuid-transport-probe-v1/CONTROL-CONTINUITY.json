@@ -1,0 +1,31 @@
+{
+  "original": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/cpuid-transport-probe-v1/origin/probe.rs",
+    "bytes": 7043,
+    "sha256": "492dc946c68955d2c94c6d7d560aa9a2cfd5252db96d7f5d3be5428d35c6bfae",
+    "mode": 420
+  },
+  "final": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/cpuid-transport-probe-v1/source/reverie-kvm/src/cpuid_transport_probe.rs",
+    "bytes": 7688,
+    "sha256": "02b0026f8b18786eb538ad0e050539e7400b54425fd0bcd6daf72601547296e1",
+    "mode": 420
+  },
+  "formatter_preparation": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/cpuid-transport-probe-v1/format-preparation.json",
+    "bytes": 596,
+    "sha256": "b923f5e3d753549bdbd04f516af4b72f4a6e9beb0680907623b437782e5128c4",
+    "mode": 420
+  },
+  "formatted_original_sha256": "a3014ca5dc9235adb1d002cd29c23d7c507b9b7a5606ac4e27704eca89e6a077",
+  "final_after_reverting_exact_four_diagnostic_macros_equals_formatted_original": true,
+  "assertions_and_diagnostic_values_unchanged": true,
+  "original_existing_tests_unchanged": true,
+  "root_original_delta": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/cpuid-transport-probe-v1/PROBE-INTEGRATION.patch",
+    "bytes": 8424,
+    "sha256": "f9655da71c10c5e59253db006fa57f909b4b621a0bb9f2fb39d6eeb298f3cc99",
+    "mode": 420
+  },
+  "no_execution": true
+}

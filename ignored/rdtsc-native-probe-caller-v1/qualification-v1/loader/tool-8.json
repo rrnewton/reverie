@@ -1,0 +1,414 @@
+{
+  "executable": {
+    "path": "/usr/bin/readelf",
+    "bytes": 683296,
+    "mode": 493,
+    "sha256": "51bc80f3a187e54e0b267fe6e64de09129f7761aafe615177d9d0be2229afcff"
+  },
+  "inputs": [
+    {
+      "path": "/usr/lib64/libctf-nobfd.so.0.0.0",
+      "bytes": 115912,
+      "mode": 493,
+      "sha256": "0d4e4bbed74766b9ccceb3f7b7e82a71dc1c996bda55cdf4d7da9206fe04542f"
+    },
+    {
+      "path": "/usr/lib64/libz.so.1.2.11",
+      "bytes": 102672,
+      "mode": 493,
+      "sha256": "ae0b0485bffccd7b374451b52938f67e109c237a4a98679792d5dc1a31270289"
+    },
+    {
+      "path": "/usr/lib64/libdebuginfod-0.195.so",
+      "bytes": 52608,
+      "mode": 493,
+      "sha256": "1df875e2eb8aca3cd2a4ced29b1c362c9157a9407f28e77113637f1e5f7eb387"
+    },
+    {
+      "path": "/usr/lib64/libc.so.6",
+      "bytes": 2549352,
+      "mode": 493,
+      "sha256": "d932cb6bc88da10cc709d5b7ecda57a1387b6571331689dba88023b4c0517776"
+    },
+    {
+      "path": "/usr/lib64/libcurl.so.4.7.0",
+      "bytes": 666384,
+      "mode": 493,
+      "sha256": "644251954e0709a4e403587d3ff85286b038fcdb1db3042f044fb129aed9cd24"
+    },
+    {
+      "path": "/usr/lib64/libelf-0.195.so",
+      "bytes": 111624,
+      "mode": 493,
+      "sha256": "fdf92630174e71757632cb728d655aea8e942030cc9a775e895dd2eab636131b"
+    },
+    {
+      "path": "/usr/lib64/libcrypto.so.3.5.7",
+      "bytes": 6164424,
+      "mode": 493,
+      "sha256": "0599684a6f76b425c95832bd00b2faf5719b32e6319afd6ce8846360d0529d31"
+    },
+    {
+      "path": "/usr/lib64/libjson-c.so.5.0.0",
+      "bytes": 75928,
+      "mode": 493,
+      "sha256": "8aa6483f266303dd0116a85882806382c9e254bceeb17be1c1f8933a1ea9f33e"
+    },
+    {
+      "path": "/usr/lib64/ld-linux-x86-64.so.2",
+      "bytes": 938752,
+      "mode": 493,
+      "sha256": "008e34384d4bc082a053ba086588efa1546086ecb863c9464b7269f8928b7577"
+    },
+    {
+      "path": "/usr/lib64/libnghttp2.so.14.20.1",
+      "bytes": 168536,
+      "mode": 493,
+      "sha256": "d6954507f906809babd898c3b07d1140ea7545596702e88416f3e6f1b8d271fc"
+    },
+    {
+      "path": "/usr/lib64/libidn2.so.0.3.7",
+      "bytes": 130952,
+      "mode": 493,
+      "sha256": "dc245bad13edbcd52b6f654a3de2ddcb017c92590e0b7b473b8a69a3db3a2b9c"
+    },
+    {
+      "path": "/usr/lib64/libssh.so.4.9.4",
+      "bytes": 487808,
+      "mode": 493,
+      "sha256": "30e94bf8c006b2de68708f0b6a8f4d8c530c7ca2525821a9dd1964e781ad6152"
+    },
+    {
+      "path": "/usr/lib64/libpsl.so.5.3.3",
+      "bytes": 77488,
+      "mode": 493,
+      "sha256": "fe74845c864b47a6b5a2cadbdeab940f828d1a45cc6381e68bd5f2d96bd836c9"
+    },
+    {
+      "path": "/usr/lib64/libssl.so.3.5.7",
+      "bytes": 1043976,
+      "mode": 493,
+      "sha256": "f587ccb16f966d96e6062c10e9e2f9c0dec3358281f6569eb65988d4a9741725"
+    },
+    {
+      "path": "/usr/lib64/libgssapi_krb5.so.2.2",
+      "bytes": 358456,
+      "mode": 493,
+      "sha256": "7fe81e015e7647977eb0ce9f6c0fcd91ae3a2ddae8342ff3b47dee6f017571c1"
+    },
+    {
+      "path": "/usr/lib64/libkrb5.so.3.3",
+      "bytes": 906320,
+      "mode": 493,
+      "sha256": "9ce9f8baa6dfe3a76aaded2aa55464f859b1c0691cd784e2e98bf9cac62edcfe"
+    },
+    {
+      "path": "/usr/lib64/libk5crypto.so.3.1",
+      "bytes": 99016,
+      "mode": 493,
+      "sha256": "11798eda493ff0b9d99b7f061768a98ab81cadb10112db07ee229c1a4777c8c7"
+    },
+    {
+      "path": "/usr/lib64/libcom_err.so.2.1",
+      "bytes": 23768,
+      "mode": 493,
+      "sha256": "3958645734110eb76dcf59b64bd5bc3b2b4d5cd6eee46bf73b024ca83931dc2b"
+    },
+    {
+      "path": "/usr/lib64/libldap_r.so.2.0.200",
+      "bytes": 417144,
+      "mode": 493,
+      "sha256": "035aa103efcc5cfdac264b18ccdd5566699bfebf114b0feb56b116f7e36c58f2"
+    },
+    {
+      "path": "/usr/lib64/liblber.so.2.0.200",
+      "bytes": 74504,
+      "mode": 493,
+      "sha256": "fc59a9429baf572a000665da512861ce97e85b4bb72acc2ae9d6aad195570b91"
+    },
+    {
+      "path": "/usr/lib64/libbrotlidec.so.1.0.9",
+      "bytes": 52416,
+      "mode": 493,
+      "sha256": "258b72615be8b96b9c87e25482d49694fdee535b060e0cdd147af71135d42b8c"
+    },
+    {
+      "path": "/usr/lib64/libzstd.so.1.5.5",
+      "bytes": 754200,
+      "mode": 493,
+      "sha256": "dc1ccdc94eea889670d6258a70ae51be922be6a4740eb44eee4f1baf012136b7"
+    },
+    {
+      "path": "/usr/lib64/libunistring.so.2.1.0",
+      "bytes": 1591920,
+      "mode": 493,
+      "sha256": "70b4c4050c4319fb109a3cf5745f9a6ab2e5862c6bc809aea0e4cb94c87978ef"
+    },
+    {
+      "path": "/usr/lib64/libkrb5support.so.0.1",
+      "bytes": 66200,
+      "mode": 493,
+      "sha256": "d07b246960403bcc9d2532b4954a761ee8607548bb3f0dedc3feb359a6dafc21"
+    },
+    {
+      "path": "/usr/lib64/libkeyutils.so.1.10",
+      "bytes": 23992,
+      "mode": 493,
+      "sha256": "b0aaec55115d2ab97e1a70cb4c9a1b036d839d7922e67d3e610cd3ccd58521e3"
+    },
+    {
+      "path": "/usr/lib64/libresolv.so.2",
+      "bytes": 70512,
+      "mode": 493,
+      "sha256": "b39beb8c599307ca3c3958ab358a734815addcefc7e595a02c91745ef2756d8b"
+    },
+    {
+      "path": "/usr/lib64/libevent-2.1.so.7.0.1",
+      "bytes": 365352,
+      "mode": 493,
+      "sha256": "b39790e3ac8043f9a84ced739efcd03adc9446f837f90e37221515b28bca7383"
+    },
+    {
+      "path": "/usr/lib64/libsasl2.so.3.0.0",
+      "bytes": 128416,
+      "mode": 493,
+      "sha256": "0eb67aea149186cd182854c46d66a7e53b6c451aaaa5a6e2ab4e84db63fd5585"
+    },
+    {
+      "path": "/usr/lib64/libbrotlicommon.so.1.0.9",
+      "bytes": 138080,
+      "mode": 493,
+      "sha256": "61035507604289edc6ed61a672b3d4b00f752e2360fffbd19d2b06d52de94e50"
+    },
+    {
+      "path": "/usr/lib64/libselinux.so.1",
+      "bytes": 175624,
+      "mode": 493,
+      "sha256": "c265777e75d52d549e52ec3b24df4f760d26fb439cc468b260d34175d1bac0e5"
+    },
+    {
+      "path": "/usr/lib64/libcrypt.so.2.0.0",
+      "bytes": 201808,
+      "mode": 493,
+      "sha256": "67847e804cdd224fc438207e6919a69ce03cdede0fa3f3467fbd09b554640667"
+    },
+    {
+      "path": "/usr/lib64/libpcre2-8.so.0.11.0",
+      "bytes": 636848,
+      "mode": 493,
+      "sha256": "9a7c5324aa19b789ec6451fac312238ba8b266886e37f2dcad51b612deaae96c"
+    }
+  ],
+  "input_symlinks": [
+    {
+      "path": "/lib64/libctf-nobfd.so.0",
+      "target": "libctf-nobfd.so.0.0.0",
+      "mode": 511
+    },
+    {
+      "path": "/lib64",
+      "target": "usr/lib64",
+      "mode": 511
+    },
+    {
+      "path": "/lib64/libz.so.1",
+      "target": "libz.so.1.2.11",
+      "mode": 511
+    },
+    {
+      "path": "/lib64/libdebuginfod.so.1",
+      "target": "libdebuginfod-0.195.so",
+      "mode": 511
+    },
+    {
+      "path": "/lib64/libcurl.so.4",
+      "target": "libcurl.so.4.7.0",
+      "mode": 511
+    },
+    {
+      "path": "/lib64/libelf.so.1",
+      "target": "libelf-0.195.so",
+      "mode": 511
+    },
+    {
+      "path": "/lib64/libcrypto.so.3",
+      "target": "libcrypto.so.3.5.7",
+      "mode": 511
+    },
+    {
+      "path": "/lib64/libjson-c.so.5",
+      "target": "libjson-c.so.5.0.0",
+      "mode": 511
+    },
+    {
+      "path": "/lib64/libnghttp2.so.14",
+      "target": "libnghttp2.so.14.20.1",
+      "mode": 511
+    },
+    {
+      "path": "/lib64/libidn2.so.0",
+      "target": "libidn2.so.0.3.7",
+      "mode": 511
+    },
+    {
+      "path": "/lib64/libssh.so.4",
+      "target": "libssh.so.4.9.4",
+      "mode": 511
+    },
+    {
+      "path": "/lib64/libpsl.so.5",
+      "target": "libpsl.so.5.3.3",
+      "mode": 511
+    },
+    {
+      "path": "/lib64/libssl.so.3",
+      "target": "libssl.so.3.5.7",
+      "mode": 511
+    },
+    {
+      "path": "/lib64/libgssapi_krb5.so.2",
+      "target": "libgssapi_krb5.so.2.2",
+      "mode": 511
+    },
+    {
+      "path": "/lib64/libkrb5.so.3",
+      "target": "libkrb5.so.3.3",
+      "mode": 511
+    },
+    {
+      "path": "/lib64/libk5crypto.so.3",
+      "target": "libk5crypto.so.3.1",
+      "mode": 511
+    },
+    {
+      "path": "/lib64/libcom_err.so.2",
+      "target": "libcom_err.so.2.1",
+      "mode": 511
+    },
+    {
+      "path": "/lib64/libldap.so.2",
+      "target": "libldap_r.so.2.0.200",
+      "mode": 511
+    },
+    {
+      "path": "/lib64/liblber.so.2",
+      "target": "liblber.so.2.0.200",
+      "mode": 511
+    },
+    {
+      "path": "/lib64/libbrotlidec.so.1",
+      "target": "libbrotlidec.so.1.0.9",
+      "mode": 511
+    },
+    {
+      "path": "/lib64/libzstd.so.1",
+      "target": "libzstd.so.1.5.5",
+      "mode": 511
+    },
+    {
+      "path": "/lib64/libunistring.so.2",
+      "target": "libunistring.so.2.1.0",
+      "mode": 511
+    },
+    {
+      "path": "/lib64/libkrb5support.so.0",
+      "target": "libkrb5support.so.0.1",
+      "mode": 511
+    },
+    {
+      "path": "/lib64/libkeyutils.so.1",
+      "target": "libkeyutils.so.1.10",
+      "mode": 511
+    },
+    {
+      "path": "/lib64/libevent-2.1.so.7",
+      "target": "libevent-2.1.so.7.0.1",
+      "mode": 511
+    },
+    {
+      "path": "/lib64/libsasl2.so.3",
+      "target": "libsasl2.so.3.0.0",
+      "mode": 511
+    },
+    {
+      "path": "/lib64/libbrotlicommon.so.1",
+      "target": "libbrotlicommon.so.1.0.9",
+      "mode": 511
+    },
+    {
+      "path": "/lib64/libcrypt.so.2",
+      "target": "libcrypt.so.2.0.0",
+      "mode": 511
+    },
+    {
+      "path": "/lib64/libpcre2-8.so.0",
+      "target": "libpcre2-8.so.0.11.0",
+      "mode": 511
+    }
+  ],
+  "queries": [
+    {
+      "argv": [
+        "/usr/bin/ldd",
+        "/usr/bin/readelf"
+      ],
+      "cwd": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-native-probe-caller-v1",
+      "wall_limit_seconds": 5,
+      "forced": false,
+      "returncode": 0,
+      "elapsed_seconds": 0.05147720919921994,
+      "stdout": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-native-probe-caller-v1/qualification-v1/loader/tool-8-ldd.stdout",
+        "bytes": 2020,
+        "mode": 420,
+        "sha256": "27383167d2ec5581700a5d176779f66bbf3942cfe7c8141baf0b91a8f1118200"
+      },
+      "stderr": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-native-probe-caller-v1/qualification-v1/loader/tool-8-ldd.stderr",
+        "bytes": 0,
+        "mode": 420,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      }
+    },
+    {
+      "argv": [
+        "/usr/bin/readelf",
+        "-W",
+        "-l",
+        "-d",
+        "/usr/bin/readelf"
+      ],
+      "cwd": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-native-probe-caller-v1",
+      "wall_limit_seconds": 5,
+      "forced": false,
+      "returncode": 0,
+      "elapsed_seconds": 0.051421053940430284,
+      "stdout": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-native-probe-caller-v1/qualification-v1/loader/tool-8-readelf.stdout",
+        "bytes": 3754,
+        "mode": 420,
+        "sha256": "9d5b3528caf6f9f0dfb121faf4560afe2caa914b0d88191950329895053ea931"
+      },
+      "stderr": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-native-probe-caller-v1/qualification-v1/loader/tool-8-readelf.stderr",
+        "bytes": 0,
+        "mode": 420,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      }
+    }
+  ],
+  "query_programs": [
+    {
+      "path": "/usr/bin/ldd",
+      "bytes": 5446,
+      "mode": 493,
+      "sha256": "2e332feed7fe0d65afca81d83d07f997917c07d5c1f1fd5564e98330e78aa0b5"
+    },
+    {
+      "path": "/usr/bin/readelf",
+      "bytes": 683296,
+      "mode": 493,
+      "sha256": "51bc80f3a187e54e0b267fe6e64de09129f7761aafe615177d9d0be2229afcff"
+    }
+  ]
+}

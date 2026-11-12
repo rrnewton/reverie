@@ -1,0 +1,180 @@
+{
+  "schema": 1,
+  "phase": "compile-lifecycle-only-recovery",
+  "accepted": false,
+  "terminal_authenticated": true,
+  "observer_attempted": true,
+  "observer_result": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/timer-integration-20260918/qualification-v3/observer/compile/result.json",
+    "bytes": 33205,
+    "mode": 384,
+    "sha256": "e2cd05b3143f887af09309ebd9e5f40d9a3118ba73d2172cf3c4deb8f15ae8bd"
+  },
+  "original_unqualified_result": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/timer-integration-20260918/qualification-v3/controls/compile/result.json",
+    "bytes": 6088,
+    "mode": 420,
+    "sha256": "bf538cb06b65cce2626563c324fe0f944f265e11debbe4115452aceb33d4361e"
+  },
+  "original_plan": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/timer-integration-20260918/qualification-v3/compile-plan.json",
+    "bytes": 30397,
+    "mode": 420,
+    "sha256": "ed118d44d3ac2723333b85b4f4a83f7f6d4bc85c284a717583bae62dc80e5b5d"
+  },
+  "raw_status": 0,
+  "payload_exit": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/timer-integration-20260918/qualification-v3/observer/compile/payload-exit.json",
+    "bytes": 80,
+    "mode": 420,
+    "sha256": "20cf8cf025b30b12f65fe932ca55fe48eb6d11c184d20b8c9288f6a46ca9eaf7"
+  },
+  "retained_terminal_accounting": {
+    "source": "systemd CPUUsageNSec after service exit",
+    "cpu_usage_nsec": 8502478000,
+    "cgroup_empty": true,
+    "exec_main_code": 1,
+    "exec_main_status": 0,
+    "properties": {
+      "Id": "safehermit-20260918T064813Z-1785449.service",
+      "LoadState": "loaded",
+      "ActiveState": "inactive",
+      "SubState": "dead",
+      "ControlGroup": "",
+      "MainPID": 0,
+      "ExecMainPID": 1785933,
+      "ExecMainCode": 1,
+      "ExecMainStatus": 0,
+      "ExecMainStartTimestampMonotonic": 1873023056279,
+      "CPUUsageNSec": 8502478000
+    }
+  },
+  "fresh_quiescence_checks": [
+    {
+      "query": {
+        "argv": [
+          "/usr/bin/systemctl",
+          "--user",
+          "show",
+          "safehermit-20260918T064813Z-1785449.service",
+          "--property=Id,LoadState,ActiveState,SubState,ControlGroup,MainPID,ExecMainPID,ExecMainStartTimestampMonotonic,CPUUsageNSec"
+        ],
+        "cwd": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918",
+        "wall_limit_seconds": 5,
+        "forced": false,
+        "returncode": 0,
+        "elapsed_seconds": 0.05075586889870465,
+        "stdout": {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/timer-integration-20260918/retirement-recovery-v1/recovery-service-0.stdout",
+          "bytes": 197,
+          "mode": 420,
+          "sha256": "60e0c89565ad245dd1d30e6fec9e680f2a3cc95593350781ac253b79f57eba7c"
+        },
+        "stderr": {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/timer-integration-20260918/retirement-recovery-v1/recovery-service-0.stderr",
+          "bytes": 0,
+          "mode": 420,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        }
+      },
+      "properties": {
+        "Id": "safehermit-20260918T064813Z-1785449.service",
+        "LoadState": "not-found",
+        "ActiveState": "inactive",
+        "SubState": "dead",
+        "MainPID": "0",
+        "ExecMainStartTimestampMonotonic": "0",
+        "ExecMainPID": "0",
+        "ControlGroup": "",
+        "CPUUsageNSec": "[not set]"
+      },
+      "processes": [
+        {
+          "original": {
+            "pid": 1785449,
+            "start_ticks": 187302268,
+            "parent_pid": 1785354,
+            "state": "R",
+            "cgroup": "/user.slice/user-212630.slice/user@212630.service/3pai_sandbox.slice/run-p1210520-i1360322665.scope"
+          },
+          "current": null
+        },
+        {
+          "original": {
+            "pid": 1785933,
+            "start_ticks": 187302305,
+            "parent_pid": 32320,
+            "state": "R",
+            "cgroup": "/user.slice/user-212630.slice/user@212630.service/app.slice/safehermit-20260918T064813Z-1785449.service"
+          },
+          "current": null
+        }
+      ],
+      "cgroup_absent": true
+    },
+    {
+      "query": {
+        "argv": [
+          "/usr/bin/systemctl",
+          "--user",
+          "show",
+          "safehermit-20260918T064813Z-1785449.service",
+          "--property=Id,LoadState,ActiveState,SubState,ControlGroup,MainPID,ExecMainPID,ExecMainStartTimestampMonotonic,CPUUsageNSec"
+        ],
+        "cwd": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918",
+        "wall_limit_seconds": 5,
+        "forced": false,
+        "returncode": 0,
+        "elapsed_seconds": 0.05051973485387862,
+        "stdout": {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/timer-integration-20260918/retirement-recovery-v1/recovery-service-1.stdout",
+          "bytes": 197,
+          "mode": 420,
+          "sha256": "60e0c89565ad245dd1d30e6fec9e680f2a3cc95593350781ac253b79f57eba7c"
+        },
+        "stderr": {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/timer-integration-20260918/retirement-recovery-v1/recovery-service-1.stderr",
+          "bytes": 0,
+          "mode": 420,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        }
+      },
+      "properties": {
+        "Id": "safehermit-20260918T064813Z-1785449.service",
+        "LoadState": "not-found",
+        "ActiveState": "inactive",
+        "SubState": "dead",
+        "MainPID": "0",
+        "ExecMainStartTimestampMonotonic": "0",
+        "ExecMainPID": "0",
+        "ControlGroup": "",
+        "CPUUsageNSec": "[not set]"
+      },
+      "processes": [
+        {
+          "original": {
+            "pid": 1785449,
+            "start_ticks": 187302268,
+            "parent_pid": 1785354,
+            "state": "R",
+            "cgroup": "/user.slice/user-212630.slice/user@212630.service/3pai_sandbox.slice/run-p1210520-i1360322665.scope"
+          },
+          "current": null
+        },
+        {
+          "original": {
+            "pid": 1785933,
+            "start_ticks": 187302305,
+            "parent_pid": 32320,
+            "state": "R",
+            "cgroup": "/user.slice/user-212630.slice/user@212630.service/app.slice/safehermit-20260918T064813Z-1785449.service"
+          },
+          "current": null
+        }
+      ],
+      "cgroup_absent": true
+    }
+  ],
+  "final_source_inputs_unchanged": true,
+  "scope": "Lifecycle recovery only. Cargo returned raw 0; original attempt remains unqualified due to observer accounting failure. No test result is retroactively accepted; no source, limits, cache token, or completion file changed by this proof."
+}

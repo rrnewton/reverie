@@ -1,0 +1,1 @@
+shutdown ok=5 shut_rd=1 shut_wr=1 shut_rdwr=1 dgram_pair=1 shut_dgram=1 ebadf=1

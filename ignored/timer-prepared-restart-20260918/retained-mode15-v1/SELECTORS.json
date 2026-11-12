@@ -1,0 +1,10 @@
+{
+  "groups": {
+    "test-mode15": {
+      "artifact": "static",
+      "names": [
+        "parked_signals::parked_signal_capacity_failure_is_terminal_before_getpid"
+      ]
+    }
+  }
+}

@@ -1,0 +1,53 @@
+{
+  "groups": {
+    "test-routing": {
+      "artifact": "static",
+      "names": [
+        "captured_write_signals::captured_write_signal_capability_routes_and_refusals"
+      ]
+    },
+    "test-write-results": {
+      "artifact": "static",
+      "names": [
+        "captured_write_signals::captured_write_signal_capability_preserves_fault_and_partial_result"
+      ]
+    },
+    "test-nested": {
+      "artifact": "static",
+      "names": [
+        "captured_write_signals::captured_write_signal_capability_blocks_nested_and_malformed_admission"
+      ]
+    },
+    "test-signalfd": {
+      "artifact": "lib",
+      "names": [
+        "executor::tests::signalfd_backing_is_not_writable_seekable_or_pollout_visible"
+      ]
+    },
+    "test-current-table": {
+      "artifact": "lib",
+      "names": [
+        "executor::tests::captured_write_site_uses_current_table_and_full_callback_identity"
+      ]
+    },
+    "test-adapter": {
+      "artifact": "lib",
+      "names": [
+        "runtime::captured_write_tests::captured_write_query_default_adapter_and_nested_guards_have_no_effects"
+      ]
+    },
+    "test-descriptor-routing": {
+      "artifact": "lib",
+      "names": [
+        "executor::tests::standard_descriptor_vectored_io_preserves_owned_and_captured_routing"
+      ]
+    },
+    "test-frame-contract": {
+      "artifact": "static",
+      "names": [
+        "parked_signals::parked_signal_actual_callback_frame_and_dequeue_contract"
+      ]
+    }
+  },
+  "scope": "Seven proposed declarations plus one nearest existing actual callback/frame control; zero added product test declarations. Twenty captured-write fixture modes; the frame neighbor has its own fifteen original modes."
+}

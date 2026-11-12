@@ -1,0 +1,30 @@
+{
+  "started": [
+    "parked_signals::parked_signal_actual_callback_frame_and_dequeue_contract",
+    "process_alarm_signals::process_alarm_signal_tool_boundary_contract"
+  ],
+  "ended": [
+    {
+      "type": "test",
+      "name": "parked_signals::parked_signal_actual_callback_frame_and_dequeue_contract",
+      "event": "ok"
+    },
+    {
+      "type": "test",
+      "name": "process_alarm_signals::process_alarm_signal_tool_boundary_contract",
+      "event": "ok"
+    }
+  ],
+  "suites": [
+    {
+      "type": "suite",
+      "event": "ok",
+      "passed": 2,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filtered_out": 288,
+      "exec_time": 2.529707969
+    }
+  ]
+}

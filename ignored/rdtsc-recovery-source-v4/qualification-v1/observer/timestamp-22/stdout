@@ -1,0 +1,4 @@
+{ "type": "suite", "event": "started", "test_count": 1 }
+{ "type": "test", "event": "started", "name": "static_elf_runs_glibc_clone3_thread_and_restores_parent_state" }
+{ "type": "test", "name": "static_elf_runs_glibc_clone3_thread_and_restores_parent_state", "event": "ok" }
+{ "type": "suite", "event": "ok", "passed": 1, "failed": 0, "ignored": 0, "measured": 0, "filtered_out": 316, "exec_time": 0.280741102 }

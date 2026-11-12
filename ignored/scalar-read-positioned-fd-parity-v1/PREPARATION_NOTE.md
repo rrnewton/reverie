@@ -1,0 +1,3 @@
+Initial artifact preparation stopped at an assertion before any proposal replacement was written: an unanchored search for fn read matched the earlier fdinfo method. Exact before/after source copies had been created; they were still identical to the base. The successor preparation anchors free functions at column zero. This was a proposal-generation error, not a build, test, or native observation; no live product bytes changed.
+
+Context packet construction initially requested Cargo.lock from the base Git tree and stopped with git show raw128: this repository keeps the existing local lockfile ignored. The successor packet binds it as an existing generated local input, separately from immutable Git blobs. No Cargo command or dependency resolution ran.

@@ -1,0 +1,142 @@
+{
+  "callbacks": [
+    {
+      "ordinal": 1,
+      "sender_tid": 1,
+      "request": "Tsc",
+      "rip": "0x101fcb8",
+      "image": "interpreter",
+      "load_bias": "0x1000000",
+      "elf_vaddr": "0x1fcb8",
+      "file_offset": 130232,
+      "bytes": "0f31"
+    },
+    {
+      "ordinal": 2,
+      "sender_tid": 1,
+      "request": "Tsc",
+      "rip": "0x101fe52",
+      "image": "interpreter",
+      "load_bias": "0x1000000",
+      "elf_vaddr": "0x1fe52",
+      "file_offset": 130642,
+      "bytes": "0f31"
+    },
+    {
+      "ordinal": 3,
+      "sender_tid": 1,
+      "request": "Tsc",
+      "rip": "0x1022392",
+      "image": "interpreter",
+      "load_bias": "0x1000000",
+      "elf_vaddr": "0x22392",
+      "file_offset": 140178,
+      "bytes": "0f31"
+    },
+    {
+      "ordinal": 4,
+      "sender_tid": 1,
+      "request": "Tsc",
+      "rip": "0x10223bf",
+      "image": "interpreter",
+      "load_bias": "0x1000000",
+      "elf_vaddr": "0x223bf",
+      "file_offset": 140223,
+      "bytes": "0f31"
+    },
+    {
+      "ordinal": 5,
+      "sender_tid": 1,
+      "request": "Tsc",
+      "rip": "0x102291d",
+      "image": "interpreter",
+      "load_bias": "0x1000000",
+      "elf_vaddr": "0x2291d",
+      "file_offset": 141597,
+      "bytes": "0f31"
+    },
+    {
+      "ordinal": 6,
+      "sender_tid": 1,
+      "request": "Tsc",
+      "rip": "0x102294b",
+      "image": "interpreter",
+      "load_bias": "0x1000000",
+      "elf_vaddr": "0x2294b",
+      "file_offset": 141643,
+      "bytes": "0f31"
+    },
+    {
+      "ordinal": 7,
+      "sender_tid": 1,
+      "request": "Tsc",
+      "rip": "0x102295e",
+      "image": "interpreter",
+      "load_bias": "0x1000000",
+      "elf_vaddr": "0x2295e",
+      "file_offset": 141662,
+      "bytes": "0f31"
+    },
+    {
+      "ordinal": 8,
+      "sender_tid": 1,
+      "request": "Tsc",
+      "rip": "0x1022a27",
+      "image": "interpreter",
+      "load_bias": "0x1000000",
+      "elf_vaddr": "0x22a27",
+      "file_offset": 141863,
+      "bytes": "0f31"
+    },
+    {
+      "ordinal": 9,
+      "sender_tid": 1,
+      "request": "Tsc",
+      "rip": "0x102316f",
+      "image": "interpreter",
+      "load_bias": "0x1000000",
+      "elf_vaddr": "0x2316f",
+      "file_offset": 143727,
+      "bytes": "0f31"
+    },
+    {
+      "ordinal": 10,
+      "sender_tid": 1,
+      "request": "Tsc",
+      "rip": "0x1023199",
+      "image": "interpreter",
+      "load_bias": "0x1000000",
+      "elf_vaddr": "0x23199",
+      "file_offset": 143769,
+      "bytes": "0f31"
+    },
+    {
+      "ordinal": 11,
+      "sender_tid": 1,
+      "request": "Tsc",
+      "rip": "0x401055",
+      "image": "main",
+      "load_bias": "0x0",
+      "elf_vaddr": "0x401055",
+      "file_offset": 4181,
+      "bytes": "0f31"
+    },
+    {
+      "ordinal": 12,
+      "sender_tid": 1,
+      "request": "Tsc",
+      "rip": "0x4010c2",
+      "image": "main",
+      "load_bias": "0x0",
+      "elf_vaddr": "0x4010c2",
+      "file_offset": 4290,
+      "bytes": "0f31"
+    }
+  ],
+  "main_elf_type": 2,
+  "main_bias": "0x0",
+  "main_loaded_end": "0x404030",
+  "interpreter_bias": "0x1000000",
+  "method": "Actual callback RIP matched to retained executable PT_LOAD bytes plus objdump instruction boundaries; biases are from exact frozen elf.rs loader source. No new guest was executed by these queries.",
+  "original_test_result": "failed raw101; exact expected two was not changed"
+}

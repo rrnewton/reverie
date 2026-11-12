@@ -1,0 +1,809 @@
+--- V6/qualification-v1/prepare.py
++++ CPUID-V1/qualification-v1/prepare.py
+@@ -39,7 +39,7 @@
+     name=sys.argv[1];kind='metadata'if name=='metadata'else'check'if name in ('clippy','core-check')else'format'if name=='format'else'compile'if name=='compile'else'list'if name.startswith('list-')else'test'
+     require(name in ('metadata','compile','list-lib','list-static','list-vmcall','list-read-clock','format','clippy','core-check') or name in json_read(HERE/'SELECTORS.json')['groups'],'unplanned phase')
+     env={'HOME':'/home/newton','PATH':str(TOOL)+':/usr/local/bin:/usr/bin:/bin','CARGO_HOME':'/home/newton/.cargo','RUSTUP_HOME':'/home/newton/.rustup',
+-         'CARGO_TARGET_DIR':str(OWNER/'target/rdtsc-recovery-v6-cold-v1'),'CARGO_BUILD_JOBS':'2','THIRD_PARTY_BUILD_JOBS':'2',
++         'CARGO_TARGET_DIR':str(OWNER/'target/cpuid-recovery-v1-cold-v1'),'CARGO_BUILD_JOBS':'2','THIRD_PARTY_BUILD_JOBS':'2',
+          'CARGO_NET_OFFLINE':'true','CARGO_NET_GIT_FETCH_WITH_CLI':'true','RUSTFLAGS':'','LC_ALL':'C','LANG':'C','TZ':'UTC',
+          'CARGO_TERM_COLOR':'never','TMPDIR':str(HERE/'tmp'),'XDG_CACHE_HOME':str(HERE/'cache'),'GIT_OPTIONAL_LOCKS':'0','GIT_NO_LAZY_FETCH':'1',
+          'USER':'newton','LOGNAME':'newton','XDG_RUNTIME_DIR':'/run/user/212630','DBUS_SESSION_BUS_ADDRESS':'unix:path=/run/user/212630/bus',
+@@ -77,7 +77,7 @@
+     elif kind=='check':
+         argv=[cargo,'clippy','--offline','--locked','-p','reverie-kvm','--lib','--test','static_elf','--test','vmcall','--test','read_clock','--message-format=json','--','-D','warnings']
+     elif kind=='format':
+-        paths=['reverie-kvm/src/bootstrap.rs', 'reverie-kvm/src/cpuid.rs', 'reverie-kvm/src/lib.rs', 'reverie-kvm/src/runtime.rs', 'reverie-kvm/src/timestamp.rs', 'reverie-kvm/src/vm.rs', 'reverie-kvm/tests/static_elf.rs', 'reverie-kvm/tests/support/timestamp_terminal.rs', 'reverie-kvm/src/terminal_runtime_tests.rs']
++        paths=['reverie-kvm/src/bootstrap.rs', 'reverie-kvm/src/cpuid.rs', 'reverie-kvm/src/lib.rs', 'reverie-kvm/src/runtime.rs', 'reverie-kvm/src/timestamp.rs', 'reverie-kvm/src/vm.rs', 'reverie-kvm/tests/static_elf.rs', 'reverie-kvm/tests/support/timestamp_terminal.rs', 'reverie-kvm/src/terminal_runtime_tests.rs', 'reverie-kvm/src/cpuid_instruction.rs', 'reverie-kvm/src/cpuid_runtime_tests.rs', 'reverie-kvm/tests/support/cpuid_dispatch.rs', 'reverie-kvm/tests/support/cpuid_terminal.rs']
+         require(REPO != OWNER, 'corrected source must be an owned snapshot')
+         expected=json_read(HERE/'SETUP.json')['source_files']
+         require([row['relative']for row in expected]==paths, 'reviewed Rust path set differs')
+@@ -110,7 +110,7 @@
+             argv=[artifact['path'],*selected,'--exact','--test-threads=1','--nocapture','-Z','unstable-options','--format=json']
+     if(HERE/'dependency-symlinks.json').exists():
+         inputs.append(file_record(HERE/'dependency-symlinks.json'));links+=json_read(HERE/'dependency-symlinks.json')
+-    target=OWNER/'target/rdtsc-recovery-v6-cold-v1';t=target.stat();lease=OWNER/'ignored/timer-integration-20260918/lane.lease';l=lease.stat();large=kind in('metadata','compile','check')
++    target=OWNER/'target/cpuid-recovery-v1-cold-v1';t=target.stat();lease=OWNER/'ignored/timer-integration-20260918/lane.lease';l=lease.stat();large=kind in('metadata','compile','check')
+     require([t.st_dev,t.st_ino,t.st_uid]==admission['identity'], 'fresh target identity changed')
+     plan=dict(path=str(HERE/(name+'-plan.json')),name=name,kind=kind,argv=argv,selected=selected,artifact_selectors=artifact_selectors,
+               environment=env,scm=scm(),source_manifest=file_record(HERE/'source-manifest.json'),inputs=list({r['path']:r for r in inputs}.values()),
+@@ -119,7 +119,7 @@
+               lease=dict(path=str(lease),owner_slot=str(OWNER),identity=[l.st_dev,l.st_ino,l.st_uid],state_directory=str(OWNER/'ignored/timer-integration-20260918/lease-state')),
+               output=str(HERE/'observer'/name),control=str(HERE/'controls'/name),
+               limits=dict(aggregate_cpu_usec=600000000 if large else 30000000,wall_seconds=900 if large else 60,lethal_stderr_bytes=16777216,live_stdout_samples_bytes=67108864,phase_read_bytes=16777216,memory_bytes=17179869184,swap_bytes=0,free_floor_bytes=107374182400),
+-              scope='CPL3 timestamp recovery: exact 37 declarations and existing public vmcall/clock neighbors; no public real-mode interception, timer completion or 75-cell parity claim from component phases')
++              scope='CPL3 CPUID Tool dispatch on frozen timestamp V6: exact 55 declarations; unchanged four-artifact clock/vmcall neighbors; no Detcore cancellation, timer or full parity claim')
+     if(HERE/'dependency-inputs.json').exists():plan['dependencies']=file_record(HERE/'dependency-inputs.json')
+     write_new(Path(plan['path']),plan);print(plan['path'],hashlib.sha256(Path(plan['path']).read_bytes()).hexdigest())
+ if __name__=='__main__':main()
+--- V6/qualification-v1/admit_target.py
++++ CPUID-V1/qualification-v1/admit_target.py
+@@ -7,7 +7,7 @@
+ OWNER=HERE.parents[2]
+ setup=json_read(HERE/'SETUP.json')
+ target=Path(setup['target'])
+-require(target==OWNER/'target/rdtsc-recovery-v6-cold-v1','wrong target')
++require(target==OWNER/'target/cpuid-recovery-v1-cold-v1','wrong target')
+ require(not target.exists() and not target.is_symlink(),'target already exists; preserve and refuse')
+ require(target.parent.is_dir() and not target.parent.is_symlink(),'target parent absent or aliased')
+ target.mkdir(mode=0o700)
+--- V6/qualification-v1/SETUP.json
++++ CPUID-V1/qualification-v1/SETUP.json
+@@ -1,13 +1,13 @@
+ {
+   "owner_slot": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918",
+-  "source_root": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v6/source",
++  "source_root": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/cpuid-recovery-source-v1/source",
+   "base": "79516661bf82d30ab2967c71834a6d47447b76ee",
+   "base_tree": "7620fe83f486d665d9d09d4f09f0e93636b862e4",
+   "source_files": [
+     {
+       "relative": "reverie-kvm/src/bootstrap.rs",
+       "file": {
+-        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v6/source/reverie-kvm/src/bootstrap.rs",
++        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/cpuid-recovery-source-v1/source/reverie-kvm/src/bootstrap.rs",
+         "bytes": 42817,
+         "sha256": "7c008be09ef0e1bcefff4f8651742276cffaf6fac82526e9dad37e348299e81a",
+         "mode": 420
+@@ -16,7 +16,7 @@
+     {
+       "relative": "reverie-kvm/src/cpuid.rs",
+       "file": {
+-        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v6/source/reverie-kvm/src/cpuid.rs",
++        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/cpuid-recovery-source-v1/source/reverie-kvm/src/cpuid.rs",
+         "bytes": 16731,
+         "sha256": "56f7b5a167a7fda07db2fdb44b4801f44564b5450bd6628ca876d2b967f2b73f",
+         "mode": 420
+@@ -25,25 +25,25 @@
+     {
+       "relative": "reverie-kvm/src/lib.rs",
+       "file": {
+-        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v6/source/reverie-kvm/src/lib.rs",
+-        "bytes": 1736,
+-        "sha256": "179ac1ba7a19011e1b481b01d8b6a5de47cea93470d313eedff8abb13b75efc2",
++        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/cpuid-recovery-source-v1/source/reverie-kvm/src/lib.rs",
++        "bytes": 1759,
++        "sha256": "f6004c9725e8085056b1ca99dc91fd7c2a5fcdd912f84d32a082a4ed3a3a6262",
+         "mode": 420
+       }
+     },
+     {
+       "relative": "reverie-kvm/src/runtime.rs",
+       "file": {
+-        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v6/source/reverie-kvm/src/runtime.rs",
+-        "bytes": 191208,
+-        "sha256": "945d6af0ac3231e4d82eeaf34a614d66b6bf14196dcb162974f97d917538f928",
++        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/cpuid-recovery-source-v1/source/reverie-kvm/src/runtime.rs",
++        "bytes": 192972,
++        "sha256": "d8ae42ecc0b62d60214f35d680fb1544031af3ebd70b530d84903dc5ed8a2cf7",
+         "mode": 420
+       }
+     },
+     {
+       "relative": "reverie-kvm/src/timestamp.rs",
+       "file": {
+-        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v6/source/reverie-kvm/src/timestamp.rs",
++        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/cpuid-recovery-source-v1/source/reverie-kvm/src/timestamp.rs",
+         "bytes": 9696,
+         "sha256": "0c1337632277a9a4dd67d679c33125193d3bbabdb4e4947d6f50b109fec3d700",
+         "mode": 420
+@@ -52,25 +52,25 @@
+     {
+       "relative": "reverie-kvm/src/vm.rs",
+       "file": {
+-        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v6/source/reverie-kvm/src/vm.rs",
+-        "bytes": 323995,
+-        "sha256": "8b61cc020810be90baaa0e4941dc06172ab80010810e4cd785dc2f08b860840e",
++        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/cpuid-recovery-source-v1/source/reverie-kvm/src/vm.rs",
++        "bytes": 329103,
++        "sha256": "40a4ea1355fa3d64df99acc5354c197db79aca5de73cb814beb149900300e342",
+         "mode": 420
+       }
+     },
+     {
+       "relative": "reverie-kvm/tests/static_elf.rs",
+       "file": {
+-        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v6/source/reverie-kvm/tests/static_elf.rs",
+-        "bytes": 512134,
+-        "sha256": "db8c6a27d89311d059c675eab764476acd4e0aed4462b603dd942dabc0c60b2c",
++        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/cpuid-recovery-source-v1/source/reverie-kvm/tests/static_elf.rs",
++        "bytes": 512252,
++        "sha256": "60f4ce3001fc19a727c752c69ac63deab9d0f3aa70c5031718bc7c1ddfeabdb2",
+         "mode": 420
+       }
+     },
+     {
+       "relative": "reverie-kvm/tests/support/timestamp_terminal.rs",
+       "file": {
+-        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v6/source/reverie-kvm/tests/support/timestamp_terminal.rs",
++        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/cpuid-recovery-source-v1/source/reverie-kvm/tests/support/timestamp_terminal.rs",
+         "bytes": 12927,
+         "sha256": "af115c32a075ec9d308a3bc0129f3c278723d62b5a2b9e4270c6e18eabadb326",
+         "mode": 420
+@@ -79,19 +79,61 @@
+     {
+       "relative": "reverie-kvm/src/terminal_runtime_tests.rs",
+       "file": {
+-        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v6/source/reverie-kvm/src/terminal_runtime_tests.rs",
++        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/cpuid-recovery-source-v1/source/reverie-kvm/src/terminal_runtime_tests.rs",
+         "bytes": 5673,
+         "sha256": "af916ce5c0f4a30adcbf9d87b52dd33b555e5b9e2fe463e7d5310d7b34b6a7c5",
++        "mode": 420
++      }
++    },
++    {
++      "relative": "reverie-kvm/src/cpuid_instruction.rs",
++      "file": {
++        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/cpuid-recovery-source-v1/source/reverie-kvm/src/cpuid_instruction.rs",
++        "bytes": 13263,
++        "sha256": "576c890af84158183937b8f86bebdbe0464099816c341edab94b13e30478a111",
++        "mode": 420
++      }
++    },
++    {
++      "relative": "reverie-kvm/src/cpuid_runtime_tests.rs",
++      "file": {
++        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/cpuid-recovery-source-v1/source/reverie-kvm/src/cpuid_runtime_tests.rs",
++        "bytes": 5778,
++        "sha256": "2652698da8546a5d5b76616b673bef99b6db7981fc57c37d7eb1246ad8a0e696",
++        "mode": 420
++      }
++    },
++    {
++      "relative": "reverie-kvm/tests/support/cpuid_dispatch.rs",
++      "file": {
++        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/cpuid-recovery-source-v1/source/reverie-kvm/tests/support/cpuid_dispatch.rs",
++        "bytes": 21009,
++        "sha256": "09b70feee10f8a6a67694890c88ce98b87d0687269e6163ff0b504d6901daaee",
++        "mode": 420
++      }
++    },
++    {
++      "relative": "reverie-kvm/tests/support/cpuid_terminal.rs",
++      "file": {
++        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/cpuid-recovery-source-v1/source/reverie-kvm/tests/support/cpuid_terminal.rs",
++        "bytes": 12635,
++        "sha256": "6dd0d85806952559e0c75244a7e354f14e5e1d0e3c36e2c943aaf9c4a77d5ba2",
+         "mode": 420
+       }
+     }
+   ],
+   "lock": {
+-    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v6/source/Cargo.lock",
++    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/cpuid-recovery-source-v1/source/Cargo.lock",
+     "bytes": 67056,
+     "sha256": "1c09663e46bf21ad7c07eedd7821cccb72ae21f42485192649ff5473962bc856",
+     "mode": 420
+   },
+-  "target": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/target/rdtsc-recovery-v6-cold-v1",
+-  "purpose": "CPL3 timestamp recovery only; public real-mode timestamp gap retained; no timer or full-backend claim"
++  "target": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/target/cpuid-recovery-v1-cold-v1",
++  "purpose": "CPUID source V1 only, based on frozen V6; no V7 test composition, qualification or parity claim from preparation",
++  "source_target": {
++    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/cpuid-recovery-source-v1/TARGET.json",
++    "bytes": 4357,
++    "sha256": "5ff12f1d6800aaa5944efcbb431fd23d79740b16430ed1b960a9ced13619d3b8",
++    "mode": 420
++  }
+ }
+--- V6/qualification-v1/PREDECESSOR-ELFS.json
++++ CPUID-V1/qualification-v1/PREDECESSOR-ELFS.json
+@@ -1,11 +1,11 @@
+ {
+-  "source": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v4/qualification-v1/retained-binaries/BINDING.json",
+-  "sha256": "5ca98185a60c383568f9f5a82ba559b6db1db839534217f93ae06962925a5e25",
++  "source": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v6/qualification-v1/retained-binaries/BINDING.json",
++  "sha256": "10c7c898fdb6d1b8496a03defd5a3fd0ef6ad2d073072a2ab17d33a54e029685",
+   "hashes": {
+-    "lib": "1b3153afdff803ca4ec304933f17359717eb9a2c666e53198e3184e0e727d6f6",
+-    "static": "286f081ef609e3ceae9c1dacb87f3246528de13ab5da56285f9c6a9a27045f39",
+-    "vmcall": "e64ccbe60a249c1c0e334ff621ba1f012fe95dbf9318f972fbc0bf5bd61ec70d",
+-    "read-clock": "9f18315a8e15c1df1c3b4d909d8903986807c3710c153c93363ea85d8b7d3694"
++    "lib": "85f9e1c558c533359b97faad7d845d5e7ce778f4cb013bd34618e0b439b870a7",
++    "static": "39fdd2e646d4c6a605ec15411635e581b04559064488b7add725856a96cc1118",
++    "vmcall": "7c63cde08d01c22660237e59f330d535735019fa77f5b07c4e4fc5e4dc8d5f93",
++    "read-clock": "62b1632b97e7f3a87a3d0240240aaa6d6e91263977cf194e8bab9829354f0703"
+   },
+-  "purpose": "Refuse all four actual V4 harness bytes as new V5 compiler output; no V4 test credit."
++  "purpose": "Refuse all four actual V6 harness bytes as newly built CPUID candidate evidence; no historical execution credit"
+ }
+--- V6/qualification-v1/SELECTORS.json
++++ CPUID-V1/qualification-v1/SELECTORS.json
+@@ -1,12 +1,147 @@
+ {
+   "groups": {
++    "cpuid-01": {
++      "artifact": "lib",
++      "names": [
++        "cpuid_instruction::tests::cpuid_decoder_fetches_exact_legal_instruction_and_refuses_invalid_forms"
++      ],
++      "source": "reverie-kvm/src/cpuid_instruction.rs",
++      "origin": "new unexecuted CPUID candidate",
++      "purpose": "Pure decoder/full-register assertions; actual MSR tests require real KVM and exact error/readback values"
++    },
++    "cpuid-02": {
++      "artifact": "lib",
++      "names": [
++        "cpuid_instruction::tests::cpuid_result_zero_extends_all_outputs_and_preserves_other_user_state"
++      ],
++      "source": "reverie-kvm/src/cpuid_instruction.rs",
++      "origin": "new unexecuted CPUID candidate",
++      "purpose": "Pure decoder/full-register assertions; actual MSR tests require real KVM and exact error/readback values"
++    },
++    "cpuid-03": {
++      "artifact": "lib",
++      "names": [
++        "cpuid_instruction::tests::actual_partial_msr_transfers_are_refused_with_exact_counts"
++      ],
++      "source": "reverie-kvm/src/cpuid_instruction.rs",
++      "origin": "new unexecuted CPUID candidate",
++      "purpose": "Pure decoder/full-register assertions; actual MSR tests require real KVM and exact error/readback values"
++    },
++    "cpuid-04": {
++      "artifact": "lib",
++      "names": [
++        "cpuid_instruction::tests::actual_cpuid_interception_is_owned_and_restores_original_msr_state"
++      ],
++      "source": "reverie-kvm/src/cpuid_instruction.rs",
++      "origin": "new unexecuted CPUID candidate",
++      "purpose": "Pure decoder/full-register assertions; actual MSR tests require real KVM and exact error/readback values"
++    },
++    "cpuid-05": {
++      "artifact": "lib",
++      "names": [
++        "vm::tests::cpuid_runtime_controls::cpuid_boundary_respects_actual_fetch_permissions_and_completed_length"
++      ],
++      "source": "reverie-kvm/src/cpuid_runtime_tests.rs",
++      "origin": "new unexecuted CPUID candidate",
++      "purpose": "Real CPL3 fetch-fault priority and prior-owned-state disarm on actual direct/public/ELF loops"
++    },
++    "cpuid-06": {
++      "artifact": "lib",
++      "names": [
++        "vm::tests::cpuid_runtime_controls::cpuid_nonconsumer_loops_disarm_actual_prior_owned_msr_state"
++      ],
++      "source": "reverie-kvm/src/cpuid_runtime_tests.rs",
++      "origin": "new unexecuted CPUID candidate",
++      "purpose": "Real CPL3 fetch-fault priority and prior-owned-state disarm on actual direct/public/ELF loops"
++    },
++    "cpuid-07": {
++      "artifact": "static",
++      "names": [
++        "cpuid_dispatch::cpuid_tool_returns_exact_full_registers_flags_stack_and_one_rpc_per_instruction"
++      ],
++      "source": "reverie-kvm/tests/support/cpuid_dispatch.rs",
++      "origin": "new unexecuted CPUID candidate",
++      "purpose": "Real Tool CPUID outputs/faults/clocks, Host/Tool ownership, fork/exec, table policy and mixed-instruction dispatch"
++    },
++    "cpuid-08": {
++      "artifact": "static",
++      "names": [
++        "cpuid_dispatch::cpuid_subscription_keeps_unrelated_locked_overlength_and_debug_faults_exact"
++      ],
++      "source": "reverie-kvm/tests/support/cpuid_dispatch.rs",
++      "origin": "new unexecuted CPUID candidate",
++      "purpose": "Real Tool CPUID outputs/faults/clocks, Host/Tool ownership, fork/exec, table policy and mixed-instruction dispatch"
++    },
++    "cpuid-09": {
++      "artifact": "static",
++      "names": [
++        "cpuid_dispatch::cpuid_thread_ownership_keeps_host_worker_native_and_tool_worker_subscribed"
++      ],
++      "source": "reverie-kvm/tests/support/cpuid_dispatch.rs",
++      "origin": "new unexecuted CPUID candidate",
++      "purpose": "Real Tool CPUID outputs/faults/clocks, Host/Tool ownership, fork/exec, table policy and mixed-instruction dispatch"
++    },
++    "cpuid-10": {
++      "artifact": "static",
++      "names": [
++        "cpuid_dispatch::unsubscribed_cpuid_keeps_the_installed_table_and_indexed_xstate_policy"
++      ],
++      "source": "reverie-kvm/tests/support/cpuid_dispatch.rs",
++      "origin": "new unexecuted CPUID candidate",
++      "purpose": "Real Tool CPUID outputs/faults/clocks, Host/Tool ownership, fork/exec, table policy and mixed-instruction dispatch"
++    },
++    "cpuid-11": {
++      "artifact": "static",
++      "names": [
++        "cpuid_dispatch::cpuid_dispatch_survives_real_fork_and_same_pid_exec"
++      ],
++      "source": "reverie-kvm/tests/support/cpuid_dispatch.rs",
++      "origin": "new unexecuted CPUID candidate",
++      "purpose": "Real Tool CPUID outputs/faults/clocks, Host/Tool ownership, fork/exec, table policy and mixed-instruction dispatch"
++    },
++    "cpuid-12": {
++      "artifact": "static",
++      "names": [
++        "cpuid_dispatch::cpuid_and_both_timestamp_forms_share_one_real_dispatcher_without_cross_charges"
++      ],
++      "source": "reverie-kvm/tests/support/cpuid_dispatch.rs",
++      "origin": "new unexecuted CPUID candidate",
++      "purpose": "Real Tool CPUID outputs/faults/clocks, Host/Tool ownership, fork/exec, table policy and mixed-instruction dispatch"
++    },
++    "cpuid-13": {
++      "artifact": "static",
++      "names": [
++        "cpuid_terminal::terminal_exit_preserves_status_and_consuming_cleanup"
++      ],
++      "source": "reverie-kvm/tests/support/cpuid_terminal.rs",
++      "origin": "new unexecuted CPUID candidate",
++      "purpose": "Real ordinary/tail terminal success, consuming cleanup, unsupported-tail refusal and sibling ordering; no Detcore cancellation claim"
++    },
++    "cpuid-14": {
++      "artifact": "static",
++      "names": [
++        "cpuid_terminal::nonterminal_tails_refuse_before_side_effects"
++      ],
++      "source": "reverie-kvm/tests/support/cpuid_terminal.rs",
++      "origin": "new unexecuted CPUID candidate",
++      "purpose": "Real ordinary/tail terminal success, consuming cleanup, unsupported-tail refusal and sibling ordering; no Detcore cancellation claim"
++    },
++    "cpuid-15": {
++      "artifact": "static",
++      "names": [
++        "cpuid_terminal::worker_terminal_rpc_precedes_real_sibling_exit_group"
++      ],
++      "source": "reverie-kvm/tests/support/cpuid_terminal.rs",
++      "origin": "new unexecuted CPUID candidate",
++      "purpose": "Real ordinary/tail terminal success, consuming cleanup, unsupported-tail refusal and sibling ordering; no Detcore cancellation claim"
++    },
+     "timestamp-01": {
+       "artifact": "lib",
+       "names": [
+         "timestamp::tests::two_byte_rdtsc_decode_does_not_read_a_third_byte"
+       ],
+       "source": "reverie-kvm/src/timestamp.rs",
+-      "origin": "new candidate",
++      "origin": "unchanged V6 neighbor; historical V6 result is not candidate execution",
+       "purpose": "Real decoder/page walker/writeback logic, exact instruction fetch and architectural state assertions; not guest qualification"
+     },
+     "timestamp-02": {
+@@ -15,7 +150,7 @@
+         "timestamp::tests::timestamp_prefixes_and_fifteen_byte_limit_preserve_faults"
+       ],
+       "source": "reverie-kvm/src/timestamp.rs",
+-      "origin": "new candidate",
++      "origin": "unchanged V6 neighbor; historical V6 result is not candidate execution",
+       "purpose": "Real decoder/page walker/writeback logic, exact instruction fetch and architectural state assertions; not guest qualification"
+     },
+     "timestamp-03": {
+@@ -24,7 +159,7 @@
+         "timestamp::tests::timestamp_writeback_preserves_other_registers_and_full_flags"
+       ],
+       "source": "reverie-kvm/src/timestamp.rs",
+-      "origin": "new candidate",
++      "origin": "unchanged V6 neighbor; historical V6 result is not candidate execution",
+       "purpose": "Real decoder/page walker/writeback logic, exact instruction fetch and architectural state assertions; not guest qualification"
+     },
+     "timestamp-04": {
+@@ -33,7 +168,7 @@
+         "timestamp::tests::timestamp_fetch_checks_each_page_and_does_not_cross_a_completed_instruction"
+       ],
+       "source": "reverie-kvm/src/timestamp.rs",
+-      "origin": "new candidate",
++      "origin": "unchanged V6 neighbor; historical V6 result is not candidate execution",
+       "purpose": "Real decoder/page walker/writeback logic, exact instruction fetch and architectural state assertions; not guest qualification"
+     },
+     "timestamp-05": {
+@@ -42,7 +177,7 @@
+         "vm::tests::timestamp_boundary_respects_hardware_instruction_fetch_fault_priority"
+       ],
+       "source": "reverie-kvm/src/vm.rs",
+-      "origin": "new candidate",
++      "origin": "unchanged V6 neighbor; historical V6 result is not candidate execution",
+       "purpose": "Actual KVM exception priority for completed two-byte instruction versus inaccessible third byte; no replacement fetch simulator"
+     },
+     "timestamp-06": {
+@@ -51,7 +186,7 @@
+         "cpuid::tests::deterministic_policy_replaces_host_identity_and_features"
+       ],
+       "source": "reverie-kvm/src/cpuid.rs",
+-      "origin": "existing, strengthened",
++      "origin": "unchanged V6 neighbor; historical V6 result is not candidate execution",
+       "purpose": "All old assertions retained plus RDTSCP capability bit remains clear; unsubscribed faults retain their meaning"
+     },
+     "timestamp-07": {
+@@ -60,7 +195,7 @@
+         "static_elf_timestamp_reads_dispatch_exact_tool_results_repeatably"
+       ],
+       "source": "reverie-kvm/tests/static_elf.rs",
+-      "origin": "historical unchanged bodies",
++      "origin": "unchanged V6 neighbor; historical V6 result is not candidate execution",
+       "purpose": "Exact retained positive/refusal/lifecycle oracles from the three historical timestamp commits; no historical execution credit"
+     },
+     "timestamp-08": {
+@@ -69,7 +204,7 @@
+         "timestamp_dispatch_survives_thread_fork_and_exec_vcpu_lifecycles"
+       ],
+       "source": "reverie-kvm/tests/static_elf.rs",
+-      "origin": "historical unchanged bodies",
++      "origin": "unchanged V6 neighbor; historical V6 result is not candidate execution",
+       "purpose": "Exact retained positive/refusal/lifecycle oracles from the three historical timestamp commits; no historical execution credit"
+     },
+     "timestamp-09": {
+@@ -78,7 +213,7 @@
+         "static_elf_unsubscribed_rdtsc_runs_without_tool_dispatch"
+       ],
+       "source": "reverie-kvm/tests/static_elf.rs",
+-      "origin": "historical unchanged bodies",
++      "origin": "unchanged V6 neighbor; historical V6 result is not candidate execution",
+       "purpose": "Exact retained positive/refusal/lifecycle oracles from the three historical timestamp commits; no historical execution credit"
+     },
+     "timestamp-10": {
+@@ -87,7 +222,7 @@
+         "subscribed_timestamp_dispatch_refuses_unrelated_exceptions"
+       ],
+       "source": "reverie-kvm/tests/static_elf.rs",
+-      "origin": "historical unchanged bodies",
++      "origin": "unchanged V6 neighbor; historical V6 result is not candidate execution",
+       "purpose": "Exact retained positive/refusal/lifecycle oracles from the three historical timestamp commits; no historical execution credit"
+     },
+     "timestamp-11": {
+@@ -96,7 +231,7 @@
+         "repeated_timestamp_reads_evolve_once_per_instruction"
+       ],
+       "source": "reverie-kvm/tests/static_elf.rs",
+-      "origin": "historical unchanged bodies",
++      "origin": "unchanged V6 neighbor; historical V6 result is not candidate execution",
+       "purpose": "Exact retained positive/refusal/lifecycle oracles from the three historical timestamp commits; no historical execution credit"
+     },
+     "timestamp-12": {
+@@ -105,7 +240,7 @@
+         "static_elf_unsubscribed_rdtscp_remains_guest_exception"
+       ],
+       "source": "reverie-kvm/tests/static_elf.rs",
+-      "origin": "historical unchanged bodies",
++      "origin": "unchanged V6 neighbor; historical V6 result is not candidate execution",
+       "purpose": "Exact retained positive/refusal/lifecycle oracles from the three historical timestamp commits; no historical execution credit"
+     },
+     "timestamp-13": {
+@@ -114,7 +249,7 @@
+         "timestamp_callbacks_observe_retired_branches_without_counting_rpc_work"
+       ],
+       "source": "reverie-kvm/tests/static_elf.rs",
+-      "origin": "new candidate",
++      "origin": "unchanged V6 neighbor; historical V6 result is not candidate execution",
+       "purpose": "Current clock/RPC and exact returning getpid/fork refusal retained; obsolete unlanded exit refusal replaced by exec refusal, with actual ordinary/tail exit coverage in timestamp-32."
+     },
+     "timestamp-14": {
+@@ -123,7 +258,7 @@
+         "host_owned_timestamp_worker_keeps_native_execution"
+       ],
+       "source": "reverie-kvm/tests/static_elf.rs",
+-      "origin": "V4 replacement of new unlanded fixture after actual RIP attribution",
++      "origin": "unchanged V6 neighbor; historical V6 result is not candidate execution",
+       "purpose": "Loader-free static clone/CLEARTID: both root RDTSC results exact, actual worker RDTSC followed by its TID/completion marker and real exit, exactly two root callbacks and zero worker callbacks; no count widening or callback filtering."
+     },
+     "timestamp-15": {
+@@ -132,7 +267,7 @@
+         "prefixed_timestamp_instructions_preserve_registers_flags_and_stack"
+       ],
+       "source": "reverie-kvm/tests/static_elf.rs",
+-      "origin": "new candidate",
++      "origin": "unchanged V6 neighbor; historical V6 result is not candidate execution",
+       "purpose": "Actual guest controls for current clock/injection/Host ownership/prefix/register/fault/debug contracts; raw results still pending"
+     },
+     "timestamp-16": {
+@@ -141,7 +276,7 @@
+         "locked_and_overlength_timestamp_encodings_remain_faults"
+       ],
+       "source": "reverie-kvm/tests/static_elf.rs",
+-      "origin": "new candidate",
++      "origin": "unchanged V6 neighbor; historical V6 result is not candidate execution",
+       "purpose": "Actual guest controls for current clock/injection/Host ownership/prefix/register/fault/debug contracts; raw results still pending"
+     },
+     "timestamp-17": {
+@@ -150,7 +285,7 @@
+         "timestamp_tool_preserves_results_with_host_supported_cpuid"
+       ],
+       "source": "reverie-kvm/tests/static_elf.rs",
+-      "origin": "new candidate",
++      "origin": "unchanged V6 neighbor; historical V6 result is not candidate execution",
+       "purpose": "Actual guest controls for current clock/injection/Host ownership/prefix/register/fault/debug contracts; raw results still pending"
+     },
+     "timestamp-18": {
+@@ -159,7 +294,7 @@
+         "timestamp_single_step_reports_the_retired_instruction_boundary"
+       ],
+       "source": "reverie-kvm/tests/static_elf.rs",
+-      "origin": "new candidate",
++      "origin": "unchanged V6 neighbor; historical V6 result is not candidate execution",
+       "purpose": "Actual guest controls for current clock/injection/Host ownership/prefix/register/fault/debug contracts; raw results still pending"
+     },
+     "timestamp-19": {
+@@ -168,7 +303,7 @@
+         "static_elf_faults_are_reported_by_direct_and_tool_runtimes"
+       ],
+       "source": "reverie-kvm/tests/static_elf.rs",
+-      "origin": "unchanged baseline neighbor",
++      "origin": "unchanged V6 neighbor; historical V6 result is not candidate execution",
+       "purpose": "Existing exception-dispatch neighbors, consumer ownership, exec and supervised error cleanup"
+     },
+     "timestamp-20": {
+@@ -177,7 +312,7 @@
+         "static_elf_vmware_probe_reports_non_vmware_in_direct_and_tool_runtimes"
+       ],
+       "source": "reverie-kvm/tests/static_elf.rs",
+-      "origin": "unchanged baseline neighbor",
++      "origin": "unchanged V6 neighbor; historical V6 result is not candidate execution",
+       "purpose": "Existing exception-dispatch neighbors, consumer ownership, exec and supervised error cleanup"
+     },
+     "timestamp-21": {
+@@ -186,7 +321,7 @@
+         "static_elf_forks_execs_and_waits_for_child"
+       ],
+       "source": "reverie-kvm/tests/static_elf.rs",
+-      "origin": "unchanged baseline neighbor",
++      "origin": "unchanged V6 neighbor; historical V6 result is not candidate execution",
+       "purpose": "Existing exception-dispatch neighbors, consumer ownership, exec and supervised error cleanup"
+     },
+     "timestamp-22": {
+@@ -195,7 +330,7 @@
+         "static_elf_runs_glibc_clone3_thread_and_restores_parent_state"
+       ],
+       "source": "reverie-kvm/tests/static_elf.rs",
+-      "origin": "unchanged baseline neighbor",
++      "origin": "unchanged V6 neighbor; historical V6 result is not candidate execution",
+       "purpose": "Existing exception-dispatch neighbors, consumer ownership, exec and supervised error cleanup"
+     },
+     "timestamp-23": {
+@@ -204,7 +339,7 @@
+         "static_elf_caught_signal_returns_through_rt_sigreturn"
+       ],
+       "source": "reverie-kvm/tests/static_elf.rs",
+-      "origin": "unchanged baseline neighbor",
++      "origin": "unchanged V6 neighbor; historical V6 result is not candidate execution",
+       "purpose": "Existing exception-dispatch neighbors, consumer ownership, exec and supervised error cleanup"
+     },
+     "timestamp-24": {
+@@ -213,7 +348,7 @@
+         "post_exec_failure_runs_tool_exit_lifecycle"
+       ],
+       "source": "reverie-kvm/tests/static_elf.rs",
+-      "origin": "unchanged baseline neighbor",
++      "origin": "unchanged V6 neighbor; historical V6 result is not candidate execution",
+       "purpose": "Existing exception-dispatch neighbors, consumer ownership, exec and supervised error cleanup"
+     },
+     "timestamp-25": {
+@@ -222,7 +357,7 @@
+         "guest_write_syscall_runs_shared_reverie_tool"
+       ],
+       "source": "reverie-kvm/tests/vmcall.rs",
+-      "origin": "unchanged baseline neighbor",
++      "origin": "unchanged V6 neighbor; historical V6 result is not candidate execution",
+       "purpose": "Existing public real-mode/vmcall Tool entry and default injection remain supported; these are not timestamp interception claims"
+     },
+     "timestamp-26": {
+@@ -231,7 +366,7 @@
+         "default_tool_handler_tail_injects_through_executor"
+       ],
+       "source": "reverie-kvm/tests/vmcall.rs",
+-      "origin": "unchanged baseline neighbor",
++      "origin": "unchanged V6 neighbor; historical V6 result is not candidate execution",
+       "purpose": "Existing public real-mode/vmcall Tool entry and default injection remain supported; these are not timestamp interception claims"
+     },
+     "timestamp-27": {
+@@ -240,7 +375,7 @@
+         "read_clock_counts_userspace_and_excludes_callbacks_and_other_vcpus"
+       ],
+       "source": "reverie-kvm/tests/read_clock.rs",
+-      "origin": "unchanged baseline neighbor",
++      "origin": "unchanged V6 neighbor; historical V6 result is not candidate execution",
+       "purpose": "Existing actual branch clock isolation and lifecycle; original internal 40-second wrapper unchanged, outer 30 CPU/60 wall retained"
+     },
+     "timestamp-28": {
+@@ -249,7 +384,7 @@
+         "read_clock_follows_a_guest_between_host_threads"
+       ],
+       "source": "reverie-kvm/tests/read_clock.rs",
+-      "origin": "unchanged baseline neighbor",
++      "origin": "unchanged V6 neighbor; historical V6 result is not candidate execution",
+       "purpose": "Existing actual branch clock isolation and lifecycle; original internal 40-second wrapper unchanged, outer 30 CPU/60 wall retained"
+     },
+     "timestamp-29": {
+@@ -258,7 +393,7 @@
+         "read_clock_starts_fork_vfork_and_thread_children_at_zero"
+       ],
+       "source": "reverie-kvm/tests/read_clock.rs",
+-      "origin": "unchanged baseline neighbor",
++      "origin": "unchanged V6 neighbor; historical V6 result is not candidate execution",
+       "purpose": "Existing actual branch clock isolation and lifecycle; original internal 40-second wrapper unchanged, outer 30 CPU/60 wall retained"
+     },
+     "timestamp-30": {
+@@ -267,7 +402,7 @@
+         "read_clock_survives_successful_and_failed_exec"
+       ],
+       "source": "reverie-kvm/tests/read_clock.rs",
+-      "origin": "unchanged baseline neighbor",
++      "origin": "unchanged V6 neighbor; historical V6 result is not candidate execution",
+       "purpose": "Existing actual branch clock isolation and lifecycle; original internal 40-second wrapper unchanged, outer 30 CPU/60 wall retained"
+     },
+     "timestamp-31": {
+@@ -276,7 +411,7 @@
+         "fault_only_assertion_rejects_actual_tool_exit_cleanup_failure"
+       ],
+       "source": "reverie-kvm/tests/static_elf.rs",
+-      "origin": "V3 new actual cleanup rejection control",
++      "origin": "unchanged V6 neighbor; historical V6 result is not candidate execution",
+       "purpose": "Actual UD2 Tool run plus failing on_exit_thread must retain both typed causes; existing fault-only helper must reject the complete cleanup aggregate. No synthetic error object or production variant."
+     },
+     "timestamp-32": {
+@@ -285,7 +420,7 @@
+         "timestamp_terminal::terminal_exit_preserves_status_and_consuming_cleanup"
+       ],
+       "source": "reverie-kvm/tests/support/timestamp_terminal.rs",
+-      "origin": "V5 new actual control",
++      "origin": "unchanged V6 neighbor; historical V6 result is not candidate execution",
+       "purpose": "Five actual modes: tail Exit23/ExitGroup29, ordinary Exit23/ExitGroup29, and real EIO cleanup; exact status, one callback and both consuming hooks, no continuation."
+     },
+     "timestamp-33": {
+@@ -294,7 +429,7 @@
+         "timestamp_terminal::nonterminal_tails_refuse_before_side_effects"
+       ],
+       "source": "reverie-kvm/tests/support/timestamp_terminal.rs",
+-      "origin": "V5 new actual control",
++      "origin": "unchanged V6 neighbor; historical V6 result is not candidate execution",
+       "purpose": "Four real timestamp tail refusals: uname/getpid/fork/exec; exact ENOSYS/full failure shape and unchanged guest-memory marker/no child/image or resumed callback."
+     },
+     "timestamp-34": {
+@@ -303,7 +438,7 @@
+         "timestamp_terminal::worker_terminal_rpc_precedes_real_sibling_exit_group"
+       ],
+       "source": "reverie-kvm/tests/support/timestamp_terminal.rs",
+-      "origin": "V5 new actual control",
++      "origin": "unchanged V6 neighbor; historical V6 result is not candidate execution",
+       "purpose": "Real Tool-owned worker timestamp RPC and terminal Exit0 precede leader actual ExitGroup17; exact exits and callback count. Backend control, not Detcore clock coverage."
+     },
+     "timestamp-35": {
+@@ -312,7 +447,7 @@
+         "vm::tests::non_elf_tool_loop_disarms_prior_timestamp_interception"
+       ],
+       "source": "reverie-kvm/src/vm.rs",
+-      "origin": "V5 new actual control",
++      "origin": "unchanged V6 neighbor; historical V6 result is not candidate execution",
+       "purpose": "Both actual CR4.TSD entry states, real-mode RDTSC plus real vmcall/HLT; one syscall, no timestamp callback, cleared ownership. No CPL0 interception claim."
+     },
+     "timestamp-36": {
+@@ -321,7 +456,7 @@
+         "runtime::tests::signal_hook_tail_injection_is_rejected_before_every_executor_side_effect"
+       ],
+       "source": "reverie-kvm/src/runtime.rs",
+-      "origin": "existing guard control, mechanical private-signature adaptation",
++      "origin": "unchanged V6 neighbor; historical V6 result is not candidate execution",
+       "purpose": "Existing signal-hook side-effect/refusal control with unchanged assertions; private predicate now receives exact request."
+     },
+     "timestamp-37": {
+@@ -330,10 +465,37 @@
+         "runtime::terminal_tests::terminal_cancellation_and_into_guest_forwarding_do_not_inject_or_start_children"
+       ],
+       "source": "reverie-kvm/src/terminal_runtime_tests.rs",
+-      "origin": "Unchanged existing terminal-cancellation neighbor; private trait signature only adapted",
++      "origin": "unchanged V6 neighbor; historical V6 result is not candidate execution",
+       "purpose": "Existing exact cancellation/IntoGuest forwarding assertions and no injection/child-start effects remain unchanged."
++    },
++    "cpuid-neighbor-01": {
++      "artifact": "lib",
++      "names": [
++        "cpuid::tests::deterministic_xstate_subleaves_are_indexed_and_unique"
++      ],
++      "source": "reverie-kvm/src/cpuid.rs",
++      "origin": "unchanged CPUID/XSAVE neighbor",
++      "purpose": "Preserve installed table/indexed XSAVE and actual dynamic guest behavior; existing oracle unchanged"
++    },
++    "cpuid-neighbor-02": {
++      "artifact": "lib",
++      "names": [
++        "cpuid::tests::deterministic_cpuid_table_rejects_duplicate_function_index"
++      ],
++      "source": "reverie-kvm/src/cpuid.rs",
++      "origin": "unchanged CPUID/XSAVE neighbor",
++      "purpose": "Preserve installed table/indexed XSAVE and actual dynamic guest behavior; existing oracle unchanged"
++    },
++    "cpuid-neighbor-03": {
++      "artifact": "static",
++      "names": [
++        "dynamic_c_guest_observes_indexed_xstate_cpuid_and_lazy_binding"
++      ],
++      "source": "reverie-kvm/tests/static_elf.rs",
++      "origin": "unchanged CPUID/XSAVE neighbor",
++      "purpose": "Preserve installed table/indexed XSAVE and actual dynamic guest behavior; existing oracle unchanged"
+     }
+   },
+-  "actual_inventory_pending": true,
+-  "exact_declarations": 37
++  "exact_declarations": 55,
++  "actual_inventory_pending": true
+ }
+--- V6/RUN-ORDER.json
++++ CPUID-V1/RUN-ORDER.json
+@@ -7,6 +7,21 @@
+     "list-static",
+     "list-vmcall",
+     "list-read-clock",
++    "cpuid-01",
++    "cpuid-02",
++    "cpuid-03",
++    "cpuid-04",
++    "cpuid-05",
++    "cpuid-06",
++    "cpuid-07",
++    "cpuid-08",
++    "cpuid-09",
++    "cpuid-10",
++    "cpuid-11",
++    "cpuid-12",
++    "cpuid-13",
++    "cpuid-14",
++    "cpuid-15",
+     "timestamp-01",
+     "timestamp-02",
+     "timestamp-03",
+@@ -44,6 +59,9 @@
+     "timestamp-28",
+     "timestamp-29",
+     "timestamp-30",
++    "cpuid-neighbor-01",
++    "cpuid-neighbor-02",
++    "cpuid-neighbor-03",
+     "core-check",
+     "clippy"
+   ],
+--- V6/execute_phases.py
++++ CPUID-V1/execute_phases.py
+@@ -2,7 +2,7 @@
+ import hashlib,json,subprocess,sys,time
+ from pathlib import Path
+ N=Path(__file__).resolve().parent
+-Q=N/'qualification-v1'
++Q=N/'qualification-preparation-v1'
+ planned=json.loads((N/'RUN-ORDER.json').read_text())['phases']
+ for name in sys.argv[1:]:
+     assert name in planned and not(Q/(name+'-plan.json')).exists(), name
+--- V6/finalize_results.py
++++ CPUID-V1/finalize_results.py
+@@ -1,6 +1,6 @@
+ from pathlib import Path
+ import hashlib,json,os,re,subprocess
+-N=Path(__file__).resolve().parent; Q=N/'qualification-v1'; OUT=N/'qualification-result-v1';R=N.parents[1]
++N=Path(__file__).resolve().parent; Q=N/'qualification-preparation-v1'; OUT=N/'qualification-result-v1';R=N.parents[1]
+ def rec(p):
+  p=Path(p);st=p.lstat();b=os.readlink(p).encode() if p.is_symlink() else p.read_bytes()
+  d=dict(path=str(p),bytes=len(b),sha256=hashlib.sha256(b).hexdigest(),mode=st.st_mode&0o7777)
+@@ -56,7 +56,7 @@
+ def add(p):
+  p=Path(p)
+  if p.is_file() or p.is_symlink():records[str(p)]=rec(p)
+-for row in json.loads((N/'INPUTS.json').read_text())['records']:
++for row in json.loads((Q/'CALLER-INPUTS.json').read_text())['records']:
+  actual=rec(row['path']);assert actual['sha256']==row['sha256'];assert actual['mode']==row['mode'];add(row['path'])
+ for p in N.iterdir():
+  if p.is_file():add(p)
+@@ -65,7 +65,7 @@
+ for directory in [Q/'controls',Q/'observer',Q/'retained-binaries',Q/'loader',N/'launch']:
+  for p in directory.rglob('*'):add(p)
+ for p in OUT.iterdir():add(p)
+-write('INPUTS.json',dict(records=list(records.values()),meaning='Actual V6 source, caller, phase results, raw streams, retained emitted ELFs and preserved first failures'))
++write('INPUTS.json',dict(records=list(records.values()),meaning='Actual CPUID V1 source, caller, phase results, raw streams, retained emitted ELFs and preserved first failures'))
+ for row in records.values():assert rec(row['path'])==row
+ write('READBACK.json',dict(results=rec(OUT/'RESULTS.json'),raw_execution_audit=rec(OUT/'RAW-EXECUTION-AUDIT.json'),inputs=rec(OUT/'INPUTS.json'),records=len(records),all_inputs_unchanged=True,all_qualified=all_qualified,no_source_review_or_parity_verdict=True))
+ print(json.dumps({n:rec(OUT/n) for n in ['RESULTS.json','RAW-EXECUTION-AUDIT.json','INPUTS.json','READBACK.json']},indent=2))

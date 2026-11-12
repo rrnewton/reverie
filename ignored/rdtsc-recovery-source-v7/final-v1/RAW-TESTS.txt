@@ -1,0 +1,51 @@
+timestamp-v7-admission stdout:
+{ "type": "suite", "event": "started", "test_count": 1 }
+{ "type": "test", "event": "started", "name": "runtime::terminal_tests::timestamp_exit_admission_preserves_returning_ordinary_injections" }
+{ "type": "test", "name": "runtime::terminal_tests::timestamp_exit_admission_preserves_returning_ordinary_injections", "event": "ok" }
+{ "type": "suite", "event": "ok", "passed": 1, "failed": 0, "ignored": 0, "measured": 0, "filtered_out": 511, "exec_time": 0.000260662 }
+stderr:
+
+
+timestamp-v7-worker-group stdout:
+{ "type": "suite", "event": "started", "test_count": 1 }
+{ "type": "test", "event": "started", "name": "timestamp_terminal::worker_timestamp_exit_group_terminates_leader_and_runs_hooks_once" }
+{ "type": "test", "name": "timestamp_terminal::worker_timestamp_exit_group_terminates_leader_and_runs_hooks_once", "event": "ok" }
+{ "type": "suite", "event": "ok", "passed": 1, "failed": 0, "ignored": 0, "measured": 0, "filtered_out": 320, "exec_time": 0.332295458 }
+stderr:
+
+
+timestamp-32 stdout:
+{ "type": "suite", "event": "started", "test_count": 1 }
+{ "type": "test", "event": "started", "name": "timestamp_terminal::terminal_exit_preserves_status_and_consuming_cleanup" }
+{ "type": "test", "name": "timestamp_terminal::terminal_exit_preserves_status_and_consuming_cleanup", "event": "ok" }
+{ "type": "suite", "event": "ok", "passed": 1, "failed": 0, "ignored": 0, "measured": 0, "filtered_out": 320, "exec_time": 1.144845059 }
+stderr:
+actual terminal exit cleanup failure: SharedFailure(Reverie(Errno(EIO)))
+
+
+timestamp-33 stdout:
+{ "type": "suite", "event": "started", "test_count": 1 }
+{ "type": "test", "event": "started", "name": "timestamp_terminal::nonterminal_tails_refuse_before_side_effects" }
+{ "type": "test", "name": "timestamp_terminal::nonterminal_tails_refuse_before_side_effects", "event": "ok" }
+{ "type": "suite", "event": "ok", "passed": 1, "failed": 0, "ignored": 0, "measured": 0, "filtered_out": 320, "exec_time": 0.557529621 }
+stderr:
+actual refused timestamp tail mode=3: SharedFailure(Reverie(Errno(ENOSYS)))
+actual refused timestamp tail mode=4: SharedFailure(Reverie(Errno(ENOSYS)))
+actual refused timestamp tail mode=5: SharedFailure(Reverie(Errno(ENOSYS)))
+actual refused timestamp tail mode=6: SharedFailure(Reverie(Errno(ENOSYS)))
+
+
+timestamp-34 stdout:
+{ "type": "suite", "event": "started", "test_count": 1 }
+{ "type": "test", "event": "started", "name": "timestamp_terminal::worker_terminal_rpc_precedes_real_sibling_exit_group" }
+{ "type": "test", "name": "timestamp_terminal::worker_terminal_rpc_precedes_real_sibling_exit_group", "event": "ok" }
+{ "type": "suite", "event": "ok", "passed": 1, "failed": 0, "ignored": 0, "measured": 0, "filtered_out": 320, "exec_time": 0.075655866 }
+stderr:
+
+
+timestamp-37 stdout:
+{ "type": "suite", "event": "started", "test_count": 1 }
+{ "type": "test", "event": "started", "name": "runtime::terminal_tests::terminal_cancellation_and_into_guest_forwarding_do_not_inject_or_start_children" }
+{ "type": "test", "name": "runtime::terminal_tests::terminal_cancellation_and_into_guest_forwarding_do_not_inject_or_start_children", "event": "ok" }
+{ "type": "suite", "event": "ok", "passed": 1, "failed": 0, "ignored": 0, "measured": 0, "filtered_out": 511, "exec_time": 0.000525349 }
+stderr:

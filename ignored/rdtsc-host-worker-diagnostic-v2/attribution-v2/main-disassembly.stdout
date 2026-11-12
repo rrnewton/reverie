@@ -1,0 +1,177 @@
+
+/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-host-worker-diagnostic-v2/qualification-v1/fixture-evidence/timestamp-host-worker.elf:     file format elf64-x86-64
+
+
+Disassembly of section .init:
+
+0000000000401000 <_init>:
+  401000:	f3 0f 1e fa          	endbr64 
+  401004:	48 83 ec 08          	sub    $0x8,%rsp
+  401008:	48 8b 05 e1 2f 00 00 	mov    0x2fe1(%rip),%rax        # 403ff0 <__gmon_start__>
+  40100f:	48 85 c0             	test   %rax,%rax
+  401012:	74 02                	je     401016 <_init+0x16>
+  401014:	ff d0                	callq  *%rax
+  401016:	48 83 c4 08          	add    $0x8,%rsp
+  40101a:	c3                   	retq   
+
+Disassembly of section .plt:
+
+0000000000401020 <.plt>:
+  401020:	ff 35 e2 2f 00 00    	pushq  0x2fe2(%rip)        # 404008 <_GLOBAL_OFFSET_TABLE_+0x8>
+  401026:	ff 25 e4 2f 00 00    	jmpq   *0x2fe4(%rip)        # 404010 <_GLOBAL_OFFSET_TABLE_+0x10>
+  40102c:	0f 1f 40 00          	nopl   0x0(%rax)
+
+0000000000401030 <pthread_create@plt>:
+  401030:	ff 25 e2 2f 00 00    	jmpq   *0x2fe2(%rip)        # 404018 <pthread_create@GLIBC_2.34>
+  401036:	68 00 00 00 00       	pushq  $0x0
+  40103b:	e9 e0 ff ff ff       	jmpq   401020 <.plt>
+
+0000000000401040 <pthread_join@plt>:
+  401040:	ff 25 da 2f 00 00    	jmpq   *0x2fda(%rip)        # 404020 <pthread_join@GLIBC_2.34>
+  401046:	68 01 00 00 00       	pushq  $0x1
+  40104b:	e9 d0 ff ff ff       	jmpq   401020 <.plt>
+
+Disassembly of section .text:
+
+0000000000401050 <main>:
+  401050:	53                   	push   %rbx
+  401051:	48 83 ec 10          	sub    $0x10,%rsp
+  401055:	0f 31                	rdtsc  
+  401057:	48 c1 e2 20          	shl    $0x20,%rdx
+  40105b:	89 c0                	mov    %eax,%eax
+  40105d:	41 b8 0a 00 00 00    	mov    $0xa,%r8d
+  401063:	48 89 d3             	mov    %rdx,%rbx
+  401066:	48 09 c3             	or     %rax,%rbx
+  401069:	48 b8 88 77 66 55 44 	movabs $0x1122334455667788,%rax
+  401070:	33 22 11 
+  401073:	48 39 c3             	cmp    %rax,%rbx
+  401076:	74 09                	je     401081 <main+0x31>
+  401078:	48 83 c4 10          	add    $0x10,%rsp
+  40107c:	44 89 c0             	mov    %r8d,%eax
+  40107f:	5b                   	pop    %rbx
+  401080:	c3                   	retq   
+  401081:	31 f6                	xor    %esi,%esi
+  401083:	b9 34 12 00 00       	mov    $0x1234,%ecx
+  401088:	ba f0 11 40 00       	mov    $0x4011f0,%edx
+  40108d:	48 89 e7             	mov    %rsp,%rdi
+  401090:	48 c7 44 24 08 00 00 	movq   $0x0,0x8(%rsp)
+  401097:	00 00 
+  401099:	e8 92 ff ff ff       	callq  401030 <pthread_create@plt>
+  40109e:	85 c0                	test   %eax,%eax
+  4010a0:	75 41                	jne    4010e3 <main+0x93>
+  4010a2:	48 8b 3c 24          	mov    (%rsp),%rdi
+  4010a6:	48 8d 74 24 08       	lea    0x8(%rsp),%rsi
+  4010ab:	e8 90 ff ff ff       	callq  401040 <pthread_join@plt>
+  4010b0:	41 89 c0             	mov    %eax,%r8d
+  4010b3:	85 c0                	test   %eax,%eax
+  4010b5:	75 34                	jne    4010eb <main+0x9b>
+  4010b7:	48 81 7c 24 08 34 12 	cmpq   $0x1234,0x8(%rsp)
+  4010be:	00 00 
+  4010c0:	75 19                	jne    4010db <main+0x8b>
+  4010c2:	0f 31                	rdtsc  
+  4010c4:	48 c1 e2 20          	shl    $0x20,%rdx
+  4010c8:	89 c0                	mov    %eax,%eax
+  4010ca:	48 09 c2             	or     %rax,%rdx
+  4010cd:	b8 0e 00 00 00       	mov    $0xe,%eax
+  4010d2:	48 39 da             	cmp    %rbx,%rdx
+  4010d5:	44 0f 45 c0          	cmovne %eax,%r8d
+  4010d9:	eb 9d                	jmp    401078 <main+0x28>
+  4010db:	41 b8 0d 00 00 00    	mov    $0xd,%r8d
+  4010e1:	eb 95                	jmp    401078 <main+0x28>
+  4010e3:	41 b8 0b 00 00 00    	mov    $0xb,%r8d
+  4010e9:	eb 8d                	jmp    401078 <main+0x28>
+  4010eb:	41 b8 0c 00 00 00    	mov    $0xc,%r8d
+  4010f1:	eb 85                	jmp    401078 <main+0x28>
+  4010f3:	66 2e 0f 1f 84 00 00 	nopw   %cs:0x0(%rax,%rax,1)
+  4010fa:	00 00 00 
+  4010fd:	0f 1f 00             	nopl   (%rax)
+
+0000000000401100 <_start>:
+  401100:	f3 0f 1e fa          	endbr64 
+  401104:	31 ed                	xor    %ebp,%ebp
+  401106:	49 89 d1             	mov    %rdx,%r9
+  401109:	5e                   	pop    %rsi
+  40110a:	48 89 e2             	mov    %rsp,%rdx
+  40110d:	48 83 e4 f0          	and    $0xfffffffffffffff0,%rsp
+  401111:	50                   	push   %rax
+  401112:	54                   	push   %rsp
+  401113:	45 31 c0             	xor    %r8d,%r8d
+  401116:	31 c9                	xor    %ecx,%ecx
+  401118:	48 c7 c7 50 10 40 00 	mov    $0x401050,%rdi
+  40111f:	ff 15 bb 2e 00 00    	callq  *0x2ebb(%rip)        # 403fe0 <__libc_start_main@GLIBC_2.34>
+  401125:	f4                   	hlt    
+  401126:	66 2e 0f 1f 84 00 00 	nopw   %cs:0x0(%rax,%rax,1)
+  40112d:	00 00 00 
+
+0000000000401130 <_dl_relocate_static_pie>:
+  401130:	f3 0f 1e fa          	endbr64 
+  401134:	c3                   	retq   
+  401135:	66 2e 0f 1f 84 00 00 	nopw   %cs:0x0(%rax,%rax,1)
+  40113c:	00 00 00 
+  40113f:	90                   	nop
+
+0000000000401140 <deregister_tm_clones>:
+  401140:	48 8d 3d e9 2e 00 00 	lea    0x2ee9(%rip),%rdi        # 404030 <__TMC_END__>
+  401147:	48 8d 05 e2 2e 00 00 	lea    0x2ee2(%rip),%rax        # 404030 <__TMC_END__>
+  40114e:	48 39 f8             	cmp    %rdi,%rax
+  401151:	74 15                	je     401168 <deregister_tm_clones+0x28>
+  401153:	48 8b 05 8e 2e 00 00 	mov    0x2e8e(%rip),%rax        # 403fe8 <_ITM_deregisterTMCloneTable>
+  40115a:	48 85 c0             	test   %rax,%rax
+  40115d:	74 09                	je     401168 <deregister_tm_clones+0x28>
+  40115f:	ff e0                	jmpq   *%rax
+  401161:	0f 1f 80 00 00 00 00 	nopl   0x0(%rax)
+  401168:	c3                   	retq   
+  401169:	0f 1f 80 00 00 00 00 	nopl   0x0(%rax)
+
+0000000000401170 <register_tm_clones>:
+  401170:	48 8d 3d b9 2e 00 00 	lea    0x2eb9(%rip),%rdi        # 404030 <__TMC_END__>
+  401177:	48 8d 35 b2 2e 00 00 	lea    0x2eb2(%rip),%rsi        # 404030 <__TMC_END__>
+  40117e:	48 29 fe             	sub    %rdi,%rsi
+  401181:	48 89 f0             	mov    %rsi,%rax
+  401184:	48 c1 ee 3f          	shr    $0x3f,%rsi
+  401188:	48 c1 f8 03          	sar    $0x3,%rax
+  40118c:	48 01 c6             	add    %rax,%rsi
+  40118f:	48 d1 fe             	sar    %rsi
+  401192:	74 14                	je     4011a8 <register_tm_clones+0x38>
+  401194:	48 8b 05 5d 2e 00 00 	mov    0x2e5d(%rip),%rax        # 403ff8 <_ITM_registerTMCloneTable>
+  40119b:	48 85 c0             	test   %rax,%rax
+  40119e:	74 08                	je     4011a8 <register_tm_clones+0x38>
+  4011a0:	ff e0                	jmpq   *%rax
+  4011a2:	66 0f 1f 44 00 00    	nopw   0x0(%rax,%rax,1)
+  4011a8:	c3                   	retq   
+  4011a9:	0f 1f 80 00 00 00 00 	nopl   0x0(%rax)
+
+00000000004011b0 <__do_global_dtors_aux>:
+  4011b0:	f3 0f 1e fa          	endbr64 
+  4011b4:	80 3d 71 2e 00 00 00 	cmpb   $0x0,0x2e71(%rip)        # 40402c <completed.0>
+  4011bb:	75 13                	jne    4011d0 <__do_global_dtors_aux+0x20>
+  4011bd:	55                   	push   %rbp
+  4011be:	48 89 e5             	mov    %rsp,%rbp
+  4011c1:	e8 7a ff ff ff       	callq  401140 <deregister_tm_clones>
+  4011c6:	c6 05 5f 2e 00 00 01 	movb   $0x1,0x2e5f(%rip)        # 40402c <completed.0>
+  4011cd:	5d                   	pop    %rbp
+  4011ce:	c3                   	retq   
+  4011cf:	90                   	nop
+  4011d0:	c3                   	retq   
+  4011d1:	66 66 2e 0f 1f 84 00 	data16 nopw %cs:0x0(%rax,%rax,1)
+  4011d8:	00 00 00 00 
+  4011dc:	0f 1f 40 00          	nopl   0x0(%rax)
+
+00000000004011e0 <frame_dummy>:
+  4011e0:	f3 0f 1e fa          	endbr64 
+  4011e4:	eb 8a                	jmp    401170 <register_tm_clones>
+  4011e6:	66 2e 0f 1f 84 00 00 	nopw   %cs:0x0(%rax,%rax,1)
+  4011ed:	00 00 00 
+
+00000000004011f0 <worker>:
+  4011f0:	0f 31                	rdtsc  
+  4011f2:	48 89 f8             	mov    %rdi,%rax
+  4011f5:	c3                   	retq   
+
+Disassembly of section .fini:
+
+00000000004011f8 <_fini>:
+  4011f8:	f3 0f 1e fa          	endbr64 
+  4011fc:	48 83 ec 08          	sub    $0x8,%rsp
+  401200:	48 83 c4 08          	add    $0x8,%rsp
+  401204:	c3                   	retq   

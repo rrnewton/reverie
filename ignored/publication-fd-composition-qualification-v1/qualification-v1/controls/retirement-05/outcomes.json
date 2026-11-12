@@ -1,0 +1,24 @@
+{
+  "started": [
+    "executor::process_signal_publication::tests::inactive_publication_refuses_poisoned_file_table_without_effects"
+  ],
+  "ended": [
+    {
+      "type": "test",
+      "name": "executor::process_signal_publication::tests::inactive_publication_refuses_poisoned_file_table_without_effects",
+      "event": "ok"
+    }
+  ],
+  "suites": [
+    {
+      "type": "suite",
+      "event": "ok",
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filtered_out": 501,
+      "exec_time": 0.001060052
+    }
+  ]
+}

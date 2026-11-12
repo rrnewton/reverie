@@ -1,0 +1,38 @@
+{
+  "base": "000c15a1161ea2d58749431b5ddaaa97f7aa37d5",
+  "tree": "a12d56466eed51cdd7d12087b5fafa9d66d8c864",
+  "source_root": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/same-inode-ofd-control-v1/baseline-source",
+  "entries": 2620,
+  "base_modes_and_bytes_except_one_test": true,
+  "additive_after": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/same-inode-ofd-control-v1/baseline-source/reverie-kvm/src/executor.rs",
+    "bytes": 1436811,
+    "mode": 420,
+    "sha256": "da17a89d603c53b0d95b63aaec2aa3de3f5e8406b474ee16437a8db4a7b20f70"
+  },
+  "test_patch": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/same-inode-ofd-control-v1/candidate.patch",
+    "bytes": 5494,
+    "mode": 420,
+    "sha256": "057f7702ff26f2c57de10e98d88a2e987a63736c76a43c613ac05460795d0ee9"
+  },
+  "lockfile": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/same-inode-ofd-control-v1/baseline-source/Cargo.lock",
+    "bytes": 67056,
+    "mode": 420,
+    "sha256": "1c09663e46bf21ad7c07eedd7821cccb72ae21f42485192649ff5473962bc856"
+  },
+  "lockfile_not_tracked": true,
+  "gitlinks_expanded": false,
+  "index_sha256": "fc8df6346ffe9eb9243457f4dc50426d759a61ef0f1d7cfd8c00d02847f5951b",
+  "source_root_identity": [
+    48,
+    822658491,
+    212630
+  ],
+  "qualification_identity": [
+    48,
+    822658490,
+    212630
+  ]
+}

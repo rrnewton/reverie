@@ -1,0 +1,57 @@
+Reverie timer integration component — authored implementation, ready for independent review.
+
+Exact target: base f97b7be1de4e2ef10ecc24cee5d8cc47f2fd254f plus SOURCE.patch SHA256 2376c4f9405d551cb5ffd4edf0314ef8e2dcefde1d2c327c22d34da831a1e804 (124,283 bytes, fourteen paths). The branch remains codex/kvm-setitimer-20260918; HEAD and index are unchanged. No commit, publication, landing, Hermit source edit, or skill edit occurred. The b116e2f6 rescue and f97 base retain identical tree fea1d0744b6eb77bd9d2643f5d9b2af7e3854e3f.
+
+The implementation adds the declared Guest/IntoGuest/Tool APIs and serializable complete event identities. API_INVENTORY.json binds the exact declarations; all five public API files remain byte-identical to the early API_V1 inventory coordinated with the Hermit author. Tool::observe_signal_dequeues defaults false and is selected before thread start. Admission-stamped task/process generations prevent a stale numeric TID from observing a replacement lifetime. Fork/clone require fresh admission; exec preserves process sequence. The first ordinary/private/non-ALRM removal works without a preceding parked call.
+
+The shared removal helper at executor.rs:7624 preserves the actual pending domain, complete event and existing private-first/synchronous-number ordering for return-to-user, signalfd and rt_sigtimedwait. It reserves sequence/journal capacity before removal under lifecycle -> process -> thread locks. All Tool execution paths flush the journal, including post-removal EFAULT and readiness errors; failed notification is terminal and cannot become a guest errno or successful cancellation. Exact latest acknowledgment is idempotent, conflicting acknowledgment is refused, and sequence exhaustion refuses before mutation. Disposition-generation discard does not invent a dequeue.
+
+parked_signal_runtime.rs sequentially reborrows the actual KvmGuest for the actual structured Tool hook. No second mutable VM/thread-state owner is created. Ignored, suppressed and reblocked results preserve their real effects; replacement retains the original domain. One caught/fatal selection is stored outside the callback future. runtime.rs:3475 consumes the caught selection through the existing frame path after the real syscall result, without another dequeue or hook. The fatal driver at runtime.rs:3311 performs the actual default-action signal exit. Returning injections remain supported, including real asynchronous nested/posthook RPCs; process actions and tail handoff are refused before effects during observation or a pending caught reservation. Opted-in alarm publication requires the exact original capable callback; unopted primitive contexts remain unchanged.
+
+The backend owns the committed effect ledger through caught handoff and terminal cleanup. Error::SignalEffects retains complete removals, acknowledgment position, publication receipts, callback context and the actual injected result even when the notification future is dropped. Its causal-chain helpers preserve the authoritative first failure; cleanup aggregation retains the ledger as evidence. Private fatal/cancellation outcomes never tail-inject Exit, fabricate EINTR, restore removed events, or manufacture success. Ordinary consuming-notification cancellation is also terminal, even without a parked ledger. A post-effect observation failure takes the private RuntimeError driver path; the original helper may not return to FinishObservation. Hermit must retire its outstanding ownership through the consuming exit path, as coordinated with its author.
+
+Final qualification is qualification-v9, summarized with exact plans, receipts, source identities and test ELF identities in QUALIFICATION.json. All ten phases are accepted, raw 0, terminal authenticated, and source inputs unchanged. The complete source manifest contains 2,617 records; ELF inventory found 473 library and 290 static-test declarations. Only the explicitly selected tests below are claimed executed.
+
+| Final phase | Actual execution | Payload wall seconds |
+|---|---:|---:|
+| Compile, no-run | zero compiler diagnostics | 15.881 |
+| Clippy, warnings denied | zero diagnostics | 3.988 |
+| Format | exact thirteen changed Rust paths | 0.415 |
+| Domain/dequeue/error library controls | 10 passed, 0 failed/ignored | 0.010 |
+| Existing alarm library controls | 12 passed, 0 failed/ignored | 0.013 |
+| Existing child library controls | 9 passed, 0 failed/ignored | 0.011 |
+| New parked + existing alarm VM tests | 2 passed, 0 failed/ignored | 1.726 |
+| Existing child receiver VM test | 1 passed, 0 failed/ignored | 1.146 |
+
+Thus 31 selected library tests and 3 selected VM tests passed. Eight new declarations are included: seven library tests and one VM test. The new VM declaration executes fourteen modes inside the existing 30-second child harness, with REVERIE_REQUIRE_KVM=1. They cover repeated ignored/suppressed cycles, original-domain reblocking, actual caught SA_SIGINFO/alternate-stack/mask/frame/rt_sigreturn behavior, fatal SIGALRM status, caught cancellation, injected and unsubscribed signalfd/sigtimedwait EFAULT, failed acknowledgment with raw EFAULT retained, nested tail refusal, caught delivery after real EFAULT, and ordinary notification cancellation without a parked ledger. Its publications are explicit fixture stimuli; it does not call or qualify Hermit's timer scheduler.
+
+The external phase bounds are unchanged: compile/Clippy 600 aggregate CPU seconds and 900 wall seconds; test/list/format phases 30 CPU seconds and 60 wall seconds; 16 GiB memory, zero swap, 100 GiB free floor, 16 MiB lethal stderr, 64 MiB live stdout samples and 16 MiB complete phase-read refusal. Actual final test ELF SHA256 values are ff75064c3f08ce265d9884b5a6aaa132ec1244416e1bbe79d72def419b93b26a (library) and 4da6810353295a0e1822774eff2d6256ab4f3463736a2a984988df0703be8d6c (static_elf). Temporary guest fixture executables are produced by the existing harness from the bound embedded C and compiler closure; retained ELF identities here refer to the actual libtest programs, not separately retained guest binaries.
+
+Preserved failures and corrections:
+
+- v1 compile raw 101: two initial source-shape/type errors; corrected normally. v2 compiled successfully.
+- v3 compile raw 0 remains accepted=false because the observer reported ENODEV during cgroup accounting. The original report did not identify the particular control read, so no such attribution is claimed. retirement-recovery-v1 authenticates original held-unit terminal accounting, absence of original process generations/cgroup, two fresh collected-unit reads and source preservation, then appends cleanup-only completion under the unchanged owned lease. It does not qualify that original run. Later phases use the exact root-approved observer 137c9b42c3f9e081db59954e0ef692ed861f488be7c2bb8a15ef595c271b2179. Bounds and refusal checks remain unchanged. v4 also retains a five-second loader-query timeout and a successful fresh query under the same bound.
+- v4 stale/reused-TID negative control: actual raw 101, one test failed. The stale ReturnToUser consumer returned 1 (removed) instead of ESRCH (-3). The same assertion now passes for all three consumers after admission-stamped validation.
+- v5 readiness fixture: raw 101, nine of ten library controls passed. Read-only /dev/null legitimately permits the readiness drain, so it did not induce EBADF. The fixture now uses write-only /dev/null to force the real failed drain. The EBADF and complete-effect assertions were preserved. The then-current thirteen-mode VM test passed independently.
+- v6/v7 Clippy raw 101: two collapsible-if diagnostics, then one test evidence tuple type-complexity diagnostic. Conditions were collapsed and the test tuple named; no warning suppression or assertion change.
+- v8 ordinary notification cancellation negative control: actual VM raw 101. After real signalfd removal and copyout EFAULT, cancellation returned Ok((Global, 0, [], [])); unwrap_err rejected the invented success. Production cancellation now returns a terminal error with the exact effect, acknowledgment zero and raw -EFAULT. The same fourteen-mode fixture passes in v9.
+
+SOURCE_INPUTS.json contains exact before/after snapshots of all fourteen changed paths, seventeen unchanged context snapshots, full-source manifest, design bindings, and SCM state. READBACK.json verifies these, final execution evidence and retained failures. SOURCE.patch also passed a read-only reverse-application check against the working tree. Old design/review evidence and all earlier receipts remain intact. DESIGN_CLARIFICATIONS.md is a concise author response to the native/Claude design closure requirements: preserve normal ChildExit bookkeeping while suppressing host send, remove/seal retired KVM timers, make unaware control replies terminal, retain startup/retired identities, and distinguish ordinary injection from the new nested guard. Historical host victim remains unknown.
+
+The bounded ledger permits 64 outstanding journal effects, up to 64 selections per observation and 4,096 retained parked effects/publication receipts; exhaustion is an explicit failure, never a completed wait. Other backends retain default unsupported observation APIs and existing policy. This patch does not change Hermit's scheduler, timer phase arithmetic, continuous virtual time, resource accounting, INFO/replay behavior, or original comparator. It does not establish setitimer/periodic/multithread parity, original pause/sleep integration controls, or native Linux conformance of the combined timer path. Those require Hermit's exact source and integrated executable qualification.
+
+Concurrent integration diagnostic: the Hermit author reported a recursion_depth_exceeding_limit warning in reverie-ptrace/tracer.rs:1863 from an earlier immutable Reverie copy, while core/KVM APIs compiled; its actual current compile blocker was a Hermit fork initializer. This warning has not been attributed to this final source, and final-copy combined backend compilation remains outside the component qualification here. No recursion limit or lint was relaxed.
+
+Disposition: implementation and focused component qualification complete; independent native and Claude source reviews are pending. This author report is not approval of its own source or prior design. Sole source/SCM write ownership is transferred back to root after this packet; further edits require explicit reassignment.
+
+GOALPOST-MOVING REVIEW RULE
+
+Adversarial reviewers must look explicitly for goalpost moving. We are extremely skeptical of any goalpost moving. YOU DO NOT CLEAR THE BAR BY SIMPLY LOWERING THE BAR.
+
+Treat each of these as an explicit review target:
+- weakening an assertion so a test passes
+- widening a tolerance · adding an exemption · skipping a case · relaxing a comparator
+- renaming or relabelling so a failure reads as a pass
+- deleting a check rather than satisfying it
+
+Author check: no pre-existing assertion, tolerance, comparator, test selection gate, skip condition or runtime bound was weakened. The existing alarm/child/domain controls are retained. New negative controls were observed failing before their production fixes; the readiness correction makes its intended fault real rather than changing the expected outcome. Original failures remain failures in their immutable receipts. Explicit component scope does not reduce the outstanding integrated timer/parity goal.

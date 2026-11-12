@@ -1,0 +1,824 @@
+{
+  "compiler_discovery_result": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-native-probe-caller-v1/qualification-v1/controls/dependencies/result.json",
+    "bytes": 7995,
+    "mode": 420,
+    "sha256": "dc77eeb4efd81e2ca5ea32787130afe387596056b6d9e842ec2d965349dac756"
+  },
+  "discovery_stdout": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-native-probe-caller-v1/qualification-v1/observer/dependencies/stdout",
+    "bytes": 3951,
+    "mode": 384,
+    "sha256": "acf44178cd19081ce10426ea69f4a16f2d28811f4045d35993b887cb8380cb87"
+  },
+  "source": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-native-probe-caller-v1/source/probe.c",
+    "bytes": 9369,
+    "mode": 420,
+    "sha256": "da386bbcd3b921dfd15a355260d13ef994ef0c9b5e45fff0f9e287b1ec4c3a1e"
+  },
+  "spelling_names": [
+    "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-native-probe-caller-v1/source/probe.c",
+    "/usr/include/alloca.h",
+    "/usr/include/asm-generic/errno-base.h",
+    "/usr/include/asm-generic/errno.h",
+    "/usr/include/asm/errno.h",
+    "/usr/include/bits/atomic_wide_counter.h",
+    "/usr/include/bits/byteswap.h",
+    "/usr/include/bits/confname.h",
+    "/usr/include/bits/endian.h",
+    "/usr/include/bits/endianness.h",
+    "/usr/include/bits/environments.h",
+    "/usr/include/bits/errno.h",
+    "/usr/include/bits/floatn-common.h",
+    "/usr/include/bits/floatn.h",
+    "/usr/include/bits/getopt_core.h",
+    "/usr/include/bits/getopt_posix.h",
+    "/usr/include/bits/indirect-return.h",
+    "/usr/include/bits/libc-header-start.h",
+    "/usr/include/bits/long-double.h",
+    "/usr/include/bits/mman-linux.h",
+    "/usr/include/bits/mman-map-flags-generic.h",
+    "/usr/include/bits/mman-shared.h",
+    "/usr/include/bits/mman.h",
+    "/usr/include/bits/posix_opt.h",
+    "/usr/include/bits/pthreadtypes-arch.h",
+    "/usr/include/bits/pthreadtypes.h",
+    "/usr/include/bits/select.h",
+    "/usr/include/bits/setjmp.h",
+    "/usr/include/bits/sigaction.h",
+    "/usr/include/bits/sigcontext.h",
+    "/usr/include/bits/sigevent-consts.h",
+    "/usr/include/bits/siginfo-arch.h",
+    "/usr/include/bits/siginfo-consts-arch.h",
+    "/usr/include/bits/siginfo-consts.h",
+    "/usr/include/bits/signal_ext.h",
+    "/usr/include/bits/signum-arch.h",
+    "/usr/include/bits/signum-generic.h",
+    "/usr/include/bits/sigstack.h",
+    "/usr/include/bits/sigstksz.h",
+    "/usr/include/bits/sigthread.h",
+    "/usr/include/bits/ss_flags.h",
+    "/usr/include/bits/stdint-intn.h",
+    "/usr/include/bits/stdint-uintn.h",
+    "/usr/include/bits/stdio.h",
+    "/usr/include/bits/stdio_lim.h",
+    "/usr/include/bits/stdlib-bsearch.h",
+    "/usr/include/bits/stdlib-float.h",
+    "/usr/include/bits/struct_mutex.h",
+    "/usr/include/bits/struct_rwlock.h",
+    "/usr/include/bits/thread-shared-types.h",
+    "/usr/include/bits/time64.h",
+    "/usr/include/bits/timesize.h",
+    "/usr/include/bits/types.h",
+    "/usr/include/bits/types/FILE.h",
+    "/usr/include/bits/types/__FILE.h",
+    "/usr/include/bits/types/__fpos64_t.h",
+    "/usr/include/bits/types/__fpos_t.h",
+    "/usr/include/bits/types/__locale_t.h",
+    "/usr/include/bits/types/__mbstate_t.h",
+    "/usr/include/bits/types/__sigset_t.h",
+    "/usr/include/bits/types/__sigval_t.h",
+    "/usr/include/bits/types/clock_t.h",
+    "/usr/include/bits/types/clockid_t.h",
+    "/usr/include/bits/types/cookie_io_functions_t.h",
+    "/usr/include/bits/types/error_t.h",
+    "/usr/include/bits/types/locale_t.h",
+    "/usr/include/bits/types/sig_atomic_t.h",
+    "/usr/include/bits/types/sigevent_t.h",
+    "/usr/include/bits/types/siginfo_t.h",
+    "/usr/include/bits/types/sigset_t.h",
+    "/usr/include/bits/types/sigval_t.h",
+    "/usr/include/bits/types/stack_t.h",
+    "/usr/include/bits/types/struct_FILE.h",
+    "/usr/include/bits/types/struct___jmp_buf_tag.h",
+    "/usr/include/bits/types/struct_sigstack.h",
+    "/usr/include/bits/types/struct_timespec.h",
+    "/usr/include/bits/types/struct_timeval.h",
+    "/usr/include/bits/types/time_t.h",
+    "/usr/include/bits/types/timer_t.h",
+    "/usr/include/bits/typesizes.h",
+    "/usr/include/bits/uintn-identity.h",
+    "/usr/include/bits/unistd_ext.h",
+    "/usr/include/bits/waitflags.h",
+    "/usr/include/bits/waitstatus.h",
+    "/usr/include/bits/wchar.h",
+    "/usr/include/bits/wordsize.h",
+    "/usr/include/endian.h",
+    "/usr/include/errno.h",
+    "/usr/include/features-time64.h",
+    "/usr/include/features.h",
+    "/usr/include/gnu/stubs-64.h",
+    "/usr/include/gnu/stubs.h",
+    "/usr/include/inttypes.h",
+    "/usr/include/linux/close_range.h",
+    "/usr/include/linux/errno.h",
+    "/usr/include/setjmp.h",
+    "/usr/include/signal.h",
+    "/usr/include/stdc-predef.h",
+    "/usr/include/stdint.h",
+    "/usr/include/stdio.h",
+    "/usr/include/stdlib.h",
+    "/usr/include/string.h",
+    "/usr/include/strings.h",
+    "/usr/include/sys/cdefs.h",
+    "/usr/include/sys/mman.h",
+    "/usr/include/sys/select.h",
+    "/usr/include/sys/types.h",
+    "/usr/include/sys/ucontext.h",
+    "/usr/include/ucontext.h",
+    "/usr/include/unistd.h",
+    "/usr/lib/gcc/x86_64-redhat-linux/11/include/cpuid.h",
+    "/usr/lib/gcc/x86_64-redhat-linux/11/include/stdarg.h",
+    "/usr/lib/gcc/x86_64-redhat-linux/11/include/stddef.h",
+    "/usr/lib/gcc/x86_64-redhat-linux/11/include/stdint.h"
+  ],
+  "files": [
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-native-probe-caller-v1/source/probe.c",
+      "bytes": 9369,
+      "mode": 420,
+      "sha256": "da386bbcd3b921dfd15a355260d13ef994ef0c9b5e45fff0f9e287b1ec4c3a1e"
+    },
+    {
+      "path": "/usr/include/alloca.h",
+      "bytes": 1203,
+      "mode": 420,
+      "sha256": "60cc5d81f3771c8954020d27e4d809b4521a5a8fcab8ad306bb24519f38f11e4"
+    },
+    {
+      "path": "/usr/include/asm-generic/errno-base.h",
+      "bytes": 1612,
+      "mode": 420,
+      "sha256": "2c148e92b8318deeb767fabd60822113e575ee664ff09a1873aed8f7a495793c"
+    },
+    {
+      "path": "/usr/include/asm-generic/errno.h",
+      "bytes": 5648,
+      "mode": 420,
+      "sha256": "fb7b5a504015f3a9074c641e7371b250d867d751d90e4a22a8ac17fced3d50af"
+    },
+    {
+      "path": "/usr/include/asm/errno.h",
+      "bytes": 31,
+      "mode": 420,
+      "sha256": "4ee384515a4325315992e61dd957f0fa91f3858fe7c079de59f56edded51de86"
+    },
+    {
+      "path": "/usr/include/bits/atomic_wide_counter.h",
+      "bytes": 1283,
+      "mode": 420,
+      "sha256": "0bc1e6923ae6b6f85619d3836fbdf448c8cc976911c6d65fb048d9ef4d773ece"
+    },
+    {
+      "path": "/usr/include/bits/byteswap.h",
+      "bytes": 2450,
+      "mode": 420,
+      "sha256": "75cb9f998212f681612d553c2f3000a404189b7fc04b5023d79afc1d3e18b1dd"
+    },
+    {
+      "path": "/usr/include/bits/confname.h",
+      "bytes": 23828,
+      "mode": 420,
+      "sha256": "843897cbda18fac62d2422a1136084a566457e10b2689636a047687ea6b4320f"
+    },
+    {
+      "path": "/usr/include/bits/endian.h",
+      "bytes": 1905,
+      "mode": 420,
+      "sha256": "e74cb7a57cc668c075c3eee4dec89e9728939467fa12370ee08d0e260a048035"
+    },
+    {
+      "path": "/usr/include/bits/endianness.h",
+      "bytes": 273,
+      "mode": 420,
+      "sha256": "659a7060004eda113671a38852c4d1e9cb97a35932bcd1d8540f98c09c180747"
+    },
+    {
+      "path": "/usr/include/bits/environments.h",
+      "bytes": 3791,
+      "mode": 420,
+      "sha256": "77c46b972677ccbb4851b4657f9337e344904c4ffef1a3fdc3efcabf55721cf3"
+    },
+    {
+      "path": "/usr/include/bits/errno.h",
+      "bytes": 1426,
+      "mode": 420,
+      "sha256": "e95220415a3bb9cc9f550e4e2111dd5d91a3e5e10269801ee3fb7fff63088c2c"
+    },
+    {
+      "path": "/usr/include/bits/floatn-common.h",
+      "bytes": 10325,
+      "mode": 420,
+      "sha256": "fc3d99a8e2469c0a83a888092f7ea3539150020ef7ee85fd4896a7b81e8d564b"
+    },
+    {
+      "path": "/usr/include/bits/floatn.h",
+      "bytes": 4457,
+      "mode": 420,
+      "sha256": "92a49e1447da51a22db5323359655de52b9d01a219a1a7f33eaafae2c2967102"
+    },
+    {
+      "path": "/usr/include/bits/getopt_core.h",
+      "bytes": 3667,
+      "mode": 420,
+      "sha256": "70de2378830527293afdff47bcb8697d9678830d61f4b280baa1a3de38628fd0"
+    },
+    {
+      "path": "/usr/include/bits/getopt_posix.h",
+      "bytes": 1810,
+      "mode": 420,
+      "sha256": "a94c6712e26d7b8bd8b48c2bcfe2a121e0bd8ea3d126936103461a537de9b95c"
+    },
+    {
+      "path": "/usr/include/bits/indirect-return.h",
+      "bytes": 1591,
+      "mode": 420,
+      "sha256": "a70b2ce7e69d17389ee7f8ce0394d78d8a3528113d4540da0126f23fb8cd5ef6"
+    },
+    {
+      "path": "/usr/include/bits/libc-header-start.h",
+      "bytes": 4286,
+      "mode": 420,
+      "sha256": "3484cbc18837e0ad143aafdd83bd82aac0b6e81b392ae3539e144f80b031be48"
+    },
+    {
+      "path": "/usr/include/bits/long-double.h",
+      "bytes": 970,
+      "mode": 420,
+      "sha256": "4203197edd94aadf2a01c675ff7bcd3fd361139a8a25d4446e954cb12ef0583b"
+    },
+    {
+      "path": "/usr/include/bits/mman-linux.h",
+      "bytes": 5086,
+      "mode": 420,
+      "sha256": "4907892920a1df5009e1734ecc6a5983ea3a8473930f99aa14dc510eafb29c0f"
+    },
+    {
+      "path": "/usr/include/bits/mman-map-flags-generic.h",
+      "bytes": 1997,
+      "mode": 420,
+      "sha256": "7aa2cbe5f42605c04e07c5f032cfe2d2806b61da355833d10ff687d8a63ea508"
+    },
+    {
+      "path": "/usr/include/bits/mman-shared.h",
+      "bytes": 2841,
+      "mode": 420,
+      "sha256": "78c4944bcfccbd6ac1ff722aba6affbe4e6ef2a6af0f995ecb7946ebd5784dd1"
+    },
+    {
+      "path": "/usr/include/bits/mman.h",
+      "bytes": 1363,
+      "mode": 420,
+      "sha256": "ed316e72553b97d57e7ca47cf895d839b611fac1708546ec493a8a8c2b8ad374"
+    },
+    {
+      "path": "/usr/include/bits/posix_opt.h",
+      "bytes": 5913,
+      "mode": 420,
+      "sha256": "c573c0e5209926907880611e03ec7660820f27df1cc1d831a9b1cb7f13216317"
+    },
+    {
+      "path": "/usr/include/bits/pthreadtypes-arch.h",
+      "bytes": 1838,
+      "mode": 420,
+      "sha256": "f618c4775644095b55771a5f30041c565a89e30a9e0a5e112ec9d41744992777"
+    },
+    {
+      "path": "/usr/include/bits/pthreadtypes.h",
+      "bytes": 3072,
+      "mode": 420,
+      "sha256": "6d012b8aefbd93cf1cee8f0a2cf99440a908e3fab1dd5afb13b733e07754260c"
+    },
+    {
+      "path": "/usr/include/bits/select.h",
+      "bytes": 1505,
+      "mode": 420,
+      "sha256": "38e98b77e152bdbbd314bcfc91fc95d50e94ae485e1479b2332cb68449ae1d21"
+    },
+    {
+      "path": "/usr/include/bits/setjmp.h",
+      "bytes": 1287,
+      "mode": 420,
+      "sha256": "e3aa8798f71361cda0f497a5ea78e00917b5f0364b1dd427667d75c1d77acf41"
+    },
+    {
+      "path": "/usr/include/bits/sigaction.h",
+      "bytes": 2935,
+      "mode": 420,
+      "sha256": "95b49b2c79f779b726526542454fa1bb8976d8eac20e950cc67ff0a3e5ef74b0"
+    },
+    {
+      "path": "/usr/include/bits/sigcontext.h",
+      "bytes": 4266,
+      "mode": 420,
+      "sha256": "8ebb86a93fc438a92249856d6efdc238fc3794f0fdaba372f25bf8337ebcc86b"
+    },
+    {
+      "path": "/usr/include/bits/sigevent-consts.h",
+      "bytes": 1471,
+      "mode": 420,
+      "sha256": "3dca74e1b360801511f78c8ff49b5c6f956c5206a174d3149d1939231158e9e5"
+    },
+    {
+      "path": "/usr/include/bits/siginfo-arch.h",
+      "bytes": 729,
+      "mode": 420,
+      "sha256": "0839bdc7af291182ff9822a7b6419659fb26a49af5e4264857a71af4ccb12213"
+    },
+    {
+      "path": "/usr/include/bits/siginfo-consts-arch.h",
+      "bytes": 204,
+      "mode": 420,
+      "sha256": "56e019330b859cc4e28af30854df4d29be120ec4bff74849301bb3c40c9f19ca"
+    },
+    {
+      "path": "/usr/include/bits/siginfo-consts.h",
+      "bytes": 7036,
+      "mode": 420,
+      "sha256": "c99588f612f35c8d2dae31c8a3c23d67f11d21909885264b119be16d60098179"
+    },
+    {
+      "path": "/usr/include/bits/signal_ext.h",
+      "bytes": 1285,
+      "mode": 420,
+      "sha256": "70d997aaac02944e69da7882e6cc457e9c844505e2a091a75d66f4a4d8390b15"
+    },
+    {
+      "path": "/usr/include/bits/signum-arch.h",
+      "bytes": 2580,
+      "mode": 420,
+      "sha256": "2a3e9e9d4d464aca79adb77c832c327e92472388fa002ad9958186aca848c7a2"
+    },
+    {
+      "path": "/usr/include/bits/signum-generic.h",
+      "bytes": 3313,
+      "mode": 420,
+      "sha256": "c71cca01e80cf114c97fb2d3575f1b71c00deab81d367ef31d00176d0ca45267"
+    },
+    {
+      "path": "/usr/include/bits/sigstack.h",
+      "bytes": 1168,
+      "mode": 420,
+      "sha256": "69e0664aa6d297ecfdf2996f8e3950becd09819d2599476ff68de6641554b4d7"
+    },
+    {
+      "path": "/usr/include/bits/sigstksz.h",
+      "bytes": 1278,
+      "mode": 420,
+      "sha256": "f9e0e451d48d22a6b5c79d8419bc8bc6aa2f1009ad2d3ad23a58cd9f575b31f8"
+    },
+    {
+      "path": "/usr/include/bits/sigthread.h",
+      "bytes": 1692,
+      "mode": 420,
+      "sha256": "a62d67e1128b5f414d5f9799344274d08ff5f208331cead21037e0ba9911c652"
+    },
+    {
+      "path": "/usr/include/bits/ss_flags.h",
+      "bytes": 1188,
+      "mode": 420,
+      "sha256": "8a5953cec99dff9f74d41f303fc1029607f8805e39496299118c652d3b383000"
+    },
+    {
+      "path": "/usr/include/bits/stdint-intn.h",
+      "bytes": 1037,
+      "mode": 420,
+      "sha256": "50e8230b02341fc86a2a7867531aa5586e533ed52be7eff2c6de054a9c8a3c9f"
+    },
+    {
+      "path": "/usr/include/bits/stdint-uintn.h",
+      "bytes": 1049,
+      "mode": 420,
+      "sha256": "bcb422c06c1c8e009aebd50af2a513522ad67cbc22aec6bd30810b0f85ce015a"
+    },
+    {
+      "path": "/usr/include/bits/stdio.h",
+      "bytes": 5599,
+      "mode": 420,
+      "sha256": "61654bf75686f997793ae9c91c2c5bb8ad922ed8a48118e20d9594c7bd29f1a2"
+    },
+    {
+      "path": "/usr/include/bits/stdio_lim.h",
+      "bytes": 1213,
+      "mode": 420,
+      "sha256": "d2b2772212736cdade86a7259ea2d7227209b55ac22ca42c490188eb66f1fe57"
+    },
+    {
+      "path": "/usr/include/bits/stdlib-bsearch.h",
+      "bytes": 1557,
+      "mode": 420,
+      "sha256": "e038a0ab86b6ecfccbe68b77fe370122767dfe9d8a430518da5d18d34ec47d86"
+    },
+    {
+      "path": "/usr/include/bits/stdlib-float.h",
+      "bytes": 1115,
+      "mode": 420,
+      "sha256": "74ee78ddb2a65280cca9471ff9aa30cf039451ec42456aaf499e4672982e9798"
+    },
+    {
+      "path": "/usr/include/bits/struct_mutex.h",
+      "bytes": 1810,
+      "mode": 420,
+      "sha256": "3a351251dbd08431e5ce82a59aec6745981a3e119ec854d24f249a79f1ba3628"
+    },
+    {
+      "path": "/usr/include/bits/struct_rwlock.h",
+      "bytes": 2027,
+      "mode": 420,
+      "sha256": "0132eb8f9ca2e6b1c5fe26c2944f6e550e5d3005172abb53409bc4ee17677238"
+    },
+    {
+      "path": "/usr/include/bits/thread-shared-types.h",
+      "bytes": 3927,
+      "mode": 420,
+      "sha256": "1b536fd2fbad402392117f8bd093cd52cb6a1f904c9374f6d24560e7307f0470"
+    },
+    {
+      "path": "/usr/include/bits/time64.h",
+      "bytes": 1340,
+      "mode": 420,
+      "sha256": "2e9214d49c9e6bdd546f8bac3af34a88ae25ce90cf0c608103575d433ebdbd0d"
+    },
+    {
+      "path": "/usr/include/bits/timesize.h",
+      "bytes": 1081,
+      "mode": 420,
+      "sha256": "c10f5d611d79a39c274ae90bfc89bd88ddab2e3a4f37cae952e14363d53b610a"
+    },
+    {
+      "path": "/usr/include/bits/types.h",
+      "bytes": 8806,
+      "mode": 420,
+      "sha256": "536ec41325b1e96b17c4b897d148495d19387334460179f84446896a3fb5e47c"
+    },
+    {
+      "path": "/usr/include/bits/types/FILE.h",
+      "bytes": 180,
+      "mode": 420,
+      "sha256": "37515f78be386f2edad4746f2947c928f480728c56d9a94e25302ebbdaef3c96"
+    },
+    {
+      "path": "/usr/include/bits/types/__FILE.h",
+      "bytes": 110,
+      "mode": 420,
+      "sha256": "26c909942e8a6bc82725e9c402f393aed9e32d94190257ddf71e1b5f819b4e5e"
+    },
+    {
+      "path": "/usr/include/bits/types/__fpos64_t.h",
+      "bytes": 410,
+      "mode": 420,
+      "sha256": "8afae3abf006beb39fd9d4d4bae38745cdf08a91e6217ddf25833c8d4b04751b"
+    },
+    {
+      "path": "/usr/include/bits/types/__fpos_t.h",
+      "bytes": 381,
+      "mode": 420,
+      "sha256": "603e58ab31ed75b7e0ab09a2ca94e99955f7fbc63310466321ce27c906227eb4"
+    },
+    {
+      "path": "/usr/include/bits/types/__locale_t.h",
+      "bytes": 1722,
+      "mode": 420,
+      "sha256": "53c0f18313e94c2d7b0f43ba871c030f514ba5038c5263b1e85af3c15935cb68"
+    },
+    {
+      "path": "/usr/include/bits/types/__mbstate_t.h",
+      "bytes": 564,
+      "mode": 420,
+      "sha256": "c561df72d5b987ccbd022059fdb1bcb6899c3e94b403997a0576ef3e1afb0f94"
+    },
+    {
+      "path": "/usr/include/bits/types/__sigset_t.h",
+      "bytes": 206,
+      "mode": 420,
+      "sha256": "05291a7d38bb1d0da1ed01c09fe85fa2b1f4d5bc708e06bb930efec672db08d5"
+    },
+    {
+      "path": "/usr/include/bits/types/__sigval_t.h",
+      "bytes": 1148,
+      "mode": 420,
+      "sha256": "a8bb1479b199aac1e62f12323637de53b25495bad51dd8f36d7f041c42f7ff8e"
+    },
+    {
+      "path": "/usr/include/bits/types/clock_t.h",
+      "bytes": 143,
+      "mode": 420,
+      "sha256": "81e60e8a8d99b28bc723c14b156d7f7fc8ff663d98a857a3f5aea90431f577e3"
+    },
+    {
+      "path": "/usr/include/bits/types/clockid_t.h",
+      "bytes": 174,
+      "mode": 420,
+      "sha256": "dcd64d184855b245e5c7acf21910a0aaca590f1faf094e400da5d30551d11eb0"
+    },
+    {
+      "path": "/usr/include/bits/types/cookie_io_functions_t.h",
+      "bytes": 2725,
+      "mode": 420,
+      "sha256": "51a5f4b94d8ad5470e68aa1a0fdb6c2b3551677293f551f50b5e93cf2aaaba4c"
+    },
+    {
+      "path": "/usr/include/bits/types/error_t.h",
+      "bytes": 894,
+      "mode": 420,
+      "sha256": "4e63be18a07ece22d49940de5ae8371b07fde1264a5c5d3aa33b76ec7fd70ba5"
+    },
+    {
+      "path": "/usr/include/bits/types/locale_t.h",
+      "bytes": 983,
+      "mode": 420,
+      "sha256": "6b174fafe351950055cdb8bdfbff6f91b5b293fa0270395d45dc65093625eed8"
+    },
+    {
+      "path": "/usr/include/bits/types/sig_atomic_t.h",
+      "bytes": 272,
+      "mode": 420,
+      "sha256": "8c44b91c2eb6e509905e1becec6b98f8ac006709bfa5d85d86e34a46eb9013cc"
+    },
+    {
+      "path": "/usr/include/bits/types/sigevent_t.h",
+      "bytes": 1204,
+      "mode": 420,
+      "sha256": "7125083b8096dd146e6498a61f38bf3bc7215c1c9237e92469550bb355545bab"
+    },
+    {
+      "path": "/usr/include/bits/types/siginfo_t.h",
+      "bytes": 3892,
+      "mode": 420,
+      "sha256": "88b1392b88af3a08d908866f4e9c5650c5cddb0c8e021b0a3f8293cef6616feb"
+    },
+    {
+      "path": "/usr/include/bits/types/sigset_t.h",
+      "bytes": 195,
+      "mode": 420,
+      "sha256": "3db5ded9d98a694e8c7196a06690b2e816ec6bb82689940d281f6504533f37e1"
+    },
+    {
+      "path": "/usr/include/bits/types/sigval_t.h",
+      "bytes": 599,
+      "mode": 420,
+      "sha256": "7d94a894bed0b9490967e8dbcd53725c0f2af9559e58d4b19bd14d3707974ee3"
+    },
+    {
+      "path": "/usr/include/bits/types/stack_t.h",
+      "bytes": 1062,
+      "mode": 420,
+      "sha256": "c49dd8690d39878759378d8ddddba4dabb3cbabf8f3a0d633a8a64ce885d532d"
+    },
+    {
+      "path": "/usr/include/bits/types/struct_FILE.h",
+      "bytes": 4588,
+      "mode": 420,
+      "sha256": "2a5531881328ab34cdb258b5a2c012aff615e9d4f2d7d655010adf0e8300896a"
+    },
+    {
+      "path": "/usr/include/bits/types/struct___jmp_buf_tag.h",
+      "bytes": 1467,
+      "mode": 420,
+      "sha256": "95ff1cbad685ae299ee3174bbfa6d6896a807986190e72c4986978e228d25265"
+    },
+    {
+      "path": "/usr/include/bits/types/struct_sigstack.h",
+      "bytes": 1073,
+      "mode": 420,
+      "sha256": "43c478026932a661988cab6aafeada322cfa6333f6f3c2b02239da3dc40d793a"
+    },
+    {
+      "path": "/usr/include/bits/types/struct_timespec.h",
+      "bytes": 867,
+      "mode": 420,
+      "sha256": "8e7e964087b9c7638be2b5fb0fa01ceab43e4af8393b805b54ac2bd8642a1b98"
+    },
+    {
+      "path": "/usr/include/bits/types/struct_timeval.h",
+      "bytes": 411,
+      "mode": 420,
+      "sha256": "d2fbcbcb4cc072a11380c826e3c8d58ca08df21e8a2436a3fd9a64ad8b4acd0c"
+    },
+    {
+      "path": "/usr/include/bits/types/time_t.h",
+      "bytes": 203,
+      "mode": 420,
+      "sha256": "721a557cff3ed308c69719a44ba8f7cd9536f6c602fb8f1b1eea8ed6749ee37d"
+    },
+    {
+      "path": "/usr/include/bits/types/timer_t.h",
+      "bytes": 159,
+      "mode": 420,
+      "sha256": "d96a2452da0d933941273d11d1048ea525f033306892835b0a7a0999b13853aa"
+    },
+    {
+      "path": "/usr/include/bits/typesizes.h",
+      "bytes": 3737,
+      "mode": 420,
+      "sha256": "c4eab974fc3e10e5936a920eafd441c783da6d43a5ff5a65f796c6eecbe67b1b"
+    },
+    {
+      "path": "/usr/include/bits/uintn-identity.h",
+      "bytes": 1542,
+      "mode": 420,
+      "sha256": "73c777716b1a8d4b2c75aee06667d7864af42d6532193ea5694feabf8640666a"
+    },
+    {
+      "path": "/usr/include/bits/unistd_ext.h",
+      "bytes": 2538,
+      "mode": 420,
+      "sha256": "a0824ebd6f89ff5dbcf45dc84455901e0b90b0769bae4a26f23933e2f1426334"
+    },
+    {
+      "path": "/usr/include/bits/waitflags.h",
+      "bytes": 1697,
+      "mode": 420,
+      "sha256": "ced16bd69c58daf55131f1350c7239eaeffe545b978f5461432ff947c88016ac"
+    },
+    {
+      "path": "/usr/include/bits/waitstatus.h",
+      "bytes": 2287,
+      "mode": 420,
+      "sha256": "51960468279bc705a66142e4bd53a279fc6233956916ef08169de5c51c979a63"
+    },
+    {
+      "path": "/usr/include/bits/wchar.h",
+      "bytes": 1906,
+      "mode": 420,
+      "sha256": "2c014ce2b642d31e97e97b93b2ff7f1c6213a899231ca0fa0303a796062b2a5b"
+    },
+    {
+      "path": "/usr/include/bits/wordsize.h",
+      "bytes": 442,
+      "mode": 420,
+      "sha256": "716d8459074e2a082d65a28192b32eddbfd7587348372395b1c283a723ae4c18"
+    },
+    {
+      "path": "/usr/include/endian.h",
+      "bytes": 2299,
+      "mode": 420,
+      "sha256": "3dc4ddb5150dbfc89a1d8e91986cc73dee0e27325eeafcde8a0201721d20315d"
+    },
+    {
+      "path": "/usr/include/errno.h",
+      "bytes": 1679,
+      "mode": 420,
+      "sha256": "6b69f4e73a44b32735a99a7b3d270cdde7fa0432cca76369aa3e8a4b6992b699"
+    },
+    {
+      "path": "/usr/include/features-time64.h",
+      "bytes": 1404,
+      "mode": 420,
+      "sha256": "c732fbea3ea389ec922483346305612c54b71cba429b2c4385628908b8c18aa9"
+    },
+    {
+      "path": "/usr/include/features.h",
+      "bytes": 18116,
+      "mode": 420,
+      "sha256": "96c0471c3ef8ecf65f327048afeed611d1a7c8195b26ccb1bcdf5cc5fd0fcb09"
+    },
+    {
+      "path": "/usr/include/gnu/stubs-64.h",
+      "bytes": 481,
+      "mode": 420,
+      "sha256": "3836bee19ddace5e06e967be88015d8492335daa08ce39a236618f520ccc40db"
+    },
+    {
+      "path": "/usr/include/gnu/stubs.h",
+      "bytes": 384,
+      "mode": 420,
+      "sha256": "ef444295a0a9e8f5c40918399a00cc91ba0bd79774110cdf6e652baa6cfadb2e"
+    },
+    {
+      "path": "/usr/include/inttypes.h",
+      "bytes": 8337,
+      "mode": 420,
+      "sha256": "fb2492f430310514b1944b988c57ad6ac4a3bb679ce5c7442d4bbbf739fd8a4b"
+    },
+    {
+      "path": "/usr/include/linux/close_range.h",
+      "bytes": 377,
+      "mode": 420,
+      "sha256": "54f02dee64fba028529c5265273d23a96629f3217d6abc31574ef7cce5a63f70"
+    },
+    {
+      "path": "/usr/include/linux/errno.h",
+      "bytes": 23,
+      "mode": 420,
+      "sha256": "a47fb2f49bce0546a1e88805cec954338abb1b2ac87de042166e8e3a74b23261"
+    },
+    {
+      "path": "/usr/include/setjmp.h",
+      "bytes": 3190,
+      "mode": 420,
+      "sha256": "37fa68c258bfad9e84500fd453fb1054babafc8590bb68fa1897d335f421a565"
+    },
+    {
+      "path": "/usr/include/signal.h",
+      "bytes": 13040,
+      "mode": 420,
+      "sha256": "ff08a1736da033e5085f0e0927942eb36cc0cb272921a860b94662968bcddd1f"
+    },
+    {
+      "path": "/usr/include/stdc-predef.h",
+      "bytes": 2290,
+      "mode": 420,
+      "sha256": "38bac01c137da3ec6623c5166d420cd0bdee18e1d6605921f138f74ef902f102"
+    },
+    {
+      "path": "/usr/include/stdint.h",
+      "bytes": 8474,
+      "mode": 420,
+      "sha256": "b8d73ae9f3e3884c7c544ad41de0e6c235fbccc5aad880f0597207972e78d086"
+    },
+    {
+      "path": "/usr/include/stdio.h",
+      "bytes": 31411,
+      "mode": 420,
+      "sha256": "2f9b1bd49f5c077435dbcd5c60495b8e26f1f6f16eee9302f02544885c9b2c7a"
+    },
+    {
+      "path": "/usr/include/stdlib.h",
+      "bytes": 36316,
+      "mode": 420,
+      "sha256": "16081c94c8dd55b556012883ffa089d6c2fcd409c9620b54608f11c2f89d4d93"
+    },
+    {
+      "path": "/usr/include/string.h",
+      "bytes": 19459,
+      "mode": 420,
+      "sha256": "d84903be79edb24ff78a93f9732835b80bcea400a0804045045a652c41663e5a"
+    },
+    {
+      "path": "/usr/include/strings.h",
+      "bytes": 4753,
+      "mode": 420,
+      "sha256": "5201d2f97860ac2b0697be158c3bc1b0197a32ee76e5cd6eeb150112e773ce7e"
+    },
+    {
+      "path": "/usr/include/sys/cdefs.h",
+      "bytes": 26257,
+      "mode": 420,
+      "sha256": "846293609ffa9ee7b1ca9ea263da1fe3fa73029ac110561b891c9c5b3c163bb4"
+    },
+    {
+      "path": "/usr/include/sys/mman.h",
+      "bytes": 5552,
+      "mode": 420,
+      "sha256": "7cc0f38f8e709be5fb8325aacd10ba2f02bf79ac71e28fd796c7229844758bc6"
+    },
+    {
+      "path": "/usr/include/sys/select.h",
+      "bytes": 5039,
+      "mode": 420,
+      "sha256": "3da7055bf53ea4774b2d05a39b175ec5d5d033294e29512fcf410a2726eaf6aa"
+    },
+    {
+      "path": "/usr/include/sys/types.h",
+      "bytes": 5713,
+      "mode": 420,
+      "sha256": "47fccf574621f99b6ca32a5f3e29f4ecd1fbe5a7d21a4221288e9df384702bec"
+    },
+    {
+      "path": "/usr/include/sys/ucontext.h",
+      "bytes": 5842,
+      "mode": 420,
+      "sha256": "39046c4ce6a469d35339e9b1d681e7317116f9888d1b9683a338d30268e39404"
+    },
+    {
+      "path": "/usr/include/ucontext.h",
+      "bytes": 2037,
+      "mode": 420,
+      "sha256": "e9b1fce0cf47c388d6624b193774cdd520a99598379f49a953c6dfbec55637f6"
+    },
+    {
+      "path": "/usr/include/unistd.h",
+      "bytes": 44489,
+      "mode": 420,
+      "sha256": "abfb1cb096b39e2494d653f7e8faaa8502decf2935a86ddb125652a775f84494"
+    },
+    {
+      "path": "/usr/lib/gcc/x86_64-redhat-linux/11/include/cpuid.h",
+      "bytes": 9849,
+      "mode": 420,
+      "sha256": "505fb76f32d09d4e1282b26e4c60a6f0df8613f3e8f897f0431f1fa44881849d"
+    },
+    {
+      "path": "/usr/lib/gcc/x86_64-redhat-linux/11/include/stdarg.h",
+      "bytes": 4072,
+      "mode": 420,
+      "sha256": "da6cfd69bbbc50d62c6fcc6a722c26b54e17f95cdadb5440c3ec331bda1eebf6"
+    },
+    {
+      "path": "/usr/lib/gcc/x86_64-redhat-linux/11/include/stddef.h",
+      "bytes": 12959,
+      "mode": 420,
+      "sha256": "8fe9e3ecaf491fa5fb1c8e7d7caf8fb0c69b13bec84cbf1f8ff7e399fc0c8bc7"
+    },
+    {
+      "path": "/usr/lib/gcc/x86_64-redhat-linux/11/include/stdint.h",
+      "bytes": 328,
+      "mode": 420,
+      "sha256": "86a7914ab7d6a18465a6fb9a7b54f945cad604fdbf3ca0d10e4e0254e0037911"
+    }
+  ],
+  "input_symlinks": [],
+  "scope": "Compiler dependency discovery only; these exact bytes/modes/aliases are bound before actual compile and actual compile membership must match."
+}

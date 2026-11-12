@@ -1,0 +1,4 @@
+
+thread 'static_elf_faults_are_reported_by_direct_and_tool_runtimes' (2417754) panicked at reverie-kvm/tests/static_elf.rs:3675:18:
+expected invalid-opcode exception, got guest exception vector 6 at 0x200000 (CR2=0x0)
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace

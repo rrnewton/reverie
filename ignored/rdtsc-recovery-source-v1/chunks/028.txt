@@ -1,0 +1,60 @@
++    );
++    for prefix in prefixes {
++        let (log, status) = run_timestamp_probe(
++            &static_elf(&prefixed_timestamp_register_program(&prefix, &prefix)),
++            true,
++        );
++        assert_eq!(status, 0, "prefix={prefix:x?}");
++        assert_eq!(
++            log.calls(),
++            vec![
++                (Pid::from_raw(1), Rdtsc::Tsc),
++                (Pid::from_raw(1), Rdtsc::Tscp)
++            ]
++        );
++    }
++    let (log, status) = run_timestamp_probe(
++        &static_elf(&prefixed_timestamp_register_program(
++            &[0x66; 13],
++            &[0x66; 12],
++        )),
++        true,
++    );
++    assert_eq!(status, 0, "both maximum-length instructions must complete");
++    assert_eq!(
++        log.calls(),
++        vec![
++            (Pid::from_raw(1), Rdtsc::Tsc),
++            (Pid::from_raw(1), Rdtsc::Tscp)
++        ]
++    );
++}
++
++#[test]
++fn locked_and_overlength_timestamp_encodings_remain_faults() {
++    if !kvm_available("KVM timestamp fault-priority test") {
++        return;
++    }
++    for code in [vec![0xf0, 0x0f, 0x31], vec![0xf0, 0x0f, 0x01, 0xf9]] {
++        let mut backend = KvmBackend::new(MEMORY_SIZE).unwrap();
++        backend
++            .install_static_elf(&static_elf(&code), "/bin/locked-timestamp")
++            .unwrap();
++        let completion = futures::executor::block_on(
++            backend.run_static_elf_with_tool_completion::<TimestampTool>(true, true),
++        )
++        .unwrap();
++        assert_invalid_opcode(completion.result.unwrap_err());
++        assert!(completion.global_state.calls().is_empty());
++    }
++    let mut code = vec![0x66; 14];
++    code.extend_from_slice(&[0x0f, 0x31]);
++    let mut backend = KvmBackend::new(MEMORY_SIZE).unwrap();
++    backend
++        .install_static_elf(&static_elf(&code), "/bin/overlength-timestamp")
++        .unwrap();
++    let completion = futures::executor::block_on(
++        backend.run_static_elf_with_tool_completion::<TimestampTool>(true, true),
++    )
++    .unwrap();
++    assert_general_protection(completion.result.unwrap_err());

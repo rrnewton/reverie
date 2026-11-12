@@ -1,0 +1,23 @@
+{
+  "original_binding": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/kvm-capture-pipe-identity-source-v2/qualification-v1/retained-binaries/BINDING.json",
+    "bytes": 6847,
+    "mode": 420,
+    "sha256": "0b93137c1f91ccb6983a01c31a4f2a93894fdc440574bf2ba4c3a58d54ab131c"
+  },
+  "retained": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/kvm-capture-pipe-identity-source-v2/qualification-v1/retained-binaries/ARTIFACTS.json",
+    "bytes": 7662,
+    "mode": 420,
+    "sha256": "0930bfc09647daa9dd2a5e6d664dfc03b349603335b837c2660bf30b3ab8421b"
+  },
+  "linked_rlib": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/kvm-capture-pipe-identity-source-v2/qualification-v1/failure-final-v1/retained-linked-library.rlib",
+    "bytes": 63170364,
+    "mode": 292,
+    "sha256": "27a96c974d129bee66530e8408c2e856d43cc7c3f55e2ceff6740c916abfe066"
+  },
+  "four_harnesses_and_rlib_unchanged": true,
+  "no_rebuild_for_continuation": true,
+  "meaning": "All tests used the original fresh V2 copies. Core/ptrace and Clippy checks are separate actual commands; no new test artifact credit."
+}

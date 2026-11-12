@@ -1,0 +1,40 @@
+{
+  "base": "000c15a1161ea2d58749431b5ddaaa97f7aa37d5",
+  "branch": "codex/kvm-setitimer-20260918",
+  "index_sha256": "fc8df6346ffe9eb9243457f4dc50426d759a61ef0f1d7cfd8c00d02847f5951b",
+  "full_source": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/process-publication-implementation-v1/frozen-v1/FULL-SOURCE-MANIFEST.json",
+    "bytes": 1224175,
+    "sha256": "7ffe8c71bc4068df04d4757a32178930dab313542b2bae10476d31b842847610"
+  },
+  "patch": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/process-publication-implementation-v1/frozen-v1/SOURCE.patch",
+    "bytes": 63642,
+    "sha256": "a1667b036591d34ef5b657f10f611b0b716491522c247f2b6a2273d754c3a41f"
+  },
+  "new_product_file": "reverie-kvm/src/process_signal_publication.rs",
+  "changed": [
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/process-publication-implementation-v1/frozen-v1/source/reverie-kvm/src/elf.rs",
+      "bytes": 66430,
+      "sha256": "2b1de049c1d144c702717593b4c9d39b23e319b9844b884258ad9c0ad4908465"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/process-publication-implementation-v1/frozen-v1/source/reverie-kvm/src/executor.rs",
+      "bytes": 1438129,
+      "sha256": "00769708fa38dc8dd9bbe430a0d5753d22f49538fc71ce98c10edca21ef63408"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/process-publication-implementation-v1/frozen-v1/source/reverie-kvm/src/process_signal_publication.rs",
+      "bytes": 32377,
+      "sha256": "64f23aded851a3ba6635f29a60c0a42b6b9784eb57ff1f44309b82b81f2db9cb"
+    }
+  ],
+  "local_ignored_lock": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/process-publication-implementation-v1/frozen-v1/source/Cargo.lock",
+    "bytes": 67056,
+    "sha256": "1c09663e46bf21ad7c07eedd7821cccb72ae21f42485192649ff5473962bc856"
+  },
+  "exact_patch_reconstruction": true,
+  "no_SCM_mutation": true
+}

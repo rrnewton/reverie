@@ -1,0 +1,25 @@
+
+thread 'parked_signals::parked_signal_worker_panic_retains_both_dequeue_owners' (1583924) panicked at reverie-kvm/tests/static_elf.rs:1590:5:
+parked_signals::parked_signal_worker_panic_retains_both_dequeue_owners: status=Some(101) stdout=
+running 1 test
+test parked_signals::parked_signal_worker_panic_retains_both_dequeue_owners ... FAILED
+
+failures:
+
+failures:
+    parked_signals::parked_signal_worker_panic_retains_both_dequeue_owners
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 295 filtered out; finished in 0.12s
+
+ stderr=
+thread 'reverie-kvm-guest-2' (1584002) panicked at reverie-kvm/tests/support/parked_signals.rs:691:17:
+deliberate dequeuing worker panic
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+sibling-dequeues mode=2 result=Err(WithCleanup { primary: WorkerFailure { tid: 2, error: SharedFailure(GuestWorkerPanic) }, cleanup: [SharedFailure(SignalEffects { cause: RunAborted, dequeues: [SignalDequeue { process: SignalProcessId { tgid: Pid(1), generation: 1 }, sequence: 2, consumer: SignalTimedWait, domain: Thread, event: SignalEvent { signal: 12, siginfo: [12, 0, 0, 0, 0, 0, 0, 0, 250, 255, 255, 255, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], target: Thread { pid: Pid(1), tid: Pid(1) } } }], acknowledged_through: 0, publications: [], raw_result: Some(-14), context: None })] }) seen=[(Pid(2), SignalDequeue { process: SignalProcessId { tgid: Pid(1), generation: 1 }, sequence: 1, consumer: SignalTimedWait, domain: Thread, event: SignalEvent { signal: 10, siginfo: [10, 0, 0, 0, 0, 0, 0, 0, 250, 255, 255, 255, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], target: Thread { pid: Pid(1), tid: Pid(2) } } })]
+
+thread 'parked_signals::parked_signal_worker_panic_retains_both_dequeue_owners' (1583927) panicked at reverie-kvm/tests/support/parked_signals.rs:824:9:
+assertion `left == right` failed: each owner retains its own committed removal on failure
+  left: 1
+ right: 2
+
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace

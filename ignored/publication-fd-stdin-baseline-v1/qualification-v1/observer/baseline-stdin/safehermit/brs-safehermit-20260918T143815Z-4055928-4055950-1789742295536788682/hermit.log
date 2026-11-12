@@ -1,0 +1,6 @@
+
+thread 'executor::tests::inherited_stdin_epoll_preserves_local_and_authoritative_handles' (4057573) panicked at reverie-kvm/src/executor.rs:25268:13:
+assertion `left == right` failed: unchanged inherited stdin must retain epoll registration identity
+  left: -2
+ right: 0
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace

@@ -1,0 +1,25 @@
+{
+  "author": "Root authored this experimental reference; worker prepares caller, no independent source approval",
+  "source": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parent-reader-support-20260916/ignored/kvm-rdtsc-native-probes-v2/probe.c",
+    "bytes": 9369,
+    "mode": 420,
+    "sha256": "da386bbcd3b921dfd15a355260d13ef994ef0c9b5e45fff0f9e287b1ec4c3a1e"
+  },
+  "copy": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-native-probe-caller-v1/source/probe.c",
+    "bytes": 9369,
+    "mode": 420,
+    "sha256": "da386bbcd3b921dfd15a355260d13ef994ef0c9b5e45fff0f9e287b1ec4c3a1e"
+  },
+  "readme": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parent-reader-support-20260916/ignored/kvm-rdtsc-native-probes-v2/README.md",
+    "bytes": 1650,
+    "mode": 420,
+    "sha256": "b472cbbf657bb1e52dd768a988672ad872fe139166f5a548eab66703b2bd52f3"
+  },
+  "source_unchanged": true,
+  "scope": "Architectural property experiment, not presumed oracle or Hermit parity result",
+  "raw_failure_policy": "Preserve all signals/status/output; investigate before changing source or backend expectations",
+  "state": "PREPARE ONLY; no compiler/probe/helper/lease/cache execution"
+}

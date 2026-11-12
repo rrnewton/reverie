@@ -1,0 +1,41 @@
+{
+  "groups": {
+    "test-cleanup-negative": {
+      "artifact": "lib",
+      "names": [
+        "runtime::signal_cleanup_tests::signal_cleanup_pending_callback_observes_published_peer_failure"
+      ]
+    },
+    "test-cleanup-ready": {
+      "artifact": "lib",
+      "names": [
+        "runtime::signal_cleanup_tests::signal_cleanup_ready_result_precedes_terminal_cancellation"
+      ]
+    },
+    "test-bookkeeping-negative": {
+      "artifact": "lib",
+      "names": [
+        "executor::tests::signal_dequeue_raw_consumers_keep_bookkeeping_failure_terminal"
+      ]
+    },
+    "test-no-effect-negative": {
+      "artifact": "lib",
+      "names": [
+        "executor::tests::signal_dequeue_no_effect_error_preserves_live_sibling_stream"
+      ]
+    },
+    "test-panic-negative": {
+      "artifact": "static",
+      "names": [
+        "parked_signals::parked_signal_worker_panic_retains_both_dequeue_owners"
+      ]
+    },
+    "test-independent-delay": {
+      "artifact": "static",
+      "names": [
+        "parked_signals::parked_signal_independent_delayed_worker_ack_wakes_sibling"
+      ]
+    }
+  },
+  "declaration_scope": "Candidate exact names only. Actual ELF inventory and successful named libtest outcomes are required; these are not pass counts."
+}

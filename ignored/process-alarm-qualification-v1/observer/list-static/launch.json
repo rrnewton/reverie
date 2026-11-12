@@ -1,0 +1,44 @@
+{
+  "binary": "/usr/bin/python3",
+  "binary_sha256": "9cfdf1a01d07dadb394dd2dc9fd8316254c36764076d23dc2c895c8401735576",
+  "arguments": [
+    "-B",
+    "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/process-alarm-qualification-v1/observer/before_exec.py",
+    "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/process-alarm-qualification-v1/observer/list-static/before-exec.json",
+    "cc5c86bc2e12f56fa3862660679ff6ef036e83c4df74a2bd966e9f5801dd8a08"
+  ],
+  "payload": {
+    "binary": "/usr/bin/python3",
+    "binary_sha256": "9cfdf1a01d07dadb394dd2dc9fd8316254c36764076d23dc2c895c8401735576",
+    "arguments": [
+      "-B",
+      "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/process-alarm-qualification-v1/phase.py",
+      "payload",
+      "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/process-alarm-qualification-v1/list-static-plan.json",
+      "b3552983ea3f8d37fafb2fc16d1090be517dedeac6eadb3771bb8c1ac2fa6887"
+    ]
+  },
+  "before_exec_spec_sha256": "cc5c86bc2e12f56fa3862660679ff6ef036e83c4df74a2bd966e9f5801dd8a08",
+  "cpu_allowance_usec": 30000000,
+  "wall_seconds": 60,
+  "log_bytes": 16777216,
+  "safehermit_log_root": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/process-alarm-qualification-v1/observer/list-static/safehermit",
+  "wrapper_sha256": "dae61b1819d424ea9928143d728fba6897f45cb619c8164ad87030922130f760",
+  "observer_sources": {
+    "observer.py": "b161c17f850113d5155974d9547ddc842b44c4e37445c44a5d2f06aef500b56e",
+    "unit_reference.py": "e00b79d292060b7a467d6a99ed88082719682d205efbdc56ecbe5fb7256fe0d0",
+    "before_exec.py": "184d1b1dcdb8c8a75626d2c0fe403d1527e160f51e0cc98338f405bf8a0319bd",
+    "source-inputs.json": "af15f634235359032b1ea544207713c32318906d51447ff6de171ada09c8b5b7"
+  },
+  "cwd": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918",
+  "epoch": 1789708410.5722523,
+  "monotonic_ns": 1867339330482654,
+  "pid": 3587479,
+  "wrapper_identity": {
+    "pid": 3587479,
+    "start_ticks": 186733933,
+    "parent_pid": 3587184,
+    "state": "R",
+    "cgroup": "/user.slice/user-212630.slice/user@212630.service/3pai_sandbox.slice/run-p1210520-i1360322665.scope"
+  }
+}

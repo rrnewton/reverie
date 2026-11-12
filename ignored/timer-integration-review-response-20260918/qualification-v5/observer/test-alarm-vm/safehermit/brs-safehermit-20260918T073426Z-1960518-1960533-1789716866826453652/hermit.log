@@ -1,0 +1,43 @@
+
+thread 'parked_signals::parked_signal_capacity_failure_is_terminal_before_getpid' (1962434) panicked at reverie-kvm/tests/static_elf.rs:1590:5:
+parked_signals::parked_signal_capacity_failure_is_terminal_before_getpid: status=Some(101) stdout=
+running 1 test
+test parked_signals::parked_signal_capacity_failure_is_terminal_before_getpid ... FAILED
+
+failures:
+
+failures:
+    parked_signals::parked_signal_capacity_failure_is_terminal_before_getpid
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 293 filtered out; finished in 0.10s
+
+ stderr=
+thread 'parked_signals::parked_signal_capacity_failure_is_terminal_before_getpid' (1962439) panicked at reverie-kvm/tests/support/parked_signals.rs:390:13:
+bookkeeping exhaustion must be terminal, never getpid's result: Err(EOVERFLOW)
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+thread 'parked_signals::parked_signal_two_thread_owned_dequeues' (1962617) panicked at reverie-kvm/tests/static_elf.rs:1590:5:
+parked_signals::parked_signal_two_thread_owned_dequeues: status=Some(101) stdout=
+running 1 test
+test parked_signals::parked_signal_two_thread_owned_dequeues ... FAILED
+
+failures:
+
+failures:
+    parked_signals::parked_signal_two_thread_owned_dequeues
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 293 filtered out; finished in 0.11s
+
+ stderr=
+thread 'reverie-kvm-guest-2' (1962669) panicked at reverie-kvm/tests/support/parked_signals.rs:658:9:
+assertion `left == right` failed: only the removing Guest may report its private signal
+  left: Thread { pid: Pid(1), tid: Pid(1) }
+ right: Thread { pid: Pid(1), tid: Pid(2) }
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+sibling-dequeues fail=false result=Err(WithCleanup { primary: WorkerFailure { tid: 2, error: SharedFailure(GuestWorkerPanic) }, cleanup: [SharedFailure(SignalEffects { cause: RunAborted, dequeues: [SignalDequeue { process: SignalProcessId { tgid: Pid(1), generation: 1 }, sequence: 1, consumer: SignalTimedWait, domain: Thread, event: SignalEvent { signal: 10, siginfo: [10, 0, 0, 0, 0, 0, 0, 0, 250, 255, 255, 255, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], target: Thread { pid: Pid(1), tid: Pid(1) } } }], acknowledged_through: 0, publications: [], raw_result: Some(-14), context: None })] }) seen=[(Pid(1), SignalDequeue { process: SignalProcessId { tgid: Pid(1), generation: 1 }, sequence: 1, consumer: SignalTimedWait, domain: Thread, event: SignalEvent { signal: 10, siginfo: [10, 0, 0, 0, 0, 0, 0, 0, 250, 255, 255, 255, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], target: Thread { pid: Pid(1), tid: Pid(1) } } })]
+
+thread 'parked_signals::parked_signal_two_thread_owned_dequeues' (1962620) panicked at reverie-kvm/tests/support/parked_signals.rs:826:50:
+called `Result::unwrap()` on an `Err` value: WithCleanup { primary: WorkerFailure { tid: 2, error: SharedFailure(GuestWorkerPanic) }, cleanup: [SharedFailure(SignalEffects { cause: RunAborted, dequeues: [SignalDequeue { process: SignalProcessId { tgid: Pid(1), generation: 1 }, sequence: 1, consumer: SignalTimedWait, domain: Thread, event: SignalEvent { signal: 10, siginfo: [10, 0, 0, 0, 0, 0, 0, 0, 250, 255, 255, 255, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], target: Thread { pid: Pid(1), tid: Pid(1) } } }], acknowledged_through: 0, publications: [], raw_result: Some(-14), context: None })] }
+

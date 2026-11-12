@@ -1,0 +1,50 @@
+{
+  "previous_component_failures": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/publication-fd-composition-qualification-v1/final-v1/PREDECESSORS.json",
+    "bytes": 5447,
+    "mode": 420,
+    "sha256": "9e103869df6a3ae1f07519526c1a95fb22685294581803103fc68fb5657075a5"
+  },
+  "v2_qualification": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/publication-fd-composition-qualification-v1/final-v1/TARGET.json",
+    "bytes": 2746,
+    "mode": 420,
+    "sha256": "004482610ed2c1f5aa032669d9adc75c878003a90258b218d5eb479120c5a953"
+  },
+  "stdin_baseline": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/publication-fd-stdin-baseline-v1/final-v1/READBACK.json",
+    "bytes": 1193,
+    "mode": 420,
+    "sha256": "dcc1ab65c4b128ab047a11ed871c304c3c0bd23892061c7633e6d96584020ab8"
+  },
+  "stdin_baseline_results": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/publication-fd-stdin-baseline-v1/final-v1/RESULTS.json",
+    "bytes": 12268,
+    "mode": 420,
+    "sha256": "09156644d7439a147778655bfc8706d8c5c338a15e6c38e20fc428e64bca01f0"
+  },
+  "stdin_baseline_retained_elfs": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/publication-fd-stdin-baseline-v1/qualification-v1/retained-binaries/BINDING.json",
+    "bytes": 5410,
+    "mode": 420,
+    "sha256": "abea3524fcae0db5ae97777a35f55ed08d09c9c5729c5ae75305e5c1dab10404"
+  },
+  "reused_artifact_refusal": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/publication-fd-stdin-qualification-v1/build-provenance-refusal-v1/READBACK.json",
+    "bytes": 1954,
+    "mode": 420,
+    "sha256": "ba0b0acc9aa39578653579accc0dc41489149ffbc3ff084c1369a7a8c9253440"
+  },
+  "reused_artifact_original_result": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/publication-fd-stdin-qualification-v1/qualification-v1/controls/compile/result.json",
+    "bytes": 6525,
+    "mode": 420,
+    "sha256": "46fbcea8e940621595a3c47ba6274d443763dd89a0bb2d6ecb4169625902ac02"
+  },
+  "reused_artifact_retained_elfs": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/publication-fd-stdin-qualification-v1/qualification-v1/retained-binaries/BINDING.json",
+    "bytes": 5369,
+    "mode": 420,
+    "sha256": "84616b4a30a2d44c6f9ff8a52a7c073ef81fef80da0310420897f2d431361146"
+  }
+}

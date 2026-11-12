@@ -1,0 +1,530 @@
+{
+  "records": [
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-host-worker-diagnostic-v2/qualification-v1/fixture-evidence/callbacks.tsv",
+      "bytes": 210,
+      "mode": 420,
+      "sha256": "d1f9afb3ebbc6a0310f9950607699e59bd8fd028e118f9b939dc884c5622e39c"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-host-worker-diagnostic-v2/qualification-v1/fixture-evidence/compiler-status.txt",
+      "bytes": 49,
+      "mode": 420,
+      "sha256": "e4f14e27d10a5408f9433013a21158c0d1772a3177e1e901b563a3774d6cbd4d"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-host-worker-diagnostic-v2/qualification-v1/fixture-evidence/compiler.argv",
+      "bytes": 413,
+      "mode": 420,
+      "sha256": "b2e808db2e86bc816c6831f8804e44735df5d52d96cb3da24fff3e2a25d7a9f7"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-host-worker-diagnostic-v2/qualification-v1/fixture-evidence/compiler.cwd",
+      "bytes": 122,
+      "mode": 420,
+      "sha256": "0d3c00f11d1829cf4259715a3e077f2473b3f91dc263bea09bac83360416fa1b"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-host-worker-diagnostic-v2/qualification-v1/fixture-evidence/compiler.stderr",
+      "bytes": 0,
+      "mode": 420,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-host-worker-diagnostic-v2/qualification-v1/fixture-evidence/compiler.stdout",
+      "bytes": 0,
+      "mode": 420,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-host-worker-diagnostic-v2/qualification-v1/fixture-evidence/interpreter-path",
+      "bytes": 27,
+      "mode": 420,
+      "sha256": "8136534e86f949863d6df7874f55a23d239d3aecd1092383827c63f901730bfd"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-host-worker-diagnostic-v2/qualification-v1/fixture-evidence/interpreter-resolved-path",
+      "bytes": 31,
+      "mode": 420,
+      "sha256": "6a1f7ebc9f4fdbc5e712593ce1da54b0f4d6cfcfd3884cb0ae3ab031be3e2d81"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-host-worker-diagnostic-v2/qualification-v1/fixture-evidence/interpreter.elf",
+      "bytes": 938752,
+      "mode": 420,
+      "sha256": "008e34384d4bc082a053ba086588efa1546086ecb863c9464b7269f8928b7577"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-host-worker-diagnostic-v2/qualification-v1/fixture-evidence/timestamp-host-worker.c",
+      "bytes": 660,
+      "mode": 420,
+      "sha256": "314382582a72eee037d8f1f2d96109d1cec87930c3ab032742a0dd93c686d812"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-host-worker-diagnostic-v2/qualification-v1/fixture-evidence/timestamp-host-worker.elf",
+      "bytes": 17600,
+      "mode": 420,
+      "sha256": "eb98e053ffe55016420c1f5791276fc9ce66cef2f870b0d89a11cb0aa9bce337"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-host-worker-diagnostic-v2/qualification-v1/controls/host-worker-diagnostic/result.json",
+      "bytes": 2730,
+      "mode": 420,
+      "sha256": "e0295fe6f0a4f5c3149dc002d03fff0bbda88cbc61e8c5470939bd84964d4b4e"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-host-worker-diagnostic-v2/qualification-v1/host-worker-diagnostic-plan.json",
+      "bytes": 58438,
+      "mode": 420,
+      "sha256": "a510a400616a2605fd8e93510fd76ef0654ad33740fbba55444021a2f394e903"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-host-worker-diagnostic-v2/source/reverie-kvm/src/elf.rs",
+      "bytes": 75310,
+      "mode": 420,
+      "sha256": "1192168a0c011bbfa45a7cff498a118b176cc28ec8e5cba7f4ee0e3cfb3ab9a2"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-host-worker-diagnostic-v2/source/reverie-kvm/src/runtime.rs",
+      "bytes": 188932,
+      "mode": 420,
+      "sha256": "5bd2d122aeb2d37bc1894ad8cec058ac01715de8aa022321e02d4d9f1b2928d3"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-host-worker-diagnostic-v2/source/reverie-kvm/tests/static_elf.rs",
+      "bytes": 511689,
+      "mode": 420,
+      "sha256": "6e6fdccfebbe27bc9fabfb9d6d0f650e5f16b42740b69f62c82beec602e702f8"
+    },
+    {
+      "path": "/usr/bin/ldd",
+      "bytes": 5446,
+      "mode": 493,
+      "sha256": "2e332feed7fe0d65afca81d83d07f997917c07d5c1f1fd5564e98330e78aa0b5"
+    },
+    {
+      "path": "/usr/bin/prlimit",
+      "bytes": 28416,
+      "mode": 493,
+      "sha256": "942bcd8596c242d4d33dca657372a83e1f55908afd59b525389362cd6d282933"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-host-worker-diagnostic-v2/attribution-v2/loader-0.stdout",
+      "bytes": 208,
+      "mode": 420,
+      "sha256": "0ce18b479e2ebc8c9c8a5268abe98f3c9416f1e3b6b8b6fa66d43fdd52156127"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-host-worker-diagnostic-v2/attribution-v2/loader-0.stderr",
+      "bytes": 0,
+      "mode": 420,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "/usr/lib64/libsmartcols.so.1.1.0",
+      "bytes": 107832,
+      "mode": 493,
+      "sha256": "e5174ca4f386732e4b487211daa5add2b107386be2b6a188ab72159bb515d8fd"
+    },
+    {
+      "path": "/usr/lib64/libc.so.6",
+      "bytes": 2549352,
+      "mode": 493,
+      "sha256": "d932cb6bc88da10cc709d5b7ecda57a1387b6571331689dba88023b4c0517776"
+    },
+    {
+      "path": "/usr/lib64/ld-linux-x86-64.so.2",
+      "bytes": 938752,
+      "mode": 493,
+      "sha256": "008e34384d4bc082a053ba086588efa1546086ecb863c9464b7269f8928b7577"
+    },
+    {
+      "path": "/usr/bin/readelf",
+      "bytes": 683296,
+      "mode": 493,
+      "sha256": "51bc80f3a187e54e0b267fe6e64de09129f7761aafe615177d9d0be2229afcff"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-host-worker-diagnostic-v2/attribution-v2/loader-1.stdout",
+      "bytes": 2020,
+      "mode": 420,
+      "sha256": "066b5e3c3d9bb7c07c13e5b8f50be9488e9429f0d23dc03e825fcfaa35343a22"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-host-worker-diagnostic-v2/attribution-v2/loader-1.stderr",
+      "bytes": 0,
+      "mode": 420,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "/usr/lib64/libctf-nobfd.so.0.0.0",
+      "bytes": 115912,
+      "mode": 493,
+      "sha256": "0d4e4bbed74766b9ccceb3f7b7e82a71dc1c996bda55cdf4d7da9206fe04542f"
+    },
+    {
+      "path": "/usr/lib64/libz.so.1.2.11",
+      "bytes": 102672,
+      "mode": 493,
+      "sha256": "ae0b0485bffccd7b374451b52938f67e109c237a4a98679792d5dc1a31270289"
+    },
+    {
+      "path": "/usr/lib64/libdebuginfod-0.195.so",
+      "bytes": 52608,
+      "mode": 493,
+      "sha256": "1df875e2eb8aca3cd2a4ced29b1c362c9157a9407f28e77113637f1e5f7eb387"
+    },
+    {
+      "path": "/usr/lib64/libcurl.so.4.7.0",
+      "bytes": 666384,
+      "mode": 493,
+      "sha256": "644251954e0709a4e403587d3ff85286b038fcdb1db3042f044fb129aed9cd24"
+    },
+    {
+      "path": "/usr/lib64/libelf-0.195.so",
+      "bytes": 111624,
+      "mode": 493,
+      "sha256": "fdf92630174e71757632cb728d655aea8e942030cc9a775e895dd2eab636131b"
+    },
+    {
+      "path": "/usr/lib64/libcrypto.so.3.5.7",
+      "bytes": 6164424,
+      "mode": 493,
+      "sha256": "0599684a6f76b425c95832bd00b2faf5719b32e6319afd6ce8846360d0529d31"
+    },
+    {
+      "path": "/usr/lib64/libjson-c.so.5.0.0",
+      "bytes": 75928,
+      "mode": 493,
+      "sha256": "8aa6483f266303dd0116a85882806382c9e254bceeb17be1c1f8933a1ea9f33e"
+    },
+    {
+      "path": "/usr/lib64/libnghttp2.so.14.20.1",
+      "bytes": 168536,
+      "mode": 493,
+      "sha256": "d6954507f906809babd898c3b07d1140ea7545596702e88416f3e6f1b8d271fc"
+    },
+    {
+      "path": "/usr/lib64/libidn2.so.0.3.7",
+      "bytes": 130952,
+      "mode": 493,
+      "sha256": "dc245bad13edbcd52b6f654a3de2ddcb017c92590e0b7b473b8a69a3db3a2b9c"
+    },
+    {
+      "path": "/usr/lib64/libssh.so.4.9.4",
+      "bytes": 487808,
+      "mode": 493,
+      "sha256": "30e94bf8c006b2de68708f0b6a8f4d8c530c7ca2525821a9dd1964e781ad6152"
+    },
+    {
+      "path": "/usr/lib64/libpsl.so.5.3.3",
+      "bytes": 77488,
+      "mode": 493,
+      "sha256": "fe74845c864b47a6b5a2cadbdeab940f828d1a45cc6381e68bd5f2d96bd836c9"
+    },
+    {
+      "path": "/usr/lib64/libssl.so.3.5.7",
+      "bytes": 1043976,
+      "mode": 493,
+      "sha256": "f587ccb16f966d96e6062c10e9e2f9c0dec3358281f6569eb65988d4a9741725"
+    },
+    {
+      "path": "/usr/lib64/libgssapi_krb5.so.2.2",
+      "bytes": 358456,
+      "mode": 493,
+      "sha256": "7fe81e015e7647977eb0ce9f6c0fcd91ae3a2ddae8342ff3b47dee6f017571c1"
+    },
+    {
+      "path": "/usr/lib64/libkrb5.so.3.3",
+      "bytes": 906320,
+      "mode": 493,
+      "sha256": "9ce9f8baa6dfe3a76aaded2aa55464f859b1c0691cd784e2e98bf9cac62edcfe"
+    },
+    {
+      "path": "/usr/lib64/libk5crypto.so.3.1",
+      "bytes": 99016,
+      "mode": 493,
+      "sha256": "11798eda493ff0b9d99b7f061768a98ab81cadb10112db07ee229c1a4777c8c7"
+    },
+    {
+      "path": "/usr/lib64/libcom_err.so.2.1",
+      "bytes": 23768,
+      "mode": 493,
+      "sha256": "3958645734110eb76dcf59b64bd5bc3b2b4d5cd6eee46bf73b024ca83931dc2b"
+    },
+    {
+      "path": "/usr/lib64/libldap_r.so.2.0.200",
+      "bytes": 417144,
+      "mode": 493,
+      "sha256": "035aa103efcc5cfdac264b18ccdd5566699bfebf114b0feb56b116f7e36c58f2"
+    },
+    {
+      "path": "/usr/lib64/liblber.so.2.0.200",
+      "bytes": 74504,
+      "mode": 493,
+      "sha256": "fc59a9429baf572a000665da512861ce97e85b4bb72acc2ae9d6aad195570b91"
+    },
+    {
+      "path": "/usr/lib64/libbrotlidec.so.1.0.9",
+      "bytes": 52416,
+      "mode": 493,
+      "sha256": "258b72615be8b96b9c87e25482d49694fdee535b060e0cdd147af71135d42b8c"
+    },
+    {
+      "path": "/usr/lib64/libzstd.so.1.5.5",
+      "bytes": 754200,
+      "mode": 493,
+      "sha256": "dc1ccdc94eea889670d6258a70ae51be922be6a4740eb44eee4f1baf012136b7"
+    },
+    {
+      "path": "/usr/lib64/libunistring.so.2.1.0",
+      "bytes": 1591920,
+      "mode": 493,
+      "sha256": "70b4c4050c4319fb109a3cf5745f9a6ab2e5862c6bc809aea0e4cb94c87978ef"
+    },
+    {
+      "path": "/usr/lib64/libkrb5support.so.0.1",
+      "bytes": 66200,
+      "mode": 493,
+      "sha256": "d07b246960403bcc9d2532b4954a761ee8607548bb3f0dedc3feb359a6dafc21"
+    },
+    {
+      "path": "/usr/lib64/libkeyutils.so.1.10",
+      "bytes": 23992,
+      "mode": 493,
+      "sha256": "b0aaec55115d2ab97e1a70cb4c9a1b036d839d7922e67d3e610cd3ccd58521e3"
+    },
+    {
+      "path": "/usr/lib64/libresolv.so.2",
+      "bytes": 70512,
+      "mode": 493,
+      "sha256": "b39beb8c599307ca3c3958ab358a734815addcefc7e595a02c91745ef2756d8b"
+    },
+    {
+      "path": "/usr/lib64/libevent-2.1.so.7.0.1",
+      "bytes": 365352,
+      "mode": 493,
+      "sha256": "b39790e3ac8043f9a84ced739efcd03adc9446f837f90e37221515b28bca7383"
+    },
+    {
+      "path": "/usr/lib64/libsasl2.so.3.0.0",
+      "bytes": 128416,
+      "mode": 493,
+      "sha256": "0eb67aea149186cd182854c46d66a7e53b6c451aaaa5a6e2ab4e84db63fd5585"
+    },
+    {
+      "path": "/usr/lib64/libbrotlicommon.so.1.0.9",
+      "bytes": 138080,
+      "mode": 493,
+      "sha256": "61035507604289edc6ed61a672b3d4b00f752e2360fffbd19d2b06d52de94e50"
+    },
+    {
+      "path": "/usr/lib64/libselinux.so.1",
+      "bytes": 175624,
+      "mode": 493,
+      "sha256": "c265777e75d52d549e52ec3b24df4f760d26fb439cc468b260d34175d1bac0e5"
+    },
+    {
+      "path": "/usr/lib64/libcrypt.so.2.0.0",
+      "bytes": 201808,
+      "mode": 493,
+      "sha256": "67847e804cdd224fc438207e6919a69ce03cdede0fa3f3467fbd09b554640667"
+    },
+    {
+      "path": "/usr/lib64/libpcre2-8.so.0.11.0",
+      "bytes": 636848,
+      "mode": 493,
+      "sha256": "9a7c5324aa19b789ec6451fac312238ba8b266886e37f2dcad51b612deaae96c"
+    },
+    {
+      "path": "/usr/bin/objdump",
+      "bytes": 423000,
+      "mode": 493,
+      "sha256": "0a1b558f444ed2bca7fb467dede7416a651bc490b1abc77705ab470d99c527c1"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-host-worker-diagnostic-v2/attribution-v2/loader-2.stdout",
+      "bytes": 2176,
+      "mode": 420,
+      "sha256": "270b0d9999e1c3b7b7fbb4190cdd7a8fd26eedb53271de2ea318b847c5012f7f"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-host-worker-diagnostic-v2/attribution-v2/loader-2.stderr",
+      "bytes": 0,
+      "mode": 420,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "/usr/lib64/libopcodes-2.35.2-72.el9.so",
+      "bytes": 1586296,
+      "mode": 493,
+      "sha256": "c2c4e79148dd95299f3b3656a7f397e898498d51e5f1c488270b3eec17eec3d9"
+    },
+    {
+      "path": "/usr/lib64/libbfd-2.35.2-72.el9.so",
+      "bytes": 1343512,
+      "mode": 493,
+      "sha256": "fa99d0491b5200bf47bb7b6e4340c572bc8e1681c44ea9e7b59106af8e6da7b5"
+    },
+    {
+      "path": "/usr/lib64/libctf.so.0.0.0",
+      "bytes": 120088,
+      "mode": 493,
+      "sha256": "42fff8b2b495fc7826e87b29459b583b61ccea79fdbf0d5f44c16d1c4d201be8"
+    },
+    {
+      "path": "/usr/bin/bash",
+      "bytes": 1389072,
+      "mode": 493,
+      "sha256": "97995faa249e5706dd0b0373c9da547709bf7349755d5fc8e52f97a4bd04feaf"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-host-worker-diagnostic-v2/attribution-v2/loader-3.stdout",
+      "bytes": 200,
+      "mode": 420,
+      "sha256": "03d287cc030df78d82528b8c49c1807982743cf866bb93f976f028af9537bc52"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-host-worker-diagnostic-v2/attribution-v2/loader-3.stderr",
+      "bytes": 0,
+      "mode": 420,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "/usr/lib64/libtinfo.so.6.2",
+      "bytes": 195088,
+      "mode": 493,
+      "sha256": "7f6e6b4b437315880fb459256f663fe1cf96ffd437f9bdcdddc5c5104b89c3ff"
+    }
+  ],
+  "symlinks": [
+    {
+      "path": "/lib64/libsmartcols.so.1",
+      "target": "libsmartcols.so.1.1.0"
+    },
+    {
+      "path": "/lib64",
+      "target": "usr/lib64"
+    },
+    {
+      "path": "/lib64/libctf-nobfd.so.0",
+      "target": "libctf-nobfd.so.0.0.0"
+    },
+    {
+      "path": "/lib64/libz.so.1",
+      "target": "libz.so.1.2.11"
+    },
+    {
+      "path": "/lib64/libdebuginfod.so.1",
+      "target": "libdebuginfod-0.195.so"
+    },
+    {
+      "path": "/lib64/libcurl.so.4",
+      "target": "libcurl.so.4.7.0"
+    },
+    {
+      "path": "/lib64/libelf.so.1",
+      "target": "libelf-0.195.so"
+    },
+    {
+      "path": "/lib64/libcrypto.so.3",
+      "target": "libcrypto.so.3.5.7"
+    },
+    {
+      "path": "/lib64/libjson-c.so.5",
+      "target": "libjson-c.so.5.0.0"
+    },
+    {
+      "path": "/lib64/libnghttp2.so.14",
+      "target": "libnghttp2.so.14.20.1"
+    },
+    {
+      "path": "/lib64/libidn2.so.0",
+      "target": "libidn2.so.0.3.7"
+    },
+    {
+      "path": "/lib64/libssh.so.4",
+      "target": "libssh.so.4.9.4"
+    },
+    {
+      "path": "/lib64/libpsl.so.5",
+      "target": "libpsl.so.5.3.3"
+    },
+    {
+      "path": "/lib64/libssl.so.3",
+      "target": "libssl.so.3.5.7"
+    },
+    {
+      "path": "/lib64/libgssapi_krb5.so.2",
+      "target": "libgssapi_krb5.so.2.2"
+    },
+    {
+      "path": "/lib64/libkrb5.so.3",
+      "target": "libkrb5.so.3.3"
+    },
+    {
+      "path": "/lib64/libk5crypto.so.3",
+      "target": "libk5crypto.so.3.1"
+    },
+    {
+      "path": "/lib64/libcom_err.so.2",
+      "target": "libcom_err.so.2.1"
+    },
+    {
+      "path": "/lib64/libldap.so.2",
+      "target": "libldap_r.so.2.0.200"
+    },
+    {
+      "path": "/lib64/liblber.so.2",
+      "target": "liblber.so.2.0.200"
+    },
+    {
+      "path": "/lib64/libbrotlidec.so.1",
+      "target": "libbrotlidec.so.1.0.9"
+    },
+    {
+      "path": "/lib64/libzstd.so.1",
+      "target": "libzstd.so.1.5.5"
+    },
+    {
+      "path": "/lib64/libunistring.so.2",
+      "target": "libunistring.so.2.1.0"
+    },
+    {
+      "path": "/lib64/libkrb5support.so.0",
+      "target": "libkrb5support.so.0.1"
+    },
+    {
+      "path": "/lib64/libkeyutils.so.1",
+      "target": "libkeyutils.so.1.10"
+    },
+    {
+      "path": "/lib64/libevent-2.1.so.7",
+      "target": "libevent-2.1.so.7.0.1"
+    },
+    {
+      "path": "/lib64/libsasl2.so.3",
+      "target": "libsasl2.so.3.0.0"
+    },
+    {
+      "path": "/lib64/libbrotlicommon.so.1",
+      "target": "libbrotlicommon.so.1.0.9"
+    },
+    {
+      "path": "/lib64/libcrypt.so.2",
+      "target": "libcrypt.so.2.0.0"
+    },
+    {
+      "path": "/lib64/libpcre2-8.so.0",
+      "target": "libpcre2-8.so.0.11.0"
+    },
+    {
+      "path": "/lib64/libctf.so.0",
+      "target": "libctf.so.0.0.0"
+    },
+    {
+      "path": "/lib64/libtinfo.so.6",
+      "target": "libtinfo.so.6.2"
+    }
+  ]
+}

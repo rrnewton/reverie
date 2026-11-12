@@ -1,0 +1,21 @@
+{
+  "argv": [
+    "/home/newton/.rustup/toolchains/nightly-2026-07-29-x86_64-unknown-linux-gnu/bin/rustfmt",
+    "--edition",
+    "2024",
+    "--config",
+    "skip_children=true",
+    "reverie-kvm/src/lib.rs",
+    "reverie-kvm/src/cpuid_instruction.rs",
+    "reverie-kvm/src/vm.rs",
+    "reverie-kvm/src/runtime.rs",
+    "reverie-kvm/src/cpuid_runtime_tests.rs",
+    "reverie-kvm/tests/static_elf.rs",
+    "reverie-kvm/tests/support/cpuid_dispatch.rs",
+    "reverie-kvm/tests/support/cpuid_terminal.rs"
+  ],
+  "cwd": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/cpuid-recovery-source-v1/source",
+  "raw_status": 0,
+  "exe_sha256": "774703f5ead5e4a869556d414a48ecc1b272548c64fa3bd3776fb28e2af48e05",
+  "purpose": "author formatting, no build/test qualification"
+}

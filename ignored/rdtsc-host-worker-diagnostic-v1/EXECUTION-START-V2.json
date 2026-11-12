@@ -1,0 +1,8 @@
+{
+  "optimize": 0,
+  "debug": true,
+  "python": "/usr/bin/python3",
+  "version": "3.9.25 (main, Aug 13 2026, 00:00:00) \n[GCC 11.5.0 20240719 (Red Hat 11.5.0-14)]",
+  "actual_target": "c82ed0bb6a94b24bb4d519c41005bdd4895f5f4b487fd5ab742e252816485ff8",
+  "started": 1789750433.6795442
+}

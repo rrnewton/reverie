@@ -1,0 +1,5 @@
+{
+  "base_source": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v6/source",
+  "manifest_sha256": "3bfb93dbed203bb66916ec78a411037781dbea075a7ce609a1cd912263d0b986",
+  "scope": "Test-only successor, no production or live SCM changes; uncompiled"
+}

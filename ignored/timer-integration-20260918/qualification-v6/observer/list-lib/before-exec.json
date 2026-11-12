@@ -1,0 +1,23 @@
+{
+  "payload": {
+    "binary": "/usr/bin/python3",
+    "binary_sha256": "9cfdf1a01d07dadb394dd2dc9fd8316254c36764076d23dc2c895c8401735576",
+    "arguments": [
+      "-B",
+      "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/timer-integration-20260918/qualification-v6/phase.py",
+      "payload",
+      "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/timer-integration-20260918/qualification-v6/list-lib-plan.json",
+      "37e4432ee52250357b63c43f3f8f099ad5bfcfed1a479503261c8b45f8859b31"
+    ]
+  },
+  "token": "3ea956ba45fe6e4c863046e3220546e61515fe8924a12b877f229e4ba642da14",
+  "observer_pid": 2674946,
+  "locale_environment": {
+    "LC_CTYPE": null,
+    "LC_ALL": "C",
+    "LANG": "C"
+  },
+  "ignore_sigpipe": true,
+  "observer_start_ticks": 187365597,
+  "deadline_monotonic_ns": 1873681024215091
+}

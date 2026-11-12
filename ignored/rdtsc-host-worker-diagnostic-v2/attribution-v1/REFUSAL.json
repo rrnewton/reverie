@@ -1,0 +1,58 @@
+{
+  "error": "ldd queried its own shell-script path and refused; no ELF disassembly query or guest ran",
+  "corrected": "Bind ldd script as a source input and query ELF shell interpreter as a tool, leaving readelf/objdump commands and bounds unchanged",
+  "records": [
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-host-worker-diagnostic-v2/attribution-v1/run.py",
+      "sha256": "7e9a87bbccfd926a1dc913679cc9dfed21a2b12aa9ce30dc4d64224020994a4f"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-host-worker-diagnostic-v2/attribution-v1/loader-0.stdout",
+      "sha256": "7966758be9f2983cf8320312acb09d7d44af77beef2422f84a4dce0b02fb6ac7"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-host-worker-diagnostic-v2/attribution-v1/loader-0.stderr",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-host-worker-diagnostic-v2/attribution-v1/loader-0.json",
+      "sha256": "bc49a81f0cd8069bb62c7d6d295165d919e3aed441fba4953f22107a1b48c134"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-host-worker-diagnostic-v2/attribution-v1/loader-1.stdout",
+      "sha256": "8cf95debe7704904d5f8c2ce4b56fe52456c2de6cc357890395bb936fef3f66a"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-host-worker-diagnostic-v2/attribution-v1/loader-1.stderr",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-host-worker-diagnostic-v2/attribution-v1/loader-1.json",
+      "sha256": "51fb487835846bcd3740d2f464b2370cc199ab314b94b0e499bac5fecfb40fb5"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-host-worker-diagnostic-v2/attribution-v1/loader-2.stdout",
+      "sha256": "72296dc5259a311bdee4d1c4ade212175099d1fb456806e5348648a4e427a876"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-host-worker-diagnostic-v2/attribution-v1/loader-2.stderr",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-host-worker-diagnostic-v2/attribution-v1/loader-2.json",
+      "sha256": "a1dd62f092234dd049dcf6ab7f9c57abf887b3cc3cd0885015701cdbd08a10fd"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-host-worker-diagnostic-v2/attribution-v1/loader-3.stdout",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-host-worker-diagnostic-v2/attribution-v1/loader-3.stderr",
+      "sha256": "a34ab9523e85bf2b370e1afb84a5998de7007958c18b9a79ff32062b0035c29b"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-host-worker-diagnostic-v2/attribution-v1/loader-3.json",
+      "sha256": "13c937511f2ad9bdb9d00a41453a489bf49cf51e31c92ed37213655c5f48db7f"
+    }
+  ]
+}

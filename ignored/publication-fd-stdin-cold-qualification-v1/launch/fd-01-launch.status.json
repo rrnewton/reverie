@@ -1,0 +1,12 @@
+{
+  "argv": [
+    "/usr/bin/python3",
+    "-B",
+    "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/publication-fd-stdin-cold-qualification-v1/qualification-v1/phase.py",
+    "launch",
+    "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/publication-fd-stdin-cold-qualification-v1/qualification-v1/fd-01-plan.json",
+    "f498a8c958d58dc7ba2c1bf1f3d10a49c1bbf298b9c19ef970eb08e2570f6365"
+  ],
+  "raw_status": 0,
+  "wall_seconds": 5.663235442945734
+}

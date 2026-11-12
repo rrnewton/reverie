@@ -1,0 +1,9 @@
+{
+  "raw_status": 1,
+  "command": "PYTHONOPTIMIZE=0 python3 ignored/cpuid-recovery-source-v1/freeze_source.py",
+  "exception": "AssertionError at assert oldrt == newrt",
+  "cause": "The static test-body checker selected the first cfg(test), which annotates a production-file import at runtime.rs:54, instead of the actual mod tests boundary. It therefore compared changed production code as if it were an old test body.",
+  "qualification": false,
+  "source_mutation": false,
+  "correction": "Select the exact cfg(test) followed by mod tests boundary; retain the whole unchanged suffix comparison."
+}

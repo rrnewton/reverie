@@ -1,0 +1,17 @@
+
+/usr/lib64/libc.so.6:     file format elf64-x86-64
+
+
+Disassembly of section .plt:
+
+Disassembly of section .plt.sec:
+
+Disassembly of section .text:
+
+00000000000dbce0 <__getpid>:
+   dbce0:	f3 0f 1e fa          	endbr64 
+   dbce4:	b8 27 00 00 00       	mov    $0x27,%eax
+   dbce9:	0f 05                	syscall 
+   dbceb:	c3                   	retq   
+
+Disassembly of section __libc_freeres_fn:

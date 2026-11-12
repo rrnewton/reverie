@@ -1,0 +1,177 @@
+{
+  "status": "Required primary grounding complete in the prescribed order; follow-up mechanism research pending.",
+  "ordered_reads": [
+    {
+      "stage": 1,
+      "complete": true,
+      "pdf": {
+        "path": "/tmp/codex-kvm-paper-JILNekxj/reproducible-containers.pdf",
+        "bytes": 596500,
+        "sha256": "6346dfa0e5ea193fb975d5330da80d030f2a7641d95c7063069c8f8d7d875539",
+        "lines": 5843
+      },
+      "text": {
+        "path": "/tmp/codex-kvm-paper-JILNekxj/reproducible-containers.txt",
+        "bytes": 84178,
+        "sha256": "3291811fec259586893f8a4b18124aa5dadbc683ca20cf13ff319645c6d6d315",
+        "lines": 1721
+      },
+      "read_ranges": [
+        [
+          1,
+          440
+        ],
+        [
+          441,
+          880
+        ],
+        [
+          881,
+          1320
+        ],
+        [
+          1321,
+          1720
+        ],
+        [
+          1721,
+          1721
+        ]
+      ],
+      "appendix": "A.1 through A.7 read including final unterminated line"
+    },
+    {
+      "stage": 2,
+      "complete": true,
+      "source": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-source-v8/source/detcore/src/scheduler.rs",
+        "bytes": 353840,
+        "sha256": "d9b94c41fb688d46bfae5420bb0319a8ad26249f39691f11d2dec908394da358",
+        "lines": 8153
+      },
+      "manifest": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-source-v8/tracked-source-manifest.json",
+        "bytes": 285278,
+        "sha256": "b21a42a234696ffe17312b4dd9459f97e55348d3e6a1ac7fa4b822ddfbb59b34",
+        "lines": 8672
+      },
+      "read_ranges": [
+        [
+          1,
+          600
+        ],
+        [
+          601,
+          1200
+        ],
+        [
+          1201,
+          1800
+        ],
+        [
+          1801,
+          2400
+        ],
+        [
+          2401,
+          3000
+        ],
+        [
+          3001,
+          3600
+        ],
+        [
+          3601,
+          4200
+        ],
+        [
+          4201,
+          4800
+        ],
+        [
+          4801,
+          5400
+        ],
+        [
+          5401,
+          6000
+        ],
+        [
+          6001,
+          6600
+        ],
+        [
+          6601,
+          7200
+        ],
+        [
+          7201,
+          7800
+        ],
+        [
+          7801,
+          8153
+        ]
+      ]
+    },
+    {
+      "stage": 3,
+      "complete": true,
+      "reads": [
+        {
+          "source": {
+            "path": "/home/newton/work/dev-hermit/PROJECT_VISION.md",
+            "bytes": 10684,
+            "sha256": "b0453aa9e05cfe86c0f0d934a40fda4db2ca93f148cc62d57d732566b75b7540",
+            "lines": 119
+          },
+          "read_ranges": [
+            [
+              1,
+              119
+            ]
+          ]
+        },
+        {
+          "source": {
+            "path": "/home/newton/work/dev-hermit/ai_docs/hermit-v2-roadmap.md",
+            "bytes": 27942,
+            "sha256": "c7140f6f6cbdca706ed08b270ff1b2869d1448df49de2c2d9186b4a40eeccde1",
+            "lines": 504
+          },
+          "read_ranges": [
+            [
+              1,
+              260
+            ],
+            [
+              261,
+              504
+            ]
+          ]
+        }
+      ],
+      "replacement_documents": "Neither primary designates a replacement primary document; dated measurements treated as history."
+    }
+  ],
+  "instructions": {
+    "product_agents": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-source-v8/source/AGENTS.md",
+      "bytes": 34047,
+      "sha256": "be97a2a0e93b8c2ce3a37bf88c9d98e60722bb9b0e5ed47a7e8cdd7332f324cc",
+      "lines": 651
+    },
+    "product_agents_read": "Full source-v7 AGENTS previously read; byte-identical SHA256 verified for source-v8",
+    "skill": {
+      "path": "/home/newton/work/dev-hermit/.llms/skills/deterministic-scheduling-review/SKILL.md",
+      "bytes": 11050,
+      "sha256": "b0f8bec8c6a278b34142c9a8e67a6795706c1ba3d296c037555b666f71c2812e",
+      "lines": 206
+    }
+  },
+  "limits": [
+    "Read-only product sources and evidence",
+    "No source edits, protocol implementation, builds, tests, guests, network or publication",
+    "Finite Reverie audit/command plan sent separately; frozen paired F2 proposal unchanged"
+  ]
+}

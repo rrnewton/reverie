@@ -1,0 +1,114 @@
+{
+  "scope": "Three real failing controls on unchanged production, not three passing tests",
+  "source": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/scalar-write-fd-qualification-v1/BASELINE-SOURCE.json",
+    "bytes": 2284,
+    "mode": 420,
+    "sha256": "01adf9c328d784dae69cad24c5429a2bad5cb502dfa2f8bae30f6cbeda186b7a"
+  },
+  "results": [
+    {
+      "name": "test-admission",
+      "raw_status": 101,
+      "accepted": false,
+      "expected_defect_location_observed": true,
+      "actual_diagnostics": [
+        "failed: mode 17",
+        "left: false",
+        "right: true"
+      ],
+      "payload_seconds": 0.18283226084895432,
+      "aggregate_cpu_seconds": 2.336074,
+      "result": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/scalar-write-fd-qualification-v1/baseline/controls/test-admission/result.json",
+        "bytes": 2651,
+        "mode": 420,
+        "sha256": "0426de7e9af972e3cb5414eb2dd5e6715514f72b9b1f3204ad049ae6298f8f19"
+      },
+      "stderr": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/scalar-write-fd-qualification-v1/baseline/observer/test-admission/stderr",
+        "bytes": 1054,
+        "mode": 384,
+        "sha256": "5795c958c1c40e28bc6601c51eb5da4dd0f4eff45948816d490364dddf62366a"
+      },
+      "outcomes": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/scalar-write-fd-qualification-v1/baseline/controls/test-admission/outcomes.json",
+        "bytes": 528,
+        "mode": 420,
+        "sha256": "4ce0d6b4fb5f30f0e329805ef96ba72cfa80fa27cf09cd09fef9456a4b6745eb"
+      }
+    },
+    {
+      "name": "test-write",
+      "raw_status": 101,
+      "accepted": false,
+      "expected_defect_location_observed": true,
+      "actual_diagnostics": [
+        "mode=19 events=[Query(None), WriteResult(Err(EBADF))]",
+        "left: 13",
+        "right: 0"
+      ],
+      "payload_seconds": 0.12815489992499352,
+      "aggregate_cpu_seconds": 2.327697,
+      "result": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/scalar-write-fd-qualification-v1/baseline/controls/test-write/result.json",
+        "bytes": 2631,
+        "mode": 420,
+        "sha256": "942abeeb07304fd5aa56b11b3e8d798ade67a6de1ca08f9594d9bf5941899930"
+      },
+      "stderr": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/scalar-write-fd-qualification-v1/baseline/observer/test-write/stderr",
+        "bytes": 980,
+        "mode": 384,
+        "sha256": "90f69fdfc39873fd8e619f4b64253bd7da8700d3e2bd9cba06d2a8d295c8856e"
+      },
+      "outcomes": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/scalar-write-fd-qualification-v1/baseline/controls/test-write/outcomes.json",
+        "bytes": 482,
+        "mode": 420,
+        "sha256": "182db37bfe93f1369eb085db54c3720e8ff4ff98dcea3ae10368119a97a4cc5b"
+      }
+    },
+    {
+      "name": "test-signalfd",
+      "raw_status": 101,
+      "accepted": false,
+      "expected_defect_location_observed": true,
+      "actual_diagnostics": [
+        "upper descriptor bits must not expose the signalfd carrier",
+        "left: -9",
+        "right: -22"
+      ],
+      "payload_seconds": 0.002852161880582571,
+      "aggregate_cpu_seconds": 2.175029,
+      "result": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/scalar-write-fd-qualification-v1/baseline/controls/test-signalfd/result.json",
+        "bytes": 2647,
+        "mode": 420,
+        "sha256": "714f05e11fdbe579091371c45ec44a5288c170ecf79a388afb9862cd60ee3015"
+      },
+      "stderr": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/scalar-write-fd-qualification-v1/baseline/observer/test-signalfd/stderr",
+        "bytes": 341,
+        "mode": 384,
+        "sha256": "f45c14be14d114ecdf7ddd2d4fc727612464bea141a24446c35d721afe90feec"
+      },
+      "outcomes": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/scalar-write-fd-qualification-v1/baseline/controls/test-signalfd/outcomes.json",
+        "bytes": 494,
+        "mode": 420,
+        "sha256": "020a9ef322b70b4457584e344a17f74d7defe17b36b26edb7ba0d28d10a41a1d"
+      }
+    }
+  ],
+  "product_test_names_added": 0,
+  "snapshot_only_selectors": 1,
+  "static_list_count": 305,
+  "library_list_count": 488,
+  "retained_elfs": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/scalar-write-fd-qualification-v1/baseline/retained/ELFS.json",
+    "bytes": 4287,
+    "mode": 420,
+    "sha256": "be18dde24bf827f79d410af0e9116ac550cf3c6a034c3884f65ef7f7beec8875"
+  }
+}

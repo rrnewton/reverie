@@ -1,0 +1,169 @@
+{
+  "paths": {
+    "PATH": "/home/newton/.rustup/toolchains/nightly-2026-07-29-x86_64-unknown-linux-gnu/bin:/usr/local/bin:/usr/bin:/bin",
+    "CARGO_HOME": "/home/newton/.cargo",
+    "RUSTUP_HOME": "/home/newton/.rustup",
+    "CARGO_TARGET_DIR": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/target/publication-fd-stdin-v3-cold-v1",
+    "TMPDIR": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/publication-fd-stdin-cold-qualification-v1/qualification-v1/tmp",
+    "XDG_CACHE_HOME": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/publication-fd-stdin-cold-qualification-v1/qualification-v1/cache",
+    "RUSTC": "/home/newton/.rustup/toolchains/nightly-2026-07-29-x86_64-unknown-linux-gnu/bin/rustc",
+    "RUSTDOC": "/home/newton/.rustup/toolchains/nightly-2026-07-29-x86_64-unknown-linux-gnu/bin/rustdoc"
+  },
+  "directories": [
+    {
+      "variable": "CARGO_HOME",
+      "path": "/home/newton/.cargo",
+      "device": 48,
+      "inode": 714,
+      "uid": 212630,
+      "mode": 493,
+      "empty": null
+    },
+    {
+      "variable": "RUSTUP_HOME",
+      "path": "/home/newton/.rustup",
+      "device": 48,
+      "inode": 2120977,
+      "uid": 212630,
+      "mode": 493,
+      "empty": null
+    },
+    {
+      "variable": "CARGO_TARGET_DIR",
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/target/publication-fd-stdin-v3-cold-v1",
+      "device": 48,
+      "inode": 831554658,
+      "uid": 212630,
+      "mode": 448,
+      "empty": true
+    },
+    {
+      "variable": "TMPDIR",
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/publication-fd-stdin-cold-qualification-v1/qualification-v1/tmp",
+      "device": 48,
+      "inode": 831554655,
+      "uid": 212630,
+      "mode": 493,
+      "empty": true
+    },
+    {
+      "variable": "XDG_CACHE_HOME",
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/publication-fd-stdin-cold-qualification-v1/qualification-v1/cache",
+      "device": 48,
+      "inode": 831554656,
+      "uid": 212630,
+      "mode": 493,
+      "empty": true
+    }
+  ],
+  "lease": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/timer-integration-20260918/lane.lease",
+    "owner_slot": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918",
+    "identity": [
+      48,
+      816917584,
+      212630
+    ],
+    "state_directory": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/timer-integration-20260918/lease-state"
+  },
+  "config_files": [
+    {
+      "path": "/home/newton/.cargo/config.toml",
+      "bytes": 993,
+      "mode": 420,
+      "sha256": "e36ce2ec7de39d1ea2276c016bb660190b960cf4ef23dda9414661bc40ef45b3"
+    }
+  ],
+  "absent_config": [
+    "/.cargo/config",
+    "/.cargo/config.toml",
+    "/home/.cargo/config",
+    "/home/.cargo/config.toml",
+    "/home/newton/.cargo/config",
+    "/home/newton/work/.cargo/config",
+    "/home/newton/work/.cargo/config.toml",
+    "/home/newton/work/dev-hermit/.cargo/config",
+    "/home/newton/work/dev-hermit/.cargo/config.toml",
+    "/home/newton/work/dev-hermit/worktrees/.cargo/config",
+    "/home/newton/work/dev-hermit/worktrees/.cargo/config.toml",
+    "/home/newton/work/dev-hermit/worktrees/slots/.cargo/config",
+    "/home/newton/work/dev-hermit/worktrees/slots/.cargo/config.toml",
+    "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/.cargo/config",
+    "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/.cargo/config.toml",
+    "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/.cargo/config",
+    "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/.cargo/config.toml",
+    "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/publication-fd-composition-v3/.cargo/config",
+    "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/publication-fd-composition-v3/.cargo/config.toml",
+    "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/publication-fd-composition-v3/source/.cargo/config",
+    "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/publication-fd-composition-v3/source/.cargo/config.toml"
+  ],
+  "dependency_binding_recipe": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/publication-fd-stdin-cold-qualification-v1/qualification-v1/bind_dependencies.py",
+    "bytes": 2101,
+    "mode": 420,
+    "sha256": "034a36525743a95cb0114b054c1334b37d0fa817387d8e774630c837b80be55f"
+  },
+  "fresh_resolved_closure_pending_metadata": true,
+  "toolchain_inputs": [
+    {
+      "path": "/home/newton/.rustup/toolchains/nightly-2026-07-29-x86_64-unknown-linux-gnu/bin/cargo",
+      "bytes": 35930328,
+      "mode": 493,
+      "sha256": "d112867ed5a295cf6beb3629283f541c094d76d0819298a418188bca0463ee72"
+    },
+    {
+      "path": "/home/newton/.rustup/toolchains/nightly-2026-07-29-x86_64-unknown-linux-gnu/bin/rustc",
+      "bytes": 647712,
+      "mode": 493,
+      "sha256": "9da19b28ed198d7a7e3bd1ba5f6490b3d56c9b324f514bd05a5ed3f4661c95de"
+    },
+    {
+      "path": "/home/newton/.rustup/toolchains/nightly-2026-07-29-x86_64-unknown-linux-gnu/lib/librustc_driver-dac3ae0f1ba99007.so",
+      "bytes": 157583248,
+      "mode": 420,
+      "sha256": "9e2b8f0c965172ea2a44b2fbcf69f1be8c2dd7f6655a5dbcfa0799d4741a416f"
+    },
+    {
+      "path": "/home/newton/.rustup/toolchains/nightly-2026-07-29-x86_64-unknown-linux-gnu/lib/libLLVM.so.22.1-rust-1.99.0-nightly",
+      "bytes": 199567600,
+      "mode": 420,
+      "sha256": "79bd30c1c32aa20c14573a5735f86151343cad1e4fc157ef40ab8f56e2a466ad"
+    },
+    {
+      "path": "/home/newton/.rustup/toolchains/nightly-2026-07-29-x86_64-unknown-linux-gnu/bin/rustdoc",
+      "bytes": 12485592,
+      "mode": 493,
+      "sha256": "68d9145d164f32d7dbf7b90213f6e07dc1b6e62efb1b329d6507e0471f4c3eed"
+    },
+    {
+      "path": "/home/newton/.rustup/toolchains/nightly-2026-07-29-x86_64-unknown-linux-gnu/bin/cargo-clippy",
+      "bytes": 1269192,
+      "mode": 493,
+      "sha256": "19828a90d246b16a14220eaefe5eb16f65d3926dadad72c49fbedbef8278bd87"
+    },
+    {
+      "path": "/home/newton/.rustup/toolchains/nightly-2026-07-29-x86_64-unknown-linux-gnu/bin/clippy-driver",
+      "bytes": 17154944,
+      "mode": 493,
+      "sha256": "657754f6f51ce79d7bbc5ed9d002001d1dd82b926c6f19c20db000a81296c930"
+    },
+    {
+      "path": "/home/newton/.rustup/toolchains/nightly-2026-07-29-x86_64-unknown-linux-gnu/bin/rustfmt",
+      "bytes": 5255768,
+      "mode": 493,
+      "sha256": "774703f5ead5e4a869556d414a48ecc1b272548c64fa3bd3776fb28e2af48e05"
+    }
+  ],
+  "empty_target": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/publication-fd-stdin-cold-qualification-v1/EMPTY-TARGET.json",
+    "bytes": 470,
+    "mode": 420,
+    "sha256": "cac9aaaa51e561d383127539cd46d05e8c8e8eff2461ab3ad8197b6ef1c9d2a6"
+  },
+  "metadata_plan": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/publication-fd-stdin-cold-qualification-v1/qualification-v1/metadata-plan.json",
+    "bytes": 33568,
+    "mode": 420,
+    "sha256": "9129c0063849ca9b8e9f1f2ac0c40edc4e07e69a549e4246c52d61249c0ab28b"
+  }
+}

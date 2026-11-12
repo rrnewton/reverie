@@ -1,0 +1,24 @@
+{
+  "started": [
+    "sibling_signal_delivery_native_plain_and_tool"
+  ],
+  "ended": [
+    {
+      "type": "test",
+      "name": "sibling_signal_delivery_native_plain_and_tool",
+      "event": "ok"
+    }
+  ],
+  "suites": [
+    {
+      "type": "suite",
+      "event": "ok",
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filtered_out": 303,
+      "exec_time": 1.778080878
+    }
+  ]
+}

@@ -1,0 +1,59 @@
+{
+  "plan_sha256": "a510a400616a2605fd8e93510fd76ef0654ad33740fbba55444021a2f394e903",
+  "accepted": false,
+  "observer_attempted": true,
+  "terminal_authenticated": true,
+  "raw_status": 101,
+  "transport": {
+    "argv": [
+      "/usr/bin/python3",
+      "-B",
+      "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-host-worker-diagnostic-v2/qualification-v1/observer/observer.py",
+      "--out",
+      "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-host-worker-diagnostic-v2/qualification-v1/observer/host-worker-diagnostic",
+      "--cpu-usec",
+      "30000000",
+      "--wall-seconds",
+      "60",
+      "--log-bytes",
+      "16777216",
+      "/usr/bin/python3",
+      "-B",
+      "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-host-worker-diagnostic-v2/qualification-v1/phase.py",
+      "payload",
+      "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-host-worker-diagnostic-v2/qualification-v1/host-worker-diagnostic-plan.json",
+      "a510a400616a2605fd8e93510fd76ef0654ad33740fbba55444021a2f394e903"
+    ],
+    "cwd": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-host-worker-diagnostic-v2/source",
+    "wall_limit_seconds": 110,
+    "forced": false,
+    "returncode": 1,
+    "elapsed_seconds": 3.3604128470178694,
+    "stdout": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-host-worker-diagnostic-v2/qualification-v1/controls/host-worker-diagnostic/observer.stdout",
+      "bytes": 162,
+      "mode": 420,
+      "sha256": "935934c2a74c3ec06cb923b295b9da8c7f8e39cd9a5dff86a87f977cf6470d3a"
+    },
+    "stderr": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-host-worker-diagnostic-v2/qualification-v1/controls/host-worker-diagnostic/observer.stderr",
+      "bytes": 0,
+      "mode": 420,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    }
+  },
+  "observer_result": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-host-worker-diagnostic-v2/qualification-v1/observer/host-worker-diagnostic/result.json",
+    "bytes": 46979,
+    "mode": 384,
+    "sha256": "8e87b0bca7c9669ce8ee285db69a9c11a20286b6e3a8b398d7d78ea220871a9b"
+  },
+  "readback_error": "RuntimeError('actual selected outcomes differ')",
+  "payload_exit": {
+    "returncode": 101,
+    "reaped": true,
+    "elapsed_seconds": 0.11600177688524127
+  },
+  "error": "RuntimeError('actual payload failed')",
+  "inputs_unchanged": true
+}

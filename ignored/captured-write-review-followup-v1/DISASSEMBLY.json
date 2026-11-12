@@ -1,0 +1,14 @@
+{
+  "argv": [
+    "/usr/local/fbcode/platform010/bin/objdump",
+    "-d",
+    "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/captured-write-review-followup-v1/native-write.elf"
+  ],
+  "returncode": 0,
+  "stdout": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/captured-write-review-followup-v1/native-disassembly.stdout",
+    "bytes": 1602,
+    "sha256": "e0f7f7c01346568cd07acfda07bd3c4a66307de6d9f1f10e287df3cd15db9b1e"
+  },
+  "stderr": ""
+}

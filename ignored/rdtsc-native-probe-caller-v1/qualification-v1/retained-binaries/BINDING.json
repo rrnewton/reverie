@@ -1,0 +1,51 @@
+{
+  "compile_result": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-native-probe-caller-v1/qualification-v1/controls/compile/result.json",
+    "bytes": 9631,
+    "mode": 420,
+    "sha256": "3e03afcbdf1f530fcc10f187b5bbbf354620731b7a3d25e2844a2e81aefcee6d"
+  },
+  "compile_plan": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-native-probe-caller-v1/qualification-v1/plans/compile.json",
+    "bytes": 71240,
+    "mode": 420,
+    "sha256": "bff5a65b03b0fa271a50d3a52603f101acc0473bcfc4ead1da2b281f70786fd7"
+  },
+  "original": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-native-probe-caller-v1/qualification-v1/target/probe",
+    "bytes": 45720,
+    "mode": 493,
+    "sha256": "386aa8e39ea4906e58c266035b5329a0c724b6012837e01aafb555b00f53a2fe"
+  },
+  "retained": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-native-probe-caller-v1/qualification-v1/retained-binaries/probe",
+    "bytes": 45720,
+    "mode": 365,
+    "sha256": "386aa8e39ea4906e58c266035b5329a0c724b6012837e01aafb555b00f53a2fe"
+  },
+  "original_identity": [
+    48,
+    833465461,
+    212630
+  ],
+  "retained_identity": [
+    48,
+    833465499,
+    212630
+  ],
+  "source": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-native-probe-caller-v1/source/probe.c",
+    "bytes": 9369,
+    "mode": 420,
+    "sha256": "da386bbcd3b921dfd15a355260d13ef994ef0c9b5e45fff0f9e287b1ec4c3a1e"
+  },
+  "header_inputs": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-native-probe-caller-v1/qualification-v1/HEADER-INPUTS.json",
+    "bytes": 26889,
+    "mode": 420,
+    "sha256": "c0f5e2a00b91adce4b556853c3ae586596243621cdceab77c2b47d31f82826ec"
+  },
+  "diagnostics": 0,
+  "distinct_inode": true,
+  "not_a_rust_or_hermit_artifact": true
+}

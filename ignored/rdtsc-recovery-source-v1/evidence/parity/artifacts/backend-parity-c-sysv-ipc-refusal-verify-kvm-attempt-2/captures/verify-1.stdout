@@ -1,0 +1,1 @@
+sysvipc ok=3 sem_rc=-1 sem_errno=38 shm_rc=-1 shm_errno=38 msg_rc=-1 msg_errno=38

@@ -1,0 +1,12 @@
+{
+  "argv": [
+    "/usr/bin/python3",
+    "-B",
+    "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v2/qualification-v1/phase.py",
+    "launch",
+    "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v2/qualification-v1/format-plan.json",
+    "8a7393c9e01e0bf687eeef054a3365bc27f29dfc75e678d7ae0f4903b463c657"
+  ],
+  "raw_status": 0,
+  "wall_seconds": 7.090823953971267
+}

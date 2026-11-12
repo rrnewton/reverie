@@ -1,0 +1,390 @@
+{
+  "root": "/home/newton/.rustup/toolchains/nightly-2026-07-29-x86_64-unknown-linux-gnu/lib/rustlib/x86_64-unknown-linux-gnu/lib",
+  "files": [
+    {
+      "path": "/home/newton/.rustup/toolchains/nightly-2026-07-29-x86_64-unknown-linux-gnu/lib/rustlib/x86_64-unknown-linux-gnu/lib/libaddr2line-eba1b97965333698.rlib",
+      "bytes": 27754,
+      "mode": 420,
+      "sha256": "4825d4503681cd09d633dad0de7218988964750912a239a21d398e1db6021895"
+    },
+    {
+      "path": "/home/newton/.rustup/toolchains/nightly-2026-07-29-x86_64-unknown-linux-gnu/lib/rustlib/x86_64-unknown-linux-gnu/lib/libaddr2line-eba1b97965333698.rmeta",
+      "bytes": 476828,
+      "mode": 420,
+      "sha256": "7c11b66bfed66e1885cd004c9423b1b9e732d4b0fb729a7fa27a2a43c5792d01"
+    },
+    {
+      "path": "/home/newton/.rustup/toolchains/nightly-2026-07-29-x86_64-unknown-linux-gnu/lib/rustlib/x86_64-unknown-linux-gnu/lib/libadler2-f89cab2548c331eb.rlib",
+      "bytes": 10100,
+      "mode": 420,
+      "sha256": "f053c750faff69b7a61c07308cb4bd4394fa85c072f12810b21f69e3fcdd9068"
+    },
+    {
+      "path": "/home/newton/.rustup/toolchains/nightly-2026-07-29-x86_64-unknown-linux-gnu/lib/rustlib/x86_64-unknown-linux-gnu/lib/libadler2-f89cab2548c331eb.rmeta",
+      "bytes": 20583,
+      "mode": 420,
+      "sha256": "7c6e668f8d5978a0595f87d5927f3698b15fb947bc49e6f8b929bde052831084"
+    },
+    {
+      "path": "/home/newton/.rustup/toolchains/nightly-2026-07-29-x86_64-unknown-linux-gnu/lib/rustlib/x86_64-unknown-linux-gnu/lib/liballoc-c1e6b2550c724aad.rlib",
+      "bytes": 1013592,
+      "mode": 420,
+      "sha256": "e7586c820b2be45b7cf103df5c8e6241987431e225ca9280899e6c7eb061292b"
+    },
+    {
+      "path": "/home/newton/.rustup/toolchains/nightly-2026-07-29-x86_64-unknown-linux-gnu/lib/rustlib/x86_64-unknown-linux-gnu/lib/liballoc-c1e6b2550c724aad.rmeta",
+      "bytes": 8649480,
+      "mode": 420,
+      "sha256": "daeaffaf313c5d4973378f9139e37ee7aae9a7b8d4f6d49e99abbc4c368dac64"
+    },
+    {
+      "path": "/home/newton/.rustup/toolchains/nightly-2026-07-29-x86_64-unknown-linux-gnu/lib/rustlib/x86_64-unknown-linux-gnu/lib/libcfg_if-3f2239d4f881ce50.rlib",
+      "bytes": 4938,
+      "mode": 420,
+      "sha256": "98e3647bab19fdbf99d16ecdcb248766e9725d4b48e98736ad5e38547147416b"
+    },
+    {
+      "path": "/home/newton/.rustup/toolchains/nightly-2026-07-29-x86_64-unknown-linux-gnu/lib/rustlib/x86_64-unknown-linux-gnu/lib/libcfg_if-3f2239d4f881ce50.rmeta",
+      "bytes": 5540,
+      "mode": 420,
+      "sha256": "758a39409d8a82d307660816dcdd640c1c5683fe96c587baf7307dba848d0def"
+    },
+    {
+      "path": "/home/newton/.rustup/toolchains/nightly-2026-07-29-x86_64-unknown-linux-gnu/lib/rustlib/x86_64-unknown-linux-gnu/lib/libcompiler_builtins-cf72fdf33ceae1ae.rlib",
+      "bytes": 4488938,
+      "mode": 420,
+      "sha256": "f1c6e393aab232d03595a4344853c05409a3e4aa726f3f001735a5a51b2399a3"
+    },
+    {
+      "path": "/home/newton/.rustup/toolchains/nightly-2026-07-29-x86_64-unknown-linux-gnu/lib/rustlib/x86_64-unknown-linux-gnu/lib/libcompiler_builtins-cf72fdf33ceae1ae.rmeta",
+      "bytes": 2048396,
+      "mode": 420,
+      "sha256": "e094184917b3a10c6af64e04068bc589121a47e21739f28628bde8975ee51ac6"
+    },
+    {
+      "path": "/home/newton/.rustup/toolchains/nightly-2026-07-29-x86_64-unknown-linux-gnu/lib/rustlib/x86_64-unknown-linux-gnu/lib/libcore-12f52b5fd4389540.rlib",
+      "bytes": 3028894,
+      "mode": 420,
+      "sha256": "21bb98151a680e471a09b7b04e6c299203f98781cb02f9e04320ac3149dda81b"
+    },
+    {
+      "path": "/home/newton/.rustup/toolchains/nightly-2026-07-29-x86_64-unknown-linux-gnu/lib/rustlib/x86_64-unknown-linux-gnu/lib/libcore-12f52b5fd4389540.rmeta",
+      "bytes": 67306354,
+      "mode": 420,
+      "sha256": "bfb8da8d1312b55a195b79704cdf56ea1881b7b34f9b50813acbfcb20d3ec1aa"
+    },
+    {
+      "path": "/home/newton/.rustup/toolchains/nightly-2026-07-29-x86_64-unknown-linux-gnu/lib/rustlib/x86_64-unknown-linux-gnu/lib/libgetopts-02e29cc364a3f06a.rlib",
+      "bytes": 745196,
+      "mode": 420,
+      "sha256": "1c377a58be2eba8234a61d0553feacece8f26fadeb4254be2c5fff153941488c"
+    },
+    {
+      "path": "/home/newton/.rustup/toolchains/nightly-2026-07-29-x86_64-unknown-linux-gnu/lib/rustlib/x86_64-unknown-linux-gnu/lib/libgetopts-02e29cc364a3f06a.rmeta",
+      "bytes": 217876,
+      "mode": 420,
+      "sha256": "9001ad0359ffc0bf3aba98ce6954395d74595fec917543c35709c25ffe706e84"
+    },
+    {
+      "path": "/home/newton/.rustup/toolchains/nightly-2026-07-29-x86_64-unknown-linux-gnu/lib/rustlib/x86_64-unknown-linux-gnu/lib/libgimli-6a07f992e573cbb2.rlib",
+      "bytes": 975302,
+      "mode": 420,
+      "sha256": "d56838493273119530355452486031772705309c0c4d791cf866426a5d7c017b"
+    },
+    {
+      "path": "/home/newton/.rustup/toolchains/nightly-2026-07-29-x86_64-unknown-linux-gnu/lib/rustlib/x86_64-unknown-linux-gnu/lib/libgimli-6a07f992e573cbb2.rmeta",
+      "bytes": 5893189,
+      "mode": 420,
+      "sha256": "a7629ce6edc8df5f12bfe39e6c3e43bbe27e065374d5fbf9050d7dda12322ce4"
+    },
+    {
+      "path": "/home/newton/.rustup/toolchains/nightly-2026-07-29-x86_64-unknown-linux-gnu/lib/rustlib/x86_64-unknown-linux-gnu/lib/libhashbrown-ecf1ee2f14b59d7f.rlib",
+      "bytes": 40984,
+      "mode": 420,
+      "sha256": "91bf021460f1ba19fc5485db303a7f0d4308eb927488c666ae514508bc85da31"
+    },
+    {
+      "path": "/home/newton/.rustup/toolchains/nightly-2026-07-29-x86_64-unknown-linux-gnu/lib/rustlib/x86_64-unknown-linux-gnu/lib/libhashbrown-ecf1ee2f14b59d7f.rmeta",
+      "bytes": 1719772,
+      "mode": 420,
+      "sha256": "b157c46bdd40ef75c1dc9109ee0c0081d442a7415a9fce99b0543f0f35466b56"
+    },
+    {
+      "path": "/home/newton/.rustup/toolchains/nightly-2026-07-29-x86_64-unknown-linux-gnu/lib/rustlib/x86_64-unknown-linux-gnu/lib/liblibc-fa5a7ae94d62d086.rlib",
+      "bytes": 31178,
+      "mode": 420,
+      "sha256": "f54fff0505cb7bd2a5ad5c61b1afbe647d7c5a0ac6e905001fd6d3a1b536a0a0"
+    },
+    {
+      "path": "/home/newton/.rustup/toolchains/nightly-2026-07-29-x86_64-unknown-linux-gnu/lib/rustlib/x86_64-unknown-linux-gnu/lib/liblibc-fa5a7ae94d62d086.rmeta",
+      "bytes": 4409855,
+      "mode": 420,
+      "sha256": "7c90ebe5730b1623240381e9c5a0a62f8950c2309546b13c01fcb41e13f46b03"
+    },
+    {
+      "path": "/home/newton/.rustup/toolchains/nightly-2026-07-29-x86_64-unknown-linux-gnu/lib/rustlib/x86_64-unknown-linux-gnu/lib/libmemchr-41cb4e5414d35146.rlib",
+      "bytes": 417858,
+      "mode": 420,
+      "sha256": "9d842b845d9659b996d985c7a906ad76fe5f54e5307610aa36d3f39a506185d8"
+    },
+    {
+      "path": "/home/newton/.rustup/toolchains/nightly-2026-07-29-x86_64-unknown-linux-gnu/lib/rustlib/x86_64-unknown-linux-gnu/lib/libmemchr-41cb4e5414d35146.rmeta",
+      "bytes": 1399811,
+      "mode": 420,
+      "sha256": "5a0798bf78f9bb02f6877f58fc478cbfff003d80758d04e1f5f7d9dcb4243939"
+    },
+    {
+      "path": "/home/newton/.rustup/toolchains/nightly-2026-07-29-x86_64-unknown-linux-gnu/lib/rustlib/x86_64-unknown-linux-gnu/lib/libminiz_oxide-5b9fe9a8a36c29ee.rlib",
+      "bytes": 109526,
+      "mode": 420,
+      "sha256": "f1f202686af55db5ffcd64ab187f8210395f01ea7ab1bdac8e73b30bccba9458"
+    },
+    {
+      "path": "/home/newton/.rustup/toolchains/nightly-2026-07-29-x86_64-unknown-linux-gnu/lib/rustlib/x86_64-unknown-linux-gnu/lib/libminiz_oxide-5b9fe9a8a36c29ee.rmeta",
+      "bytes": 131277,
+      "mode": 420,
+      "sha256": "ebda87433ea09a79685bc843b873d94a8ed882776d71729e7a00f63dd4424b47"
+    },
+    {
+      "path": "/home/newton/.rustup/toolchains/nightly-2026-07-29-x86_64-unknown-linux-gnu/lib/rustlib/x86_64-unknown-linux-gnu/lib/libobject-7e6275bba5937c15.rlib",
+      "bytes": 264744,
+      "mode": 420,
+      "sha256": "d7715dbd67422e2e210cf5060bb904f5856b83ed15c34a1beb4d07cc0c677c0a"
+    },
+    {
+      "path": "/home/newton/.rustup/toolchains/nightly-2026-07-29-x86_64-unknown-linux-gnu/lib/rustlib/x86_64-unknown-linux-gnu/lib/libobject-7e6275bba5937c15.rmeta",
+      "bytes": 8838892,
+      "mode": 420,
+      "sha256": "2fb382417f7fa1b83157dc8dd043a5401d82d3e9b72dd4fca4b62756e32040b0"
+    },
+    {
+      "path": "/home/newton/.rustup/toolchains/nightly-2026-07-29-x86_64-unknown-linux-gnu/lib/rustlib/x86_64-unknown-linux-gnu/lib/libpanic_abort-4baf99202f732b67.rlib",
+      "bytes": 10908,
+      "mode": 420,
+      "sha256": "7e5ab2e06d6fb59005aa7a4dd3e1340b75c0cf94258e7342fd264b89fcb713fd"
+    },
+    {
+      "path": "/home/newton/.rustup/toolchains/nightly-2026-07-29-x86_64-unknown-linux-gnu/lib/rustlib/x86_64-unknown-linux-gnu/lib/libpanic_abort-4baf99202f732b67.rmeta",
+      "bytes": 2747,
+      "mode": 420,
+      "sha256": "71c550ef570b54c44661c88ef2594a53fdfe085c69aead8dc0a53fd2c3472d1e"
+    },
+    {
+      "path": "/home/newton/.rustup/toolchains/nightly-2026-07-29-x86_64-unknown-linux-gnu/lib/rustlib/x86_64-unknown-linux-gnu/lib/libpanic_unwind-aff6afe86ac8b0f1.rlib",
+      "bytes": 35966,
+      "mode": 420,
+      "sha256": "a80a0043766db238add4e138b00df32b4118551a3f49b0e99d1382dd7f1f2600"
+    },
+    {
+      "path": "/home/newton/.rustup/toolchains/nightly-2026-07-29-x86_64-unknown-linux-gnu/lib/rustlib/x86_64-unknown-linux-gnu/lib/libpanic_unwind-aff6afe86ac8b0f1.rmeta",
+      "bytes": 7076,
+      "mode": 420,
+      "sha256": "c91bdc96c1bb415b01b9039ae42dc080347212eb6a0975b4d664909864e2f9e1"
+    },
+    {
+      "path": "/home/newton/.rustup/toolchains/nightly-2026-07-29-x86_64-unknown-linux-gnu/lib/rustlib/x86_64-unknown-linux-gnu/lib/libproc_macro-1dd54d715e9d0dfd.rlib",
+      "bytes": 4482480,
+      "mode": 420,
+      "sha256": "99b9f5fd73c4f532249aa5705a038b84993779613ceaa4cb278a1e3a3dbb03b3"
+    },
+    {
+      "path": "/home/newton/.rustup/toolchains/nightly-2026-07-29-x86_64-unknown-linux-gnu/lib/rustlib/x86_64-unknown-linux-gnu/lib/libproc_macro-1dd54d715e9d0dfd.rmeta",
+      "bytes": 1156440,
+      "mode": 420,
+      "sha256": "ff7ebbb1c0f794e53355dc741694b6715f000499caa091c7628e9947b3bc528e"
+    },
+    {
+      "path": "/home/newton/.rustup/toolchains/nightly-2026-07-29-x86_64-unknown-linux-gnu/lib/rustlib/x86_64-unknown-linux-gnu/lib/libprofiler_builtins-3ee77bc7df0e7ffc.rlib",
+      "bytes": 495400,
+      "mode": 420,
+      "sha256": "ea40c36c8621ef6b56dbbda8c1acb33bd8bdd0f3fde3ed64d10a06e4c07aea3f"
+    },
+    {
+      "path": "/home/newton/.rustup/toolchains/nightly-2026-07-29-x86_64-unknown-linux-gnu/lib/rustlib/x86_64-unknown-linux-gnu/lib/libprofiler_builtins-3ee77bc7df0e7ffc.rmeta",
+      "bytes": 1362,
+      "mode": 420,
+      "sha256": "8d6b47d7a2d110ab6f97affe5f5db0469118089cd0810f6864f7de7acdd8061f"
+    },
+    {
+      "path": "/home/newton/.rustup/toolchains/nightly-2026-07-29-x86_64-unknown-linux-gnu/lib/rustlib/x86_64-unknown-linux-gnu/lib/librustc-nightly_rt.asan.a",
+      "bytes": 3631816,
+      "mode": 420,
+      "sha256": "921338bf0066562b9186f7960a331f2b2f0991e8243aa1acd26567345997bf01"
+    },
+    {
+      "path": "/home/newton/.rustup/toolchains/nightly-2026-07-29-x86_64-unknown-linux-gnu/lib/rustlib/x86_64-unknown-linux-gnu/lib/librustc-nightly_rt.dfsan.a",
+      "bytes": 1189682,
+      "mode": 420,
+      "sha256": "8ec86b6c054999ba5fa14b30d25db99bb64e8fd0c9d89c127028d6f35cf193ea"
+    },
+    {
+      "path": "/home/newton/.rustup/toolchains/nightly-2026-07-29-x86_64-unknown-linux-gnu/lib/rustlib/x86_64-unknown-linux-gnu/lib/librustc-nightly_rt.lsan.a",
+      "bytes": 1248022,
+      "mode": 420,
+      "sha256": "8feaa37e8e5b878c2ebfd26a20c29473393a23ac00c1c3923ea5528bac5a00ff"
+    },
+    {
+      "path": "/home/newton/.rustup/toolchains/nightly-2026-07-29-x86_64-unknown-linux-gnu/lib/rustlib/x86_64-unknown-linux-gnu/lib/librustc-nightly_rt.msan.a",
+      "bytes": 3024896,
+      "mode": 420,
+      "sha256": "9f88e5571d5c190a86b65ef08155921f18d69137afce557362808d938ec48222"
+    },
+    {
+      "path": "/home/newton/.rustup/toolchains/nightly-2026-07-29-x86_64-unknown-linux-gnu/lib/rustlib/x86_64-unknown-linux-gnu/lib/librustc-nightly_rt.rtsan.a",
+      "bytes": 1173488,
+      "mode": 420,
+      "sha256": "bdb6a036dfbf7143e4acdd1375a88a506e2ac7e3028c7e8701e8bf5ac52bbe1c"
+    },
+    {
+      "path": "/home/newton/.rustup/toolchains/nightly-2026-07-29-x86_64-unknown-linux-gnu/lib/rustlib/x86_64-unknown-linux-gnu/lib/librustc-nightly_rt.safestack.a",
+      "bytes": 18816,
+      "mode": 420,
+      "sha256": "8e51ae0b8f75378ed0cb4bfdc730111ce1db72ddde68de0062014600033a8050"
+    },
+    {
+      "path": "/home/newton/.rustup/toolchains/nightly-2026-07-29-x86_64-unknown-linux-gnu/lib/rustlib/x86_64-unknown-linux-gnu/lib/librustc-nightly_rt.tsan.a",
+      "bytes": 3244484,
+      "mode": 420,
+      "sha256": "7244a312bd9800281b81d2bd94f6e3b16bf085a5e40099e71dd9140760b788d3"
+    },
+    {
+      "path": "/home/newton/.rustup/toolchains/nightly-2026-07-29-x86_64-unknown-linux-gnu/lib/rustlib/x86_64-unknown-linux-gnu/lib/librustc_demangle-c20b96772112d39e.rlib",
+      "bytes": 230046,
+      "mode": 420,
+      "sha256": "d36e54b1c243a4ba73272aa5a1ae7292fd1050a4d74bda582ae5fe5b86548766"
+    },
+    {
+      "path": "/home/newton/.rustup/toolchains/nightly-2026-07-29-x86_64-unknown-linux-gnu/lib/rustlib/x86_64-unknown-linux-gnu/lib/librustc_demangle-c20b96772112d39e.rmeta",
+      "bytes": 91685,
+      "mode": 420,
+      "sha256": "a538ae956d87557730840a030548d16d57fcf3b5d814715520e229b7ccaf33c0"
+    },
+    {
+      "path": "/home/newton/.rustup/toolchains/nightly-2026-07-29-x86_64-unknown-linux-gnu/lib/rustlib/x86_64-unknown-linux-gnu/lib/librustc_literal_escaper-ee3731dff8f4720b.rlib",
+      "bytes": 5112,
+      "mode": 420,
+      "sha256": "c7ee8c1886f70543b10c9bd27bf6498d6df7f806d50f29c50ada6f362d39485c"
+    },
+    {
+      "path": "/home/newton/.rustup/toolchains/nightly-2026-07-29-x86_64-unknown-linux-gnu/lib/rustlib/x86_64-unknown-linux-gnu/lib/librustc_literal_escaper-ee3731dff8f4720b.rmeta",
+      "bytes": 123269,
+      "mode": 420,
+      "sha256": "24e95b2729a8e00848bb89aff116fb148fd7c5d9ca90dc8e79a25e214cf75644"
+    },
+    {
+      "path": "/home/newton/.rustup/toolchains/nightly-2026-07-29-x86_64-unknown-linux-gnu/lib/rustlib/x86_64-unknown-linux-gnu/lib/librustc_std_workspace_alloc-a3c9111364fed246.rlib",
+      "bytes": 5200,
+      "mode": 420,
+      "sha256": "b49c9b7d767839a22d138a210df7a2bec6fa11294e6e3def5d4a4d1967e2355f"
+    },
+    {
+      "path": "/home/newton/.rustup/toolchains/nightly-2026-07-29-x86_64-unknown-linux-gnu/lib/rustlib/x86_64-unknown-linux-gnu/lib/librustc_std_workspace_alloc-a3c9111364fed246.rmeta",
+      "bytes": 2219,
+      "mode": 420,
+      "sha256": "16d7d8a9197305afd7dc774759b3b66a8fccac134dd11e68313990f361291165"
+    },
+    {
+      "path": "/home/newton/.rustup/toolchains/nightly-2026-07-29-x86_64-unknown-linux-gnu/lib/rustlib/x86_64-unknown-linux-gnu/lib/librustc_std_workspace_core-e09ae1d627fcdb49.rlib",
+      "bytes": 5198,
+      "mode": 420,
+      "sha256": "64d8f68cbf832868ba8565102db497d32b904ed390a7e28092bdcb8385773210"
+    },
+    {
+      "path": "/home/newton/.rustup/toolchains/nightly-2026-07-29-x86_64-unknown-linux-gnu/lib/rustlib/x86_64-unknown-linux-gnu/lib/librustc_std_workspace_core-e09ae1d627fcdb49.rmeta",
+      "bytes": 6082,
+      "mode": 420,
+      "sha256": "eb50db98a40cdcb65353c2f1b17c0daefc4299833f2d2e8f97ed11fec8be339b"
+    },
+    {
+      "path": "/home/newton/.rustup/toolchains/nightly-2026-07-29-x86_64-unknown-linux-gnu/lib/rustlib/x86_64-unknown-linux-gnu/lib/librustc_std_workspace_std-3d54e3676de45a23.rlib",
+      "bytes": 5172,
+      "mode": 420,
+      "sha256": "aa21a184e0e76ee72dbed07bfe36c1ed74a1286b7d69fead6800719b8ad0dc1f"
+    },
+    {
+      "path": "/home/newton/.rustup/toolchains/nightly-2026-07-29-x86_64-unknown-linux-gnu/lib/rustlib/x86_64-unknown-linux-gnu/lib/librustc_std_workspace_std-3d54e3676de45a23.rmeta",
+      "bytes": 7192,
+      "mode": 420,
+      "sha256": "10bdacda9641c127717d3e67745d2a2657b55ae528aa3a737599e5f3f9ba6df7"
+    },
+    {
+      "path": "/home/newton/.rustup/toolchains/nightly-2026-07-29-x86_64-unknown-linux-gnu/lib/rustlib/x86_64-unknown-linux-gnu/lib/libstd-c205895a4d5ddcd1.rlib",
+      "bytes": 12123072,
+      "mode": 420,
+      "sha256": "4fd822a90465ab16d9b70d6f90d2e2f2dc83873eb2825e08b50f2d38f4b0e224"
+    },
+    {
+      "path": "/home/newton/.rustup/toolchains/nightly-2026-07-29-x86_64-unknown-linux-gnu/lib/rustlib/x86_64-unknown-linux-gnu/lib/libstd-c205895a4d5ddcd1.rmeta",
+      "bytes": 7728892,
+      "mode": 420,
+      "sha256": "76e627c2f6fd5ad6355bf947529e48fb4abe6303e7a7f42497970e6b5c943504"
+    },
+    {
+      "path": "/home/newton/.rustup/toolchains/nightly-2026-07-29-x86_64-unknown-linux-gnu/lib/rustlib/x86_64-unknown-linux-gnu/lib/libstd-c205895a4d5ddcd1.so",
+      "bytes": 2865272,
+      "mode": 493,
+      "sha256": "61f1b88b567ef73035cccc2305d7be5d4b0afae06b6824ad89a05a06ac404cac"
+    },
+    {
+      "path": "/home/newton/.rustup/toolchains/nightly-2026-07-29-x86_64-unknown-linux-gnu/lib/rustlib/x86_64-unknown-linux-gnu/lib/libstd_detect-550b44dbe4562f1c.rlib",
+      "bytes": 64322,
+      "mode": 420,
+      "sha256": "63973ff9fd0b8b0de998af941e491a74fe4ee01b32686b625d1ee39cbe386344"
+    },
+    {
+      "path": "/home/newton/.rustup/toolchains/nightly-2026-07-29-x86_64-unknown-linux-gnu/lib/rustlib/x86_64-unknown-linux-gnu/lib/libstd_detect-550b44dbe4562f1c.rmeta",
+      "bytes": 580952,
+      "mode": 420,
+      "sha256": "723d9af50b6d3eb8d11ddbe13ddff98e55b5efa42216ae0465b58ccf5d4e5d7c"
+    },
+    {
+      "path": "/home/newton/.rustup/toolchains/nightly-2026-07-29-x86_64-unknown-linux-gnu/lib/rustlib/x86_64-unknown-linux-gnu/lib/libsysroot-8fcd93d794d25cfa.rlib",
+      "bytes": 5028,
+      "mode": 420,
+      "sha256": "a04ab2a9532c65622fe6b30e249f59ce72841370be386db68dc52d2cabceac50"
+    },
+    {
+      "path": "/home/newton/.rustup/toolchains/nightly-2026-07-29-x86_64-unknown-linux-gnu/lib/rustlib/x86_64-unknown-linux-gnu/lib/libsysroot-8fcd93d794d25cfa.rmeta",
+      "bytes": 2256,
+      "mode": 420,
+      "sha256": "ac36814f0d087704b892f0190ab207821ac83fe1f45d087ea620f16021049dfa"
+    },
+    {
+      "path": "/home/newton/.rustup/toolchains/nightly-2026-07-29-x86_64-unknown-linux-gnu/lib/rustlib/x86_64-unknown-linux-gnu/lib/libtest-8c3a6ced9722590b.rlib",
+      "bytes": 7314128,
+      "mode": 420,
+      "sha256": "75440c2f1e84840f9fb33d6e16b7da89063668d689d23b05e1b75a03fa704045"
+    },
+    {
+      "path": "/home/newton/.rustup/toolchains/nightly-2026-07-29-x86_64-unknown-linux-gnu/lib/rustlib/x86_64-unknown-linux-gnu/lib/libtest-8c3a6ced9722590b.rmeta",
+      "bytes": 1027657,
+      "mode": 420,
+      "sha256": "983bac5d32aba6d22c9a9a27c58ac9054a649b833b9527ef06acf495ed91d52e"
+    },
+    {
+      "path": "/home/newton/.rustup/toolchains/nightly-2026-07-29-x86_64-unknown-linux-gnu/lib/rustlib/x86_64-unknown-linux-gnu/lib/libunwind-fd99f30816f81491.rlib",
+      "bytes": 5002,
+      "mode": 420,
+      "sha256": "24cb584c14edd4935d9d329ada6ffa323360f01b8d452bb8e6937c0f017e6748"
+    },
+    {
+      "path": "/home/newton/.rustup/toolchains/nightly-2026-07-29-x86_64-unknown-linux-gnu/lib/rustlib/x86_64-unknown-linux-gnu/lib/libunwind-fd99f30816f81491.rmeta",
+      "bytes": 20066,
+      "mode": 420,
+      "sha256": "b850d334c9cfa3e3dacc8d77b36dcee004b0ce824ded9f5144019108b1abe0c7"
+    },
+    {
+      "path": "/home/newton/.rustup/toolchains/nightly-2026-07-29-x86_64-unknown-linux-gnu/lib/rustlib/components",
+      "bytes": 212,
+      "mode": 420,
+      "sha256": "02f2a9178f102c0c32adfbf96610271d6fa4e5e0f1e79685aa330a2dcf83b344"
+    },
+    {
+      "path": "/home/newton/.rustup/toolchains/nightly-2026-07-29-x86_64-unknown-linux-gnu/lib/rustlib/rust-installer-version",
+      "bytes": 1,
+      "mode": 420,
+      "sha256": "4e07408562bedb8b60ce05c1decfe3ad16b72230967de01f640b7e4729b49fce"
+    }
+  ],
+  "bytes": 164218475
+}

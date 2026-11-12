@@ -1,0 +1,37 @@
+{
+  "argv": [
+    "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-native-probe-caller-v1/qualification-v1/retained-binaries/probe",
+    "edge",
+    "rdtsc",
+    "0"
+  ],
+  "cwd": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-native-probe-caller-v1",
+  "environment": {
+    "HOME": "/home/newton",
+    "LANG": "C",
+    "LOGNAME": "newton",
+    "PATH": "/usr/bin:/bin",
+    "SHELL": "/bin/bash",
+    "USER": "newton",
+    "XDG_RUNTIME_DIR": "/run/user/212630",
+    "THRIFT_TLS_CL_CERT_PATH": "/var/facebook/credentials/newton/x509/newton.pem",
+    "THRIFT_TLS_CL_KEY_PATH": "/var/facebook/credentials/newton/x509/newton.pem",
+    "DBUS_SESSION_BUS_ADDRESS": "unix:path=/run/user/212630/bus",
+    "MANAGERPID": "32320",
+    "MANAGERPIDFDID": "401475",
+    "INVOCATION_ID": "faef0fc290734a0595bf83860bf10319",
+    "SYSTEMD_EXEC_PID": "3429760",
+    "MEMORY_PRESSURE_WATCH": "/sys/fs/cgroup/user.slice/user-212630.slice/user@212630.service/app.slice/safehermit-20260918T163141Z-3429493.service/memory.pressure",
+    "MEMORY_PRESSURE_WRITE": "c29tZSAyMDAwMDAgMjAwMDAwMAA=",
+    "PWD": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-native-probe-caller-v1",
+    "TZ": "UTC",
+    "TMPDIR": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-native-probe-caller-v1/qualification-v1/tmp",
+    "SHLVL": "1",
+    "LC_ALL": "C",
+    "SAFEHERMIT_LOG_ROOT": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-native-probe-caller-v1/qualification-v1/observer/edge-rdtsc/safehermit",
+    "_": "/usr/bin/env"
+  },
+  "cgroup": "0::/user.slice/user-212630.slice/user@212630.service/app.slice/safehermit-20260918T163141Z-3429493.service\n",
+  "pid": 3429760,
+  "plan_sha256": "f7401da57b0afbd95197d7aecf8994525c3101d09407957a6afaf9c3d85977aa"
+}

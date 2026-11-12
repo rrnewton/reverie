@@ -1,0 +1,23 @@
+{
+  "payload": {
+    "binary": "/usr/bin/python3",
+    "binary_sha256": "9cfdf1a01d07dadb394dd2dc9fd8316254c36764076d23dc2c895c8401735576",
+    "arguments": [
+      "-B",
+      "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v3/qualification-v1/phase.py",
+      "payload",
+      "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v3/qualification-v1/list-static-plan.json",
+      "608c23c85b0202c0aab9b0eb9854b93a6916564c3e7e02eb1ccec91aa5b08ca7"
+    ]
+  },
+  "token": "01dc30fd53e15f076c9937ccdc0cd0d137c8078593fa7043862e09611ba41405",
+  "observer_pid": 3361717,
+  "locale_environment": {
+    "LC_CTYPE": null,
+    "LC_ALL": "C",
+    "LANG": "C"
+  },
+  "ignore_sigpipe": true,
+  "observer_start_ticks": 190798452,
+  "deadline_monotonic_ns": 1908009572769388
+}

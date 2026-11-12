@@ -1,0 +1,54 @@
+{
+  "scope": "Isolated source formatting only, after comment clarification; not qualified execution",
+  "argv": [
+    "/home/newton/.rustup/toolchains/nightly-2026-07-29-x86_64-unknown-linux-gnu/bin/rustfmt",
+    "--edition",
+    "2024",
+    "--config",
+    "skip_children=true",
+    "reverie-kvm/src/elf.rs",
+    "reverie-kvm/src/executor.rs",
+    "reverie-kvm/src/process_signal_publication.rs"
+  ],
+  "executable": {
+    "path": "/home/newton/.rustup/toolchains/nightly-2026-07-29-x86_64-unknown-linux-gnu/bin/rustfmt",
+    "bytes": 5255768,
+    "sha256": "774703f5ead5e4a869556d414a48ecc1b272548c64fa3bd3776fb28e2af48e05"
+  },
+  "raw": 0,
+  "wall_seconds": 0.3059744141064584,
+  "before": [
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/publication-fd-composition-v2/source/reverie-kvm/src/elf.rs",
+      "bytes": 73971,
+      "sha256": "3ba6138fc497e3b0872d2c859cdf50836d3bbabb1d068f59f43397e97a462e73"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/publication-fd-composition-v2/source/reverie-kvm/src/executor.rs",
+      "bytes": 1472497,
+      "sha256": "f17275b4abc34579f2bf33994b90047822fadce01639df187f34f20f1c064541"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/publication-fd-composition-v2/source/reverie-kvm/src/process_signal_publication.rs",
+      "bytes": 34220,
+      "sha256": "34e0ee688c691b1314bbba62d8ed41365a1f3e64edbe5eb508a12bfff8e3495c"
+    }
+  ],
+  "after": [
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/publication-fd-composition-v2/source/reverie-kvm/src/elf.rs",
+      "bytes": 74224,
+      "sha256": "e96d411feb9663725d69e743949a15b171515e1d0b8f8c74bea4bf9d8246e024"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/publication-fd-composition-v2/source/reverie-kvm/src/executor.rs",
+      "bytes": 1475699,
+      "sha256": "1ac0df57e5b1cb07fde161cbb2f2322bbb4a766e1133b177574350beab4f118b"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/publication-fd-composition-v2/source/reverie-kvm/src/process_signal_publication.rs",
+      "bytes": 34331,
+      "sha256": "79e2888f41abc49dde140217fafef56a5ccd7eb5e52eade7a0e559a968bbb75b"
+    }
+  ]
+}

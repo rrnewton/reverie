@@ -1,0 +1,4 @@
+{ "type": "suite", "event": "started", "test_count": 1 }
+{ "type": "test", "event": "started", "name": "executor::tests::shared_file_table_reopen_same_inode_replaces_description" }
+{ "type": "test", "name": "executor::tests::shared_file_table_reopen_same_inode_replaces_description", "event": "failed" }
+{ "type": "suite", "event": "failed", "passed": 0, "failed": 1, "ignored": 0, "measured": 0, "filtered_out": 488, "exec_time": 0.001470097 }

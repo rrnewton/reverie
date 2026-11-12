@@ -1,0 +1,21 @@
+timestamp diagnostic callbacks:
+pid	instruction	rip
+1	Tsc	0x101fcb8
+1	Tsc	0x101fe52
+1	Tsc	0x1022392
+1	Tsc	0x10223bf
+1	Tsc	0x102291d
+1	Tsc	0x102294b
+1	Tsc	0x102295e
+1	Tsc	0x1022a27
+1	Tsc	0x102316f
+1	Tsc	0x1023199
+1	Tsc	0x401055
+1	Tsc	0x4010c2
+
+
+thread 'host_owned_timestamp_worker_keeps_native_execution' (2963061) panicked at reverie-kvm/tests/static_elf.rs:14703:5:
+assertion `left == right` failed
+  left: [(Pid(1), Tsc), (Pid(1), Tsc), (Pid(1), Tsc), (Pid(1), Tsc), (Pid(1), Tsc), (Pid(1), Tsc), (Pid(1), Tsc), (Pid(1), Tsc), (Pid(1), Tsc), (Pid(1), Tsc), (Pid(1), Tsc), (Pid(1), Tsc)]
+ right: [(Pid(1), Tsc), (Pid(1), Tsc)]
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace

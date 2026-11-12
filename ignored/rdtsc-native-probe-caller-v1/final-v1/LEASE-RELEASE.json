@@ -1,0 +1,22 @@
+{
+  "private_lease": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-native-probe-caller-v1/qualification-v1/private.lease",
+    "owner_slot": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-native-probe-caller-v1",
+    "identity": [
+      48,
+      833464024,
+      212630
+    ],
+    "state_directory": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-native-probe-caller-v1/qualification-v1/lease-state"
+  },
+  "exclusive_final_check": true,
+  "last_completion": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-native-probe-caller-v1/qualification-v1/lease-state/519a42b8ab980ad3ff0baa3347bedca0962f6436d9762c1cca68b56e7dafb768.json",
+    "bytes": 400,
+    "mode": 420,
+    "sha256": "7aaa9d70cc0025872bbf3c2fc71e8d0807959ad9f1fda1817ee90dfc9d93bed0"
+  },
+  "no_shared_lane_lease": true,
+  "no_unresolved_started_phase": true,
+  "exclusive_fd_closed": true
+}

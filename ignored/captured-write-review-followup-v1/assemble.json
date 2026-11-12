@@ -1,0 +1,36 @@
+{
+  "label": "assemble",
+  "argv": [
+    "/usr/bin/as",
+    "--64",
+    "-o",
+    "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/captured-write-review-followup-v1/native-write.o",
+    "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/captured-write-review-followup-v1/native-write.S"
+  ],
+  "limits": {
+    "cpu_seconds": 2,
+    "wall_seconds": 5,
+    "address_space_bytes": 268435456,
+    "file_size_bytes": 65536,
+    "stdout_limit_bytes": 65536,
+    "stderr_limit_bytes": 65536,
+    "core_bytes": 0
+  },
+  "raw_status": 0,
+  "timed_out": false,
+  "wall_seconds": 0.005147292977198958,
+  "user_cpu_seconds": 0.0010199999999999999,
+  "system_cpu_seconds": 0.0030589999999999997,
+  "stdout": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/captured-write-review-followup-v1/assemble.stdout",
+    "bytes": 0,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "stderr": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/captured-write-review-followup-v1/assemble.stderr",
+    "bytes": 0,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "process_id": 1912169,
+  "scope": "Native assembly/link or direct Linux syscall only; no Hermit/KVM execution"
+}

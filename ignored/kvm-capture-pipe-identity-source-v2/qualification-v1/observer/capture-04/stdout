@@ -1,0 +1,4 @@
+{ "type": "suite", "event": "started", "test_count": 1 }
+{ "type": "test", "event": "started", "name": "executor::tests::captured_pipe_root_owner_releases_after_executor_cleanup_and_unwind" }
+{ "type": "test", "name": "executor::tests::captured_pipe_root_owner_releases_after_executor_cleanup_and_unwind", "event": "ok" }
+{ "type": "suite", "event": "ok", "passed": 1, "failed": 0, "ignored": 0, "measured": 0, "filtered_out": 515, "exec_time": 0.004134069 }

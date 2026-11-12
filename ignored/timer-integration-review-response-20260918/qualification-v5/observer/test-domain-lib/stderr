@@ -1,0 +1,6 @@
+
+thread 'executor::tests::signal_dequeue_sibling_cannot_flush_or_ack_another_owner' (1957870) panicked at reverie-kvm/src/signal_dequeue_tests.rs:405:5:
+assertion `left == right` failed: the sibling owns no removal
+  left: Some(SignalDequeue { process: SignalProcessId { tgid: Pid(1), generation: 1 }, sequence: 1, consumer: ReturnToUser, domain: Thread, event: SignalEvent { signal: 10, siginfo: [10, 0, 0, 0, 0, 0, 0, 0, 250, 255, 255, 255, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], target: Thread { pid: Pid(1), tid: Pid(1) } } })
+ right: None
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace

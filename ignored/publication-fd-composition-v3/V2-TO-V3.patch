@@ -1,0 +1,751 @@
+--- a/reverie-kvm/src/elf.rs
++++ b/reverie-kvm/src/elf.rs
+@@ -591,6 +591,10 @@
+     pub cwd: PathBuf,
+     pub cwd_fd: std::fs::File,
+     pub stdin: Option<std::fs::File>,
++    /// Identity of the inherited stdin slot, distinct from its inode/OFD.
++    /// Loader setup precedes table publication; fork and exec retain this
++    /// identity, while closing or replacing the slot creates a new identity.
++    pub stdin_entry_id: std::sync::Arc<()>,
+     pub auxv: Vec<(libc::c_ulong, libc::c_ulong)>,
+     pub fs_base: u64,
+     pub gs_base: u64,
+@@ -716,12 +720,24 @@
+ }
+ 
+ impl LoadedStaticElf {
+-    /// Return the replaced description so callers can retire it after both
+-    /// the authoritative file-table and signal-transaction guards are released.
+-    pub(crate) fn insert_file(&mut self, fd: i32, file: std::fs::File) -> Option<std::fs::File> {
+-        let retired = self.files.insert(fd, file);
++    /// Return replaced descriptions, including inherited stdin at fd 0, so
++    /// callers retire them after both the authoritative file-table and
++    /// signal-transaction guards are released.
++    pub(crate) fn insert_file(&mut self, fd: i32, file: std::fs::File) -> Vec<std::fs::File> {
++        let mut retired: Vec<_> = self.files.insert(fd, file).into_iter().collect();
++        if fd == libc::STDIN_FILENO {
++            retired.extend(self.take_stdin());
++        }
+         self.fd_entry_ids.insert(fd, std::sync::Arc::new(()));
+         retired
++    }
++
++    pub(crate) fn take_stdin(&mut self) -> Option<std::fs::File> {
++        let stdin = self.stdin.take();
++        if stdin.is_some() {
++            self.stdin_entry_id = std::sync::Arc::new(());
++        }
++        stdin
+     }
+ 
+     pub(crate) fn remove_file(&mut self, fd: i32) -> Option<std::fs::File> {
+@@ -775,6 +791,7 @@
+             cwd: self.cwd.clone(),
+             cwd_fd: cwd_fd.into_file(),
+             stdin: stdin.map(StagedFile::into_file),
++            stdin_entry_id: self.stdin_entry_id.clone(),
+             auxv: self.auxv.clone(),
+             fs_base: self.fs_base,
+             gs_base: self.gs_base,
+@@ -862,6 +879,7 @@
+             .file_retirement
+             .retire_shared(previous.executable_file);
+         let mut stdin = previous.stdin;
++        let mut stdin_entry_id = previous.stdin_entry_id;
+         let files: std::collections::BTreeMap<_, _> = previous
+             .files
+             .into_iter()
+@@ -920,6 +938,7 @@
+         let mut closed_standard_fds = previous.closed_standard_fds;
+         if cloexec_fds.contains(&libc::STDIN_FILENO) {
+             retired.extend(stdin.take());
++            stdin_entry_id = std::sync::Arc::new(());
+             closed_standard_fds.insert(libc::STDIN_FILENO);
+         }
+         for fd in [libc::STDOUT_FILENO, libc::STDERR_FILENO] {
+@@ -958,6 +977,7 @@
+         self.cwd = previous.cwd;
+         retired.push(std::mem::replace(&mut self.cwd_fd, previous.cwd_fd));
+         retired.extend(std::mem::replace(&mut self.stdin, stdin));
++        self.stdin_entry_id = stdin_entry_id;
+         self.pid = previous.pid;
+         self.pgid = previous.pgid;
+         self.tid = previous.tid;
+@@ -1254,6 +1274,7 @@
+         cwd: cwd.to_owned(),
+         cwd_fd,
+         stdin: None,
++        stdin_entry_id: std::sync::Arc::new(()),
+         auxv,
+         fs_base: 0,
+         gs_base: 0,
+--- a/reverie-kvm/src/executor.rs
++++ b/reverie-kvm/src/executor.rs
+@@ -1248,6 +1248,7 @@
+ #[derive(Debug, Default)]
+ pub(crate) struct FileTableState {
+     stdin: Option<std::fs::File>,
++    stdin_entry_id: Arc<()>,
+     files: std::collections::BTreeMap<i32, std::fs::File>,
+     fd_entry_ids: std::collections::BTreeMap<i32, Arc<()>>,
+     random_device_fds: std::collections::BTreeSet<i32>,
+@@ -1618,11 +1619,37 @@
+     }
+ 
+     fn try_from_elf(state: &LoadedStaticElf) -> std::io::Result<Self> {
+-        let stdin = state
+-            .stdin
+-            .as_ref()
+-            .map(|file| state.file_retirement.stage_clone(file))
+-            .transpose()?;
++        Self::prepare_from_elf(state, false)
++    }
++
++    fn same_stdin_entry(&self, state: &LoadedStaticElf) -> bool {
++        self.stdin.is_some() == state.stdin.is_some()
++            && Arc::ptr_eq(&self.stdin_entry_id, &state.stdin_entry_id)
++    }
++
++    fn update_from_elf(&mut self, state: &LoadedStaticElf) -> std::io::Result<()> {
++        let same_stdin = self.same_stdin_entry(state);
++        // Stage every required clone before taking an authoritative handle.
++        // A failed clone leaves the entire previous table intact.
++        let mut next = Self::prepare_from_elf(state, same_stdin)?;
++        if same_stdin {
++            next.stdin = self.stdin.take();
++        }
++        let retired = std::mem::replace(self, next);
++        retired.retire(&state.file_retirement);
++        Ok(())
++    }
++
++    fn prepare_from_elf(state: &LoadedStaticElf, preserve_stdin: bool) -> std::io::Result<Self> {
++        let stdin = if preserve_stdin {
++            None
++        } else {
++            state
++                .stdin
++                .as_ref()
++                .map(|file| state.file_retirement.stage_clone(file))
++                .transpose()?
++        };
+         let files = state
+             .files
+             .iter()
+@@ -1630,6 +1657,7 @@
+             .collect::<std::io::Result<std::collections::BTreeMap<_, _>>>()?;
+         Ok(Self {
+             stdin: stdin.map(crate::elf::StagedFile::into_file),
++            stdin_entry_id: state.stdin_entry_id.clone(),
+             files: files
+                 .into_iter()
+                 .map(|(fd, file)| (fd, file.into_file()))
+@@ -1656,15 +1684,19 @@
+ 
+     // TODO-HUMAN-REVIEW(PR-235): Review stable host-fd preservation during table sync.
+     fn install(&self, state: &mut LoadedStaticElf) -> std::io::Result<()> {
+-        // Finish every fallible clone, including stdin, before replacing state.
++        // Finish every required fallible clone before replacing state.
+         // An unchanged entry keeps its actual host fd for epoll MOD/DEL. Inode
+         // equality cannot prove this: closing and reopening a linked file keeps
+         // its filesystem identity but installs a different open description.
+-        let stdin = self
+-            .stdin
+-            .as_ref()
+-            .map(|file| state.file_retirement.stage_clone(file))
+-            .transpose()?;
++        let same_stdin = self.same_stdin_entry(state);
++        let stdin = if same_stdin {
++            None
++        } else {
++            self.stdin
++                .as_ref()
++                .map(|file| state.file_retirement.stage_clone(file))
++                .transpose()?
++        };
+         let mut installed_files = std::collections::BTreeMap::new();
+         for (&fd, shared_file) in &self.files {
+             let same_entry = state.files.contains_key(&fd)
+@@ -1689,10 +1721,15 @@
+                     .expect("unchanged descriptor entry has its original host fd")
+             });
+         }
+-        let retired_stdin = std::mem::replace(
+-            &mut state.stdin,
+-            stdin.map(crate::elf::StagedFile::into_file),
+-        );
++        let retired_stdin = if same_stdin {
++            None
++        } else {
++            std::mem::replace(
++                &mut state.stdin,
++                stdin.map(crate::elf::StagedFile::into_file),
++            )
++        };
++        state.stdin_entry_id.clone_from(&self.stdin_entry_id);
+         state.files = installed_files;
+         state.file_retirement.retire(
+             retired_stdin
+@@ -1897,10 +1934,9 @@
+             None,
+         );
+         if result >= 0 {
+-            let next =
+-                FileTableState::try_from_elf(&self.state).expect("clone updated KVM file table");
+-            let retired = std::mem::replace(&mut *shared_files, next);
+-            retired.retire(&self.state.file_retirement);
++            shared_files
++                .update_from_elf(&self.state)
++                .expect("clone updated KVM file table");
+         }
+         Some(result)
+     }
+@@ -2562,7 +2598,7 @@
+         let _files = files.lock().unwrap_or_else(|p| p.into_inner());
+         let transaction = self.state.signal_transaction.clone();
+         let _transaction = transaction.lock().unwrap_or_else(|p| p.into_inner());
+-        let stdin = self.state.stdin.take();
++        let stdin = self.state.take_stdin();
+         let retired = std::mem::take(&mut self.state.files);
+         self.state.fd_entry_ids.clear();
+         self.file_table = Arc::new(Mutex::new(FileTableState::default()));
+@@ -2887,11 +2923,9 @@
+             .address_space
+             .lock()
+             .expect("KVM address-space lock poisoned") = AddressSpaceState::from_elf(&self.state);
+-        let retired_table = std::mem::replace(
+-            &mut *files,
+-            FileTableState::try_from_elf(&self.state).expect("clone post-exec KVM file table"),
+-        );
+-        retired_table.retire(&self.state.file_retirement);
++        files
++            .update_from_elf(&self.state)
++            .expect("clone post-exec KVM file table");
+         self.signal_binding.rebind(&self.state, &file_table);
+         self.sigchld_auto_reap
+             .store(sigchld_auto_reaps(&self.state), Ordering::SeqCst);
+@@ -4360,10 +4394,9 @@
+             }
+         }
+         if let Some(mut shared_files) = shared_files {
+-            let next =
+-                FileTableState::try_from_elf(&self.state).expect("clone updated KVM file table");
+-            let retired = std::mem::replace(&mut *shared_files, next);
+-            retired.retire(&self.state.file_retirement);
++            shared_files
++                .update_from_elf(&self.state)
++                .expect("clone updated KVM file table");
+         }
+         match action {
+             SyscallAction::Continue { result, segment } => {
+@@ -12447,7 +12480,7 @@
+     }
+     if is_open_standard(state, fd) {
+         let retired = if fd == libc::STDIN_FILENO {
+-            state.stdin.take()
++            state.take_stdin()
+         } else {
+             None
+         };
+@@ -15099,6 +15132,7 @@
+         cwd: cwd.to_owned(),
+         cwd_fd: std::fs::File::open(cwd).unwrap(),
+         stdin: Some(std::fs::File::open("/dev/null").unwrap()),
++        stdin_entry_id: Arc::new(()),
+         auxv: Vec::new(),
+         fs_base: 0,
+         gs_base: 0,
+@@ -25204,12 +25238,329 @@
+         }
+     }
+ 
++    fn inherited_pipe_stdin_fixture(capture: bool) -> (FdinfoFixture, std::fs::File) {
++        let root = TestDir::new();
++        for (name, data) in [("a", b"abc"), ("b", b"def"), ("c", b"ghi")] {
++            std::fs::write(root.0.join(name), data).unwrap();
++        }
++        let mut pipe = [-1; 2];
++        // SAFETY: pipe has storage for both returned descriptors.
++        assert_eq!(
++            unsafe { libc::pipe2(pipe.as_mut_ptr(), libc::O_CLOEXEC) },
++            0
++        );
++        let mut state = test_state(&root.0);
++        // This is loader setup, before the executor publishes its file table.
++        // SAFETY: each successful pipe descriptor is transferred to one File.
++        state.stdin = Some(unsafe { std::fs::File::from_raw_fd(pipe[0]) });
++        let writer = unsafe { std::fs::File::from_raw_fd(pipe[1]) };
++        (
++            FdinfoFixture {
++                executor: ElfExecutor::new(state, capture),
++                memory: GuestMemory::new(0, 4 * PAGE_SIZE as usize).unwrap(),
++                root,
++            },
++            writer,
++        )
++    }
++
++    #[test]
++    fn inherited_stdin_epoll_preserves_local_and_authoritative_handles() {
++        for capture in [false, true] {
++            let (mut f, mut writer) = inherited_pipe_stdin_fixture(capture);
++            let epoll = f.call(libc::SYS_epoll_create1, [0; 6]);
++            assert!(epoll >= 3);
++            let event = libc::epoll_event {
++                events: libc::EPOLLIN as u32,
++                u64: 71,
++            };
++            assert_eq!(write_struct(&mut f.memory, PAGE_SIZE, &event), 0);
++            assert_eq!(
++                f.call(
++                    libc::SYS_epoll_ctl,
++                    [epoll as u64, libc::EPOLL_CTL_ADD as u64, 0, PAGE_SIZE, 0, 0]
++                ),
++                0
++            );
++            let local = f.executor.state.stdin.as_ref().unwrap().as_raw_fd();
++            let authoritative = f
++                .executor
++                .file_table
++                .lock()
++                .unwrap()
++                .stdin
++                .as_ref()
++                .unwrap()
++                .as_raw_fd();
++            let modified = libc::epoll_event {
++                events: (libc::EPOLLIN | libc::EPOLLONESHOT) as u32,
++                u64: 72,
++            };
++            assert_eq!(write_struct(&mut f.memory, PAGE_SIZE, &modified), 0);
++            // execute() installs the shared table before epoll_ctl reaches the
++            // host. This is the decisive ADD -> synchronization -> MOD oracle.
++            assert_eq!(
++                f.call(
++                    libc::SYS_epoll_ctl,
++                    [epoll as u64, libc::EPOLL_CTL_MOD as u64, 0, PAGE_SIZE, 0, 0]
++                ),
++                0,
++                "unchanged inherited stdin must retain epoll registration identity"
++            );
++            assert_eq!(f.executor.state.stdin.as_ref().unwrap().as_raw_fd(), local);
++            assert_eq!(
++                f.executor
++                    .file_table
++                    .lock()
++                    .unwrap()
++                    .stdin
++                    .as_ref()
++                    .unwrap()
++                    .as_raw_fd(),
++                authoritative
++            );
++            // F_GETFL uses the mutating-table writeback path. It must preserve
++            // the authoritative handle as well as the executor's local one.
++            let flags = f.call(libc::SYS_fcntl, [0, libc::F_GETFL as u64, 0, 0, 0, 0]);
++            assert!(flags >= 0);
++            assert_eq!(
++                flags & i64::from(libc::O_ACCMODE),
++                i64::from(libc::O_RDONLY)
++            );
++            assert_eq!(f.call(libc::SYS_getpid, [0; 6]), 1);
++            assert_eq!(f.executor.state.stdin.as_ref().unwrap().as_raw_fd(), local);
++            assert_eq!(
++                f.executor
++                    .file_table
++                    .lock()
++                    .unwrap()
++                    .stdin
++                    .as_ref()
++                    .unwrap()
++                    .as_raw_fd(),
++                authoritative
++            );
++            std::io::Write::write_all(&mut writer, b"xyz").unwrap();
++            assert_eq!(
++                f.call(libc::SYS_epoll_wait, [epoll as u64, PAGE_SIZE, 1, 0, 0, 0]),
++                1
++            );
++            let delivered: libc::epoll_event = read_struct(&f.memory, PAGE_SIZE);
++            let data = delivered.u64;
++            assert_eq!(data, 72);
++            assert_eq!(f.call(libc::SYS_read, [0, PAGE_SIZE, 3, 0, 0, 0]), 3);
++            let mut bytes = [0; 3];
++            f.memory.read(PAGE_SIZE, &mut bytes).unwrap();
++            assert_eq!(&bytes, b"xyz");
++            assert_eq!(
++                f.call(
++                    libc::SYS_epoll_ctl,
++                    [epoll as u64, libc::EPOLL_CTL_DEL as u64, 0, 1, 0, 0]
++                ),
++                0
++            );
++            assert_eq!(write_struct(&mut f.memory, PAGE_SIZE, &modified), 0);
++            assert_eq!(
++                f.call(
++                    libc::SYS_epoll_ctl,
++                    [epoll as u64, libc::EPOLL_CTL_MOD as u64, 0, PAGE_SIZE, 0, 0]
++                ),
++                negative_errno(libc::ENOENT),
++                "DEL must remove the original registration"
++            );
++        }
++    }
++
++    #[test]
++    fn inherited_stdin_sibling_replacement_preserves_old_dup() {
++        for use_dup2 in [false, true] {
++            let (mut f, mut writer) = inherited_pipe_stdin_fixture(false);
++            let alias = f.call(libc::SYS_dup, [0; 6]);
++            assert!(alias >= 3);
++            let replacement = f.open("b", libc::O_RDONLY);
++            assert!(replacement > alias);
++            let alias_host = f.executor.state.files[&(alias as i32)].as_raw_fd();
++            let mut sibling = f.executor.thread_child(2).unwrap();
++            if use_dup2 {
++                assert_eq!(
++                    sibling.execute(
++                        &SyscallRequest::new(
++                            libc::SYS_dup2 as u64,
++                            [replacement as u64, 0, 0, 0, 0, 0]
++                        ),
++                        &f.memory
++                    ),
++                    0
++                );
++            } else {
++                assert_eq!(
++                    sibling.execute(
++                        &SyscallRequest::new(libc::SYS_close as u64, [0; 6]),
++                        &f.memory
++                    ),
++                    0
++                );
++                f.memory.write(0x100, b"b\0").unwrap();
++                assert_eq!(
++                    sibling.execute(
++                        &SyscallRequest::new(
++                            libc::SYS_openat as u64,
++                            [libc::AT_FDCWD as u64, 0x100, libc::O_RDONLY as u64, 0, 0, 0]
++                        ),
++                        &f.memory
++                    ),
++                    0
++                );
++            }
++            assert_eq!(f.call(libc::SYS_read, [0, PAGE_SIZE, 3, 0, 0, 0]), 3);
++            let mut bytes = [0; 3];
++            f.memory.read(PAGE_SIZE, &mut bytes).unwrap();
++            assert_eq!(&bytes, b"def");
++            assert!(f.executor.state.stdin.is_none());
++            assert!(f.executor.file_table.lock().unwrap().stdin.is_none());
++            assert!(f.executor.state.files.contains_key(&0));
++            assert_eq!(
++                f.executor.state.files[&(alias as i32)].as_raw_fd(),
++                alias_host
++            );
++            std::io::Write::write_all(&mut writer, b"old").unwrap();
++            assert_eq!(
++                f.call(libc::SYS_read, [alias as u64, PAGE_SIZE, 3, 0, 0, 0]),
++                3
++            );
++            f.memory.read(PAGE_SIZE, &mut bytes).unwrap();
++            assert_eq!(&bytes, b"old");
++            assert_eq!(f.call(libc::SYS_close, [0; 6]), 0);
++            assert_eq!(
++                f.call(libc::SYS_read, [0, PAGE_SIZE, 1, 0, 0, 0]),
++                negative_errno(libc::EBADF)
++            );
++            assert_eq!(f.open("a", libc::O_RDONLY), 0);
++            assert_eq!(f.call(libc::SYS_read, [0, PAGE_SIZE, 3, 0, 0, 0]), 3);
++            f.memory.read(PAGE_SIZE, &mut bytes).unwrap();
++            assert_eq!(&bytes, b"abc");
++            assert!(
++                f.executor.state.stdin.is_none(),
++                "mapped close/reopen must not restore inherited stdin"
++            );
++        }
++    }
++
++    #[test]
++    fn inherited_stdin_fork_exec_and_exit_preserve_entry_lifetime() {
++        let (mut f, mut writer) = inherited_pipe_stdin_fixture(false);
++        let local = f.executor.state.stdin.as_ref().unwrap().as_raw_fd();
++        let authoritative = f
++            .executor
++            .file_table
++            .lock()
++            .unwrap()
++            .stdin
++            .as_ref()
++            .unwrap()
++            .as_raw_fd();
++        let mut child = f.executor.fork_child(2, false, false).unwrap();
++        assert!(!Arc::ptr_eq(&f.executor.file_table, &child.file_table));
++        let child_local = child.state.stdin.as_ref().unwrap().as_raw_fd();
++        let child_authoritative = child
++            .file_table
++            .lock()
++            .unwrap()
++            .stdin
++            .as_ref()
++            .unwrap()
++            .as_raw_fd();
++        assert_eq!(
++            child.execute(
++                &SyscallRequest::new(libc::SYS_getpid as u64, [0; 6]),
++                &f.memory
++            ),
++            2
++        );
++        assert_eq!(child.state.stdin.as_ref().unwrap().as_raw_fd(), child_local);
++        assert_eq!(
++            child
++                .file_table
++                .lock()
++                .unwrap()
++                .stdin
++                .as_ref()
++                .unwrap()
++                .as_raw_fd(),
++            child_authoritative
++        );
++        assert_eq!(
++            child.execute(
++                &SyscallRequest::new(libc::SYS_close as u64, [0; 6]),
++                &f.memory
++            ),
++            0
++        );
++        child.release_files_on_exit();
++        drop(child);
++        assert_eq!(f.call(libc::SYS_getpid, [0; 6]), 1);
++        assert_eq!(f.executor.state.stdin.as_ref().unwrap().as_raw_fd(), local);
++        assert_eq!(
++            f.executor
++                .file_table
++                .lock()
++                .unwrap()
++                .stdin
++                .as_ref()
++                .unwrap()
++                .as_raw_fd(),
++            authoritative
++        );
++        let replacement = test_state(&f.root.0);
++        f.executor.replace_after_exec(replacement);
++        assert_eq!(f.executor.state.stdin.as_ref().unwrap().as_raw_fd(), local);
++        assert_eq!(
++            f.executor
++                .file_table
++                .lock()
++                .unwrap()
++                .stdin
++                .as_ref()
++                .unwrap()
++                .as_raw_fd(),
++            authoritative
++        );
++        std::io::Write::write_all(&mut writer, b"ok").unwrap();
++        assert_eq!(f.call(libc::SYS_read, [0, PAGE_SIZE, 2, 0, 0, 0]), 2);
++        let mut bytes = [0; 2];
++        f.memory.read(PAGE_SIZE, &mut bytes).unwrap();
++        assert_eq!(&bytes, b"ok");
++        assert_eq!(
++            f.call(
++                libc::SYS_fcntl,
++                [0, libc::F_SETFD as u64, libc::FD_CLOEXEC as u64, 0, 0, 0]
++            ),
++            0
++        );
++        f.executor.replace_after_exec(test_state(&f.root.0));
++        assert!(f.executor.state.stdin.is_none());
++        assert!(f.executor.file_table.lock().unwrap().stdin.is_none());
++        assert_eq!(
++            f.call(libc::SYS_read, [0, PAGE_SIZE, 1, 0, 0, 0]),
++            negative_errno(libc::EBADF)
++        );
++        f.executor.release_files_on_exit();
++        assert!(f.executor.state.stdin.is_none());
++    }
++
+     type RetirementObservations = Arc<Mutex<Vec<Vec<(i32, libc::mode_t)>>>>;
+ 
+     // Pause the real owned retirement batch before its File/Arc<File> values
+     // are destroyed. A separate host thread must acquire both actual mutexes;
+     // try_lock makes the violating ordering fail without a linger timing test.
+     fn observe_unlocked_retirement(executor: &ElfExecutor) -> RetirementObservations {
++        observe_unlocked_retirement_then(executor, |_| {})
++    }
++
++    fn observe_unlocked_retirement_then(
++        executor: &ElfExecutor,
++        after: impl Fn(&[i32]) + Send + Sync + 'static,
++    ) -> RetirementObservations {
+         let observations = Arc::new(Mutex::new(Vec::new()));
+         let observed = observations.clone();
+         let table = executor.file_table.clone();
+@@ -25242,6 +25593,7 @@
+                     "both guards must be released before close"
+                 );
+                 observed.lock().unwrap().push(batch);
++                after(descriptors);
+             })));
+         observations
+     }
+@@ -25414,6 +25766,7 @@
+         let mut f = FdinfoFixture::new(false);
+         let first = f.open("a", libc::O_RDWR);
+         let second = f.open("b", libc::O_RDWR);
++        let third = f.open("c", libc::O_RDWR);
+         let before: Vec<_> = f
+             .executor
+             .state
+@@ -25422,7 +25775,7 @@
+             .map(|(&fd, file)| (fd, file.as_raw_fd()))
+             .collect();
+         let mut sibling = f.executor.thread_child(2).unwrap();
+-        for target in [first, second] {
++        for target in [first, second, third] {
+             assert_eq!(
+                 sibling.execute(
+                     &SyscallRequest::new(libc::SYS_close as u64, [target as u64, 0, 0, 0, 0, 0]),
+@@ -25443,9 +25796,11 @@
+             );
+         }
+         let observed = observe_unlocked_retirement(&f.executor);
+-        // A deterministic injected clone error after stdin and one changed
+-        // entry exercises real install cleanup. The separate unchanged EMFILE
+-        // child still establishes actual host descriptor exhaustion behavior.
++        // Three genuinely replaced entries require three clones. Fail after
++        // two successful staged clones, preserving the same partial-install
++        // cleanup boundary now that unchanged stdin requires no clone.
++        // The separate real-EMFILE child remains unchanged apart from its
++        // comment describing which required clones exhaust the host limit.
+         f.executor.state.file_retirement.fail_clone_after(Some(2));
+         assert_eq!(
+             f.call(libc::SYS_getpid, [0; 6]),
+@@ -25503,6 +25858,31 @@
+             assert_eq!(f.call(libc::SYS_listen, [server as u64, 1, 0, 0, 0, 0]), 0);
+             let mut client = std::os::unix::net::UnixStream::connect(&socket_path).unwrap();
+             client.set_nonblocking(true).unwrap();
++            let target = f.open("a", libc::O_RDWR);
++            assert!(target > server);
++            let old_sentinel_host = f.executor.state.files[&(target as i32)].as_raw_fd();
++            let mut sibling = f.executor.thread_child(2).unwrap();
++            f.memory.write(0x100, b"a\0").unwrap();
++            assert_eq!(
++                sibling.execute(
++                    &SyscallRequest::new(libc::SYS_close as u64, [target as u64, 0, 0, 0, 0, 0]),
++                    &f.memory
++                ),
++                0
++            );
++            assert_eq!(
++                sibling.execute(
++                    &SyscallRequest::new(
++                        libc::SYS_openat as u64,
++                        [libc::AT_FDCWD as u64, 0x100, libc::O_RDWR as u64, 0, 0, 0]
++                    ),
++                    &f.memory
++                ),
++                target
++            );
++            let first_installed_id =
++                f.executor.file_table.lock().unwrap().fd_entry_ids[&(target as i32)].clone();
++            let between_installs = Mutex::new(sibling);
+             let before: Vec<_> = f
+                 .executor
+                 .file_table
+@@ -25512,10 +25892,45 @@
+                 .keys()
+                 .copied()
+                 .collect();
+-            let observed = observe_unlocked_retirement(&f.executor);
++            let replaced_between_installs = Arc::new(std::sync::atomic::AtomicUsize::new(0));
++            let replaced = replaced_between_installs.clone();
++            let memory = f.memory.clone();
++            let observed = observe_unlocked_retirement_then(&f.executor, move |descriptors| {
++                if descriptors.contains(&old_sentinel_host)
++                    && replaced
++                        .compare_exchange(0, 1, Ordering::SeqCst, Ordering::SeqCst)
++                        .is_ok()
++                {
++                    // The first required install clone has completed; its old
++                    // local owner is at the real unlocked retirement drain.
++                    // Replace that entry again through an actual sibling before
++                    // accept resumes, making the second install require a clone.
++                    let mut sibling = between_installs.lock().unwrap();
++                    assert_eq!(
++                        sibling.execute(
++                            &SyscallRequest::new(
++                                libc::SYS_close as u64,
++                                [target as u64, 0, 0, 0, 0, 0]
++                            ),
++                            &memory
++                        ),
++                        0
++                    );
++                    assert_eq!(
++                        sibling.execute(
++                            &SyscallRequest::new(
++                                libc::SYS_openat as u64,
++                                [libc::AT_FDCWD as u64, 0x100, libc::O_RDWR as u64, 0, 0, 0]
++                            ),
++                            &memory
++                        ),
++                        target
++                    );
++                }
++            });
+             if fail_second_install {
+-                // With unchanged entries, each install clones only stdin.
+-                // Fail the second install, after the real host accept succeeds.
++                // The first changed entry consumes the one permitted clone;
++                // the second install fails after the real host accept succeeds.
+                 f.executor.state.file_retirement.fail_clone_after(Some(1));
+             }
+             let result = f.call(
+@@ -25525,7 +25940,16 @@
+             f.executor.state.file_retirement.fail_clone_after(None);
+             f.executor.state.file_retirement.set_probe(None);
+             assert!(!observed.lock().unwrap().is_empty());
++            assert_eq!(replaced_between_installs.load(Ordering::SeqCst), 1);
+             if fail_second_install {
++                assert!(Arc::ptr_eq(
++                    &f.executor.state.fd_entry_ids[&(target as i32)],
++                    &first_installed_id
++                ));
++                assert!(!Arc::ptr_eq(
++                    &f.executor.file_table.lock().unwrap().fd_entry_ids[&(target as i32)],
++                    &first_installed_id
++                ));
+                 assert_eq!(result, negative_errno(libc::EMFILE));
+                 assert_eq!(
+                     f.executor
+@@ -25554,6 +25978,14 @@
+                     "failed accept installation must close its host socket"
+                 );
+             } else {
++                assert!(Arc::ptr_eq(
++                    &f.executor.state.fd_entry_ids[&(target as i32)],
++                    &f.executor.file_table.lock().unwrap().fd_entry_ids[&(target as i32)]
++                ));
++                assert!(!Arc::ptr_eq(
++                    &f.executor.state.fd_entry_ids[&(target as i32)],
++                    &first_installed_id
++                ));
+                 assert!(result > server);
+                 assert!(
+                     f.executor
+@@ -25879,7 +26311,8 @@
+         let mut exhausted = None;
+         let mut attempt = None;
+         // No assertions or output occur between lowering and restoring the
+-        // soft limit. The real install, including its stdin clone, is used.
++        // soft limit. The real install must stage both changed mapped entries;
++        // unchanged stdin no longer consumes a host descriptor.
+         let lowered = unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &reduced) };
+         if lowered == 0 {
+             for _ in 0..=256 {

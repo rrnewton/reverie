@@ -1,0 +1,45 @@
+{
+  "source_links": "Exact relative links from retained man-v2-futex.2.html lines144/175",
+  "requests": [
+    {
+      "url": "https://man7.org/linux/man-pages/man2/FUTEX_WAIT.2const.html",
+      "argv": [
+        "curl",
+        "--silent",
+        "--show-error",
+        "--fail",
+        "--max-time",
+        "40",
+        "https://man7.org/linux/man-pages/man2/FUTEX_WAIT.2const.html"
+      ],
+      "rc": 0,
+      "raw": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/timed-futex-restart-research-v1/man-v3-FUTEX_WAIT.html",
+      "stderr": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/timed-futex-restart-research-v1/man-v3-FUTEX_WAIT.stderr",
+      "raw_bytes": 12867,
+      "raw_sha256": "38c22ef9132a828e208c259a07775d680895e82d09e1dc2dfd94b64e0aee3604",
+      "decoded": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/timed-futex-restart-research-v1/man-v3-FUTEX_WAIT.txt",
+      "sha256": "17c0f53076975afe43cfb0677b1d7b90f83f1bedfa5189850abad93dc8c85962",
+      "bytes": 7084
+    },
+    {
+      "url": "https://man7.org/linux/man-pages/man2/FUTEX_WAIT_BITSET.2const.html",
+      "argv": [
+        "curl",
+        "--silent",
+        "--show-error",
+        "--fail",
+        "--max-time",
+        "40",
+        "https://man7.org/linux/man-pages/man2/FUTEX_WAIT_BITSET.2const.html"
+      ],
+      "rc": 0,
+      "raw": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/timed-futex-restart-research-v1/man-v3-FUTEX_WAIT_BITSET.html",
+      "stderr": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/timed-futex-restart-research-v1/man-v3-FUTEX_WAIT_BITSET.stderr",
+      "raw_bytes": 14128,
+      "raw_sha256": "e91be67b021c125606587e4bfd872ebee486828c1d5c76b6fe8758ddf53647cc",
+      "decoded": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/timed-futex-restart-research-v1/man-v3-FUTEX_WAIT_BITSET.txt",
+      "sha256": "f21d0bffc30d1e0d1c86b6cf83f85dc4b711443fb387ac0b711069cf7f0a4095",
+      "bytes": 8247
+    }
+  ]
+}

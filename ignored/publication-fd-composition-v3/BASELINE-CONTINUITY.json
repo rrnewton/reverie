@@ -1,0 +1,18 @@
+{
+  "production_and_old_tests_byte_identical_to_v2": true,
+  "only_addition": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/publication-fd-composition-v3/NEW-TESTS.rs",
+    "bytes": 11722,
+    "mode": 420,
+    "sha256": "4f3aa1cdc829fa199a4e75600dde12effc6d672b75134f32d87ed5f03a5925aa"
+  },
+  "test_patch": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/publication-fd-composition-v3/BASELINE-TEST.patch",
+    "bytes": 12305,
+    "mode": 420,
+    "sha256": "e1fd7c14dacbb8e48b2f69c4da5305031e4d52fba4221785425191d3de8d55f1"
+  },
+  "new_bodies_identical_between_baseline_and_corrected": true,
+  "no_baseline_only_production_adapter": true,
+  "execution_performed": false
+}

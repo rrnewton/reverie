@@ -1,0 +1,406 @@
+{
+  "files": [
+    {
+      "path": "reverie/src/guest.rs",
+      "source": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/timer-observation-claude-response-v3/frozen-v3/source/after/reverie/src/guest.rs",
+        "bytes": 24865,
+        "sha256": "206a31ecb2ed85f4f260c7a265a5f718aaab3e1600b4eb1bf95befd75b9112a2"
+      },
+      "declarations": [
+        {
+          "line": 31,
+          "text": "pub enum DetlogRegionKind {"
+        },
+        {
+          "line": 47,
+          "text": "pub struct DetlogMemoryRegion {"
+        },
+        {
+          "line": 58,
+          "text": "pub trait Guest<T: Tool>: Send + GlobalRPC<T::GlobalState> {"
+        },
+        {
+          "line": 288,
+          "text": "async fn queue_process_alarm_signal("
+        },
+        {
+          "line": 299,
+          "text": "fn signal_task_identity(&self) -> Option<crate::SignalTaskIdentity> {"
+        },
+        {
+          "line": 304,
+          "text": "fn parked_signal_site(&self) -> Option<crate::CallbackSignalSite> {"
+        },
+        {
+          "line": 309,
+          "text": "fn signal_observation_lease(&self) -> Option<crate::ParkedObservationLease> {"
+        },
+        {
+          "line": 314,
+          "text": "async fn observe_parked_signal("
+        },
+        {
+          "line": 325,
+          "text": "async fn terminate_from_parked_signal("
+        },
+        {
+          "line": 335,
+          "text": "fn parked_signal_failure_context(&self) -> Option<crate::ParkedSignalFailureContext> {"
+        },
+        {
+          "line": 340,
+          "text": "async fn cancel_parked_signal("
+        },
+        {
+          "line": 476,
+          "text": "pub struct IntoGuest<'a, G: ?Sized, U> {"
+        },
+        {
+          "line": 483,
+          "text": "pub fn new(guest: &'a mut G) -> Self {"
+        },
+        {
+          "line": 600,
+          "text": "async fn queue_process_alarm_signal("
+        },
+        {
+          "line": 607,
+          "text": "fn signal_task_identity(&self) -> Option<crate::SignalTaskIdentity> {"
+        },
+        {
+          "line": 610,
+          "text": "fn parked_signal_site(&self) -> Option<crate::CallbackSignalSite> {"
+        },
+        {
+          "line": 613,
+          "text": "fn signal_observation_lease(&self) -> Option<crate::ParkedObservationLease> {"
+        },
+        {
+          "line": 616,
+          "text": "async fn observe_parked_signal("
+        },
+        {
+          "line": 623,
+          "text": "async fn terminate_from_parked_signal("
+        },
+        {
+          "line": 629,
+          "text": "fn parked_signal_failure_context(&self) -> Option<crate::ParkedSignalFailureContext> {"
+        },
+        {
+          "line": 632,
+          "text": "async fn cancel_parked_signal("
+        }
+      ]
+    },
+    {
+      "path": "reverie/src/lib.rs",
+      "source": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/timer-observation-claude-response-v3/frozen-v3/source/after/reverie/src/lib.rs",
+        "bytes": 4581,
+        "sha256": "59640c96cd9dae86dd75bf40edff3f282ab1a45a30db5bcef7ec87cc62d7c59c"
+      },
+      "declarations": [
+        {
+          "line": 70,
+          "text": "pub use auxv::*;"
+        },
+        {
+          "line": 71,
+          "text": "pub use backend::*;"
+        },
+        {
+          "line": 72,
+          "text": "pub use backend_stats::*;"
+        },
+        {
+          "line": 73,
+          "text": "pub use backtrace::*;"
+        },
+        {
+          "line": 74,
+          "text": "pub use error::*;"
+        },
+        {
+          "line": 75,
+          "text": "pub use guest::*;"
+        },
+        {
+          "line": 76,
+          "text": "pub use process::ExitStatus;"
+        },
+        {
+          "line": 77,
+          "text": "pub use process::Pid;"
+        },
+        {
+          "line": 79,
+          "text": "pub use rdtsc::*;"
+        },
+        {
+          "line": 80,
+          "text": "pub use regs::RegDisplay;"
+        },
+        {
+          "line": 81,
+          "text": "pub use regs::RegDisplayOptions;"
+        },
+        {
+          "line": 82,
+          "text": "pub use reverie_process as process;"
+        },
+        {
+          "line": 83,
+          "text": "pub use signal::*;"
+        },
+        {
+          "line": 84,
+          "text": "pub use signal_observation::*;"
+        },
+        {
+          "line": 85,
+          "text": "pub use stack::*;"
+        },
+        {
+          "line": 86,
+          "text": "pub use subscription::*;"
+        },
+        {
+          "line": 87,
+          "text": "pub use timer::*;"
+        },
+        {
+          "line": 88,
+          "text": "pub use tool::*;"
+        },
+        {
+          "line": 97,
+          "text": "pub type Tid = Pid;"
+        },
+        {
+          "line": 103,
+          "text": "pub use async_trait::async_trait as tool;"
+        },
+        {
+          "line": 109,
+          "text": "pub use async_trait::async_trait as global_tool;"
+        },
+        {
+          "line": 114,
+          "text": "pub use async_trait::async_trait as backend;"
+        },
+        {
+          "line": 116,
+          "text": "pub use nix::sys::signal::Signal;"
+        },
+        {
+          "line": 118,
+          "text": "pub use raw_cpuid::CpuIdResult;"
+        },
+        {
+          "line": 120,
+          "text": "pub use reverie_syscalls as syscalls;"
+        },
+        {
+          "line": 123,
+          "text": "pub type Never = never_say_never::Never;"
+        }
+      ]
+    },
+    {
+      "path": "reverie/src/signal.rs",
+      "source": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/timer-observation-claude-response-v3/frozen-v3/source/after/reverie/src/signal.rs",
+        "bytes": 10358,
+        "sha256": "cb5e56347dd7651e9e10f7ff1a226c0f1fde5da55f901096cac7ee342107d33d"
+      },
+      "declarations": [
+        {
+          "line": 23,
+          "text": "pub enum ChildExitSignalDisposition {"
+        },
+        {
+          "line": 37,
+          "text": "pub enum ChildExitSignalErrorKind {"
+        },
+        {
+          "line": 54,
+          "text": "pub enum ChildExitSignalOutcome {"
+        },
+        {
+          "line": 82,
+          "text": "pub enum ProcessAlarmSignalDisposition {"
+        },
+        {
+          "line": 97,
+          "text": "pub struct ProcessAlarmSignalReceipt {"
+        },
+        {
+          "line": 110,
+          "text": "pub enum ProcessAlarmSignalErrorKind {"
+        },
+        {
+          "line": 125,
+          "text": "pub enum ProcessAlarmSignalOutcome {"
+        },
+        {
+          "line": 147,
+          "text": "pub enum SignalTarget {"
+        },
+        {
+          "line": 172,
+          "text": "pub struct SignalEvent {"
+        },
+        {
+          "line": 207,
+          "text": "pub fn new("
+        }
+      ]
+    },
+    {
+      "path": "reverie/src/signal_observation.rs",
+      "source": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/timer-observation-claude-response-v3/frozen-v3/source/after/reverie/src/signal_observation.rs",
+        "bytes": 7632,
+        "sha256": "d089b3d2f18d41364a3ea73dd5ff241ceeec4996bcf71e33bcc08495a4c73dcf"
+      },
+      "declarations": [
+        {
+          "line": 19,
+          "text": "pub struct SignalProcessId {"
+        },
+        {
+          "line": 28,
+          "text": "pub struct SignalTaskIdentity {"
+        },
+        {
+          "line": 39,
+          "text": "pub struct CallbackSignalSite {"
+        },
+        {
+          "line": 54,
+          "text": "pub enum PendingDomain {"
+        },
+        {
+          "line": 63,
+          "text": "pub enum SignalConsumer {"
+        },
+        {
+          "line": 74,
+          "text": "pub struct DequeueId {"
+        },
+        {
+          "line": 83,
+          "text": "pub struct SignalDequeue {"
+        },
+        {
+          "line": 111,
+          "text": "pub struct ParkedObservationLease {"
+        },
+        {
+          "line": 120,
+          "text": "pub struct PreparedSignalToken {"
+        },
+        {
+          "line": 129,
+          "text": "pub enum SignalObservationStep {"
+        },
+        {
+          "line": 161,
+          "text": "pub enum SignalObservationStop {"
+        },
+        {
+          "line": 178,
+          "text": "pub struct ParkedSignalObservation {"
+        },
+        {
+          "line": 187,
+          "text": "pub enum SignalObservationFailure {"
+        },
+        {
+          "line": 209,
+          "text": "pub struct ParkedSignalFailureContext {"
+        }
+      ]
+    },
+    {
+      "path": "reverie/src/tool.rs",
+      "source": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/timer-observation-claude-response-v3/frozen-v3/source/after/reverie/src/tool.rs",
+        "bytes": 25724,
+        "sha256": "8d7d1bc3c70d31aa498b265fc5de6a5ae61dad1c9aa4d821422a09b9f6147207"
+      },
+      "declarations": [
+        {
+          "line": 62,
+          "text": "pub enum ThreadOwnership {"
+        },
+        {
+          "line": 93,
+          "text": "pub fn executes_on_tool(self) -> bool {"
+        },
+        {
+          "line": 100,
+          "text": "pub fn executes_on_host(self) -> bool {"
+        },
+        {
+          "line": 108,
+          "text": "pub fn futex_is_host_owned(self) -> bool {"
+        },
+        {
+          "line": 119,
+          "text": "pub trait GlobalTool: Send + Sync + Default {"
+        },
+        {
+          "line": 189,
+          "text": "pub struct BackendFailure {"
+        },
+        {
+          "line": 200,
+          "text": "pub enum BackendChildWaitState {"
+        },
+        {
+          "line": 217,
+          "text": "pub struct BackendChildWaitEvent {"
+        },
+        {
+          "line": 287,
+          "text": "pub trait Tool: Send + Sync + Default {"
+        },
+        {
+          "line": 484,
+          "text": "fn observe_signal_dequeues(_config: &<Self::GlobalState as GlobalTool>::Config) -> bool {"
+        },
+        {
+          "line": 496,
+          "text": "async fn handle_signal_dequeue<G: Guest<Self>>("
+        },
+        {
+          "line": 587,
+          "text": "pub trait GlobalRPC<G: GlobalTool>: Sync {"
+        }
+      ]
+    },
+    {
+      "path": "reverie-kvm/src/error.rs",
+      "source": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/timer-observation-claude-response-v3/frozen-v3/source/after/reverie-kvm/src/error.rs",
+        "bytes": 19691,
+        "sha256": "a1277128ed97e8e5228af6151eb4e26c11cadb12e13460dfea22ca237f8ec4de"
+      },
+      "declarations": [
+        {
+          "line": 15,
+          "text": "pub enum Error {"
+        },
+        {
+          "line": 232,
+          "text": "pub fn primary(&self) -> &Self {"
+        }
+      ]
+    }
+  ],
+  "delta": "No Guest or Tool method/type signature changes from frozen-v2. One public KVM Error variant SignalObservationRequiresToolThreads adds explicit setup refusal for statically incompatible opt-in Host ownership. Tool/Caught/ack docs clarify existing contracts. Private failure channel and terminal cleanup preserve raw guest syscall APIs.",
+  "hermit_scope": "sole_signal_receiver remains; separate single-threaded processes retain existing per-tgid behavior. Deterministic selection among sibling receivers and arbitrary parked request continuation need a separate reviewed extension. FIFO sequence alone proves neither deterministic recipient nor deadlock-free scheduler policy."
+}

@@ -1,0 +1,4 @@
+
+thread '<unnamed>' (3774591) panicked at reverie-kvm/src/process_signal_publication.rs:465:17:
+controlled authoritative-table poison
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace

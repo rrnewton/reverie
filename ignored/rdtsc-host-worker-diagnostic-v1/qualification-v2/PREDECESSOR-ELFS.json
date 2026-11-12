@@ -1,0 +1,12 @@
+{
+  "source": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v3/qualification-v1/retained-binaries/BINDING.json",
+    "bytes": 6419,
+    "mode": 420,
+    "sha256": "37f710a3b3845b0e39a9bc03f94dd73332ed3c7cc2142456b179541b05fccf4a"
+  },
+  "hashes": {
+    "static": "6d1ebca63d56fbad179d6300764c88e7a56c6ccb5f98555c03fd764ec01291d5"
+  },
+  "purpose": "Refuse the failed V3 harness as newly compiled diagnostic source"
+}

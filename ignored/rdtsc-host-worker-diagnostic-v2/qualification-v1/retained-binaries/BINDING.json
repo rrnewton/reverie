@@ -1,0 +1,95 @@
+{
+  "compile_plan": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-host-worker-diagnostic-v2/qualification-v1/compile-plan.json",
+    "bytes": 55165,
+    "mode": 420,
+    "sha256": "91b10147a157e3c1ad894b55497c233e1a8b9b90cf04965e35371b4c019ab55d"
+  },
+  "compile_result": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-host-worker-diagnostic-v2/qualification-v1/controls/compile/result.json",
+    "bytes": 4583,
+    "mode": 420,
+    "sha256": "f9e4b7017f33e9d54dc5e70ca94d9c6c8227729599f4453eab0866e61659acb6"
+  },
+  "cargo_output": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-host-worker-diagnostic-v2/qualification-v1/observer/compile/stdout",
+    "bytes": 133281,
+    "mode": 384,
+    "sha256": "7eca83fb611106bd012d910c902b5aedd7d039cbb7a512fa7a3c9a58081f547f"
+  },
+  "original_artifacts": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-host-worker-diagnostic-v2/qualification-v1/controls/compile/artifacts.json",
+    "bytes": 1815,
+    "mode": 420,
+    "sha256": "8a07808aac3b9ac656aaf59d012e395cf75f91baf0744e038c2996f9b396f8f4"
+  },
+  "source_manifest": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-host-worker-diagnostic-v2/qualification-v1/source-manifest.json",
+    "bytes": 470737,
+    "mode": 420,
+    "sha256": "9cca71852ddf2ac824da8cda95027f38bb8a211c907c6a223d5f4e8cd290ec8c"
+  },
+  "linked_library": {
+    "cargo_artifact": {
+      "reason": "compiler-artifact",
+      "package_id": "path+file:///home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-host-worker-diagnostic-v2/source/reverie-kvm#0.2.0",
+      "manifest_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-host-worker-diagnostic-v2/source/reverie-kvm/Cargo.toml",
+      "target": {
+        "kind": [
+          "lib"
+        ],
+        "crate_types": [
+          "lib"
+        ],
+        "name": "reverie_kvm",
+        "src_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-host-worker-diagnostic-v2/source/reverie-kvm/src/lib.rs",
+        "edition": "2024",
+        "doc": true,
+        "doctest": true,
+        "test": true
+      },
+      "profile": {
+        "opt_level": "0",
+        "debuginfo": 2,
+        "debug_assertions": true,
+        "overflow_checks": true,
+        "test": false
+      },
+      "features": [
+        "default"
+      ],
+      "filenames": [
+        "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/target/rdtsc-host-worker-diagnostic-v2-cold-v1/debug/deps/libreverie_kvm-7f5cea81517ac40f.rlib",
+        "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/target/rdtsc-host-worker-diagnostic-v2-cold-v1/debug/deps/libreverie_kvm-7f5cea81517ac40f.rmeta"
+      ],
+      "executable": null,
+      "fresh": false
+    },
+    "file": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/target/rdtsc-host-worker-diagnostic-v2-cold-v1/debug/deps/libreverie_kvm-7f5cea81517ac40f.rlib",
+      "bytes": 63014882,
+      "mode": 420,
+      "sha256": "9c4634f4c0b4b1e15421f5dbbc1ca26644aa7b9887cf8dacc024476b71627a1b"
+    }
+  },
+  "copies": [
+    {
+      "id": "static",
+      "original": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/target/rdtsc-host-worker-diagnostic-v2-cold-v1/debug/deps/static_elf-8045a74b4f627592",
+        "bytes": 180637264,
+        "mode": 493,
+        "sha256": "b34e707b673d8a01e569bb14cf05a1072be51e63377eb13a5e7cd963fe661336"
+      },
+      "retained": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-host-worker-diagnostic-v2/qualification-v1/retained-binaries/static.elf",
+        "bytes": 180637264,
+        "mode": 365,
+        "sha256": "b34e707b673d8a01e569bb14cf05a1072be51e63377eb13a5e7cd963fe661336"
+      },
+      "distinct_inode": true
+    }
+  ],
+  "all_selected_newly_built": true,
+  "meaning": "Cargo fresh=false for diagnostic harness and linked KVM library; not a test result"
+}

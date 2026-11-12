@@ -1,0 +1,30 @@
+{
+  "target": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/cpuid-recovery-source-v1/TARGET.json",
+    "kind": "file",
+    "bytes": 4357,
+    "sha256": "5ff12f1d6800aaa5944efcbb431fd23d79740b16430ed1b960a9ced13619d3b8",
+    "mode": 420
+  },
+  "inputs": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/cpuid-recovery-source-v1/INPUTS.json",
+    "kind": "file",
+    "bytes": 1840082,
+    "sha256": "3f0006fa3b62529fede264cf795ef2abd0147f359cc7dd2ce1474453d484366b",
+    "mode": 420
+  },
+  "records_authenticated": 5367,
+  "kind_counts": {
+    "file": 5347,
+    "symlink": 14,
+    "unexpanded_gitlink": 6
+  },
+  "source_entries": 2627,
+  "changed_paths": 8,
+  "new_test_declarations": 15,
+  "planned_exact_declarations": 55,
+  "preparation_format_status": 0,
+  "compile_or_test_execution": false,
+  "all_records_stable": true,
+  "no_independent_approval": true
+}

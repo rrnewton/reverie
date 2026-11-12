@@ -1,0 +1,24 @@
+{
+  "started": [
+    "executor::tests::signal_dequeue_sibling_cannot_flush_or_ack_another_owner"
+  ],
+  "ended": [
+    {
+      "type": "test",
+      "name": "executor::tests::signal_dequeue_sibling_cannot_flush_or_ack_another_owner",
+      "event": "ok"
+    }
+  ],
+  "suites": [
+    {
+      "type": "suite",
+      "event": "ok",
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filtered_out": 504,
+      "exec_time": 0.00113856
+    }
+  ]
+}

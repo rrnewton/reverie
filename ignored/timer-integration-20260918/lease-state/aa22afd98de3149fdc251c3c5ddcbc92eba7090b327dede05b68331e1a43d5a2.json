@@ -1,0 +1,9 @@
+{
+  "plan_sha256": "aa22afd98de3149fdc251c3c5ddcbc92eba7090b327dede05b68331e1a43d5a2",
+  "result": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/same-inode-ofd-repair-v2/qualification-v3/controls/test-emfile/result.json",
+    "bytes": 2859,
+    "mode": 420,
+    "sha256": "1348c58108ac88ca5f53693be763cb8c59a0aeca4447fc811ca44a3727b59b69"
+  }
+}

@@ -1,0 +1,80 @@
+        &self,
+        guest: &mut G,
+        eax: u32,
+        ecx: u32,
+    ) -> Result<CpuIdResult, Errno> {
+        assert!(guest.has_cpuid_interception());
+        let registers = guest.regs().await;
+        assert_eq!((registers.rax as u32, registers.rcx as u32), (eax, ecx));
+        let before = guest.read_clock().expect("actual guest clock");
+        assert_eq!(
+            guest.inject(reverie::syscalls::Getpid::new()).await?,
+            i64::from(guest.pid().as_raw())
+        );
+        assert_eq!(guest.inject(Fork::new()).await, Err(Errno::ENOSYS));
+        guest.send_rpc((eax, ecx, before)).await;
+        assert_eq!(
+            guest.read_clock().unwrap(),
+            before,
+            "host RPC/injection must not retire guest branches"
+        );
+        let ordinal = *guest.thread_state();
+        *guest.thread_state_mut() = ordinal + 1;
+        let values = if guest.config().1 == 2 {
+            [RDTSC_SENTINEL as u32, 0, 0, (RDTSC_SENTINEL >> 32) as u32]
+        } else {
+            OUTPUTS.map(|value| value + if guest.config().1 == 1 { ordinal } else { 0 })
+        };
+        Ok(CpuIdResult {
+            eax: values[0],
+            ebx: values[1],
+            ecx: values[2],
+            edx: values[3],
+        })
+    }
+}
+
+fn append_cpuid(code: &mut Vec<u8>, prefix: &[u8], ordinal: u32, failures: &mut Vec<usize>) {
+    code.extend_from_slice(&[0x48, 0xb8]);
+    code.extend_from_slice(&0x8877665500000007_u64.to_le_bytes());
+    code.extend_from_slice(&[0x48, 0xb9]);
+    code.extend_from_slice(&0x1234567800000002_u64.to_le_bytes());
+    code.extend_from_slice(&[0x48, 0xbb]);
+    code.extend_from_slice(&u64::MAX.to_le_bytes());
+    code.extend_from_slice(&[0x48, 0xba]);
+    code.extend_from_slice(&u64::MAX.to_le_bytes());
+    code.extend_from_slice(&[0x49, 0xb8]);
+    code.extend_from_slice(&0x123456789abcdef0_u64.to_le_bytes());
+    code.extend_from_slice(&[0x49, 0x89, 0xe4]); // mov r12,rsp
+    code.extend_from_slice(&[0x68, 0xd7, 0x02, 0, 0, 0x9d]); // push flags; popfq
+    code.extend_from_slice(prefix);
+    code.extend_from_slice(&[0x0f, 0xa2]);
+    code.extend_from_slice(&[0x9c, 0x41, 0x5b]); // pushfq; pop r11
+    code.extend_from_slice(&[0x49, 0x81, 0xfb, 0xd7, 0x02, 0, 0]);
+    append_jne_failure(code, failures);
+    for (register, value) in [0_u8, 3, 1, 2].into_iter().zip(OUTPUTS) {
+        code.extend_from_slice(&[0x49, 0xba]);
+        code.extend_from_slice(&u64::from(value + ordinal).to_le_bytes());
+        code.extend_from_slice(&[0x4c, 0x39, 0xd0 | register]);
+        append_jne_failure(code, failures);
+    }
+    code.extend_from_slice(&[0x49, 0xba]);
+    code.extend_from_slice(&0x123456789abcdef0_u64.to_le_bytes());
+    code.extend_from_slice(&[0x4d, 0x39, 0xd0]);
+    append_jne_failure(code, failures); // cmp r8,r10
+    code.extend_from_slice(&[0x4c, 0x39, 0xe4]);
+    append_jne_failure(code, failures); // cmp rsp,r12
+}
+
+fn assertion_program(prefix: &[u8], count: u32, evolving: bool) -> Vec<u8> {
+    let mut code = Vec::new();
+    let mut failures = Vec::new();
+    for ordinal in 0..count {
+        append_cpuid(
+            &mut code,
+            prefix,
+            if evolving { ordinal } else { 0 },
+            &mut failures,
+        );
+    }
+    append_stats_exit(&mut code, true);

@@ -1,0 +1,780 @@
+{
+  "status": "STOPPED ON FIRST REAL FAILURE; NOT COMPLETE QUALIFICATION",
+  "phases": [
+    {
+      "name": "metadata",
+      "plan": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v3/qualification-v1/metadata-plan.json",
+        "bytes": 53331,
+        "mode": 420,
+        "sha256": "e6b77f4d6889330255a8e3c7fa5723b453653e57eb61aed890cccb61b2669b45"
+      },
+      "result": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v3/qualification-v1/controls/metadata/result.json",
+        "bytes": 2664,
+        "mode": 420,
+        "sha256": "590cefc7d2e279ece5fe242092f060efa5a7aae408b4c425bd98ac56dfcffd79"
+      },
+      "raw_status": 0,
+      "accepted": true,
+      "terminal_authenticated": true,
+      "inputs_unchanged": true
+    },
+    {
+      "name": "compile",
+      "plan": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v3/qualification-v1/compile-plan.json",
+        "bytes": 54802,
+        "mode": 420,
+        "sha256": "209511db8611aee97d115f00eaab4f216af9e927afc972a22e78c7f55682359b"
+      },
+      "result": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v3/qualification-v1/controls/compile/result.json",
+        "bytes": 10185,
+        "mode": 420,
+        "sha256": "5209db46d26549eae03b5b2ca24ec57935c0138185ac24ca5044fa4b7ca211d5"
+      },
+      "raw_status": 0,
+      "accepted": true,
+      "terminal_authenticated": true,
+      "inputs_unchanged": true
+    },
+    {
+      "name": "format",
+      "plan": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v3/qualification-v1/format-plan.json",
+        "bytes": 64907,
+        "mode": 420,
+        "sha256": "e3cfe20c669e212999aab01a43446896117be6b34949a2c73988fda796ff70ec"
+      },
+      "result": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v3/qualification-v1/controls/format/result.json",
+        "bytes": 2540,
+        "mode": 420,
+        "sha256": "acdc7048a2258fb29a123c6452ae168b0ff1f084cd17b09ee060d58d5f5620fd"
+      },
+      "raw_status": 0,
+      "accepted": true,
+      "terminal_authenticated": true,
+      "inputs_unchanged": true
+    },
+    {
+      "name": "list-lib",
+      "plan": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v3/qualification-v1/list-lib-plan.json",
+        "bytes": 57577,
+        "mode": 420,
+        "sha256": "97fd0d7ee9d4c9c074001fc90408c4b9cedd6d44345212d31376f0e1c7461cc5"
+      },
+      "result": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v3/qualification-v1/controls/list-lib/result.json",
+        "bytes": 45633,
+        "mode": 420,
+        "sha256": "7acb691b5e93e8f12946a9374deb642da7e48d9d88c95543d921ec4fef3380ba"
+      },
+      "raw_status": 0,
+      "accepted": true,
+      "terminal_authenticated": true,
+      "inputs_unchanged": true
+    },
+    {
+      "name": "list-static",
+      "plan": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v3/qualification-v1/list-static-plan.json",
+        "bytes": 58349,
+        "mode": 420,
+        "sha256": "608c23c85b0202c0aab9b0eb9854b93a6916564c3e7e02eb1ccec91aa5b08ca7"
+      },
+      "result": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v3/qualification-v1/controls/list-static/result.json",
+        "bytes": 22280,
+        "mode": 420,
+        "sha256": "98d4b2ed4900e7a5745658b9272646db5b41da3c0eae3578ef51bed9c06eb808"
+      },
+      "raw_status": 0,
+      "accepted": true,
+      "terminal_authenticated": true,
+      "inputs_unchanged": true
+    },
+    {
+      "name": "list-vmcall",
+      "plan": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v3/qualification-v1/list-vmcall-plan.json",
+        "bytes": 57209,
+        "mode": 420,
+        "sha256": "622c2285c9cf37728a1b469386aff3d3f7e5e3e1f6be3822c11bfc71b613d71d"
+      },
+      "result": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v3/qualification-v1/controls/list-vmcall/result.json",
+        "bytes": 3015,
+        "mode": 420,
+        "sha256": "c801663237c882a24fbd3f90c6968e3b062bf61f73e796a852d7b95150c84569"
+      },
+      "raw_status": 0,
+      "accepted": true,
+      "terminal_authenticated": true,
+      "inputs_unchanged": true
+    },
+    {
+      "name": "list-read-clock",
+      "plan": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v3/qualification-v1/list-read-clock-plan.json",
+        "bytes": 57390,
+        "mode": 420,
+        "sha256": "c9fb090c06caaaa5798a94fc484bee4efd6002cbf1e40a5a856a8d69ff3fb030"
+      },
+      "result": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v3/qualification-v1/controls/list-read-clock/result.json",
+        "bytes": 3348,
+        "mode": 420,
+        "sha256": "dff7cd8157713a75f0ed254ee3cc6dfce20388e66196d06a3e8c6bce6790dee6"
+      },
+      "raw_status": 0,
+      "accepted": true,
+      "terminal_authenticated": true,
+      "inputs_unchanged": true
+    },
+    {
+      "name": "timestamp-01",
+      "plan": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v3/qualification-v1/timestamp-01-plan.json",
+        "bytes": 57585,
+        "mode": 420,
+        "sha256": "33f08cde111c6c65384aea2923230a42d7ca1d61d2dea9c1bc51f96a7c90901e"
+      },
+      "result": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v3/qualification-v1/controls/timestamp-01/result.json",
+        "bytes": 2837,
+        "mode": 420,
+        "sha256": "e04c1a121b3a7591bb91ebfccc45ab30d76552ed7429e28d700d8c1a4f62408d"
+      },
+      "raw_status": 0,
+      "accepted": true,
+      "terminal_authenticated": true,
+      "inputs_unchanged": true,
+      "outcomes": {
+        "started": [
+          "timestamp::tests::two_byte_rdtsc_decode_does_not_read_a_third_byte"
+        ],
+        "ended": [
+          {
+            "type": "test",
+            "name": "timestamp::tests::two_byte_rdtsc_decode_does_not_read_a_third_byte",
+            "event": "ok"
+          }
+        ],
+        "suites": [
+          {
+            "type": "suite",
+            "event": "ok",
+            "passed": 1,
+            "failed": 0,
+            "ignored": 0,
+            "measured": 0,
+            "filtered_out": 509,
+            "exec_time": 0.00023262
+          }
+        ]
+      }
+    },
+    {
+      "name": "timestamp-02",
+      "plan": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v3/qualification-v1/timestamp-02-plan.json",
+        "bytes": 57603,
+        "mode": 420,
+        "sha256": "fcb0869cdc573ffd139bea301b4ece7d1391112c24bc2a75eb01fc9eb6e732e7"
+      },
+      "result": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v3/qualification-v1/controls/timestamp-02/result.json",
+        "bytes": 2845,
+        "mode": 420,
+        "sha256": "fbf80062155b6e7cd4a21887d06ff629630087a05fb969588b2a4ec84443159a"
+      },
+      "raw_status": 0,
+      "accepted": true,
+      "terminal_authenticated": true,
+      "inputs_unchanged": true,
+      "outcomes": {
+        "started": [
+          "timestamp::tests::timestamp_prefixes_and_fifteen_byte_limit_preserve_faults"
+        ],
+        "ended": [
+          {
+            "type": "test",
+            "name": "timestamp::tests::timestamp_prefixes_and_fifteen_byte_limit_preserve_faults",
+            "event": "ok"
+          }
+        ],
+        "suites": [
+          {
+            "type": "suite",
+            "event": "ok",
+            "passed": 1,
+            "failed": 0,
+            "ignored": 0,
+            "measured": 0,
+            "filtered_out": 509,
+            "exec_time": 0.000326591
+          }
+        ]
+      }
+    },
+    {
+      "name": "timestamp-03",
+      "plan": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v3/qualification-v1/timestamp-03-plan.json",
+        "bytes": 57609,
+        "mode": 420,
+        "sha256": "e3325609adee4333bacc90eab8270f8d6f0ed8ccd9ad8f9d5b4a36ae40d75a4d"
+      },
+      "result": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v3/qualification-v1/controls/timestamp-03/result.json",
+        "bytes": 2849,
+        "mode": 420,
+        "sha256": "416589695ddde98b932ae5c5fbe772e647d29cbffeb5682c6931d66384b361d3"
+      },
+      "raw_status": 0,
+      "accepted": true,
+      "terminal_authenticated": true,
+      "inputs_unchanged": true,
+      "outcomes": {
+        "started": [
+          "timestamp::tests::timestamp_writeback_preserves_other_registers_and_full_flags"
+        ],
+        "ended": [
+          {
+            "type": "test",
+            "name": "timestamp::tests::timestamp_writeback_preserves_other_registers_and_full_flags",
+            "event": "ok"
+          }
+        ],
+        "suites": [
+          {
+            "type": "suite",
+            "event": "ok",
+            "passed": 1,
+            "failed": 0,
+            "ignored": 0,
+            "measured": 0,
+            "filtered_out": 509,
+            "exec_time": 0.000238748
+          }
+        ]
+      }
+    },
+    {
+      "name": "timestamp-04",
+      "plan": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v3/qualification-v1/timestamp-04-plan.json",
+        "bytes": 57639,
+        "mode": 420,
+        "sha256": "6b2b4fb8e3fdc9b09dd6b2c64af7ed934485ae476d8dbdcf508ae3180f8d5175"
+      },
+      "result": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v3/qualification-v1/controls/timestamp-04/result.json",
+        "bytes": 2865,
+        "mode": 420,
+        "sha256": "9e975024a9b5f7c573327581b02da1ff7c4a3dcd7ad9ac473ee59ad358a3b4ab"
+      },
+      "raw_status": 0,
+      "accepted": true,
+      "terminal_authenticated": true,
+      "inputs_unchanged": true,
+      "outcomes": {
+        "started": [
+          "timestamp::tests::timestamp_fetch_checks_each_page_and_does_not_cross_a_completed_instruction"
+        ],
+        "ended": [
+          {
+            "type": "test",
+            "name": "timestamp::tests::timestamp_fetch_checks_each_page_and_does_not_cross_a_completed_instruction",
+            "event": "ok"
+          }
+        ],
+        "suites": [
+          {
+            "type": "suite",
+            "event": "ok",
+            "passed": 1,
+            "failed": 0,
+            "ignored": 0,
+            "measured": 0,
+            "filtered_out": 509,
+            "exec_time": 0.000417337
+          }
+        ]
+      }
+    },
+    {
+      "name": "timestamp-05",
+      "plan": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v3/qualification-v1/timestamp-05-plan.json",
+        "bytes": 57613,
+        "mode": 420,
+        "sha256": "75ff929ce0b61b36794a71e5568f1caaaf3f6270b5d4fae73be039a376c5e2f8"
+      },
+      "result": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v3/qualification-v1/controls/timestamp-05/result.json",
+        "bytes": 2850,
+        "mode": 420,
+        "sha256": "6e459ae14ec1a69ae39ae3d5451ddf23c80e50fc2bc1d974fcaa47ab301f9edd"
+      },
+      "raw_status": 0,
+      "accepted": true,
+      "terminal_authenticated": true,
+      "inputs_unchanged": true,
+      "outcomes": {
+        "started": [
+          "vm::tests::timestamp_boundary_respects_hardware_instruction_fetch_fault_priority"
+        ],
+        "ended": [
+          {
+            "type": "test",
+            "name": "vm::tests::timestamp_boundary_respects_hardware_instruction_fetch_fault_priority",
+            "event": "ok"
+          }
+        ],
+        "suites": [
+          {
+            "type": "suite",
+            "event": "ok",
+            "passed": 1,
+            "failed": 0,
+            "ignored": 0,
+            "measured": 0,
+            "filtered_out": 509,
+            "exec_time": 0.274091026
+          }
+        ]
+      }
+    },
+    {
+      "name": "timestamp-06",
+      "plan": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v3/qualification-v1/timestamp-06-plan.json",
+        "bytes": 57593,
+        "mode": 420,
+        "sha256": "1a930bf406b4df42bf0f129307953b9e03c1830100d87564e1be8b524c3c6ed3"
+      },
+      "result": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v3/qualification-v1/controls/timestamp-06/result.json",
+        "bytes": 2842,
+        "mode": 420,
+        "sha256": "c173ce20641fdbe5e5fdef142c3e10e2d1c2e98b6e4971efacae3cac0ea129dc"
+      },
+      "raw_status": 0,
+      "accepted": true,
+      "terminal_authenticated": true,
+      "inputs_unchanged": true,
+      "outcomes": {
+        "started": [
+          "cpuid::tests::deterministic_policy_replaces_host_identity_and_features"
+        ],
+        "ended": [
+          {
+            "type": "test",
+            "name": "cpuid::tests::deterministic_policy_replaces_host_identity_and_features",
+            "event": "ok"
+          }
+        ],
+        "suites": [
+          {
+            "type": "suite",
+            "event": "ok",
+            "passed": 1,
+            "failed": 0,
+            "ignored": 0,
+            "measured": 0,
+            "filtered_out": 509,
+            "exec_time": 0.000415564
+          }
+        ]
+      }
+    },
+    {
+      "name": "timestamp-07",
+      "plan": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v3/qualification-v1/timestamp-07-plan.json",
+        "bytes": 57607,
+        "mode": 420,
+        "sha256": "005a147c9597f6c84001fcd6a6e56d46410d3b6225c517419fbcf83a67dc4fe6"
+      },
+      "result": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v3/qualification-v1/controls/timestamp-07/result.json",
+        "bytes": 2835,
+        "mode": 420,
+        "sha256": "ac0db060166209e1ef1d87342a94cdb7af7ac5ffce066c4188db5a4279338d42"
+      },
+      "raw_status": 0,
+      "accepted": true,
+      "terminal_authenticated": true,
+      "inputs_unchanged": true,
+      "outcomes": {
+        "started": [
+          "static_elf_timestamp_reads_dispatch_exact_tool_results_repeatably"
+        ],
+        "ended": [
+          {
+            "type": "test",
+            "name": "static_elf_timestamp_reads_dispatch_exact_tool_results_repeatably",
+            "event": "ok"
+          }
+        ],
+        "suites": [
+          {
+            "type": "suite",
+            "event": "ok",
+            "passed": 1,
+            "failed": 0,
+            "ignored": 0,
+            "measured": 0,
+            "filtered_out": 316,
+            "exec_time": 0.277498562
+          }
+        ]
+      }
+    },
+    {
+      "name": "timestamp-08",
+      "plan": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v3/qualification-v1/timestamp-08-plan.json",
+        "bytes": 57605,
+        "mode": 420,
+        "sha256": "acda13bca11552e4571a3fb75f9853806925f12ba9cf8373b661458442d68ae3"
+      },
+      "result": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v3/qualification-v1/controls/timestamp-08/result.json",
+        "bytes": 2833,
+        "mode": 420,
+        "sha256": "6359adad4765deddfd858306433425ca493088b73321c628c5f76c3fcc2d7a8b"
+      },
+      "raw_status": 0,
+      "accepted": true,
+      "terminal_authenticated": true,
+      "inputs_unchanged": true,
+      "outcomes": {
+        "started": [
+          "timestamp_dispatch_survives_thread_fork_and_exec_vcpu_lifecycles"
+        ],
+        "ended": [
+          {
+            "type": "test",
+            "name": "timestamp_dispatch_survives_thread_fork_and_exec_vcpu_lifecycles",
+            "event": "ok"
+          }
+        ],
+        "suites": [
+          {
+            "type": "suite",
+            "event": "ok",
+            "passed": 1,
+            "failed": 0,
+            "ignored": 0,
+            "measured": 0,
+            "filtered_out": 316,
+            "exec_time": 0.417470989
+          }
+        ]
+      }
+    },
+    {
+      "name": "timestamp-09",
+      "plan": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v3/qualification-v1/timestamp-09-plan.json",
+        "bytes": 57589,
+        "mode": 420,
+        "sha256": "79f247b5d2652461fb7a64f9670001df31b04ce6a84b40b986cd3af2a27ccc7c"
+      },
+      "result": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v3/qualification-v1/controls/timestamp-09/result.json",
+        "bytes": 2826,
+        "mode": 420,
+        "sha256": "4b5419c319564a04a1b65ce7b07e1c5a14006fe84d7f6f60c2713b6866b43d95"
+      },
+      "raw_status": 0,
+      "accepted": true,
+      "terminal_authenticated": true,
+      "inputs_unchanged": true,
+      "outcomes": {
+        "started": [
+          "static_elf_unsubscribed_rdtsc_runs_without_tool_dispatch"
+        ],
+        "ended": [
+          {
+            "type": "test",
+            "name": "static_elf_unsubscribed_rdtsc_runs_without_tool_dispatch",
+            "event": "ok"
+          }
+        ],
+        "suites": [
+          {
+            "type": "suite",
+            "event": "ok",
+            "passed": 1,
+            "failed": 0,
+            "ignored": 0,
+            "measured": 0,
+            "filtered_out": 316,
+            "exec_time": 0.136867756
+          }
+        ]
+      }
+    },
+    {
+      "name": "timestamp-10",
+      "plan": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v3/qualification-v1/timestamp-10-plan.json",
+        "bytes": 57593,
+        "mode": 420,
+        "sha256": "174654e3f7bb84674570e204b7bafd3abc8bb1fa249d82b1f138781b24f1f1f7"
+      },
+      "result": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v3/qualification-v1/controls/timestamp-10/result.json",
+        "bytes": 2828,
+        "mode": 420,
+        "sha256": "fa3524fe480e8860c7e4985ce46eaa98a439a39ff9d632ad93ceec4626a4c208"
+      },
+      "raw_status": 0,
+      "accepted": true,
+      "terminal_authenticated": true,
+      "inputs_unchanged": true,
+      "outcomes": {
+        "started": [
+          "subscribed_timestamp_dispatch_refuses_unrelated_exceptions"
+        ],
+        "ended": [
+          {
+            "type": "test",
+            "name": "subscribed_timestamp_dispatch_refuses_unrelated_exceptions",
+            "event": "ok"
+          }
+        ],
+        "suites": [
+          {
+            "type": "suite",
+            "event": "ok",
+            "passed": 1,
+            "failed": 0,
+            "ignored": 0,
+            "measured": 0,
+            "filtered_out": 316,
+            "exec_time": 0.247506135
+          }
+        ]
+      }
+    },
+    {
+      "name": "timestamp-11",
+      "plan": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v3/qualification-v1/timestamp-11-plan.json",
+        "bytes": 57581,
+        "mode": 420,
+        "sha256": "e465731032a0b0966ad73d7cce87c259fe032a9a14e75573e64adc445eddc6e2"
+      },
+      "result": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v3/qualification-v1/controls/timestamp-11/result.json",
+        "bytes": 2823,
+        "mode": 420,
+        "sha256": "82ec4f1aeda7c944982e1a5e2ff99a13789d3024d65b5f0c3100f82d8d060a97"
+      },
+      "raw_status": 0,
+      "accepted": true,
+      "terminal_authenticated": true,
+      "inputs_unchanged": true,
+      "outcomes": {
+        "started": [
+          "repeated_timestamp_reads_evolve_once_per_instruction"
+        ],
+        "ended": [
+          {
+            "type": "test",
+            "name": "repeated_timestamp_reads_evolve_once_per_instruction",
+            "event": "ok"
+          }
+        ],
+        "suites": [
+          {
+            "type": "suite",
+            "event": "ok",
+            "passed": 1,
+            "failed": 0,
+            "ignored": 0,
+            "measured": 0,
+            "filtered_out": 316,
+            "exec_time": 0.066455745
+          }
+        ]
+      }
+    },
+    {
+      "name": "timestamp-12",
+      "plan": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v3/qualification-v1/timestamp-12-plan.json",
+        "bytes": 57585,
+        "mode": 420,
+        "sha256": "ce64fbc002bf5835249202ef5566b46807f1158df973520cdbcf6a9523330aa9"
+      },
+      "result": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v3/qualification-v1/controls/timestamp-12/result.json",
+        "bytes": 2825,
+        "mode": 420,
+        "sha256": "6cf15b5f9bc79f27cdee444a2d8d83c4586a05bff80457c83a96b0759b94a27f"
+      },
+      "raw_status": 0,
+      "accepted": true,
+      "terminal_authenticated": true,
+      "inputs_unchanged": true,
+      "outcomes": {
+        "started": [
+          "static_elf_unsubscribed_rdtscp_remains_guest_exception"
+        ],
+        "ended": [
+          {
+            "type": "test",
+            "name": "static_elf_unsubscribed_rdtscp_remains_guest_exception",
+            "event": "ok"
+          }
+        ],
+        "suites": [
+          {
+            "type": "suite",
+            "event": "ok",
+            "passed": 1,
+            "failed": 0,
+            "ignored": 0,
+            "measured": 0,
+            "filtered_out": 316,
+            "exec_time": 0.046901384
+          }
+        ]
+      }
+    },
+    {
+      "name": "timestamp-13",
+      "plan": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v3/qualification-v1/timestamp-13-plan.json",
+        "bytes": 57617,
+        "mode": 420,
+        "sha256": "c3c1c454b6bd265644674b2daed953a5e0781acd0c568264c2c4d2649cdc1692"
+      },
+      "result": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v3/qualification-v1/controls/timestamp-13/result.json",
+        "bytes": 2841,
+        "mode": 420,
+        "sha256": "cdfd1a8bbf25db848e787336bd6cc83181da55f94fc5e1cdeb6f14c5f0267866"
+      },
+      "raw_status": 0,
+      "accepted": true,
+      "terminal_authenticated": true,
+      "inputs_unchanged": true,
+      "outcomes": {
+        "started": [
+          "timestamp_callbacks_observe_retired_branches_without_counting_rpc_work"
+        ],
+        "ended": [
+          {
+            "type": "test",
+            "name": "timestamp_callbacks_observe_retired_branches_without_counting_rpc_work",
+            "event": "ok"
+          }
+        ],
+        "suites": [
+          {
+            "type": "suite",
+            "event": "ok",
+            "passed": 1,
+            "failed": 0,
+            "ignored": 0,
+            "measured": 0,
+            "filtered_out": 316,
+            "exec_time": 0.110922885
+          }
+        ]
+      }
+    },
+    {
+      "name": "timestamp-14",
+      "plan": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v3/qualification-v1/timestamp-14-plan.json",
+        "bytes": 57577,
+        "mode": 420,
+        "sha256": "906d7c2d71bc0b2f0089973b78830e8a1437cd96e06f08682094bcec3b90f6ee"
+      },
+      "result": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v3/qualification-v1/controls/timestamp-14/result.json",
+        "bytes": 2621,
+        "mode": 420,
+        "sha256": "7504087694697f4d18a6245e9e5dec15b3ca968104cfe31de82694140114bc16"
+      },
+      "raw_status": 101,
+      "accepted": false,
+      "terminal_authenticated": true,
+      "inputs_unchanged": true,
+      "outcomes": {
+        "started": [
+          "host_owned_timestamp_worker_keeps_native_execution"
+        ],
+        "ended": [
+          {
+            "type": "test",
+            "name": "host_owned_timestamp_worker_keeps_native_execution",
+            "event": "failed"
+          }
+        ],
+        "suites": [
+          {
+            "type": "suite",
+            "event": "failed",
+            "passed": 0,
+            "failed": 1,
+            "ignored": 0,
+            "measured": 0,
+            "filtered_out": 316,
+            "exec_time": 0.243823059
+          }
+        ]
+      }
+    }
+  ],
+  "planned_phases": 40,
+  "attempted_phases": 21,
+  "accepted_phases": 20,
+  "passed_declarations": 13,
+  "failed_declarations": 1,
+  "unattempted_phases": [
+    "timestamp-15",
+    "timestamp-16",
+    "timestamp-17",
+    "timestamp-18",
+    "timestamp-19",
+    "timestamp-31",
+    "timestamp-20",
+    "timestamp-21",
+    "timestamp-22",
+    "timestamp-23",
+    "timestamp-24",
+    "timestamp-25",
+    "timestamp-26",
+    "timestamp-27",
+    "timestamp-28",
+    "timestamp-29",
+    "timestamp-30",
+    "core-check",
+    "clippy"
+  ],
+  "inventories": {
+    "list-lib": 510,
+    "list-static": 317,
+    "list-vmcall": 6,
+    "list-read-clock": 8
+  },
+  "all_inputs_unchanged": true,
+  "all_terminal_authenticated": true,
+  "no_skip_readback": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v3/qualification-stop-v1/NO-SKIP-READBACK.json",
+    "bytes": 12447,
+    "mode": 420,
+    "sha256": "e76adbd71ae1e1c136081f33bf6f8bc172cc626dfac6bf687b80437ecfc78788"
+  }
+}

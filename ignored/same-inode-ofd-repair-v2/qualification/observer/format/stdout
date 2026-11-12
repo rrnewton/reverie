@@ -1,0 +1,10 @@
+Diff in /home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/same-inode-ofd-repair-v2/corrected-source/reverie-kvm/src/executor.rs:25323:
+         let lowered = unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &reduced) };
+         if lowered == 0 {
+             for _ in 0..=256 {
+-                let raw = unsafe { libc::fcntl(clone_source.as_raw_fd(), libc::F_DUPFD_CLOEXEC, 3) };
++                let raw =
++                    unsafe { libc::fcntl(clone_source.as_raw_fd(), libc::F_DUPFD_CLOEXEC, 3) };
+                 if raw < 0 {
+                     exhausted = std::io::Error::last_os_error().raw_os_error();
+                     break;

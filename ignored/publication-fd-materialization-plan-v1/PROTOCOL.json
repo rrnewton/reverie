@@ -1,0 +1,164 @@
+{
+  "inputs": [
+    {
+      "original": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/CONTRIBUTING.md",
+        "bytes": 1524,
+        "mode": 420,
+        "sha256": "c6de999fdc06d22d19b18d08f82294f6674f1a62dc09a2f151e44276b9b8b07e"
+      },
+      "retained": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/publication-fd-materialization-plan-v1/protocol/CONTRIBUTING.md",
+        "bytes": 1524,
+        "mode": 420,
+        "sha256": "c6de999fdc06d22d19b18d08f82294f6674f1a62dc09a2f151e44276b9b8b07e"
+      }
+    },
+    {
+      "original": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/rustfmt.toml",
+        "bytes": 287,
+        "mode": 420,
+        "sha256": "fb381af1e39bdd4639360e7256b8bea0ed26fb77c1bfa89f1a83f7e1d9d2a932"
+      },
+      "retained": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/publication-fd-materialization-plan-v1/protocol/rustfmt.toml",
+        "bytes": 287,
+        "mode": 420,
+        "sha256": "fb381af1e39bdd4639360e7256b8bea0ed26fb77c1bfa89f1a83f7e1d9d2a932"
+      }
+    },
+    {
+      "original": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/rust-toolchain.toml",
+        "bytes": 831,
+        "mode": 420,
+        "sha256": "8e95dba878d554bb4ce4267bc4cc5be16c20f327d2bc636fa0e25cd9cc2a0909"
+      },
+      "retained": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/publication-fd-materialization-plan-v1/protocol/rust-toolchain.toml",
+        "bytes": 831,
+        "mode": 420,
+        "sha256": "8e95dba878d554bb4ce4267bc4cc5be16c20f327d2bc636fa0e25cd9cc2a0909"
+      }
+    },
+    {
+      "original": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/.gitignore",
+        "bytes": 98,
+        "mode": 420,
+        "sha256": "73ad520aa06c3b6d142a2539aa20fab7554146198839bc5a27e68d03a622bf5e"
+      },
+      "retained": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/publication-fd-materialization-plan-v1/protocol/gitignore",
+        "bytes": 98,
+        "mode": 420,
+        "sha256": "73ad520aa06c3b6d142a2539aa20fab7554146198839bc5a27e68d03a622bf5e"
+      }
+    },
+    {
+      "original": {
+        "path": "/home/newton/work/dev-hermit/.githooks/dev-hermit-hook-dispatch",
+        "bytes": 2068,
+        "mode": 493,
+        "sha256": "d2ff8d40b41101febfb1bb6d3504c31b4a89549bcd0813d6e65b15c19e223f32"
+      },
+      "retained": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/publication-fd-materialization-plan-v1/protocol/hook-dispatch",
+        "bytes": 2068,
+        "mode": 420,
+        "sha256": "d2ff8d40b41101febfb1bb6d3504c31b4a89549bcd0813d6e65b15c19e223f32"
+      }
+    }
+  ],
+  "common_hooks": [
+    {
+      "path": "/home/newton/work/dev-hermit/.git/modules/reverie/dev-hermit-hooks/applypatch-msg",
+      "link": "/home/newton/work/dev-hermit/.githooks/dev-hermit-hook-dispatch",
+      "resolved": "/home/newton/work/dev-hermit/.githooks/dev-hermit-hook-dispatch"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/.git/modules/reverie/dev-hermit-hooks/commit-msg",
+      "link": "/home/newton/work/dev-hermit/.githooks/dev-hermit-hook-dispatch",
+      "resolved": "/home/newton/work/dev-hermit/.githooks/dev-hermit-hook-dispatch"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/.git/modules/reverie/dev-hermit-hooks/fsmonitor-watchman",
+      "link": "/home/newton/work/dev-hermit/.githooks/dev-hermit-hook-dispatch",
+      "resolved": "/home/newton/work/dev-hermit/.githooks/dev-hermit-hook-dispatch"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/.git/modules/reverie/dev-hermit-hooks/post-applypatch",
+      "link": "/home/newton/work/dev-hermit/.githooks/dev-hermit-hook-dispatch",
+      "resolved": "/home/newton/work/dev-hermit/.githooks/dev-hermit-hook-dispatch"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/.git/modules/reverie/dev-hermit-hooks/post-checkout",
+      "link": "/home/newton/work/dev-hermit/.githooks/dev-hermit-hook-dispatch",
+      "resolved": "/home/newton/work/dev-hermit/.githooks/dev-hermit-hook-dispatch"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/.git/modules/reverie/dev-hermit-hooks/post-commit",
+      "link": "/home/newton/work/dev-hermit/.githooks/dev-hermit-hook-dispatch",
+      "resolved": "/home/newton/work/dev-hermit/.githooks/dev-hermit-hook-dispatch"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/.git/modules/reverie/dev-hermit-hooks/post-index-change",
+      "link": "/home/newton/work/dev-hermit/.githooks/dev-hermit-hook-dispatch",
+      "resolved": "/home/newton/work/dev-hermit/.githooks/dev-hermit-hook-dispatch"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/.git/modules/reverie/dev-hermit-hooks/post-merge",
+      "link": "/home/newton/work/dev-hermit/.githooks/dev-hermit-hook-dispatch",
+      "resolved": "/home/newton/work/dev-hermit/.githooks/dev-hermit-hook-dispatch"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/.git/modules/reverie/dev-hermit-hooks/post-rewrite",
+      "link": "/home/newton/work/dev-hermit/.githooks/dev-hermit-hook-dispatch",
+      "resolved": "/home/newton/work/dev-hermit/.githooks/dev-hermit-hook-dispatch"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/.git/modules/reverie/dev-hermit-hooks/pre-applypatch",
+      "link": "/home/newton/work/dev-hermit/.githooks/dev-hermit-hook-dispatch",
+      "resolved": "/home/newton/work/dev-hermit/.githooks/dev-hermit-hook-dispatch"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/.git/modules/reverie/dev-hermit-hooks/pre-commit",
+      "link": "/home/newton/work/dev-hermit/.githooks/dev-hermit-hook-dispatch",
+      "resolved": "/home/newton/work/dev-hermit/.githooks/dev-hermit-hook-dispatch"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/.git/modules/reverie/dev-hermit-hooks/pre-merge-commit",
+      "link": "/home/newton/work/dev-hermit/.githooks/dev-hermit-hook-dispatch",
+      "resolved": "/home/newton/work/dev-hermit/.githooks/dev-hermit-hook-dispatch"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/.git/modules/reverie/dev-hermit-hooks/pre-push",
+      "link": "/home/newton/work/dev-hermit/.githooks/dev-hermit-hook-dispatch",
+      "resolved": "/home/newton/work/dev-hermit/.githooks/dev-hermit-hook-dispatch"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/.git/modules/reverie/dev-hermit-hooks/pre-rebase",
+      "link": "/home/newton/work/dev-hermit/.githooks/dev-hermit-hook-dispatch",
+      "resolved": "/home/newton/work/dev-hermit/.githooks/dev-hermit-hook-dispatch"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/.git/modules/reverie/dev-hermit-hooks/prepare-commit-msg",
+      "link": "/home/newton/work/dev-hermit/.githooks/dev-hermit-hook-dispatch",
+      "resolved": "/home/newton/work/dev-hermit/.githooks/dev-hermit-hook-dispatch"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/.git/modules/reverie/dev-hermit-hooks/reference-transaction",
+      "link": "/home/newton/work/dev-hermit/.githooks/dev-hermit-hook-dispatch",
+      "resolved": "/home/newton/work/dev-hermit/.githooks/dev-hermit-hook-dispatch"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/.git/modules/reverie/dev-hermit-hooks/sendemail-validate",
+      "link": "/home/newton/work/dev-hermit/.githooks/dev-hermit-hook-dispatch",
+      "resolved": "/home/newton/work/dev-hermit/.githooks/dev-hermit-hook-dispatch"
+    }
+  ],
+  "local_hook_directory_present": false,
+  "no_current_root_or_affected_directory_agents_file": true,
+  "root_applied_hermit_protocol_is_workflow_direction_not_reverie_file_authority": true
+}

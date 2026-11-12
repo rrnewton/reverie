@@ -1,0 +1,53 @@
+#!/usr/bin/env bash
+# dev-hermit-managed-hook-dispatch-v1
+# Machine-local composite hook dispatcher. scripts/setup-hooks.sh installs one
+# regular executable copy under every Git client hook name in each repository's
+# durable common Git directory. Resolving the repository at invocation time is
+# what keeps an installer run from a disposable linked worktree from binding
+# every worktree's hooks to that disposable path.
+set -euo pipefail
+
+hook_name=$(basename -- "$0")
+dispatcher=$(readlink -f -- "$0") || {
+  echo "hook dispatch REFUSED: cannot resolve installed $hook_name hook at $0" >&2
+  exit 1
+}
+repo_root=$(git rev-parse --show-toplevel 2>/dev/null) || {
+  echo "hook dispatch REFUSED: cannot resolve the active repository for $hook_name" >&2
+  exit 1
+}
+
+repo_hook="$repo_root/.githooks/$hook_name"
+repo_hook_relative=".githooks/$hook_name"
+
+# Most of Git's hook names have no tracked implementation in a given
+# repository; those are deliberately absent. A hook recorded in the index but
+# absent from the working tree is different: Git would otherwise treat that
+# missing gate as success. Preserve GIT_INDEX_FILE here because a pathspec
+# commit supplies the exact temporary index the commit will record.
+if [ ! -e "$repo_hook" ] && [ ! -L "$repo_hook" ]; then
+  tracked=$(git -C "$repo_root" ls-files --stage -- "$repo_hook_relative") || {
+    echo "hook dispatch REFUSED: cannot determine whether $repo_hook_relative is tracked" >&2
+    exit 1
+  }
+  if [ -n "$tracked" ]; then
+    echo "hook dispatch REFUSED: tracked $hook_name hook is missing at $repo_hook" >&2
+    exit 1
+  fi
+  exit 0
+fi
+
+repo_hook_real=$(readlink -f -- "$repo_hook") || {
+  echo "hook dispatch REFUSED: cannot resolve tracked $hook_name hook at $repo_hook" >&2
+  exit 1
+}
+[ -x "$repo_hook" ] || {
+  echo "hook dispatch REFUSED: tracked $hook_name hook is not executable at $repo_hook" >&2
+  exit 1
+}
+[ "$repo_hook_real" != "$dispatcher" ] || {
+  echo "hook dispatch REFUSED: tracked $hook_name hook resolves back to the installed dispatcher" >&2
+  exit 1
+}
+
+exec "$repo_hook" "$@"

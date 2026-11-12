@@ -1,0 +1,24 @@
+{
+  "argv": [
+    "/usr/bin/python3",
+    "-B",
+    "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/kvm-capture-pipe-identity-source-v2/qualification-v1/phase.py",
+    "launch",
+    "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/kvm-capture-pipe-identity-source-v2/qualification-v1/list-vmcall-plan.json",
+    "80c2e1d809ae197e66f9ff4baa0b37479423ef1f3cc4bccc4135a72eb8bd23e9"
+  ],
+  "returncode": 0,
+  "elapsed_seconds": 7.400990227004513,
+  "stdout": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/kvm-capture-pipe-identity-source-v2/qualification-v1/launch/phase-list-vmcall.stdout",
+    "bytes": 2782,
+    "mode": 420,
+    "sha256": "0ad0fbf18f79c2134078b1135172a02129ff6dd6fc07d3bb82b7114a914d96ba"
+  },
+  "stderr": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/kvm-capture-pipe-identity-source-v2/qualification-v1/launch/phase-list-vmcall.stderr",
+    "bytes": 0,
+    "mode": 420,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  }
+}

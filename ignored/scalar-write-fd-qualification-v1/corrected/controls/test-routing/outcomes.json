@@ -1,0 +1,24 @@
+{
+  "started": [
+    "captured_write_signals::captured_write_signal_capability_routes_and_refusals"
+  ],
+  "ended": [
+    {
+      "type": "test",
+      "name": "captured_write_signals::captured_write_signal_capability_routes_and_refusals",
+      "event": "ok"
+    }
+  ],
+  "suites": [
+    {
+      "type": "suite",
+      "event": "ok",
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filtered_out": 303,
+      "exec_time": 0.626975301
+    }
+  ]
+}

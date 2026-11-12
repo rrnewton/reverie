@@ -1,0 +1,11 @@
+{
+  "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/target/publication-fd-stdin-v3-cold-v1",
+  "device": 48,
+  "inode": 831554658,
+  "uid": 212630,
+  "gid": 100,
+  "mode": 448,
+  "entries": [],
+  "source_of_creation": "New mkdir in owned target parent; no copy, deletion or cache import",
+  "old_target_preserved": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/target/process-alarm-qualification-v1"
+}

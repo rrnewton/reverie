@@ -1,0 +1,65 @@
+commit d9d8d32f9511911ef9becac0220bc5d748a414c2
+Author:     Ryan Newton <rrnewton@gmail.com>
+AuthorDate: Fri Sep 18 05:02:10 2026 -0700
+Commit:     Ryan Newton <rrnewton@gmail.com>
+CommitDate: Fri Sep 18 05:02:10 2026 -0700
+
+    Revert the synchronous-tracing thread equalizer that kills setitimer under KVM
+    
+    [hermit2, cleanup-3, claude-opus-5, devbig014, role=impl]
+    
+    Reverts the three lines added to init_sync_file_tracing() by 1d9c9094de
+    "Preserve the initial thread identity in synchronous tracing"
+    (https://github.com/rrnewton/hermit/pull/2945), which made
+    c-programs/setitimer-determinism (verify/kvm) fail.
+    
+    The helper those lines call is, in full:
+    
+        fn equalize_tracing_thread_number() {
+            // Create an extra, pointless thread just so that our thread number
+            // starts at the same DetTid "3" that `init_file_tracing` does.
+            std::thread::spawn(|| {}).join().unwrap();
+        }
+    
+    so the synchronous verification-logging path spawned and joined a HOST THREAD
+    during init. Under KVM with an interval timer the sandbox is then killed by
+    SIGALRM: "sandbox failed during Run1: Signaled { signal: 14, core_dumped:
+    false }; no guest disposition or comparison was returned". ptrace is unaffected.
+    
+    LOCATED BY BISECT, CONFIRMED BY REVERT. Bisect over the 112 commits between
+    fe4108174265 (last observed pass, 2026-09-16 17:47) and ebc2a64b4f18 converged
+    in 7 probes with zero untestable. A bisect result is a correlation until the
+    revert is tried, so it was tried, at current main 8255986391:
+    
+        before   FAIL c-programs/setitimer-determinism (verify/kvm)
+                 PASS c-programs/setitimer-determinism (verify/ptrace)
+        after    PASS c-programs/setitimer-determinism (verify/kvm)
+                 PASS c-programs/setitimer-determinism (verify/ptrace)
+    
+    ⚠️ THIS REVERT REINTRODUCES A REAL MISMATCH AND THE COST IS NAMED RATHER THAN
+    DISCOVERED LATER. The three lines had a legitimate purpose: aligning the initial
+    DetTid baseline for synchronous verification logging with the baseline
+    init_file_tracing produces. Removing them restores that misalignment, which is
+    determinism-relevant. There is no test on either side -- the helper has three
+    call sites and zero tests -- so nothing in the suite guards 2945's intent, and
+    nothing will go red to remind anyone.
+    
+    The obligation is tracked rather than left to memory:
+    TaskGraph restore-the-dettid-alignment-without-spawning-a-host-thread (OPEN).
+    
+    The defect is in the MECHANISM, not the goal. Burning a DetTid by spawning a
+    host thread perturbs signal and timer delivery in the KVM sandbox; achieving the
+    same alignment without spawning a thread would satisfy both. That change belongs
+    in tracing init on the determinism path and should be made deliberately, not as
+    part of a revert.
+    
+    Trade being made, explicitly: a known, measured blocker on
+    e2e.manifest_c_programs -- which gates the reverie pin bump,
+    https://github.com/rrnewton/hermit/pull/3066 and a third landing -- for a named
+    and tracked identity mismatch. Not for silence.
+    
+    No assertion, tolerance, cell or case was weakened, retired or deleted. The cell
+    is correct and it caught a real defect.
+
+ hermit-cli/src/bin/hermit/tracing.rs | 3 ---
+ 1 file changed, 3 deletions(-)

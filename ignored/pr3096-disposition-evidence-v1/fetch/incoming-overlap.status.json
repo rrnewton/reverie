@@ -1,0 +1,14 @@
+{
+  "argv": [
+    "git",
+    "-C",
+    "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-20260918",
+    "diff",
+    "8255986391593432a8f96a38b7b2a6fc02bfc674",
+    "39ac9f8a55f1b4d17b8c4c0001ce6c4d8a763435",
+    "--",
+    "hermit-cli/src/bin/hermit/tracing.rs",
+    "tests/c/setitimer_determinism.c"
+  ],
+  "returncode": 0
+}

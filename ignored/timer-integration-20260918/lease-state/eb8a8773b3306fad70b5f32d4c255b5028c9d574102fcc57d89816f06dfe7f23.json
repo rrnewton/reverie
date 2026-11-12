@@ -1,0 +1,9 @@
+{
+  "plan_sha256": "eb8a8773b3306fad70b5f32d4c255b5028c9d574102fcc57d89816f06dfe7f23",
+  "result": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/timer-observation-claude-response-v3/positive-v2/controls/test-correction-vm/result.json",
+    "bytes": 3154,
+    "mode": 420,
+    "sha256": "4685f5ba35ef4880fe40830f29e53f41e00abd116a1fd7af5d13dbf6bf26a38b"
+  }
+}

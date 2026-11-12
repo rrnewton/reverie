@@ -1,0 +1,434 @@
+{
+  "status": "PREPARE ONLY; no compiler, loader query, lease, target admission or probe has run",
+  "source": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-native-probe-caller-v1/source/probe.c",
+    "bytes": 9369,
+    "mode": 420,
+    "sha256": "da386bbcd3b921dfd15a355260d13ef994ef0c9b5e45fff0f9e287b1ec4c3a1e"
+  },
+  "readme": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-native-probe-caller-v1/source/README.md",
+    "bytes": 1650,
+    "mode": 420,
+    "sha256": "b472cbbf657bb1e52dd768a988672ad872fe139166f5a548eab66703b2bd52f3"
+  },
+  "selectors": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-native-probe-caller-v1/SELECTORS.json",
+    "bytes": 6302,
+    "mode": 420,
+    "sha256": "83c367b409e8d15e593f0899037655a91aa8466966e1534b97535bef2d842295"
+  },
+  "source_origin": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-native-probe-caller-v1/SOURCE-ORIGIN.json",
+    "bytes": 1261,
+    "mode": 420,
+    "sha256": "90f9ec1b10336cce39d12b6ff01961668f6d7d53342ee82e2ee0e4cfe7c99d2f"
+  },
+  "compiler": "/usr/bin/gcc",
+  "tool_executables": [
+    "/usr/bin/gcc",
+    "/usr/libexec/gcc/x86_64-redhat-linux/11/cc1",
+    "/usr/libexec/gcc/x86_64-redhat-linux/11/collect2",
+    "/usr/bin/as",
+    "/usr/bin/ld",
+    "/usr/libexec/gcc/x86_64-redhat-linux/11/liblto_plugin.so",
+    "/usr/libexec/gcc/x86_64-redhat-linux/11/lto-wrapper",
+    "/usr/bin/python3",
+    "/usr/bin/readelf",
+    "/usr/bin/systemctl",
+    "/bin/bash"
+  ],
+  "link_inputs": [
+    "/usr/lib/gcc/x86_64-redhat-linux/11/crtbegin.o",
+    "/usr/lib/gcc/x86_64-redhat-linux/11/crtend.o",
+    "/usr/lib/gcc/x86_64-redhat-linux/11/libgcc.a",
+    "/usr/lib/gcc/x86_64-redhat-linux/11/libgcc_eh.a",
+    "/usr/lib/gcc/x86_64-redhat-linux/11/libgcc_s.so",
+    "/usr/lib64/crt1.o",
+    "/usr/lib64/crti.o",
+    "/usr/lib64/crtn.o",
+    "/usr/lib64/libc.so",
+    "/usr/lib64/libc.so.6",
+    "/usr/lib64/libc_nonshared.a",
+    "/usr/lib64/libgcc_s.so.1",
+    "/lib64/ld-linux-x86-64.so.2"
+  ],
+  "static_inputs": [
+    {
+      "path": "/usr/bin/gcc",
+      "bytes": 1093144,
+      "mode": 493,
+      "sha256": "546023eae5ff58287b1d987e059d38e2733dfe49eda827282d6942707c4c25d0"
+    },
+    {
+      "path": "/usr/libexec/gcc/x86_64-redhat-linux/11/cc1",
+      "bytes": 28991152,
+      "mode": 493,
+      "sha256": "43d76c430f9bac83a34f06094bd7a8d9d66c1a155cfd978489024afbdaf1faf5"
+    },
+    {
+      "path": "/usr/libexec/gcc/x86_64-redhat-linux/11/collect2",
+      "bytes": 349536,
+      "mode": 493,
+      "sha256": "9520e6fb1ad7d606c35241a6b4032247a492675fb355687830756a6644912f8e"
+    },
+    {
+      "path": "/usr/bin/as",
+      "bytes": 727360,
+      "mode": 493,
+      "sha256": "2870525fb59869f6f4c51cae67ffc6124f6635129db00a7d0818b84f7d069c56"
+    },
+    {
+      "path": "/usr/bin/ld.bfd",
+      "bytes": 1791600,
+      "mode": 493,
+      "sha256": "ac6bbc7393b95278ffa294cbdf18c65b5003d4e15dc805ce24a8146a8a154c42"
+    },
+    {
+      "path": "/usr/libexec/gcc/x86_64-redhat-linux/11/liblto_plugin.so",
+      "bytes": 99496,
+      "mode": 493,
+      "sha256": "41cfbfd1c97419ae2f8a9ff6b1a6eacc0b2253c8dfa26ab3db27b61a1a723be9"
+    },
+    {
+      "path": "/usr/libexec/gcc/x86_64-redhat-linux/11/lto-wrapper",
+      "bytes": 919968,
+      "mode": 493,
+      "sha256": "b7d19a0a3a987a58fa277a47ad8819e2adb46e7f08db03555ea1657bcaef2922"
+    },
+    {
+      "path": "/usr/bin/python3.9",
+      "bytes": 15448,
+      "mode": 493,
+      "sha256": "9cfdf1a01d07dadb394dd2dc9fd8316254c36764076d23dc2c895c8401735576"
+    },
+    {
+      "path": "/usr/bin/ldd",
+      "bytes": 5446,
+      "mode": 493,
+      "sha256": "2e332feed7fe0d65afca81d83d07f997917c07d5c1f1fd5564e98330e78aa0b5"
+    },
+    {
+      "path": "/usr/bin/readelf",
+      "bytes": 683296,
+      "mode": 493,
+      "sha256": "51bc80f3a187e54e0b267fe6e64de09129f7761aafe615177d9d0be2229afcff"
+    },
+    {
+      "path": "/usr/bin/systemctl",
+      "bytes": 330440,
+      "mode": 493,
+      "sha256": "56f571f124b0564f8f971c878ffbc705a24f4c4db5876cf4dccdedade88f3155"
+    },
+    {
+      "path": "/usr/lib/gcc/x86_64-redhat-linux/11/crtbegin.o",
+      "bytes": 2952,
+      "mode": 420,
+      "sha256": "250bfab9298f3ef5c3b9027fd8e674cd30903cf3f91349a56c6bc3b598629d99"
+    },
+    {
+      "path": "/usr/lib/gcc/x86_64-redhat-linux/11/crtend.o",
+      "bytes": 1632,
+      "mode": 420,
+      "sha256": "50a9a7f09866b19579485f1bab9a3d94592b7eb954009936fc9ba47c599208a1"
+    },
+    {
+      "path": "/usr/lib/gcc/x86_64-redhat-linux/11/libgcc.a",
+      "bytes": 3133246,
+      "mode": 420,
+      "sha256": "f5118081c7501f5d16d3ea52038c3445e5d7d971bc53a092b5e37b4cf10d9fbb"
+    },
+    {
+      "path": "/usr/lib/gcc/x86_64-redhat-linux/11/libgcc_eh.a",
+      "bytes": 70272,
+      "mode": 420,
+      "sha256": "73876246041a101c12692c09872669bc6a8f55a338f58bf78538003fc8ab57bf"
+    },
+    {
+      "path": "/usr/lib/gcc/x86_64-redhat-linux/11/libgcc_s.so",
+      "bytes": 195,
+      "mode": 420,
+      "sha256": "1f0e19cc3d3eea1bdcf0a8469f651cd57190ce969e4c6b75c5ad523acdefb459"
+    },
+    {
+      "path": "/usr/lib64/crt1.o",
+      "bytes": 3096,
+      "mode": 420,
+      "sha256": "33df84be5c733e1b00a4cdf2f0820d99ff5cd17c59f0c0935f2c67a4d60fa427"
+    },
+    {
+      "path": "/usr/lib64/crti.o",
+      "bytes": 1800,
+      "mode": 420,
+      "sha256": "d0f6f64378800c817f9ba3a5a6f47e4c9ebef89dcdbc77394e661ca8030c9be8"
+    },
+    {
+      "path": "/usr/lib64/crtn.o",
+      "bytes": 1536,
+      "mode": 420,
+      "sha256": "d468c4d1438bb6c14ff3087a0ec364d4ca0b7cdfe71ab493d04c56bbb3c07a5e"
+    },
+    {
+      "path": "/usr/lib64/libc.so",
+      "bytes": 253,
+      "mode": 420,
+      "sha256": "bc8e2fd8ffcf12e2156395df0a2ea6a0a139937ac835cdc1395b525ded29d7bb"
+    },
+    {
+      "path": "/usr/lib64/libc.so.6",
+      "bytes": 2549352,
+      "mode": 493,
+      "sha256": "d932cb6bc88da10cc709d5b7ecda57a1387b6571331689dba88023b4c0517776"
+    },
+    {
+      "path": "/usr/lib64/libc_nonshared.a",
+      "bytes": 17606,
+      "mode": 420,
+      "sha256": "6bf329c85ea56c6020040c22efc612e417753b33fade52313e8fd5183126ede8"
+    },
+    {
+      "path": "/usr/lib64/libgcc_s-11-20240719.so.1",
+      "bytes": 116408,
+      "mode": 493,
+      "sha256": "3d144b557008c93e4e67567d5dc98cb81cf55187a698d1b4872ce84ba8a26bed"
+    },
+    {
+      "path": "/usr/lib64/ld-linux-x86-64.so.2",
+      "bytes": 938752,
+      "mode": 493,
+      "sha256": "008e34384d4bc082a053ba086588efa1546086ecb863c9464b7269f8928b7577"
+    },
+    {
+      "path": "/usr/bin/bash",
+      "bytes": 1389072,
+      "mode": 493,
+      "sha256": "97995faa249e5706dd0b0373c9da547709bf7349755d5fc8e52f97a4bd04feaf"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/bin/safehermit",
+      "bytes": 29416,
+      "mode": 493,
+      "sha256": "dae61b1819d424ea9928143d728fba6897f45cb619c8164ad87030922130f760"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/scripts/hermit-box-run",
+      "bytes": 42932,
+      "mode": 493,
+      "sha256": "6d924ce3e12c34cdf5d8ca446f0952a9137da786161cac1feef83867bda90639"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/scripts/bounded-run-space",
+      "bytes": 15385,
+      "mode": 493,
+      "sha256": "b17e28257163f7603c7b1462b0e0a9f06ffe5d3d449620488cd95ae0fb45c489"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/.skills/code-review/SKILL.md",
+      "bytes": 3617,
+      "mode": 420,
+      "sha256": "2cd879e25391da1fa13de6d20334a3f387f3171d05b40c075ba5f1f1c10c6b8f"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/ignored/kvm-parity-20260914-codex/next-work/remeasurement-plan.md",
+      "bytes": 23892,
+      "mode": 420,
+      "sha256": "3a73d3873a87f0e4fd23137ba702a69da62c08f1812b14a37753fcbe2197c5f6"
+    },
+    {
+      "path": "/usr/bin/busctl",
+      "bytes": 106664,
+      "mode": 493,
+      "sha256": "9f0bba9343ed701884c7ff46767ffeffffe048de31fda4d8c23c2c6ea2211b6d"
+    },
+    {
+      "path": "/usr/lib64/libsystemd.so.0.43.0",
+      "bytes": 1251104,
+      "mode": 493,
+      "sha256": "ce568412d003dd7e271896e57211d464bcb1a74e76fa4dad706ea418a5847d37"
+    }
+  ],
+  "input_symlinks": [
+    {
+      "path": "/usr/bin/ld",
+      "target": "/etc/alternatives/ld",
+      "mode": 511
+    },
+    {
+      "path": "/usr/bin/python3",
+      "target": "python3.9",
+      "mode": 511
+    },
+    {
+      "path": "/usr/lib64/libgcc_s.so.1",
+      "target": "libgcc_s-11-20240719.so.1",
+      "mode": 511
+    },
+    {
+      "path": "/lib64",
+      "target": "usr/lib64",
+      "mode": 511
+    },
+    {
+      "path": "/bin",
+      "target": "usr/bin",
+      "mode": 511
+    },
+    {
+      "path": "/etc/alternatives/ld",
+      "target": "/usr/bin/ld.bfd",
+      "mode": 511
+    }
+  ],
+  "flags": [
+    "-std=gnu11",
+    "-O2",
+    "-g",
+    "-Wall",
+    "-Wextra",
+    "-Wpedantic",
+    "-Wformat=2",
+    "-Werror",
+    "-fno-pie",
+    "-no-pie"
+  ],
+  "private_target": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-native-probe-caller-v1/qualification-v1/target",
+  "private_lease": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-native-probe-caller-v1/qualification-v1/private.lease",
+  "private_lease_state": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-native-probe-caller-v1/qualification-v1/lease-state",
+  "no_shared_lane_lease": true,
+  "limits": {
+    "compiler_cpu_usec": 10000000,
+    "compiler_wall_seconds": 20,
+    "probe_cpu_usec": 30000000,
+    "probe_wall_seconds": 60,
+    "memory_bytes": 17179869184,
+    "swap_bytes": 0,
+    "lethal_stderr_bytes": 16777216,
+    "live_stdout_samples_bytes": 67108864,
+    "phase_read_bytes": 16777216,
+    "free_floor_bytes": 107374182400
+  },
+  "scope": "42 separate native architectural cases; not Rust tests, VM controls, deterministic repeat, or Hermit parity",
+  "query_script_note": "ldd is a held shell script with /usr/bin/bash interpreter (also bound through the /bin/bash alias), not a dynamic ELF. Bind the script as a static query input and its actual interpreter/loader separately; do not run ldd on the script.",
+  "absent_inputs": [
+    "/usr/lib/gcc/x86_64-redhat-linux/11/specs"
+  ],
+  "supervision_input_proof": [
+    {
+      "original": {
+        "path": "/home/newton/work/dev-hermit/bin/safehermit",
+        "bytes": 29416,
+        "sha256": "dae61b1819d424ea9928143d728fba6897f45cb619c8164ad87030922130f760"
+      },
+      "current": {
+        "path": "/home/newton/work/dev-hermit/bin/safehermit",
+        "bytes": 29416,
+        "mode": 493,
+        "sha256": "dae61b1819d424ea9928143d728fba6897f45cb619c8164ad87030922130f760"
+      }
+    },
+    {
+      "original": {
+        "path": "/home/newton/work/dev-hermit/scripts/hermit-box-run",
+        "bytes": 42932,
+        "sha256": "6d924ce3e12c34cdf5d8ca446f0952a9137da786161cac1feef83867bda90639"
+      },
+      "current": {
+        "path": "/home/newton/work/dev-hermit/scripts/hermit-box-run",
+        "bytes": 42932,
+        "mode": 493,
+        "sha256": "6d924ce3e12c34cdf5d8ca446f0952a9137da786161cac1feef83867bda90639"
+      }
+    },
+    {
+      "original": {
+        "path": "/home/newton/work/dev-hermit/scripts/bounded-run-space",
+        "bytes": 15385,
+        "sha256": "b17e28257163f7603c7b1462b0e0a9f06ffe5d3d449620488cd95ae0fb45c489"
+      },
+      "current": {
+        "path": "/home/newton/work/dev-hermit/scripts/bounded-run-space",
+        "bytes": 15385,
+        "mode": 493,
+        "sha256": "b17e28257163f7603c7b1462b0e0a9f06ffe5d3d449620488cd95ae0fb45c489"
+      }
+    },
+    {
+      "original": {
+        "path": "/home/newton/work/dev-hermit/.skills/code-review/SKILL.md",
+        "bytes": 3617,
+        "sha256": "2cd879e25391da1fa13de6d20334a3f387f3171d05b40c075ba5f1f1c10c6b8f"
+      },
+      "current": {
+        "path": "/home/newton/work/dev-hermit/.skills/code-review/SKILL.md",
+        "bytes": 3617,
+        "mode": 420,
+        "sha256": "2cd879e25391da1fa13de6d20334a3f387f3171d05b40c075ba5f1f1c10c6b8f"
+      }
+    },
+    {
+      "original": {
+        "path": "/home/newton/work/dev-hermit/ignored/kvm-parity-20260914-codex/next-work/remeasurement-plan.md",
+        "bytes": 23892,
+        "sha256": "3a73d3873a87f0e4fd23137ba702a69da62c08f1812b14a37753fcbe2197c5f6"
+      },
+      "current": {
+        "path": "/home/newton/work/dev-hermit/ignored/kvm-parity-20260914-codex/next-work/remeasurement-plan.md",
+        "bytes": 23892,
+        "mode": 420,
+        "sha256": "3a73d3873a87f0e4fd23137ba702a69da62c08f1812b14a37753fcbe2197c5f6"
+      }
+    },
+    {
+      "original": {
+        "path": "/usr/bin/busctl",
+        "bytes": 106664,
+        "sha256": "9f0bba9343ed701884c7ff46767ffeffffe048de31fda4d8c23c2c6ea2211b6d"
+      },
+      "current": {
+        "path": "/usr/bin/busctl",
+        "bytes": 106664,
+        "mode": 493,
+        "sha256": "9f0bba9343ed701884c7ff46767ffeffffe048de31fda4d8c23c2c6ea2211b6d"
+      }
+    },
+    {
+      "original": {
+        "path": "/usr/bin/systemctl",
+        "bytes": 330440,
+        "sha256": "56f571f124b0564f8f971c878ffbc705a24f4c4db5876cf4dccdedade88f3155"
+      },
+      "current": {
+        "path": "/usr/bin/systemctl",
+        "bytes": 330440,
+        "mode": 493,
+        "sha256": "56f571f124b0564f8f971c878ffbc705a24f4c4db5876cf4dccdedade88f3155"
+      }
+    },
+    {
+      "original": {
+        "path": "/usr/bin/python3",
+        "bytes": 15448,
+        "sha256": "9cfdf1a01d07dadb394dd2dc9fd8316254c36764076d23dc2c895c8401735576"
+      },
+      "current": {
+        "path": "/usr/bin/python3.9",
+        "bytes": 15448,
+        "mode": 493,
+        "sha256": "9cfdf1a01d07dadb394dd2dc9fd8316254c36764076d23dc2c895c8401735576"
+      }
+    },
+    {
+      "original": {
+        "path": "/usr/lib64/libsystemd.so.0.43.0",
+        "bytes": 1251104,
+        "sha256": "ce568412d003dd7e271896e57211d464bcb1a74e76fa4dad706ea418a5847d37"
+      },
+      "current": {
+        "path": "/usr/lib64/libsystemd.so.0.43.0",
+        "bytes": 1251104,
+        "mode": 493,
+        "sha256": "ce568412d003dd7e271896e57211d464bcb1a74e76fa4dad706ea418a5847d37"
+      }
+    }
+  ]
+}

@@ -1,0 +1,43 @@
+{
+  "status": "Append-only source clarification; no implementation or execution",
+  "base": "000c15a1161ea2d58749431b5ddaaa97f7aa37d5",
+  "original": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/timer-integration-review-v27/source/hermit-cli/src/lib.rs",
+    "bytes": 205350,
+    "sha256": "4f6d6c189d80b3db50426a35158ffa82cca81f0a392f8032b50d6e2bbb40e155"
+  },
+  "coverage": "CLI lib.rs assignment near2406 plus already-bound scheduler1193\u20131201/2244\u20132259 and Reverie vm2175\u20132201",
+  "earlier_readback_unchanged": true,
+  "records": [
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/process-signal-publication-design-v1/REPORT.md",
+      "bytes": 20568,
+      "sha256": "c078791826f1e3f166615ff12f1513091cad58e14d1f1d0f3dbd4c2f42afbc26"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/process-signal-publication-design-v1/API.md",
+      "bytes": 6519,
+      "sha256": "31273ea52e550407c143448f18bb50b579cd2674e703abd043ff7002bade569e"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/process-signal-publication-design-v1/INPUTS.json",
+      "bytes": 21920,
+      "sha256": "79ec818293123bb48c16be292c22873be65cd9c5e19472f9fa653d6c62267ef8"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/process-signal-publication-design-v1/READBACK.json",
+      "bytes": 9663,
+      "sha256": "f6a26d5bd776457956ebe49df2c938dd8ab5e84ceaa6e9acd60347998e207e14"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/process-signal-publication-design-v1/CHILD_COMPLETION_ADDENDUM.md",
+      "bytes": 4525,
+      "sha256": "45a6b247867cf5166d791b5c47b21a3773cfd3872b9ff13402a565f0d202d684"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/process-signal-publication-design-v1/source/hermit/hermit-cli/src/lib.rs",
+      "bytes": 205350,
+      "sha256": "4f6d6c189d80b3db50426a35158ffa82cca81f0a392f8032b50d6e2bbb40e155"
+    }
+  ]
+}

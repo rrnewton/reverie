@@ -1,0 +1,80 @@
+diff --git a/reverie-kvm/src/cpuid_instruction.rs b/reverie-kvm/src/cpuid_instruction.rs
+new file mode 100644
+--- /dev/null
++++ b/reverie-kvm/src/cpuid_instruction.rs
+@@ -0,0 +1,379 @@
++/*
++ * Copyright (c) Meta Platforms, Inc. and affiliates.
++ *
++ * This source code is licensed under the BSD-style license found in the
++ * LICENSE file in the root directory of this source tree.
++ */
++
++//! CPL3 CPUID fault admission and instruction retirement. The existing Tool
++//! callback owns the result and any logical-time charge; this module adds none.
++
++use kvm_bindings::Msrs;
++use kvm_bindings::kvm_msr_entry;
++use kvm_bindings::kvm_regs;
++use kvm_ioctls::Kvm;
++use kvm_ioctls::VcpuFd;
++use reverie::CpuIdResult;
++
++use crate::Error;
++use crate::Result;
++
++const PLATFORM_INFO: u32 = 0xce;
++const MISC_FEATURES_ENABLES: u32 = 0x140;
++const SUPPORT: u64 = 1 << 31;
++const ENABLE: u64 = 1;
++
++#[derive(Clone, Copy)]
++struct MsrState {
++    platform: u64,
++    features: u64,
++}
++
++/// State belongs to one real vCPU, never to a process snapshot or a Tool type.
++/// Retain the original before the first write, including after a failed rollback.
++#[derive(Default)]
++pub(crate) struct Interception {
++    original: Option<MsrState>,
++    enabled: bool,
++}
++
++fn entry(index: u32, data: u64) -> kvm_msr_entry {
++    kvm_msr_entry {
++        index,
++        data,
++        ..Default::default()
++    }
++}
++
++fn exact_count(operation: &str, expected: usize, actual: usize) -> Result<()> {
++    if actual != expected {
++        return Err(Error::UnexpectedVcpuExit(format!(
++            "CPUID interception {operation}: transferred {actual} of {expected} MSRs"
++        )));
++    }
++    Ok(())
++}
++
++fn read_state(vcpu: &VcpuFd) -> Result<MsrState> {
++    let mut values =
++        Msrs::from_entries(&[entry(PLATFORM_INFO, 0), entry(MISC_FEATURES_ENABLES, 0)])
++            .expect("fixed CPUID MSR read fits");
++    exact_count("read", 2, vcpu.get_msrs(&mut values)?)?;
++    Ok(MsrState {
++        platform: values.as_slice()[0].data,
++        features: values.as_slice()[1].data,
++    })
++}
++
++fn write_one(vcpu: &VcpuFd, index: u32, value: u64) -> Result<()> {
++    let values = Msrs::from_entries(&[entry(index, value)]).expect("one CPUID MSR write fits");
++    exact_count(&format!("write {index:#x}"), 1, vcpu.set_msrs(&values)?)
++}
++
++impl Interception {
++    pub(crate) fn enabled(&self) -> bool {
++        self.enabled

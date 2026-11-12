@@ -1,0 +1,48 @@
+{
+  "schema": 2,
+  "base": "f97b7be1de4e2ef10ecc24cee5d8cc47f2fd254f",
+  "source_patch": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/timer-integration-review-response-20260918/frozen-v2/SOURCE.patch",
+    "bytes": 159872,
+    "sha256": "09efb96b9fda442f36cb22f772b94db50cf42ecbee125738063752cd57917979"
+  },
+  "delta_patch": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/timer-integration-review-response-20260918/frozen-v2/DELTA.patch",
+    "bytes": 64979,
+    "sha256": "fe292a6f01ae755b80fc9c2771dec035090aadf909d208622b5f860f8d37eea3"
+  },
+  "files": [
+    {
+      "path": "reverie/src/guest.rs",
+      "bytes": 24865,
+      "sha256": "206a31ecb2ed85f4f260c7a265a5f718aaab3e1600b4eb1bf95befd75b9112a2"
+    },
+    {
+      "path": "reverie/src/lib.rs",
+      "bytes": 4581,
+      "sha256": "59640c96cd9dae86dd75bf40edff3f282ab1a45a30db5bcef7ec87cc62d7c59c"
+    },
+    {
+      "path": "reverie/src/signal.rs",
+      "bytes": 10358,
+      "sha256": "cb5e56347dd7651e9e10f7ff1a226c0f1fde5da55f901096cac7ee342107d33d"
+    },
+    {
+      "path": "reverie/src/signal_observation.rs",
+      "bytes": 7162,
+      "sha256": "83361a50d825b11df24649349f45d1297b7edf0c851f78b9ae04335e65b7132a"
+    },
+    {
+      "path": "reverie/src/tool.rs",
+      "bytes": 25087,
+      "sha256": "d4e11629f795ed773f428ff72c1ac6067169de187f4f1b038722834c4c5de29d"
+    }
+  ],
+  "early_inventory": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/timer-integration-review-response-20260918/API_V2.json",
+    "bytes": 716,
+    "sha256": "4c2f03782a8484a665800ee2e3fb30d198b8e4ed885ea649736bc976022f3683"
+  },
+  "change": "PreparedSignalToken and ParkedSignalFailureContext carry full CallbackSignalSite. SignalDequeue and Tool/Guest method declarations unchanged from frozen-v1. Internal FIFO owner and capacity preflight are private KVM implementation.",
+  "hermit_contract": "Process-global contiguous sequence; sender owns each removal; no notification across a failed predecessor; no speculative sequence buffering."
+}

@@ -1,0 +1,146 @@
+{
+  "syscall_number": 1,
+  "raw_arguments": [
+    4294967297,
+    4202496,
+    3,
+    1667330167,
+    17,
+    39030
+  ],
+  "raw_fd_hex": "0x100000001",
+  "argument_width_bits": 64,
+  "raw_signed_rax": 3,
+  "stdout": "616263",
+  "stderr": "",
+  "native_exit_status": 0,
+  "exact_three_bytes_written": true,
+  "full_64_bit_rdi_in_disassembly": true,
+  "elf_before": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/captured-write-review-followup-v1/native-write.elf",
+    "bytes": 9376,
+    "sha256": "435597d7572f85b47492f782d7cbca8c6ad0bedb006ddd61ff28cf688ce389ba"
+  },
+  "elf_after": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/captured-write-review-followup-v1/native-write.elf",
+    "bytes": 9376,
+    "sha256": "435597d7572f85b47492f782d7cbca8c6ad0bedb006ddd61ff28cf688ce389ba"
+  },
+  "record": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/captured-write-review-followup-v1/native-raw-record.bin",
+    "bytes": 72,
+    "sha256": "643066f7685fa89fdc46b665828733b83b934a81106a643ea5dbd03d0123c0ca"
+  },
+  "source": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/captured-write-review-followup-v1/native-write.S",
+    "bytes": 913,
+    "sha256": "0161ed905be4136ee03b6afcf46d14d5d807cef0b008e363ef3840110f1de766"
+  },
+  "report_fd": 3,
+  "phases": [
+    {
+      "label": "assemble",
+      "argv": [
+        "/usr/bin/as",
+        "--64",
+        "-o",
+        "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/captured-write-review-followup-v1/native-write.o",
+        "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/captured-write-review-followup-v1/native-write.S"
+      ],
+      "limits": {
+        "cpu_seconds": 2,
+        "wall_seconds": 5,
+        "address_space_bytes": 268435456,
+        "file_size_bytes": 65536,
+        "stdout_limit_bytes": 65536,
+        "stderr_limit_bytes": 65536,
+        "core_bytes": 0
+      },
+      "raw_status": 0,
+      "timed_out": false,
+      "wall_seconds": 0.005147292977198958,
+      "user_cpu_seconds": 0.0010199999999999999,
+      "system_cpu_seconds": 0.0030589999999999997,
+      "stdout": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/captured-write-review-followup-v1/assemble.stdout",
+        "bytes": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "stderr": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/captured-write-review-followup-v1/assemble.stderr",
+        "bytes": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "process_id": 1912169,
+      "scope": "Native assembly/link or direct Linux syscall only; no Hermit/KVM execution"
+    },
+    {
+      "label": "link",
+      "argv": [
+        "/usr/bin/ld.bfd",
+        "--build-id=sha1",
+        "-o",
+        "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/captured-write-review-followup-v1/native-write.elf",
+        "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/captured-write-review-followup-v1/native-write.o"
+      ],
+      "limits": {
+        "cpu_seconds": 2,
+        "wall_seconds": 5,
+        "address_space_bytes": 268435456,
+        "file_size_bytes": 65536,
+        "stdout_limit_bytes": 65536,
+        "stderr_limit_bytes": 65536,
+        "core_bytes": 0
+      },
+      "raw_status": 0,
+      "timed_out": false,
+      "wall_seconds": 0.004979579942300916,
+      "user_cpu_seconds": 0.001762,
+      "system_cpu_seconds": 0.0008810000000000003,
+      "stdout": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/captured-write-review-followup-v1/link.stdout",
+        "bytes": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "stderr": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/captured-write-review-followup-v1/link.stderr",
+        "bytes": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "process_id": 1912172,
+      "scope": "Native assembly/link or direct Linux syscall only; no Hermit/KVM execution"
+    },
+    {
+      "label": "native-write",
+      "argv": [
+        "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/captured-write-review-followup-v1/native-write.elf"
+      ],
+      "limits": {
+        "cpu_seconds": 1,
+        "wall_seconds": 3,
+        "address_space_bytes": 16777216,
+        "file_size_bytes": 4096,
+        "stdout_limit_bytes": 4096,
+        "stderr_limit_bytes": 4096,
+        "core_bytes": 0
+      },
+      "raw_status": 0,
+      "timed_out": false,
+      "wall_seconds": 0.0019391998648643494,
+      "user_cpu_seconds": 0.0,
+      "system_cpu_seconds": 0.0011789999999999995,
+      "stdout": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/captured-write-review-followup-v1/native-write.stdout",
+        "bytes": 3,
+        "sha256": "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+      },
+      "stderr": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/captured-write-review-followup-v1/native-write.stderr",
+        "bytes": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "process_id": 1912181,
+      "scope": "Native assembly/link or direct Linux syscall only; no Hermit/KVM execution"
+    }
+  ]
+}

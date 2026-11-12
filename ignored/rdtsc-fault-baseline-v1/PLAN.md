@@ -1,0 +1,7 @@
+# One unchanged predecessor fault control — prepared, not launched
+
+Run exactly `static_elf_faults_are_reported_by_direct_and_tool_runtimes` from the retained source-qualified composition-v3 / landed-tree-equivalent585 static ELF. The actual old inventory lists it once. The executable is a distinct-inode mode0555 content-identical copy; current loader binding and complete original source/tool/dependency/compile receipt inputs remain bound. No Cargo or source compilation occurs. The original observed phase/common/lease/observer code and 30 CPU / 60 wall bounds are unchanged; only phase paths, exact selector and temporary directories change. Fresh SCM state is bound.
+
+This test first runs direct UD2 and then Tool UD2, both using the old exact top-level GuestException helper. Later PF/GP cases must not be credited if an earlier assertion fails. Its old KVM-open path prints a skip and returns rather than consulting REVERIE_REQUIRE_KVM; therefore this evidence requires independent raw stderr readback with no `skipping KVM exception test`, or it is explicitly unexecuted regardless of libtest's event. An actual reached panic/raw101 cannot be confused with that skip. No assertion, fixture or library byte was changed.
+
+After root inspects the exact plan, use PYTHONOPTIMIZE=0 /usr/bin/python3 -B qualification-v1/phase.py launch <absolute plan> <exact SHA>. Retain raw result/stdio/accounting and terminal lease completion. No retry, build, production fix, callback success or unrun branch is inferred. This preparation does not execute the test or claim a lease.

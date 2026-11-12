@@ -1,0 +1,60 @@
++        argv=[cargo,'test','--offline','--locked','-p','reverie-kvm','--lib','--test','static_elf','--test','vmcall','--test','read_clock','--no-run','--message-format=json']
++        artifact_selectors=[dict(id='lib',target='reverie_kvm',kind=['lib']),dict(id='static',target='static_elf',kind=['test']),dict(id='vmcall',target='vmcall',kind=['test']),dict(id='read-clock',target='read_clock',kind=['test'])]
+     else:
+         qualified=json_read(HERE/'controls/compile/result.json');require(qualified['accepted']and qualified['terminal_authenticated'],'compile did not qualify')
+         selection=json_read(HERE/'SELECTORS.json')
+         artifact_id=name.removeprefix('list-')if kind=='list'else selection['groups'][name]['artifact']
+-        artifact=json_read(HERE/'controls/compile/artifacts.json')[artifact_id]['file'];check_file(artifact,executable=True)
+-        inputs += [file_record(HERE/'controls/compile/result.json'),file_record(HERE/'controls/compile/artifacts.json'),artifact]
++        artifact=json_read(HERE/'retained-binaries/ARTIFACTS.json')[artifact_id]['file'];check_file(artifact,executable=True)
++        inputs += [file_record(HERE/'controls/compile/result.json'),file_record(HERE/'retained-binaries/ARTIFACTS.json'),artifact]
+         extra,symlinks=loader('test-'+artifact_id,artifact,env);inputs+=extra;links+=symlinks
+         if kind=='list':
+             selected=sorted({test for group in selection['groups'].values()if group['artifact']==artifact_id for test in group['names']})
+@@ -100,7 +110,8 @@
+             argv=[artifact['path'],*selected,'--exact','--test-threads=1','--nocapture','-Z','unstable-options','--format=json']
+     if(HERE/'dependency-symlinks.json').exists():
+         inputs.append(file_record(HERE/'dependency-symlinks.json'));links+=json_read(HERE/'dependency-symlinks.json')
+-    target=OWNER/'target/publication-fd-stdin-v3-cold-v1';t=target.stat();lease=OWNER/'ignored/timer-integration-20260918/lane.lease';l=lease.stat();large=kind in('metadata','compile','check')
++    target=OWNER/'target/rdtsc-recovery-v1-cold-v1';t=target.stat();lease=OWNER/'ignored/timer-integration-20260918/lane.lease';l=lease.stat();large=kind in('metadata','compile','check')
++    require([t.st_dev,t.st_ino,t.st_uid]==admission['identity'], 'fresh target identity changed')
+     plan=dict(path=str(HERE/(name+'-plan.json')),name=name,kind=kind,argv=argv,selected=selected,artifact_selectors=artifact_selectors,
+               environment=env,scm=scm(),source_manifest=file_record(HERE/'source-manifest.json'),inputs=list({r['path']:r for r in inputs}.values()),
+               input_symlinks=list({r['path']:r for r in links}.values()),absent_inputs=sorted(set(absent)),
+@@ -108,7 +119,7 @@
+               lease=dict(path=str(lease),owner_slot=str(OWNER),identity=[l.st_dev,l.st_ino,l.st_uid],state_directory=str(OWNER/'ignored/timer-integration-20260918/lease-state')),
+               output=str(HERE/'observer'/name),control=str(HERE/'controls'/name),
+               limits=dict(aggregate_cpu_usec=600000000 if large else 30000000,wall_seconds=900 if large else 60,lethal_stderr_bytes=16777216,live_stdout_samples_bytes=67108864,phase_read_bytes=16777216,memory_bytes=17179869184,swap_bytes=0,free_floor_bytes=107374182400),
+-              scope='Inactive publisher and descriptor-entry composition; additive retirement/poison and unchanged unit/VM controls. No activation, FIFO or timer completion claim')
++              scope='CPL3 timestamp recovery: exact 30 declarations and existing public vmcall/clock neighbors; no public real-mode interception, timer completion or 75-cell parity claim from component phases')
+     if(HERE/'dependency-inputs.json').exists():plan['dependencies']=file_record(HERE/'dependency-inputs.json')
+     write_new(Path(plan['path']),plan);print(plan['path'],hashlib.sha256(Path(plan['path']).read_bytes()).hexdigest())
+ if __name__=='__main__':main()
+--- /dev/null
++++ candidate/admit_target.py
+@@ -0,0 +1,20 @@
++#!/usr/bin/python3
++"""Create only the approved empty target and phase directories, after authorization."""
++import os
++from pathlib import Path
++from common import json_read, require, write_new
++HERE=Path(__file__).resolve().parent
++OWNER=HERE.parents[2]
++setup=json_read(HERE/'SETUP.json')
++target=Path(setup['target'])
++require(target==OWNER/'target/rdtsc-recovery-v1-cold-v1','wrong target')
++require(not target.exists() and not target.is_symlink(),'target already exists; preserve and refuse')
++require(target.parent.is_dir() and not target.parent.is_symlink(),'target parent absent or aliased')
++target.mkdir(mode=0o700)
++s=target.stat()
++require(s.st_uid==os.getuid() and (s.st_mode&0o777)==0o700 and not list(target.iterdir()),'target creation binding')
++write_new(HERE/'TARGET-ADMISSION.json',dict(path=str(target),identity=[s.st_dev,s.st_ino,s.st_uid],mode=s.st_mode&0o777,initially_empty=True,imports=[],created_by=str(Path(__file__).resolve())))
++for directory in [HERE/'tmp',HERE/'cache',HERE/'controls',HERE/'loader',HERE.parent/'launch']:
++    require(not directory.exists() and not directory.is_symlink(),'phase destination already exists: '+str(directory))
++    directory.mkdir(mode=0o700)
++print(str(HERE/'TARGET-ADMISSION.json'))
+--- /dev/null
++++ candidate/retain_artifacts.py
+@@ -0,0 +1,50 @@
++#!/usr/bin/python3
++"""Bind fresh Cargo output and copy immutable harnesses; never execute an artifact."""

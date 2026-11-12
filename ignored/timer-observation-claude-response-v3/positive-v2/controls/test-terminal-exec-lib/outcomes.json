@@ -1,0 +1,48 @@
+{
+  "started": [
+    "runtime::failure_tests::caught_worker_panic_publishes_before_retirement_and_pending_rpc_join",
+    "runtime::failure_tests::failure_precedes_ready_callback_and_keeps_child_start_gate_closed",
+    "vm::tests::exec_teardown_disposition_survives_unstarted_child_cleanup",
+    "vm::tests::worker_exec_action_preserves_cancelled_group_before_parking",
+    "vm::tests::worker_exec_action_preserves_cancelled_group_without_parking"
+  ],
+  "ended": [
+    {
+      "type": "test",
+      "name": "runtime::failure_tests::caught_worker_panic_publishes_before_retirement_and_pending_rpc_join",
+      "event": "ok"
+    },
+    {
+      "type": "test",
+      "name": "runtime::failure_tests::failure_precedes_ready_callback_and_keeps_child_start_gate_closed",
+      "event": "ok"
+    },
+    {
+      "type": "test",
+      "name": "vm::tests::exec_teardown_disposition_survives_unstarted_child_cleanup",
+      "event": "ok"
+    },
+    {
+      "type": "test",
+      "name": "vm::tests::worker_exec_action_preserves_cancelled_group_before_parking",
+      "event": "ok"
+    },
+    {
+      "type": "test",
+      "name": "vm::tests::worker_exec_action_preserves_cancelled_group_without_parking",
+      "event": "ok"
+    }
+  ],
+  "suites": [
+    {
+      "type": "suite",
+      "event": "ok",
+      "passed": 5,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filtered_out": 481,
+      "exec_time": 0.177846678
+    }
+  ]
+}

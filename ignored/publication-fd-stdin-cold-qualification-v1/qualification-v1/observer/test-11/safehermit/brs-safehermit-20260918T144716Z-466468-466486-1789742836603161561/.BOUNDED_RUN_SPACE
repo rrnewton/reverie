@@ -1,0 +1,5 @@
+bounded-run-space/v1
+directory=/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/publication-fd-stdin-cold-qualification-v1/qualification-v1/observer/test-11/safehermit/brs-safehermit-20260918T144716Z-466468-466486-1789742836603161561
+device_inode=8388781:256
+subvolume_id=2441
+limit_bytes=8000000000

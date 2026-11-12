@@ -1,0 +1,80 @@
++        ThreadOwnership::Tool,
++    );
++    assert_eq!(status, 0);
++    let calls = log.calls.lock().unwrap();
++    assert_eq!(calls.len(), 3);
++    assert!(
++        calls
++            .iter()
++            .all(|call| (call.0.as_raw(), call.1, call.2) == (1, 7, 2))
++    );
++    assert!(
++        calls.windows(2).all(|pair| pair[1].3 > pair[0].3),
++        "guest comparison branches must advance the real guest clock"
++    );
++}
++
++#[test]
++fn cpuid_subscription_keeps_unrelated_locked_overlength_and_debug_faults_exact() {
++    let mut overlong = vec![0x66; 14];
++    overlong.extend_from_slice(&[0x0f, 0xa2]);
++    for (code, vector, rip, calls) in [
++        (vec![0xf0, 0x0f, 0xa2], 6, LOAD_ADDRESS, 0),
++        (overlong, 13, LOAD_ADDRESS, 0),
++        (vec![0xfa], 13, LOAD_ADDRESS, 0),
++        (vec![0x0f, 0x0b], 6, LOAD_ADDRESS, 0),
++        (
++            vec![
++                0x9c, 0x48, 0x81, 0x0c, 0x24, 0x00, 0x01, 0, 0, 0x9d, 0x0f, 0xa2,
++            ],
++            1,
++            LOAD_ADDRESS + 12,
++            1,
++        ),
++    ] {
++        let mut backend = KvmBackend::new(MEMORY_SIZE).unwrap();
++        backend
++            .install_static_elf(&static_elf(&code), "/cpuid-fault")
++            .unwrap();
++        let completion = futures::executor::block_on(
++            backend.run_static_elf_with_tool_completion::<CpuidTool>((true, 0), true),
++        )
++        .unwrap();
++        let error = completion.result.unwrap_err();
++        let Error::GuestException {
++            vector: actual_vector,
++            instruction_pointer: actual_rip,
++            ..
++        } = unwrap_shared_guest_exception(error)
++        else {
++            panic!("exact guest exception required");
++        };
++        assert_eq!((actual_vector, actual_rip), (vector, rip));
++        assert_eq!(completion.global_state.calls.lock().unwrap().len(), calls);
++    }
++}
++
++fn cpuid_clone_program() -> Vec<u8> {
++    fn append_root_read(code: &mut Vec<u8>, failures: &mut Vec<usize>) {
++        code.extend_from_slice(&[0x0f, 0xa2]); // cpuid
++        code.push(0x3d); // cmp eax, expected low word
++        code.extend_from_slice(&(RDTSC_SENTINEL as u32).to_le_bytes());
++        append_jne_failure(code, failures);
++        code.extend_from_slice(&[0x81, 0xfa]); // cmp edx, expected high word
++        code.extend_from_slice(&((RDTSC_SENTINEL >> 32) as u32).to_le_bytes());
++        append_jne_failure(code, failures);
++    }
++
++    const CHILD_TID: u64 = LOAD_ADDRESS + 0x1800;
++    const CHILD_RESULT: u64 = LOAD_ADDRESS + 0x1808;
++    const CHILD_DONE: u64 = LOAD_ADDRESS + 0x1810;
++    const CHILD_STACK: u64 = LOAD_ADDRESS + 0x1900;
++    const CHILD_STACK_SIZE: u64 = 0x600;
++    let flags = libc::CLONE_VM as u64
++        | libc::CLONE_FS as u64
++        | libc::CLONE_FILES as u64
++        | libc::CLONE_SIGHAND as u64
++        | libc::CLONE_THREAD as u64
++        | libc::CLONE_SYSVSEM as u64
++        | libc::CLONE_CHILD_SETTID as u64
++        | libc::CLONE_CHILD_CLEARTID as u64;

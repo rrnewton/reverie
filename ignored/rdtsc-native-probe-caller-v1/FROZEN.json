@@ -1,0 +1,47 @@
+{
+  "status": "prepared-only immutable packet",
+  "artifacts": [
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-native-probe-caller-v1/TARGET.json",
+      "bytes": 4278,
+      "mode": 420,
+      "sha256": "41500365a8f2672e33e8937d9491ee74b183ddd69b794054e7a1fd68284007cf"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-native-probe-caller-v1/INPUTS.json",
+      "bytes": 17800,
+      "mode": 420,
+      "sha256": "f934ed939afe10d1220fac6d33b35e6ee6df7e63cf96884bd4ad4496daebf2ff"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-native-probe-caller-v1/PLAN.md",
+      "bytes": 8582,
+      "mode": 420,
+      "sha256": "fbbd5ed20f6d8de3ab1b0ab167abb9878ee67de5e60200382037eefbcacf20d9"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-native-probe-caller-v1/CALLER.patch",
+      "bytes": 56862,
+      "mode": 420,
+      "sha256": "ab1340ffd9cf625be001875653dcbae1288a7ddeae81170e8e4c2bff57ba0868"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-native-probe-caller-v1/EXECUTION.json",
+      "bytes": 1349,
+      "mode": 420,
+      "sha256": "e5a3dc8f5b259ff0f9ea02a1b497eb9addf3e2d67fa6cf57f8353ee6e2b6085f"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-native-probe-caller-v1/READBACK.json",
+      "bytes": 4231,
+      "mode": 420,
+      "sha256": "4b567883a1e55cf956e7ef5000b4ab4aec1acdf9c85c59d564a12cb91eb76993"
+    }
+  ],
+  "caller_inputs": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-native-probe-caller-v1/qualification-v1/CALLER-INPUTS.json",
+    "bytes": 5747,
+    "mode": 420,
+    "sha256": "371b8bbb1bb9532c665cd6aa886cf820d224bbad5d3628d3cea21c71c4fd86c8"
+  }
+}

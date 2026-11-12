@@ -1,0 +1,48 @@
++import json,os
++from pathlib import Path
++from common import check_file,digest,file_record,json_read,read,require,write_new
++from phase import check
++HERE=Path(__file__).resolve().parent
++REPO=Path(json_read(HERE/'SETUP.json')['source_root'])
++result_path=HERE/'controls/compile/result.json'
++result=json_read(result_path)
++require(result['accepted'] is True and result['terminal_authenticated'] is True and result['inputs_unchanged'] is True and result['raw_status']==0,'compile did not qualify')
++plan_path=HERE/'compile-plan.json';plan=json_read(plan_path)
++require(digest(plan_path)==result['plan_sha256'],'compile plan mismatch')
++check(plan)
++raw_path=Path(plan['output'])/'stdout'
++rows=[json.loads(line)for line in read(raw_path).splitlines()]
++linked=[r for r in rows if r.get('reason')=='compiler-artifact' and r.get('manifest_path')==str(REPO/'reverie-kvm/Cargo.toml') and r.get('target',{}).get('name')=='reverie_kvm' and r.get('target',{}).get('kind')==['lib'] and r.get('profile',{}).get('test') is False]
++require(len(linked)==1 and linked[0].get('fresh') is False,'linked non-test KVM library is absent, ambiguous or reused')
++rlibs=[Path(p)for p in linked[0]['filenames']if p.endswith('.rlib')]
++require(len(rlibs)==1 and rlibs[0].is_relative_to(Path(plan['target']['path'])) and rlibs[0].resolve()==rlibs[0],'linked library path differs')
++linked_file=file_record(rlibs[0])
++originals=json_read(HERE/'controls/compile/artifacts.json')
++require(set(originals)=={'lib','static','vmcall','read-clock'},'wrong four harnesses')
++predecessor=json_read(HERE/'PREDECESSOR-ELFS.json')
++retained=HERE/'retained-binaries';retained.mkdir(mode=0o700)
++artifacts={};copies=[]
++for artifact_id,row in originals.items():
++    cargo=row['cargo_artifact'];original=row['file']
++    require(cargo.get('fresh') is False,'selected harness reused: '+artifact_id)
++    require(cargo['manifest_path']==str(REPO/'reverie-kvm/Cargo.toml'),'wrong Cargo source manifest')
++    check_file(original,executable=True)
++    if artifact_id in predecessor['hashes']:
++        require(original['sha256']!=predecessor['hashes'][artifact_id],'selected harness equals predecessor bytes')
++    source=Path(original['path']);copy=retained/(artifact_id+'.elf')
++    with source.open('rb')as src,copy.open('xb')as dst:
++        require(src.read(4)==b'\x7fELF','source harness not ELF');src.seek(0)
++        while chunk:=src.read(1024**2):dst.write(chunk)
++        dst.flush();os.fsync(dst.fileno())
++    copy.chmod(0o555)
++    actual=file_record(copy)
++    require(actual['sha256']==original['sha256'] and actual['bytes']==original['bytes'],'copy content differs')
++    require((source.stat().st_dev,source.stat().st_ino)!=(copy.stat().st_dev,copy.stat().st_ino),'copy aliases target inode')
++    check_file(original,executable=True)
++    artifacts[artifact_id]=dict(cargo_artifact=cargo,file=actual)
++    copies.append(dict(id=artifact_id,original=original,retained=actual,distinct_inode=True))
++check(plan)
++binding=dict(compile_plan=file_record(plan_path),compile_result=file_record(result_path),cargo_output=file_record(raw_path),original_artifacts=file_record(HERE/'controls/compile/artifacts.json'),source_manifest=plan['source_manifest'],linked_library=dict(cargo_artifact=linked[0],file=linked_file),copies=copies,all_selected_newly_built=True,meaning='Cargo fresh=false for all four harnesses and linked KVM library; not a test result')
++write_new(retained/'BINDING.json',binding)
++write_new(retained/'ARTIFACTS.json',artifacts)
++print(json.dumps(dict(binding=str(retained/'BINDING.json'),retained=list(artifacts),test_execution=False)))

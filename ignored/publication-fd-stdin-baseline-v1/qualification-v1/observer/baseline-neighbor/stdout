@@ -1,0 +1,4 @@
+{ "type": "suite", "event": "started", "test_count": 1 }
+{ "type": "test", "event": "started", "name": "executor::tests::epoll_waits_are_nonblocking_and_pwait_validates_sigmask" }
+{ "type": "test", "name": "executor::tests::epoll_waits_are_nonblocking_and_pwait_validates_sigmask", "event": "ok" }
+{ "type": "suite", "event": "ok", "passed": 1, "failed": 0, "ignored": 0, "measured": 0, "filtered_out": 504, "exec_time": 0.001206762 }

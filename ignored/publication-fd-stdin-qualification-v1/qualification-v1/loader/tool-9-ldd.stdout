@@ -1,0 +1,6 @@
+	linux-vdso.so.1 (0x00007fc7dbd2b000)
+	libbfd-2.35.2-72.el9.so => /lib64/libbfd-2.35.2-72.el9.so (0x00007fc7dba1c000)
+	libctf.so.0 => /lib64/libctf.so.0 (0x00007fc7db9fe000)
+	libc.so.6 => /lib64/libc.so.6 (0x00007fc7db600000)
+	libz.so.1 => /lib64/libz.so.1 (0x00007fc7db9e4000)
+	/lib64/ld-linux-x86-64.so.2 (0x00007fc7dbd2d000)

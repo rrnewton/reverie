@@ -1,0 +1,30 @@
+{
+  "target": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/kvm-capture-pipe-identity-source-v1/qualification-v1/CALLER-TARGET.json",
+    "bytes": 4228,
+    "mode": 420,
+    "sha256": "69207e62337c16d9747472a9baba1e8c505078f7ef02d25ad507b7000870a6eb"
+  },
+  "inputs": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/kvm-capture-pipe-identity-source-v1/qualification-v1/CALLER-INPUTS.json",
+    "bytes": 3534980,
+    "mode": 420,
+    "sha256": "bcbddcfc9c8f33fdc72355e5d26f2e4fbc8bc06fab3ac0f27b08e9e23b00599e"
+  },
+  "regular_files": 10660,
+  "symlinks": 30,
+  "unexpanded_gitlinks": 12,
+  "all_current_bytes_modes_unchanged": true,
+  "carrier_original_entries_unchanged": 2626,
+  "only_added_lock": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/kvm-capture-pipe-identity-source-v1/qualification-v1/source/Cargo.lock",
+    "bytes": 67056,
+    "mode": 420,
+    "sha256": "1c09663e46bf21ad7c07eedd7821cccb72ae21f42485192649ff5473962bc856"
+  },
+  "python_ast_helpers": 12,
+  "planned_phases": 72,
+  "planned_tests": 63,
+  "runtime_executed": false,
+  "admission_or_lease_created": false
+}

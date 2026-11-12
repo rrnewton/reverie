@@ -1,0 +1,20 @@
+📊 Subtree — 0/3 complete (0%)
+
+Mission View (by execution phase)
+
+Phase 1 (Ready Now):
+  📍 [P2] restore-the-dettid-alignment-without-spawning-a-host-thread "Restore the DetTid alignment without spawning a host thread" (i=50 e=1 v=5000) [0/1]
+      - **FILED BEFORE THE REVERT THAT CREATES IT, SO THE OBLIGATION EXISTS RATHER THAN BEING PROMISED. Three lines in hermit-cli/src/bin/hermit/tracing.rs from https://github.com/rrnewton/hermit/pull/2945, commit 1d9c9094dea0e7a4a85bb641165088bded1386bd, are being reverted as the immediate unblock for c-programs/setitimer-determinism under kvm.**
+      - **WHAT THE REVERT GIVES BACK: the identity mismatch 2945 set out to fix. equalize_tracing_thread_number aligns the initial DetTid baseline for synchronous verification logging so it matches init_file_tracing. THAT MISMATCH IS ITSELF DETERMINISM-RELEVANT, so this is a real cost rather than bookkeeping.**
+      - ⚠️ **THE DEFECT IS THE MECHANISM, NOT THE GOAL. Burning a DetTid by spawning and joining a host thread has a side effect on signal and timer delivery in the KVM sandbox — the sandbox is killed by SIGALRM, signal 14, with no comparison returned. ptrace is unaffected throughout. A fix achieving the same alignment WITHOUT spawning a thread satisfies both sides.**
+      - ⚠️ **THERE IS NO TEST COVERAGE IN EITHER DIRECTION: equalize_tracing_thread_number has THREE CALL SITES AND ZERO TESTS. So the revert goes green with nothing guarding 2945's intent, and a future reapplication would have nothing to catch this recurrence either. ADD COVERAGE AS PART OF THIS, or the same three lines come back and break the same cell again.**
+      - **THIS IS ON THE DETERMINISM PATH IN TRACING INIT, so it should be made deliberately rather than as a drive-by. Not urgent; the cell is unblocked either way.**
+      - **Verify:** the DetTid baseline matches init_file_tracing without a host thread being spawned, c-programs/setitimer-determinism passes under both kvm and ptrace, and a test exists that would fail if the alignment regressed.
+
+
+Legend:
+  📍 Open  🏃 In Progress  ✅ Closed
+  i=impact  e=effort(days)  v=ROI(i/e×100)
+  Phase View: Tasks grouped by execution order
+  Phase 1 = ready now, Phase 2 = unblocked after Phase 1, etc.
+  Sorted by ROI within each phase (highest first)

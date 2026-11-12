@@ -1,0 +1,130 @@
+{
+  "plan": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/kvm-capture-pipe-identity-source-v2/qualification-v1/neighbor-05-plan.json",
+    "bytes": 60708,
+    "mode": 420,
+    "sha256": "89798243b48b1e99df2247bcdd0de974c966523e4d20ef9ab61184e4d996ec4a"
+  },
+  "refused_result": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/kvm-capture-pipe-identity-source-v2/qualification-v1/controls/neighbor-05/result.json",
+    "bytes": 2623,
+    "mode": 420,
+    "sha256": "015e2eff6621d8512f28db239c0dbb58fe3f5d86bd9c4980515d74cfc2ce0d05"
+  },
+  "original_observer": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/kvm-capture-pipe-identity-source-v2/qualification-v1/observer/neighbor-05/result.json",
+    "bytes": 15236,
+    "mode": 384,
+    "sha256": "a4ca23d788732df6ab1b80996288e499a730d2230cbbdc218740ddba85a6ac6b"
+  },
+  "query": {
+    "argv": [
+      "/usr/bin/systemctl",
+      "--user",
+      "show",
+      "safehermit-20260918T185643Z-2072765.service",
+      "--property=Id,LoadState,ActiveState,SubState,MainPID,ControlGroup,ExecMainPID,ExecMainStartTimestampMonotonic,ExecMainExitTimestampMonotonic,ExecMainCode,ExecMainStatus,Result,CPUUsageNSec,TasksCurrent"
+    ],
+    "cwd": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/kvm-capture-pipe-identity-source-v2/qualification-v1",
+    "wall_limit_seconds": 5,
+    "forced": false,
+    "returncode": 0,
+    "elapsed_seconds": 0.0517138431314379,
+    "stdout": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/kvm-capture-pipe-identity-source-v2/qualification-v1/failure-final-v1/terminal-unit.stdout",
+      "bytes": 300,
+      "mode": 420,
+      "sha256": "96da02fc7a30b0814411217caa38adc693a81e879527ea4c01345500342d1877"
+    },
+    "stderr": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/kvm-capture-pipe-identity-source-v2/qualification-v1/failure-final-v1/terminal-unit.stderr",
+      "bytes": 0,
+      "mode": 420,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    }
+  },
+  "properties": {
+    "Id": "safehermit-20260918T185643Z-2072765.service",
+    "LoadState": "not-found",
+    "ActiveState": "inactive",
+    "SubState": "dead",
+    "MainPID": "0",
+    "Result": "success",
+    "ExecMainStartTimestampMonotonic": "0",
+    "ExecMainExitTimestampMonotonic": "0",
+    "ExecMainPID": "0",
+    "ExecMainCode": "0",
+    "ExecMainStatus": "0",
+    "ControlGroup": "",
+    "CPUUsageNSec": "[not set]",
+    "TasksCurrent": "[not set]"
+  },
+  "recorded_processes": {
+    "wrapper": {
+      "pid": 2072765,
+      "absent": true
+    },
+    "observer": {
+      "pid": 2072748,
+      "absent": true
+    },
+    "service_main": {
+      "pid": 2074316,
+      "absent": true
+    }
+  },
+  "wrapper_session": {
+    "sid": 2072765,
+    "members": [],
+    "read_errors": [],
+    "transient_disappearances": 15
+  },
+  "gate_sources": [
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/kvm-capture-pipe-identity-source-v2/qualification-v1/observer/observer.py",
+      "bytes": 44851,
+      "mode": 420,
+      "sha256": "137c9b42c3f9e081db59954e0ef692ed861f488be7c2bb8a15ef595c271b2179"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/kvm-capture-pipe-identity-source-v2/qualification-v1/observer/before_exec.py",
+      "bytes": 8260,
+      "mode": 420,
+      "sha256": "184d1b1dcdb8c8a75626d2c0fe403d1527e160f51e0cc98338f405bf8a0319bd"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/kvm-capture-pipe-identity-source-v2/qualification-v1/observer/unit_reference.py",
+      "bytes": 8569,
+      "mode": 420,
+      "sha256": "e00b79d292060b7a467d6a99ed88082719682d205efbdc56ecbe5fb7256fe0d0"
+    }
+  ],
+  "gate_analysis": "The first Unit.Id property read threw before authenticate_service/acquire_before_exec and the sole authorization send. The bound child requires authenticated exec response before writing its receipt and fd-exec. No authorization path was reached; absent receipt/payload records corroborate rather than establish this alone.",
+  "absent_execution_records": [
+    "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/kvm-capture-pipe-identity-source-v2/qualification-v1/observer/neighbor-05/before-exec-receipt.json",
+    "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/kvm-capture-pipe-identity-source-v2/qualification-v1/observer/neighbor-05/payload.json",
+    "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/kvm-capture-pipe-identity-source-v2/qualification-v1/observer/neighbor-05/payload-exit.json"
+  ],
+  "cpu_accounting_available": true,
+  "available_cpu_nsec": "[not set]",
+  "original_missing_accounting_preserved": true,
+  "lease": {
+    "binding": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/kvm-capture-pipe-identity-source-v2/qualification-v1/lane.lease",
+      "owner_slot": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918",
+      "identity": [
+        48,
+        837793869,
+        212630
+      ],
+      "state_directory": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/kvm-capture-pipe-identity-source-v2/qualification-v1/lease-state"
+    },
+    "exclusive_nonblocking_acquired": true,
+    "token": "{\"plan_sha256\": \"89798243b48b1e99df2247bcdd0de974c966523e4d20ef9ab61184e4d996ec4a\", \"schema\": 1}\n",
+    "token_sha256": "28db1c5ed05babbd3c795b22ec12283ae0d3db168415e38c422a21fa97212a39",
+    "completion_absent": true,
+    "no_token_or_completion_mutation": true,
+    "continuation_forbidden_on_this_lease": true,
+    "exclusive_hold_closed": true
+  }
+}

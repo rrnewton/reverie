@@ -1,0 +1,5 @@
+Successor to immutable prequalification-v2. First compilation completed raw0 and authenticated source/terminal lifetime, but accepted=false because two now-unused private readiness wrappers emitted dead_code warnings in both library builds. Original diagnostics and the actual emitted lib/static ELFs are retained under qualification-v1; no test ran.
+
+V2-TO-V3.patch removes only ElfExecutor::refresh_signalfd_readiness and refresh_all_signalfd_readiness. All their former callers already use transaction-held locked helpers in v2. Neither wrapper has any remaining production or test caller. No allowance, assertion, selector, guard, comparator, budget, API or activation change. The new module and elf.rs remain identical.
+
+Fresh qualification-v2 contains byte-identical caller/observer/lease helpers, all 59 selectors, and a new complete source manifest. It will repeat metadata/dependency binding/compilation on the corrected source, then the exact approved finite plan. No source is independently approved by this report.

@@ -1,0 +1,4 @@
+{ "type": "suite", "event": "started", "test_count": 1 }
+{ "type": "test", "event": "started", "name": "executor::process_signal_publication::tests::inactive_publication_alarm_preserves_masks_dispositions_and_coalesces" }
+{ "type": "test", "name": "executor::process_signal_publication::tests::inactive_publication_alarm_preserves_masks_dispositions_and_coalesces", "event": "ok" }
+{ "type": "suite", "event": "ok", "passed": 1, "failed": 0, "ignored": 0, "measured": 0, "filtered_out": 494, "exec_time": 0.001720221 }

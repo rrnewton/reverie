@@ -1,0 +1,19 @@
+{
+  "argv": [
+    "/home/newton/work/dev-hermit/ci-hub/bin/who-am-i",
+    "--tag",
+    "--role",
+    "impl"
+  ],
+  "status": 0,
+  "stdout": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/process-alarm-qualification-v3/who-am-i.stdout",
+    "bytes": 65,
+    "sha256": "b832fdf7689538bf73bf4dccf3c9823c45a0f0ed13a48266f7b6a46f09089cbf"
+  },
+  "stderr": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/process-alarm-qualification-v3/who-am-i.stderr",
+    "bytes": 274,
+    "sha256": "ff72660015385e50a3c4caac725b2bd983d66dd56c902cc91886809c178eb322"
+  }
+}

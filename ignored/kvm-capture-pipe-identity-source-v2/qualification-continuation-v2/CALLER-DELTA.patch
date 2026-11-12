@@ -1,0 +1,214 @@
+--- original/execute.py
++++ continuation/execute.py
+@@ -1,6 +1,8 @@
+ #!/usr/bin/python3
+ """Run the approved finite sequence once; never recover, retry, or change a plan."""
++import fcntl
+ import json
++import cache_lease
+ import os
+ from pathlib import Path
+ import subprocess
+@@ -40,19 +42,18 @@
+     return record
+ 
+ 
+-def main():
++def run_sequence():
+     require(sys.flags.optimize == 0 and os.environ.get('PYTHONOPTIMIZE') == '0', 'explicit unoptimized Python required')
+     require(len(sys.argv) == 2 and sys.argv[1] == 'run', 'use execute.py run only after owner authorization')
+-    authenticate()
+     selection = json_read(HERE/'SELECTORS.json')
+     names = selection['proposed_order']
+-    require(len(names) == len(set(names)) == 63 and set(names) == set(selection['groups']), 'wrong finite selection')
++    require(len(names) == len(set(names)) == 53 and set(names) == set(selection['groups']), 'wrong finite selection')
+     exact = [(selection['groups'][n]['artifact'], selection['groups'][n]['names']) for n in names]
+-    require(all(len(n) == 1 for _, n in exact) and len({(a,n[0]) for a,n in exact}) == 63, 'not 63 unique exact declarations')
++    require(all(len(n) == 1 for _, n in exact) and len({(a,n[0]) for a,n in exact}) == 53, 'not 53 unique exact declarations')
+     # Admission has no product process; all later product processes use phase.py's unchanged observer.
+     subprocess.run([PYTHON, '-B', str(HERE/'admit_target.py')], cwd=HERE, check=True)
+-    sequence = ['metadata', 'compile', 'format', 'list-lib', 'list-static', 'list-vmcall', 'list-read-clock', *names, 'core-check', 'clippy']
+-    journal = dict(sequence=sequence, planned_phases=72, completed=[], error=None)
++    sequence = [*names, 'core-check', 'clippy']
++    journal = dict(sequence=sequence, planned_phases=55, completed=[], error=None)
+     try:
+         for name in sequence:
+             command('prepare-'+name, [PYTHON,'-B',str(HERE/'prepare.py'),name])
+@@ -61,17 +62,27 @@
+             result = json_read(HERE/'controls'/name/'result.json')
+             require(result['accepted'] and result['terminal_authenticated'] and result['inputs_unchanged'] and result['raw_status']==0, 'phase did not qualify: '+name)
+             journal['completed'].append(name)
+-            if name == 'metadata':
+-                command('bind-dependencies', [PYTHON,'-B',str(HERE/'bind_dependencies.py')])
+-            if name == 'compile':
+-                command('retain-artifacts', [PYTHON,'-B',str(HERE/'retain_artifacts.py')])
+     except BaseException as error:
+         journal['error'] = repr(error)
+         raise
+     finally:
+         write_new(HERE/'EXECUTION-RESULT.json', journal)
+-    require(len(journal['completed']) == 72, 'incomplete finite sequence')
+-    print(json.dumps(dict(completed_phases=72, exact_tests=63, meaning='phase receipts remain the authority')))
++    require(len(journal['completed']) == 55, 'incomplete finite sequence')
++    print(json.dumps(dict(completed_phases=55, exact_tests=53, meaning='phase receipts remain the authority')))
++
++def main():
++    authenticate()
++    origin=Path(json_read(HERE/'SETUP.json')['origin'])
++    old_plan=json_read(origin/'neighbor-05-plan.json');old_sha=digest(origin/'neighbor-05-plan.json')
++    fd=cache_lease.open_bound(old_plan['lease'])
++    try:
++        fcntl.flock(fd,fcntl.LOCK_EX|fcntl.LOCK_NB)
++        cache_lease.check_held(fd,old_plan['lease'],old_sha)
++        require(not (Path(old_plan['lease']['state_directory'])/(old_sha+'.json')).exists(),'old refused lease was unexpectedly completed')
++        run_sequence()
++        cache_lease.check_held(fd,old_plan['lease'],old_sha)
++    finally:
++        os.close(fd)  # Never write the old token or completion; keep exclusion through all phases.
+ 
+ if __name__ == '__main__':
+     main()
+--- original/prepare.py
++++ continuation/prepare.py
+@@ -5,6 +5,7 @@
+ from common import bounded_process,check_file,file_record,json_read,read,require,write_new
+ HERE=Path(__file__).resolve().parent
+ OWNER = HERE.parents[2]
++ORIGIN = Path(json_read(HERE/'SETUP.json')['origin'])
+ REPO = Path(json_read(HERE/'SETUP.json')['source_root'])
+ require(REPO == OWNER or REPO.is_relative_to(OWNER/'ignored'), 'source root outside owned slot')
+ TOOL=Path('/home/newton/.rustup/toolchains/nightly-2026-07-29-x86_64-unknown-linux-gnu/bin')
+@@ -37,9 +38,9 @@
+ 
+ def main():
+     name=sys.argv[1];kind='metadata'if name=='metadata'else'check'if name in ('clippy','core-check')else'format'if name=='format'else'compile'if name=='compile'else'list'if name.startswith('list-')else'test'
+-    require(name in ('metadata','compile','list-lib','list-static','list-vmcall','list-read-clock','format','clippy','core-check') or name in json_read(HERE/'SELECTORS.json')['groups'],'unplanned phase')
++    require(name in ('clippy','core-check') or name in json_read(HERE/'SELECTORS.json')['groups'],'unplanned continuation phase')
+     env={'HOME':'/home/newton','PATH':str(TOOL)+':/usr/local/bin:/usr/bin:/bin','CARGO_HOME':'/home/newton/.cargo','RUSTUP_HOME':'/home/newton/.rustup',
+-         'CARGO_TARGET_DIR':str(HERE/'target'),'CARGO_BUILD_JOBS':'2','THIRD_PARTY_BUILD_JOBS':'2',
++         'CARGO_TARGET_DIR':str(ORIGIN/'target'),'CARGO_BUILD_JOBS':'2','THIRD_PARTY_BUILD_JOBS':'2',
+          'CARGO_NET_OFFLINE':'true','CARGO_NET_GIT_FETCH_WITH_CLI':'true','RUSTFLAGS':'','LC_ALL':'C','LANG':'C','TZ':'UTC',
+          'CARGO_TERM_COLOR':'never','TMPDIR':str(HERE/'tmp'),'XDG_CACHE_HOME':str(HERE/'cache'),'GIT_OPTIONAL_LOCKS':'0','GIT_NO_LAZY_FETCH':'1',
+          'USER':'newton','LOGNAME':'newton','XDG_RUNTIME_DIR':'/run/user/212630','DBUS_SESSION_BUS_ADDRESS':'unix:path=/run/user/212630/bus',
+@@ -61,15 +62,15 @@
+         check_file(row);inputs.append(row)
+     admission=json_read(HERE/'TARGET-ADMISSION.json')
+     inputs.append(file_record(HERE/'TARGET-ADMISSION.json'))
+-    require(admission['initially_empty'] is True and admission['mode']==0o700, 'fresh target admission missing')
++    require(admission['mode']==0o700 and admission['continued_target'] is True, 'continued private target admission missing')
+     require(admission['path']==env['CARGO_TARGET_DIR'], 'wrong admitted target')
+     cargo=str(TOOL/'cargo')
+     if kind not in ('metadata','compile'):
+-        inputs += [file_record(HERE/'retained-binaries/BINDING.json'),file_record(HERE/'controls/compile/artifacts.json')]
++        inputs += [file_record(ORIGIN/'retained-binaries/BINDING.json'),file_record(ORIGIN/'controls/compile/artifacts.json')]
+     if kind in ('check','format'):
+-        qualified=json_read(HERE/'controls/compile/result.json');require(qualified['accepted']and qualified['terminal_authenticated'],'successor compile did not qualify')
+-        inputs += [file_record(HERE/'controls/compile/result.json'),file_record(HERE/'retained-binaries/ARTIFACTS.json')]
+-        for artifact_id,record in json_read(HERE/'retained-binaries/ARTIFACTS.json').items():
++        qualified=json_read(ORIGIN/'controls/compile/result.json');require(qualified['accepted']and qualified['terminal_authenticated'],'successor compile did not qualify')
++        inputs += [file_record(ORIGIN/'controls/compile/result.json'),file_record(ORIGIN/'retained-binaries/ARTIFACTS.json')]
++        for artifact_id,record in json_read(ORIGIN/'retained-binaries/ARTIFACTS.json').items():
+             artifact=record['file'];check_file(artifact,executable=True);inputs.append(artifact)
+             extra,symlinks=loader('test-'+artifact_id,artifact,env);inputs+=extra;links+=symlinks
+     if name=='core-check':
+@@ -93,17 +94,17 @@
+         argv=[cargo,'test','--offline','--locked','-p','reverie-kvm','--lib','--test','static_elf','--test','vmcall','--test','read_clock','--no-run','--message-format=json']
+         artifact_selectors=[dict(id='lib',target='reverie_kvm',kind=['lib']),dict(id='static',target='static_elf',kind=['test']),dict(id='vmcall',target='vmcall',kind=['test']),dict(id='read-clock',target='read_clock',kind=['test'])]
+     else:
+-        qualified=json_read(HERE/'controls/compile/result.json');require(qualified['accepted']and qualified['terminal_authenticated'],'compile did not qualify')
++        qualified=json_read(ORIGIN/'controls/compile/result.json');require(qualified['accepted']and qualified['terminal_authenticated'],'compile did not qualify')
+         selection=json_read(HERE/'SELECTORS.json')
+         artifact_id=name.removeprefix('list-')if kind=='list'else selection['groups'][name]['artifact']
+-        artifact=json_read(HERE/'retained-binaries/ARTIFACTS.json')[artifact_id]['file'];check_file(artifact,executable=True)
+-        inputs += [file_record(HERE/'controls/compile/result.json'),file_record(HERE/'retained-binaries/ARTIFACTS.json'),artifact]
++        artifact=json_read(ORIGIN/'retained-binaries/ARTIFACTS.json')[artifact_id]['file'];check_file(artifact,executable=True)
++        inputs += [file_record(ORIGIN/'controls/compile/result.json'),file_record(ORIGIN/'retained-binaries/ARTIFACTS.json'),artifact]
+         extra,symlinks=loader('test-'+artifact_id,artifact,env);inputs+=extra;links+=symlinks
+         if kind=='list':
+             selected=sorted({test for group in selection['groups'].values()if group['artifact']==artifact_id for test in group['names']})
+             argv=[artifact['path'],'--list','-Z','unstable-options','--format=json']
+         else:
+-            inventory_path=HERE/'controls'/('list-'+artifact_id)/'result.json';inventory=json_read(inventory_path)
++            inventory_path=ORIGIN/'controls'/('list-'+artifact_id)/'result.json';inventory=json_read(inventory_path)
+             require(inventory['accepted']and inventory['terminal_authenticated'],'inventory did not qualify')
+             inputs.append(file_record(inventory_path));selected=selection['groups'][name]['names']
+             require(selected and all(inventory['readback']['names'].count(n)==1 for n in selected),'exact selected name missing or duplicated')
+@@ -112,7 +113,7 @@
+     require(len(reviewed)==1 and reviewed[0]['kind']==kind and reviewed[0]['argv']==argv, 'actual phase differs from reviewed finite command')
+     if(HERE/'dependency-symlinks.json').exists():
+         inputs.append(file_record(HERE/'dependency-symlinks.json'));links+=json_read(HERE/'dependency-symlinks.json')
+-    target=HERE/'target';t=target.stat();lease=HERE/'lane.lease';l=lease.stat();large=kind in('metadata','compile','check')
++    target=ORIGIN/'target';t=target.stat();lease=HERE/'lane.lease';l=lease.stat();large=kind in('metadata','compile','check')
+     require([t.st_dev,t.st_ino,t.st_uid]==admission['identity'], 'fresh target identity changed')
+     plan=dict(path=str(HERE/(name+'-plan.json')),name=name,kind=kind,argv=argv,selected=selected,artifact_selectors=artifact_selectors,
+               environment=env,scm=scm(),source_manifest=file_record(HERE/'source-manifest.json'),inputs=list({r['path']:r for r in inputs}.values()),
+@@ -121,7 +122,7 @@
+               lease=dict(path=str(lease),owner_slot=str(OWNER),identity=[l.st_dev,l.st_ino,l.st_uid],state_directory=str(HERE/'lease-state')),
+               output=str(HERE/'observer'/name),control=str(HERE/'controls'/name),
+               limits=dict(aggregate_cpu_usec=600000000 if large else 30000000,wall_seconds=900 if large else 60,lethal_stderr_bytes=16777216,live_stdout_samples_bytes=67108864,phase_read_bytes=16777216,memory_bytes=17179869184,swap_bytes=0,free_floor_bytes=107374182400),
+-              scope='Capture pipe identity: 63 exact declarations (6 new, 20 metadata/ownership neighbors, all 37 V6); no Hermit witness/parity or broad backend approval')
++              scope='Continuation: 53 still-unqualified V2 declarations (16 unchanged neighbors and all 37 V6), plus two checks; ten original passes retained, no Hermit parity claim')
+     if(HERE/'dependency-inputs.json').exists():plan['dependencies']=file_record(HERE/'dependency-inputs.json')
+     write_new(Path(plan['path']),plan);print(plan['path'],hashlib.sha256(Path(plan['path']).read_bytes()).hexdigest())
+ if __name__=='__main__':main()
+--- original/admit_target.py
++++ continuation/admit_target.py
+@@ -1,34 +1,27 @@
+ #!/usr/bin/python3
+-"""Create only the approved private destinations after execution authorization."""
+-import os
+-import stat
++"""Admit a fresh continuation lease while the parent excludes the old unresolved lease."""
++import os,stat
+ from pathlib import Path
+-from common import json_read, owned, require, write_new
+-
+-HERE = Path(__file__).resolve().parent
+-setup = json_read(HERE/'SETUP.json')
+-target, lease, state = HERE/'target', HERE/'lane.lease', HERE/'lease-state'
+-require(setup['target'] == str(target) and setup['lease'] == str(lease)
+-        and setup['lease_state'] == str(state), 'private destinations differ')
+-directories = [target, state, HERE/'tmp', HERE/'cache', HERE/'controls', HERE/'loader', HERE/'launch']
+-for path in [*directories, lease, HERE/'TARGET-ADMISSION.json']:
+-    owned(path, HERE)
+-    require(not path.exists() and not path.is_symlink(), 'destination already exists: '+str(path))
+-for path in directories:
+-    path.mkdir(mode=0o700)
+-    info = path.stat()
+-    require(info.st_uid == os.getuid() and stat.S_IMODE(info.st_mode) == 0o700
+-            and not list(path.iterdir()), 'private directory creation failed')
+-fd = os.open(lease, os.O_RDWR | os.O_CREAT | os.O_EXCL | os.O_CLOEXEC | os.O_NOFOLLOW, 0o600)
++from common import check_file,json_read,owned,require,write_new
++HERE=Path(__file__).resolve().parent
++s=json_read(HERE/'SETUP.json');origin=Path(s['origin']);prior=json_read(origin/'TARGET-ADMISSION.json')
++proof=json_read(origin/'failure-final-v1/TERMINAL-LIFECYCLE.json')
++require(proof['properties']['ActiveState']=='inactive' and proof['properties']['MainPID']=='0' and proof['properties']['ControlGroup']=='' and proof['wrapper_session']['members']==[], 'old terminal lifecycle missing')
++require(json_read(origin/'failure-final-v1/TERMINAL-READBACK.json')['old_lease_unresolved'] is True,'old refusal not preserved')
++target=Path(s['target']);t=target.stat()
++require(str(target)==prior['path'] and [t.st_dev,t.st_ino,t.st_uid]==prior['identity'] and stat.S_IMODE(t.st_mode)==0o700 and not target.is_symlink(),'private target identity changed')
++lease=HERE/'lane.lease';dirs=[HERE/n for n in ['lease-state','tmp','cache','controls','launch']]
++require(s['lease']==str(lease) and s['lease_state']==str(HERE/'lease-state'),'private lease destination changed')
++for p in [*dirs,lease,HERE/'TARGET-ADMISSION.json']:
++ owned(p,HERE)
++ require(not p.exists() and not p.is_symlink(),'continuation destination exists')
++for p in dirs:
++ p.mkdir(mode=0o700)
++ info=p.stat()
++ require(info.st_uid==os.getuid() and stat.S_IMODE(info.st_mode)==0o700 and not list(p.iterdir()),'private directory creation failed')
++fd=os.open(lease,os.O_RDWR|os.O_CREAT|os.O_EXCL|os.O_CLOEXEC|os.O_NOFOLLOW,0o600)
+ try:
+-    info = os.fstat(fd)
+-    require(stat.S_ISREG(info.st_mode) and stat.S_IMODE(info.st_mode) == 0o600
+-            and info.st_uid == os.getuid() and info.st_size == 0, 'private lease creation failed')
+-    lease_record = dict(path=str(lease), identity=[info.st_dev, info.st_ino, info.st_uid], mode=0o600, initially_empty=True)
+-finally:
+-    os.close(fd)
+-info = target.stat()
+-write_new(HERE/'TARGET-ADMISSION.json', dict(path=str(target), identity=[info.st_dev, info.st_ino, info.st_uid],
+-          mode=0o700, initially_empty=True, imports=[], private_lease=lease_record,
+-          directories=[str(p) for p in directories], created_by=str(Path(__file__).resolve())))
+-print(str(HERE/'TARGET-ADMISSION.json'))
++ st=os.fstat(fd);require(stat.S_ISREG(st.st_mode) and st.st_uid==os.getuid() and st.st_size==0 and stat.S_IMODE(st.st_mode)==0o600,'new lease is not empty/private')
++ record=dict(path=str(lease),identity=[st.st_dev,st.st_ino,st.st_uid],mode=0o600,initially_empty=True)
++finally:os.close(fd)
++write_new(HERE/'TARGET-ADMISSION.json',dict(path=str(target),identity=[t.st_dev,t.st_ino,t.st_uid],mode=0o700,continued_target=True,initially_empty=False,private_lease=record,old_lease_unchanged=True,parent_holds_old_lease_exclusively=True))

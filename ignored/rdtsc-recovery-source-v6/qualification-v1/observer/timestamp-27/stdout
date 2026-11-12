@@ -1,0 +1,4 @@
+{ "type": "suite", "event": "started", "test_count": 1 }
+{ "type": "test", "event": "started", "name": "read_clock_counts_userspace_and_excludes_callbacks_and_other_vcpus" }
+{ "type": "test", "name": "read_clock_counts_userspace_and_excludes_callbacks_and_other_vcpus", "event": "ok" }
+{ "type": "suite", "event": "ok", "passed": 1, "failed": 0, "ignored": 0, "measured": 0, "filtered_out": 7, "exec_time": 1.193862628 }

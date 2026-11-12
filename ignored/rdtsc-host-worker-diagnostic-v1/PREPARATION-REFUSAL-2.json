@@ -1,0 +1,7 @@
+{
+  "stage": "unfrozen author packaging",
+  "raw_status": 1,
+  "error": "Exact anticipated formatter transformation omitted its trailing call comma",
+  "correction": "Account for exact formatted block; original assertion remains byte-identical",
+  "compile_or_test_executed": false
+}

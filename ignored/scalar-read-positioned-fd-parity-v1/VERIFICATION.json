@@ -1,0 +1,16 @@
+{
+  "head": "000c15a1161ea2d58749431b5ddaaa97f7aa37d5",
+  "tree": "a12d56466eed51cdd7d12087b5fafa9d66d8c864",
+  "branch": "codex/kvm-setitimer-20260918",
+  "tracked_status": "",
+  "cached_diff": "",
+  "worktree_diff": "",
+  "complete_patch_read": true,
+  "patch_applies_without_changes": true,
+  "existing_static_test_file_is_exact_prefix": true,
+  "existing_executor_test_module_exact_except_new_include": true,
+  "four_changed_path_afterfiles_reauthenticated": true,
+  "native_result_claims": 0,
+  "test_result_claims": 0,
+  "source_only": true
+}

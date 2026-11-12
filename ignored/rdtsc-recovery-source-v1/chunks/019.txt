@@ -1,0 +1,60 @@
++    let mut failure_patches = Vec::new();
++
++    code.extend_from_slice(&[0x0f, 0x31]); // rdtsc
++    code.push(0x3d); // cmp eax, imm32
++    code.extend_from_slice(&(RDTSC_SENTINEL as u32).to_le_bytes());
++    append_jne_failure(&mut code, &mut failure_patches);
++    code.extend_from_slice(&[0x81, 0xfa]); // cmp edx, imm32
++    code.extend_from_slice(&((RDTSC_SENTINEL >> 32) as u32).to_le_bytes());
++    append_jne_failure(&mut code, &mut failure_patches);
++
++    code.extend_from_slice(&[0x0f, 0x01, 0xf9]); // rdtscp
++    code.push(0x3d); // cmp eax, imm32
++    code.extend_from_slice(&(RDTSCP_SENTINEL as u32).to_le_bytes());
++    append_jne_failure(&mut code, &mut failure_patches);
++    code.extend_from_slice(&[0x81, 0xfa]); // cmp edx, imm32
++    code.extend_from_slice(&((RDTSCP_SENTINEL >> 32) as u32).to_le_bytes());
++    append_jne_failure(&mut code, &mut failure_patches);
++    code.extend_from_slice(&[0x81, 0xf9]); // cmp ecx, imm32
++    code.extend_from_slice(&RDTSCP_AUX_SENTINEL.to_le_bytes());
++    append_jne_failure(&mut code, &mut failure_patches);
++
++    code.extend_from_slice(&[
++        0xb8, 0x3c, 0x00, 0x00, 0x00, // mov eax, SYS_exit
++        0x31, 0xff, // xor edi, edi
++        0x0f, 0x05, // syscall
++    ]);
++    let failure = code.len();
++    code.extend_from_slice(&[
++        0xb8, 0x3c, 0x00, 0x00, 0x00, // mov eax, SYS_exit
++        0xbf, 0x01, 0x00, 0x00, 0x00, // mov edi, 1
++        0x0f, 0x05, // syscall
++    ]);
++
++    for patch in failure_patches {
++        let displacement = i32::try_from(failure).unwrap() - i32::try_from(patch + 4).unwrap();
++        code[patch..patch + 4].copy_from_slice(&displacement.to_le_bytes());
++    }
++    code
++}
++
++fn run_timestamp_probe(image: &[u8], subscribed: bool) -> (TimestampLog, i32) {
++    let mut backend = KvmBackend::new(MEMORY_SIZE).unwrap();
++    backend
++        .install_static_elf(image, "/bin/timestamp-probe")
++        .unwrap();
++    let (log, code, stdout, stderr) = futures::executor::block_on(
++        backend.run_static_elf_with_tool::<TimestampTool>(subscribed, true),
++    )
++    .unwrap();
++    assert!(stdout.is_empty());
++    assert!(stderr.is_empty());
++    (log, code)
++}
++
++#[test]
++fn static_elf_timestamp_reads_dispatch_exact_tool_results_repeatably() {
++    if !kvm_available("KVM timestamp dispatch test") {
++        return;
++    }
++

@@ -1,0 +1,4 @@
+{ "type": "suite", "event": "started", "test_count": 1 }
+{ "type": "test", "event": "started", "name": "executor::tests::descriptor_duplication_and_fchmod_preserve_guest_fd_semantics" }
+{ "type": "test", "name": "executor::tests::descriptor_duplication_and_fchmod_preserve_guest_fd_semantics", "event": "ok" }
+{ "type": "suite", "event": "ok", "passed": 1, "failed": 0, "ignored": 0, "measured": 0, "filtered_out": 489, "exec_time": 0.00125243 }

@@ -1,0 +1,9 @@
+{
+  "plan_sha256": "2b45bc1406a07850a9d63a05999a8b7c81ab30ca0bda94fa2be2a29594e49b37",
+  "result": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-fault-baseline-v1/qualification-v1/controls/baseline-fault/result.json",
+    "bytes": 2631,
+    "mode": 420,
+    "sha256": "44bfc0b7eb3b62efeb5c31d0e2804670ca4ea93395379394be2fc873c5ad1641"
+  }
+}

@@ -1,0 +1,13 @@
+      "line": 378,
+      "source_sha256": "74e8f34c7e3b6f041ce1f497a66500e9ea9e85beb5bb363139d14661d2ad995e",
+      "origin": "unchanged baseline neighbor",
+      "purpose": "Existing actual branch clock isolation and lifecycle; original internal 40-second wrapper unchanged, outer 30 CPU/60 wall retained",
+      "executed": false,
+      "require_kvm": true,
+      "outer_cpu_seconds": 30,
+      "outer_wall_seconds": 60,
+      "selection": "--exact --nocapture --test-threads=1; actual emitted harness/list identity must be verified before execution"
+    }
+  ],
+  "additional_native_reference_plan": "PLAN.md: native architectural references; not authored/executed controls yet"
+}

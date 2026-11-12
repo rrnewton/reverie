@@ -1,0 +1,1 @@
+statfs ok=6 statfs_rc=1 statfs_bfree=1000000 statfs_bavail=1000000 fstatfs_rc=1 fstatfs_bfree=1000000 fstatfs_bavail=1000000

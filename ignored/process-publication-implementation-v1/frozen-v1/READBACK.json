@@ -1,0 +1,62 @@
+[
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/process-publication-implementation-v1/frozen-v1/REPORT.md",
+    "bytes": 4828,
+    "sha256": "6ac906317dbb60ba3297c13f7c6b4158b4f674e36ecfae04e458aa96dcd7ad76"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/process-publication-implementation-v1/frozen-v1/QUALIFICATION.md",
+    "bytes": 3526,
+    "sha256": "ebedb73bf2d98ff6e4eb60711fc173a90c990f5468646c237910716e643126b0"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/process-publication-implementation-v1/frozen-v1/RESULTS.json",
+    "bytes": 218548,
+    "sha256": "bc403216f5a5599247d51b98b3ca61beb122b205c012fb60791438e2c10c7253"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/process-publication-implementation-v1/frozen-v1/SOURCE.patch",
+    "bytes": 63642,
+    "sha256": "a1667b036591d34ef5b657f10f611b0b716491522c247f2b6a2273d754c3a41f"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/process-publication-implementation-v1/frozen-v1/V1-TO-V2.patch",
+    "bytes": 39841,
+    "sha256": "888d8ad8dda3d25e66a550021905dcae4763e9d1d8d56b0aed9b271341e2188e"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/process-publication-implementation-v1/frozen-v1/V2-TO-V3.patch",
+    "bytes": 999,
+    "sha256": "f1e42e8391490ae357e41d27246d06def973b470076b040f65a3b155adcfa99f"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/process-publication-implementation-v1/frozen-v1/SOURCE_INPUTS.json",
+    "bytes": 2139,
+    "sha256": "ccf6d86e80d8733eee1dd3df0885e2a49052ea3ce8f3f6a79b1986046e44b042"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/process-publication-implementation-v1/frozen-v1/FULL-SOURCE-MANIFEST.json",
+    "bytes": 1224175,
+    "sha256": "7ffe8c71bc4068df04d4757a32178930dab313542b2bae10476d31b842847610"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/process-publication-implementation-v1/frozen-v1/CALLER_INPUTS.json",
+    "bytes": 3376,
+    "sha256": "2edf7618ac87d029a69fddc75522f5e4960adc8bd9c6c345dc784698cefb11be"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/process-publication-implementation-v1/frozen-v1/RECONSTRUCTION.json",
+    "bytes": 1263,
+    "sha256": "971e4e886ceaaf30e0d5d3c0ae2fc92e761893601216eb349d76450c1bd6ff72"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/process-publication-implementation-v1/frozen-v1/LEASE-RELEASE.json",
+    "bytes": 725,
+    "sha256": "0d9fed3755908065c130f9368e96bfa0d2302613380f352706befcda2a3add6c"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/process-publication-implementation-v1/frozen-v1/INPUTS.json",
+    "bytes": 1513395,
+    "sha256": "eda29e634677d3b6e784c1c2fb9a75bc7741f738c1fc7bd0652f2c15c60f7dd7"
+  }
+]

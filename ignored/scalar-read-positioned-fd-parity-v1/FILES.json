@@ -1,0 +1,50 @@
+[
+  {
+    "path": "reverie-kvm/src/executor.rs",
+    "before": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/scalar-read-positioned-fd-parity-v1/before/reverie-kvm/src/executor.rs",
+      "bytes": 1431750,
+      "sha256": "1f20e4259eb6b90ffdc6363c218a847eede94c1510477dcca49f70c5e5704242"
+    },
+    "after": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/scalar-read-positioned-fd-parity-v1/after/reverie-kvm/src/executor.rs",
+      "bytes": 1431881,
+      "sha256": "5c7afd10f77674d1fe7635fe53a87a22bd4915b4b6d7d0efa4bff9b5f6eb2941"
+    }
+  },
+  {
+    "path": "reverie-kvm/src/scalar_fd_width_tests.rs",
+    "before": {
+      "absent_at_base": true
+    },
+    "after": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/scalar-read-positioned-fd-parity-v1/after/reverie-kvm/src/scalar_fd_width_tests.rs",
+      "bytes": 19237,
+      "sha256": "e1ee373de389c01e8682cdb66283954813fbc733c3815b3ddde3a74f0a0267c4"
+    }
+  },
+  {
+    "path": "reverie-kvm/tests/static_elf.rs",
+    "before": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/scalar-read-positioned-fd-parity-v1/before/reverie-kvm/tests/static_elf.rs",
+      "bytes": 478617,
+      "sha256": "c4dc2bd1172f206a00db50cd4206cff76badab8b8b11846910fd812b052ce479"
+    },
+    "after": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/scalar-read-positioned-fd-parity-v1/after/reverie-kvm/tests/static_elf.rs",
+      "bytes": 483344,
+      "sha256": "dc34373ac5c80cf991638cb27f5514a404510522e90b28884562a8401b9324c0"
+    }
+  },
+  {
+    "path": "reverie-kvm/tests/fixtures/scalar_fd_width.c",
+    "before": {
+      "absent_at_base": true
+    },
+    "after": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/scalar-read-positioned-fd-parity-v1/after/reverie-kvm/tests/fixtures/scalar_fd_width.c",
+      "bytes": 3583,
+      "sha256": "8384a3acca2cdf9d2654db871cd08a1073d9fbc463b963cb33bd164f8ffe1ca0"
+    }
+  }
+]

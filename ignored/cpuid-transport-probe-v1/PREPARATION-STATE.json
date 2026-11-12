@@ -1,0 +1,15 @@
+{
+  "scm": {
+    "head": "79516661bf82d30ab2967c71834a6d47447b76ee",
+    "branch": "codex/kvm-setitimer-20260918",
+    "index": "d3a88be14872a030e9718536ecd0ccb240447bdf25f42e4fa42711ea9bb60571"
+  },
+  "target_absent": true,
+  "no_cargo_test_vm_or_lease_execution": true,
+  "only_source_formatter_preparation": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/cpuid-transport-probe-v1/format-preparation.json",
+    "bytes": 596,
+    "sha256": "b923f5e3d753549bdbd04f516af4b72f4a6e9beb0680907623b437782e5128c4",
+    "mode": 420
+  }
+}

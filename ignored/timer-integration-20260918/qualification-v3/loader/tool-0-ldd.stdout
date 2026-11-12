@@ -1,0 +1,8 @@
+	linux-vdso.so.1 (0x00007f7aa0ce8000)
+	libdl.so.2 => /lib64/libdl.so.2 (0x00007f7aa0cd4000)
+	libgcc_s.so.1 => /lib64/libgcc_s.so.1 (0x00007f7aa0cb7000)
+	librt.so.1 => /lib64/librt.so.1 (0x00007f7aa0cb2000)
+	libpthread.so.0 => /lib64/libpthread.so.0 (0x00007f7aa0cad000)
+	libm.so.6 => /lib64/libm.so.6 (0x00007f7aa0bce000)
+	libc.so.6 => /lib64/libc.so.6 (0x00007f7a9ec00000)
+	/lib64/ld-linux-x86-64.so.2 (0x00007f7aa0cea000)

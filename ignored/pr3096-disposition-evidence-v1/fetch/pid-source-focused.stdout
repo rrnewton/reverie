@@ -1,0 +1,7 @@
+d9d8d32f9511911ef9becac0220bc5d748a414c2:detcore/src/syscalls/threads.rs:2737:        assert_eq!(unsafe { info.si_pid() }, 123);
+d9d8d32f9511911ef9becac0220bc5d748a414c2:detcore/src/tool_local.rs:3351:        parent.record_exited_child(pid, cpu_snapshot(10, 20, 3, 4));
+d9d8d32f9511911ef9becac0220bc5d748a414c2:detcore/src/tool_local.rs:3376:        parent.record_exited_child(pid, cpu_snapshot(10, 20, 3, 4));
+d9d8d32f9511911ef9becac0220bc5d748a414c2:tests/c/dbt_pid_virtualization.c:54:  return stat_pid == 6 && stat_ppid == 3 && status_pid == 6 &&
+d9d8d32f9511911ef9becac0220bc5d748a414c2:tests/c/dbt_pid_virtualization.c:55:                 status_ppid == 3 && tracer_pid == 1
+d9d8d32f9511911ef9becac0220bc5d748a414c2:tests/c/dbt_pid_virtualization.c:144:    _exit((pid == 8 ? 0 : 1) | (ppid == 3 ? 0 : 2) | (tid == 8 ? 0 : 4) |
+d9d8d32f9511911ef9becac0220bc5d748a414c2:tests/c/terminal_child_selectors.c:229:    waitpid_exit(intermediate, intermediate, 0, 33);

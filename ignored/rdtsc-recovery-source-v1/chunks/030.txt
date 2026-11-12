@@ -1,0 +1,7 @@
++        );
++        assert_eq!(
++            completion.global_state.calls(),
++            vec![(Pid::from_raw(1), request)]
++        );
++    }
++}

@@ -1,0 +1,24 @@
+{
+  "started": [
+    "captured_write_signals::captured_write_signal_capability_blocks_nested_and_malformed_admission"
+  ],
+  "ended": [
+    {
+      "type": "test",
+      "name": "captured_write_signals::captured_write_signal_capability_blocks_nested_and_malformed_admission",
+      "event": "failed"
+    }
+  ],
+  "suites": [
+    {
+      "type": "suite",
+      "event": "failed",
+      "passed": 0,
+      "failed": 1,
+      "ignored": 0,
+      "measured": 0,
+      "filtered_out": 304,
+      "exec_time": 0.180405959
+    }
+  ]
+}

@@ -1,0 +1,49 @@
+--- a/reverie-kvm/src/executor.rs
++++ b/reverie-kvm/src/executor.rs
+@@ -4696,9 +4696,8 @@
+ }
+ 
+ fn read(memory: &mut GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6]) -> i64 {
+-    let Ok(fd) = i32::try_from(args[0]) else {
+-        return negative_errno(libc::EBADF);
+-    };
++    // Linux descriptor lookup consumes the low 32 bits of the raw register.
++    let fd = args[0] as libc::c_int;
+     if let Some(description) = state.fdinfo_files.get(&fd).cloned() {
+         return description.read(memory, args, false);
+     }
+@@ -4744,9 +4743,8 @@
+ }
+ 
+ fn pread64(memory: &mut GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) -> i64 {
+-    let Ok(fd) = i32::try_from(args[0]) else {
+-        return negative_errno(libc::EBADF);
+-    };
++    // Linux descriptor lookup consumes the low 32 bits of the raw register.
++    let fd = args[0] as libc::c_int;
+     if let Some(description) = state.fdinfo_files.get(&fd).cloned() {
+         return description.read(memory, args, true);
+     }
+@@ -4783,9 +4781,8 @@
+ }
+ 
+ fn pwrite64(memory: &GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) -> i64 {
+-    let Ok(fd) = i32::try_from(args[0]) else {
+-        return negative_errno(libc::EBADF);
+-    };
++    // Linux descriptor lookup consumes the low 32 bits of the raw register.
++    let fd = args[0] as libc::c_int;
+     let Ok(requested_length) = usize::try_from(args[2]) else {
+         return negative_errno(libc::EINVAL);
+     };
+@@ -6760,8 +6757,8 @@
+         }
+         _ => return None,
+     };
+-    let fd = if number == libc::SYS_write as u64 {
+-        // Match scalar write before it can reach the private eventfd carrier.
++    let fd = if number == libc::SYS_write as u64 || number == libc::SYS_pwrite64 as u64 {
++        // Match scalar descriptor lookup before it reaches the private carrier.
+         args[0] as libc::c_int
+     } else {
+         libc::c_int::try_from(args[0]).ok()?

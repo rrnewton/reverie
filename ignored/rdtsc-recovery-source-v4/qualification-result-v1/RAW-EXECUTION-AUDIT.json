@@ -1,0 +1,1155 @@
+{
+  "tests": [
+    {
+      "name": "timestamp-01",
+      "selector": "timestamp::tests::two_byte_rdtsc_decode_does_not_read_a_third_byte",
+      "artifact": "lib",
+      "streams": [
+        {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v4/qualification-v1/observer/timestamp-01/stdout",
+          "bytes": 423,
+          "sha256": "a0b9c28af81894fa945ac3d88ce7cbae463c9a042f5cb0f2a51508f5a866db90",
+          "mode": 384
+        },
+        {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v4/qualification-v1/observer/timestamp-01/stderr",
+          "bytes": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "mode": 384
+        }
+      ],
+      "raw_suite": {
+        "type": "suite",
+        "event": "ok",
+        "passed": 1,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered_out": 509,
+        "exec_time": 0.000200992
+      },
+      "outcomes": [
+        {
+          "type": "test",
+          "name": "timestamp::tests::two_byte_rdtsc_decode_does_not_read_a_third_byte",
+          "event": "ok"
+        }
+      ],
+      "skip_or_unexecuted_messages": []
+    },
+    {
+      "name": "timestamp-02",
+      "selector": "timestamp::tests::timestamp_prefixes_and_fifteen_byte_limit_preserve_faults",
+      "artifact": "lib",
+      "streams": [
+        {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v4/qualification-v1/observer/timestamp-02/stdout",
+          "bytes": 440,
+          "sha256": "6ac9dc6049b742f7ce8b67e54fbbc0cda282ccd4d09af7fe4bc978532081995a",
+          "mode": 384
+        },
+        {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v4/qualification-v1/observer/timestamp-02/stderr",
+          "bytes": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "mode": 384
+        }
+      ],
+      "raw_suite": {
+        "type": "suite",
+        "event": "ok",
+        "passed": 1,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered_out": 509,
+        "exec_time": 0.00027298
+      },
+      "outcomes": [
+        {
+          "type": "test",
+          "name": "timestamp::tests::timestamp_prefixes_and_fifteen_byte_limit_preserve_faults",
+          "event": "ok"
+        }
+      ],
+      "skip_or_unexecuted_messages": []
+    },
+    {
+      "name": "timestamp-03",
+      "selector": "timestamp::tests::timestamp_writeback_preserves_other_registers_and_full_flags",
+      "artifact": "lib",
+      "streams": [
+        {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v4/qualification-v1/observer/timestamp-03/stdout",
+          "bytes": 447,
+          "sha256": "2056803792095ab28c0cf2556aaa55743de4db34d0ec7058b7a9e1fb374dd924",
+          "mode": 384
+        },
+        {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v4/qualification-v1/observer/timestamp-03/stderr",
+          "bytes": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "mode": 384
+        }
+      ],
+      "raw_suite": {
+        "type": "suite",
+        "event": "ok",
+        "passed": 1,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered_out": 509,
+        "exec_time": 0.000276345
+      },
+      "outcomes": [
+        {
+          "type": "test",
+          "name": "timestamp::tests::timestamp_writeback_preserves_other_registers_and_full_flags",
+          "event": "ok"
+        }
+      ],
+      "skip_or_unexecuted_messages": []
+    },
+    {
+      "name": "timestamp-04",
+      "selector": "timestamp::tests::timestamp_fetch_checks_each_page_and_does_not_cross_a_completed_instruction",
+      "artifact": "lib",
+      "streams": [
+        {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v4/qualification-v1/observer/timestamp-04/stdout",
+          "bytes": 477,
+          "sha256": "25f663bdcbe9d6f79418a1677bc31233c1585dde4f23e73fe161f88e57700ae2",
+          "mode": 384
+        },
+        {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v4/qualification-v1/observer/timestamp-04/stderr",
+          "bytes": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "mode": 384
+        }
+      ],
+      "raw_suite": {
+        "type": "suite",
+        "event": "ok",
+        "passed": 1,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered_out": 509,
+        "exec_time": 0.000354842
+      },
+      "outcomes": [
+        {
+          "type": "test",
+          "name": "timestamp::tests::timestamp_fetch_checks_each_page_and_does_not_cross_a_completed_instruction",
+          "event": "ok"
+        }
+      ],
+      "skip_or_unexecuted_messages": []
+    },
+    {
+      "name": "timestamp-05",
+      "selector": "vm::tests::timestamp_boundary_respects_hardware_instruction_fetch_fault_priority",
+      "artifact": "lib",
+      "streams": [
+        {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v4/qualification-v1/observer/timestamp-05/stdout",
+          "bytes": 451,
+          "sha256": "f2e8a8f397802c9ab348963a7fe766d69846e533b62b5cf21dd73ecaa84f754a",
+          "mode": 384
+        },
+        {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v4/qualification-v1/observer/timestamp-05/stderr",
+          "bytes": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "mode": 384
+        }
+      ],
+      "raw_suite": {
+        "type": "suite",
+        "event": "ok",
+        "passed": 1,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered_out": 509,
+        "exec_time": 0.075550922
+      },
+      "outcomes": [
+        {
+          "type": "test",
+          "name": "vm::tests::timestamp_boundary_respects_hardware_instruction_fetch_fault_priority",
+          "event": "ok"
+        }
+      ],
+      "skip_or_unexecuted_messages": []
+    },
+    {
+      "name": "timestamp-06",
+      "selector": "cpuid::tests::deterministic_policy_replaces_host_identity_and_features",
+      "artifact": "lib",
+      "streams": [
+        {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v4/qualification-v1/observer/timestamp-06/stdout",
+          "bytes": 431,
+          "sha256": "43839a2b2c1b0e12657d89c8b2e52137df7e70164c49dfa9257b645c079fc659",
+          "mode": 384
+        },
+        {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v4/qualification-v1/observer/timestamp-06/stderr",
+          "bytes": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "mode": 384
+        }
+      ],
+      "raw_suite": {
+        "type": "suite",
+        "event": "ok",
+        "passed": 1,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered_out": 509,
+        "exec_time": 0.000362154
+      },
+      "outcomes": [
+        {
+          "type": "test",
+          "name": "cpuid::tests::deterministic_policy_replaces_host_identity_and_features",
+          "event": "ok"
+        }
+      ],
+      "skip_or_unexecuted_messages": []
+    },
+    {
+      "name": "timestamp-07",
+      "selector": "static_elf_timestamp_reads_dispatch_exact_tool_results_repeatably",
+      "artifact": "static",
+      "streams": [
+        {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v4/qualification-v1/observer/timestamp-07/stdout",
+          "bytes": 421,
+          "sha256": "905a5b50d30605f4703ed644cc7db27b4499ae41152914aa94c449357a9860db",
+          "mode": 384
+        },
+        {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v4/qualification-v1/observer/timestamp-07/stderr",
+          "bytes": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "mode": 384
+        }
+      ],
+      "raw_suite": {
+        "type": "suite",
+        "event": "ok",
+        "passed": 1,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered_out": 316,
+        "exec_time": 0.069222705
+      },
+      "outcomes": [
+        {
+          "type": "test",
+          "name": "static_elf_timestamp_reads_dispatch_exact_tool_results_repeatably",
+          "event": "ok"
+        }
+      ],
+      "skip_or_unexecuted_messages": []
+    },
+    {
+      "name": "timestamp-08",
+      "selector": "timestamp_dispatch_survives_thread_fork_and_exec_vcpu_lifecycles",
+      "artifact": "static",
+      "streams": [
+        {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v4/qualification-v1/observer/timestamp-08/stdout",
+          "bytes": 419,
+          "sha256": "d083baaa5d0deceea8eb5481679c37d9559aa87943da51e63b1902a6e299ef3e",
+          "mode": 384
+        },
+        {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v4/qualification-v1/observer/timestamp-08/stderr",
+          "bytes": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "mode": 384
+        }
+      ],
+      "raw_suite": {
+        "type": "suite",
+        "event": "ok",
+        "passed": 1,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered_out": 316,
+        "exec_time": 0.145832908
+      },
+      "outcomes": [
+        {
+          "type": "test",
+          "name": "timestamp_dispatch_survives_thread_fork_and_exec_vcpu_lifecycles",
+          "event": "ok"
+        }
+      ],
+      "skip_or_unexecuted_messages": []
+    },
+    {
+      "name": "timestamp-09",
+      "selector": "static_elf_unsubscribed_rdtsc_runs_without_tool_dispatch",
+      "artifact": "static",
+      "streams": [
+        {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v4/qualification-v1/observer/timestamp-09/stdout",
+          "bytes": 401,
+          "sha256": "2066b3a99ea708d2d1c627bee422376e1f5f3fdb7ef1cf8d32d5eeb5eba45655",
+          "mode": 384
+        },
+        {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v4/qualification-v1/observer/timestamp-09/stderr",
+          "bytes": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "mode": 384
+        }
+      ],
+      "raw_suite": {
+        "type": "suite",
+        "event": "ok",
+        "passed": 1,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered_out": 316,
+        "exec_time": 0.0345934
+      },
+      "outcomes": [
+        {
+          "type": "test",
+          "name": "static_elf_unsubscribed_rdtsc_runs_without_tool_dispatch",
+          "event": "ok"
+        }
+      ],
+      "skip_or_unexecuted_messages": []
+    },
+    {
+      "name": "timestamp-10",
+      "selector": "subscribed_timestamp_dispatch_refuses_unrelated_exceptions",
+      "artifact": "static",
+      "streams": [
+        {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v4/qualification-v1/observer/timestamp-10/stdout",
+          "bytes": 407,
+          "sha256": "f5861a72602da77a2449a4a4b2fe9df15a813571a3548ba931a2f9805d837c44",
+          "mode": 384
+        },
+        {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v4/qualification-v1/observer/timestamp-10/stderr",
+          "bytes": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "mode": 384
+        }
+      ],
+      "raw_suite": {
+        "type": "suite",
+        "event": "ok",
+        "passed": 1,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered_out": 316,
+        "exec_time": 0.057522838
+      },
+      "outcomes": [
+        {
+          "type": "test",
+          "name": "subscribed_timestamp_dispatch_refuses_unrelated_exceptions",
+          "event": "ok"
+        }
+      ],
+      "skip_or_unexecuted_messages": []
+    },
+    {
+      "name": "timestamp-11",
+      "selector": "repeated_timestamp_reads_evolve_once_per_instruction",
+      "artifact": "static",
+      "streams": [
+        {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v4/qualification-v1/observer/timestamp-11/stdout",
+          "bytes": 395,
+          "sha256": "c2c3d3147c109d8c860d2bcdd22b9c171280f730c996b32997418ccf4c7be350",
+          "mode": 384
+        },
+        {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v4/qualification-v1/observer/timestamp-11/stderr",
+          "bytes": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "mode": 384
+        }
+      ],
+      "raw_suite": {
+        "type": "suite",
+        "event": "ok",
+        "passed": 1,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered_out": 316,
+        "exec_time": 0.074643899
+      },
+      "outcomes": [
+        {
+          "type": "test",
+          "name": "repeated_timestamp_reads_evolve_once_per_instruction",
+          "event": "ok"
+        }
+      ],
+      "skip_or_unexecuted_messages": []
+    },
+    {
+      "name": "timestamp-12",
+      "selector": "static_elf_unsubscribed_rdtscp_remains_guest_exception",
+      "artifact": "static",
+      "streams": [
+        {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v4/qualification-v1/observer/timestamp-12/stdout",
+          "bytes": 399,
+          "sha256": "db7ad725bae37a57292fd0e692f2ed09311f25d10301c2306ba9e1de5dedc1e6",
+          "mode": 384
+        },
+        {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v4/qualification-v1/observer/timestamp-12/stderr",
+          "bytes": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "mode": 384
+        }
+      ],
+      "raw_suite": {
+        "type": "suite",
+        "event": "ok",
+        "passed": 1,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered_out": 316,
+        "exec_time": 0.037807989
+      },
+      "outcomes": [
+        {
+          "type": "test",
+          "name": "static_elf_unsubscribed_rdtscp_remains_guest_exception",
+          "event": "ok"
+        }
+      ],
+      "skip_or_unexecuted_messages": []
+    },
+    {
+      "name": "timestamp-13",
+      "selector": "timestamp_callbacks_observe_retired_branches_without_counting_rpc_work",
+      "artifact": "static",
+      "streams": [
+        {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v4/qualification-v1/observer/timestamp-13/stdout",
+          "bytes": 431,
+          "sha256": "84604b75e178a6ceb6ff3dbd37439ef7d0905112683eb1f1c1b4320fc0f5b7eb",
+          "mode": 384
+        },
+        {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v4/qualification-v1/observer/timestamp-13/stderr",
+          "bytes": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "mode": 384
+        }
+      ],
+      "raw_suite": {
+        "type": "suite",
+        "event": "ok",
+        "passed": 1,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered_out": 316,
+        "exec_time": 0.076992999
+      },
+      "outcomes": [
+        {
+          "type": "test",
+          "name": "timestamp_callbacks_observe_retired_branches_without_counting_rpc_work",
+          "event": "ok"
+        }
+      ],
+      "skip_or_unexecuted_messages": []
+    },
+    {
+      "name": "timestamp-14",
+      "selector": "host_owned_timestamp_worker_keeps_native_execution",
+      "artifact": "static",
+      "streams": [
+        {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v4/qualification-v1/observer/timestamp-14/stdout",
+          "bytes": 391,
+          "sha256": "adf6e1e79480ddecc7695122a6a22c798224c2491b652605dcc06baa502ce6d8",
+          "mode": 384
+        },
+        {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v4/qualification-v1/observer/timestamp-14/stderr",
+          "bytes": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "mode": 384
+        }
+      ],
+      "raw_suite": {
+        "type": "suite",
+        "event": "ok",
+        "passed": 1,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered_out": 316,
+        "exec_time": 0.067136982
+      },
+      "outcomes": [
+        {
+          "type": "test",
+          "name": "host_owned_timestamp_worker_keeps_native_execution",
+          "event": "ok"
+        }
+      ],
+      "skip_or_unexecuted_messages": []
+    },
+    {
+      "name": "timestamp-15",
+      "selector": "prefixed_timestamp_instructions_preserve_registers_flags_and_stack",
+      "artifact": "static",
+      "streams": [
+        {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v4/qualification-v1/observer/timestamp-15/stdout",
+          "bytes": 423,
+          "sha256": "b104fb1329842afc6a5aa8b753929fe6c3a9e633e8f313fcd1c8bbf082ddb989",
+          "mode": 384
+        },
+        {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v4/qualification-v1/observer/timestamp-15/stderr",
+          "bytes": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "mode": 384
+        }
+      ],
+      "raw_suite": {
+        "type": "suite",
+        "event": "ok",
+        "passed": 1,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered_out": 316,
+        "exec_time": 0.548016858
+      },
+      "outcomes": [
+        {
+          "type": "test",
+          "name": "prefixed_timestamp_instructions_preserve_registers_flags_and_stack",
+          "event": "ok"
+        }
+      ],
+      "skip_or_unexecuted_messages": []
+    },
+    {
+      "name": "timestamp-16",
+      "selector": "locked_and_overlength_timestamp_encodings_remain_faults",
+      "artifact": "static",
+      "streams": [
+        {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v4/qualification-v1/observer/timestamp-16/stdout",
+          "bytes": 401,
+          "sha256": "5d3c5b6e5818eea9d3f8b05a7b417dcb412ab73bd7f886c61d7f6421bd9b71a3",
+          "mode": 384
+        },
+        {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v4/qualification-v1/observer/timestamp-16/stderr",
+          "bytes": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "mode": 384
+        }
+      ],
+      "raw_suite": {
+        "type": "suite",
+        "event": "ok",
+        "passed": 1,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered_out": 316,
+        "exec_time": 0.090971308
+      },
+      "outcomes": [
+        {
+          "type": "test",
+          "name": "locked_and_overlength_timestamp_encodings_remain_faults",
+          "event": "ok"
+        }
+      ],
+      "skip_or_unexecuted_messages": []
+    },
+    {
+      "name": "timestamp-17",
+      "selector": "timestamp_tool_preserves_results_with_host_supported_cpuid",
+      "artifact": "static",
+      "streams": [
+        {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v4/qualification-v1/observer/timestamp-17/stdout",
+          "bytes": 407,
+          "sha256": "45509a8f469597bab09f14fdc6a4d1fa9226d8bcb82de62db613dd1af1dd4008",
+          "mode": 384
+        },
+        {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v4/qualification-v1/observer/timestamp-17/stderr",
+          "bytes": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "mode": 384
+        }
+      ],
+      "raw_suite": {
+        "type": "suite",
+        "event": "ok",
+        "passed": 1,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered_out": 316,
+        "exec_time": 0.040257309
+      },
+      "outcomes": [
+        {
+          "type": "test",
+          "name": "timestamp_tool_preserves_results_with_host_supported_cpuid",
+          "event": "ok"
+        }
+      ],
+      "skip_or_unexecuted_messages": []
+    },
+    {
+      "name": "timestamp-18",
+      "selector": "timestamp_single_step_reports_the_retired_instruction_boundary",
+      "artifact": "static",
+      "streams": [
+        {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v4/qualification-v1/observer/timestamp-18/stdout",
+          "bytes": 415,
+          "sha256": "529e7fd4e0f888d333ac4a3b2dbb5464c2ca92080e3be1141786caf658184d4d",
+          "mode": 384
+        },
+        {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v4/qualification-v1/observer/timestamp-18/stderr",
+          "bytes": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "mode": 384
+        }
+      ],
+      "raw_suite": {
+        "type": "suite",
+        "event": "ok",
+        "passed": 1,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered_out": 316,
+        "exec_time": 0.072371104
+      },
+      "outcomes": [
+        {
+          "type": "test",
+          "name": "timestamp_single_step_reports_the_retired_instruction_boundary",
+          "event": "ok"
+        }
+      ],
+      "skip_or_unexecuted_messages": []
+    },
+    {
+      "name": "timestamp-19",
+      "selector": "static_elf_faults_are_reported_by_direct_and_tool_runtimes",
+      "artifact": "static",
+      "streams": [
+        {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v4/qualification-v1/observer/timestamp-19/stdout",
+          "bytes": 407,
+          "sha256": "89b7a63cdd2f8c76b72987fee40d8847d131f65de53d26f0ef74702e043c9270",
+          "mode": 384
+        },
+        {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v4/qualification-v1/observer/timestamp-19/stderr",
+          "bytes": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "mode": 384
+        }
+      ],
+      "raw_suite": {
+        "type": "suite",
+        "event": "ok",
+        "passed": 1,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered_out": 316,
+        "exec_time": 0.151074482
+      },
+      "outcomes": [
+        {
+          "type": "test",
+          "name": "static_elf_faults_are_reported_by_direct_and_tool_runtimes",
+          "event": "ok"
+        }
+      ],
+      "skip_or_unexecuted_messages": []
+    },
+    {
+      "name": "timestamp-31",
+      "selector": "fault_only_assertion_rejects_actual_tool_exit_cleanup_failure",
+      "artifact": "static",
+      "streams": [
+        {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v4/qualification-v1/observer/timestamp-31/stdout",
+          "bytes": 413,
+          "sha256": "bbb71a0cda87d14753ecea854e2e315d361953057ae5543d40c13b78d8450efb",
+          "mode": 384
+        },
+        {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v4/qualification-v1/observer/timestamp-31/stderr",
+          "bytes": 539,
+          "sha256": "cce82f56dc7218a0b7ecab18440bd8626023402be793b7721dc60af717c3a2c4",
+          "mode": 384
+        }
+      ],
+      "raw_suite": {
+        "type": "suite",
+        "event": "ok",
+        "passed": 1,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered_out": 316,
+        "exec_time": 0.038351386
+      },
+      "outcomes": [
+        {
+          "type": "test",
+          "name": "fault_only_assertion_rejects_actual_tool_exit_cleanup_failure",
+          "event": "ok"
+        }
+      ],
+      "skip_or_unexecuted_messages": []
+    },
+    {
+      "name": "timestamp-20",
+      "selector": "static_elf_vmware_probe_reports_non_vmware_in_direct_and_tool_runtimes",
+      "artifact": "static",
+      "streams": [
+        {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v4/qualification-v1/observer/timestamp-20/stdout",
+          "bytes": 431,
+          "sha256": "eb49a44acccd44a6cdc90c783fa6d20fa62cc21cd88dea44cd41539c09d8835e",
+          "mode": 384
+        },
+        {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v4/qualification-v1/observer/timestamp-20/stderr",
+          "bytes": 25,
+          "sha256": "601bb6cbc9eaf85a77250debd8323eb83913c1c3055cda83de0a56277ff893f5",
+          "mode": 384
+        }
+      ],
+      "raw_suite": {
+        "type": "suite",
+        "event": "ok",
+        "passed": 1,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered_out": 316,
+        "exec_time": 0.197012095
+      },
+      "outcomes": [
+        {
+          "type": "test",
+          "name": "static_elf_vmware_probe_reports_non_vmware_in_direct_and_tool_runtimes",
+          "event": "ok"
+        }
+      ],
+      "skip_or_unexecuted_messages": []
+    },
+    {
+      "name": "timestamp-21",
+      "selector": "static_elf_forks_execs_and_waits_for_child",
+      "artifact": "static",
+      "streams": [
+        {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v4/qualification-v1/observer/timestamp-21/stdout",
+          "bytes": 374,
+          "sha256": "3de3e82d6fd94f0517dc0531fa430e0253d7de76798feb1be15d2cf88394cec5",
+          "mode": 384
+        },
+        {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v4/qualification-v1/observer/timestamp-21/stderr",
+          "bytes": 187,
+          "sha256": "8eac9465e4b73d68287b99fa36c63fd1daeba5dff85e38a6f6af8a4b41b9216d",
+          "mode": 384
+        }
+      ],
+      "raw_suite": {
+        "type": "suite",
+        "event": "ok",
+        "passed": 1,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered_out": 316,
+        "exec_time": 0.15846917
+      },
+      "outcomes": [
+        {
+          "type": "test",
+          "name": "static_elf_forks_execs_and_waits_for_child",
+          "event": "ok"
+        }
+      ],
+      "skip_or_unexecuted_messages": []
+    },
+    {
+      "name": "timestamp-22",
+      "selector": "static_elf_runs_glibc_clone3_thread_and_restores_parent_state",
+      "artifact": "static",
+      "streams": [
+        {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v4/qualification-v1/observer/timestamp-22/stdout",
+          "bytes": 413,
+          "sha256": "45d4c5a984f723c7f1deda7e9c8341aea0b4d537d92f352998896a648b2f58ca",
+          "mode": 384
+        },
+        {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v4/qualification-v1/observer/timestamp-22/stderr",
+          "bytes": 1497,
+          "sha256": "5ae4ec819626a5257cc652cf83e24e2db95e0dd283da99e658a3b6ee53227dae",
+          "mode": 384
+        }
+      ],
+      "raw_suite": {
+        "type": "suite",
+        "event": "ok",
+        "passed": 1,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered_out": 316,
+        "exec_time": 0.280741102
+      },
+      "outcomes": [
+        {
+          "type": "test",
+          "name": "static_elf_runs_glibc_clone3_thread_and_restores_parent_state",
+          "event": "ok"
+        }
+      ],
+      "skip_or_unexecuted_messages": []
+    },
+    {
+      "name": "timestamp-23",
+      "selector": "static_elf_caught_signal_returns_through_rt_sigreturn",
+      "artifact": "static",
+      "streams": [
+        {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v4/qualification-v1/observer/timestamp-23/stdout",
+          "bytes": 397,
+          "sha256": "c1db7d34a32838eb923af3c8162d0f950e415d0b68f3bc02d2de8b337f65eac0",
+          "mode": 384
+        },
+        {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v4/qualification-v1/observer/timestamp-23/stderr",
+          "bytes": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "mode": 384
+        }
+      ],
+      "raw_suite": {
+        "type": "suite",
+        "event": "ok",
+        "passed": 1,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered_out": 316,
+        "exec_time": 0.081399668
+      },
+      "outcomes": [
+        {
+          "type": "test",
+          "name": "static_elf_caught_signal_returns_through_rt_sigreturn",
+          "event": "ok"
+        }
+      ],
+      "skip_or_unexecuted_messages": []
+    },
+    {
+      "name": "timestamp-24",
+      "selector": "post_exec_failure_runs_tool_exit_lifecycle",
+      "artifact": "static",
+      "streams": [
+        {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v4/qualification-v1/observer/timestamp-24/stdout",
+          "bytes": 375,
+          "sha256": "60e51d354715b8d1c16c2048d4d1578a43279934754edbb1f3afa85d45075a36",
+          "mode": 384
+        },
+        {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v4/qualification-v1/observer/timestamp-24/stderr",
+          "bytes": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "mode": 384
+        }
+      ],
+      "raw_suite": {
+        "type": "suite",
+        "event": "ok",
+        "passed": 1,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered_out": 316,
+        "exec_time": 0.040328616
+      },
+      "outcomes": [
+        {
+          "type": "test",
+          "name": "post_exec_failure_runs_tool_exit_lifecycle",
+          "event": "ok"
+        }
+      ],
+      "skip_or_unexecuted_messages": []
+    },
+    {
+      "name": "timestamp-25",
+      "selector": "guest_write_syscall_runs_shared_reverie_tool",
+      "artifact": "vmcall",
+      "streams": [
+        {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v4/qualification-v1/observer/timestamp-25/stdout",
+          "bytes": 377,
+          "sha256": "926cb3d94c9da6cfec24ff5ed90909bce5415052016fcf2c7d27ad8eee0057fd",
+          "mode": 384
+        },
+        {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v4/qualification-v1/observer/timestamp-25/stderr",
+          "bytes": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "mode": 384
+        }
+      ],
+      "raw_suite": {
+        "type": "suite",
+        "event": "ok",
+        "passed": 1,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered_out": 5,
+        "exec_time": 0.033897986
+      },
+      "outcomes": [
+        {
+          "type": "test",
+          "name": "guest_write_syscall_runs_shared_reverie_tool",
+          "event": "ok"
+        }
+      ],
+      "skip_or_unexecuted_messages": []
+    },
+    {
+      "name": "timestamp-26",
+      "selector": "default_tool_handler_tail_injects_through_executor",
+      "artifact": "vmcall",
+      "streams": [
+        {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v4/qualification-v1/observer/timestamp-26/stdout",
+          "bytes": 389,
+          "sha256": "4b07228175aca32b8c6ab48b0b2fbd653626d5f8ec61709031cbc5200700cd80",
+          "mode": 384
+        },
+        {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v4/qualification-v1/observer/timestamp-26/stderr",
+          "bytes": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "mode": 384
+        }
+      ],
+      "raw_suite": {
+        "type": "suite",
+        "event": "ok",
+        "passed": 1,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered_out": 5,
+        "exec_time": 0.028555118
+      },
+      "outcomes": [
+        {
+          "type": "test",
+          "name": "default_tool_handler_tail_injects_through_executor",
+          "event": "ok"
+        }
+      ],
+      "skip_or_unexecuted_messages": []
+    },
+    {
+      "name": "timestamp-27",
+      "selector": "read_clock_counts_userspace_and_excludes_callbacks_and_other_vcpus",
+      "artifact": "read-clock",
+      "streams": [
+        {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v4/qualification-v1/observer/timestamp-27/stdout",
+          "bytes": 421,
+          "sha256": "8b0baa19f97ee52c215ceb57f35f72a386139efefbfea69df05b048258573350",
+          "mode": 384
+        },
+        {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v4/qualification-v1/observer/timestamp-27/stderr",
+          "bytes": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "mode": 384
+        }
+      ],
+      "raw_suite": {
+        "type": "suite",
+        "event": "ok",
+        "passed": 1,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered_out": 7,
+        "exec_time": 0.515359902
+      },
+      "outcomes": [
+        {
+          "type": "test",
+          "name": "read_clock_counts_userspace_and_excludes_callbacks_and_other_vcpus",
+          "event": "ok"
+        }
+      ],
+      "skip_or_unexecuted_messages": []
+    },
+    {
+      "name": "timestamp-28",
+      "selector": "read_clock_follows_a_guest_between_host_threads",
+      "artifact": "read-clock",
+      "streams": [
+        {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v4/qualification-v1/observer/timestamp-28/stdout",
+          "bytes": 382,
+          "sha256": "c0db68f94420d5661984f291dba53cbd4a70bfee837d65c610e534feeebf37c1",
+          "mode": 384
+        },
+        {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v4/qualification-v1/observer/timestamp-28/stderr",
+          "bytes": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "mode": 384
+        }
+      ],
+      "raw_suite": {
+        "type": "suite",
+        "event": "ok",
+        "passed": 1,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered_out": 7,
+        "exec_time": 0.06792159
+      },
+      "outcomes": [
+        {
+          "type": "test",
+          "name": "read_clock_follows_a_guest_between_host_threads",
+          "event": "ok"
+        }
+      ],
+      "skip_or_unexecuted_messages": []
+    },
+    {
+      "name": "timestamp-29",
+      "selector": "read_clock_starts_fork_vfork_and_thread_children_at_zero",
+      "artifact": "read-clock",
+      "streams": [
+        {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v4/qualification-v1/observer/timestamp-29/stdout",
+          "bytes": 401,
+          "sha256": "44aff78fcc31a90b400dfe3d734dedb55124f7e15e73c6db258400a1ffa9cd98",
+          "mode": 384
+        },
+        {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v4/qualification-v1/observer/timestamp-29/stderr",
+          "bytes": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "mode": 384
+        }
+      ],
+      "raw_suite": {
+        "type": "suite",
+        "event": "ok",
+        "passed": 1,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered_out": 7,
+        "exec_time": 0.251854965
+      },
+      "outcomes": [
+        {
+          "type": "test",
+          "name": "read_clock_starts_fork_vfork_and_thread_children_at_zero",
+          "event": "ok"
+        }
+      ],
+      "skip_or_unexecuted_messages": []
+    },
+    {
+      "name": "timestamp-30",
+      "selector": "read_clock_survives_successful_and_failed_exec",
+      "artifact": "read-clock",
+      "streams": [
+        {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v4/qualification-v1/observer/timestamp-30/stdout",
+          "bytes": 381,
+          "sha256": "8ebe74c03e96214844310b58a7a93da3cfa046afa91f2feeb9576cac87965f3d",
+          "mode": 384
+        },
+        {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v4/qualification-v1/observer/timestamp-30/stderr",
+          "bytes": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "mode": 384
+        }
+      ],
+      "raw_suite": {
+        "type": "suite",
+        "event": "ok",
+        "passed": 1,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered_out": 7,
+        "exec_time": 0.157235747
+      },
+      "outcomes": [
+        {
+          "type": "test",
+          "name": "read_clock_survives_successful_and_failed_exec",
+          "event": "ok"
+        }
+      ],
+      "skip_or_unexecuted_messages": []
+    }
+  ],
+  "attempted": 31,
+  "unattempted": [],
+  "skips_or_unexecuted": [],
+  "claim": "Raw streams inspected separately from libtest and inventory counts; no unattempted test credit"
+}

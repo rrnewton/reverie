@@ -1,0 +1,13 @@
+libc  path iteration=0
+inline path iteration
+libc  path raw write
+libc  path iteration=1
+inline path iteration
+libc  path raw write
+libc  path iteration=2
+inline path iteration
+libc  path raw write
+libc  path iteration=3
+inline path iteration
+libc  path raw write
+mixed_paths checksum=14672364840939692

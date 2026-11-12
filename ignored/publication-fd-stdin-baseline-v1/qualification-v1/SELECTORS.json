@@ -1,0 +1,20 @@
+{
+  "groups": {
+    "baseline-neighbor": {
+      "artifact": "lib",
+      "names": [
+        "executor::tests::epoll_waits_are_nonblocking_and_pwait_validates_sigmask"
+      ]
+    },
+    "baseline-stdin": {
+      "artifact": "lib",
+      "names": [
+        "executor::tests::inherited_stdin_epoll_preserves_local_and_authoritative_handles"
+      ]
+    }
+  },
+  "proposed_unique_declarations": 2,
+  "proposed_lib_declarations": 2,
+  "proposed_static_declarations": 0,
+  "execution_performed": false
+}

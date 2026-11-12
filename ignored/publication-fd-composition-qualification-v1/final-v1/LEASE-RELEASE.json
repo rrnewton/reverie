@@ -1,0 +1,29 @@
+{
+  "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/timer-integration-20260918/lane.lease",
+  "identity": [
+    48,
+    816917584,
+    212630
+  ],
+  "exclusive_lock_available": true,
+  "check_descriptor_closed": true,
+  "no_lease_state_mutation": true,
+  "last_terminal_result": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/publication-fd-composition-qualification-v1/qualification-v1/controls/fd-emfile/result.json",
+    "bytes": 2974,
+    "mode": 420,
+    "sha256": "2a943f9b739569e360330bc27069e875761cea17ead5c0dd03dbce2fc01c6ad5"
+  },
+  "retained_artifacts_before_release": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/publication-fd-composition-qualification-v1/qualification-v1/retained-binaries/BINDING.json",
+    "bytes": 5395,
+    "mode": 420,
+    "sha256": "aab6195567a568f108cd37e32f0a49ee43c7c2d41862f80f977995e1e41b19b8"
+  },
+  "immutable_results": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/publication-fd-composition-qualification-v1/final-v1/RESULTS.json",
+    "bytes": 225700,
+    "mode": 420,
+    "sha256": "d3ea66b412cd126472dc813c00779e57dae81427194036dcb432d0a460b646ff"
+  }
+}

@@ -1,0 +1,34 @@
+{
+  "schema": 1,
+  "inputs": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/publication-fd-materialization-plan-v1/INPUTS.json",
+    "bytes": 7391,
+    "mode": 420,
+    "sha256": "39829f5461ba00eb2c528da84dc75f466548887b33a40bac31f3bc558a932e5c"
+  },
+  "all_input_records_authenticated": 24,
+  "source_binding": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/publication-fd-materialization-plan-v1/SOURCE-BINDING.json",
+    "bytes": 5891,
+    "mode": 420,
+    "sha256": "9c475caa1c2c13cc14722c9b28808f5dfc6a2b345111335296c3829fba797ca3"
+  },
+  "plan": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/publication-fd-materialization-plan-v1/PLAN.md",
+    "bytes": 8828,
+    "mode": 420,
+    "sha256": "377b4951d8b1c62c52fdf4807dc36bf105aa023b07d15f03a6884b309b7f31f6"
+  },
+  "expected_tree": "db63dc5823131a9af142e7d74dd4695f90a38eb9",
+  "live_source_head_index_unchanged": true,
+  "not_executed": [
+    "product materialization",
+    "git add",
+    "git commit",
+    "build",
+    "test",
+    "network",
+    "lease acquisition"
+  ],
+  "no_source_approval": true
+}

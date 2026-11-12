@@ -1,0 +1,3 @@
+V7 preparation stopped before phase admission. The new proxy loop shadowed the phase variable and generated a metadata command under clippy-driver-plan.json. The preparer returned 0; reading the expected metadata plan then failed. No observer, payload or shared lease was started. Both author and root review missed the shadowing. The original generated plan and empty cold target remain untouched.
+
+The successor uses proxy_name, a fresh qualification-v2 output directory, cold-v2 target and launch-v2 bookkeeping directory. The existing source snapshot, six selectors, 13 phases, 11 static VM modes, parser, observer, lease, retention, binder and limits are unchanged. No product or qualification result is claimed. All new admission/execution remains pending authorization.
