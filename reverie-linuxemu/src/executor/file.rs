@@ -404,8 +404,13 @@ fn open_file(
         return open_guest_fd_path(state, guest_fd, flags, guest_cloexec);
     }
     let guest_path = path;
-    let Ok((host_dirfd, path)) = host_dirfd_and_path(state, guest_dirfd, path) else {
-        return negative_errno(libc::EBADF);
+    // Resolution failures are EBADF, except ENOENT (a deleted working
+    // directory, or an fd-link spelling that must fail closed without
+    // reaching the host), which Linux also answers for those cases.
+    let (host_dirfd, path) = match host_dirfd_and_path(state, guest_dirfd, path) {
+        Ok(resolved) => resolved,
+        Err(error) if error == negative_errno(libc::ENOENT) => return error,
+        Err(_) => return negative_errno(libc::EBADF),
     };
     // Legacy open/openat reduce every O_PATH request to O_PATH_FLAGS before
     // strict openat2 validation, as Linux's build_open_how does ("O_PATH
@@ -2168,6 +2173,31 @@ pub(super) fn host_dirfd_and_path(
     path: &[u8],
 ) -> Result<(RawFd, CString), i64> {
     if path.starts_with(b"/") {
+        // A guest spelling below an fd link must never reach the host
+        // filesystem literally: there it would name the supervisor
+        // process's own descriptors. Resolve it below the guest
+        // descriptor's mapped host descriptor instead, exactly as the
+        // kernel resolves the magic link and continues below the file it
+        // names; another task's spelling, an unknown descriptor, and
+        // synthetic proc/fdinfo carriers fail closed with ENOENT.
+        match reverie_procfs::parse_fd_link(path, state.pid) {
+            Some(reverie_procfs::FdLinkPath::Below { fd, rest }) => {
+                if state.proc_files.contains_key(&fd) || state.fdinfo_files.contains_key(&fd) {
+                    return Err(negative_errno(libc::ENOENT));
+                }
+                let Some(host_fd) = host_fd(state, fd) else {
+                    return Err(negative_errno(libc::ENOENT));
+                };
+                let rest = if rest.is_empty() { &b"."[..] } else { rest };
+                return CString::new(rest)
+                    .map(|rest| (host_fd, rest))
+                    .map_err(|_| negative_errno(libc::EINVAL));
+            }
+            Some(reverie_procfs::FdLinkPath::OtherTask) => {
+                return Err(negative_errno(libc::ENOENT));
+            }
+            Some(reverie_procfs::FdLinkPath::Exact(_)) | None => {}
+        }
         return CString::new(path)
             .map(|path| (libc::AT_FDCWD, path))
             .map_err(|_| negative_errno(libc::EINVAL));

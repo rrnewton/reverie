@@ -245,6 +245,91 @@ pub fn parse_fd_path(path: &[u8], own_pid: i32) -> Option<i32> {
     parse_id(suffix)
 }
 
+/// How a guest fd-link spelling relates to the caller's own task, for
+/// spellings with a path below the link itself.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FdLinkPath<'a> {
+    /// The link itself: `/proc/self/fd/<n>` and its spellings.
+    Exact(i32),
+    /// A path below the caller's own fd link: resolve `rest` below the
+    /// descriptor `fd` the link names (`rest` is empty for a trailing
+    /// slash). Native resolution crosses the magic link to the
+    /// descriptor's file and continues below it.
+    Below { fd: i32, rest: &'a [u8] },
+    /// A syntactically valid fd-link spelling naming another task.
+    /// Callers must decide it from their own descriptor state (or refuse
+    /// it) and never let it reach the host filesystem, where the same
+    /// spelling names the supervisor process's descriptors.
+    OtherTask,
+}
+
+/// Classify a guest fd-link spelling: `/dev/fd/`, `/proc/self/fd/`,
+/// `/proc/thread-self/fd/`, `/proc/<pid>/fd/` and
+/// `/proc/<pid>/task/<tid>/fd/` (decimal ids only), each optionally
+/// followed by `/<rest>`. `None` for every other spelling. This is the
+/// prefix counterpart of [`parse_fd_path`], which accepts exact links
+/// only; a caller that forwards path spellings to the host must handle
+/// every variant here so no spelling is ever resolved against the
+/// supervisor's own `/proc/self/fd`.
+pub fn parse_fd_link(path: &[u8], own_pid: i32) -> Option<FdLinkPath<'_>> {
+    fn split_fd(suffix: &[u8]) -> Option<(i32, Option<&[u8]>)> {
+        let digits = suffix
+            .iter()
+            .take_while(|byte| byte.is_ascii_digit())
+            .count();
+        let fd = parse_id(&suffix[..digits])?;
+        match &suffix[digits..] {
+            [] => Some((fd, None)),
+            [b'/', rest @ ..] => Some((fd, Some(rest))),
+            _ => None,
+        }
+    }
+    if let Some(suffix) = path
+        .strip_prefix(b"/dev/fd/")
+        .or_else(|| path.strip_prefix(b"/proc/self/fd/"))
+        .or_else(|| path.strip_prefix(b"/proc/thread-self/fd/"))
+    {
+        return split_fd(suffix).map(|(fd, rest)| match rest {
+            None => FdLinkPath::Exact(fd),
+            Some(rest) => FdLinkPath::Below { fd, rest },
+        });
+    }
+    let components: Vec<&[u8]> = path
+        .strip_prefix(b"/proc/")?
+        .split(|b| *b == b'/')
+        .collect();
+    // Threads of one process share its descriptor table, so ownership is
+    // decided by the thread-group id, not the individual task id.
+    let (own, fd_at) = match components.as_slice() {
+        [b"self", b"task", _task, b"fd", ..] => (true, 4),
+        [b"thread-self", b"task", _task, b"fd", ..] => (true, 4),
+        [group, b"fd", ..] => (parse_id(group)? == own_pid, 2),
+        [group, b"task", _task, b"fd", ..] => (parse_id(group)? == own_pid, 4),
+        _ => return None,
+    };
+    // Rejoin the fd component and everything below it, then split there.
+    let mut joined: Vec<u8> = Vec::new();
+    for (index, part) in components[fd_at..].iter().enumerate() {
+        if index > 0 {
+            joined.push(b'/');
+        }
+        joined.extend_from_slice(part);
+    }
+    let (fd, rest) = split_fd(&joined)?;
+    if !own {
+        return Some(FdLinkPath::OtherTask);
+    }
+    // `rest` borrows from `joined`, not from `path`; map it back by
+    // length: it is the trailing bytes of the original spelling.
+    Some(match rest {
+        None => FdLinkPath::Exact(fd),
+        Some(rest) => FdLinkPath::Below {
+            fd,
+            rest: &path[path.len() - rest.len()..],
+        },
+    })
+}
+
 /// Classify a procfs executable-link spelling against `live`, the
 /// caller's "thread is live in the current process" predicate.
 /// `Some(false)` is a syntactically valid guest proc link naming a task
@@ -511,6 +596,46 @@ mod tests {
         assert_eq!(parse_fd_path(b"/dev/fd/3", 1), Some(3));
         assert_eq!(parse_fd_path(b"/dev/fd/not-a-fd", 1), None);
         assert_eq!(parse_fd_path(b"/proc/self/fd/", 1), None);
+    }
+
+    #[test]
+    fn parse_fd_link_spellings() {
+        use FdLinkPath::{Below, Exact, OtherTask};
+        // Exact links, every own spelling.
+        assert_eq!(parse_fd_link(b"/proc/self/fd/3", 1), Some(Exact(3)));
+        assert_eq!(parse_fd_link(b"/proc/thread-self/fd/3", 1), Some(Exact(3)));
+        assert_eq!(parse_fd_link(b"/proc/1/fd/3", 1), Some(Exact(3)));
+        assert_eq!(parse_fd_link(b"/dev/fd/3", 1), Some(Exact(3)));
+        assert_eq!(parse_fd_link(b"/proc/1/task/9/fd/3", 1), Some(Exact(3)));
+        assert_eq!(parse_fd_link(b"/proc/self/task/9/fd/3", 1), Some(Exact(3)));
+        // Below a link of the caller's own descriptor table.
+        assert_eq!(
+            parse_fd_link(b"/proc/self/fd/3/marker", 1),
+            Some(Below {
+                fd: 3,
+                rest: b"marker"
+            })
+        );
+        assert_eq!(
+            parse_fd_link(b"/proc/1/task/9/fd/3/a/b", 1),
+            Some(Below {
+                fd: 3,
+                rest: b"a/b"
+            })
+        );
+        assert_eq!(
+            parse_fd_link(b"/proc/self/fd/3/", 1),
+            Some(Below { fd: 3, rest: b"" })
+        );
+        // Another task's spellings, exact and below.
+        assert_eq!(parse_fd_link(b"/proc/2/fd/3", 1), Some(OtherTask));
+        assert_eq!(parse_fd_link(b"/proc/2/fd/3/x", 1), Some(OtherTask));
+        assert_eq!(parse_fd_link(b"/proc/2/task/2/fd/3", 1), Some(OtherTask));
+        // Not fd links.
+        assert_eq!(parse_fd_link(b"/proc/self/status", 1), None);
+        assert_eq!(parse_fd_link(b"/proc/self/fd/", 1), None);
+        assert_eq!(parse_fd_link(b"/proc/self/fd/3x", 1), None);
+        assert_eq!(parse_fd_link(b"/etc/fd/3", 1), None);
     }
 
     #[test]

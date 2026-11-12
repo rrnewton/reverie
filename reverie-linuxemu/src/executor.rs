@@ -620,6 +620,7 @@ mod tests {
     include!("executor/shared_file_tests.rs");
     include!("executor/read_zero_cancel_tests.rs");
     include!("executor/descriptor_generic_tests.rs");
+    include!("executor/fd_subpath_tests.rs");
     include!("executor/tool_directory_tests.rs");
     include!("executor/host_resources_tests.rs");
     include!("executor/script_line_tests.rs");
