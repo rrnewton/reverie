@@ -1,0 +1,9 @@
+observer=PhysicalObserverId(1)
+records=2436
+physical_statuses=244
+successful_resumes=242
+explicit_dispositions=2
+ordinary_lost=0
+cleanup_lost=0
+after_close=0
+violations=[]

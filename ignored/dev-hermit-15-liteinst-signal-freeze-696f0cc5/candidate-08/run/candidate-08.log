@@ -1,0 +1,15 @@
+
+running 1 test
+
+thread 'constructor_disabled_runner_restores_guest_before_raw_getpid_callbacks' (1013919) panicked at reverie-liteinst/tests/after_loader.rs:157:33:
+canonicalize REVERIE_LITEINST_AFTER_LOADER_MARKER: No such file or directory (os error 2)
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test constructor_disabled_runner_restores_guest_before_raw_getpid_callbacks ... FAILED
+
+failures:
+
+failures:
+    constructor_disabled_runner_restores_guest_before_raw_getpid_callbacks
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 1 filtered out; finished in 0.00s
+

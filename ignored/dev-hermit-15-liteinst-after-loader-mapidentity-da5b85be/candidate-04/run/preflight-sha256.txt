@@ -1,0 +1,8 @@
+31ef32faede8ffb8e8c0ac1e9d815c65c1acb40dbd47b8aeb9dc966f373a0348  /home/newton/work/dev-hermit/worktrees/slots/dev-hermit-15-liteinst-bootstrap-rdtsc-01a0a13c/ignored/dev-hermit-15-liteinst-after-loader-mapidentity-da5b85be/candidate-04/stage/libreverie_liteinst.so
+f50096af119996b0a17a5f3a512d7523845d1bfd4f4a399cfff4dd93086a0ac8  /home/newton/work/dev-hermit/worktrees/slots/dev-hermit-15-liteinst-bootstrap-rdtsc-01a0a13c/ignored/dev-hermit-15-liteinst-after-loader-mapidentity-da5b85be/candidate-04/stage/runtime.marker
+623db6b27e6ae1ea7e434dcce3ce8a51aa22033a2208f177a6ae31e804d717a9  /home/newton/work/dev-hermit/worktrees/slots/dev-hermit-15-liteinst-bootstrap-rdtsc-01a0a13c/ignored/dev-hermit-15-liteinst-after-loader-mapidentity-da5b85be/candidate-04/stage/graph.manifest
+4fdddbb2777df232132ba9bc612bc88e7406acc4472658e7f31c33cc312a0fd5  /home/newton/work/dev-hermit/worktrees/slots/dev-hermit-15-liteinst-bootstrap-rdtsc-01a0a13c/ignored/dev-hermit-15-liteinst-after-loader-mapidentity-da5b85be/candidate-04/run/after_loader-test
+da5b85be6831176e8b24770e342bce3bc60361677e955bb69f16ec9e90872cce  reverie-ptrace/src/task/after_loader_task.rs
+fd15467d041a06cb82f9a4e7e03d46e5b139a305b4f4b0a1be2b088fc1237ffd  reverie-ptrace/src/task.rs
+bb37351c3c5cbedf84b94141905fad3d3c986f053617c3b6a732886c15bd8fae  reverie-ptrace/src/after_loader.rs
+d49a8990c70abcade98a7338fcfe15a1d7aca6561e2b3ff2f5576d25382be1a8  reverie-liteinst/tests/after_loader.rs

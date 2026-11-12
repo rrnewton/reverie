@@ -1,0 +1,9 @@
+mode=555 bytes=35299816 device=48 inode=889457346 path=ignored/dev-hermit-15-liteinst-after-loader-mapidentity-da5b85be/candidate-05/stage/libreverie_liteinst.so
+mode=444 bytes=197 device=48 inode=889457732 path=ignored/dev-hermit-15-liteinst-after-loader-mapidentity-da5b85be/candidate-05/stage/runtime.marker
+mode=444 bytes=508 device=48 inode=889457347 path=ignored/dev-hermit-15-liteinst-after-loader-mapidentity-da5b85be/candidate-05/stage/graph.manifest
+mode=555 bytes=40903088 device=48 inode=889463035 path=ignored/dev-hermit-15-liteinst-after-loader-mapidentity-da5b85be/candidate-05/run/after_loader-test
+mode=755 bytes=938752 device=33 inode=21907915 path=/usr/lib64/ld-linux-x86-64.so.2
+mode=755 bytes=2549352 device=33 inode=21907919 path=/usr/lib64/libc.so.6
+mode=755 bytes=116408 device=33 inode=110440 path=/usr/lib64/libgcc_s-11-20240719.so.1
+mode=444 bytes=8956 device=48 inode=889880980 path=ignored/dev-hermit-15-liteinst-environment-profile-9458be62/validation/candidate-05.log
+mode=444 bytes=4 device=48 inode=889880981 path=ignored/dev-hermit-15-liteinst-environment-profile-9458be62/validation/candidate-05.exit

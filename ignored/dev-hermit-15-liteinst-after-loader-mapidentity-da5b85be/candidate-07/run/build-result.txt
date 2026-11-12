@@ -1,0 +1,7 @@
+success=true
+elapsed_seconds=24.53
+artifact=run/target/release/deps/after_loader-ddb7b8112a2e4425
+artifact_sha256=f276f05e8507e27127c0db5c518242890bca69f4d95b925d69f6e35551b1dfdb
+installed_sha256=f276f05e8507e27127c0db5c518242890bca69f4d95b925d69f6e35551b1dfdb
+installed_mode=555
+installed_bytes=40929512

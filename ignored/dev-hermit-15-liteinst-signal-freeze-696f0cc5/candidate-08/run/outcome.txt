@@ -1,0 +1,15 @@
+execution_count=1
+rerun_forbidden=true
+command_sha256=688a2528be0f1f5ca0497dd6d001180e92443e7e425dfbb259ff461fdfe7bb42
+exit=101
+wall_seconds=0.019990177
+test=constructor_disabled_runner_restores_guest_before_raw_getpid_callbacks
+result=FAILED_BEFORE_GUEST
+guest_started=false
+physical_statuses=0
+successful_resumes=0
+explicit_dispositions=0
+failure=REVERIE_LITEINST_AFTER_LOADER_MARKER named a nonexistent path
+cause=candidate command omitted the slot checkout component from marker and graph absolute paths
+log_sha256=19ee04786098af8b8337271d1a673f4847afcb02f581439f5668c5626f818c00
+exit_receipt_sha256=39b8dc3fc8b44765c8e6f1adee04c5b465e555ab791cc42d0d9e810d5b64297c

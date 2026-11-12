@@ -1,0 +1,6 @@
+exit=0
+unexpected_dependencies=0
+libgcc_s_path=/usr/lib64/libgcc_s-11-20240719.so.1
+libc_path=/usr/lib64/libc.so.6
+loader_path=/usr/lib64/ld-linux-x86-64.so.2
+graph_hashes_match=true

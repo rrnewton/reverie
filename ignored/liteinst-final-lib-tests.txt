@@ -1,0 +1,119 @@
+warning: function `waitpidfd` is never used
+  --> safeptrace/src/waitid.rs:78:8
+   |
+78 | pub fn waitpidfd(raw_fd: RawFd, flags: WaitPidFlag) -> Result<Option<i32>, Errno> {
+   |        ^^^^^^^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `safeptrace` (lib) generated 1 warning
+warning: variable does not need to be mutable
+    --> reverie-ptrace/src/task.rs:4618:13
+     |
+4618 |         let mut wait = match running.next_state().await {
+     |             ----^^^^
+     |             |
+     |             help: remove this `mut`
+     |
+     = note: `#[warn(unused_mut)]` (part of `#[warn(unused)]`) on by default
+
+warning: function `liteinst_activation_failure_reason` is never used
+   --> reverie-ptrace/src/error.rs:140:15
+    |
+140 | pub(crate) fn liteinst_activation_failure_reason(
+    |               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: method `liteinst_root_runtime` is never used
+    --> reverie-ptrace/src/task.rs:5068:8
+     |
+1916 | impl<L: Tool + 'static> TracedTask<L> {
+     | ------------------------------------- method in this implementation
+...
+5068 |     fn liteinst_root_runtime(&self, task: &Stopped) -> Option<&LiteinstRuntimeConfig> {
+     |        ^^^^^^^^^^^^^^^^^^^^^
+
+warning: constant `HOST_HELPER_STACK_BYTES` is never used
+  --> reverie-ptrace/src/task/after_loader_task.rs:34:7
+   |
+34 | const HOST_HELPER_STACK_BYTES: u64 = 256 * 1024;
+   |       ^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: methods `guest_pid` and `guest_tid` are never used
+   --> reverie-ptrace/src/timer.rs:457:19
+    |
+452 | impl PrivateExecutionTimerSuspension {
+    | ------------------------------------ methods in this implementation
+...
+457 |     pub(crate) fn guest_pid(&self) -> Pid {
+    |                   ^^^^^^^^^
+...
+461 |     pub(crate) fn guest_tid(&self) -> Tid {
+    |                   ^^^^^^^^^
+
+warning: constant `FUNCTION_OFFSET` is never used
+  --> reverie-ptrace/src/vdso/getrandom_x86_64.rs:37:18
+   |
+37 | pub(super) const FUNCTION_OFFSET: usize = 0x1050;
+   |                  ^^^^^^^^^^^^^^^
+
+warning: `reverie-ptrace` (lib) generated 6 warnings (run `cargo fix --lib -p reverie-ptrace` to apply 1 suggestion)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.09s
+     Running unittests src/lib.rs (target/debug/deps/reverie_liteinst-2a708366079ebb1a)
+
+running 51 tests
+test backend::tests::coordinator_connection_drain_is_bounded ... ok
+test backend::tests::coordinator_drain_timeout_preserves_completion_error ... ok
+test backend::tests::coordinator_global_waits_for_cancelled_connection_owners ... ok
+test backend::tests::coordinator_serves_multiple_local_rpc_connections ... ok
+test backend::tests::coordinator_surfaces_server_failure_during_connection_drain ... ok
+test backend::tests::coordinator_two_monitor_drain_is_level_triggered ... ok
+test backend::tests::effective_command_environment_honors_override_remove_and_clear ... ok
+test backend::tests::in_guest_preload_override_remove_and_clear_win_over_ambient ... ok
+test backend::tests::inherited_stdio_replaces_caller_pipes ... ok
+test backend::tests::production_coordinator_drain_timeout_is_thirty_seconds ... ok
+test backend::tests::rejects_and_closes_multiple_matching_bootstraps ... ok
+test patch_alloc::tests::dispatch_heap_honors_large_alignment ... ok
+test patch_alloc::tests::dispatch_heap_realloc_preserves_bytes_when_growing_and_shrinking ... ok
+test patch_alloc::tests::dispatch_heap_reuses_freed_blocks ... ok
+test patch_alloc::tests::dispatch_heap_supports_concurrent_allocate_free ... ok
+test patch_alloc::tests::failed_dispatch_realloc_keeps_the_source_live ... ok
+test patch_alloc::tests::system_realloc_migrates_into_the_dispatch_heap ... ok
+test runtime::tests::alt_stack_defaults_to_the_shared_default_when_unset ... ok
+test runtime::tests::alt_stack_env_is_distinct_from_the_other_selectors ... ok
+test runtime::tests::alt_stack_parses_truthy_and_falsy_spellings ... ok
+test runtime::tests::alt_stack_rejects_unknown_values ... ok
+test runtime::tests::builtin_tool_selector_maps_shared_values_only ... ok
+test runtime::tests::clone_accepts_only_fork_like_flags ... ok
+test runtime::tests::disabled_dispatch_does_not_classify_fallback_sites ... ok
+test runtime::tests::every_optional_rcb_setup_error_takes_the_real_unavailable_path ... ok
+test runtime::tests::explicit_host_refuses_concurrent_publication_without_changing_legacy_policy ... ok
+test runtime::tests::fallback_counter_reset_zeroes_total_and_per_number_counts ... ok
+test runtime::tests::fork_child_reset_zeroes_per_site_counts_but_preserves_patch_state ... ok
+test runtime::tests::fork_hook_runs_the_observability_reset ... ok
+test runtime::tests::out_of_range_syscall_numbers_count_in_the_total_only ... ok
+test runtime::tests::preparation_storage_bound_fits_its_isolated_heap ... ok
+test runtime::tests::raw_proc_maps_reader_is_bounded_and_covers_its_own_code ... ok
+test runtime::tests::recording_a_fallback_bumps_total_and_the_matching_syscall ... ok
+test runtime::tests::reused_address_claims_a_new_site_generation ... ok
+test runtime::tests::stack_line_formats_signed_and_hex_values ... ok
+test stats::tests::aggregates_equal_rips_from_distinct_fork_processes_and_exact_hits ... ok
+test stats::tests::deserialized_dispatch_paths_count_out_of_order_entries ... ok
+test stats::tests::deserialized_dispatch_paths_return_zero_for_missing_keys ... ok
+test stats::tests::deserialized_dispatch_paths_sum_duplicates_like_constructor ... ok
+test stats::tests::disabled_hooks_do_not_enter_enabled_stats_code ... ok
+test stats::tests::dispatch_path_wire_identity_is_name_not_variant_position ... ok
+test stats::tests::display_is_deterministic_and_contains_no_raw_identity ... ok
+test stats::tests::process_report_round_trips_named_dispatch_paths ... ok
+test straddler::tests::calibrated_staleness_enables_every_split_offset ... ok
+test straddler::tests::single_line_publication_does_not_need_a_staleness_delay ... ok
+test straddler::tests::staleness_parser_accepts_only_nonzero_decimal_ticks ... ok
+test straddler::tests::unset_staleness_disables_guarded_publication ... ok
+test syscall_fallback::tests::every_enabled_user_component_is_saved_without_a_fixed_mask ... ok
+test syscall_fallback::tests::pending_continuation_refuses_reentry_without_overwriting ... ok
+test syscall_fallback::tests::pkru_layout_must_fit_the_standard_save_area ... ok
+test tests::alt_stack_setter_round_trips_through_the_parser ... ok
+
+test result: ok. 51 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.20s
+

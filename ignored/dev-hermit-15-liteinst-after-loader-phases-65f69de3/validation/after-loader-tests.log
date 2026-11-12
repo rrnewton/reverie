@@ -1,0 +1,123 @@
+warning: function `waitpidfd` is never used
+  --> safeptrace/src/waitid.rs:78:8
+   |
+78 | pub fn waitpidfd(raw_fd: RawFd, flags: WaitPidFlag) -> Result<Option<i32>, Errno> {
+   |        ^^^^^^^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `safeptrace` (lib) generated 1 warning
+warning: variable does not need to be mutable
+    --> reverie-ptrace/src/task.rs:4618:13
+     |
+4618 |         let mut wait = match running.next_state().await {
+     |             ----^^^^
+     |             |
+     |             help: remove this `mut`
+     |
+     = note: `#[warn(unused_mut)]` (part of `#[warn(unused)]`) on by default
+
+warning: function `liteinst_activation_failure_reason` is never used
+   --> reverie-ptrace/src/error.rs:140:15
+    |
+140 | pub(crate) fn liteinst_activation_failure_reason(
+    |               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: method `liteinst_root_runtime` is never used
+    --> reverie-ptrace/src/task.rs:5068:8
+     |
+1916 | impl<L: Tool + 'static> TracedTask<L> {
+     | ------------------------------------- method in this implementation
+...
+5068 |     fn liteinst_root_runtime(&self, task: &Stopped) -> Option<&LiteinstRuntimeConfig> {
+     |        ^^^^^^^^^^^^^^^^^^^^^
+
+warning: constant `HOST_HELPER_STACK_BYTES` is never used
+  --> reverie-ptrace/src/task/after_loader_task.rs:34:7
+   |
+34 | const HOST_HELPER_STACK_BYTES: u64 = 256 * 1024;
+   |       ^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: methods `guest_pid` and `guest_tid` are never used
+   --> reverie-ptrace/src/timer.rs:457:19
+    |
+452 | impl PrivateExecutionTimerSuspension {
+    | ------------------------------------ methods in this implementation
+...
+457 |     pub(crate) fn guest_pid(&self) -> Pid {
+    |                   ^^^^^^^^^
+...
+461 |     pub(crate) fn guest_tid(&self) -> Tid {
+    |                   ^^^^^^^^^
+
+warning: constant `FUNCTION_OFFSET` is never used
+  --> reverie-ptrace/src/vdso/getrandom_x86_64.rs:37:18
+   |
+37 | pub(super) const FUNCTION_OFFSET: usize = 0x1050;
+   |                  ^^^^^^^^^^^^^^^
+
+warning: method `liteinst_root_runtime` is never used
+    --> reverie-ptrace/src/task.rs:5068:8
+     |
+1916 | impl<L: Tool + 'static> TracedTask<L> {
+     | ------------------------------------- method in this implementation
+...
+5068 |     fn liteinst_root_runtime(&self, task: &Stopped) -> Option<&LiteinstRuntimeConfig> {
+     |        ^^^^^^^^^^^^^^^^^^^^^
+     |
+     = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `reverie-ptrace` (lib) generated 6 warnings (run `cargo fix --lib -p reverie-ptrace` to apply 1 suggestion)
+warning: `reverie-ptrace` (lib test) generated 4 warnings (3 duplicates)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.08s
+     Running unittests src/lib.rs (target/debug/deps/reverie_ptrace-6b38c084e6d95520)
+
+running 25 tests
+test after_loader::tests::loader_union_graph_has_exact_initial_and_deferred_closures ... ok
+test after_loader::tests::loader_phase_partition_refuses_missing_and_unreachable_images ... ok
+test task::after_loader_task::tests::complete_environment_rejects_duplicate_keys_and_truncation ... ok
+test task::after_loader_task::tests::alternate_stack_compares_all_abi_fields_and_preserves_raw_padding_evidence ... ok
+test task::after_loader_task::tests::file_and_mapping_identity_domains_bind_without_device_conflation ... ok
+test task::after_loader_task::tests::geometry_byte_comparison_has_no_entry_guard_or_neighbor_exemption ... ok
+test task::after_loader_task::tests::mapping_identity_match_checks_major_minor_and_inode ... ok
+test task::after_loader_task::tests::private_entropy_signal_timer_exec_and_clone_requests_are_refused ... ok
+test task::after_loader_task::tests::trampoline_mapping_identity_is_captured_once_per_generation ... ok
+test task::after_loader_task::tests::unsupported_cet_status_completion_reaches_the_final_caller_gate ... ok
+test task::after_loader_task::tests::dlopen_graph_excludes_the_unsealed_staging_runtime ... ok
+test task::tests::retired_after_loader_trap_requires_exact_runtime_origin ... ok
+test tracer::tests::after_loader_environment_freeze_preserves_exact_map_and_adds_no_sanitizer_values ... ok
+test tracer::tests::after_loader_filter_has_no_rt_sigreturn_or_private_page_allow_rule ... ok
+test tracer::tests::after_loader_filter_traces_subscribed_unsubscribed_unknown_and_x32_syscalls ... ok
+test after_loader::tests::ordinary_input_cannot_be_used_as_an_unqualified_runtime_stage ... ok
+test task::after_loader_task::tests::exact_open_file_mapping_identity_is_observed_stably_from_proc_maps ... ok
+test task::after_loader_task::tests::private_wait_diagnostics_are_structured_and_do_not_expand_event_owners ... ok
+test after_loader::tests::sealed_runtime_retains_exact_stage_bytes_and_refuses_write_grow_shrink ... ok
+test task::after_loader_task::tests::zero_fill_verification_reads_prot_none_without_changing_permissions ... ok
+test after_loader::tests::changed_regular_stage_or_marker_is_refused_before_sealed_copy ... ok
+test after_loader::tests::missing_marker_and_diagnostic_overflow_remain_errors ... ok
+test task::after_loader_task::tests::exact_image_backing_guard_accepts_only_the_bound_file_and_full_bytes ... ok
+test after_loader::tests::runtime_requires_host_export_and_refuses_legacy_init_array_entry ... ok
+test after_loader::tests::runtime_marker_requires_every_canonical_field_and_exact_dso_binding ... ok
+
+test result: ok. 25 passed; 0 failed; 0 ignored; 0 measured; 254 filtered out; finished in 0.01s
+
+     Running tests/ignored_signal_hook.rs (target/debug/deps/ignored_signal_hook-c2fbe17835cee300)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 3 filtered out; finished in 0.00s
+
+     Running tests/stdio_drain.rs (target/debug/deps/stdio_drain-3dc2ed2c1ce07197)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out; finished in 0.00s
+
+     Running tests/vsyscall.rs (target/debug/deps/vsyscall-e04f164f69879256)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out; finished in 0.00s
+

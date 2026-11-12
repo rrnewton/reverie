@@ -1,0 +1,71 @@
+warning: function `waitpidfd` is never used
+  --> safeptrace/src/waitid.rs:78:8
+   |
+78 | pub fn waitpidfd(raw_fd: RawFd, flags: WaitPidFlag) -> Result<Option<i32>, Errno> {
+   |        ^^^^^^^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `safeptrace` (lib) generated 1 warning
+   Compiling reverie-ptrace v0.2.0 (/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-15-liteinst-bootstrap-rdtsc-01a0a13c/reverie-ptrace)
+warning: variable does not need to be mutable
+    --> reverie-ptrace/src/task.rs:4618:13
+     |
+4618 |         let mut wait = match running.next_state().await {
+     |             ----^^^^
+     |             |
+     |             help: remove this `mut`
+     |
+     = note: `#[warn(unused_mut)]` (part of `#[warn(unused)]`) on by default
+
+warning: function `liteinst_activation_failure_reason` is never used
+   --> reverie-ptrace/src/error.rs:140:15
+    |
+140 | pub(crate) fn liteinst_activation_failure_reason(
+    |               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: method `liteinst_root_runtime` is never used
+    --> reverie-ptrace/src/task.rs:5068:8
+     |
+1916 | impl<L: Tool + 'static> TracedTask<L> {
+     | ------------------------------------- method in this implementation
+...
+5068 |     fn liteinst_root_runtime(&self, task: &Stopped) -> Option<&LiteinstRuntimeConfig> {
+     |        ^^^^^^^^^^^^^^^^^^^^^
+
+warning: constant `HOST_HELPER_STACK_BYTES` is never used
+  --> reverie-ptrace/src/task/after_loader_task.rs:34:7
+   |
+34 | const HOST_HELPER_STACK_BYTES: u64 = 256 * 1024;
+   |       ^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: methods `guest_pid` and `guest_tid` are never used
+   --> reverie-ptrace/src/timer.rs:457:19
+    |
+452 | impl PrivateExecutionTimerSuspension {
+    | ------------------------------------ methods in this implementation
+...
+457 |     pub(crate) fn guest_pid(&self) -> Pid {
+    |                   ^^^^^^^^^
+...
+461 |     pub(crate) fn guest_tid(&self) -> Tid {
+    |                   ^^^^^^^^^
+
+warning: constant `FUNCTION_OFFSET` is never used
+  --> reverie-ptrace/src/vdso/getrandom_x86_64.rs:37:18
+   |
+37 | pub(super) const FUNCTION_OFFSET: usize = 0x1050;
+   |                  ^^^^^^^^^^^^^^^
+
+warning: `reverie-ptrace` (lib) generated 6 warnings (run `cargo fix --lib -p reverie-ptrace` to apply 1 suggestion)
+   Compiling reverie-liteinst v0.2.0 (/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-15-liteinst-bootstrap-rdtsc-01a0a13c/reverie-liteinst)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 5.63s
+     Running unittests src/lib.rs (target/debug/deps/reverie_liteinst-2a708366079ebb1a)
+
+running 1 test
+test patch_alloc::tests::preparation_scope_routes_every_allocator_operation_off_system ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 51 filtered out; finished in 0.00s
+

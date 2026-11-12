@@ -1,0 +1,67 @@
+Diff in /home/newton/work/dev-hermit/worktrees/slots/dev-hermit-15-liteinst-bootstrap-rdtsc-01a0a13c/reverie-ptrace/src/task/after_loader_task.rs:1490:
+                 if !state.owns_range(range, false)
+                     || state.refuses_protected_overlap(range)
+                     || protection & !(libc::PROT_READ | libc::PROT_WRITE | libc::PROT_EXEC) != 0
+-                    || protection & libc::PROT_WRITE != 0
+-                        && protection & libc::PROT_EXEC != 0
++                    || protection & libc::PROT_WRITE != 0 && protection & libc::PROT_EXEC != 0
+                 {
+                     return Err(self.caller_error(
+                         "private mprotect is outside an owned range or requests W+X",
+Diff in /home/newton/work/dev-hermit/worktrees/slots/dev-hermit-15-liteinst-bootstrap-rdtsc-01a0a13c/reverie-ptrace/src/task/after_loader_task.rs:1584:
+         {
+             return Err(self.caller_error("private mmap length or offset is outside bounds"));
+         }
+-        let protection = canonical_c_int_argument(args[2]).ok_or_else(|| {
+-            self.caller_error("private mmap protection is not a canonical C int")
+-        })?;
++        let protection = canonical_c_int_argument(args[2])
++            .ok_or_else(|| self.caller_error("private mmap protection is not a canonical C int"))?;
+         let flags = canonical_c_int_argument(args[3])
+             .ok_or_else(|| self.caller_error("private mmap flags are not a canonical C int"))?;
+         if protection & !(libc::PROT_READ | libc::PROT_WRITE | libc::PROT_EXEC) != 0
+Diff in /home/newton/work/dev-hermit/worktrees/slots/dev-hermit-15-liteinst-bootstrap-rdtsc-01a0a13c/reverie-ptrace/src/task/after_loader_task.rs:1599:
+         let (descriptor, purpose) = match function {
+             None => {
+                 let expected = libc::MAP_PRIVATE | libc::MAP_ANONYMOUS;
+-                if args[0] != 0
+-                    || !anonymous_descriptor
+-                    || args[5] != 0
+-                    || flags != expected
+-                {
++                if args[0] != 0 || !anonymous_descriptor || args[5] != 0 || flags != expected {
+                     return Err(self.caller_error(
+                         "controller mmap is not an exact new private anonymous mapping",
+                     ));
+Diff in /home/newton/work/dev-hermit/worktrees/slots/dev-hermit-15-liteinst-bootstrap-rdtsc-01a0a13c/reverie-ptrace/src/task/after_loader_task.rs:1872:
+                 if !state.owns_range(range, false)
+                     || state.refuses_protected_overlap(range)
+                     || protection & !(libc::PROT_READ | libc::PROT_WRITE | libc::PROT_EXEC) != 0
+-                    || protection & libc::PROT_WRITE != 0
+-                        && protection & libc::PROT_EXEC != 0
++                    || protection & libc::PROT_WRITE != 0 && protection & libc::PROT_EXEC != 0
+                 {
+                     return Err(self.caller_error("private function mprotect is unowned or W+X"));
+                 }
+Diff in /home/newton/work/dev-hermit/worktrees/slots/dev-hermit-15-liteinst-bootstrap-rdtsc-01a0a13c/reverie-ptrace/src/task/after_loader_task.rs:1954:
+                     length: args[1],
+                 })
+             }
+-            libc::SYS_getpid | libc::SYS_gettid
+-                if function == CallerFunction::Initializer =>
+-            {
++            libc::SYS_getpid | libc::SYS_gettid if function == CallerFunction::Initializer => {
+                 Ok(AfterLoaderSyscallEffect::Identity(task.pid()))
+             }
+             libc::SYS_fcntl
+Diff in /home/newton/work/dev-hermit/worktrees/slots/dev-hermit-15-liteinst-bootstrap-rdtsc-01a0a13c/reverie-ptrace/src/task/after_loader_task.rs:5850:
+ 
+     #[test]
+     fn anonymous_mmap_descriptor_accepts_only_canonical_minus_one() {
+-        assert!(canonical_anonymous_mmap_descriptor(
+-            0x0000_0000_ffff_ffff
+-        ));
++        assert!(canonical_anonymous_mmap_descriptor(0x0000_0000_ffff_ffff));
+         assert!(canonical_anonymous_mmap_descriptor(u64::MAX));
+         for raw in [
+             0x0000_0001_ffff_ffff,

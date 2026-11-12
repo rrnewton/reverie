@@ -1,0 +1,47 @@
+
+running 1 test
+
+thread 'constructor_disabled_runner_restores_guest_before_raw_getpid_callbacks' (2501255) panicked at reverie-liteinst/tests/after_loader.rs:971:27:
+after-loader runner failed: LiteInst after-loader call failed for tracee 2501865: private openat flags or directory are not read-only and bound; 573 retained observations; showing [541..573]
+541: operation="private syscall completion" raw_clock=Some(19763) detail_bytes=118 detail_prefix="Stopped(tid=2501865 generation=PhysicalEventGenerationId(1) physical_status=Some(PhysicalStatusId(234)) event=Syscall)"
+542: operation="private held stop registers" raw_clock=Some(19763) detail_bytes=189 detail_prefix="tid=2501865 event=Syscall regs=[0, 0, 140737488350688, 4198592, 0, 0, 770, 0, 0, 0, 15, 1895825410, 0, 1034, 3, 72, 1895825410, 51, 514, 140737488350688, 43, 140737353811776, 0, 0, 0, 0, 0]"
+543: operation="private syscall result" raw_clock=Some(19763) detail_bytes=43 detail_prefix="fcntl args=[3, 1034, 0, 0, 0, 0] result=0xf"
+544: operation="target runtime descriptor opened" raw_clock=Some(19763) detail_bytes=37 detail_prefix="fd=3 device=1 inode=3459958 seals=0xf"
+545: operation="private syscall stop" raw_clock=Some(19763) detail_bytes=118 detail_prefix="Stopped(tid=2501865 generation=PhysicalEventGenerationId(1) physical_status=Some(PhysicalStatusId(235)) event=Seccomp)"
+546: operation="private held stop registers" raw_clock=Some(19763) detail_bytes=221 detail_prefix="tid=2501865 event=Seccomp regs=[0, 0, 140737488350688, 4198592, 0, 0, 770, 0, 0, 0, 18446744073709551578, 1895825410, 5, 4096, 140737353842688, 10, 1895825410, 51, 514, 140737488350688, 43, 140737353811776, 0, 0, 0, 0, 0]"
+547: operation="private syscall permit consumed" raw_clock=Some(19763) detail_bytes=205 detail_prefix="tid=2501865 generation=1 origin_status=Some(PhysicalStatusId(234)) admission_status=Some(PhysicalStatusId(235)) purpose=PrivateSetup nr=10 args=[140737353842688, 4096, 5, 0, 0, 0] rip=0x71000000 outputs=[]"
+548: operation="private syscall completion" raw_clock=Some(19763) detail_bytes=118 detail_prefix="Stopped(tid=2501865 generation=PhysicalEventGenerationId(1) physical_status=Some(PhysicalStatusId(236)) event=Syscall)"
+549: operation="private held stop registers" raw_clock=Some(19763) detail_bytes=202 detail_prefix="tid=2501865 event=Syscall regs=[0, 0, 140737488350688, 4198592, 0, 0, 770, 0, 0, 0, 0, 1895825410, 5, 4096, 140737353842688, 10, 1895825410, 51, 514, 140737488350688, 43, 140737353811776, 0, 0, 0, 0, 0]"
+550: operation="private syscall result" raw_clock=Some(19763) detail_bytes=60 detail_prefix="mprotect args=[140737353842688, 4096, 5, 0, 0, 0] result=0x0"
+551: operation="before errno accessor" raw_clock=Some(19763) detail_bytes=22 detail_prefix="address=0x7ffff7c2aa20"
+552: operation="private function stop" raw_clock=Some(19763) detail_bytes=126 detail_prefix="Stopped(tid=2501865 generation=PhysicalEventGenerationId(1) physical_status=Some(PhysicalStatusId(237)) event=Signal(SIGTRAP))"
+553: operation="private held stop registers" raw_clock=Some(19763) detail_bytes=307 detail_prefix="tid=2501865 event=Signal(SIGTRAP) regs=[0, 0, 140737488350688, 4198592, 0, 0, 140737350117920, 5496998767914385411, 140737488350198, 140737352030864, 140737353811672, 140737488350712, 140737353916608, 0, 0, 18446744073709551615, 140737353842716, 51, 519, 1"
+554: operation="private held stop siginfo" raw_clock=Some(19763) detail_bytes=36 detail_prefix="tid=2501865 signo=5 code=128 errno=0"
+555: operation="after errno accessor" raw_clock=Some(19763) detail_bytes=41 detail_prefix="pointer=0x7ffff7fb06d8 bytes=[7, 0, 0, 0]"
+556: operation="private syscall stop" raw_clock=Some(19763) detail_bytes=118 detail_prefix="Stopped(tid=2501865 generation=PhysicalEventGenerationId(1) physical_status=Some(PhysicalStatusId(238)) event=Seccomp)"
+557: operation="private held stop registers" raw_clock=Some(19763) detail_bytes=221 detail_prefix="tid=2501865 event=Seccomp regs=[0, 0, 140737488350688, 4198592, 0, 0, 775, 0, 0, 0, 18446744073709551578, 1895825410, 3, 4096, 140737353842688, 10, 1895825410, 51, 519, 140737353805824, 43, 140737353811776, 0, 0, 0, 0, 0]"
+558: operation="private syscall permit consumed" raw_clock=Some(19763) detail_bytes=205 detail_prefix="tid=2501865 generation=1 origin_status=Some(PhysicalStatusId(237)) admission_status=Some(PhysicalStatusId(238)) purpose=PrivateSetup nr=10 args=[140737353842688, 4096, 3, 0, 0, 0] rip=0x71000000 outputs=[]"
+559: operation="private syscall completion" raw_clock=Some(19763) detail_bytes=118 detail_prefix="Stopped(tid=2501865 generation=PhysicalEventGenerationId(1) physical_status=Some(PhysicalStatusId(239)) event=Syscall)"
+560: operation="private held stop registers" raw_clock=Some(19763) detail_bytes=202 detail_prefix="tid=2501865 event=Syscall regs=[0, 0, 140737488350688, 4198592, 0, 0, 775, 0, 0, 0, 0, 1895825410, 3, 4096, 140737353842688, 10, 1895825410, 51, 519, 140737353805824, 43, 140737353811776, 0, 0, 0, 0, 0]"
+561: operation="private syscall result" raw_clock=Some(19763) detail_bytes=60 detail_prefix="mprotect args=[140737353842688, 4096, 3, 0, 0, 0] result=0x0"
+562: operation="private syscall stop" raw_clock=Some(19763) detail_bytes=118 detail_prefix="Stopped(tid=2501865 generation=PhysicalEventGenerationId(1) physical_status=Some(PhysicalStatusId(240)) event=Seccomp)"
+563: operation="private held stop registers" raw_clock=Some(19763) detail_bytes=221 detail_prefix="tid=2501865 event=Seccomp regs=[0, 0, 140737488350688, 4198592, 0, 0, 775, 0, 0, 0, 18446744073709551578, 1895825410, 5, 4096, 140737353842688, 10, 1895825410, 51, 519, 140737353805824, 43, 140737353811776, 0, 0, 0, 0, 0]"
+564: operation="private syscall permit consumed" raw_clock=Some(19763) detail_bytes=205 detail_prefix="tid=2501865 generation=1 origin_status=Some(PhysicalStatusId(239)) admission_status=Some(PhysicalStatusId(240)) purpose=PrivateSetup nr=10 args=[140737353842688, 4096, 5, 0, 0, 0] rip=0x71000000 outputs=[]"
+565: operation="private syscall completion" raw_clock=Some(19763) detail_bytes=118 detail_prefix="Stopped(tid=2501865 generation=PhysicalEventGenerationId(1) physical_status=Some(PhysicalStatusId(241)) event=Syscall)"
+566: operation="private held stop registers" raw_clock=Some(19763) detail_bytes=202 detail_prefix="tid=2501865 event=Syscall regs=[0, 0, 140737488350688, 4198592, 0, 0, 775, 0, 0, 0, 0, 1895825410, 5, 4096, 140737353842688, 10, 1895825410, 51, 519, 140737353805824, 43, 140737353811776, 0, 0, 0, 0, 0]"
+567: operation="private syscall result" raw_clock=Some(19763) detail_bytes=60 detail_prefix="mprotect args=[140737353842688, 4096, 5, 0, 0, 0] result=0x0"
+568: operation="before dlopen" raw_clock=Some(19763) detail_bytes=22 detail_prefix="address=0x7ffff7c87ab0"
+569: operation="private function stop" raw_clock=Some(19763) detail_bytes=118 detail_prefix="Stopped(tid=2501865 generation=PhysicalEventGenerationId(1) physical_status=Some(PhysicalStatusId(242)) event=Seccomp)"
+570: operation="private held stop registers" raw_clock=Some(19763) detail_bytes=288 detail_prefix="tid=2501865 event=Seccomp regs=[140737353803392, 4219568, 140737353803392, 0, 140737353803264, 140737353803375, 647, 0, 4219568, 524288, 18446744073709551578, 140737354045144, 524288, 4219568, 4294967196, 257, 140737354045144, 51, 647, 140737353803160, 43,"
+571: operation="private loader syscall" raw_clock=Some(19763) detail_bytes=62 detail_prefix="ip=0x7ffff7fe96d6 nr=257 image=/usr/lib64/ld-linux-x86-64.so.2"
+572: operation="physical event partition validated" raw_clock=None detail_bytes=171 detail_prefix="observer=PhysicalObserverId(1) records=2436 physical_statuses=244 successful_resumes=242 explicit_dispositions=2 ordinary_lost=0 cleanup_lost=0 after_close=0 violations=[]"
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test constructor_disabled_runner_restores_guest_before_raw_getpid_callbacks ... FAILED
+
+failures:
+
+failures:
+    constructor_disabled_runner_restores_guest_before_raw_getpid_callbacks
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 1 filtered out; finished in 0.29s
+

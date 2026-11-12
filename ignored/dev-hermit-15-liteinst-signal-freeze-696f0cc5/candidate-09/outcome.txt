@@ -1,0 +1,32 @@
+candidate-09 is permanently consumed and must never be rerun.
+
+The command was authorized once and executed once.
+command_sha256=09c70639fcfafca550af96ba87f342f86287d6dc82bd1ddec7aa5d22025cf240
+exit_code=101
+wall_seconds=0.175598812
+log_bytes=8877
+log_sha256=5c720f1499339174cd3c3a45f7f85010a99e15a3d2f6782656decb1b20d0f312
+exit_receipt_sha256=39b8dc3fc8b44765c8e6f1adee04c5b465e555ab791cc42d0d9e810d5b64297c
+
+The constructor-disabled guest reached the dynamic loader. Its next exact syscall was:
+nr=9 mmap
+args=[0, 131528450, 1, 2050, 4, 0]
+length_hex=0x7d6f702
+page_rounded_length_hex=0x7d70000
+
+The admission gate rejected this Linux-valid positive mmap length with:
+private mmap length or offset is outside bounds
+
+The source seam is that mmap length is page-rounded by Linux while offset alone
+must be page-aligned. The next source revision must apply the same page-effect
+semantics consistently to mmap, mprotect, and munmap before any new candidate.
+
+Physical-event partition at failure:
+records=2496
+physical_statuses=250
+successful_resumes=248
+explicit_dispositions=2
+ordinary_lost=0
+cleanup_lost=0
+after_close=0
+violations=[]

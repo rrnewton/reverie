@@ -1,0 +1,2 @@
+#!/usr/bin/env bash
+exec /home/newton/orc-bin/tg --db hermit2 "$@"

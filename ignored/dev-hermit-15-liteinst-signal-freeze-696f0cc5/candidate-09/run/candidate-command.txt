@@ -1,0 +1,56 @@
+set -o noclobber
+slot_root=/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-15-liteinst-bootstrap-rdtsc-01a0a13c
+candidate_root="$slot_root/ignored/dev-hermit-15-liteinst-signal-freeze-696f0cc5/candidate-09"
+candidate_runtime="$candidate_root/stage/libreverie_liteinst.so"
+candidate_marker="$candidate_root/stage/runtime.marker"
+candidate_graph="$candidate_root/stage/graph.manifest"
+candidate_runner="$candidate_root/run/after_loader-test"
+candidate_tmp="$candidate_root/run/tmp"
+candidate_log="$candidate_root/run/candidate-09.log"
+candidate_exit="$candidate_root/run/candidate-09.exit"
+
+verify_file() {
+    local path="$1"
+    local expected_hash="$2"
+    local expected_mode="$3"
+    local canonical
+    local digest_line
+    local digest
+    local mode
+
+    [ -f "$path" ] && [ ! -L "$path" ] || return 1
+    canonical=$(realpath -e -- "$path") || return 1
+    [ "$canonical" = "$path" ] || return 1
+    digest_line=$(sha256sum -- "$path") || return 1
+    digest=${digest_line%% *}
+    [ "$digest" = "$expected_hash" ] || return 1
+    mode=$(stat -c '%a' -- "$path") || return 1
+    [ "$mode" = "$expected_mode" ] || return 1
+}
+
+if [ -e "$candidate_log" ] || [ -e "$candidate_exit" ]; then
+    exit 125
+fi
+candidate_root_canonical=$(realpath -e -- "$candidate_root") || exit 124
+[ "$candidate_root_canonical" = "$candidate_root" ] || exit 124
+verify_file "$candidate_runtime" ea0bb2e67aaf4d18a766c56c138e4dd9bdfa4c7af2149bf013cfc3cf45010a01 555 || exit 124
+verify_file "$candidate_marker" a2b9d1cd61783dacd2d5798c458be3ad2d7adbeb625f9756d13a3004528f58f9 444 || exit 124
+verify_file "$candidate_graph" 623db6b27e6ae1ea7e434dcce3ce8a51aa22033a2208f177a6ae31e804d717a9 444 || exit 124
+verify_file "$candidate_runner" 4e6300a1ea068c1cfad9a8e5b152920f82f427950ef4853b69f8643c3cfd173e 555 || exit 124
+[ -d "$candidate_tmp" ] && [ ! -L "$candidate_tmp" ] || exit 124
+candidate_tmp_canonical=$(realpath -e -- "$candidate_tmp") || exit 124
+[ "$candidate_tmp_canonical" = "$candidate_tmp" ] || exit 124
+shopt -s nullglob dotglob
+candidate_tmp_entries=("$candidate_tmp"/*)
+[ "${#candidate_tmp_entries[@]}" -eq 0 ] || exit 124
+
+(
+    ulimit -c 0
+    ulimit -f 8192
+    exec env TMPDIR="$candidate_tmp" CC=cc REVERIE_LITEINST_AFTER_LOADER_RUNTIME="$candidate_runtime" REVERIE_LITEINST_AFTER_LOADER_MARKER="$candidate_marker" REVERIE_LITEINST_AFTER_LOADER_GRAPH="$candidate_graph" timeout --signal=TERM --kill-after=5s 45s "$candidate_runner" --exact constructor_disabled_runner_restores_guest_before_raw_getpid_callbacks --nocapture
+) > "$candidate_log" 2>&1
+candidate_rc=$?
+if ! printf '%s\n' "$candidate_rc" > "$candidate_exit"; then
+    exit 126
+fi
+exit "$candidate_rc"

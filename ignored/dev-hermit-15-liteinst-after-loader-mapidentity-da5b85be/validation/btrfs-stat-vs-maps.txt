@@ -1,0 +1,4 @@
+direct_stat_hex_device=21 inode=21907919 bytes=2549352 path=/usr/lib64/libc.so.6
+proc_root_stat_hex_device=21 inode=21907919 bytes=2549352 path=/proc/3393327/root/usr/lib64/libc.so.6
+proc_maps_device=00:20 inode=21907919 path=/usr/lib64/libc.so.6
+exit=0

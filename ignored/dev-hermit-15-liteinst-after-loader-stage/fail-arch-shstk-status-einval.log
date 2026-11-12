@@ -1,0 +1,111 @@
+warning: function `waitpidfd` is never used
+  --> safeptrace/src/waitid.rs:78:8
+   |
+78 | pub fn waitpidfd(raw_fd: RawFd, flags: WaitPidFlag) -> Result<Option<i32>, Errno> {
+   |        ^^^^^^^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `safeptrace` (lib) generated 1 warning
+warning: variable does not need to be mutable
+    --> reverie-ptrace/src/task.rs:4282:13
+     |
+4282 |         let mut wait = match running.next_state().await {
+     |             ----^^^^
+     |             |
+     |             help: remove this `mut`
+     |
+     = note: `#[warn(unused_mut)]` (part of `#[warn(unused)]`) on by default
+
+warning: function `liteinst_activation_failure_reason` is never used
+   --> reverie-ptrace/src/error.rs:140:15
+    |
+140 | pub(crate) fn liteinst_activation_failure_reason(
+    |               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: method `liteinst_root_runtime` is never used
+    --> reverie-ptrace/src/task.rs:4732:8
+     |
+1734 | impl<L: Tool + 'static> TracedTask<L> {
+     | ------------------------------------- method in this implementation
+...
+4732 |     fn liteinst_root_runtime(&self, task: &Stopped) -> Option<&LiteinstRuntimeConfig> {
+     |        ^^^^^^^^^^^^^^^^^^^^^
+
+warning: constant `HOST_HELPER_STACK_BYTES` is never used
+  --> reverie-ptrace/src/task/after_loader_task.rs:31:7
+   |
+31 | const HOST_HELPER_STACK_BYTES: u64 = 256 * 1024;
+   |       ^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: methods `guest_pid` and `guest_tid` are never used
+   --> reverie-ptrace/src/timer.rs:457:19
+    |
+452 | impl PrivateExecutionTimerSuspension {
+    | ------------------------------------ methods in this implementation
+...
+457 |     pub(crate) fn guest_pid(&self) -> Pid {
+    |                   ^^^^^^^^^
+...
+461 |     pub(crate) fn guest_tid(&self) -> Tid {
+    |                   ^^^^^^^^^
+
+warning: constant `FUNCTION_OFFSET` is never used
+  --> reverie-ptrace/src/vdso/getrandom_x86_64.rs:37:18
+   |
+37 | pub(super) const FUNCTION_OFFSET: usize = 0x1050;
+   |                  ^^^^^^^^^^^^^^^
+
+warning: `reverie-ptrace` (lib) generated 6 warnings (run `cargo fix --lib -p reverie-ptrace` to apply 1 suggestion)
+    Finished `release` profile [optimized] target(s) in 0.09s
+     Running tests/after_loader.rs (target/after-loader-release/release/deps/after_loader-ddb7b8112a2e4425)
+
+running 1 test
+
+thread 'constructor_disabled_runner_restores_guest_before_raw_getpid_callbacks' (4042868) panicked at reverie-liteinst/tests/after_loader.rs:857:27:
+after-loader runner failed: LiteInst after-loader call failed for tracee 4042999: admitted private syscall failed before its exact effect: -22; 127 retained observations; showing [95..127]
+95: operation="private syscall stop" raw_clock=Some(19785) detail_bytes=516919 detail_prefix="Stopped(Stopped(Pid(4042999), TraceeToken { event: EventHandle(EventGeneration { event: Event { generation: PhysicalEventGenerationId(1), observer: OnceLock(PhysicalEventObserver { inner: PhysicalObserverInner { id: PhysicalObserverId(1), ordinary: RecordB"
+96: operation="private held stop registers" raw_clock=Some(19785) detail_bytes=227 detail_prefix="tid=4042999 event=Seccomp regs=[0, 0, 140737488350688, 4198592, 0, 0, 770, 34, 0, 18446744073709551615, 18446744073709551578, 1895825410, 0, 73728, 0, 9, 1895825410, 51, 514, 140737488350688, 43, 140737353811776, 0, 0, 0, 0, 0]"
+97: operation="private syscall permit consumed" raw_clock=Some(19785) detail_bytes=209 detail_prefix="tid=4042999 generation=1 origin_status=Some(PhysicalStatusId(84)) admission_status=Some(PhysicalStatusId(85)) purpose=PrivateSetup nr=9 args=[0, 73728, 0, 34, 18446744073709551615, 0] rip=0x71000000 outputs=[]"
+98: operation="private syscall completion" raw_clock=Some(19785) detail_bytes=516909 detail_prefix="Stopped(Stopped(Pid(4042999), TraceeToken { event: EventHandle(EventGeneration { event: Event { generation: PhysicalEventGenerationId(1), observer: OnceLock(PhysicalEventObserver { inner: PhysicalObserverInner { id: PhysicalObserverId(1), ordinary: RecordB"
+99: operation="private held stop registers" raw_clock=Some(19785) detail_bytes=222 detail_prefix="tid=4042999 event=Syscall regs=[0, 0, 140737488350688, 4198592, 0, 0, 770, 34, 0, 18446744073709551615, 140737353736192, 1895825410, 0, 73728, 0, 9, 1895825410, 51, 514, 140737488350688, 43, 140737353811776, 0, 0, 0, 0, 0]"
+100: operation="private syscall result" raw_clock=Some(19785) detail_bytes=74 detail_prefix="mmap args=[0, 73728, 0, 34, 18446744073709551615, 0] result=0x7ffff7f9e000"
+101: operation="private syscall stop" raw_clock=Some(19785) detail_bytes=516899 detail_prefix="Stopped(Stopped(Pid(4042999), TraceeToken { event: EventHandle(EventGeneration { event: Event { generation: PhysicalEventGenerationId(1), observer: OnceLock(PhysicalEventObserver { inner: PhysicalObserverInner { id: PhysicalObserverId(1), ordinary: RecordB"
+102: operation="private held stop registers" raw_clock=Some(19785) detail_bytes=222 detail_prefix="tid=4042999 event=Seccomp regs=[0, 0, 140737488350688, 4198592, 0, 0, 770, 0, 0, 0, 18446744073709551578, 1895825410, 3, 65536, 140737353740288, 10, 1895825410, 51, 514, 140737488350688, 43, 140737353811776, 0, 0, 0, 0, 0]"
+103: operation="private syscall permit consumed" raw_clock=Some(19785) detail_bytes=204 detail_prefix="tid=4042999 generation=1 origin_status=Some(PhysicalStatusId(86)) admission_status=Some(PhysicalStatusId(87)) purpose=PrivateSetup nr=10 args=[140737353740288, 65536, 3, 0, 0, 0] rip=0x71000000 outputs=[]"
+104: operation="private syscall completion" raw_clock=Some(19785) detail_bytes=516889 detail_prefix="Stopped(Stopped(Pid(4042999), TraceeToken { event: EventHandle(EventGeneration { event: Event { generation: PhysicalEventGenerationId(1), observer: OnceLock(PhysicalEventObserver { inner: PhysicalObserverInner { id: PhysicalObserverId(1), ordinary: RecordB"
+105: operation="private held stop registers" raw_clock=Some(19785) detail_bytes=203 detail_prefix="tid=4042999 event=Syscall regs=[0, 0, 140737488350688, 4198592, 0, 0, 770, 0, 0, 0, 0, 1895825410, 3, 65536, 140737353740288, 10, 1895825410, 51, 514, 140737488350688, 43, 140737353811776, 0, 0, 0, 0, 0]"
+106: operation="private syscall result" raw_clock=Some(19785) detail_bytes=61 detail_prefix="mprotect args=[140737353740288, 65536, 3, 0, 0, 0] result=0x0"
+107: operation="private syscall stop" raw_clock=Some(19785) detail_bytes=516879 detail_prefix="Stopped(Stopped(Pid(4042999), TraceeToken { event: EventHandle(EventGeneration { event: Event { generation: PhysicalEventGenerationId(1), observer: OnceLock(PhysicalEventObserver { inner: PhysicalObserverInner { id: PhysicalObserverId(1), ordinary: RecordB"
+108: operation="private held stop registers" raw_clock=Some(19785) detail_bytes=226 detail_prefix="tid=4042999 event=Seccomp regs=[0, 0, 140737488350688, 4198592, 0, 0, 770, 34, 0, 18446744073709551615, 18446744073709551578, 1895825410, 3, 4096, 0, 9, 1895825410, 51, 514, 140737488350688, 43, 140737353811776, 0, 0, 0, 0, 0]"
+109: operation="private syscall permit consumed" raw_clock=Some(19785) detail_bytes=208 detail_prefix="tid=4042999 generation=1 origin_status=Some(PhysicalStatusId(88)) admission_status=Some(PhysicalStatusId(89)) purpose=PrivateSetup nr=9 args=[0, 4096, 3, 34, 18446744073709551615, 0] rip=0x71000000 outputs=[]"
+110: operation="private syscall completion" raw_clock=Some(19785) detail_bytes=516869 detail_prefix="Stopped(Stopped(Pid(4042999), TraceeToken { event: EventHandle(EventGeneration { event: Event { generation: PhysicalEventGenerationId(1), observer: OnceLock(PhysicalEventObserver { inner: PhysicalObserverInner { id: PhysicalObserverId(1), ordinary: RecordB"
+111: operation="private held stop registers" raw_clock=Some(19785) detail_bytes=221 detail_prefix="tid=4042999 event=Syscall regs=[0, 0, 140737488350688, 4198592, 0, 0, 770, 34, 0, 18446744073709551615, 140737353846784, 1895825410, 3, 4096, 0, 9, 1895825410, 51, 514, 140737488350688, 43, 140737353811776, 0, 0, 0, 0, 0]"
+112: operation="private syscall result" raw_clock=Some(19785) detail_bytes=73 detail_prefix="mmap args=[0, 4096, 3, 34, 18446744073709551615, 0] result=0x7ffff7fb9000"
+113: operation="private syscall stop" raw_clock=Some(19785) detail_bytes=516859 detail_prefix="Stopped(Stopped(Pid(4042999), TraceeToken { event: EventHandle(EventGeneration { event: Event { generation: PhysicalEventGenerationId(1), observer: OnceLock(PhysicalEventObserver { inner: PhysicalObserverInner { id: PhysicalObserverId(1), ordinary: RecordB"
+114: operation="private held stop registers" raw_clock=Some(19785) detail_bytes=226 detail_prefix="tid=4042999 event=Seccomp regs=[0, 0, 140737488350688, 4198592, 0, 0, 770, 34, 0, 18446744073709551615, 18446744073709551578, 1895825410, 3, 4096, 0, 9, 1895825410, 51, 514, 140737488350688, 43, 140737353811776, 0, 0, 0, 0, 0]"
+115: operation="private syscall permit consumed" raw_clock=Some(19785) detail_bytes=208 detail_prefix="tid=4042999 generation=1 origin_status=Some(PhysicalStatusId(90)) admission_status=Some(PhysicalStatusId(91)) purpose=PrivateSetup nr=9 args=[0, 4096, 3, 34, 18446744073709551615, 0] rip=0x71000000 outputs=[]"
+116: operation="private syscall completion" raw_clock=Some(19785) detail_bytes=516849 detail_prefix="Stopped(Stopped(Pid(4042999), TraceeToken { event: EventHandle(EventGeneration { event: Event { generation: PhysicalEventGenerationId(1), observer: OnceLock(PhysicalEventObserver { inner: PhysicalObserverInner { id: PhysicalObserverId(1), ordinary: RecordB"
+117: operation="private held stop registers" raw_clock=Some(19785) detail_bytes=221 detail_prefix="tid=4042999 event=Syscall regs=[0, 0, 140737488350688, 4198592, 0, 0, 770, 34, 0, 18446744073709551615, 140737353842688, 1895825410, 3, 4096, 0, 9, 1895825410, 51, 514, 140737488350688, 43, 140737353811776, 0, 0, 0, 0, 0]"
+118: operation="private syscall result" raw_clock=Some(19785) detail_bytes=73 detail_prefix="mmap args=[0, 4096, 3, 34, 18446744073709551615, 0] result=0x7ffff7fb8000"
+119: operation="private syscall permit consumed" raw_clock=Some(19785) detail_bytes=191 detail_prefix="tid=4042999 generation=1 origin_status=Some(PhysicalStatusId(92)) admission_status=Some(PhysicalStatusId(93)) purpose=TraceePreinit nr=158 args=[4113, 0, 0, 0, 0, 0] rip=0x71000000 outputs=[]"
+120: operation="private syscall permit consumed" raw_clock=Some(19785) detail_bytes=203 detail_prefix="tid=4042999 generation=1 origin_status=Some(PhysicalStatusId(94)) admission_status=Some(PhysicalStatusId(95)) purpose=TraceePreinit nr=157 args=[25, 140737353849344, 0, 0, 0, 0] rip=0x71000000 outputs=[]"
+121: operation="private syscall stop" raw_clock=Some(19785) detail_bytes=516799 detail_prefix="Stopped(Stopped(Pid(4042999), TraceeToken { event: EventHandle(EventGeneration { event: Event { generation: PhysicalEventGenerationId(1), observer: OnceLock(PhysicalEventObserver { inner: PhysicalObserverInner { id: PhysicalObserverId(1), ordinary: RecordB"
+122: operation="private held stop registers" raw_clock=Some(19785) detail_bytes=223 detail_prefix="tid=4042999 event=Seccomp regs=[0, 0, 140737488350688, 4198592, 0, 0, 770, 0, 0, 0, 18446744073709551578, 1895825410, 0, 140737353846912, 20485, 158, 1895825410, 51, 514, 140737488350688, 43, 140737353811776, 0, 0, 0, 0, 0]"
+123: operation="private syscall permit consumed" raw_clock=Some(19785) detail_bytes=239 detail_prefix="tid=4042999 generation=1 origin_status=Some(PhysicalStatusId(96)) admission_status=Some(PhysicalStatusId(97)) purpose=PrivateSetup nr=158 args=[20485, 140737353846912, 0, 0, 0, 0] rip=0x71000000 outputs=[(140737353846912, 140737353846920)]"
+124: operation="private syscall completion" raw_clock=Some(19785) detail_bytes=516790 detail_prefix="Stopped(Stopped(Pid(4042999), TraceeToken { event: EventHandle(EventGeneration { event: Event { generation: PhysicalEventGenerationId(1), observer: OnceLock(PhysicalEventObserver { inner: PhysicalObserverInner { id: PhysicalObserverId(1), ordinary: RecordB"
+125: operation="private held stop registers" raw_clock=Some(19785) detail_bytes=223 detail_prefix="tid=4042999 event=Syscall regs=[0, 0, 140737488350688, 4198592, 0, 0, 770, 0, 0, 0, 18446744073709551594, 1895825410, 0, 140737353846912, 20485, 158, 1895825410, 51, 514, 140737488350688, 43, 140737353811776, 0, 0, 0, 0, 0]"
+126: operation="physical event partition validated" raw_clock=None detail_bytes=169 detail_prefix="observer=PhysicalObserverId(1) records=996 physical_statuses=100 successful_resumes=98 explicit_dispositions=2 ordinary_lost=0 cleanup_lost=0 after_close=0 violations=[]"
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test constructor_disabled_runner_restores_guest_before_raw_getpid_callbacks ... FAILED
+
+failures:
+
+failures:
+    constructor_disabled_runner_restores_guest_before_raw_getpid_callbacks
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.22s
+
+error: test failed, to rerun pass `-p reverie-liteinst --test after_loader`
